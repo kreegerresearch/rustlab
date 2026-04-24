@@ -1583,6 +1583,51 @@ Per-backend behaviour:
 - **SVG / PNG** — per-cell discrete-band approximation (each cell painted with the colour for its centre-value's band). Looks like a coarse colourmap; v1 limitation. Exact polygon fill is HTML-only.
 - **Terminal** — not rendered.
 
+### `quiver(X, Y, U, V)` / `quiver(X, Y, U, V, ...)` / `quiver(U, V)`
+
+Arrow plot of a 2-D vector field. `U` and `V` are same-shape matrices giving the field's x- and y-components on the grid `X × Y`. `X` and `Y` may be 1-D vectors (length = `ncols`, `nrows`) or `meshgrid` matrices. `quiver(U, V)` is a shortcut that defaults `X` and `Y` to `1..ncols`, `1..nrows`.
+
+Arrows auto-scale so the longest one equals the nearest-neighbour cell distance — dense fields never overlap. Trailing modifier arguments (in any order):
+
+- **Scalar** — a positive multiplier applied on top of the auto-scale.
+- **String** — a single-letter colour code (`"k"/"r"/"g"/"b"/"c"/"m"/"y"/"w"`) sets arrow colour; any other string is the subplot title.
+
+```
+quiver(X, Y, U, V);
+quiver(X, Y, U, V, 0.5);            % half-length arrows
+quiver(X, Y, U, V, "Vortex field");
+quiver(X, Y, U, V, "k");            % black arrows
+quiver(U, V);                       % shortcut — indexed axes
+```
+
+Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces. NaN entries in `U` or `V` skip that cell.
+
+Per-backend behaviour:
+
+- **HTML** (`savefig("...html")`) — single Plotly scatter line trace with `null`-separated polylines per arrow (shaft + triangular head).
+- **SVG / PNG** — plotters line + head polyline per cell.
+- **Terminal** — not rendered (one-time warning).
+
+### `streamplot(X, Y, U, V)` / `streamplot(X, Y, U, V, ...)`
+
+Streamlines of a 2-D vector field. Traces are integrated by RK4 forward and backward from each seed, clipping at the domain boundary and terminating on NaN samples, near-zero field magnitude, or closed-orbit return. Each streamline carries a midpoint arrowhead showing direction.
+
+Trailing modifier arguments (in any order):
+
+- **Scalar** — `density`, a positive knob; default `1.0` places a 10×10 seed grid (≈ 100 seeds).
+- **Matrix (N×2)** — explicit `(x, y)` seed points; overrides the default grid.
+- **String** — single-letter colour code as in `quiver`; any other string is the subplot title.
+
+```
+streamplot(X, Y, U, V);
+streamplot(X, Y, U, V, 2.0);        % 20×20 seed grid
+streamplot(X, Y, U, V, [[-1.5, 0.5]; [0.0, 1.8]; [1.5, -1.2]]);  % 3 seeds
+streamplot(X, Y, U, V, "Field lines");
+streamplot(X, Y, U, V, "r");        % red streamlines
+```
+
+Same `hold on` / backend behaviour as `quiver`.
+
 ---
 
 ## Visualization — File Output (PNG / SVG / HTML)

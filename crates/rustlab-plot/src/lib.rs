@@ -5,6 +5,8 @@ pub mod figure;
 pub mod file;
 pub mod html;
 pub mod live;
+pub mod quiver;
+pub mod streamline;
 pub mod theme;
 #[cfg(feature = "viewer")]
 pub mod viewer_client;
@@ -20,8 +22,8 @@ pub use figure::{
     clear_notebook_figures, colormap_rgb, current_figure_id, current_figure_output, figure_new,
     figure_new_html, figure_switch, plot_context, push_notebook_figure_snapshot,
     set_current_figure_output, set_plot_context, take_notebook_figures, ContourData, FigureOutput,
-    FigureState, HeatmapData, LineStyle, PlotContext, PlotKind, Series, SeriesColor, SubplotState,
-    SurfaceData, FIGURE,
+    FigureState, HeatmapData, LineStyle, PlotContext, PlotKind, QuiverData, Series, SeriesColor,
+    StreamlineData, SubplotState, SurfaceData, FIGURE,
 };
 pub use file::{render_figure_file, render_figure_state_to_file};
 pub use html::{

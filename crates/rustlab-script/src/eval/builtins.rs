@@ -157,6 +157,8 @@ impl BuiltinRegistry {
         r.register("surf", builtin_surf);
         r.register("contour", builtin_contour);
         r.register("contourf", builtin_contourf);
+        r.register("quiver", builtin_quiver);
+        r.register("streamplot", builtin_streamplot);
         // Import / export
         r.register("save", builtin_save);
         r.register("load", builtin_load);
@@ -2714,6 +2716,236 @@ fn builtin_contourf(args: Vec<Value>) -> Result<Value, ScriptError> {
     push_contour_state(
         "contourf", x, y, z_rows, nlevels, levels, title, true, None, colorscale,
     )?;
+    Ok(Value::None)
+}
+
+// ─── Quiver and streamline plots ─────────────────────────────────────────────
+
+/// Convert a `CMatrix` to `Vec<Vec<f64>>` by taking the real part of each
+/// complex entry. Used for vector-field components where imaginary content is
+/// not meaningful (same convention as `axis_from_value`).
+fn vector_field_matrix_to_rows(m: &CMatrix) -> Vec<Vec<f64>> {
+    let (nrows, ncols) = (m.nrows(), m.ncols());
+    (0..nrows)
+        .map(|r| (0..ncols).map(|c| m[[r, c]].re).collect())
+        .collect()
+}
+
+/// Extract `(X, Y, U, V)` from the first 2 or 4 arguments. For the 2-arg
+/// shortcut `quiver(U, V)` we synthesise X and Y from grid indices.
+fn parse_xyuv<'a>(
+    name: &str,
+    args: &'a [Value],
+) -> Result<
+    (
+        Vec<f64>,
+        Vec<f64>,
+        Vec<Vec<f64>>,
+        Vec<Vec<f64>>,
+        &'a [Value],
+    ),
+    ScriptError,
+> {
+    if args.len() >= 4 {
+        if let (Value::Matrix(um), Value::Matrix(vm)) = (&args[2], &args[3]) {
+            if um.shape() != vm.shape() {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: U and V must have the same shape"
+                )));
+            }
+            let (nrows, ncols) = (um.nrows(), um.ncols());
+            let x = axis_from_value(&args[0], name, "X", ncols, false)?;
+            let y = axis_from_value(&args[1], name, "Y", nrows, true)?;
+            let u = vector_field_matrix_to_rows(um);
+            let v = vector_field_matrix_to_rows(vm);
+            return Ok((x, y, u, v, &args[4..]));
+        }
+    }
+    if args.len() >= 2 {
+        if let (Value::Matrix(um), Value::Matrix(vm)) = (&args[0], &args[1]) {
+            if um.shape() != vm.shape() {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: U and V must have the same shape"
+                )));
+            }
+            let (nrows, ncols) = (um.nrows(), um.ncols());
+            let (x, y) = rustlab_plot::quiver::default_xy(nrows, ncols);
+            let u = vector_field_matrix_to_rows(um);
+            let v = vector_field_matrix_to_rows(vm);
+            return Ok((x, y, u, v, &args[2..]));
+        }
+    }
+    Err(ScriptError::type_err(format!(
+        "{name}: expected (X, Y, U, V) or (U, V) with matrix arguments"
+    )))
+}
+
+fn warn_terminal_quiver_once() {
+    use std::sync::Once;
+    static WARN: Once = Once::new();
+    WARN.call_once(|| {
+        eprintln!(
+            "rustlab: quiver is not rendered to the terminal — \
+             use savefig(\"plot.svg\" or \"plot.html\") to view it."
+        );
+    });
+}
+
+fn warn_terminal_streamplot_once() {
+    use std::sync::Once;
+    static WARN: Once = Once::new();
+    WARN.call_once(|| {
+        eprintln!(
+            "rustlab: streamplot is not rendered to the terminal — \
+             use savefig(\"plot.svg\" or \"plot.html\") to view it."
+        );
+    });
+}
+
+/// `quiver(X, Y, U, V [, scale | "title"])` or `quiver(U, V [, ...])`.
+///
+/// Draws an arrow glyph at each grid point. Arrows are auto-scaled so the
+/// longest one equals the nearest-neighbour cell distance; an explicit
+/// `scale` multiplier is applied on top. NaN entries in `U` or `V` skip
+/// that cell. Honours `hold on` to overlay on an existing `imagesc` or
+/// `contour`.
+fn builtin_quiver(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("quiver", &args, 2, 6)?;
+    let (x, y, u, v, rest) = parse_xyuv("quiver", &args)?;
+    let mut scale = 1.0f64;
+    let mut title: Option<String> = None;
+    let mut color: Option<rustlab_plot::SeriesColor> = None;
+    for arg in rest {
+        match arg {
+            Value::Scalar(n) => {
+                if !n.is_finite() || *n <= 0.0 {
+                    return Err(ScriptError::type_err(
+                        "quiver: scale must be a positive finite number".into(),
+                    ));
+                }
+                scale = *n;
+            }
+            Value::Str(s) => {
+                if let Some(c) = rustlab_plot::SeriesColor::parse(s) {
+                    color = Some(c);
+                } else {
+                    title = Some(s.clone());
+                }
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "quiver: unexpected argument of type {}",
+                    other.type_name()
+                )));
+            }
+        }
+    }
+
+    rustlab_plot::FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            fig.current_mut().quivers.clear();
+        }
+        if let Some(t) = &title {
+            fig.current_mut().title = t.clone();
+        }
+        fig.current_mut().quivers.push(rustlab_plot::QuiverData {
+            x,
+            y,
+            u,
+            v,
+            scale,
+            color,
+            title: title.clone(),
+        });
+    });
+
+    if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Terminal {
+        warn_terminal_quiver_once();
+    }
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+/// `streamplot(X, Y, U, V [, density | seeds | "title"])`.
+///
+/// Integrates streamlines from seed points via RK4 forward and backward
+/// until they leave the domain or hit a NaN / near-zero sample. When no
+/// explicit `seeds` matrix is supplied, places seeds on a grid sized by
+/// `density` (default 1.0 → ≈ one seed per grid cell). Honours `hold on`
+/// for overlay on `imagesc` / `contour`.
+fn builtin_streamplot(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("streamplot", &args, 2, 7)?;
+    let (x, y, u, v, rest) = parse_xyuv("streamplot", &args)?;
+    let mut density = 1.0f64;
+    let mut title: Option<String> = None;
+    let mut color: Option<rustlab_plot::SeriesColor> = None;
+    let mut seeds: Option<Vec<(f64, f64)>> = None;
+    for arg in rest {
+        match arg {
+            Value::Scalar(n) => {
+                if !n.is_finite() || *n <= 0.0 {
+                    return Err(ScriptError::type_err(
+                        "streamplot: density must be a positive finite number".into(),
+                    ));
+                }
+                density = *n;
+            }
+            Value::Str(s) => {
+                if let Some(c) = rustlab_plot::SeriesColor::parse(s) {
+                    color = Some(c);
+                } else {
+                    title = Some(s.clone());
+                }
+            }
+            Value::Matrix(m) => {
+                if m.ncols() != 2 {
+                    return Err(ScriptError::type_err(format!(
+                        "streamplot: seeds matrix must be N×2 (got {}×{})",
+                        m.nrows(),
+                        m.ncols()
+                    )));
+                }
+                let pts: Vec<(f64, f64)> = (0..m.nrows())
+                    .map(|i| (m[[i, 0]].re, m[[i, 1]].re))
+                    .collect();
+                seeds = Some(pts);
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "streamplot: unexpected argument of type {}",
+                    other.type_name()
+                )));
+            }
+        }
+    }
+
+    rustlab_plot::FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            fig.current_mut().streamlines.clear();
+        }
+        if let Some(t) = &title {
+            fig.current_mut().title = t.clone();
+        }
+        fig.current_mut()
+            .streamlines
+            .push(rustlab_plot::StreamlineData {
+                x,
+                y,
+                u,
+                v,
+                density,
+                seeds,
+                color,
+                title: title.clone(),
+            });
+    });
+
+    if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Terminal {
+        warn_terminal_streamplot_once();
+    }
+    sync_figure_outputs();
     Ok(Value::None)
 }
 

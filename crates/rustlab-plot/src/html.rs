@@ -316,6 +316,73 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
             }
         }
 
+        // Quiver overlays: emit one scatter(lines) trace per QuiverData,
+        // with `null` separators between arrows so Plotly draws each as an
+        // independent polyline (shaft + arrowhead).
+        for qd in &panel.quivers {
+            let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
+            if arrows.is_empty() { continue; }
+            let color = color_to_css(qd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+            let (xs, ys) = arrows_to_polyline(&arrows);
+            traces.push_str(&format!(
+                r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                x = xs,
+                y = ys,
+                color = color,
+                xa = xaxis_ref,
+                ya = yaxis_ref,
+            ));
+        }
+
+        // Streamline overlays: integrate each seed and emit one scatter(lines)
+        // trace per StreamlineData with null-separated polylines.
+        for sd in &panel.streamlines {
+            let seeds = match &sd.seeds {
+                Some(s) => s.clone(),
+                None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
+            };
+            if seeds.is_empty() { continue; }
+            let step = crate::streamline::default_step(&sd.x, &sd.y);
+            let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
+            let mut paths: Vec<Vec<(f64, f64)>> = Vec::new();
+            let mut arrowheads: Vec<crate::quiver::Arrow> = Vec::new();
+            for (sx, sy) in seeds {
+                let pts = crate::streamline::integrate(
+                    &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
+                );
+                if pts.len() < 2 { continue; }
+                if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
+                    arrowheads.push(a);
+                }
+                paths.push(pts);
+            }
+            if paths.is_empty() { continue; }
+            let color = color_to_css(sd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+            let (xs, ys) = paths_to_polyline(&paths);
+            traces.push_str(&format!(
+                r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                x = xs,
+                y = ys,
+                color = color,
+                xa = xaxis_ref,
+                ya = yaxis_ref,
+            ));
+            if !arrowheads.is_empty() {
+                let (hxs, hys) = arrows_to_polyline(&arrowheads);
+                traces.push_str(&format!(
+                    r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                    x = hxs,
+                    y = hys,
+                    color = color,
+                    xa = xaxis_ref,
+                    ya = yaxis_ref,
+                ));
+            }
+        }
+
         // Traces for each series
         for series in &panel.series {
             let color_str = color_to_css(&series.color);
@@ -477,6 +544,63 @@ fn color_to_css(c: &SeriesColor) -> String {
         SeriesColor::White => "rgb(255,255,255)".into(),
         SeriesColor::Rgb(r, g, b) => format!("rgb({},{},{})", r, g, b),
     }
+}
+
+/// Flatten a slice of arrow glyphs into a pair of Plotly JSON arrays
+/// (`x`, `y`) with `null` separators between arrows. Each arrow is emitted
+/// as `tail, tip, leftBarb, tip, rightBarb, null`.
+fn arrows_to_polyline(arrows: &[crate::quiver::Arrow]) -> (String, String) {
+    let mut out_x = String::from("[");
+    let mut out_y = String::from("[");
+    let mut first = true;
+    for a in arrows {
+        let pts: [(f64, f64); 5] = [
+            a.shaft.0, a.shaft.1, a.head[0], a.head[1], a.head[2],
+        ];
+        if !first {
+            out_x.push_str(",null");
+            out_y.push_str(",null");
+        }
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 || !first {
+                out_x.push(',');
+                out_y.push(',');
+            }
+            out_x.push_str(&format!("{}", p.0));
+            out_y.push_str(&format!("{}", p.1));
+        }
+        first = false;
+    }
+    out_x.push(']');
+    out_y.push(']');
+    (out_x, out_y)
+}
+
+/// Flatten a slice of polylines into Plotly JSON arrays with `null`
+/// separators between polylines.
+fn paths_to_polyline(paths: &[Vec<(f64, f64)>]) -> (String, String) {
+    let mut out_x = String::from("[");
+    let mut out_y = String::from("[");
+    let mut first = true;
+    for path in paths {
+        if path.is_empty() { continue; }
+        if !first {
+            out_x.push_str(",null");
+            out_y.push_str(",null");
+        }
+        for (i, p) in path.iter().enumerate() {
+            if i > 0 || !first {
+                out_x.push(',');
+                out_y.push(',');
+            }
+            out_x.push_str(&format!("{}", p.0));
+            out_y.push_str(&format!("{}", p.1));
+        }
+        first = false;
+    }
+    out_x.push(']');
+    out_y.push(']');
+    (out_x, out_y)
 }
 
 fn json_f64_array(data: &[f64]) -> String {

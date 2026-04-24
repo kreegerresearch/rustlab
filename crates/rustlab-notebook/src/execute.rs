@@ -83,6 +83,8 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
                                 || s.heatmap.is_some()
                                 || s.surface.is_some()
                                 || !s.contours.is_empty()
+                                || !s.quivers.is_empty()
+                                || !s.streamlines.is_empty()
                         }) {
                             figures.push(f.clone());
                         }

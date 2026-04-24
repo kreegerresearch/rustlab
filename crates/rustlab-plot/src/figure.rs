@@ -142,6 +142,42 @@ pub struct ContourData {
     pub colorscale: String,
 }
 
+/// Quiver overlay data (produced by `quiver`). Row-major grid with columns
+/// indexing `x` and rows indexing `y`. `u[r][c]` is the x-component at
+/// `(x[c], y[r])`, `v[r][c]` is the y-component. NaN entries are skipped at
+/// render time.
+#[derive(Debug, Clone)]
+pub struct QuiverData {
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub u: Vec<Vec<f64>>,
+    pub v: Vec<Vec<f64>>,
+    /// User-supplied scale multiplier applied *after* the auto-scale step.
+    /// `1.0` is the default (auto-scale sets longest arrow to one cell edge).
+    pub scale: f64,
+    /// Arrow color. `None` falls back to the next series color.
+    pub color: Option<SeriesColor>,
+    pub title: Option<String>,
+}
+
+/// Streamline overlay data (produced by `streamplot`). Grid conventions match
+/// `QuiverData`. Streamlines are integrated at render time so the raw field
+/// is stored here; `seeds` overrides the default uniform grid when supplied.
+#[derive(Debug, Clone)]
+pub struct StreamlineData {
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub u: Vec<Vec<f64>>,
+    pub v: Vec<Vec<f64>>,
+    /// Seed density multiplier. `1.0` yields ≈ 1 seed per cell area.
+    pub density: f64,
+    /// Explicit seed points `(x, y)`. When `Some`, overrides the density grid.
+    pub seeds: Option<Vec<(f64, f64)>>,
+    /// Line color. `None` falls back to the next series color.
+    pub color: Option<SeriesColor>,
+    pub title: Option<String>,
+}
+
 /// State for a single subplot panel.
 #[derive(Debug, Clone)]
 pub struct SubplotState {
@@ -160,6 +196,10 @@ pub struct SubplotState {
     pub surface: Option<SurfaceData>,
     /// Contour overlays (line and filled). Rendered above the heatmap.
     pub contours: Vec<ContourData>,
+    /// Quiver (vector arrow) overlays. Rendered above contours.
+    pub quivers: Vec<QuiverData>,
+    /// Streamline overlays. Rendered above quivers.
+    pub streamlines: Vec<StreamlineData>,
 }
 impl SubplotState {
     pub fn new() -> Self {
@@ -175,6 +215,8 @@ impl SubplotState {
             heatmap: None,
             surface: None,
             contours: Vec::new(),
+            quivers: Vec::new(),
+            streamlines: Vec::new(),
         }
     }
 }

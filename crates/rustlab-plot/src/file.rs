@@ -72,9 +72,13 @@ where
             render_surface_to_backend(panel.clone(), sf, &caption)?;
             continue;
         }
-        // Heatmap and/or contour rendering — they share a chart so they
-        // overlay correctly under hold on.
-        if sp.heatmap.is_some() || !sp.contours.is_empty() {
+        // Heatmap and/or contour/quiver/streamline rendering — they share a
+        // chart so they overlay correctly under hold on.
+        if sp.heatmap.is_some()
+            || !sp.contours.is_empty()
+            || !sp.quivers.is_empty()
+            || !sp.streamlines.is_empty()
+        {
             render_heatmap_and_contours_to_backend(panel.clone(), sp)?;
             continue;
         }
@@ -618,10 +622,19 @@ where
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     root.fill(&WHITE).map_err(err)?;
 
-    // Decide chart bounds.
+    // Decide chart bounds. First overlay that can dictate world coordinates
+    // wins; heatmap-only falls back to integer cell coordinates.
     let (x_lo, x_hi, y_lo, y_hi) = if let Some(cd) = sp.contours.first() {
         let (xmin, xmax) = bounds(&cd.x);
         let (ymin, ymax) = bounds(&cd.y);
+        (xmin, xmax, ymin, ymax)
+    } else if let Some(qd) = sp.quivers.first() {
+        let (xmin, xmax) = bounds(&qd.x);
+        let (ymin, ymax) = bounds(&qd.y);
+        (xmin, xmax, ymin, ymax)
+    } else if let Some(sd) = sp.streamlines.first() {
+        let (xmin, xmax) = bounds(&sd.x);
+        let (ymin, ymax) = bounds(&sd.y);
         (xmin, xmax, ymin, ymax)
     } else if let Some(hm) = &sp.heatmap {
         let nrows = hm.z.len();
@@ -688,7 +701,111 @@ where
         }
     }
 
+    // Quiver overlays.
+    for qd in &sp.quivers {
+        render_quiver_to_backend(&mut chart, qd)?;
+    }
+
+    // Streamline overlays.
+    for sd in &sp.streamlines {
+        render_streamlines_to_backend(&mut chart, sd)?;
+    }
+
     root.present().map_err(err)?;
+    Ok(())
+}
+
+fn render_quiver_to_backend<DB>(
+    chart: &mut ChartContext<
+        DB,
+        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
+    >,
+    qd: &crate::figure::QuiverData,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
+    let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
+    if arrows.is_empty() {
+        return Ok(());
+    }
+    let color = series_color_to_rgb(qd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+    let style = ShapeStyle {
+        color: color.to_rgba(),
+        filled: false,
+        stroke_width: 1,
+    };
+    for a in arrows {
+        chart
+            .draw_series(std::iter::once(PathElement::new(
+                vec![a.shaft.0, a.shaft.1],
+                style,
+            )))
+            .map_err(err)?;
+        chart
+            .draw_series(std::iter::once(PathElement::new(
+                vec![a.head[0], a.head[1], a.head[2]],
+                style,
+            )))
+            .map_err(err)?;
+    }
+    Ok(())
+}
+
+fn render_streamlines_to_backend<DB>(
+    chart: &mut ChartContext<
+        DB,
+        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
+    >,
+    sd: &crate::figure::StreamlineData,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
+    let seeds = match &sd.seeds {
+        Some(s) => s.clone(),
+        None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
+    };
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    let step = crate::streamline::default_step(&sd.x, &sd.y);
+    let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
+    let color = series_color_to_rgb(sd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+    let style = ShapeStyle {
+        color: color.to_rgba(),
+        filled: false,
+        stroke_width: 1,
+    };
+    for (sx, sy) in seeds {
+        let pts = crate::streamline::integrate(
+            &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
+        );
+        if pts.len() < 2 {
+            continue;
+        }
+        chart
+            .draw_series(std::iter::once(PathElement::new(pts.clone(), style)))
+            .map_err(err)?;
+        if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![a.shaft.0, a.shaft.1],
+                    style,
+                )))
+                .map_err(err)?;
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![a.head[0], a.head[1], a.head[2]],
+                    style,
+                )))
+                .map_err(err)?;
+        }
+    }
     Ok(())
 }
 
@@ -1051,6 +1168,142 @@ mod tests {
             rect_count >= (10 * 10) - 5,
             "expected ~100 cell rectangles, got {rect_count}"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn uniform_field(nx: usize, ny: usize, ux: f64, uy: f64)
+        -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>)
+    {
+        let x: Vec<f64> = (0..nx).map(|i| -1.0 + 2.0 * i as f64 / (nx - 1) as f64).collect();
+        let y: Vec<f64> = (0..ny).map(|i| -1.0 + 2.0 * i as f64 / (ny - 1) as f64).collect();
+        let u = vec![vec![ux; nx]; ny];
+        let v = vec![vec![uy; nx]; ny];
+        (x, y, u, v)
+    }
+
+    fn vortex_field(nx: usize, ny: usize)
+        -> (Vec<f64>, Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>)
+    {
+        let x: Vec<f64> = (0..nx).map(|i| -2.0 + 4.0 * i as f64 / (nx - 1) as f64).collect();
+        let y: Vec<f64> = (0..ny).map(|i| -2.0 + 4.0 * i as f64 / (ny - 1) as f64).collect();
+        let mut u = vec![vec![0.0; nx]; ny];
+        let mut v = vec![vec![0.0; nx]; ny];
+        for r in 0..ny {
+            for c in 0..nx {
+                u[r][c] = -y[r];
+                v[r][c] = x[c];
+            }
+        }
+        (x, y, u, v)
+    }
+
+    #[test]
+    fn quiver_renders_horizontal_arrows_to_svg() {
+        let path = tmp_path("_quiver_uniform.svg");
+        let (x, y, u, v) = uniform_field(8, 8, 1.0, 0.0);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            fig.current_mut().quivers.push(crate::figure::QuiverData {
+                x, y, u, v,
+                scale: 1.0,
+                color: None,
+                title: None,
+            });
+        });
+        render_figure_file(&path).expect("quiver SVG should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(content.contains("<svg"));
+        // One shaft path + one head path per arrow, minus border cells where
+        // the arrow might stick out of bounds. Either polyline or path should
+        // show up repeatedly.
+        let strokes = content.matches("<polyline").count() + content.matches("<path").count();
+        assert!(strokes > 30, "quiver SVG missing arrow strokes, got {strokes}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn quiver_skips_nan_entries() {
+        let path = tmp_path("_quiver_nan.svg");
+        let (x, y, mut u, v) = uniform_field(6, 6, 1.0, 0.0);
+        // Poison a handful of cells with NaN.
+        for r in 0..6 { u[r][0] = f64::NAN; }
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            fig.current_mut().quivers.push(crate::figure::QuiverData {
+                x, y, u, v,
+                scale: 1.0,
+                color: None,
+                title: None,
+            });
+        });
+        // Smoke: should not panic; SVG should render.
+        render_figure_file(&path).expect("quiver NaN SVG should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(content.contains("<svg"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn streamplot_renders_paths_for_vortex() {
+        let path = tmp_path("_stream_vortex.svg");
+        let (x, y, u, v) = vortex_field(21, 21);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            fig.current_mut().streamlines.push(crate::figure::StreamlineData {
+                x, y, u, v,
+                density: 0.3,
+                seeds: None,
+                color: None,
+                title: None,
+            });
+        });
+        render_figure_file(&path).expect("streamplot SVG should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(content.contains("<svg"));
+        // Each streamline traces a multi-point polyline; expect several in SVG.
+        let strokes = content.matches("<polyline").count() + content.matches("<path").count();
+        assert!(strokes > 5, "streamplot SVG missing line strokes, got {strokes}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn heatmap_with_quiver_overlay_both_render() {
+        let path = tmp_path("_heatmap_quiver.svg");
+        let (z, x, y) = radial_z(11);
+        let (qx, qy, u, v) = uniform_field(6, 6, 1.0, 0.0);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+            });
+            sp.contours.push(crate::figure::ContourData {
+                z: vec![vec![0.0; 2]; 2],
+                x: x.clone(), y: y.clone(),
+                levels: vec![0.5],
+                filled: false,
+                line_color: Some(crate::figure::SeriesColor::Black),
+                colorscale: "viridis".to_string(),
+            });
+            sp.quivers.push(crate::figure::QuiverData {
+                x: qx, y: qy, u, v,
+                scale: 1.0,
+                color: Some(crate::figure::SeriesColor::Red),
+                title: None,
+            });
+        });
+        render_figure_file(&path).expect("overlay render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(content.contains("<svg"));
+        // Heatmap rectangles + quiver arrow strokes should both be present.
+        assert!(content.matches("<rect").count() > 50, "heatmap cells missing");
+        let strokes = content.matches("<polyline").count() + content.matches("<path").count();
+        assert!(strokes > 30, "quiver arrows missing, got {strokes}");
         let _ = std::fs::remove_file(&path);
     }
 

@@ -1,15 +1,16 @@
-# Development Plan: `em_lab` Feature Requests
+# Development Plan: `rustlab_em` Feature Requests
 
-**Status:** Proposed — not yet started
+**Status:** Phases 1, 1.5, 2, 3 landed — Phases 4 & 5 remaining
 **Date opened:** 2026-04-22
-**Source:** `../em_lab/dev/rustlab/requests/*.md` (5 requests)
+**Source:** `../rustlab_em/dev/rustlab/requests/*.md` (5 requests)
 **Current rustlab version at plan creation:** `0.1.9`
+**Current rustlab version:** `0.1.10` (after Phase 3)
 
 ---
 
 ## Purpose
 
-The `em_lab` curriculum has filed five standalone feature requests against
+The `rustlab_em` curriculum has filed five standalone feature requests against
 rustlab. Each request is a self-contained proposal with motivation, proposed
 API, and semantics. This plan sequences the work into phases a follow-up
 agent can execute independently.
@@ -17,7 +18,7 @@ agent can execute independently.
 The request files live at:
 
 ```
-../em_lab/dev/rustlab/requests/
+../rustlab_em/dev/rustlab/requests/
 ├── README.md                       # priority table
 ├── vector-calculus-operators.md    # #1 High
 ├── quiver-and-streamplot.md        # #2 High
@@ -37,7 +38,7 @@ not duplicate their contents.
 - **`dev/plans/tensor3.md`** — foundational `Value::Tensor3` work. ✅
   Complete (2026-04-22). 3D numerical operators (`gradient3`,
   `divergence3`, `curl3`) are now unblocked as a Phase 1.5 follow-up.
-  Phase 1 below remains scoped to 2D to keep the em_lab request unblocks
+  Phase 1 below remains scoped to 2D to keep the rustlab_em request unblocks
   small and independently reviewable.
 
 ## Prerequisites already verified (2026-04-22)
@@ -68,10 +69,10 @@ The user (Mike) should confirm these before a follow-up agent begins Phase 1:
    items (#1 vector calculus, #2 quiver/streamplot, #3 contour)?
 2. **Commit cadence.** One commit per phase (recommended), or one bundled
    commit at the end?
-3. **`em_lab` lesson updates.** After each phase lands, the corresponding
-   request file in `em_lab/dev/rustlab/requests/` should be marked
+3. **`rustlab_em` lesson updates.** After each phase lands, the corresponding
+   request file in `rustlab_em/dev/rustlab/requests/` should be marked
    `Status: Landed` and the lesson scripts updated to use the new builtin.
-   Is this in-scope here, or left to Mike to do in the `em_lab` repo?
+   Is this in-scope here, or left to Mike to do in the `rustlab_em` repo?
 4. **Node-ordering convention for Phase 4.** Request #4 specifies row-major
    `V(i, j) → (i-1)*nx + j`. Confirm this matches what any existing rustlab
    helpers expect; if rustlab uses column-major elsewhere, flag the
@@ -114,7 +115,7 @@ checks.
 
 Tasks:
 - Confirm scope (all five vs. top three) with Mike.
-- Confirm commit cadence and `em_lab`-side updates.
+- Confirm commit cadence and `rustlab_em`-side updates.
 - Confirm node-ordering convention for Phase 4.
 - Re-read the five request files end-to-end — they are short and
   self-contained.
@@ -127,10 +128,10 @@ Tasks:
 
 ## Phase 1 — Vector-calculus operators (request #1)
 
-**Reference:** `../em_lab/dev/rustlab/requests/vector-calculus-operators.md`
+**Reference:** `../rustlab_em/dev/rustlab/requests/vector-calculus-operators.md`
 
 **Why first:** smallest blast radius (numerical only, no plotting), and is a
-dependency of meaningful demos in later phases. Unblocks `em_lab` Lessons
+dependency of meaningful demos in later phases. Unblocks `rustlab_em` Lessons
 01, 02, 03, 07, 08.
 
 **Surface area (this phase: 2D only):**
@@ -173,7 +174,7 @@ approves before commit.
 
 ## Phase 2 — Contour plots (request #3)
 
-**Reference:** `../em_lab/dev/rustlab/requests/contour-plots.md`
+**Reference:** `../rustlab_em/dev/rustlab/requests/contour-plots.md`
 
 **Why before quiver:** contour is the smaller plotting surface, and
 `contourf` exercises the polygon-fill path that `quiver` arrowheads will
@@ -213,7 +214,7 @@ later phases assume works.
 - `hold on; imagesc(...); contour(...); hold off` produces a figure with
   both traces.
 
-**Exit criteria:** all three High-priority request demos from `em_lab`
+**Exit criteria:** all three High-priority request demos from `rustlab_em`
 Lessons 03 / 04 / 08 renderable; tests pass; help entries present; AGENTS
 updated; Mike approves.
 
@@ -221,7 +222,7 @@ updated; Mike approves.
 
 ## Phase 3 — Quiver and streamplot (request #2)
 
-**Reference:** `../em_lab/dev/rustlab/requests/quiver-and-streamplot.md`
+**Reference:** `../rustlab_em/dev/rustlab/requests/quiver-and-streamplot.md`
 
 **Why after contour:** relies on `hold on` overlay (verified in Phase 2)
 and on Phase 1's gradient (for `streamplot` on `-∇V` fields in lesson
@@ -260,7 +261,7 @@ examples).
 - Vortex `(-y, x)` → circular streamlines.
 - NaN entries skipped.
 
-**Exit criteria:** at minimum `em_lab` Lessons 01/02/03/04/05 can render
+**Exit criteria:** at minimum `rustlab_em` Lessons 01/02/03/04/05 can render
 their canonical vector-field figures; tests pass; help entries present;
 AGENTS updated; Mike approves.
 
@@ -268,7 +269,7 @@ AGENTS updated; Mike approves.
 
 ## Phase 4 — Laplacian stencil builder (request #4)
 
-**Reference:** `../em_lab/dev/rustlab/requests/laplacian-stencil-builder.md`
+**Reference:** `../rustlab_em/dev/rustlab/requests/laplacian-stencil-builder.md`
 
 **Prerequisite status:** `spsolve` and `spdiags` confirmed present
 (verified 2026-04-22). No core-infra detour required.
@@ -302,7 +303,7 @@ AGENTS updated; Mike approves.
   term producing a Gaussian potential), verify `||Lx - b||` small.
 - `ij2k` / `k2ij` round-trip for random `(i, j)` on a grid.
 
-**Exit criteria:** `em_lab` Lesson 04 Poisson demo runs via `laplacian_2d`
+**Exit criteria:** `rustlab_em` Lesson 04 Poisson demo runs via `laplacian_2d`
 + `spsolve`; tests pass; help entries present; AGENTS updated; Mike
 approves.
 
@@ -310,10 +311,10 @@ approves.
 
 ## Phase 5 — Animation export (request #5)
 
-**Reference:** `../em_lab/dev/rustlab/requests/animation-export.md`
+**Reference:** `../rustlab_em/dev/rustlab/requests/animation-export.md`
 
 **Lowest priority** — a per-frame SVG loop workaround already exists and
-is documented in `em_lab` lessons 08–09.
+is documented in `rustlab_em` lessons 08–09.
 
 **Surface area (Option A only unless Mike requests Option B):**
 - `frame()` — snapshot current figure into internal frame buffer, clear
@@ -335,7 +336,7 @@ dependency; otherwise same data flow.
   two frames in its `frames` array.
 - `figure()` called mid-sequence clears the buffer.
 
-**Exit criteria:** a short time-loop test from `em_lab` Lesson 08 renders
+**Exit criteria:** a short time-loop test from `rustlab_em` Lesson 08 renders
 as an animated HTML page; tests pass; help entries present; AGENTS
 updated; Mike approves.
 
@@ -350,9 +351,9 @@ updated; Mike approves.
   `0.1.10` or `0.2.0` depending on scope landed). Confirm semver choice
   with Mike.
 - For each request that landed, edit its file in
-  `../em_lab/dev/rustlab/requests/` to change
+  `../rustlab_em/dev/rustlab/requests/` to change
   `**Status**: Proposed` → `**Status**: Landed` and (separately, in the
-  `em_lab` repo) update the lesson scripts to use the new builtin instead
+  `rustlab_em` repo) update the lesson scripts to use the new builtin instead
   of the workaround.
 
 ---

@@ -967,3 +967,68 @@ rustlab run examples/contour.r
 # Then open the generated files in /tmp/, e.g.:
 open /tmp/rustlab_contour_overlay.html
 ```
+
+## `examples/quiver.r`
+
+Arrow plots (`quiver`) and streamlines (`streamplot`) for 2-D vector fields, including uniform flow, vortex, saddle, custom seeds, and the canonical overlay patterns (|E|² heatmap with E arrows; equipotentials with field lines).
+
+```rustlab
+# Vortex field: (U, V) = (-Y, X)
+[X, Y] = meshgrid(linspace(-2, 2, 16), linspace(-2, 2, 16));
+U = -Y;  V = X;
+
+# 1. Arrows at every grid point
+figure();
+quiver(X, Y, U, V, "Vortex field (-y, x)");
+savefig("/tmp/rustlab_quiver_vortex.html");
+
+# 2. Streamlines through the same field
+figure();
+streamplot(X, Y, U, V, "Vortex streamlines");
+savefig("/tmp/rustlab_stream_vortex.html");
+
+# 3. Custom seeds — start streamlines at exactly these points
+figure();
+seeds = [[-1.5, 0.5]; [0.0, 1.8]; [1.5, -1.2]];
+streamplot(X, Y, U, V, seeds);
+savefig("/tmp/rustlab_stream_seeds.html");
+
+# 4. Canonical EM overlay: |E|² heatmap with E = -grad(V) arrows
+[X, Y] = meshgrid(linspace(-2, 2, 25), linspace(-2, 2, 25));
+Vpot = X .^ 2 - Y .^ 2;             % saddle-shaped potential
+[Ex, Ey] = gradient(Vpot);
+Ex = -Ex;  Ey = -Ey;
+Emag = Ex .* Ex + Ey .* Ey;
+
+figure();
+hold on;
+imagesc(Emag);
+quiver(X, Y, Ex, Ey, "|E|² with E arrows");
+hold off;
+savefig("/tmp/rustlab_heatmap_quiver.html");
+```
+
+### What's going on
+
+1. **`quiver(X, Y, U, V)`** places one arrow per grid point. Arrows auto-scale so the longest one equals the nearest-neighbour cell distance — dense fields never overlap. An optional scalar (`quiver(X, Y, U, V, 0.5)`) multiplies the auto-scale for finer control.
+
+2. **`quiver(U, V)`** is a shortcut: `X` and `Y` default to `1..ncols`, `1..nrows`. Handy for quick inspections before building a `meshgrid`.
+
+3. **`streamplot(X, Y, U, V)`** integrates streamlines by RK4 forward and backward from each seed, clipping at the domain boundary, terminating on NaN samples, zero-magnitude field, or closed-orbit return (so vortex streamlines draw once rather than looping). A midpoint arrowhead indicates direction.
+
+4. **Seed control.** A trailing scalar sets density (`density = 1.0` → 10×10 seed grid, ≈ 100 seeds). An explicit Nx2 matrix of `(x, y)` points replaces the default grid — useful when highlighting trajectories through known points of interest.
+
+5. **Overlays under `hold on`.** `quiver` and `streamplot` append to the subplot rather than replacing it, and they stack with `imagesc` heatmaps and `contour` layers. Chart bounds come from the first vector-field or contour layer's `(X, Y)`; the heatmap cells rescale to fit. This is the canonical pattern for EM diagrams: a magnitude heatmap with the field arrows or equipotentials overlaid.
+
+6. **NaN masking.** NaN entries in `U` or `V` skip that cell in `quiver` and terminate a streamline locally, so you can mask out regions of a field without corrupting neighbouring arrows or traces.
+
+7. **Backends.** `.html` emits interactive Plotly line traces with null-separated arrow / streamline polylines; `.svg` uses plotters line + polygon strokes per cell. Terminal does **not** render either (one-time warning) — use `savefig` to view.
+
+### Running
+
+```sh
+rustlab run examples/quiver.r
+# Then open the generated files in /tmp/, e.g.:
+open /tmp/rustlab_heatmap_quiver.html
+open /tmp/rustlab_contour_stream.html
+```
