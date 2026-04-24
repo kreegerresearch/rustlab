@@ -6290,6 +6290,138 @@ mod sparse_tests {
         let ev = eval_str("S = sprand(3, 3, 1.0)\nk = nnz(S)");
         assert_eq!(get_scalar(&ev, "k"), 9.0);
     }
+
+    // ── Phase 4: Laplacian stencil + index sugar ─────────────────────────────
+
+    #[test]
+    fn laplacian_2d_dimensions_and_nnz() {
+        // 3×3 grid: 1 interior cell (5 entries), 4 edge cells (4 entries),
+        // 4 corner cells (3 entries) → 5 + 16 + 12 = 33 nnz.
+        let ev = eval_str(
+            "L = laplacian_2d(3, 3)\n\
+             is = issparse(L)\n\
+             k = nnz(L)",
+        );
+        assert_eq!(get_scalar(&ev, "is"), 1.0);
+        assert_eq!(get_scalar(&ev, "k"), 33.0);
+    }
+
+    #[test]
+    fn laplacian_2d_interior_stencil_entries() {
+        // For nx = ny = 3, the centre cell is k = 5 (1-based, column-major:
+        // i = 2, j = 2). Its 4 neighbours sit at k ± 1 (vertical) and
+        // k ± ny = k ± 3 (horizontal). Diagonal = -4 for dx = dy = 1.
+        let ev = eval_str(
+            "L = laplacian_2d(3, 3)\n\
+             D = full(L)\n\
+             d = D(5, 5)\n\
+             u = D(5, 4)\n\
+             dn = D(5, 6)\n\
+             l = D(5, 2)\n\
+             r = D(5, 8)",
+        );
+        assert!((get_scalar(&ev, "d") - (-4.0)).abs() < 1e-12);
+        assert!((get_scalar(&ev, "u") - 1.0).abs() < 1e-12);
+        assert!((get_scalar(&ev, "dn") - 1.0).abs() < 1e-12);
+        assert!((get_scalar(&ev, "l") - 1.0).abs() < 1e-12);
+        assert!((get_scalar(&ev, "r") - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_2d_spacing_scales_diagonal() {
+        // Diagonal = -2*(1/dx² + 1/dy²). With dx = 0.5, dy = 0.25 → -2*(4+16) = -40.
+        let ev = eval_str(
+            "L = laplacian_2d(4, 4, 0.5, 0.25)\n\
+             D = full(L)\n\
+             d = D(6, 6)",
+        );
+        assert!((get_scalar(&ev, "d") - (-40.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn laplacian_2d_poisson_roundtrip() {
+        // Self-consistency: pick a column vector x, compute rhs = L*x via
+        // the dense form, solve, and verify the residual norm is tiny.
+        let ev = eval_str(
+            "nx = 5; ny = 4;\n\
+             L = laplacian_2d(nx, ny);\n\
+             D = full(L);\n\
+             x = (1:nx*ny)';\n\
+             rhs = D * x;\n\
+             y = spsolve(L, rhs);\n\
+             err = norm(y' - x)",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-9);
+    }
+
+    #[test]
+    fn laplacian_2d_dirichlet_column_major_agreement() {
+        // For a 5×5 grid (nx = ny = 5), the Dirichlet sine eigenfunction
+        // V(i, j) = sin(pi*i/(ny+1)) * sin(pi*j/(nx+1)) satisfies L*V = λ*V
+        // exactly, where λ = 2*(cos(pi/(nx+1)) + cos(pi/(ny+1)) - 2).
+        // Ghost V = 0 at i = 0, ny+1 and j = 0, nx+1 — which is exactly how
+        // the stencil is assembled.
+        let ev = eval_str(
+            "nx = 5; ny = 5;\n\
+             L = laplacian_2d(nx, ny);\n\
+             D = full(L);\n\
+             V = zeros(ny, nx);\n\
+             for jj = 1:nx\n\
+               for ii = 1:ny\n\
+                 V(ii, jj) = sin(pi*ii/(ny+1)) * sin(pi*jj/(nx+1));\n\
+               end\n\
+             end\n\
+             v_flat = V(:)';\n\
+             lam = 2*(cos(pi/(nx+1)) + cos(pi/(ny+1)) - 2);\n\
+             r = D * v_flat - lam * v_flat;\n\
+             err = norm(r)",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-10);
+    }
+
+    #[test]
+    fn ij2k_formula_is_column_major() {
+        // ij2k(3, 4, 6) = (4-1)*6 + 3 = 21.
+        let ev = eval_str("k = ij2k(3, 4, 6)");
+        assert_eq!(get_scalar(&ev, "k"), 21.0);
+    }
+
+    #[test]
+    fn k2ij_inverse_of_ij2k() {
+        // k2ij(21, 6) = [3, 4].
+        let ev = eval_str("[i, j] = k2ij(21, 6)");
+        assert_eq!(get_scalar(&ev, "i"), 3.0);
+        assert_eq!(get_scalar(&ev, "j"), 4.0);
+    }
+
+    #[test]
+    fn ij2k_k2ij_roundtrip_across_grid() {
+        // For every (i, j) in a 5×4 grid, k2ij(ij2k(i, j, 5), 5) == [i, j].
+        let ev = eval_str(
+            "ny = 5; nx = 4;\n\
+             err = 0;\n\
+             for jj = 1:nx\n\
+               for ii = 1:ny\n\
+                 k = ij2k(ii, jj, ny);\n\
+                 [ri, rj] = k2ij(k, ny);\n\
+                 err = err + abs(ri - ii) + abs(rj - jj);\n\
+               end\n\
+             end",
+        );
+        assert_eq!(get_scalar(&ev, "err"), 0.0);
+    }
+
+    #[test]
+    fn laplacian_2d_rejects_small_dimensions() {
+        let result = std::panic::catch_unwind(|| eval_str("L = laplacian_2d(1, 3)"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn laplacian_2d_rejects_non_positive_spacing() {
+        let result = std::panic::catch_unwind(|| eval_str("L = laplacian_2d(3, 3, 0, 1)"));
+        assert!(result.is_err());
+    }
 }
 
 // ── Tax-script language features ────────────────────────────────────────────

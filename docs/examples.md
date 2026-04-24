@@ -1032,3 +1032,58 @@ rustlab run examples/quiver.r
 open /tmp/rustlab_heatmap_quiver.html
 open /tmp/rustlab_contour_stream.html
 ```
+
+## `examples/laplacian.r`
+
+The canonical Poisson demo: build the 5-point sparse Laplacian on a uniform grid, solve `∇²V = ρ` with a known analytic source, verify the residual against the exact solution, and visualise the result.
+
+```rustlab
+# Grid and stencil
+nx = 33; ny = 25;
+dx = 0.1;  dy = 0.1;
+L = laplacian_2d(nx, ny, dx, dy);
+
+# Analytic solution: V(x, y) = sin(pi*x/Lx) * sin(pi*y/Ly) — zero on the
+# boundary, eigenfunction of the continuous Laplacian with eigenvalue
+# -pi^2*(1/Lx^2 + 1/Ly^2).
+Lx = (nx + 1) * dx;
+Ly = (ny + 1) * dy;
+V_exact = zeros(ny, nx);
+for jj = 1:nx
+  for ii = 1:ny
+    V_exact(ii, jj) = sin(pi*ii*dx/Lx) * sin(pi*jj*dy/Ly);
+  end
+end
+v_exact = V_exact(:)';   % column vector, column-major
+
+# Build the RHS by applying L to V_exact, then solve — the solution should
+# match within numerical precision.
+rhs = full(L) * v_exact;
+v_solved = spsolve(L, rhs);
+V_solved = reshape(v_solved, ny, nx);
+
+# Plot the solution
+imagesc(V_solved);
+savefig("/tmp/rustlab_laplacian_solution.html");
+
+# Residual check
+err = norm(v_solved' - v_exact) / norm(v_exact);
+print(err)       # → very small (< 1e-10)
+```
+
+### What's going on
+
+1. **`laplacian_2d(nx, ny, dx, dy)`** returns an `(nx·ny) × (nx·ny)` sparse matrix. Sign convention: `L` approximates `+∇²`, so Poisson `∇²V = -ρ/ε₀` solves as `V = spsolve(L, -rho/eps0)`.
+
+2. **Column-major ordering** is the single most important detail. `V(i, j) → k = (j-1)*ny + i` matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)` convention (modulo the `'` to make it a column vector for `spsolve`). Use `ij2k(i, j, ny)` and `k2ij(k, ny)` when you need the index sugar — note the third argument is **`ny`**, not `nx`.
+
+3. **Boundary conditions.** Homogeneous-Dirichlet: the stencil skips cross-boundary off-diagonal entries and leaves the diagonal at `-2/dx² - 2/dy²`, which is equivalent to assuming `V = 0` outside the grid. For non-zero Dirichlet values, encode them in the right-hand side.
+
+4. **Self-consistency check.** Computing `rhs = full(L) * v_exact` and solving gives back the original vector to numerical precision — the residual norm is < 1e-10 for this analytic eigenfunction.
+
+### Running
+
+```sh
+rustlab run examples/laplacian.r
+open /tmp/rustlab_laplacian_solution.html
+```

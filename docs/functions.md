@@ -1249,6 +1249,48 @@ Solve the linear system `A·x = b` where `A` is sparse. Currently converts to de
 x = spsolve(A, b)
 ```
 
+### `laplacian_2d(nx, ny [, dx, dy])`
+
+Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid with homogeneous-Dirichlet boundary conditions. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
+
+**Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`.
+
+**Boundary semantics.** Homogeneous-ghost Dirichlet: cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries, as if `V = 0` outside the grid. For non-zero Dirichlet values, encode them in the right-hand side.
+
+Neumann and periodic boundary conditions, along with 1-D and 3-D variants, are not implemented in v1.
+
+```
+# Default unit spacing
+L = laplacian_2d(nx, ny)
+
+# Anisotropic grid
+L = laplacian_2d(nx, ny, dx, dy)
+
+# Canonical Poisson solve for a point source at the grid centre
+nx = 32; ny = 24;
+L = laplacian_2d(nx, ny);
+rho = zeros(ny, nx);
+rho(ny/2, nx/2) = 1.0;
+V = spsolve(L, -rho(:)');
+V_grid = reshape(V, ny, nx);
+```
+
+### `ij2k(i, j, ny)`
+
+Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering.
+
+```
+k = ij2k(3, 4, 6)     # → (4-1)*6 + 3 = 21
+```
+
+### `k2ij(k, ny)`
+
+Inverse of `ij2k`. Returns a tuple `[i, j]` destructurable via `[i, j] = k2ij(k, ny)`.
+
+```
+[i, j] = k2ij(21, 6)  # → i = 3, j = 4
+```
+
 ### `full(S)`
 Convert a sparse value to dense. Acts as the identity for already-dense inputs.
 ```

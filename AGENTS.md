@@ -852,6 +852,9 @@ primary     = NUMBER | STRING | IDENT
 | `spsolve` | `spsolve(A, b)` | Solve A×x = b where A is sparse (converts to dense internally) |
 | `spdiags` | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals; D=0 main, >0 super, <0 sub |
 | `sprand` | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
+| `laplacian_2d` | `laplacian_2d(nx, ny [, dx, dy])` | Sparse 5-point Laplacian stencil with homogeneous-Dirichlet BC. Approximates `+∇²` (Poisson solves as `V = spsolve(L, -rho/eps0)`). Node ordering is **column-major** — `V(i, j) → (j-1)*ny + i` — so `reshape(V_flat, ny, nx)` and `V_grid(:)'` compose without transposes. Interior-only: boundary rows have reduced stencils with the same diagonal. |
+| `ij2k` | `ij2k(i, j, ny)` | Column-major grid → flat index. Third arg is **ny** (row count), not nx. |
+| `k2ij` | `[i, j] = k2ij(k, ny)` | Inverse of `ij2k`. Third arg same caveat. |
 | `sprintf` | `sprintf(fmt, args...)` | Like `fprintf` but returns the formatted string |
 | `commas` | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns Str |
 | `error` | `error(msg)` | Halt script execution with a runtime error message |

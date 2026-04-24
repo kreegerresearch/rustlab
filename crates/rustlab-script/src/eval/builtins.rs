@@ -269,6 +269,9 @@ impl BuiltinRegistry {
         r.register("spsolve", builtin_spsolve);
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
+        r.register("laplacian_2d", builtin_laplacian_2d);
+        r.register("ij2k", builtin_ij2k);
+        r.register("k2ij", builtin_k2ij);
 
         // Live plotting
         r.register("figure_live", builtin_figure_live);
@@ -8052,6 +8055,131 @@ fn builtin_spdiags(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 
     Ok(Value::SparseMatrix(SparseMat::new(m, n, entries)))
+}
+
+// ─── Laplacian stencil builder and index sugar ──────────────────────────────
+//
+// Node-ordering convention: **column-major** (Octave/rustlab convention). For
+// a grid `V(i, j)` with `i ∈ 1..=ny` (row) and `j ∈ 1..=nx` (col), the flat
+// index is `k = (j-1)*ny + i` (1-based). This composes naturally with the
+// existing `reshape(V_flat, ny, nx)` and `V_grid(:)` idioms, so users can
+// write `V = spsolve(L, rhs); V_grid = reshape(V, ny, nx)` without a
+// transpose. The `ij2k` / `k2ij` sugar takes `ny` (the row-count) as the
+// divider — **not** `nx`.
+
+/// `laplacian_2d(nx, ny [, dx, dy])` — sparse 5-point Laplacian stencil with
+/// homogeneous-Dirichlet boundary conditions. Approximates `+∇²` so Poisson
+/// `∇²V = -rho/eps0` solves as `V = spsolve(L, -rho/eps0)`.
+fn builtin_laplacian_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("laplacian_2d", &args, 2, 4)?;
+    let nx = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_2d: nx: {e}")))?;
+    let ny = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_2d: ny: {e}")))?;
+    if nx < 2 || ny < 2 {
+        return Err(ScriptError::type_err(
+            "laplacian_2d: nx and ny must each be >= 2".to_string(),
+        ));
+    }
+    let (dx, dy) = if args.len() == 2 {
+        (1.0, 1.0)
+    } else if args.len() == 4 {
+        let dx = args[2]
+            .to_scalar()
+            .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
+        let dy = args[3]
+            .to_scalar()
+            .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
+        if dx <= 0.0 || dy <= 0.0 {
+            return Err(ScriptError::type_err(
+                "laplacian_2d: dx and dy must be positive".to_string(),
+            ));
+        }
+        (dx, dy)
+    } else {
+        return Err(ScriptError::type_err(
+            "laplacian_2d: expected laplacian_2d(nx, ny) or laplacian_2d(nx, ny, dx, dy)"
+                .to_string(),
+        ));
+    };
+
+    let n = nx * ny;
+    let inv_dx2 = 1.0 / (dx * dx);
+    let inv_dy2 = 1.0 / (dy * dy);
+    let diag = -2.0 * (inv_dx2 + inv_dy2);
+
+    // Column-major flat index: k = j*ny + i  (0-based i ∈ 0..ny, j ∈ 0..nx).
+    // Neighbours: ±1 steps in i; ±ny steps in j.
+    let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
+    for j in 0..nx {
+        for i in 0..ny {
+            let k = j * ny + i;
+            entries.push((k, k, Complex::new(diag, 0.0)));
+            if i > 0 {
+                entries.push((k, k - 1, Complex::new(inv_dy2, 0.0)));
+            }
+            if i + 1 < ny {
+                entries.push((k, k + 1, Complex::new(inv_dy2, 0.0)));
+            }
+            if j > 0 {
+                entries.push((k, k - ny, Complex::new(inv_dx2, 0.0)));
+            }
+            if j + 1 < nx {
+                entries.push((k, k + ny, Complex::new(inv_dx2, 0.0)));
+            }
+        }
+    }
+
+    Ok(Value::SparseMatrix(SparseMat::new(n, n, entries)))
+}
+
+/// `ij2k(i, j, ny)` — convert 1-based grid indices `(i, j)` to flat
+/// column-major index `k = (j-1)*ny + i`. Note: the third argument is `ny`
+/// (the row count), not `nx`.
+fn builtin_ij2k(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("ij2k", &args, 3)?;
+    let i = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ij2k: i: {e}")))?;
+    let j = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ij2k: j: {e}")))?;
+    let ny = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ij2k: ny: {e}")))?;
+    if i < 1 || i > ny || j < 1 || ny == 0 {
+        return Err(ScriptError::type_err(format!(
+            "ij2k: out of range (i={i}, j={j}, ny={ny})"
+        )));
+    }
+    let k = (j - 1) * ny + i;
+    Ok(Value::Scalar(k as f64))
+}
+
+/// `k2ij(k, ny)` — inverse of `ij2k`. Returns a tuple `[i, j]` of 1-based
+/// grid indices, destructurable via `[i, j] = k2ij(k, ny)`.
+fn builtin_k2ij(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("k2ij", &args, 2)?;
+    let k = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("k2ij: k: {e}")))?;
+    let ny = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("k2ij: ny: {e}")))?;
+    if k < 1 || ny == 0 {
+        return Err(ScriptError::type_err(format!(
+            "k2ij: out of range (k={k}, ny={ny})"
+        )));
+    }
+    let k0 = k - 1;
+    let i = (k0 % ny) + 1;
+    let j = (k0 / ny) + 1;
+    Ok(Value::Tuple(vec![
+        Value::Scalar(i as f64),
+        Value::Scalar(j as f64),
+    ]))
 }
 
 /// `sprand(m, n, density)` — random sparse matrix with approximately density*m*n non-zeros.

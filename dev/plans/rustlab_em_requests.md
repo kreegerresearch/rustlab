@@ -1,10 +1,10 @@
 # Development Plan: `rustlab_em` Feature Requests
 
-**Status:** Phases 1, 1.5, 2, 3 landed — Phases 4 & 5 remaining
+**Status:** Phases 1, 1.5, 2, 3, 4 landed — Phase 5 remaining
 **Date opened:** 2026-04-22
 **Source:** `../rustlab_em/dev/rustlab/requests/*.md` (5 requests)
 **Current rustlab version at plan creation:** `0.1.9`
-**Current rustlab version:** `0.1.10` (after Phase 3)
+**Current rustlab version:** `0.1.11` (after Phase 4)
 
 ---
 

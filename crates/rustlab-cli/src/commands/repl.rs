@@ -497,6 +497,12 @@ const HELP: &[HelpEntry] = &[
         detail: "spdiags(V, D, m, n)  — place diagonals into an m×n sparse matrix\n  V — vector (single diag) or matrix (one column per diag)\n  D — scalar or vector of offsets (0=main, >0 super, <0 sub)\n\nExamples:\n  S = spdiags([1,2,3], 0, 3, 3)   — diagonal\n  T = spdiags([-ones(5,1), 2*ones(5,1), -ones(5,1)], [-1,0,1], 5, 5)" },
     HelpEntry { name: "sprand", brief: "Random sparse matrix with given density",
         detail: "sprand(m, n, density)  — m×n sparse matrix with ~density*m*n non-zeros\n  Values are uniform in [0, 1). Density must be in [0, 1].\n\nExample:\n  S = sprand(100, 100, 0.05)  → ~500 non-zeros" },
+    HelpEntry { name: "laplacian_2d", brief: "5-point sparse Laplacian with Dirichlet boundary",
+        detail: "laplacian_2d(nx, ny)              — dx = dy = 1\nlaplacian_2d(nx, ny, dx, dy)      — uniform spacing\n\n  Returns an (nx*ny) × (nx*ny) sparse matrix L approximating +∇² on a\n  uniform grid with homogeneous Dirichlet boundary (V = 0 outside).\n  Sign: Poisson ∇²V = -rho/eps0 solves as V = spsolve(L, -rho/eps0).\n\n  Node ordering: column-major, V(i, j) → k = (j-1)*ny + i (1-based).\n  This composes with rustlab's reshape / V(:) convention so\n  V_flat = V_grid(:) and V_grid = reshape(V_flat, ny, nx) round-trip\n  without transposes. Use ij2k(i, j, ny) / k2ij(k, ny) for index sugar.\n\nExample:\n  nx = 8; ny = 6;\n  L = laplacian_2d(nx, ny);\n  % source: unit charge at the grid centre\n  rho = zeros(ny, nx);  rho(ny/2, nx/2) = 1;\n  V = spsolve(L, -rho(:));  V_grid = reshape(V, ny, nx);" },
+    HelpEntry { name: "ij2k", brief: "Column-major grid (i, j) → flat index",
+        detail: "ij2k(i, j, ny)  — return 1-based flat index k = (j-1)*ny + i\n  Third argument is ny (row count), not nx. Matches reshape(V_flat, ny, nx).\n\nExample:\n  k = ij2k(3, 4, 6)  → (4-1)*6 + 3 = 21" },
+    HelpEntry { name: "k2ij", brief: "Column-major flat index → grid (i, j)",
+        detail: "[i, j] = k2ij(k, ny)  — inverse of ij2k. 1-based.\n  i = ((k-1) mod ny) + 1\n  j = ((k-1) div ny) + 1\n\nExample:\n  [i, j] = k2ij(21, 6)  → i = 3, j = 4" },
     HelpEntry { name: "plot_limits", brief: "Set axis limits for a live figure panel",
         detail: "plot_limits(fig, panel, xmin, xmax, ymin, ymax)  — fix axes for one panel\n\nExample:\n  plot_limits(fig, 1, 0, 1000, -100, 0)" },
 ];
@@ -943,6 +949,9 @@ fn print_help_list() {
                 "nonzeros",
                 "find",
                 "spsolve",
+                "laplacian_2d",
+                "ij2k",
+                "k2ij",
             ],
         ),
         (
