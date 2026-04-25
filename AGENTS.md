@@ -827,6 +827,10 @@ primary     = NUMBER | STRING | IDENT
 | `zeros` | `zeros(n)` / `zeros(n, m)` | Complex zero vector of length n, or n×m zero matrix |
 | `ones` | `ones(n)` / `ones(n, m)` | Complex ones vector of length n, or n×m ones matrix |
 | `linspace` | `linspace(start, stop, n)` | Real vector of n points |
+| `rand` | `rand(n)` / `rand(m, n)` | Uniform U[0,1) vector or matrix |
+| `randn` | `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) vector or matrix |
+| `randi` | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Integer scalar or vector drawn uniformly |
+| `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `len` | `len(v)` | Number of elements |
 | `length` | `length(v)` | Alias for `len` |
 | `numel` | `numel(x)` | Total elements (rows×cols for matrices, m·n·p for tensor3) |

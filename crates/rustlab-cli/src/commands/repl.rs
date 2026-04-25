@@ -64,6 +64,8 @@ const HELP: &[HelpEntry] = &[
         detail: "randn(n)     — length-n vector from N(0,1)\nrandn(m, n)  — m×n matrix from N(0,1)\n  All values are real (zero imaginary part)." },
     HelpEntry { name: "randi", brief: "Random integer(s) in a range",
         detail: "randi(imax)        — single integer in [1, imax]\nrandi(imax, n)     — n integers in [1, imax]\nrandi([lo,hi], n)  — n integers in [lo, hi] (inclusive)" },
+    HelpEntry { name: "seed",  brief: "Seed the RNG used by rand/randn/randi/rand3/randn3/sprand",
+        detail: "seed(N)  — re-seed the shared RNG with a non-negative integer for a reproducible random stream\nseed()   — re-seed from OS entropy (restores the default non-deterministic behaviour)\n  Useful in notebooks that commit rendered SVG/MD: a `seed(N)` line near the top makes re-renders bit-stable." },
     HelpEntry { name: "min",  brief: "Minimum value",
         detail: "min(v)      — smallest real value in the vector\nmin(a, b)   — smaller of two scalars\n  min([3, 1, 4])  → 1.0\n  min(5, 3)       → 3.0" },
     HelpEntry { name: "max",  brief: "Maximum value",
@@ -824,7 +826,7 @@ fn print_help_list() {
         (
             "Array / Stats",
             &[
-                "zeros", "ones", "linspace", "logspace", "rand", "randn", "randi", "min", "max",
+                "zeros", "ones", "linspace", "logspace", "rand", "randn", "randi", "seed", "min", "max",
                 "sum", "prod", "cumsum", "argmin", "argmax", "sort", "trapz", "mean", "median",
                 "std", "hist", "len", "length", "numel", "size", "ndims", "meshgrid", "all", "any",
             ],

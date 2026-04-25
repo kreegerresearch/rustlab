@@ -8781,3 +8781,112 @@ mod tensor3_io_tests {
         assert!(s.contains("pages omitted"));
     }
 }
+
+#[cfg(test)]
+mod seed_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn vec_of(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{name} is {other:?}, expected Vector"),
+        }
+    }
+
+    fn matrix_of(ev: &Evaluator, name: &str) -> Vec<Vec<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (0..m.nrows())
+                .map(|r| (0..m.ncols()).map(|c| m[[r, c]].re).collect())
+                .collect(),
+            other => panic!("{name} is {other:?}, expected Matrix"),
+        }
+    }
+
+    #[test]
+    fn seed_makes_randn_deterministic() {
+        // Two evaluators, both seeded the same way: identical output.
+        let a = run("seed(42); v = randn(8);");
+        let b = run("seed(42); v = randn(8);");
+        assert_eq!(vec_of(&a, "v"), vec_of(&b, "v"));
+    }
+
+    #[test]
+    fn seed_makes_rand_matrix_deterministic() {
+        let a = run("seed(7); M = rand(3, 4);");
+        let b = run("seed(7); M = rand(3, 4);");
+        assert_eq!(matrix_of(&a, "M"), matrix_of(&b, "M"));
+    }
+
+    #[test]
+    fn seed_covers_all_random_builtins_in_a_single_run() {
+        // A mix of rand/randn/randi after one seed call must be reproducible.
+        let src = "seed(123);
+            a = rand(4);
+            b = randn(4);
+            c = randi(100, 4);";
+        let a = run(src);
+        let b = run(src);
+        assert_eq!(vec_of(&a, "a"), vec_of(&b, "a"));
+        assert_eq!(vec_of(&a, "b"), vec_of(&b, "b"));
+        assert_eq!(vec_of(&a, "c"), vec_of(&b, "c"));
+    }
+
+    #[test]
+    fn different_seeds_produce_different_output() {
+        let a = run("seed(1); v = randn(8);");
+        let b = run("seed(2); v = randn(8);");
+        assert_ne!(
+            vec_of(&a, "v"),
+            vec_of(&b, "v"),
+            "two distinct seeds should produce distinct sequences"
+        );
+    }
+
+    #[test]
+    fn seed_with_no_args_re_randomises() {
+        // After `seed(0)` two streams match; after a `seed()` call between
+        // the second `randn` and the first, the two streams should diverge
+        // because the entropy reseed wipes the deterministic state.
+        let src = "seed(0); a = randn(8); seed(); b = randn(8);";
+        let ev = run(src);
+        let va = vec_of(&ev, "a");
+        let vb = vec_of(&ev, "b");
+        assert_ne!(va, vb, "seed() with no args should re-randomise the stream");
+    }
+
+    #[test]
+    fn seed_rejects_negative_or_fractional() {
+        let src = "seed(-1)";
+        let mut ev = Evaluator::new();
+        let tokens = crate::lexer::tokenize(&format!("{src}\n")).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let err = ev.exec_stmt(&stmts[0]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-negative integer"),
+            "expected validation error, got: {msg}"
+        );
+
+        let src2 = "seed(1.5)";
+        let mut ev2 = Evaluator::new();
+        let tokens2 = crate::lexer::tokenize(&format!("{src2}\n")).unwrap();
+        let stmts2 = crate::parser::parse(tokens2).unwrap();
+        let err2 = ev2.exec_stmt(&stmts2[0]).unwrap_err();
+        assert!(
+            err2.to_string().contains("non-negative integer"),
+            "expected validation error for fractional seed"
+        );
+    }
+}

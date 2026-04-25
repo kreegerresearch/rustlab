@@ -110,6 +110,7 @@ impl BuiltinRegistry {
         r.register("rand", builtin_rand);
         r.register("randn", builtin_randn);
         r.register("randi", builtin_randi);
+        r.register("seed", builtin_seed);
         // Tensor3 (rank-3) constructors
         r.register("zeros3", builtin_zeros3);
         r.register("ones3", builtin_ones3);
@@ -1007,37 +1008,39 @@ fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("rand", &args, 1, 2)?;
-    let mut rng = rand::thread_rng();
     let dist = Uniform::new(0.0_f64, 1.0);
     let (m, n) = unpack_size_args(&args, "rand")?;
-    if let Some(m) = m {
-        let data: Vec<C64> = (0..m * n)
-            .map(|_| Complex::new(dist.sample(&mut rng), 0.0))
-            .collect();
-        Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-    } else {
-        Ok(Value::Vector(Array1::from_iter(
-            (0..n).map(|_| Complex::new(dist.sample(&mut rng), 0.0)),
-        )))
-    }
+    crate::eval::rng::with_rng(|rng| {
+        if let Some(m) = m {
+            let data: Vec<C64> = (0..m * n)
+                .map(|_| Complex::new(dist.sample(rng), 0.0))
+                .collect();
+            Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap()))
+        } else {
+            Ok(Value::Vector(Array1::from_iter(
+                (0..n).map(|_| Complex::new(dist.sample(rng), 0.0)),
+            )))
+        }
+    })
 }
 
 fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("randn", &args, 1, 2)?;
-    let mut rng = rand::thread_rng();
     let dist =
         Normal::new(0.0_f64, 1.0).map_err(|e| ScriptError::type_err(format!("randn: {e}")))?;
     let (m, n) = unpack_size_args(&args, "randn")?;
-    if let Some(m) = m {
-        let data: Vec<C64> = (0..m * n)
-            .map(|_| Complex::new(dist.sample(&mut rng), 0.0))
-            .collect();
-        Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-    } else {
-        Ok(Value::Vector(Array1::from_iter(
-            (0..n).map(|_| Complex::new(dist.sample(&mut rng), 0.0)),
-        )))
-    }
+    crate::eval::rng::with_rng(|rng| {
+        if let Some(m) = m {
+            let data: Vec<C64> = (0..m * n)
+                .map(|_| Complex::new(dist.sample(rng), 0.0))
+                .collect();
+            Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap()))
+        } else {
+            Ok(Value::Vector(Array1::from_iter(
+                (0..n).map(|_| Complex::new(dist.sample(rng), 0.0)),
+            )))
+        }
+    })
 }
 
 /// Unpack (m, n, p) from either 3 scalar args or one 3-element vector.
@@ -1084,11 +1087,12 @@ fn builtin_ones3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_rand3(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (m, n, p) = unpack_tensor3_shape(&args, "rand3")?;
-    let mut rng = rand::thread_rng();
     let dist = Uniform::new(0.0_f64, 1.0);
-    let data: Vec<C64> = (0..m * n * p)
-        .map(|_| Complex::new(dist.sample(&mut rng), 0.0))
-        .collect();
+    let data: Vec<C64> = crate::eval::rng::with_rng(|rng| {
+        (0..m * n * p)
+            .map(|_| Complex::new(dist.sample(rng), 0.0))
+            .collect()
+    });
     Ok(Value::Tensor3(
         Array3::from_shape_vec((m, n, p), data).unwrap(),
     ))
@@ -1096,12 +1100,13 @@ fn builtin_rand3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_randn3(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (m, n, p) = unpack_tensor3_shape(&args, "randn3")?;
-    let mut rng = rand::thread_rng();
     let dist =
         Normal::new(0.0_f64, 1.0).map_err(|e| ScriptError::type_err(format!("randn3: {e}")))?;
-    let data: Vec<C64> = (0..m * n * p)
-        .map(|_| Complex::new(dist.sample(&mut rng), 0.0))
-        .collect();
+    let data: Vec<C64> = crate::eval::rng::with_rng(|rng| {
+        (0..m * n * p)
+            .map(|_| Complex::new(dist.sample(rng), 0.0))
+            .collect()
+    });
     Ok(Value::Tensor3(
         Array3::from_shape_vec((m, n, p), data).unwrap(),
     ))
@@ -1127,16 +1132,45 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
             "randi: lo ({lo}) must be <= hi ({hi})"
         )));
     }
-    let mut rng = rand::thread_rng();
-    if args.len() == 1 {
-        // Return a single scalar integer
-        Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64))
-    } else {
-        let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-        let v: CVector =
-            Array1::from_iter((0..n).map(|_| Complex::new(rng.gen_range(lo..=hi) as f64, 0.0)));
-        Ok(Value::Vector(v))
+    crate::eval::rng::with_rng(|rng| {
+        if args.len() == 1 {
+            // Return a single scalar integer
+            Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64))
+        } else {
+            let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            let v: CVector =
+                Array1::from_iter((0..n).map(|_| Complex::new(rng.gen_range(lo..=hi) as f64, 0.0)));
+            Ok(Value::Vector(v))
+        }
+    })
+}
+
+/// `seed(N)` — re-seed the shared RNG with a deterministic 64-bit value, so
+/// every subsequent `rand` / `randn` / `randi` / `rand3` / `randn3` /
+/// `sprand` call produces a reproducible sequence. Useful for notebooks
+/// that commit rendered SVG/MD output to git: a `seed(N)` line at the top
+/// of a notebook makes re-renders bit-stable.
+///
+/// `seed()` with no arguments re-seeds from OS entropy — restores the
+/// non-deterministic behaviour that was the default before any seed call.
+fn builtin_seed(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() {
+        crate::eval::rng::seed_rng_from_entropy();
+        return Ok(Value::None);
     }
+    if args.len() != 1 {
+        return Err(ScriptError::type_err(
+            "seed: expected seed() or seed(N) where N is a non-negative integer".to_string(),
+        ));
+    }
+    let s = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    if !s.is_finite() || s < 0.0 || s.fract() != 0.0 {
+        return Err(ScriptError::type_err(format!(
+            "seed: expected a non-negative integer, got {s}"
+        )));
+    }
+    crate::eval::rng::seed_rng(s as u64);
+    Ok(Value::None)
 }
 
 fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -8193,33 +8227,34 @@ fn builtin_sprand(args: Vec<Value>) -> Result<Value, ScriptError> {
             "sprand: density must be in [0, 1]".to_string(),
         ));
     }
-    let mut rng = rand::thread_rng();
     let val_dist = Uniform::new(0.0_f64, 1.0);
     let total = m * n;
     let target_nnz = (density * total as f64).round() as usize;
-    let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(target_nnz);
-
-    if density >= 0.5 {
-        // For high density, iterate all positions and keep with probability=density
-        for r in 0..m {
-            for c in 0..n {
-                if rng.gen::<f64>() < density {
-                    entries.push((r, c, Complex::new(val_dist.sample(&mut rng), 0.0)));
+    let entries: Vec<(usize, usize, C64)> = crate::eval::rng::with_rng(|rng| {
+        let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(target_nnz);
+        if density >= 0.5 {
+            // For high density, iterate all positions and keep with probability=density
+            for r in 0..m {
+                for c in 0..n {
+                    if rng.gen::<f64>() < density {
+                        entries.push((r, c, Complex::new(val_dist.sample(rng), 0.0)));
+                    }
+                }
+            }
+        } else {
+            // For low density, sample positions directly
+            use std::collections::HashSet;
+            let mut positions = HashSet::new();
+            while positions.len() < target_nnz && positions.len() < total {
+                let r = rng.gen_range(0..m);
+                let c = rng.gen_range(0..n);
+                if positions.insert((r, c)) {
+                    entries.push((r, c, Complex::new(val_dist.sample(rng), 0.0)));
                 }
             }
         }
-    } else {
-        // For low density, sample positions directly
-        use std::collections::HashSet;
-        let mut positions = HashSet::new();
-        while positions.len() < target_nnz && positions.len() < total {
-            let r = rng.gen_range(0..m);
-            let c = rng.gen_range(0..n);
-            if positions.insert((r, c)) {
-                entries.push((r, c, Complex::new(val_dist.sample(&mut rng), 0.0)));
-            }
-        }
-    }
+        entries
+    });
 
     Ok(Value::SparseMatrix(SparseMat::new(m, n, entries)))
 }

@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod output;
 pub mod profile;
+pub mod rng;
 pub mod toml_io;
 pub mod value;
 
