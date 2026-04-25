@@ -289,7 +289,13 @@ fn render_output(
         }
         Format::Markdown => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
-            let md = render_markdown::render_markdown(title, rendered, &plot_dir, &href_prefix);
+            let md = render_markdown::render_markdown(
+                title,
+                rendered,
+                &plot_dir,
+                &href_prefix,
+                theme,
+            );
             write_output(out_path, md.as_bytes());
         }
         Format::Latex => {

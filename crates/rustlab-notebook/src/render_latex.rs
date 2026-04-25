@@ -73,9 +73,11 @@ pub fn render_latex(
                 for fig in figures {
                     plot_idx += 1;
                     let plot_file = plot_dir.join(format!("plot-{plot_idx}.svg"));
-                    if let Err(e) =
-                        rustlab_plot::render_figure_state_to_file(fig, &plot_file.to_string_lossy())
-                    {
+                    if let Err(e) = rustlab_plot::render_figure_state_to_file_themed(
+                        fig,
+                        &plot_file.to_string_lossy(),
+                        theme,
+                    ) {
                         eprintln!("warning: could not render plot-{plot_idx}: {e}");
                         continue;
                     }

@@ -4,11 +4,102 @@ use crate::figure::{
     colormap_rgb, plot_context, push_notebook_figure_snapshot, ContourData, FigureState, LineStyle,
     PlotContext, PlotKind, SeriesColor, SubplotState, SurfaceData, FIGURE,
 };
+use crate::theme::{Theme, ThemeColors};
 use plotters::prelude::*;
 
 const MARGIN: u32 = 20;
 const X_LABEL_AREA: u32 = 50;
 const Y_LABEL_AREA: u32 = 70;
+
+// Heatmap colorbar geometry. The colorbar is drawn in a strip reserved on the
+// right of the chart area; the strip total width is GUTTER + WIDTH + LABELS.
+const COLORBAR_WIDTH: u32 = 28;
+const COLORBAR_GUTTER: u32 = 12;
+const COLORBAR_LABEL_AREA: u32 = 56;
+const COLORBAR_SAMPLES: usize = 64;
+// Approximate vertical space plotters reserves for a non-empty caption (font
+// 18 plus padding). Used to predict where plotters places the data rect so
+// the colorbar can vertically align with it.
+const CAPTION_H_EST: u32 = 30;
+
+/// Pre-parsed plotters colors derived from `ThemeColors`. Rendering helpers
+/// take this rather than the raw string-typed `ThemeColors` so the parsing
+/// happens once per figure instead of per draw call.
+#[derive(Clone, Copy)]
+struct ThemePalette {
+    /// Page / panel background fill.
+    bg: RGBColor,
+    /// Foreground colour for axis lines, ticks, descriptions, captions.
+    text: RGBAColor,
+    /// Gridline colour (semi-transparent).
+    grid: RGBAColor,
+}
+
+impl ThemePalette {
+    fn from(theme: &ThemeColors) -> Self {
+        ThemePalette {
+            bg: parse_color_solid(theme.plot_bg).unwrap_or(RGBColor(255, 255, 255)),
+            text: parse_color_rgba(theme.text).unwrap_or(RGBAColor(0, 0, 0, 1.0)),
+            grid: parse_color_rgba(theme.plot_grid).unwrap_or(RGBAColor(100, 100, 100, 0.35)),
+        }
+    }
+}
+
+/// Parse a `#RRGGBB` hex string into an opaque `RGBColor`.
+fn parse_color_solid(s: &str) -> Option<RGBColor> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(RGBColor(r, g, b));
+        }
+    }
+    parse_color_rgba(s).map(|c| RGBColor(c.0, c.1, c.2))
+}
+
+/// Parse `#RRGGBB`, `#RRGGBBAA`, or `rgba(r,g,b,a)` / `rgb(r,g,b)` into an
+/// `RGBAColor` (alpha defaults to 1.0).
+fn parse_color_rgba(s: &str) -> Option<RGBAColor> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        match hex.len() {
+            6 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                return Some(RGBAColor(r, g, b, 1.0));
+            }
+            8 => {
+                let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+                let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+                let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+                let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+                return Some(RGBAColor(r, g, b, a as f64 / 255.0));
+            }
+            _ => return None,
+        }
+    }
+    let lower = s.to_ascii_lowercase();
+    let body = lower
+        .strip_prefix("rgba(")
+        .or_else(|| lower.strip_prefix("rgb("))?
+        .strip_suffix(')')?;
+    let parts: Vec<&str> = body.split(',').map(str::trim).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let r: u16 = parts[0].parse().ok()?;
+    let g: u16 = parts[1].parse().ok()?;
+    let b: u16 = parts[2].parse().ok()?;
+    let a: f64 = if parts.len() >= 4 {
+        parts[3].parse().ok()?
+    } else {
+        1.0
+    };
+    Some(RGBAColor(r.min(255) as u8, g.min(255) as u8, b.min(255) as u8, a))
+}
 
 // ─── Main render entry points ───────────────────────────────────────────────
 
@@ -26,19 +117,32 @@ pub fn render_figure_file(path: &str) -> Result<(), PlotError> {
     })
 }
 
-/// Render a given FigureState to a file (PNG or SVG by extension).
+/// Render a given FigureState to a file (PNG or SVG by extension) using the
+/// default theme (matches `render_figure_html`'s default).
 pub fn render_figure_state_to_file(fig: &FigureState, path: &str) -> Result<(), PlotError> {
+    render_figure_state_to_file_themed(fig, path, Theme::default().colors())
+}
+
+/// Render a given FigureState to a file with an explicit theme. Background,
+/// axis text, gridlines, and captions all pick up colours from `theme` so the
+/// SVG/PNG matches the themed HTML output for the same data.
+pub fn render_figure_state_to_file_themed(
+    fig: &FigureState,
+    path: &str,
+    theme: &ThemeColors,
+) -> Result<(), PlotError> {
     let rows = fig.subplot_rows;
     let cols = fig.subplot_cols;
     let w = (cols as u32 * 900).min(3600);
     let h = (rows as u32 * 500).min(3000);
+    let palette = ThemePalette::from(theme);
 
     if path.ends_with(".svg") {
         let root = SVGBackend::new(path, (w, h)).into_drawing_area();
-        render_to_backend(root, fig, rows, cols)
+        render_to_backend(root, fig, rows, cols, &palette)
     } else {
         let root = BitMapBackend::new(path, (w, h)).into_drawing_area();
-        render_to_backend(root, fig, rows, cols)
+        render_to_backend(root, fig, rows, cols, &palette)
     }
 }
 
@@ -47,13 +151,14 @@ fn render_to_backend<DB>(
     fig: &FigureState,
     rows: usize,
     cols: usize,
+    palette: &ThemePalette,
 ) -> Result<(), PlotError>
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    root.fill(&WHITE).map_err(err)?;
+    root.fill(&palette.bg).map_err(err)?;
 
     let panels: Vec<_> = root.split_evenly((rows, cols));
 
@@ -69,7 +174,7 @@ where
             } else {
                 format!("{} — surf {}", sp.title, sf.colorscale)
             };
-            render_surface_to_backend(panel.clone(), sf, &caption)?;
+            render_surface_to_backend(panel.clone(), sf, &caption, palette)?;
             continue;
         }
         // Heatmap and/or contour/quiver/streamline rendering — they share a
@@ -79,13 +184,13 @@ where
             || !sp.quivers.is_empty()
             || !sp.streamlines.is_empty()
         {
-            render_heatmap_and_contours_to_backend(panel.clone(), sp)?;
+            render_heatmap_and_contours_to_backend(panel.clone(), sp, palette)?;
             continue;
         }
         if sp.series.is_empty() {
             continue;
         }
-        render_subplot_to_panel(panel, sp)?;
+        render_subplot_to_panel(panel, sp, palette)?;
     }
     root.present().map_err(err)?;
     Ok(())
@@ -94,6 +199,7 @@ where
 fn render_subplot_to_panel<DB>(
     panel: &DrawingArea<DB, plotters::coord::Shift>,
     sp: &SubplotState,
+    palette: &ThemePalette,
 ) -> Result<(), PlotError>
 where
     DB: DrawingBackend,
@@ -153,19 +259,23 @@ where
     };
 
     let title_str = sp.title.as_str();
-    let xlabel = if !sp.xlabel.is_empty() {
-        sp.xlabel.as_str()
-    } else {
-        "x"
-    };
-    let ylabel = if !sp.ylabel.is_empty() {
-        sp.ylabel.as_str()
-    } else {
-        "y"
-    };
+    // Pass labels through verbatim. An empty string causes plotters to skip
+    // drawing the descriptor — matches HTML's behaviour (Plotly with empty
+    // axis title also draws nothing). The previous "x" / "y" fallback caused
+    // unset axes to render literal placeholders that HTML never showed.
+    let xlabel = sp.xlabel.as_str();
+    let ylabel = sp.ylabel.as_str();
+
+    let caption_style: TextStyle =
+        ("sans-serif", 22u32, &palette.text).into_text_style(panel);
+    let label_style: TextStyle =
+        ("sans-serif", 12u32, &palette.text).into_text_style(panel);
+    let desc_style: TextStyle =
+        ("sans-serif", 14u32, &palette.text).into_text_style(panel);
+    let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
     let mut chart = ChartBuilder::on(panel)
-        .caption(title_str, ("sans-serif", 22u32).into_font())
+        .caption(title_str, caption_style)
         .margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
         .y_label_area_size(Y_LABEL_AREA)
@@ -177,6 +287,9 @@ where
         chart
             .configure_mesh()
             .disable_mesh()
+            .axis_style(axis_style)
+            .label_style(label_style.clone())
+            .axis_desc_style(desc_style.clone())
             .x_desc(xlabel)
             .y_desc(ylabel)
             .x_labels(labels_c.len())
@@ -198,6 +311,9 @@ where
         chart
             .configure_mesh()
             .disable_mesh()
+            .axis_style(axis_style)
+            .label_style(label_style.clone())
+            .axis_desc_style(desc_style.clone())
             .x_desc(xlabel)
             .y_desc(ylabel)
             .draw()
@@ -205,26 +321,7 @@ where
     }
 
     if sp.grid {
-        const N: usize = 5;
-        let grid_color = plotters::style::RGBAColor(100, 100, 100, 0.35);
-        for i in 0..=N {
-            let yv = y_lo + (y_hi - y_lo) * i as f64 / N as f64;
-            chart
-                .draw_series(LineSeries::new(
-                    vec![(x_lo, yv), (x_hi, yv)],
-                    grid_color.stroke_width(1),
-                ))
-                .map_err(err)?;
-        }
-        for i in 1..N {
-            let xv = x_lo + (x_hi - x_lo) * i as f64 / N as f64;
-            chart
-                .draw_series(LineSeries::new(
-                    vec![(xv, y_lo), (xv, y_hi)],
-                    grid_color.stroke_width(1),
-                ))
-                .map_err(err)?;
-        }
+        draw_grid(&mut chart, x_lo, x_hi, y_lo, y_hi, palette)?;
     }
 
     // Pre-compute grouped bar offsets
@@ -298,8 +395,10 @@ where
                     ))
                     .map_err(err)?;
 
-                // Stems — attach legend annotation here (the visual identity
-                // of a stem plot is the vertical line, not the tip).
+                // Stems — attach legend annotation here. The legend marker
+                // is the same filled circle used for the tip glyph below, so
+                // mixed plot/stem legends are distinguishable (matches the
+                // marker that Plotly's stem trace shows in its own legend).
                 let anno = chart
                     .draw_series(
                         s.x_data
@@ -310,9 +409,8 @@ where
                     )
                     .map_err(err)?;
                 if has_label {
-                    anno.label(label).legend(move |(x, y)| {
-                        PathElement::new(vec![(x, y), (x + 20, y)], color)
-                    });
+                    anno.label(label)
+                        .legend(move |(x, y)| Circle::new((x + 10, y), 3, rgb.filled()));
                 }
 
                 // Tips
@@ -403,10 +501,18 @@ where
     }
 
     if any_label {
+        // Legend background sits on top of the chart, so it must use the same
+        // theme background (with a slight transparency for visual separation)
+        // and the theme foreground for borders + label text.
+        let legend_bg = palette.bg.mix(0.85);
+        let legend_border = palette.text.mix(0.3);
+        let legend_label_style: TextStyle =
+            ("sans-serif", 14u32, &palette.text).into_text_style(panel);
         chart
             .configure_series_labels()
-            .background_style(WHITE.mix(0.85))
-            .border_style(BLACK.mix(0.3))
+            .background_style(legend_bg)
+            .border_style(legend_border)
+            .label_font(legend_label_style)
             .position(SeriesLabelPosition::UpperRight)
             .draw()
             .map_err(err)?;
@@ -422,13 +528,14 @@ fn render_surface_to_backend<DB>(
     root: DrawingArea<DB, plotters::coord::Shift>,
     sf: &SurfaceData,
     caption: &str,
+    palette: &ThemePalette,
 ) -> Result<(), PlotError>
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    root.fill(&WHITE).map_err(err)?;
+    root.fill(&palette.bg).map_err(err)?;
 
     let nrows = sf.z.len();
     let ncols = if nrows > 0 { sf.z[0].len() } else { 0 };
@@ -438,7 +545,7 @@ where
 
     // Caption
     let (w_pixels, h_pixels) = root.dim_in_pixel();
-    let caption_style: TextStyle = ("sans-serif", 18u32).into_font().into();
+    let caption_style: TextStyle = ("sans-serif", 18u32, &palette.text).into_text_style(&root);
     root.draw_text(caption, &caption_style, (MARGIN as i32, 4))
         .map_err(err)?;
 
@@ -562,7 +669,7 @@ where
         (2, 6),
         (3, 7),
     ];
-    let axis_color = RGBColor(160, 160, 160);
+    let axis_color = palette.text;
     for (a, b) in edges {
         root.draw(&PathElement::new(
             vec![pc[a], pc[b]],
@@ -610,7 +717,7 @@ where
             .partial_cmp(&b.depth)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let edge_style = RGBColor(80, 80, 80).stroke_width(1);
+    let edge_style = palette.text.stroke_width(1);
     for q in &quads {
         root.draw(&Polygon::new(q.pts.to_vec(), q.color.filled()))
             .map_err(err)?;
@@ -621,7 +728,7 @@ where
     }
 
     // Axis tick labels (min/max on X and Y, min/max on Z).
-    let tick_font = ("sans-serif", 11u32).into_font();
+    let tick_font: TextStyle = ("sans-serif", 11u32, &palette.text).into_text_style(&root);
     let label = |corner: &(i32, i32), s: String| -> Result<(), PlotError> {
         root.draw(&Text::new(
             s,
@@ -665,13 +772,14 @@ fn series_color_to_rgb(c: &SeriesColor) -> RGBColor {
 fn render_heatmap_and_contours_to_backend<DB>(
     root: DrawingArea<DB, plotters::coord::Shift>,
     sp: &SubplotState,
+    palette: &ThemePalette,
 ) -> Result<(), PlotError>
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    root.fill(&WHITE).map_err(err)?;
+    root.fill(&palette.bg).map_err(err)?;
 
     // Decide chart bounds. First overlay that can dictate world coordinates
     // wins; heatmap-only falls back to integer cell coordinates.
@@ -695,18 +803,67 @@ where
         return Ok(());
     };
 
+    // When a heatmap is present, split off a colorbar strip on the right and
+    // shrink the chart drawing area so its post-margin/post-label data rect
+    // is square. This matches Plotly's `scaleanchor: "x"` behaviour and gives
+    // `imagesc` cells a 1:1 aspect — parity with the HTML renderer.
+    let caption_h = if sp.title.is_empty() { 0u32 } else { CAPTION_H_EST };
+    let (chart_area, cbar_info) = if sp.heatmap.is_some() {
+        let (panel_w, panel_h) = root.dim_in_pixel();
+        let cbar_total = COLORBAR_GUTTER + COLORBAR_WIDTH + COLORBAR_LABEL_AREA;
+        let split_x = (panel_w as i32 - cbar_total as i32).max(50);
+        let (chart_side, cbar_side) = root.split_horizontally(split_x);
+        let (cw, ch) = chart_side.dim_in_pixel();
+        let data_w_avail = cw.saturating_sub(2 * MARGIN + Y_LABEL_AREA);
+        let data_h_avail = ch.saturating_sub(2 * MARGIN + X_LABEL_AREA + caption_h);
+        let side = data_w_avail.min(data_h_avail).max(1);
+        let req_cw = side + 2 * MARGIN + Y_LABEL_AREA;
+        let req_ch = side + 2 * MARGIN + X_LABEL_AREA + caption_h;
+        let chart_area = chart_side.shrink((0, 0), (req_cw, req_ch));
+        let data_top = (MARGIN + caption_h) as i32;
+        let data_bot = data_top + side as i32;
+        let _ = panel_h; // unused but documents that we considered total height
+        (chart_area, Some((cbar_side, data_top, data_bot)))
+    } else {
+        (root.clone(), None)
+    };
+
     let caption = sp.title.clone();
-    let mut chart = ChartBuilder::on(&root)
-        .caption(caption, ("sans-serif", 18u32).into_font())
+    let caption_style: TextStyle =
+        ("sans-serif", 18u32, &palette.text).into_text_style(&chart_area);
+    let label_style: TextStyle =
+        ("sans-serif", 12u32, &palette.text).into_text_style(&chart_area);
+    let desc_style: TextStyle =
+        ("sans-serif", 14u32, &palette.text).into_text_style(&chart_area);
+    let axis_style: ShapeStyle = palette.text.stroke_width(1);
+
+    let mut chart = ChartBuilder::on(&chart_area)
+        .caption(caption, caption_style)
         .margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
         .y_label_area_size(Y_LABEL_AREA)
         .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
         .map_err(err)?;
 
-    chart.configure_mesh().disable_mesh().draw().map_err(err)?;
+    chart
+        .configure_mesh()
+        .disable_mesh()
+        .axis_style(axis_style)
+        .label_style(label_style)
+        .axis_desc_style(desc_style)
+        .x_desc(sp.xlabel.as_str())
+        .y_desc(sp.ylabel.as_str())
+        .draw()
+        .map_err(err)?;
 
-    // Draw heatmap, rescaled into the chart bounds.
+    // Gridlines first so heatmap cells / filled contours render on top.
+    if sp.grid {
+        draw_grid(&mut chart, x_lo, x_hi, y_lo, y_hi, palette)?;
+    }
+
+    // Draw heatmap, rescaled into the chart bounds. Capture (min_v, max_v,
+    // colorscale) so the colorbar pass can use the same range.
+    let mut heatmap_meta: Option<(f64, f64, String)> = None;
     if let Some(hm) = &sp.heatmap {
         let nrows = hm.z.len();
         let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
@@ -714,13 +871,22 @@ where
             let vals: Vec<f64> = hm.z.iter().flat_map(|row| row.iter().copied()).collect();
             let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
             let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let range = (max_v - min_v).max(1e-12);
+            // Match Plotly's auto-zmin/zmax behaviour: scale to the actual
+            // data range. Even a floating-point-noise spread (e.g. divU on a
+            // linear field where range ~ 1e-15 from rounding) gets that tiny
+            // range mapped across the full colormap, exactly as Plotly does.
+            // Only when the range is *literally* zero (every cell bit-equal
+            // to every other cell) do we collapse to a single mid-colormap
+            // value — division by zero would otherwise yield NaN.
+            let raw_range = max_v - min_v;
+            let degenerate = raw_range == 0.0;
+            let range = if degenerate { 1.0 } else { raw_range };
             let cell_w = (x_hi - x_lo) / ncols as f64;
             let cell_h = (y_hi - y_lo) / nrows as f64;
             for r in 0..nrows {
                 for c in 0..ncols {
                     let v = vals[r * ncols + c];
-                    let t = (v - min_v) / range;
+                    let t = if degenerate { 0.5 } else { (v - min_v) / range };
                     let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
                     let color = RGBColor(rr, gg, bb);
                     let x0 = x_lo + c as f64 * cell_w;
@@ -734,6 +900,7 @@ where
                         .map_err(err)?;
                 }
             }
+            heatmap_meta = Some((min_v, max_v, hm.colorscale.clone()));
         }
     }
 
@@ -748,7 +915,7 @@ where
         if cd.filled {
             render_contour_filled(&mut chart, cd)?;
         } else {
-            render_contour_lines(&mut chart, cd)?;
+            render_contour_lines(&mut chart, cd, palette)?;
         }
     }
 
@@ -762,8 +929,116 @@ where
         render_streamlines_to_backend(&mut chart, sd)?;
     }
 
+    // Colorbar — only when the panel has a heatmap (mirrors the HTML
+    // renderer's `showscale: true` on the heatmap trace).
+    if let (Some((cbar_side, data_top, data_bot)), Some((min_v, max_v, scale))) =
+        (cbar_info, heatmap_meta)
+    {
+        render_colorbar_to_backend(
+            &cbar_side, data_top, data_bot, min_v, max_v, &scale, palette,
+        )?;
+    }
+
     root.present().map_err(err)?;
     Ok(())
+}
+
+/// Draw a vertical colorbar with tick labels into a side strip. The y range
+/// `[data_top, data_bot]` is in pixels within `cbar_area` and is chosen by
+/// the caller to align with the chart's data rectangle.
+///
+/// Top of the strip = `max_v`; bottom = `min_v` (matches Plotly's default).
+fn render_colorbar_to_backend<DB>(
+    cbar_area: &DrawingArea<DB, plotters::coord::Shift>,
+    data_top: i32,
+    data_bot: i32,
+    min_v: f64,
+    max_v: f64,
+    colorscale: &str,
+    palette: &ThemePalette,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
+
+    let strip_left = COLORBAR_GUTTER as i32;
+    let strip_right = strip_left + COLORBAR_WIDTH as i32;
+    let strip_h = (data_bot - data_top).max(1);
+    let n = COLORBAR_SAMPLES as i32;
+
+    // For a strictly-constant heatmap (every cell bit-equal), the heatmap
+    // pass renders mid-colormap; the colorbar must do the same so it doesn't
+    // visually imply a gradient. For any non-zero range — including
+    // floating-point noise — we use the full ramp so the colorbar matches
+    // Plotly's auto-scaled behaviour (and matches the noisy variation the
+    // cells now show).
+    let degenerate = (max_v - min_v) == 0.0;
+
+    // Vertical gradient: top = max_v, bottom = min_v. Reuses the same
+    // colormap_rgb sampler as the heatmap cells, so swatches and cells of
+    // the same value are pixel-identical in colour.
+    for i in 0..n {
+        let y0 = data_top + (strip_h * i) / n;
+        let y1 = data_top + (strip_h * (i + 1)) / n;
+        let t = if degenerate {
+            0.5
+        } else {
+            1.0 - (i as f64 + 0.5) / n as f64
+        };
+        let (r, g, b) = colormap_rgb(t, colorscale);
+        let color = RGBColor(r, g, b);
+        cbar_area
+            .draw(&Rectangle::new(
+                [(strip_left, y0), (strip_right, y1)],
+                color.filled(),
+            ))
+            .map_err(err)?;
+    }
+
+    // Border + tick text use the theme's foreground colour so dark themes
+    // don't render an unreadable black-on-dark border.
+    let stroke = palette.text.stroke_width(1);
+    cbar_area
+        .draw(&Rectangle::new(
+            [(strip_left, data_top), (strip_right, data_bot)],
+            stroke,
+        ))
+        .map_err(err)?;
+
+    // Five evenly-spaced tick labels (min, +25%, +50%, +75%, max).
+    let label_font: TextStyle =
+        ("sans-serif", 11u32, &palette.text).into_text_style(cbar_area);
+    let label_x = strip_right + 6;
+    let range = max_v - min_v;
+    for i in 0..5 {
+        let frac = i as f64 / 4.0;
+        let v = min_v + frac * range;
+        // i=0 → bottom (min_v); i=4 → top (max_v).
+        let y = data_bot - (strip_h * i) / 4;
+        cbar_area
+            .draw(&PathElement::new(
+                vec![(strip_right, y), (strip_right + 4, y)],
+                stroke,
+            ))
+            .map_err(err)?;
+        let s = format_cbar_value(v, range);
+        cbar_area
+            .draw(&Text::new(s, (label_x, y - 6), label_font.clone()))
+            .map_err(err)?;
+    }
+
+    Ok(())
+}
+
+fn format_cbar_value(v: f64, range: f64) -> String {
+    let m = v.abs().max(range.abs());
+    if m != 0.0 && (m >= 1e4 || m < 1e-3) {
+        format!("{:.2e}", v)
+    } else {
+        format!("{:.3}", v)
+    }
 }
 
 fn render_quiver_to_backend<DB>(
@@ -860,6 +1135,51 @@ where
     Ok(())
 }
 
+/// Draw a 5×5 light gridline overlay on the chart's data area using the
+/// theme grid colour. Shared by the series and heatmap render paths so
+/// `sp.grid` is honoured uniformly. For heatmap-bearing panels the cells
+/// are drawn on top, hiding the grid (matches Plotly's `showgrid` + heatmap
+/// behaviour); contour-only / quiver-only / streamline-only panels see the
+/// grid through the overlays.
+fn draw_grid<DB>(
+    chart: &mut ChartContext<
+        DB,
+        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
+    >,
+    x_lo: f64,
+    x_hi: f64,
+    y_lo: f64,
+    y_hi: f64,
+    palette: &ThemePalette,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
+    const N: usize = 5;
+    let grid_color = palette.grid;
+    for i in 0..=N {
+        let yv = y_lo + (y_hi - y_lo) * i as f64 / N as f64;
+        chart
+            .draw_series(LineSeries::new(
+                vec![(x_lo, yv), (x_hi, yv)],
+                grid_color.stroke_width(1),
+            ))
+            .map_err(err)?;
+    }
+    for i in 1..N {
+        let xv = x_lo + (x_hi - x_lo) * i as f64 / N as f64;
+        chart
+            .draw_series(LineSeries::new(
+                vec![(xv, y_lo), (xv, y_hi)],
+                grid_color.stroke_width(1),
+            ))
+            .map_err(err)?;
+    }
+    Ok(())
+}
+
 fn bounds(xs: &[f64]) -> (f64, f64) {
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
@@ -885,15 +1205,21 @@ fn render_contour_lines<DB>(
         Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
     >,
     cd: &ContourData,
+    palette: &ThemePalette,
 ) -> Result<(), PlotError>
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    let color = series_color_to_rgb(cd.line_color.as_ref().unwrap_or(&SeriesColor::Black));
+    // When the user didn't pick a colour, follow the theme foreground so
+    // dark-theme contours don't render as invisible black-on-near-black.
+    let color: RGBAColor = match &cd.line_color {
+        Some(c) => series_color_to_rgb(c).to_rgba(),
+        None => palette.text,
+    };
     let style = ShapeStyle {
-        color: color.to_rgba(),
+        color,
         filled: false,
         stroke_width: 1,
     };
@@ -1215,6 +1541,399 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Pull `width` / `height` (in pixels) out of every `<rect>` in an SVG.
+    fn extract_rect_dims(svg: &str) -> Vec<(u32, u32)> {
+        fn parse_attr_u32(s: &str, key: &str) -> Option<u32> {
+            let pat = format!("{}=\"", key);
+            let p = s.find(&pat)?;
+            let rest = &s[p + pat.len()..];
+            let q = rest.find('"')?;
+            rest[..q].parse().ok()
+        }
+        let mut dims = Vec::new();
+        let mut i = 0;
+        while let Some(p) = svg[i..].find("<rect") {
+            let start = i + p;
+            let end = svg[start..]
+                .find("/>")
+                .map(|e| start + e)
+                .unwrap_or(svg.len());
+            let chunk = &svg[start..end];
+            if let (Some(w), Some(h)) = (
+                parse_attr_u32(chunk, "width"),
+                parse_attr_u32(chunk, "height"),
+            ) {
+                dims.push((w, h));
+            }
+            i = end + 1;
+        }
+        dims
+    }
+
+    fn push_gaussian_heatmap(n: usize, title: &str) {
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.title = title.to_string();
+            let mid = (n as f64 - 1.0) * 0.5;
+            let z: Vec<Vec<f64>> = (0..n)
+                .map(|r| {
+                    (0..n)
+                        .map(|c| {
+                            let dx = c as f64 - mid;
+                            let dy = r as f64 - mid;
+                            (-(dx * dx + dy * dy) / 50.0).exp()
+                        })
+                        .collect()
+                })
+                .collect();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+            });
+        });
+    }
+
+    #[test]
+    fn imagesc_svg_has_colorbar() {
+        // Render a heatmap whose values span exactly [0, 1] so the five
+        // colorbar tick labels are the predictable 0.000 / 0.250 / 0.500 /
+        // 0.750 / 1.000. Verify the SVG contains both colorbar swatch rects
+        // (≥ COLORBAR_SAMPLES / 2) and at least 3 of those numeric labels.
+        // Without the colorbar fix, neither would appear.
+        let path = tmp_path("_imagesc_cbar.svg");
+        let n = 5usize;
+        let denom = (n * n - 1) as f64;
+        let z: Vec<Vec<f64>> = (0..n)
+            .map(|r| (0..n).map(|c| (r * n + c) as f64 / denom).collect())
+            .collect();
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.title = "cbar test".to_string();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+
+        let dims = extract_rect_dims(&content);
+        let swatches = dims
+            .iter()
+            .filter(|(w, _)| *w == COLORBAR_WIDTH)
+            .count();
+        assert!(
+            swatches >= COLORBAR_SAMPLES / 2,
+            "expected at least {} colorbar swatch rects of width {}, got {}",
+            COLORBAR_SAMPLES / 2,
+            COLORBAR_WIDTH,
+            swatches
+        );
+
+        let numeric_ticks = ["0.000", "0.250", "0.500", "0.750", "1.000"]
+            .iter()
+            .filter(|s| content.contains(*s))
+            .count();
+        assert!(
+            numeric_ticks >= 3,
+            "expected ≥ 3 numeric tick labels in colorbar text, got {numeric_ticks}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn imagesc_svg_cells_are_square() {
+        // Without the aspect-shrink, cells render rectangular (~37 × 18 for a
+        // 21×21 grid in a 900×500 SVG). After the fix, every cell rect should
+        // have width == height within ±1 px (rounding tolerance).
+        let path = tmp_path("_imagesc_square.svg");
+        push_gaussian_heatmap(21, "square test");
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+
+        let dims = extract_rect_dims(&content);
+        // Cells are the small (~10-25 px) square-ish rects; filter out the
+        // colorbar swatches (width = COLORBAR_WIDTH = 28, very short height)
+        // and any chart-axis rectangles (width > 100, e.g. background or
+        // frame).
+        let cells: Vec<&(u32, u32)> = dims
+            .iter()
+            .filter(|(w, h)| *w >= 6 && *w <= 30 && *h >= 6 && *h <= 30 && *w != COLORBAR_WIDTH)
+            .collect();
+        assert!(
+            cells.len() >= 400,
+            "expected ≥ 400 cell rects for 21×21 heatmap, got {}",
+            cells.len()
+        );
+        for &(w, h) in &cells {
+            assert!(
+                (*w as i32 - *h as i32).abs() <= 1,
+                "non-square cell: width={w}, height={h}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn heatmap_panel_renders_xlabel_and_ylabel() {
+        // Regression: render_heatmap_and_contours_to_backend used to call
+        // configure_mesh().disable_mesh().draw() with no .x_desc/.y_desc, so
+        // imagesc / contour / quiver panels in SVG dropped axis labels even
+        // when set. HTML rendered them via `xaxis.title` / `yaxis.title`.
+        let path = tmp_path("_heatmap_axes.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.title = "labels".to_string();
+            sp.xlabel = "x [m]".to_string();
+            sp.ylabel = "y [m]".to_string();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
+                colorscale: "viridis".to_string(),
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("x [m]"),
+            "expected xlabel 'x [m]' in heatmap SVG axis text"
+        );
+        assert!(
+            content.contains("y [m]"),
+            "expected ylabel 'y [m]' in heatmap SVG axis text"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn series_panel_omits_xlabel_when_unset() {
+        // Regression: render_subplot_to_panel used to render literal "x" /
+        // "y" when sp.xlabel / sp.ylabel were empty. HTML emits empty axis
+        // titles in that case; SVG should match.
+        let path = tmp_path("_no_default_labels.svg");
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(
+            vec![0.0, 1.0, 2.0],
+            vec![0.0, 1.0, 0.5],
+            "",
+            "",
+            Some(crate::figure::SeriesColor::Blue),
+            LineStyle::Solid,
+        );
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        // After the fix, no <text> element should contain a literal lone "x"
+        // or "y" descriptor. plotters emits axis tick labels as numerics
+        // ("0.5", "1.0", …) so checking for >x< or >y< won't false-positive
+        // on data values.
+        assert!(
+            !content.contains(">x<"),
+            "found literal 'x' axis descriptor in SVG with no xlabel set"
+        );
+        assert!(
+            !content.contains(">y<"),
+            "found literal 'y' axis descriptor in SVG with no ylabel set"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn heatmap_panel_renders_grid_when_enabled() {
+        // Regression: render_heatmap_and_contours_to_backend ignored sp.grid.
+        // After the fix, a contour-only panel with grid=true should emit
+        // gridlines in the theme grid colour. We use a contour-only panel
+        // (no heatmap) so the gridlines aren't covered by cell rectangles.
+        let path = tmp_path("_grid_contour.svg");
+        let (z, x, y) = radial_z(11);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.grid = true;
+            sp.contours.push(crate::figure::ContourData {
+                z,
+                x,
+                y,
+                levels: vec![0.5, 1.0, 1.5],
+                filled: false,
+                line_color: Some(crate::figure::SeriesColor::Red),
+                colorscale: "viridis".to_string(),
+            });
+        });
+        render_figure_file(&path).expect("contour-with-grid SVG should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        // draw_grid emits LineSeries with the theme's grid colour. plotters
+        // SVGBackend writes opacity from RGBAColor as a CSS `opacity:` style.
+        // Any of these markers indicates a grid line was drawn:
+        //   - the literal `opacity:0.3` from the dark grid alpha
+        //   - the literal `opacity:0.2` from the light grid alpha
+        let has_grid_opacity = content.contains("opacity:0.3")
+            || content.contains("opacity:0.2")
+            || content.contains("opacity=\"0.3\"")
+            || content.contains("opacity=\"0.2\"");
+        assert!(
+            has_grid_opacity,
+            "expected gridline strokes (semi-transparent) in heatmap-path SVG \
+             when sp.grid=true"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn stem_legend_uses_circle_marker() {
+        // Regression: stem series' legend symbol used to be a horizontal line
+        // (PathElement), inconsistent with HTML/Plotly which shows a circle
+        // marker in the legend (matching the stem's tip glyph). After the
+        // fix, the legend closure draws a Circle.
+        let path = tmp_path("_stem_legend.svg");
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        let x: Vec<f64> = (0..16).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| (xi * 0.4).sin()).collect();
+        push_xy_stem(
+            x,
+            y,
+            "stem series",
+            "stems",
+            Some(crate::figure::SeriesColor::Red),
+        );
+        render_figure_file(&path).expect("stem SVG should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("stem series"),
+            "legend label missing — stem series didn't register a label"
+        );
+        // The legend area sits in the upper-right of the chart (per
+        // SeriesLabelPosition::UpperRight) and should contain a <circle>
+        // element from the legend closure. Total <circle> count = tips
+        // (16) + legend marker (1) = 17. Without the fix the legend marker
+        // is a <polyline> instead, so the count drops to 16.
+        let circle_count = content.matches("<circle").count();
+        assert!(
+            circle_count >= 17,
+            "expected ≥ 17 <circle> elements (16 tips + 1 legend marker), \
+             got {circle_count}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn themed_svg_uses_theme_background_color() {
+        // render_figure_state_to_file_themed should fill the canvas with
+        // `theme.plot_bg`. Pick the Light theme (#eff1f5) so the assertion
+        // doesn't conflict with anything plotters might emit by default and
+        // is unlikely to occur incidentally in unrelated tests.
+        let path = tmp_path("_themed_light.svg");
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(
+            vec![0.0, 1.0, 2.0],
+            vec![0.0, 1.0, 0.5],
+            "trace",
+            "themed",
+            Some(crate::figure::SeriesColor::Blue),
+            LineStyle::Solid,
+        );
+        let snapshot: FigureState = FIGURE.with(|f| f.borrow().clone());
+        render_figure_state_to_file_themed(&snapshot, &path, Theme::Light.colors())
+            .expect("themed render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        // Light theme bg = #eff1f5 → plotters writes it as #EFF1F5.
+        // SVGBackend writes hex in upper-case; check both hex and rgb forms.
+        assert!(
+            content.contains("#EFF1F5")
+                || content.contains("#eff1f5")
+                || content.contains("rgb(239,241,245)"),
+            "expected light-theme bg colour in SVG fill (got first 300 chars: {})",
+            &content.chars().take(300).collect::<String>()
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn imagesc_svg_min_eq_max_no_division_by_zero() {
+        // Constant matrix (e.g. divU = 2 from a uniform divergence field):
+        // min_v == max_v. Render must succeed; colorbar ticks must all show
+        // the constant value; heatmap cells AND colorbar swatches must all
+        // render in the SAME single colour (mid-colormap), not a full ramp
+        // contradicting the uniform data. Tests the constant-matrix visual
+        // divergence fix.
+        let path = tmp_path("_imagesc_const.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.title = "constant".to_string();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z: vec![vec![2.0; 8]; 8],
+                colorscale: "viridis".to_string(),
+            });
+        });
+        render_figure_file(&path).expect("constant heatmap should render");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("2.000"),
+            "expected constant value '2.000' in colorbar tick text"
+        );
+
+        // Collect every fill colour used by every cell rect (8x8 = 64) and
+        // every colorbar swatch (COLORBAR_SAMPLES = 64) — every one of those
+        // 128 fills should be the same single mid-viridis colour.
+        let mut fills: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut i = 0;
+        while let Some(p) = content[i..].find("<rect") {
+            let start = i + p;
+            let end = content[start..]
+                .find("/>")
+                .map(|e| start + e)
+                .unwrap_or(content.len());
+            let chunk = &content[start..end];
+            // Skip the figure-background rects (width = full SVG width 900).
+            if let Some(w_pos) = chunk.find("width=\"") {
+                let rest = &chunk[w_pos + 7..];
+                if let Some(q) = rest.find('"') {
+                    if let Ok(w) = rest[..q].parse::<u32>() {
+                        if w == 900 {
+                            i = end + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(f_pos) = chunk.find("fill=\"#") {
+                let rest = &chunk[f_pos + 7..];
+                if let Some(q) = rest.find('"') {
+                    fills.insert(rest[..q].to_uppercase());
+                }
+            }
+            i = end + 1;
+        }
+        assert_eq!(
+            fills.len(),
+            1,
+            "expected a single fill colour across heatmap cells + colorbar \
+             swatches for a constant matrix; got {} distinct colours: {:?}",
+            fills.len(),
+            fills
+        );
+        // Mid-viridis is `#21918C` (close to t=0.5; varies by interpolation
+        // segment). Reject the bottom of the ramp explicitly so a regression
+        // back to t=0 fails this test.
+        let only_fill = fills.iter().next().unwrap();
+        assert!(
+            !only_fill.starts_with("#440"),
+            "constant-matrix cells fell back to bottom-of-ramp colour ({only_fill}); \
+             expected mid-colormap"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn radial_z(n: usize) -> (Vec<Vec<f64>>, Vec<f64>, Vec<f64>) {
         let xs: Vec<f64> = (0..n)
             .map(|i| -1.0 + 2.0 * i as f64 / (n as f64 - 1.0))
@@ -1252,6 +1971,51 @@ mod tests {
         assert!(
             seg_count > 30,
             "expected many polyline segments for 3 levels, got {seg_count}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn contour_lines_use_theme_foreground_when_color_unset() {
+        // Regression: render_contour_lines defaulted to SeriesColor::Black
+        // (#000000) when ContourData.line_color was None, which made dark-
+        // theme contours invisible against the dark background. The default
+        // should now pick up palette.text.
+        let path = tmp_path("_contour_dark.svg");
+        let (z, x, y) = radial_z(31);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.contours.push(crate::figure::ContourData {
+                z,
+                x,
+                y,
+                levels: vec![0.1, 0.4, 0.9],
+                filled: false,
+                line_color: None,
+                colorscale: "viridis".to_string(),
+            });
+        });
+        let snapshot: FigureState = FIGURE.with(|f| f.borrow().clone());
+        render_figure_state_to_file_themed(&snapshot, &path, Theme::Dark.colors())
+            .expect("dark-theme contour render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        // Catppuccin Mocha text = #cdd6f4. plotters' SVGBackend emits stroke
+        // colours as upper-case hex; allow either case for safety.
+        assert!(
+            content.contains("#CDD6F4") || content.contains("#cdd6f4"),
+            "expected dark-theme foreground colour in contour stroke; \
+             black-on-dark would mean the regression is back"
+        );
+        // And the literal pure-black stroke must not appear on contour
+        // polylines (plotters emits other elements like <text> in theme
+        // colour too, so assert no `stroke="#000000"`).
+        assert!(
+            !content.contains("stroke=\"#000000\"")
+                && !content.contains("stroke=\"#000\""),
+            "found pure-black stroke in dark-theme SVG — contours likely fell \
+             back to SeriesColor::Black"
         );
         let _ = std::fs::remove_file(&path);
     }

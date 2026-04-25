@@ -25,7 +25,7 @@ pub use figure::{
     FigureState, HeatmapData, LineStyle, PlotContext, PlotKind, QuiverData, Series, SeriesColor,
     StreamlineData, SubplotState, SurfaceData, FIGURE,
 };
-pub use file::{render_figure_file, render_figure_state_to_file};
+pub use file::{render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed};
 pub use html::{
     clear_html_figure_path, render_figure_html, render_figure_plotly_div, set_html_figure_path,
     sync_html_file,

@@ -298,8 +298,14 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                     ya = yaxis_ref,
                 ));
             } else {
-                let line_color =
-                    color_to_css(cd.line_color.as_ref().unwrap_or(&SeriesColor::Black));
+                // When the user didn't pick a colour, follow the theme
+                // foreground so dark-theme contours don't render as invisible
+                // black-on-near-black. (`theme.text` is already a CSS hex
+                // string in `ThemeColors`.)
+                let line_color = match &cd.line_color {
+                    Some(c) => color_to_css(c),
+                    None => theme.text.to_string(),
+                };
                 traces.push_str(&format!(
                     r#"{{ z: {z}, x: {x}, y: {y}, type: "contour", contours: {{ coloring: "none", showlines: true, start: {s}, end: {e}, size: {step} }}, line: {{ color: "{color}", width: 1.5 }}, showscale: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
