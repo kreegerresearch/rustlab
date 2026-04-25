@@ -113,33 +113,40 @@ ylim([-80, -20])
 ## Results
 
 ```rustlab
-% Measure peak stopband level for each
+% Passband: indices 1 .. round(0.20 * n_fft)
+% Stopband: indices round(0.30 * n_fft)+1 .. n_fft
+pass_end   = round(0.20 * n_fft);
 stop_start = round(0.30 * n_fft) + 1;
-stop_end = n_fft;
 
-mag_float = 20*log10(abs(Hz_float(2, stop_start:stop_end)));
-mag_naive = 20*log10(abs(Hz_naive(2, stop_start:stop_end)));
-mag_q     = 20*log10(abs(Hz_q(2, stop_start:stop_end)));
+% Peak-to-peak passband ripple (dB)
+ripple_float = max(20*log10(abs(Hz_float(2, 1:pass_end)))) - min(20*log10(abs(Hz_float(2, 1:pass_end))));
+ripple_naive = max(20*log10(abs(Hz_naive(2, 1:pass_end)))) - min(20*log10(abs(Hz_naive(2, 1:pass_end))));
+ripple_q     = max(20*log10(abs(Hz_q(2,     1:pass_end)))) - min(20*log10(abs(Hz_q(2,     1:pass_end))));
 
-disp(sprintf("Peak stopband (float):    %6.2f dB", max(mag_float)))
-disp(sprintf("Peak stopband (naïve Q):  %6.2f dB", max(mag_naive)))
-disp(sprintf("Peak stopband (firpmq):   %6.2f dB", max(mag_q)))
-disp("")
-disp(sprintf("firpmq improves stopband by %.1f dB over naïve quantization", max(mag_naive) - max(mag_q)))
+% Peak stopband level (dB)
+stop_float = max(20*log10(abs(Hz_float(2, stop_start:n_fft))));
+stop_naive = max(20*log10(abs(Hz_naive(2, stop_start:n_fft))));
+stop_q     = max(20*log10(abs(Hz_q(2,     stop_start:n_fft))));
+
+% Improvements (positive = firpmq better than naive)
+ripple_improvement = ripple_naive - ripple_q;
+stop_improvement   = stop_naive   - stop_q;
 ```
 
-```text
-Peak stopband (float):    -56.18 dB
-Peak stopband (naïve Q):  -38.66 dB
-Peak stopband (firpmq):   -45.99 dB
+| Filter                | Passband ripple (dB) | Stopband peak (dB) |
+|-----------------------|----------------------|--------------------|
+| `firpm` (float)       | 0.024 | -56.18 |
+| Naïve 10-bit     | 0.098 | -38.66 |
+| `firpmq` 10-bit  | 0.067     | -45.99     |
 
-firpmq improves stopband by 7.3 dB over naïve quantization
-```
+`firpmq` reduces passband ripple by **0.031 dB** and
+lowers the peak stopband level by **7.3 dB** versus
+naïve quantization at the same bitwidth.
 
-**Legend:** blue = `firpm` (float), red = naïve 10-bit quantization,
-green = `firpmq` 10-bit optimized.
+**Legend (plot colors):** blue = `firpm` (float), red = naïve 10-bit
+quantization, green = `firpmq` 10-bit optimized.
 
-The naïve approach degrades the stopband by several dB because rounding
-destroys the equiripple property. `firpmq` recovers most of the loss by
-re-optimizing with quantization in the loop.
+The naïve approach degrades both the passband ripple and the stopband
+floor because rounding destroys the equiripple property. `firpmq`
+recovers most of the loss by re-optimizing with quantization in the loop.
 

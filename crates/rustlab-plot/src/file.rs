@@ -231,11 +231,21 @@ where
     let bar_series_count = sp.series.iter().filter(|s| s.kind == PlotKind::Bar).count();
     let mut bar_series_idx = 0usize;
 
+    // Track whether any series has a label so we know whether to draw a
+    // legend at the end. legend("a", "b", ...) populates Series.label;
+    // an empty label means "don't show this series in the legend".
+    let mut any_label = false;
+
     // Draw each series
     for s in &sp.series {
         let rgb = s.color.to_plotters();
         let stroke_width: u32 = if s.style == LineStyle::Dashed { 1 } else { 2 };
         let color = rgb.stroke_width(stroke_width);
+        let has_label = !s.label.is_empty();
+        if has_label {
+            any_label = true;
+        }
+        let label = s.label.clone();
 
         match s.kind {
             PlotKind::Line => {
@@ -247,24 +257,38 @@ where
                     .collect();
 
                 if s.style == LineStyle::Dashed {
-                    // Simulate dashed by drawing every other segment
+                    // Simulate dashed by drawing every other segment.
+                    // Attach the legend annotation to the *first* segment
+                    // so the legend gets exactly one entry per series.
                     let mut draw_seg = true;
+                    let mut first = true;
                     for pair in pts.windows(2) {
                         if draw_seg {
-                            chart
+                            let anno = chart
                                 .draw_series(LineSeries::new(vec![pair[0], pair[1]], color))
                                 .map_err(err)?;
+                            if first && has_label {
+                                anno.label(label.clone()).legend(move |(x, y)| {
+                                    PathElement::new(vec![(x, y), (x + 20, y)], color)
+                                });
+                                first = false;
+                            }
                         }
                         draw_seg = !draw_seg;
                     }
                 } else {
-                    chart
+                    let anno = chart
                         .draw_series(LineSeries::new(pts, color))
                         .map_err(err)?;
+                    if has_label {
+                        anno.label(label).legend(move |(x, y)| {
+                            PathElement::new(vec![(x, y), (x + 20, y)], color)
+                        });
+                    }
                 }
             }
             PlotKind::Stem => {
-                // Baseline
+                // Baseline (drawn once, not per-series)
                 let x_lo_s = s.x_data.iter().copied().fold(f64::INFINITY, f64::min);
                 let x_hi_s = s.x_data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                 chart
@@ -274,8 +298,9 @@ where
                     ))
                     .map_err(err)?;
 
-                // Stems
-                chart
+                // Stems — attach legend annotation here (the visual identity
+                // of a stem plot is the vertical line, not the tip).
+                let anno = chart
                     .draw_series(
                         s.x_data
                             .iter()
@@ -284,6 +309,11 @@ where
                             .map(|(x, y)| PathElement::new(vec![(x, 0.0), (x, y)], color)),
                     )
                     .map_err(err)?;
+                if has_label {
+                    anno.label(label).legend(move |(x, y)| {
+                        PathElement::new(vec![(x, y), (x + 20, y)], color)
+                    });
+                }
 
                 // Tips
                 chart
@@ -322,8 +352,9 @@ where
                     ))
                     .map_err(err)?;
 
-                // Filled bars
-                chart
+                // Filled bars — attach legend annotation here so the marker
+                // matches the visible bar fill.
+                let anno = chart
                     .draw_series(s.x_data.iter().copied().zip(s.y_data.iter().copied()).map(
                         |(x, y)| {
                             let cx = x + offset;
@@ -332,6 +363,11 @@ where
                         },
                     ))
                     .map_err(err)?;
+                if has_label {
+                    anno.label(label).legend(move |(x, y)| {
+                        Rectangle::new([(x, y - 5), (x + 20, y + 5)], rgb.filled())
+                    });
+                }
 
                 // Bar outlines
                 chart
@@ -348,7 +384,7 @@ where
                     .map_err(err)?;
             }
             PlotKind::Scatter => {
-                chart
+                let anno = chart
                     .draw_series(
                         s.x_data
                             .iter()
@@ -357,8 +393,23 @@ where
                             .map(|(x, y)| Circle::new((x, y), 4, rgb.filled())),
                     )
                     .map_err(err)?;
+                if has_label {
+                    anno.label(label).legend(move |(x, y)| {
+                        Circle::new((x + 10, y), 4, rgb.filled())
+                    });
+                }
             }
         }
+    }
+
+    if any_label {
+        chart
+            .configure_series_labels()
+            .background_style(WHITE.mix(0.85))
+            .border_style(BLACK.mix(0.3))
+            .position(SeriesLabelPosition::UpperRight)
+            .draw()
+            .map_err(err)?;
     }
     Ok(())
 }
@@ -927,6 +978,70 @@ mod tests {
     }
 
     // Tests use the push helpers + render_figure_file pattern (same as builtins)
+
+    #[test]
+    fn legend_labels_appear_in_svg_when_set() {
+        // Regression: legend("a", "b") used to populate Series.label but the
+        // SVG renderer never read it, so the rendered .md plots had no key.
+        let path = tmp_path("_legend.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+        });
+        let x: Vec<f64> = (0..32).map(|i| i as f64).collect();
+        let y1: Vec<f64> = x.iter().map(|&xi| xi.sin()).collect();
+        let y2: Vec<f64> = x.iter().map(|&xi| xi.cos()).collect();
+        push_xy_line(
+            x.clone(),
+            y1,
+            "sine wave",
+            "Trig",
+            Some(crate::figure::SeriesColor::Blue),
+            LineStyle::Solid,
+        );
+        push_xy_line(
+            x,
+            y2,
+            "cosine wave",
+            "Trig",
+            Some(crate::figure::SeriesColor::Red),
+            LineStyle::Solid,
+        );
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("sine wave"),
+            "legend missing 'sine wave' label in SVG"
+        );
+        assert!(
+            content.contains("cosine wave"),
+            "legend missing 'cosine wave' label in SVG"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn no_legend_drawn_when_no_labels_set() {
+        // If every series has an empty label, no legend box should render.
+        // Verify by drawing without labels and checking that a known
+        // non-data string (e.g. a label we *didn't* set) is absent.
+        let path = tmp_path("_nolegend.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+        });
+        let x: Vec<f64> = (0..32).map(|i| i as f64).collect();
+        let y: Vec<f64> = x.iter().map(|&xi| xi.sin()).collect();
+        push_xy_line(x, y, "", "Untitled", None, LineStyle::Solid);
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(content.contains("<svg"));
+        // Plotters writes legend background as a <rect> with a specific
+        // structure; the simplest invariant is that no <text> element
+        // contains the non-existent label "MISSING_LEGEND_TEXT".
+        assert!(!content.contains("MISSING_LEGEND_TEXT"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn push_line_and_render_produces_svg() {

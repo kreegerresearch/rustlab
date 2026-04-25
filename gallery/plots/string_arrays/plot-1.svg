@@ -94,4 +94,10 @@ Jun
 <rect x="500" y="329" width="126" height="101" opacity="1" fill="none" stroke="#000000"/>
 <rect x="658" y="79" width="126" height="351" opacity="1" fill="none" stroke="#000000"/>
 <rect x="815" y="238" width="65" height="192" opacity="1" fill="none" stroke="#000000"/>
+<rect x="809" y="52" width="66" height="30" opacity="0.85" fill="#FFFFFF" stroke="none"/>
+<rect x="809" y="52" width="66" height="30" opacity="0.3" fill="none" stroke="#000000"/>
+<text x="849" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#000000">
+bar
+</text>
+<rect x="819" y="62" width="20" height="10" opacity="1" fill="#17BECF" stroke="none"/>
 </svg>

@@ -2,6 +2,12 @@
 
 A matrix algebra and DSP toolkit written in Rust — scriptable from the command line or embedded in your own applications.
 
+**[Browse the rendered notebook gallery →](gallery/)** — twelve worked
+notebooks (DSP filter design, spectral estimation, vector calculus,
+contour and surface plots, sparse Laplacian solves, and more), all
+rendered with plots inline. GitHub displays them directly — no install
+needed to read.
+
 ---
 
 ## Install (macOS and Linux)
@@ -522,7 +528,7 @@ rustlab-notebook render analysis.md                  # → analysis.html
 rustlab-notebook render analysis.md -f pdf           # → analysis.pdf (self-contained)
 rustlab-notebook render analysis.md -f markdown      # → analysis.md + plots/analysis/*.svg
 rustlab-notebook render analysis.md -f latex         # → analysis.tex + plots/analysis/*.svg
-rustlab-notebook render notebooks/ -o site/html      # render all → *.html + index.html
+rustlab-notebook render notebooks/ -o build/         # render all → *.html + index.html
 ```
 
 **Output formats** (all four are first-class):
@@ -551,9 +557,15 @@ plots inline.
 - Cross-notebook `.md` → `.html` link rewriting
 - Variables persist across code blocks within a notebook
 
-This repo's notebooks live at `examples/notebooks/*.md`; rendered output
-goes to `examples/notebooks/site/` (gitignored) via `make notebooks`. See
-[`docs/notebooks.md`](docs/notebooks.md) for full documentation and
+This repo's notebooks live at `examples/notebooks/*.md`. `make notebooks`
+writes everything into [`gallery/`](gallery/):
+
+- `gallery/<name>.md` + `gallery/plots/<name>/*.svg` — **committed**, the
+  entry point for browsing rendered notebooks on GitHub
+- `gallery/<name>.html` + `gallery/index.html` — **gitignored**, for
+  local interactive viewing with Plotly + KaTeX
+
+See [`docs/notebooks.md`](docs/notebooks.md) for full documentation and
 [`examples/notebooks/README.md`](examples/notebooks/README.md) for the
 directory layout.
 
@@ -643,28 +655,32 @@ sox -d -r 44100 -c 1 -b 32 -e float -t raw - \
 bash examples/audio/test_filter.sh
 ```
 
-### Notebooks (`examples/notebooks/`)
+### Notebooks
 
-| File | Description |
-|------|-------------|
-| `examples/notebooks/quick_look.md` | Minimal one-block notebook (random signal + plot) |
-| `examples/notebooks/filter_analysis.md` | FIR filter design with frequency response plots |
-| `examples/notebooks/spectral_estimation.md` | Periodogram vs. windowed PSD, tables, display math |
-| `examples/notebooks/template_interpolation.md` | `${expr}` interpolation with format specs |
-| `examples/notebooks/string_arrays.md` | String arrays, categorical bar charts, `iscell()` |
-| `examples/notebooks/multi_notebook.md` | Directory rendering and cross-notebook links |
+Sources are at [`examples/notebooks/`](examples/notebooks/), rendered
+output at [`gallery/`](gallery/) — see the gallery README for the full
+list with descriptions, or jump straight to a notebook:
 
-Render all notebooks at once:
+| Source | Rendered | Description |
+|--------|----------|-------------|
+| [quick_look.md](examples/notebooks/quick_look.md) | [view](gallery/quick_look.md) | Minimal one-block notebook (random signal + plot) |
+| [filter_analysis.md](examples/notebooks/filter_analysis.md) | [view](gallery/filter_analysis.md) | FIR filter design with frequency response plots |
+| [firpm_quantization.md](examples/notebooks/firpm_quantization.md) | [view](gallery/firpm_quantization.md) | `firpm` vs `firpmq` 10-bit quantized FIR design |
+| [spectral_estimation.md](examples/notebooks/spectral_estimation.md) | [view](gallery/spectral_estimation.md) | Periodogram vs. windowed PSD, tables, display math |
+| [contour_plots.md](examples/notebooks/contour_plots.md) | [view](gallery/contour_plots.md) | `contour` and `contourf` for 2-D scalar fields |
+| [surface_plots.md](examples/notebooks/surface_plots.md) | [view](gallery/surface_plots.md) | 3-D `surf` with `meshgrid` and colormaps |
+| [vector_fields.md](examples/notebooks/vector_fields.md) | [view](gallery/vector_fields.md) | Quiver and streamplot for 2-D vector fields |
+| [vector_calculus.md](examples/notebooks/vector_calculus.md) | [view](gallery/vector_calculus.md) | Gradient / divergence / curl on uniform 2-D and 3-D grids |
+| [laplacian.md](examples/notebooks/laplacian.md) | [view](gallery/laplacian.md) | Sparse 5-point Laplacian + Poisson solve |
+| [string_arrays.md](examples/notebooks/string_arrays.md) | [view](gallery/string_arrays.md) | String arrays, categorical bar charts, `iscell()` |
+| [template_interpolation.md](examples/notebooks/template_interpolation.md) | [view](gallery/template_interpolation.md) | `${expr}` interpolation with format specs |
+| [multi_notebook.md](examples/notebooks/multi_notebook.md) | [view](gallery/multi_notebook.md) | Directory rendering and cross-notebook links |
+
+Render everything locally:
 
 ```sh
-make notebooks                            # → examples/notebooks/site/{md,html}/
-open examples/notebooks/site/html/index.html
+make notebooks                                          # → gallery/ (md committed, html ignored)
+open gallery/index.html                                 # interactive view
 ```
-
-Rendered output lives at [`examples/notebooks/site/md/`](examples/notebooks/site/md/)
-— browseable directly on GitHub with inline SVG plots. The interactive
-HTML build (`examples/notebooks/site/html/`) is gitignored; run
-`make notebooks` and open `site/html/index.html` to view it locally with
-Plotly + KaTeX.
 
 See `docs/examples.md` for annotated walkthroughs.

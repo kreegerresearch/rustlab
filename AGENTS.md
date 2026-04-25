@@ -395,14 +395,19 @@ broken templating / KaTeX / figure-snapshot change does not slip out:
 Open the artifacts and confirm code blocks, math, and plots render.
 
 **Notebook source layout.** Sources live at `examples/notebooks/*.md`.
-`make notebooks` renders into `examples/notebooks/site/{md,html}/`:
+Generated files never mix with sources — `make notebooks` writes
+everything into the top-level `gallery/` directory. The `.gitignore`
+splits visibility:
 
-- `site/md/` is **committed** so GitHub displays the rendered notebooks
-  inline (Markdown + SVG plots). When a notebook source changes,
-  regenerate and commit the matching `site/md/<name>.md` plus any
-  changed SVGs under `site/md/plots/<name>/` in the same commit.
-- `site/html/` is **gitignored** — bulky Plotly bundles for local
-  interactive browsing only.
+- `gallery/<name>.md` and `gallery/plots/<name>/*.svg` are **committed**
+  so GitHub displays the rendered notebooks inline. This is the primary
+  entry point readers click into from the repo root README. When a
+  notebook source changes, regenerate and commit the matching
+  `gallery/<name>.md` plus any changed SVGs in the same commit, and
+  update the row in `gallery/README.md` if the notebook's title or
+  scope changed.
+- `gallery/<name>.html` and `gallery/index.html` are **gitignored** —
+  bulky Plotly bundles for local interactive browsing only.
 
 See `examples/notebooks/README.md` for the directory layout and
 `docs/notebooks.md` for the renderer design (incl. the

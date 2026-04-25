@@ -36,10 +36,13 @@ examples/*.toml
 *.html
 
 # Notebook rendered output — sources live at examples/notebooks/*.md.
-# `make notebooks` regenerates two trees:
-#   site/md/   committed → GitHub renders these inline with SVG plots
-#   site/html/ ignored   → bulky Plotly bundles, regen locally to browse
-# The carve-out below overrides the global *.svg rule for notebook plots.
-examples/notebooks/site/html/
-!examples/notebooks/site/md/plots/
-!examples/notebooks/site/md/plots/**/*.svg
+# `make notebooks` writes everything into gallery/:
+#   gallery/<name>.md           committed → GitHub-browseable Markdown
+#   gallery/plots/<name>/*.svg  committed → referenced by .md inline
+#   gallery/<name>.html         ignored   → bulky Plotly bundles, local view
+#   gallery/index.html          ignored   → generated index for the HTML build
+# The carve-outs below override the global *.svg and *.html rules for the
+# gallery's committed assets.
+gallery/*.html
+!gallery/
+!gallery/**/*.svg

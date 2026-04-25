@@ -35,19 +35,20 @@ octave-compare:
 	@bash tests/octave/run_compare.sh
 
 # Regenerate rendered notebooks from sources at examples/notebooks/*.md.
-# Output goes to examples/notebooks/site/{md,html}/ (gitignored). Some
-# notebooks use unseeded randn() so back-to-back renders differ in the
-# generated plot SVGs — the README calls this out as a known limitation
-# pending a seedable RNG.
+# All output → gallery/. Markdown + plot SVGs are committed; HTML files
+# (per-notebook .html and the generated index.html) are gitignored.
+# Some notebooks use unseeded randn() so back-to-back renders differ in
+# the generated plot SVGs — the README calls this out as a known
+# limitation pending a seedable RNG.
 notebooks:
 	@bash dev/build-notebooks.sh
 
-# Remove the gitignored notebook output (site/html/). The committed
-# site/md/ tree is left intact — `make notebooks` will regenerate it,
-# but we don't blow away tracked files from a `clean` target.
+# Remove the gitignored HTML output from gallery/. Markdown and SVG
+# plots (committed) are left alone — `make notebooks` will regenerate
+# them, but we don't blow away tracked files from a `clean` target.
 clean-notebooks:
-	@rm -rf examples/notebooks/site/html
-	@echo "Removed examples/notebooks/site/html/"
+	@rm -f gallery/*.html
+	@echo "Removed gallery/*.html"
 
 clean: clean-notebooks
 	$(CARGO) clean
@@ -62,8 +63,8 @@ help:
 	@echo "  install   Release build + install to $(INSTALL_DIR)"
 	@echo "  perf      Release build, run benchmarks, write perf/report.md"
 	@echo "  octave-compare  Regenerate CSVs and compare rustlab vs Octave (requires octave)"
-	@echo "  notebooks       Render examples/notebooks/*.md to examples/notebooks/site/{md,html}/"
-	@echo "  clean-notebooks Remove examples/notebooks/site/html/ (committed site/md/ is left alone)"
+	@echo "  notebooks       Render examples/notebooks/*.md → gallery/ (md committed, html ignored)"
+	@echo "  clean-notebooks Remove gallery/*.html (committed gallery/*.md is left alone)"
 	@echo "  clean     Remove build artifacts (also runs clean-notebooks)"
 	@echo ""
 	@echo "Workflow:  make build → make test → make install"
