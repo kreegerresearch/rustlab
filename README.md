@@ -515,16 +515,31 @@ rustlab info
 ## Notebooks
 
 `rustlab-notebook` renders Markdown files with `` ```rustlab `` code blocks
-into self-contained HTML reports, LaTeX documents, or PDF.
+into HTML, LaTeX, PDF, or GitHub-friendly Markdown.
 
 ```sh
-rustlab-notebook render analysis.md              # → analysis.html
-rustlab-notebook render analysis.md -f pdf       # → analysis.pdf
-rustlab-notebook render notebooks/               # render all → *.html + index.html
+rustlab-notebook render analysis.md                  # → analysis.html
+rustlab-notebook render analysis.md -f pdf           # → analysis.pdf (self-contained)
+rustlab-notebook render analysis.md -f markdown      # → analysis.md + plots/analysis/*.svg
+rustlab-notebook render analysis.md -f latex         # → analysis.tex + plots/analysis/*.svg
+rustlab-notebook render notebooks/ -o site/html      # render all → *.html + index.html
 ```
 
+**Output formats** (all four are first-class):
+
+| Format     | Output                                       |
+|------------|----------------------------------------------|
+| `html`     | `<name>.html` — self-contained, Plotly + KaTeX |
+| `pdf`      | `<name>.pdf`  — self-contained, intermediates compile in tempdir |
+| `markdown` | `<name>.md`   + `plots/<name>/*.svg`         |
+| `latex`    | `<name>.tex`  + `plots/<name>/*.svg`         |
+
+Markdown and LaTeX share the same on-disk shape: one document file plus a
+`plots/<stem>/` subdirectory under the output folder. HTML and PDF embed
+plots inline.
+
 **Features:**
-- Interactive Plotly charts (HTML) or static SVG (LaTeX/PDF)
+- Interactive Plotly charts (HTML) or static SVG (Markdown / LaTeX / PDF)
 - KaTeX math rendering ($...$, $$...$$)
 - Syntax-highlighted code blocks
 - Template interpolation: `${expr}` embeds computed values in prose
@@ -536,8 +551,11 @@ rustlab-notebook render notebooks/               # render all → *.html + index
 - Cross-notebook `.md` → `.html` link rewriting
 - Variables persist across code blocks within a notebook
 
-See [`docs/notebooks.md`](docs/notebooks.md) for full documentation and
-`examples/notebooks/` for working examples.
+This repo's notebooks live at `examples/notebooks/*.md`; rendered output
+goes to `examples/notebooks/site/` (gitignored) via `make notebooks`. See
+[`docs/notebooks.md`](docs/notebooks.md) for full documentation and
+[`examples/notebooks/README.md`](examples/notebooks/README.md) for the
+directory layout.
 
 ---
 
@@ -639,7 +657,14 @@ bash examples/audio/test_filter.sh
 Render all notebooks at once:
 
 ```sh
-rustlab-notebook render examples/notebooks/
+make notebooks                            # → examples/notebooks/site/{md,html}/
+open examples/notebooks/site/html/index.html
 ```
+
+Rendered output lives at [`examples/notebooks/site/md/`](examples/notebooks/site/md/)
+— browseable directly on GitHub with inline SVG plots. The interactive
+HTML build (`examples/notebooks/site/html/`) is gitignored; run
+`make notebooks` and open `site/html/index.html` to view it locally with
+Plotly + KaTeX.
 
 See `docs/examples.md` for annotated walkthroughs.

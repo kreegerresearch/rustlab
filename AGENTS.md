@@ -389,9 +389,24 @@ broken templating / KaTeX / figure-snapshot change does not slip out:
 ```sh
 ./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.html
 ./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.pdf --format pdf
+./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.md --format markdown
 ```
 
-Open both artifacts and confirm code blocks, math, and plots render.
+Open the artifacts and confirm code blocks, math, and plots render.
+
+**Notebook source layout.** Sources live at `examples/notebooks/*.md`.
+`make notebooks` renders into `examples/notebooks/site/{md,html}/`:
+
+- `site/md/` is **committed** so GitHub displays the rendered notebooks
+  inline (Markdown + SVG plots). When a notebook source changes,
+  regenerate and commit the matching `site/md/<name>.md` plus any
+  changed SVGs under `site/md/plots/<name>/` in the same commit.
+- `site/html/` is **gitignored** — bulky Plotly bundles for local
+  interactive browsing only.
+
+See `examples/notebooks/README.md` for the directory layout and
+`docs/notebooks.md` for the renderer design (incl. the
+`plot_dir` / `plot_href_prefix` split shared by markdown and LaTeX).
 
 **PDF dependencies** (`--format pdf` only): `pdflatex` (or `tectonic`) plus
 the LaTeX packages `svg`, `transparent`, `trimspaces`, `pagecolor`, and
@@ -656,12 +671,13 @@ rustlab-viewer --socket PATH    # custom socket path
 **Purpose:** Library + binary crate. Renders Markdown notebooks with \`\`\`rustlab code blocks into self-contained HTML, LaTeX, or PDF.
 
 **Key files:**
-- `src/lib.rs` — public API: `cmd_render`, `cmd_render_dir` (accepts optional `index_title`), `Format`, `NotebookNav`, `generate_index_html` (accepts an `index_body_html: &str`)
+- `src/lib.rs` — public API: `cmd_render`, `cmd_render_dir` (accepts optional `index_title`), `Format`, `NotebookNav`, `generate_index_html` (accepts an `index_body_html: &str`); contains `render_output` (per-format dispatch) and `plot_layout_for` (canonical `plots/<stem>/` rule shared by markdown + LaTeX)
 - `src/main.rs` — thin CLI wrapper (`rustlab-notebook render`)
 - `src/parse.rs` — parse notebook markdown into `Block` enum (Markdown / Code)
 - `src/execute.rs` — execute code blocks through `Evaluator`, produce `Rendered` blocks
 - `src/render.rs` — HTML rendering with themed CSS (Catppuccin Mocha/Latte)
-- `src/render_latex.rs` — LaTeX/PDF rendering with themed colors
+- `src/render_latex.rs` — LaTeX rendering (also used to drive PDF compilation in a tempdir)
+- `src/render_markdown.rs` — GitHub-flavored Markdown rendering with inline SVG plots
 
 **Theme support:** `--theme dark|light` flag (default: dark). Dark = Catppuccin Mocha, Light = Catppuccin Latte. Theme colors are defined in `rustlab-plot/src/theme.rs` (`Theme` enum + `ThemeColors` struct) and shared with the plot crate for consistent Plotly chart styling.
 
@@ -678,6 +694,26 @@ rustlab-viewer --socket PATH    # custom socket path
 **Cross-notebook page navigation (`NotebookNav`):** In directory-mode HTML renders, each notebook receives a `NotebookNav { index_href, prev, next }` computed from the sorted entry list. `render::render_html` switches the page layout when `nav` is `Some`: the fixed sidebar (with per-page H1/H2/H3 TOC) is dropped, the `<body>` gets a `topbar-layout` class, and a sticky `<header class="topbar">` breadcrumb (`← Index / <title>`) is inserted at the top. A `Previous · Index · Next` footer bar is appended above the page footer. Single-file `cmd_render` passes `None` → standalone pages keep the sidebar + TOC layout unchanged. LaTeX/PDF renders ignore `NotebookNav`.
 
 **Accessible via:** `rustlab-notebook render ...` (standalone binary) or `rustlab notebook render ...` (main CLI subcommand). `--title` is directory-mode only; passing it with a single-file input prints a warning and is ignored.
+
+**Renderer design pattern — split write location from reference path:**
+
+Every emitter that writes plot files to disk (`render_markdown`, `render_latex`, and any future format) takes **two** arguments for plots, not one:
+
+- `plot_dir: &Path` — where the SVG bytes are written
+- `plot_href_prefix: &str` — what relative path is embedded in the rendered document (markdown `![alt](…)`, LaTeX `\includesvg{…}`, etc.)
+
+These are intentionally distinct. The on-disk dir is a host-filesystem path; the href is a string the rendered document carries to its eventual reader. Conflating them (e.g. deriving the href from `plot_dir.file_name()`) hardcodes the on-disk layout into the document and prevents the caller from picking a different one.
+
+Both renderers are then wired through `lib.rs::plot_layout_for(out_path)`, which produces the canonical pair `(out_dir/plots/<stem>/, "plots/<stem>")`. That single rule gives every format the same on-disk shape: one document file plus one subdirectory under a shared `plots/` umbrella, scaling cleanly to directory-mode renders of many notebooks.
+
+Self-contained formats (HTML embeds plots inline; PDF compiles in a tempdir and copies only the `.pdf` out) skip the layout helper entirely — the user asked for one file, so they get one file. The tempdir for PDF is the same idea applied to *all* intermediates, not just plots: the `.tex`, the SVGs, and pdflatex's `aux/log/out` sidecars all live in the temp dir and disappear on success. On compile failure, only the build log is copied to `<pdf_path>.log` so it survives the cleanup.
+
+When adding a new output format, follow this pattern:
+
+- If the format is self-contained (single-file deliverable), generate intermediates in a tempdir and copy only the final artifact out.
+- If the format references external plot files, take both `plot_dir` and `plot_href_prefix`, and call `plot_layout_for(out_path)` from `render_output` to get the canonical pair.
+
+Documented for users in `docs/notebooks.md` ("Plot output layout").
 
 ---
 

@@ -8,6 +8,7 @@ enum CliFormat {
     Html,
     Latex,
     Pdf,
+    Markdown,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -32,12 +33,14 @@ pub enum NotebookCommands {
             rustlab notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
-            -f, --format <FMT>     html (default), latex, pdf\n  \
+            -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
             -t, --theme  <THEME>   dark (default), light\n\n\
             Formats:\n  \
-            html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
-            latex  LaTeX .tex file + SVG plots in <name>_plots/ directory\n  \
-            pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
+            html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
+            latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
+            pdf       Compile LaTeX to PDF (requires pdflatex or tectonic)\n  \
+            markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
+                      committing alongside source, browsable on GitHub\n\n\
             Themes:\n  \
             dark   Catppuccin Mocha — dark background, light text (default)\n  \
             light  Catppuccin Latte — light background, dark text"
@@ -52,7 +55,7 @@ pub struct RenderArgs {
     /// Output file or directory
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Output format: html (default), latex, pdf
+    /// Output format: html (default), latex, pdf, markdown
     #[arg(short, long, value_enum, default_value = "html")]
     format: CliFormat,
     /// Color theme: dark (default), light
@@ -76,6 +79,7 @@ pub fn execute(cmd: NotebookCommands) -> Result<()> {
                 CliFormat::Html => rustlab_notebook::Format::Html,
                 CliFormat::Latex => rustlab_notebook::Format::Latex,
                 CliFormat::Pdf => rustlab_notebook::Format::Pdf,
+                CliFormat::Markdown => rustlab_notebook::Format::Markdown,
             };
             if args.input.is_dir() {
                 rustlab_notebook::cmd_render_dir(

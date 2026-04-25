@@ -5,19 +5,25 @@ use rustlab_plot::theme::{Theme, ThemeColors};
 use std::path::Path;
 
 /// Render executed notebook blocks into a LaTeX document string.
-/// Plot images are written to `plot_dir` as SVG files and referenced
-/// via \includesvg.
+///
+/// Plot images are written to `plot_dir` as SVG files and referenced from
+/// the rendered `.tex` via `\includesvg{plot_href_prefix/plot-N}`. Splitting
+/// the on-disk write location from the include path lets callers nest plots
+/// under a single `plots/<stem>/` umbrella the same way the markdown emitter
+/// does, without coupling the path inside `\includesvg` to the directory the
+/// SVGs are written to.
 pub fn render_latex(
     title: &str,
     blocks: &[Rendered],
     plot_dir: &Path,
+    plot_href_prefix: &str,
     theme: &ThemeColors,
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0;
 
-    // Ensure plot directory exists
     let _ = std::fs::create_dir_all(plot_dir);
+    let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
 
     for block in blocks {
         match block {
@@ -73,7 +79,6 @@ pub fn render_latex(
                         eprintln!("warning: could not render plot-{plot_idx}: {e}");
                         continue;
                     }
-                    let rel_path = plot_dir.file_name().unwrap_or_default().to_string_lossy();
                     let width = if let Some(n) = grid_cols {
                         let w = 0.9 / *n as f64;
                         format!("{w:.2}\\textwidth")
@@ -82,7 +87,7 @@ pub fn render_latex(
                     };
                     body.push_str(&format!(
                         "\\begin{{center}}\n\\includesvg[width={width}]{{{}/plot-{plot_idx}}}\n\\end{{center}}\n\n",
-                        rel_path,
+                        href_prefix,
                     ));
                 }
             }
@@ -535,6 +540,7 @@ mod tests {
             "Test Title",
             &[],
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\documentclass"));
@@ -553,6 +559,7 @@ mod tests {
             "A & B",
             &[],
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\title{A \\& B}"));
@@ -573,6 +580,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\begin{verbatim}\nx = 42\n\\end{verbatim}"));
@@ -593,6 +601,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         // Source should not appear in verbatim
@@ -616,6 +625,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\begin{quote}"));
@@ -637,6 +647,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         // Only one verbatim (source), no quote block for output
@@ -660,6 +671,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\color[HTML]{"));
@@ -675,6 +687,7 @@ mod tests {
             "Test",
             &blocks,
             std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
             light(),
         );
         assert!(tex.contains("\\subsection{Analysis}"));

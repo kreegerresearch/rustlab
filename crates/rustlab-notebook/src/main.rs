@@ -27,7 +27,7 @@ use std::path::PathBuf;
         -t, --theme  <THEME>   dark (default), light\n\n\
         Formats:\n  \
         html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
-        latex  LaTeX .tex file + SVG plots in <name>_plots/ directory\n  \
+        latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
         pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
         Themes:\n  \
         dark   Catppuccin Mocha — dark background, light text (default)\n  \
@@ -71,7 +71,7 @@ enum Command {
             -t, --theme  <THEME>   dark (default), light\n\n\
             Formats:\n  \
             html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
-            latex  LaTeX .tex file + SVG plots in <name>_plots/ directory\n  \
+            latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
             pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
             Themes:\n  \
             dark   Catppuccin Mocha — dark background, light text (default)\n  \

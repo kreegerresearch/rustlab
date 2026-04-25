@@ -2,7 +2,7 @@ CARGO       := cargo
 INSTALL_DIR := $(HOME)/.local/bin
 UNAME       := $(shell uname)
 
-.PHONY: all build release test install perf octave-compare clean help
+.PHONY: all build release test install perf octave-compare notebooks clean-notebooks clean help
 
 all: help
 
@@ -34,7 +34,22 @@ perf:
 octave-compare:
 	@bash tests/octave/run_compare.sh
 
-clean:
+# Regenerate rendered notebooks from sources at examples/notebooks/*.md.
+# Output goes to examples/notebooks/site/{md,html}/ (gitignored). Some
+# notebooks use unseeded randn() so back-to-back renders differ in the
+# generated plot SVGs — the README calls this out as a known limitation
+# pending a seedable RNG.
+notebooks:
+	@bash dev/build-notebooks.sh
+
+# Remove the gitignored notebook output (site/html/). The committed
+# site/md/ tree is left intact — `make notebooks` will regenerate it,
+# but we don't blow away tracked files from a `clean` target.
+clean-notebooks:
+	@rm -rf examples/notebooks/site/html
+	@echo "Removed examples/notebooks/site/html/"
+
+clean: clean-notebooks
 	$(CARGO) clean
 
 help:
@@ -47,7 +62,9 @@ help:
 	@echo "  install   Release build + install to $(INSTALL_DIR)"
 	@echo "  perf      Release build, run benchmarks, write perf/report.md"
 	@echo "  octave-compare  Regenerate CSVs and compare rustlab vs Octave (requires octave)"
-	@echo "  clean     Remove build artifacts"
+	@echo "  notebooks       Render examples/notebooks/*.md to examples/notebooks/site/{md,html}/"
+	@echo "  clean-notebooks Remove examples/notebooks/site/html/ (committed site/md/ is left alone)"
+	@echo "  clean     Remove build artifacts (also runs clean-notebooks)"
 	@echo ""
 	@echo "Workflow:  make build → make test → make install"
 	@echo ""

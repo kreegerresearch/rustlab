@@ -1,7 +1,8 @@
 # rustlab-notebook
 
 Render Markdown notebooks with executable rustlab code blocks into HTML
-reports, LaTeX documents, or PDF.
+reports, LaTeX documents, PDFs, or GitHub-friendly Markdown with inline
+SVG plots.
 
 ## Quick Start
 
@@ -10,8 +11,16 @@ rustlab notebook render analysis.md              # → analysis.html (default, d
 rustlab notebook render analysis.md -t light     # → analysis.html (light theme)
 rustlab notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
+rustlab notebook render analysis.md -f markdown  # → analysis.md + analysis_plots/*.svg
 rustlab notebook render analysis.md -o out.html  # explicit output path
 ```
+
+The `markdown` output format is purpose-built for committing rendered
+notebooks to a repo so they display with inline plots on GitHub — each
+captured figure is written as SVG to `<stem>_plots/plot-N.svg` and
+referenced inline. See
+[`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
+source/rendered split design pattern.
 
 The standalone `rustlab-notebook` binary accepts the same arguments:
 
@@ -245,12 +254,12 @@ Self-contained HTML with:
 
 ### LaTeX (`--format latex`)
 
-Produces a `.tex` file and a `<name>_plots/` directory of SVG images.
+Produces a `.tex` file and a `plots/<name>/` directory of SVG images.
 
 ```
 rustlab-notebook render analysis.md -f latex
 # → analysis.tex
-# → analysis_plots/plot-1.svg, plot-2.svg, ...
+# → plots/analysis/plot-1.svg, plot-2.svg, ...
 ```
 
 The `.tex` file uses `article` class with `amsmath`, `booktabs`,
@@ -269,8 +278,35 @@ in PATH.
 
 ```
 rustlab-notebook render analysis.md -f pdf
-# → analysis.pdf  (also keeps analysis.tex)
+# → analysis.pdf   (single file — intermediates compile in a temp dir)
 ```
+
+The `.tex` source and SVG plots used during compilation live in a
+temporary directory that is deleted on completion, so the only artifact
+left behind is the requested `.pdf`. If the build fails, the LaTeX log
+is preserved next to the requested PDF path as `<stem>.log` so the
+failure is debuggable.
+
+### Plot output layout
+
+Markdown and LaTeX share one rule: plots are written under
+`<output-dir>/plots/<stem>/` and referenced from the rendered document
+as `plots/<stem>/plot-N.{svg}`. A directory of rendered notebooks
+therefore contributes one document file plus one subdirectory under a
+single `plots/` umbrella, instead of N siblings of the form
+`<stem>_plots/`. HTML embeds plots inline (no on-disk dir), and PDF is
+self-contained for the same reason.
+
+Internally, both renderers take two arguments to support this:
+
+- `plot_dir: &Path` — where to write the SVGs on disk
+- `plot_href_prefix: &str` — what relative path to embed in the rendered
+  document (markdown `![alt](…)` and LaTeX `\includesvg{…}`)
+
+Splitting "where the bytes go" from "what the document references" is
+what lets the on-disk layout be reorganised without touching the
+emitter. New output formats that include external plot files should
+follow the same shape.
 
 ## Frontmatter
 

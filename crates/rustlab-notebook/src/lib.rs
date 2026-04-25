@@ -2,6 +2,7 @@ pub mod execute;
 pub mod parse;
 pub mod render;
 pub mod render_latex;
+pub mod render_markdown;
 
 use rustlab_plot::theme::ThemeColors;
 use std::path::PathBuf;
@@ -69,6 +70,10 @@ pub fn cmd_render_dir(
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
+            // README.md is project metadata for the directory itself, not a
+            // notebook. Skip it so it doesn't appear in the rendered index
+            // alongside real notebooks. (`index.md` is handled separately.)
+            .filter(|p| p.file_name().map_or(true, |n| n != "README.md"))
             .collect(),
         Err(e) => {
             eprintln!("error: cannot read directory {}: {e}", dir.display());
@@ -255,6 +260,7 @@ pub enum Format {
     Html,
     Latex,
     Pdf,
+    Markdown,
 }
 
 impl Format {
@@ -263,6 +269,7 @@ impl Format {
             Format::Html => "html",
             Format::Latex => "tex",
             Format::Pdf => "pdf",
+            Format::Markdown => "md",
         }
     }
 }
@@ -280,19 +287,57 @@ fn render_output(
             let html = render::render_html(title, rendered, theme, nav);
             write_output(out_path, html.as_bytes());
         }
+        Format::Markdown => {
+            let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            let md = render_markdown::render_markdown(title, rendered, &plot_dir, &href_prefix);
+            write_output(out_path, md.as_bytes());
+        }
         Format::Latex => {
-            let plot_dir = plot_dir_for(out_path);
-            let tex = render_latex::render_latex(title, rendered, &plot_dir, theme);
+            let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            let tex = render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme);
             write_output(out_path, tex.as_bytes());
         }
         Format::Pdf => {
-            let tex_path = out_path.with_extension("tex");
-            let plot_dir = plot_dir_for(&tex_path);
-            let tex = render_latex::render_latex(title, rendered, &plot_dir, theme);
+            // PDFs are self-contained, so compilation happens inside a temp
+            // directory: the .tex source and SVG plots are intermediates the
+            // user did not ask for. Only the final .pdf is copied out.
+            let workdir = match tempfile::tempdir() {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("error: cannot create temp directory for PDF build: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let tex_path = workdir.path().join("notebook.tex");
+            let plot_dir = workdir.path().join("plots").join("notebook");
+            let tex = render_latex::render_latex(
+                title,
+                rendered,
+                &plot_dir,
+                "plots/notebook",
+                theme,
+            );
             write_output(&tex_path, tex.as_bytes());
             compile_pdf(&tex_path, out_path);
         }
     }
+}
+
+/// Where to write plot SVGs and what relative path to embed in the rendered
+/// document. Both Markdown and LaTeX use the same convention so a directory
+/// of rendered notebooks groups under one `plots/` umbrella with one
+/// subdirectory per notebook stem — see `docs/notebooks.md` ("Plot output
+/// layout") for the rationale.
+fn plot_layout_for(out_path: &PathBuf) -> (PathBuf, String) {
+    let stem = out_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let parent = out_path.parent().unwrap_or(std::path::Path::new("."));
+    let plot_dir = parent.join("plots").join(&stem);
+    let href_prefix = format!("plots/{stem}");
+    (plot_dir, href_prefix)
 }
 
 fn print_summary(input: &PathBuf, out_path: &PathBuf, rendered: &[execute::Rendered]) {
@@ -325,12 +370,6 @@ fn print_summary(input: &PathBuf, out_path: &PathBuf, rendered: &[execute::Rende
     println!(")");
 }
 
-fn plot_dir_for(tex_path: &PathBuf) -> PathBuf {
-    let stem = tex_path.file_stem().unwrap_or_default().to_string_lossy();
-    let parent = tex_path.parent().unwrap_or(std::path::Path::new("."));
-    parent.join(format!("{stem}_plots"))
-}
-
 fn write_output(path: &PathBuf, data: &[u8]) {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -346,6 +385,10 @@ fn write_output(path: &PathBuf, data: &[u8]) {
     }
 }
 
+/// Run pdflatex/tectonic on `tex_path` (expected to live in a temp directory)
+/// and copy the resulting PDF to `pdf_path`. On failure the build log is
+/// copied next to `pdf_path` as `<stem>.log` so it survives the temp dir's
+/// cleanup and the user has something to read.
 fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) {
     let tex_dir = tex_path.parent().unwrap_or(std::path::Path::new("."));
 
@@ -379,19 +422,26 @@ fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) {
     match status {
         Ok(s) if s.success() => {
             let generated = tex_path.with_extension("pdf");
-            if generated != *pdf_path {
-                let _ = std::fs::rename(&generated, pdf_path);
+            if let Some(parent) = pdf_path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
             }
-            for ext in &["aux", "log", "out"] {
-                let _ = std::fs::remove_file(tex_path.with_extension(ext));
+            if let Err(e) = std::fs::copy(&generated, pdf_path) {
+                eprintln!("error: cannot write {}: {e}", pdf_path.display());
+                std::process::exit(1);
             }
         }
         Ok(s) => {
+            let log_src = tex_path.with_extension("log");
+            let log_dst = pdf_path.with_extension("log");
+            let copied = std::fs::copy(&log_src, &log_dst).is_ok();
             eprintln!("error: {cmd} exited with status {s}");
-            eprintln!(
-                "  Check {} for details",
-                tex_path.with_extension("log").display()
-            );
+            if copied {
+                eprintln!("  Build log saved to {}", log_dst.display());
+            } else {
+                eprintln!("  (build log was not preserved)");
+            }
             std::process::exit(1);
         }
         Err(e) => {
