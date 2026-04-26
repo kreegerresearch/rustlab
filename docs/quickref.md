@@ -117,6 +117,18 @@ Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
 
 ---
 
+## Geometry / Masks
+
+Returns a real-valued matrix the same shape as the meshgrid `X` / `Y` inputs, with `1.0` inside the shape and `0.0` outside. Compose with element-wise math: `M1 .* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union).
+
+| Function | Description |
+|---|---|
+| `rect_mask(X, Y, x0, y0, w, h)` | Axis-aligned rectangle mask, inclusive on all four sides |
+| `disk_mask(X, Y, xc, yc, r)` | Closed-disk mask `(X-xc)² + (Y-yc)² ≤ r²` |
+| `polygon_mask(X, Y, verts)` | Polygon mask via even-odd ray casting; `verts` is N×2 |
+
+---
+
 ## Tensor3 (rank-3)
 
 A `Tensor3` is a complex `(m, n, p)` array — `m` rows, `n` columns, `p` pages. 1-based indexing on every axis. No broadcasting between Matrix and Tensor3, and no `*`/`/` between two Tensor3s — use `.*` / `./`.

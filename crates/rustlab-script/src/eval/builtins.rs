@@ -274,6 +274,11 @@ impl BuiltinRegistry {
         r.register("ij2k", builtin_ij2k);
         r.register("k2ij", builtin_k2ij);
 
+        // Geometry / shape rasterization masks
+        r.register("rect_mask", builtin_rect_mask);
+        r.register("disk_mask", builtin_disk_mask);
+        r.register("polygon_mask", builtin_polygon_mask);
+
         // Live plotting
         r.register("figure_live", builtin_figure_live);
         r.register("plot_update", builtin_plot_update);
@@ -805,6 +810,97 @@ fn builtin_meshgrid(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Matrix(x_mat),
         Value::Matrix(y_mat),
     ]))
+}
+
+// ─── Geometry / shape rasterization masks ────────────────────────────────────
+
+fn mask_xy<'a>(
+    name: &str,
+    args: &'a [Value],
+) -> Result<(&'a CMatrix, &'a CMatrix), ScriptError> {
+    let x = match &args[0] {
+        Value::Matrix(m) => m,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: X must be a matrix, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let y = match &args[1] {
+        Value::Matrix(m) => m,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: Y must be a matrix, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    Ok((x, y))
+}
+
+/// `rect_mask(X, Y, x0, y0, w, h)` — axis-aligned rectangle mask, inclusive
+/// on all four sides. Returns a real-valued matrix the same shape as X/Y
+/// with `1.0` inside the rectangle and `0.0` outside.
+fn builtin_rect_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("rect_mask", &args, 6)?;
+    let (x, y) = mask_xy("rect_mask", &args)?;
+    let x0 = args[2]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("rect_mask: x0: {e}")))?;
+    let y0 = args[3]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("rect_mask: y0: {e}")))?;
+    let w = args[4]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("rect_mask: w: {e}")))?;
+    let h = args[5]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("rect_mask: h: {e}")))?;
+    let m = rustlab_dsp::rect_mask(x, y, x0, y0, w, h)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::Matrix(m))
+}
+
+/// `disk_mask(X, Y, xc, yc, r)` — closed-disk mask. Returns a real-valued
+/// matrix the same shape as X/Y with `1.0` inside the disk and `0.0` outside.
+fn builtin_disk_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("disk_mask", &args, 5)?;
+    let (x, y) = mask_xy("disk_mask", &args)?;
+    let xc = args[2]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("disk_mask: xc: {e}")))?;
+    let yc = args[3]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("disk_mask: yc: {e}")))?;
+    let r = args[4]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("disk_mask: r: {e}")))?;
+    let m = rustlab_dsp::disk_mask(x, y, xc, yc, r)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::Matrix(m))
+}
+
+/// `polygon_mask(X, Y, verts)` — polygon mask via even-odd ray casting.
+/// `verts` is an N×2 matrix where each row is `[x, y]`. Returns a
+/// real-valued matrix the same shape as X/Y with `1.0` inside the polygon
+/// and `0.0` outside. Polygons with fewer than 3 vertices, or with all
+/// vertices collinear, return an all-zero mask.
+fn builtin_polygon_mask(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("polygon_mask", &args, 3)?;
+    let (x, y) = mask_xy("polygon_mask", &args)?;
+    let verts = match &args[2] {
+        Value::Matrix(m) => m,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "polygon_mask: verts must be an N×2 matrix, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let m = rustlab_dsp::polygon_mask(x, y, verts)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::Matrix(m))
 }
 
 // ─── Vector calculus on uniform 2-D grids ────────────────────────────────────

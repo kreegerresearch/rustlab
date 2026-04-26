@@ -1087,3 +1087,64 @@ print(err)       # → very small (< 1e-10)
 rustlab run examples/laplacian.r
 open /tmp/rustlab_laplacian_solution.html
 ```
+
+---
+
+## `examples/masks.r`
+
+Shape rasterization on a meshgrid: `rect_mask`, `disk_mask`, `polygon_mask`, plus boolean composition for building material-map-style geometry.
+
+```rustlab
+N = 200;
+[X, Y] = meshgrid(linspace(-1.5, 1.5, N), linspace(-1.5, 1.5, N));
+
+# Three primitives
+R = rect_mask(X, Y, -0.8, -0.4, 1.2, 0.8);          # axis-aligned rectangle
+D = disk_mask(X, Y, 0.0, 0.0, 0.9);                  # closed disk, radius 0.9
+T = polygon_mask(X, Y, [-1.0,-1.0; 1.0,-1.0; 0.0,1.0]);   # right triangle
+
+# Boolean composition on 0/1 masks
+both   = R .* D;                 # intersection
+r_only = R .* (1 - D);           # set difference R \ D
+d_only = D .* (1 - R);           # set difference D \ R
+union  = R + D - R .* D;         # inclusion-exclusion (avoids double-counting)
+
+# A four-region "device" geometry built by stacking masks with material IDs.
+# Each layer overwrites earlier layers via the (1 - mask) gating idiom.
+substrate = rect_mask(X, Y, -1.2, -0.6, 2.4, 1.2);
+via       = disk_mask(X, Y, -0.4, 0.0, 0.25);
+contact   = polygon_mask(X, Y, [0.2,-0.3; 0.9,-0.3; 0.9,0.3; 0.2,0.3]);
+trace     = rect_mask(X, Y, 0.2, -0.05, 0.7, 0.1);
+
+device =        1 * substrate;
+device = device .* (1 - via)     + 2 * via;
+device = device .* (1 - contact) + 3 * contact;
+device = device .* (1 - trace)   + 4 * trace;
+
+imagesc(device);
+savefig("/tmp/rustlab_mask_device.html");
+
+# Numerical sanity: a unit disk integrates to π·r² = π.
+unit_disk = disk_mask(X, Y, 0.0, 0.0, 1.0);
+step = 3.0 / (N - 1);
+print(sum(sum(unit_disk)) * step * step)    # → 3.135 (0.2% off π)
+```
+
+### What's going on
+
+1. **All three masks return real-valued matrices the same shape as `X` and `Y`** — `1.0` inside the shape, `0.0` outside. Output is binary, not anti-aliased; users compose area-weighting on top if they need it.
+
+2. **Boolean operators on 0/1 masks are just element-wise math.** Intersection is `M1 .* M2`; complement is `1 - M`; union via inclusion-exclusion is `M1 + M2 - M1 .* M2` (matrix `max` is for scalar arguments only). The set-difference and material-stacking idioms `M1 .* (1 - M2)` and `device .* (1 - layer) + id * layer` are the standard way to build layered material maps.
+
+3. **`polygon_mask` uses even-odd ray casting (PNPOLY).** `verts` is `N × 2` with each row `[x, y]`. The polygon is implicitly closed — an edge runs from vertex `N-1` back to vertex `0`. Degenerate inputs (fewer than 3 vertices, or all vertices collinear) return an all-zero mask without panicking. Behaviour at points exactly on a polygon edge is implementation-defined.
+
+4. **`rect_mask` is inclusive on all four sides** — `M(i,j) = 1.0` iff `x0 ≤ X(i,j) ≤ x0+w` and `y0 ≤ Y(i,j) ≤ y0+h`. A zero-extent rectangle (`w = 0` or `h = 0`) matches only the line / point on its boundary.
+
+5. **`disk_mask` is closed** — boundary cells are included. `r = 0` matches the cells closest to the centre. The π integration overshoots slightly because the closed inequality picks up boundary cells that a half-open mask would omit.
+
+### Running
+
+```sh
+rustlab run examples/masks.r
+open /tmp/rustlab_mask_device.html
+```

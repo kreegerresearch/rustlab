@@ -179,6 +179,29 @@ Create 2D grid matrices from two vectors. Returns a tuple `[X, Y]` where X repli
 ```
 - Useful for evaluating functions over a 2D grid: `R = sqrt(X .^ 2 + Y .^ 2)`.
 
+### `rect_mask(X, Y, x0, y0, w, h)`
+Axis-aligned rectangle mask. Returns an `ny×nx` real-valued matrix the same shape as the meshgrid inputs, with `1.0` inside `[x0, x0+w] × [y0, y0+h]` (inclusive on all four sides) and `0.0` outside. `w` and `h` must be finite and non-negative; zero-extent rectangles match only the boundary line / point.
+```
+[X, Y] = meshgrid(linspace(0, 1, 21), linspace(0, 1, 21))
+M = rect_mask(X, Y, 0.25, 0.25, 0.5, 0.5)
+```
+
+### `disk_mask(X, Y, xc, yc, r)`
+Closed-disk mask. Returns an `ny×nx` real-valued matrix with `1.0` where `(X-xc)² + (Y-yc)² ≤ r²` and `0.0` elsewhere. `r` must be finite and non-negative; `r = 0` matches only the cells closest to the centre.
+```
+[X, Y] = meshgrid(linspace(-1.5, 1.5, 200), linspace(-1.5, 1.5, 200))
+D = disk_mask(X, Y, 0, 0, 1)
+# sum(sum(D)) * (3/199)^2  ≈  π
+```
+
+### `polygon_mask(X, Y, verts)`
+Polygon mask via even-odd ray casting (PNPOLY). `verts` is an `N×2` matrix where each row is `[x, y]`; the polygon is implicitly closed (an edge connects vertex `N-1` back to vertex `0`). Returns an `ny×nx` real-valued matrix with `1.0` inside and `0.0` outside.
+```
+[X, Y] = meshgrid(linspace(0, 1, 50), linspace(0, 1, 50))
+T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
+```
+Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
+
 ### `gradient(F)` / `gradient(F, dx, dy)`
 2-D gradient of a scalar field on a uniform grid. `F` is an `ny×nx` matrix where rows index `y` and columns index `x`. Returns a tuple `[Fx, Fy]` of the same shape.
 ```

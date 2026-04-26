@@ -396,6 +396,13 @@ const HELP: &[HelpEntry] = &[
         detail: "logspace(a, b, n)  — n points from 10^a to 10^b (inclusive)\n  Equivalent to 10 .^ linspace(a, b, n)\n  logspace(0, 3, 4)  →  [1, 10, 100, 1000]" },
     HelpEntry { name: "meshgrid", brief: "Create 2-D coordinate matrices from two vectors",
         detail: "[X, Y] = meshgrid(x, y)\n  x — length-m vector (column values)\n  y — length-n vector (row values)\n  Returns Tuple [X, Y] where X and Y are n×m matrices.\n  X[i,j] = x[j]  (x repeats across rows)\n  Y[i,j] = y[i]  (y repeats across columns)\n\nExample:\n  [X, Y] = meshgrid(1:3, 1:2)\n  X  →  [1,2,3; 1,2,3]\n  Y  →  [1,1,1; 2,2,2]" },
+    // Geometry / shape rasterization masks
+    HelpEntry { name: "rect_mask", brief: "Axis-aligned rectangle mask on a meshgrid",
+        detail: "M = rect_mask(X, Y, x0, y0, w, h)\n  X, Y — meshgrid coordinate matrices (same shape).\n  x0, y0 — rectangle origin (lower-left corner).\n  w, h   — width and height (must be finite, non-negative).\n  Returns ny×nx matrix with 1.0 inside [x0, x0+w] × [y0, y0+h] (inclusive)\n  and 0.0 outside.\n\nCompose with element-wise math:\n  M1 .* M2     intersection\n  1 - M        complement\n  max(M1, M2)  union\n\nExample:\n  [X, Y] = meshgrid(linspace(0,1,21), linspace(0,1,21))\n  M = rect_mask(X, Y, 0.25, 0.25, 0.5, 0.5)" },
+    HelpEntry { name: "disk_mask", brief: "Closed-disk mask on a meshgrid",
+        detail: "M = disk_mask(X, Y, xc, yc, r)\n  X, Y — meshgrid coordinate matrices (same shape).\n  xc, yc — disk centre.\n  r      — radius (finite, non-negative; r=0 matches the centre cell only).\n  Returns ny×nx matrix with 1.0 where (X-xc)^2 + (Y-yc)^2 ≤ r^2 and 0.0 elsewhere.\n\nExample:\n  [X, Y] = meshgrid(linspace(-1.5,1.5,200), linspace(-1.5,1.5,200))\n  D = disk_mask(X, Y, 0, 0, 1)\n  area = sum(sum(D)) * (3/199)^2   # ≈ π" },
+    HelpEntry { name: "polygon_mask", brief: "Polygon mask via even-odd ray casting",
+        detail: "M = polygon_mask(X, Y, verts)\n  X, Y — meshgrid coordinate matrices (same shape).\n  verts — N×2 matrix; each row is [x, y]. Polygon is implicitly closed.\n  Returns ny×nx matrix with 1.0 inside the polygon and 0.0 outside.\n\nDegenerate inputs (fewer than 3 vertices, or all vertices collinear) return an\nall-zero mask. Behaviour at points exactly on a polygon edge is implementation-\ndefined.\n\nExample:\n  [X, Y] = meshgrid(linspace(0,1,50), linspace(0,1,50))\n  T = polygon_mask(X, Y, [0 0; 1 0; 0.5 1])   # right triangle" },
     // Vector calculus
     HelpEntry { name: "gradient", brief: "Gradient of a scalar field on a uniform 2-D grid",
         detail: "[Fx, Fy] = gradient(F)\n[Fx, Fy] = gradient(F, dx, dy)\n  F   — ny×nx scalar field (real or complex). Rows index y, columns index x.\n  dx, dy — grid spacing (default 1.0). Both must be > 0.\n  Returns Tuple [Fx, Fy] same shape as F.\n  Stencils: 2nd-order central interior, 2nd-order one-sided at boundaries.\n  Each axis must have length ≥ 3.\n\nExample:\n  [X, Y] = meshgrid(linspace(-1,1,21), linspace(-1,1,21))\n  F = X.^2 + Y.^2\n  [Fx, Fy] = gradient(F, 0.1, 0.1)" },
@@ -867,6 +874,10 @@ fn print_help_list() {
                 "divergence3",
                 "curl3",
             ],
+        ),
+        (
+            "Geometry / Masks",
+            &["rect_mask", "disk_mask", "polygon_mask"],
         ),
         (
             "DSP",

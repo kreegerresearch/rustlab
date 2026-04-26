@@ -25,7 +25,7 @@ x = randn(n_samples);
 signal_power = sum(x .* x) / length(x);
 ```
 
-The signal has 1024 samples with mean power 1.0720.
+The signal has 1024 samples with mean power 1.0097.
 The Nyquist frequency is 8000 Hz.
 
 ## Format Specifiers

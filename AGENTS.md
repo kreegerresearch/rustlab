@@ -559,6 +559,7 @@ rustlab run examples/lowpass.r   # must exit 0 with a plot
 - `src/iir/butterworth.rs` — `IirFilter { b: Vec<f64>, a: Vec<f64> }` + `butterworth_lowpass`, `butterworth_highpass` (bilinear transform, cascade of biquad sections). `IirFilter` implements `Filter`.
 - `src/convolution.rs` — `convolve(x, h)` (direct O(nm)), `overlap_add(x, h, block_size)` (FFT-based)
 - `src/vector_calc.rs` — 2-D: `gradient_2d(F, dx, dy)`, `divergence_2d(Fx, Fy, dx, dy)`, `curl_2d(Fx, Fy, dx, dy)`. 3-D: `gradient_3d(F, dx, dy, dz)`, `divergence_3d(Fx, Fy, Fz, dx, dy, dz)`, `curl_3d(Fx, Fy, Fz, dx, dy, dz)`. 2nd-order central interior + 2nd-order one-sided boundaries. 2-D operates on `CMatrix` (rows index y, cols index x); 3-D on `CTensor3` (axis 0 = y, axis 1 = x, axis 2 = z). Complex inputs throughout.
+- `src/rasterize.rs` — Shape rasterization masks: `rect_mask(X, Y, x0, y0, w, h)`, `disk_mask(X, Y, xc, yc, r)`, `polygon_mask(X, Y, verts)` (even-odd ray casting / PNPOLY). All take meshgrid `X` / `Y` matrices and return a `CMatrix` of `0.0` / `1.0` the same shape. Compose with element-wise math.
 - `src/error.rs` — `DspError` (wraps `CoreError`)
 
 ---
@@ -920,6 +921,9 @@ primary     = NUMBER | STRING | IDENT
 | `gradient3` | `[Fx, Fy, Fz] = gradient3(F)` / `gradient3(F, dx, dy, dz)` | 3-D gradient on a uniform grid. F is a Tensor3; axis 0 = y, axis 1 = x, axis 2 = z. Returns three Tensor3s. Same stencils and shape requirements as `gradient`. |
 | `divergence3` | `divergence3(Fx, Fy, Fz)` / `divergence3(Fx, Fy, Fz, dx, dy, dz)` | 3-D divergence ∂Fx/∂x + ∂Fy/∂y + ∂Fz/∂z; all three components must share shape. Returns a Tensor3. |
 | `curl3` | `[Cx, Cy, Cz] = curl3(Fx, Fy, Fz)` / `curl3(Fx, Fy, Fz, dx, dy, dz)` | 3-D curl ∇×F. Returns three Tensor3s: Cx = ∂Fz/∂y − ∂Fy/∂z, Cy = ∂Fx/∂z − ∂Fz/∂x, Cz = ∂Fy/∂x − ∂Fx/∂y. |
+| `rect_mask` | `rect_mask(X, Y, x0, y0, w, h)` | Axis-aligned rectangle mask on a meshgrid. Returns an ny×nx real-valued matrix with 1.0 inside `[x0, x0+w] × [y0, y0+h]` (inclusive on all four sides) and 0.0 outside. |
+| `disk_mask` | `disk_mask(X, Y, xc, yc, r)` | Closed-disk mask. Returns an ny×nx real-valued matrix with 1.0 where `(X-xc)² + (Y-yc)² ≤ r²` and 0.0 elsewhere. |
+| `polygon_mask` | `polygon_mask(X, Y, verts)` | Polygon mask via even-odd ray casting. `verts` is N×2 (each row `[x, y]`); polygon is implicitly closed. Degenerate inputs (<3 vertices or all-collinear) return all-zero. |
 
 Window names: `"hann"`, `"hamming"`, `"blackman"`, `"rectangular"`, `"kaiser"`
 

@@ -8890,3 +8890,107 @@ mod seed_tests {
         );
     }
 }
+
+// ── Geometry / shape rasterization masks ─────────────────────────────────────
+#[cfg(test)]
+mod mask_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn matrix_count(ev: &Evaluator, name: &str) -> usize {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m.iter().filter(|c| c.re > 0.5).count(),
+            other => panic!("expected matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    fn matrix_shape(ev: &Evaluator, name: &str) -> (usize, usize) {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (m.nrows(), m.ncols()),
+            other => panic!("expected matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rect_mask_unit_square_inclusive() {
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(0, 1, 11), linspace(0, 1, 11));
+             M = rect_mask(X, Y, 0, 0, 1, 1);",
+        );
+        assert_eq!(matrix_shape(&ev, "M"), (11, 11));
+        assert_eq!(matrix_count(&ev, "M"), 11 * 11);
+    }
+
+    #[test]
+    fn disk_mask_pi_approximation() {
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(-1.5, 1.5, 200), linspace(-1.5, 1.5, 200));
+             D = disk_mask(X, Y, 0, 0, 1);
+             step = 3.0 / 199.0;
+             area = sum(sum(D)) * step * step;",
+        );
+        let area = match ev.get("area").unwrap() {
+            Value::Scalar(v) => *v,
+            Value::Matrix(m) if m.nrows() == 1 && m.ncols() == 1 => m[[0, 0]].re,
+            other => panic!("expected scalar area, got {other:?}"),
+        };
+        assert!(
+            (area - std::f64::consts::PI).abs() < 0.05,
+            "expected ~π, got {area}"
+        );
+    }
+
+    #[test]
+    fn polygon_mask_matches_rect_mask_for_square() {
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(-0.25, 1.25, 60), linspace(-0.25, 1.25, 60));
+             P = polygon_mask(X, Y, [0,0; 1,0; 1,1; 0,1]);
+             R = rect_mask(X, Y, 0, 0, 1, 1);
+             diff = sum(sum(abs(P - R)));",
+        );
+        let diff = match ev.get("diff").unwrap() {
+            Value::Scalar(v) => *v,
+            Value::Matrix(m) if m.nrows() == 1 && m.ncols() == 1 => m[[0, 0]].re,
+            other => panic!("expected scalar diff, got {other:?}"),
+        };
+        // Allow at most a one-cell-thick boundary disagreement; the off-grid
+        // sampling here is chosen so most cells fall clearly inside or outside.
+        assert!(diff < 1.0, "polygon vs rect disagreement {diff}");
+    }
+
+    #[test]
+    fn polygon_mask_triangle() {
+        let ev = run(
+            "[X, Y] = meshgrid(linspace(0, 1, 21), linspace(0, 1, 21));
+             T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1]);",
+        );
+        // Triangle area = 0.5 → expect ~50% of grid cells inside.
+        let count = matrix_count(&ev, "T");
+        assert!(
+            (180..=260).contains(&count),
+            "expected ~half of 441 cells inside triangle, got {count}"
+        );
+    }
+
+    #[test]
+    fn rect_mask_arity_error() {
+        let mut ev = Evaluator::new();
+        let src = "[X, Y] = meshgrid(linspace(0,1,3), linspace(0,1,3))\nM = rect_mask(X, Y, 0, 0, 1)\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let err = ev.run(&stmts).unwrap_err();
+        assert!(
+            err.to_string().contains("rect_mask"),
+            "expected rect_mask arity error, got: {err}"
+        );
+    }
+}
