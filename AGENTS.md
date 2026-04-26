@@ -390,9 +390,12 @@ broken templating / KaTeX / figure-snapshot change does not slip out:
 ./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.html
 ./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.pdf --format pdf
 ./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.md --format markdown
+./target/release/rustlab-notebook render examples/notebooks/quick_look.md -o /tmp/nb.md --format markdown --obsidian
 ```
 
-Open the artifacts and confirm code blocks, math, and plots render.
+Open the artifacts and confirm code blocks, math, and plots render. The
+`--obsidian` variant should additionally append an `<iframe>` to the
+sibling `.html` at the bottom of the `.md`.
 
 **Notebook source layout.** Sources live at `examples/notebooks/*.md`.
 Generated files never mix with sources — `make notebooks` writes

@@ -12,6 +12,7 @@ rustlab notebook render analysis.md -t light     # → analysis.html (light them
 rustlab notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
 rustlab notebook render analysis.md -f markdown  # → analysis.md + analysis_plots/*.svg
+rustlab notebook render analysis.md -f markdown --obsidian  # markdown + iframe to sibling .html (Obsidian)
 rustlab notebook render analysis.md -o out.html  # explicit output path
 ```
 
@@ -21,6 +22,34 @@ captured figure is written as SVG to `<stem>_plots/plot-N.svg` and
 referenced inline. See
 [`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
 source/rendered split design pattern.
+
+### Obsidian integration (`--obsidian`)
+
+Adding `--obsidian` to a `--format markdown` render appends a single HTML
+`<iframe>` at the end of the `.md`, pointing at the sibling
+`<stem>.html`. The intent is that you render both formats into the same
+directory (as `make notebooks` already does), then point an Obsidian
+vault at it: Obsidian renders the markdown + inline SVGs as usual, and
+the trailing iframe gives you the interactive Plotly view inline.
+
+```
+rustlab notebook render notebooks/ -f html        # → <name>.html for each
+rustlab notebook render notebooks/ -f markdown --obsidian  # → <name>.md with trailing iframe
+```
+
+The iframe is plain raw HTML embedded in markdown:
+
+```html
+<iframe src="<stem>.html" width="100%" height="600" style="border: 0;"></iframe>
+```
+
+GitHub strips iframes during sanitization, so the *same* `--obsidian`
+output is also safe to commit and view on GitHub — the iframe simply
+disappears, leaving the static SVG plots inline. There is no separate
+"obsidian" output format; the flag is a small augmentation of the
+existing `markdown` format, kept under a single name so future
+Obsidian-targeted features (callout dialect, wikilinks, frontmatter)
+can flow through the same flag.
 
 The standalone `rustlab-notebook` binary accepts the same arguments:
 

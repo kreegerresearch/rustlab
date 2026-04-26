@@ -260,7 +260,14 @@ pub enum Format {
     Html,
     Latex,
     Pdf,
-    Markdown,
+    /// GitHub-friendly markdown with inline SVG plots.
+    ///
+    /// `obsidian: true` additionally appends an `<iframe>` pointing at the
+    /// sibling `<stem>.html` file so Obsidian (and any tool that respects
+    /// raw HTML in markdown) can show the interactive Plotly view inline.
+    /// GitHub strips iframes during sanitization, so the same `.md` is
+    /// safe to commit either way.
+    Markdown { obsidian: bool },
 }
 
 impl Format {
@@ -269,7 +276,7 @@ impl Format {
             Format::Html => "html",
             Format::Latex => "tex",
             Format::Pdf => "pdf",
-            Format::Markdown => "md",
+            Format::Markdown { .. } => "md",
         }
     }
 }
@@ -287,14 +294,25 @@ fn render_output(
             let html = render::render_html(title, rendered, theme, nav);
             write_output(out_path, html.as_bytes());
         }
-        Format::Markdown => {
+        Format::Markdown { obsidian } => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            let iframe_href = if *obsidian {
+                let stem = out_path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                Some(format!("{stem}.html"))
+            } else {
+                None
+            };
             let md = render_markdown::render_markdown(
                 title,
                 rendered,
                 &plot_dir,
                 &href_prefix,
                 theme,
+                iframe_href.as_deref(),
             );
             write_output(out_path, md.as_bytes());
         }

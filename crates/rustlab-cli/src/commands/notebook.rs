@@ -30,11 +30,16 @@ pub enum NotebookCommands {
             rustlab notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
             rustlab notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
+            rustlab notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n  \
+            rustlab notebook render notebooks/ -f markdown --obsidian  # Obsidian-friendly .md with iframe to sibling .html\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
-            -t, --theme  <THEME>   dark (default), light\n\n\
+            -t, --theme  <THEME>   dark (default), light\n  \
+                --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
+                                   sibling .html so Obsidian renders the interactive\n                                   \
+                                   Plotly view inline. GitHub strips iframes, so the\n                                   \
+                                   same .md remains safe to commit.\n\n\
             Formats:\n  \
             html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
@@ -65,6 +70,10 @@ pub struct RenderArgs {
     /// index.md H1 > parent directory name.
     #[arg(long)]
     title: Option<String>,
+    /// Obsidian-friendly markdown: append an iframe to the sibling .html.
+    /// Only meaningful with --format markdown; ignored otherwise.
+    #[arg(long)]
+    obsidian: bool,
 }
 
 pub fn execute(cmd: NotebookCommands) -> Result<()> {
@@ -75,11 +84,16 @@ pub fn execute(cmd: NotebookCommands) -> Result<()> {
                 CliTheme::Light => Theme::Light,
             };
             let colors = theme.colors();
+            if args.obsidian && !matches!(args.format, CliFormat::Markdown) {
+                eprintln!("warning: --obsidian only applies to --format markdown; ignored");
+            }
             let format = match args.format {
                 CliFormat::Html => rustlab_notebook::Format::Html,
                 CliFormat::Latex => rustlab_notebook::Format::Latex,
                 CliFormat::Pdf => rustlab_notebook::Format::Pdf,
-                CliFormat::Markdown => rustlab_notebook::Format::Markdown,
+                CliFormat::Markdown => rustlab_notebook::Format::Markdown {
+                    obsidian: args.obsidian,
+                },
             };
             if args.input.is_dir() {
                 rustlab_notebook::cmd_render_dir(

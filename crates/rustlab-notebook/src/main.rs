@@ -23,12 +23,18 @@ use std::path::PathBuf;
         rustlab-notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
-        -f, --format <FMT>     html (default), latex, pdf\n  \
-        -t, --theme  <THEME>   dark (default), light\n\n\
+        -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
+        -t, --theme  <THEME>   dark (default), light\n      \
+            --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
+                               sibling .html so Obsidian renders the interactive\n                                   \
+                               Plotly view inline. GitHub strips iframes, so the\n                                   \
+                               same .md remains safe to commit.\n\n\
         Formats:\n  \
-        html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
-        latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-        pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
+        html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
+        latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
+        pdf       Compile LaTeX to PDF (requires pdflatex or tectonic)\n  \
+        markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
+                  committing alongside source, browsable on GitHub\n\n\
         Themes:\n  \
         dark   Catppuccin Mocha — dark background, light text (default)\n  \
         light  Catppuccin Latte — light background, dark text"
@@ -43,6 +49,7 @@ enum CliFormat {
     Html,
     Latex,
     Pdf,
+    Markdown,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -83,7 +90,7 @@ enum Command {
         /// Output file or directory (default: <input_stem>.<ext> or same directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Output format: html (default), latex, pdf
+        /// Output format: html (default), latex, pdf, markdown
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
         /// Color theme: dark (default), light
@@ -93,6 +100,10 @@ enum Command {
         /// --title > index.md H1 > parent directory name.
         #[arg(long)]
         title: Option<String>,
+        /// Obsidian-friendly markdown: append an iframe to the sibling .html.
+        /// Only meaningful with --format markdown; ignored otherwise.
+        #[arg(long)]
+        obsidian: bool,
     },
 }
 
@@ -105,16 +116,21 @@ fn main() {
             format,
             theme,
             title,
+            obsidian,
         } => {
             let theme = match theme {
                 CliTheme::Dark => Theme::Dark,
                 CliTheme::Light => Theme::Light,
             };
             let colors = theme.colors();
+            if obsidian && !matches!(format, CliFormat::Markdown) {
+                eprintln!("warning: --obsidian only applies to --format markdown; ignored");
+            }
             let format = match format {
                 CliFormat::Html => rustlab_notebook::Format::Html,
                 CliFormat::Latex => rustlab_notebook::Format::Latex,
                 CliFormat::Pdf => rustlab_notebook::Format::Pdf,
+                CliFormat::Markdown => rustlab_notebook::Format::Markdown { obsidian },
             };
             if input.is_dir() {
                 rustlab_notebook::cmd_render_dir(input, output, format, colors, title);
