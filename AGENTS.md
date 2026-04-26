@@ -615,6 +615,7 @@ rustlab run examples/lowpass.r   # must exit 0 with a plot
 - `src/convolution.rs` — `convolve(x, h)` (direct O(nm)), `overlap_add(x, h, block_size)` (FFT-based)
 - `src/vector_calc.rs` — 2-D: `gradient_2d(F, dx, dy)`, `divergence_2d(Fx, Fy, dx, dy)`, `curl_2d(Fx, Fy, dx, dy)`. 3-D: `gradient_3d(F, dx, dy, dz)`, `divergence_3d(Fx, Fy, Fz, dx, dy, dz)`, `curl_3d(Fx, Fy, Fz, dx, dy, dz)`. 2nd-order central interior + 2nd-order one-sided boundaries. 2-D operates on `CMatrix` (rows index y, cols index x); 3-D on `CTensor3` (axis 0 = y, axis 1 = x, axis 2 = z). Complex inputs throughout.
 - `src/rasterize.rs` — Shape rasterization masks: `rect_mask(X, Y, x0, y0, w, h)`, `disk_mask(X, Y, xc, yc, r)`, `polygon_mask(X, Y, verts)` (even-odd ray casting / PNPOLY). All take meshgrid `X` / `Y` matrices and return a `CMatrix` of `0.0` / `1.0` the same shape. Compose with element-wise math.
+- `src/laplacian.rs` — Sparse Laplacian builders: `laplacian_1d(n, dx, bc)`, `laplacian_2d_bc(nx, ny, dx, dy, bc)`, `laplacian_3d(nx, ny, nz, dx, dy, dz, bc)`, `laplacian_eps_2d(eps_map, dx, dy, bc)`. The `BoundaryCondition` enum (`Dirichlet | Neumann | Periodic`) is shared across all four; the parser at the builtin layer accepts the `"dirichlet"|"neumann"|"periodic"` string form. The `eps` variant uses harmonic-mean half-cell coefficients for flux conservation across material interfaces.
 - `src/error.rs` — `DspError` (wraps `CoreError`)
 
 ---
@@ -956,9 +957,14 @@ primary     = NUMBER | STRING | IDENT
 | `spsolve` | `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto detects SPD (Hermitian + real-positive diagonal); SPD routes to hand-rolled sparse Cholesky, otherwise to hand-rolled sparse LU with partial pivoting. Both paths use AMD ordering by default. Real-vs-complex auto-detection at the entries level. Dense Value::Matrix input still uses the legacy dense Gaussian elimination. |
 | `spdiags` | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals; D=0 main, >0 super, <0 sub |
 | `sprand` | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
-| `laplacian_2d` | `laplacian_2d(nx, ny [, dx, dy])` | Sparse 5-point Laplacian stencil with homogeneous-Dirichlet BC. Approximates `+∇²` (Poisson solves as `V = spsolve(L, -rho/eps0)`). Node ordering is **column-major** — `V(i, j) → (j-1)*ny + i` — so `reshape(V_flat, ny, nx)` and `V_grid(:)'` compose without transposes. Interior-only: boundary rows have reduced stencils with the same diagonal. |
+| `laplacian_1d` | `laplacian_1d(n [, dx] [, bc])` | Sparse tridiagonal Laplacian on a 1-D grid. `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"`. |
+| `laplacian_2d` | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | Sparse 5-point Laplacian. Approximates `+∇²`. Column-major ordering `V(i, j) → (j-1)*ny + i`. `bc` string selects Dirichlet (default), Neumann (zero-flux; constants in null space), or Periodic (wrap; constants in null space). |
+| `laplacian_3d` | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | Sparse 7-point Laplacian on the `Tensor3` grid (axis 0 = y, axis 1 = x, axis 2 = z). Flat index `k = ((kk-1)*nx + (j-1))*ny + i`. Same `bc` semantics. |
+| `laplacian_eps_2d` | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` via flux-conservative discretization with harmonic-mean half-cell coefficients. `eps_map` is `(ny, nx)` real or complex. Setting `eps_map ≡ 1` reduces to `laplacian_2d`. For magnetostatics pass `1./mu_map`. |
 | `ij2k` | `ij2k(i, j, ny)` | Column-major grid → flat index. Third arg is **ny** (row count), not nx. |
 | `k2ij` | `[i, j] = k2ij(k, ny)` | Inverse of `ij2k`. Third arg same caveat. |
+| `ijk2k` | `ijk2k(i, j, kk, ny, nx)` | 3-D version of `ij2k`. Last two args are `ny`, `nx` (Tensor3 convention). |
+| `k2ijk` | `[i, j, kk] = k2ijk(k, ny, nx)` | Inverse of `ijk2k`. |
 | `sprintf` | `sprintf(fmt, args...)` | Like `fprintf` but returns the formatted string |
 | `commas` | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns Str |
 | `error` | `error(msg)` | Halt script execution with a runtime error message |

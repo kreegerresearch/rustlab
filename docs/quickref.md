@@ -101,6 +101,7 @@ Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
 | `rand(n)` | n floats uniform [0, 1) |
 | `randn(n)` / `randn(m, n)` | n floats (or m×n matrix) from N(0,1) |
 | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Random integers |
+| `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
 | `len(v)` / `length(v)` | Number of elements |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
@@ -322,9 +323,14 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals (D=0 main, >0 super, <0 sub) |
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto routes SPD inputs through hand-rolled sparse Cholesky and others through hand-rolled sparse LU with partial pivoting. AMD-ordered. |
-| `laplacian_2d(nx, ny [, dx, dy])` | 5-point sparse Laplacian with Dirichlet BC; column-major ordering `k = (j-1)*ny + i` |
+| `laplacian_1d(n [, dx] [, bc])` | Tridiagonal sparse Laplacian; `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"` |
+| `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |
+| `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
+| `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
+| `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
+| `k2ijk(k, ny, nx)` | `[i, j, kk] = k2ijk(k, ny, nx)` — inverse of `ijk2k` |
 | `full(S)` | Convert sparse to dense (identity for dense inputs) |
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |

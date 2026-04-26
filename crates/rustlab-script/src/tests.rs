@@ -6523,6 +6523,118 @@ mod sparse_tests {
         let result = std::panic::catch_unwind(|| eval_str("L = laplacian_2d(3, 3, 0, 1)"));
         assert!(result.is_err());
     }
+
+    // ── Laplacian BC extensions, 1-D and 3-D, eps variant ─────────────
+
+    #[test]
+    fn laplacian_2d_neumann_corner_diag() {
+        // 3x3 Neumann: corner k=0 has diagonal -2 (was -4 for Dirichlet).
+        let ev = eval_str(
+            "L = laplacian_2d(3, 3, \"neumann\")\n\
+             d = full(L)(1, 1)",
+        );
+        assert!((get_scalar(&ev, "d") - (-2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_2d_periodic_constants_in_null_space() {
+        let ev = eval_str(
+            "L = laplacian_2d(4, 4, \"periodic\")\n\
+             ones16 = ones(16, 1)\n\
+             r = full(L) * ones16\n\
+             err = norm(r)",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_2d_unknown_bc_errors() {
+        let result = std::panic::catch_unwind(|| eval_str("L = laplacian_2d(3, 3, \"banana\")"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn laplacian_1d_default_dirichlet() {
+        // Diagonal -2/dx^2 = -2 with default dx=1.
+        let ev = eval_str(
+            "L = laplacian_1d(5)\n\
+             d = full(L)(3, 3)",
+        );
+        assert!((get_scalar(&ev, "d") - (-2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_1d_with_spacing_and_bc() {
+        // dx = 0.5 → diag = -2 / 0.25 = -8 for interior; Neumann boundary -4.
+        let ev = eval_str(
+            "L = laplacian_1d(5, 0.5, \"neumann\")\n\
+             d_interior = full(L)(3, 3)\n\
+             d_boundary = full(L)(1, 1)",
+        );
+        assert!((get_scalar(&ev, "d_interior") - (-8.0)).abs() < 1e-12);
+        assert!((get_scalar(&ev, "d_boundary") - (-4.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_3d_dimensions() {
+        let ev = eval_str(
+            "L = laplacian_3d(3, 3, 3)\n\
+             s = size(L)\n\
+             r = s(1)\n\
+             c = s(2)",
+        );
+        assert_eq!(get_scalar(&ev, "r"), 27.0);
+        assert_eq!(get_scalar(&ev, "c"), 27.0);
+    }
+
+    #[test]
+    fn laplacian_3d_neumann_corner() {
+        // 3x3x3 corner cell with Neumann: diag -3 (was -6 for Dirichlet).
+        let ev = eval_str(
+            "L = laplacian_3d(3, 3, 3, \"neumann\")\n\
+             d = full(L)(1, 1)",
+        );
+        assert!((get_scalar(&ev, "d") - (-3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_eps_2d_unit_eps_matches_lap_2d() {
+        // eps_map ≡ 1 should reproduce laplacian_2d for the Dirichlet case.
+        let ev = eval_str(
+            "eps = ones(3, 3)\n\
+             Le = full(laplacian_eps_2d(eps))\n\
+             L = full(laplacian_2d(3, 3))\n\
+             diff = norm(Le - L)",
+        );
+        assert!(get_scalar(&ev, "diff") < 1e-12);
+    }
+
+    #[test]
+    fn laplacian_eps_2d_neumann_constant_in_null_space() {
+        // For ANY eps_map under Neumann, constants are in the null space.
+        let ev = eval_str(
+            "eps = [1, 2, 1; 2, 4, 2; 1, 2, 1]\n\
+             Le = laplacian_eps_2d(eps, 1, 1, \"neumann\")\n\
+             ones9 = ones(9, 1)\n\
+             r = full(Le) * ones9\n\
+             err = norm(r)",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-12);
+    }
+
+    #[test]
+    fn ijk2k_and_k2ijk_roundtrip() {
+        // For (i, j, kk) = (2, 3, 4) on ny=5, nx=6:
+        // k = ((4-1)*6 + (3-1))*5 + 2 = (18 + 2)*5 + 2 = 102
+        let ev = eval_str(
+            "k = ijk2k(2, 3, 4, 5, 6)\n\
+             [i, j, kk] = k2ijk(k, 5, 6)",
+        );
+        assert_eq!(get_scalar(&ev, "k"), 102.0);
+        assert_eq!(get_scalar(&ev, "i"), 2.0);
+        assert_eq!(get_scalar(&ev, "j"), 3.0);
+        assert_eq!(get_scalar(&ev, "kk"), 4.0);
+    }
 }
 
 // ── Tax-script language features ────────────────────────────────────────────

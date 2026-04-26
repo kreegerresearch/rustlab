@@ -4,6 +4,7 @@ pub mod fft;
 pub mod fir;
 pub mod fixed;
 pub mod iir;
+pub mod laplacian;
 pub mod rasterize;
 pub mod upfirdn;
 pub mod vector_calc;
@@ -21,6 +22,9 @@ pub use fir::kaiser::{
 pub use fir::pm::{firpm, firpmq};
 pub use fixed::{qadd, qconv, qmul, quantize_scalar, quantize_vec, snr_db, QFmtSpec};
 pub use iir::butterworth::{butterworth_highpass, butterworth_lowpass, IirFilter};
+pub use laplacian::{
+    laplacian_1d, laplacian_2d_bc, laplacian_3d, laplacian_eps_2d, BoundaryCondition,
+};
 pub use rasterize::{disk_mask, polygon_mask, rect_mask};
 pub use upfirdn::upfirdn;
 pub use vector_calc::{curl_2d, curl_3d, divergence_2d, divergence_3d, gradient_2d, gradient_3d};

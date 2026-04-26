@@ -271,8 +271,13 @@ impl BuiltinRegistry {
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
         r.register("laplacian_2d", builtin_laplacian_2d);
+        r.register("laplacian_1d", builtin_laplacian_1d);
+        r.register("laplacian_3d", builtin_laplacian_3d);
+        r.register("laplacian_eps_2d", builtin_laplacian_eps_2d);
         r.register("ij2k", builtin_ij2k);
         r.register("k2ij", builtin_k2ij);
+        r.register("ijk2k", builtin_ijk2k);
+        r.register("k2ijk", builtin_k2ijk);
 
         // Geometry / shape rasterization masks
         r.register("rect_mask", builtin_rect_mask);
@@ -8359,69 +8364,202 @@ fn builtin_spdiags(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `laplacian_2d(nx, ny [, dx, dy])` — sparse 5-point Laplacian stencil with
 /// homogeneous-Dirichlet boundary conditions. Approximates `+∇²` so Poisson
 /// `∇²V = -rho/eps0` solves as `V = spsolve(L, -rho/eps0)`.
+/// Common arg-parsing helper for the laplacian_* family. Extracts an
+/// optional trailing string argument as a `BoundaryCondition`, defaulting
+/// to Dirichlet.
+fn parse_bc_arg(name: &str, value: Option<&Value>) -> Result<rustlab_dsp::BoundaryCondition, ScriptError> {
+    match value {
+        None => Ok(rustlab_dsp::BoundaryCondition::Dirichlet),
+        Some(Value::Str(s)) => rustlab_dsp::BoundaryCondition::from_str(s.as_str())
+            .map_err(|e| ScriptError::type_err(format!("{name}: {e}"))),
+        Some(other) => Err(ScriptError::type_err(format!(
+            "{name}: bc must be a string (\"dirichlet\"|\"neumann\"|\"periodic\"), got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `laplacian_2d(nx, ny [, dx, dy] [, bc])` — sparse 5-point Laplacian on
+/// a uniform grid with the requested boundary condition.
 fn builtin_laplacian_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("laplacian_2d", &args, 2, 4)?;
+    check_args_range("laplacian_2d", &args, 2, 5)?;
     let nx = args[0]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("laplacian_2d: nx: {e}")))?;
     let ny = args[1]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("laplacian_2d: ny: {e}")))?;
-    if nx < 2 || ny < 2 {
-        return Err(ScriptError::type_err(
-            "laplacian_2d: nx and ny must each be >= 2".to_string(),
-        ));
-    }
-    let (dx, dy) = if args.len() == 2 {
-        (1.0, 1.0)
-    } else if args.len() == 4 {
-        let dx = args[2]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
-        let dy = args[3]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
-        if dx <= 0.0 || dy <= 0.0 {
-            return Err(ScriptError::type_err(
-                "laplacian_2d: dx and dy must be positive".to_string(),
-            ));
+
+    // Argument shape:
+    //   2 args: (nx, ny)
+    //   3 args: (nx, ny, bc)
+    //   4 args: (nx, ny, dx, dy)
+    //   5 args: (nx, ny, dx, dy, bc)
+    let (dx, dy, bc) = match args.len() {
+        2 => (1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
+        3 => {
+            let bc = parse_bc_arg("laplacian_2d", Some(&args[2]))?;
+            (1.0, 1.0, bc)
         }
-        (dx, dy)
-    } else {
-        return Err(ScriptError::type_err(
-            "laplacian_2d: expected laplacian_2d(nx, ny) or laplacian_2d(nx, ny, dx, dy)"
-                .to_string(),
-        ));
+        4 => {
+            let dx = args[2]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
+            let dy = args[3]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
+            (dx, dy, rustlab_dsp::BoundaryCondition::Dirichlet)
+        }
+        5 => {
+            let dx = args[2]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
+            let dy = args[3]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
+            let bc = parse_bc_arg("laplacian_2d", Some(&args[4]))?;
+            (dx, dy, bc)
+        }
+        _ => unreachable!(),
     };
 
-    let n = nx * ny;
-    let inv_dx2 = 1.0 / (dx * dx);
-    let inv_dy2 = 1.0 / (dy * dy);
-    let diag = -2.0 * (inv_dx2 + inv_dy2);
+    let l = rustlab_dsp::laplacian::laplacian_2d_bc(nx, ny, dx, dy, bc)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::SparseMatrix(l))
+}
 
-    // Column-major flat index: k = j*ny + i  (0-based i ∈ 0..ny, j ∈ 0..nx).
-    // Neighbours: ±1 steps in i; ±ny steps in j.
-    let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
-    for j in 0..nx {
-        for i in 0..ny {
-            let k = j * ny + i;
-            entries.push((k, k, Complex::new(diag, 0.0)));
-            if i > 0 {
-                entries.push((k, k - 1, Complex::new(inv_dy2, 0.0)));
+/// `laplacian_1d(n [, dx] [, bc])` — sparse tridiagonal Laplacian.
+fn builtin_laplacian_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("laplacian_1d", &args, 1, 3)?;
+    let n = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_1d: n: {e}")))?;
+    let (dx, bc) = match args.len() {
+        1 => (1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
+        2 => match &args[1] {
+            Value::Str(_) => (1.0, parse_bc_arg("laplacian_1d", Some(&args[1]))?),
+            _ => {
+                let dx = args[1]
+                    .to_scalar()
+                    .map_err(|e| ScriptError::type_err(format!("laplacian_1d: dx: {e}")))?;
+                (dx, rustlab_dsp::BoundaryCondition::Dirichlet)
             }
-            if i + 1 < ny {
-                entries.push((k, k + 1, Complex::new(inv_dy2, 0.0)));
-            }
-            if j > 0 {
-                entries.push((k, k - ny, Complex::new(inv_dx2, 0.0)));
-            }
-            if j + 1 < nx {
-                entries.push((k, k + ny, Complex::new(inv_dx2, 0.0)));
-            }
+        },
+        3 => {
+            let dx = args[1]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_1d: dx: {e}")))?;
+            let bc = parse_bc_arg("laplacian_1d", Some(&args[2]))?;
+            (dx, bc)
         }
-    }
+        _ => unreachable!(),
+    };
+    let l = rustlab_dsp::laplacian::laplacian_1d(n, dx, bc)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::SparseMatrix(l))
+}
 
-    Ok(Value::SparseMatrix(SparseMat::new(n, n, entries)))
+/// `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` — sparse 7-point Laplacian.
+fn builtin_laplacian_3d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("laplacian_3d", &args, 3, 7)?;
+    let nx = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_3d: nx: {e}")))?;
+    let ny = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_3d: ny: {e}")))?;
+    let nz = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("laplacian_3d: nz: {e}")))?;
+    let (dx, dy, dz, bc) = match args.len() {
+        3 => (1.0, 1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
+        4 => {
+            let bc = parse_bc_arg("laplacian_3d", Some(&args[3]))?;
+            (1.0, 1.0, 1.0, bc)
+        }
+        6 => {
+            let dx = args[3]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dx: {e}")))?;
+            let dy = args[4]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dy: {e}")))?;
+            let dz = args[5]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dz: {e}")))?;
+            (dx, dy, dz, rustlab_dsp::BoundaryCondition::Dirichlet)
+        }
+        7 => {
+            let dx = args[3]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dx: {e}")))?;
+            let dy = args[4]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dy: {e}")))?;
+            let dz = args[5]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dz: {e}")))?;
+            let bc = parse_bc_arg("laplacian_3d", Some(&args[6]))?;
+            (dx, dy, dz, bc)
+        }
+        _ => {
+            return Err(ScriptError::type_err(format!(
+                "laplacian_3d: expected (nx, ny, nz), (nx, ny, nz, bc), \
+                 (nx, ny, nz, dx, dy, dz), or (nx, ny, nz, dx, dy, dz, bc); \
+                 got {} args",
+                args.len()
+            )));
+        }
+    };
+    let l = rustlab_dsp::laplacian::laplacian_3d(nx, ny, nz, dx, dy, dz, bc)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::SparseMatrix(l))
+}
+
+/// `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` — variable-coefficient
+/// Laplacian `∇·(ε∇)` on a uniform grid via flux-conservative
+/// discretization with harmonic-mean half-cell coefficients.
+fn builtin_laplacian_eps_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("laplacian_eps_2d", &args, 1, 4)?;
+    let eps_map = match &args[0] {
+        Value::Matrix(m) => m,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "laplacian_eps_2d: eps_map must be a matrix (ny x nx), got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let (dx, dy, bc) = match args.len() {
+        1 => (1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
+        2 => {
+            let bc = parse_bc_arg("laplacian_eps_2d", Some(&args[1]))?;
+            (1.0, 1.0, bc)
+        }
+        3 => {
+            let dx = args[1]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dx: {e}")))?;
+            let dy = args[2]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dy: {e}")))?;
+            (dx, dy, rustlab_dsp::BoundaryCondition::Dirichlet)
+        }
+        4 => {
+            let dx = args[1]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dx: {e}")))?;
+            let dy = args[2]
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dy: {e}")))?;
+            let bc = parse_bc_arg("laplacian_eps_2d", Some(&args[3]))?;
+            (dx, dy, bc)
+        }
+        _ => unreachable!(),
+    };
+    let l = rustlab_dsp::laplacian::laplacian_eps_2d(eps_map, dx, dy, bc)
+        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::SparseMatrix(l))
 }
 
 /// `ij2k(i, j, ny)` — convert 1-based grid indices `(i, j)` to flat
@@ -8445,6 +8583,66 @@ fn builtin_ij2k(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let k = (j - 1) * ny + i;
     Ok(Value::Scalar(k as f64))
+}
+
+/// `ijk2k(i, j, kk, ny, nx)` — convert 1-based 3-D grid indices to flat
+/// column-major-of-pages index `k = ((kk-1)*nx + (j-1))*ny + i`. The
+/// fourth and fifth arguments are `ny` (rows) and `nx` (cols), in that
+/// order — matching the meshgrid / Tensor3 convention.
+fn builtin_ijk2k(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("ijk2k", &args, 5)?;
+    let i = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ijk2k: i: {e}")))?;
+    let j = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ijk2k: j: {e}")))?;
+    let kk = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ijk2k: kk: {e}")))?;
+    let ny = args[3]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ijk2k: ny: {e}")))?;
+    let nx = args[4]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("ijk2k: nx: {e}")))?;
+    if i < 1 || i > ny || j < 1 || j > nx || kk < 1 || ny == 0 || nx == 0 {
+        return Err(ScriptError::type_err(format!(
+            "ijk2k: out of range (i={i}, j={j}, kk={kk}, ny={ny}, nx={nx})"
+        )));
+    }
+    let k = ((kk - 1) * nx + (j - 1)) * ny + i;
+    Ok(Value::Scalar(k as f64))
+}
+
+/// `k2ijk(k, ny, nx)` — inverse of `ijk2k`. Returns a tuple `[i, j, kk]`
+/// of 1-based 3-D grid indices.
+fn builtin_k2ijk(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("k2ijk", &args, 3)?;
+    let k = args[0]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("k2ijk: k: {e}")))?;
+    let ny = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("k2ijk: ny: {e}")))?;
+    let nx = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("k2ijk: nx: {e}")))?;
+    if k < 1 || ny == 0 || nx == 0 {
+        return Err(ScriptError::type_err(format!(
+            "k2ijk: out of range (k={k}, ny={ny}, nx={nx})"
+        )));
+    }
+    let k0 = k - 1;
+    let i = (k0 % ny) + 1;
+    let rest = k0 / ny;
+    let j = (rest % nx) + 1;
+    let kk = (rest / nx) + 1;
+    Ok(Value::Tuple(vec![
+        Value::Scalar(i as f64),
+        Value::Scalar(j as f64),
+        Value::Scalar(kk as f64),
+    ]))
 }
 
 /// `k2ij(k, ny)` — inverse of `ij2k`. Returns a tuple `[i, j]` of 1-based

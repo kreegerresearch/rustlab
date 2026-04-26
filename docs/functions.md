@@ -459,6 +459,9 @@ Total number of elements: `rows × cols` for matrices, `1` for scalars.
 ### `size(x)`
 Returns a 2-element vector `[rows, cols]`. Vectors return `[1, n]`.
 
+### `ndims(x)`
+Number of dimensions: `1` for scalars, `2` for vectors and matrices, `3` for `Tensor3` values.
+
 ### `logspace(a, b, n)`
 `n` logarithmically spaced points from `10^a` to `10^b` (inclusive).
 ```
@@ -496,6 +499,20 @@ randi(6, 100)     # 100 integers in [1, 6]
 randi([0, 1], 8)  # 8 random bits
 randi([-5, 5], 50)  # 50 integers in [-5, 5]
 ```
+
+### `seed(N)` / `seed()`
+
+Set the shared RNG seed for `rand`, `randn`, `randi`, `sprand`, etc.
+
+`seed(N)` re-seeds with a deterministic 64-bit value, making subsequent random draws bit-stable across runs — useful for reproducible notebooks and tests. `seed()` (no argument) re-randomizes from system entropy, which is the default state at startup.
+
+```
+seed(42)              # all subsequent random draws are deterministic
+x = randn(100)
+seed()                # back to non-deterministic
+```
+
+The seed is process-global; calling it from one script affects every subsequent random call until the next `seed()`.
 
 ---
 
@@ -1303,22 +1320,29 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
 
 The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust.
 
-### `laplacian_2d(nx, ny [, dx, dy])`
+### `laplacian_2d(nx, ny [, dx, dy] [, bc])`
 
-Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid with homogeneous-Dirichlet boundary conditions. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
+Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.
 
 **Node ordering — column-major.** `V(i, j) → k = (j-1)*ny + i` (1-based). This matches rustlab's `reshape(V_flat, ny, nx)` and `V_grid(:)'` convention so state vectors and grids round-trip without transposes. The third argument of `ij2k` / `k2ij` is `ny`, not `nx`.
 
-**Boundary semantics.** Homogeneous-ghost Dirichlet: cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries, as if `V = 0` outside the grid. For non-zero Dirichlet values, encode them in the right-hand side.
-
-Neumann and periodic boundary conditions, along with 1-D and 3-D variants, are not implemented in v1.
+**Boundary conditions.** The optional trailing string argument selects:
+- `"dirichlet"` (default) — homogeneous Dirichlet (`V = 0` outside the grid). Cells at the grid edge have the same diagonal (`-2/dx² - 2/dy²`) as interior cells but skip the cross-boundary off-diagonal entries. For non-zero Dirichlet values, encode them in the right-hand side.
+- `"neumann"` — homogeneous Neumann (zero normal flux). Boundary cells absorb the missing direction's coefficient back into the diagonal — for a four-side Neumann grid the corner diagonal becomes `-(1/dx² + 1/dy²)`. Constants are in the null space, so the resulting linear system is singular: pin one cell (zero a row, set its diagonal to 1, and pin the corresponding RHS) before calling `spsolve`.
+- `"periodic"` — wrap. Edge cells point to their wrap-around neighbours. Constants are in the null space; the same row-pinning idiom applies.
 
 ```
-# Default unit spacing
+# Default unit spacing, Dirichlet
 L = laplacian_2d(nx, ny)
 
 # Anisotropic grid
 L = laplacian_2d(nx, ny, dx, dy)
+
+# Neumann boundaries on the same grid
+L = laplacian_2d(nx, ny, dx, dy, "neumann")
+
+# Periodic boundaries (Brillouin-zone-style wrap)
+L = laplacian_2d(nx, ny, "periodic")
 
 # Canonical Poisson solve for a point source at the grid centre
 nx = 32; ny = 24;
@@ -1327,6 +1351,52 @@ rho = zeros(ny, nx);
 rho(ny/2, nx/2) = 1.0;
 V = spsolve(L, -rho(:)');
 V_grid = reshape(V, ny, nx);
+```
+
+### `laplacian_1d(n [, dx] [, bc])`
+
+Sparse tridiagonal Laplacian on a length-`n` 1-D grid. Returns an `n × n` sparse matrix approximating `+d²/dx²`. The `bc` argument is the same string-form selector as `laplacian_2d`.
+
+```
+L = laplacian_1d(100)                          # Dirichlet, dx=1
+L = laplacian_1d(100, 0.01, "periodic")        # periodic with explicit spacing
+```
+
+### `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])`
+
+Sparse 7-point Laplacian on an `nx × ny × nz` uniform grid. Returns an `(nx·ny·nz) × (nx·ny·nz)` sparse matrix.
+
+**Node ordering — column-major-of-pages.** `V(i, j, kk) → k = ((kk-1)*nx + (j-1))*ny + i` (1-based). Axis 0 = y (rows), axis 1 = x (cols), axis 2 = z (pages) — the `Tensor3` convention. The `ijk2k` / `k2ijk` helpers handle the round-trip; their last two arguments are `ny` and `nx`.
+
+```
+L = laplacian_3d(8, 8, 8)                              # Dirichlet, unit spacing
+L = laplacian_3d(8, 8, 8, "neumann")                   # Neumann, unit spacing
+L = laplacian_3d(8, 8, 8, 0.1, 0.1, 0.05)              # anisotropic
+L = laplacian_3d(8, 8, 8, 0.1, 0.1, 0.05, "periodic")  # periodic anisotropic
+```
+
+### `laplacian_eps_2d(eps_map [, dx, dy] [, bc])`
+
+Variable-coefficient Laplacian `∇·(ε∇V)` on a 2-D uniform grid via flux-conservative discretization with harmonic-mean half-cell coefficients:
+
+$$\varepsilon_{i,j+1/2} = \frac{2\,\varepsilon(i,j)\,\varepsilon(i,j+1)}{\varepsilon(i,j) + \varepsilon(i,j+1)}$$
+
+The harmonic mean is the physically correct face-coefficient choice for piecewise-uniform media — it preserves flux continuity across material interfaces (where arithmetic-mean discretizations introduce artificial sources).
+
+`eps_map` is shape `(ny, nx)` matching `meshgrid` / `imagesc`. Real or complex entries (lossy materials are common in FDFD-style problems). Setting `eps_map ≡ 1` reduces this to the constant-coefficient `laplacian_2d`. The same `bc` selector is supported.
+
+```
+# Dielectric slab in vacuum: half the grid has eps=4
+eps = ones(ny, nx);
+eps(:, 1:nx/2) = 4.0;
+L = laplacian_eps_2d(eps, dx, dy);
+
+# Magnetostatic 1/mu form: pass 1./mu_map
+A = laplacian_eps_2d(1.0 ./ mu_map, dx, dy);
+
+# Lossy material with imaginary eps
+eps_lossy = 4.0 - 0.1 * j * ones(ny, nx);
+L = laplacian_eps_2d(eps_lossy, dx, dy);
 ```
 
 ### `ij2k(i, j, ny)`
@@ -1343,6 +1413,22 @@ Inverse of `ij2k`. Returns a tuple `[i, j]` destructurable via `[i, j] = k2ij(k,
 
 ```
 [i, j] = k2ij(21, 6)  # → i = 3, j = 4
+```
+
+### `ijk2k(i, j, kk, ny, nx)`
+
+3-D version of `ij2k`. Converts 1-based grid indices `(i, j, kk)` to the column-major-of-pages flat index `k = ((kk-1)*nx + (j-1))*ny + i`. The fourth and fifth arguments are `ny` (rows) and `nx` (cols) — same `Tensor3` convention used by `laplacian_3d`.
+
+```
+k = ijk2k(2, 3, 4, 5, 6)    # → ((4-1)*6 + (3-1))*5 + 2 = 102
+```
+
+### `k2ijk(k, ny, nx)`
+
+Inverse of `ijk2k`. Returns a tuple `[i, j, kk]` destructurable via `[i, j, kk] = k2ijk(k, ny, nx)`.
+
+```
+[i, j, kk] = k2ijk(102, 5, 6)   # → i = 2, j = 3, kk = 4
 ```
 
 ### `full(S)`
@@ -1747,6 +1833,72 @@ imagesc(M, "jet")
 savefig("heatmap.svg")
 
 savefig("report.html")    % interactive Plotly HTML with zoom/pan/hover
+```
+
+## Figure & Plot Controls
+
+These functions configure the figure that the next chart-creation call (`plot`, `stem`, `imagesc`, `contour`, `quiver`, `streamplot`, etc.) will populate. They have no effect on the math — only on the rendered output.
+
+### `figure()`
+Open a new figure. Subsequent chart calls draw into it. With `hold off` (the default), each new chart-creating call clears the current figure first.
+
+### `clf()`
+Clear the current figure's series, titles, and axes — convenient at the top of a notebook cell or example script.
+
+### `hold("on")` / `hold("off")` / `hold(1)` / `hold(0)`
+Toggle whether the next chart call clears the figure first. With `hold on`, multiple `plot` / `quiver` / `contour` calls overlay on the same axes — the canonical pattern for combining heatmaps with field arrows.
+
+```
+figure(); hold on;
+imagesc(V);
+quiver(X, Y, Ex, Ey);
+contour(X, Y, V, 8, "k");
+```
+
+### `grid("on")` / `grid("off")` / `grid(1)` / `grid(0)`
+Show or hide gridlines.
+
+### `title(s)` / `xlabel(s)` / `ylabel(s)`
+Set the figure title or axis labels. Strings only.
+
+```
+title("Frequency response")
+xlabel("Frequency (Hz)")
+ylabel("Magnitude (dB)")
+```
+
+### `xlim(lo, hi)` / `ylim(lo, hi)`
+Set explicit axis ranges. `lo` and `hi` are real scalars.
+
+```
+xlim(0, 1000)
+ylim(-60, 5)
+```
+
+### `legend("loc1", "loc2", ...)` / `legend("off")`
+Set legend labels for the series in the current figure (in plot order). `legend("off")` hides the legend.
+
+```
+plot(t, x, "label", "input");
+plot(t, y, "label", "output");
+legend("input", "output")
+```
+
+### `subplot(rows, cols, idx)`
+Switch the active subplot in a grid layout. `idx` is 1-based, row-major.
+
+```
+subplot(2, 1, 1); plot(t, x); title("input");
+subplot(2, 1, 2); plot(t, y); title("output");
+```
+
+### `yline(y)` / `yline(y, color)` / `yline(y, color, label)`
+Draw a horizontal reference line across the current axes — useful for thresholds, target values, or zero lines on bode-style plots.
+
+```
+yline(-60)                  % default colour, no label
+yline(0, "k")               % black zero line
+yline(-3, "r", "-3 dB")     % labelled threshold
 ```
 
 ## Import / Export
