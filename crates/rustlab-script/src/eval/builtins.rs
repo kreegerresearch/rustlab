@@ -8005,14 +8005,20 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `spsolve(A, b)` or `spsolve(A, b, mode)` — solve `A x = b` where `A` is sparse.
 ///
 /// `mode` is one of `"auto"` (default), `"cholesky"`, or `"lu"`.
-/// - `"auto"` detects Hermitian-positive-definite structure via
-///   `SparseMat::is_spd_estimate` and dispatches to the hand-rolled sparse
-///   Cholesky path; on detection failure or factorization failure, falls
-///   back to the dense LU fallback.
+/// - `"auto"` detects Hermitian-positive-definite structure and routes
+///   to the hand-rolled sparse Cholesky; otherwise it uses the
+///   hand-rolled sparse LU with partial pivoting. Either path stays
+///   sparse end-to-end and uses the `AmdOrdering` fill-reducing
+///   permutation by default.
 /// - `"cholesky"` forces the SPD path; returns an error if the input is
 ///   not Hermitian positive definite.
-/// - `"lu"` forces the dense LU path (until Phase 3 ships sparse LU,
-///   "lu" routes through the existing dense Gaussian elimination).
+/// - `"lu"` forces the sparse LU path. Useful when you know the matrix
+///   isn't Hermitian and want to skip the SPD pre-check.
+///
+/// Dense `Value::Matrix` input is dispatched through the legacy dense
+/// Gaussian-elimination path — sparse factorization is reserved for
+/// sparse input. (Sparse-from-dense conversion is cheap; users who want
+/// the sparse paths on a dense matrix can call `sparse(A)` first.)
 fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("spsolve", &args, 2, 3)?;
     let mode = if args.len() == 3 {
@@ -8036,9 +8042,6 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
 
-    // The hand-rolled Cholesky path consumes a `SparseMat`. If the user
-    // passed a dense `Value::Matrix`, the SPD path is not attempted —
-    // we go straight to the dense fallback.
     let sparse_input: Option<&SparseMat> = match &args[0] {
         Value::SparseMatrix(sm) => Some(sm),
         Value::Matrix(_) => None,
@@ -8066,6 +8069,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             )));
         }
 
+        // SPD path: explicit "cholesky", or "auto" when SPD detected.
         let try_cholesky = match mode {
             "auto" => sm.is_spd_estimate(1e-10),
             "cholesky" => true,
@@ -8080,16 +8084,23 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
                     if mode == "cholesky" {
                         return Err(ScriptError::type_err(format!("spsolve: {e}")));
                     }
-                    // "auto" silently falls through to dense LU fallback.
+                    // "auto" silently falls through to sparse LU.
                 }
+            }
+        }
+
+        // Sparse LU path: explicit "lu", or "auto" fallback when Cholesky is unavailable.
+        match try_sparse_lu(sm, &b) {
+            Ok(x) => return Ok(spsolve_pack(x)),
+            Err(e) => {
+                return Err(ScriptError::type_err(format!("spsolve: {e}")));
             }
         }
     }
 
-    // Dense LU fallback. Used for "lu", "auto" with non-SPD,
-    // or any dense `Value::Matrix` input.
+    // Dense input falls through to the legacy dense path.
     let a_dense = match &args[0] {
-        Value::SparseMatrix(sm) => sm.to_dense(),
+        Value::SparseMatrix(_) => unreachable!(),
         Value::Matrix(m) => m.clone(),
         _ => unreachable!(),
     };
@@ -8097,14 +8108,11 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(spsolve_pack(x))
 }
 
-/// Try the sparse Cholesky path. Returns `Err` if the matrix isn't SPD,
-/// can't be converted to the chosen scalar type, or the solve fails for
-/// any other reason. Detects "essentially real" inputs and routes to the
-/// `f64` solver to skip the 4× cost of complex factorization.
+/// Try the sparse Cholesky path. Detects "essentially real" inputs and
+/// routes to the `f64` solver to skip the 4× cost of complex factorization.
 fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
-    use rustlab_core::sparse_solve::{ColCountOrdering, SparseChol, SparseCsc, SparseSolveError};
+    use rustlab_core::sparse_solve::{AmdOrdering, SparseChol, SparseCsc, SparseSolveError};
 
-    // "Essentially real" detection: every entry's imag part below 1e-12.
     let all_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12)
         && b.iter().all(|c| c.im.abs() < 1e-12);
 
@@ -8112,8 +8120,7 @@ fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
         let csc: SparseCsc<f64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let chol =
-            SparseChol::factor(&csc, &ColCountOrdering).map_err(|e| e.to_string())?;
+        let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
         let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
         let x_real = chol.solve(&b_real).map_err(|e| e.to_string())?;
         Ok(Array1::from_iter(
@@ -8123,10 +8130,38 @@ fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
         let csc: SparseCsc<C64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let chol =
-            SparseChol::factor(&csc, &ColCountOrdering).map_err(|e| e.to_string())?;
+        let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
         let b_vec: Vec<C64> = b.iter().copied().collect();
         let x_vec = chol.solve(&b_vec).map_err(|e| e.to_string())?;
+        Ok(Array1::from_vec(x_vec))
+    }
+}
+
+/// Sparse LU with partial pivoting. Same real-vs-complex auto-routing
+/// as the Cholesky path. Pivoting threshold is the standard 0.1 (Trefethen).
+fn try_sparse_lu(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
+    use rustlab_core::sparse_solve::{AmdOrdering, SparseCsc, SparseLU, SparseSolveError};
+
+    let all_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12)
+        && b.iter().all(|c| c.im.abs() < 1e-12);
+
+    if all_real {
+        let csc: SparseCsc<f64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
+        let x_real = lu.solve(&b_real).map_err(|e| e.to_string())?;
+        Ok(Array1::from_iter(
+            x_real.into_iter().map(|v| Complex::new(v, 0.0)),
+        ))
+    } else {
+        let csc: SparseCsc<C64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        let b_vec: Vec<C64> = b.iter().copied().collect();
+        let x_vec = lu.solve(&b_vec).map_err(|e| e.to_string())?;
         Ok(Array1::from_vec(x_vec))
     }
 }

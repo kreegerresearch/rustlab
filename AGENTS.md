@@ -597,7 +597,7 @@ rustlab run examples/lowpass.r   # must exit 0 with a plot
 - `src/traits/transform.rs` — `Transform` trait: `forward`, `inverse`
 - `src/traits/decompose.rs` — `Decomposable` trait + marker traits `LuDecomposable`, `SvdDecomposable`, `CholeskyDecomposable`, `EigenDecomposable` (stubs — no implementors yet)
 - `src/error.rs` — `CoreError` enum
-- `src/sparse_solve/` — hand-rolled sparse direct solvers (per `dev/plans/sparse_solve_handroll.md`, Davis-2006). `csc.rs` defines `SparseCsc<T>` and the `SparseScalar` trait (`f64` + `Complex<f64>` impls); `ordering.rs` has `OrderingMethod` trait + `ColCountOrdering` (Phase 2 default; AMD lands in Phase 4); `elimination_tree.rs` builds the column elimination tree; `cholesky.rs` is the up-looking sparse Cholesky for SPD matrices. `SparseMat::is_hermitian` and `SparseMat::is_spd_estimate` are pre-filter helpers used by the dispatch in `builtin_spsolve`.
+- `src/sparse_solve/` — hand-rolled sparse direct solvers (per `dev/plans/sparse_solve_handroll.md`, Davis-2006). `csc.rs` defines `SparseCsc<T>` and the `SparseScalar` trait (`f64` + `Complex<f64>` impls); `ordering.rs` has `OrderingMethod` trait + `ColCountOrdering`, `IdentityOrdering`, `AmdOrdering` (basic minimum-degree; full external-degree variant is deferred); `elimination_tree.rs` builds the column elimination tree; `cholesky.rs` is the up-looking sparse Cholesky for SPD matrices; `lu.rs` is the Gilbert-Peierls sparse LU with partial pivoting. `SparseMat::is_hermitian` and `SparseMat::is_spd_estimate` are pre-filter helpers used by the dispatch in `builtin_spsolve`.
 
 **Feature flags:**
 - `linalg` — enables optional `ndarray-linalg` dependency for future matrix decompositions
@@ -953,7 +953,7 @@ primary     = NUMBER | STRING | IDENT
 | `issparse` | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros` | `nonzeros(S)` | Vector of non-zero values in storage order |
 | `find` | `find(S)` | `[I,J,V]` tuple for sparse matrix, `[I,V]` for sparse vector (1-based) |
-| `spsolve` | `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto detects SPD (Hermitian + real-positive diagonal) and routes to hand-rolled sparse Cholesky; otherwise dense LU. Real-vs-complex auto-detection at the entries level. Sparse LU lands in a later phase. |
+| `spsolve` | `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto detects SPD (Hermitian + real-positive diagonal); SPD routes to hand-rolled sparse Cholesky, otherwise to hand-rolled sparse LU with partial pivoting. Both paths use AMD ordering by default. Real-vs-complex auto-detection at the entries level. Dense Value::Matrix input still uses the legacy dense Gaussian elimination. |
 | `spdiags` | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals; D=0 main, >0 super, <0 sub |
 | `sprand` | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `laplacian_2d` | `laplacian_2d(nx, ny [, dx, dy])` | Sparse 5-point Laplacian stencil with homogeneous-Dirichlet BC. Approximates `+∇²` (Poisson solves as `V = spsolve(L, -rho/eps0)`). Node ordering is **column-major** — `V(i, j) → (j-1)*ny + i` — so `reshape(V_flat, ny, nx)` and `V_grid(:)'` compose without transposes. Interior-only: boundary rows have reduced stencils with the same diagonal. |

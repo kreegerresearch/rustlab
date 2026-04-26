@@ -6321,6 +6321,57 @@ mod sparse_tests {
     }
 
     #[test]
+    fn spsolve_lu_mode_handles_indefinite_sparse() {
+        // [[1, 2], [2, 1]] is symmetric but indefinite. The "lu" mode
+        // should solve it via the sparse LU path (not error like
+        // cholesky does). spsolve returns a row vector — transpose
+        // before multiplying back through.
+        let ev = eval_str(
+            "A = [1, 2; 2, 1]\n\
+             As = sparse(A)\n\
+             x = spsolve(As, [1; 1], \"lu\")\n\
+             r = A * x'\n\
+             err = norm(r - [1; 1])",
+        );
+        let err = get_scalar(&ev, "err");
+        assert!(err < 1e-10, "indefinite-LU residual {err}");
+    }
+
+    #[test]
+    fn spsolve_auto_falls_through_to_lu_for_indefinite() {
+        // Auto on a symmetric-but-indefinite sparse matrix should fall
+        // through to sparse LU (since SPD pre-check fails) and produce
+        // a correct answer matching the "lu"-forced result.
+        let ev = eval_str(
+            "A = [1, 2; 2, 1]\n\
+             As = sparse(A)\n\
+             x_auto = spsolve(As, [1; 1])\n\
+             x_lu   = spsolve(As, [1; 1], \"lu\")\n\
+             diff = norm(x_auto - x_lu)",
+        );
+        let diff = get_scalar(&ev, "diff");
+        assert!(diff < 1e-12, "auto vs forced-lu disagreement {diff}");
+    }
+
+    #[test]
+    fn spsolve_complex_lu_path() {
+        // Non-Hermitian complex matrix.
+        // [[1+i, 2], [3, 4-i]] → solve A x = [1; i]. spsolve returns
+        // a row vector; convert to a column vector for the residual
+        // check by `transpose` (NOT `'`, which is the conjugate
+        // transpose and would flip imaginary parts).
+        let ev = eval_str(
+            "A = [1 + j, 2; 3, 4 - j]\n\
+             As = sparse(A)\n\
+             x = spsolve(As, [1; j])\n\
+             r = A * transpose(x)\n\
+             err = norm(r - [1; j])",
+        );
+        let err = get_scalar(&ev, "err");
+        assert!(err < 1e-10, "complex-LU residual {err}");
+    }
+
+    #[test]
     fn spdiags_multi_diagonal() {
         // Build tridiagonal: [-1, 2, -1] on diags [-1, 0, 1]
         let ev = eval_str(

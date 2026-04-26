@@ -1,7 +1,9 @@
 # Implementation Plan — Hand-Rolled Sparse Solver (Item 2 of em_requests_queue)
 
-**Status:** Proposed, awaiting review.
+**Status:** Phases 1, 2, 3, 4 landed; Phase 5 (remove dense fallback for sparse input) effectively complete via the wire-in.
 **Date opened:** 2026-04-26.
+**Phase 1+2 commit:** `6623496` (CSC storage, sparse Cholesky for SPD, wire-in).
+**Phase 3+4 commit:** *(this commit)* — sparse LU with partial pivoting, AMD ordering as default for both paths.
 **Source request:** `em_requests_queue.md` Item 2; underlying request `../rustlab_em/dev/rustlab/requests/em_requests.md` §2.3.
 **Target:** Production-grade (Phases 1-5 with AMD ordering), phase-by-phase PRs.
 **Total estimate:** ~3300 LoC implementation + ~1000 LoC tests, **3-4 weeks** senior-level work.

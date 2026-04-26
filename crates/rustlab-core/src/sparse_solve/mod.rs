@@ -22,10 +22,14 @@ pub mod csc;
 pub mod ordering;
 pub mod elimination_tree;
 pub mod cholesky;
+pub mod lu;
 
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
 pub use cholesky::SparseChol;
-pub use ordering::{ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation};
+pub use lu::SparseLU;
+pub use ordering::{
+    AmdOrdering, ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation,
+};
 
 #[cfg(test)]
 mod tests;

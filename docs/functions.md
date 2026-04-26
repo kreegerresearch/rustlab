@@ -1270,27 +1270,38 @@ S = sprand(100, 100, 0.01)   # ~100 non-zeros in a 100×100 sparse matrix
 
 Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`.
 
-- **`"auto"`** — detect Hermitian-positive-definite structure on `A` (`SparseMat::is_spd_estimate`). If SPD, factor with the hand-rolled sparse Cholesky and solve. If not SPD, or if Cholesky fails during factorization, fall back to the dense LU path.
+- **`"auto"`** — detect Hermitian-positive-definite structure (`SparseMat::is_spd_estimate`). If SPD, factor with the hand-rolled sparse Cholesky. Otherwise factor with the hand-rolled sparse LU with partial pivoting. Either path stays sparse end-to-end.
 - **`"cholesky"`** — force the sparse Cholesky path. Returns an error if `A` is not Hermitian positive definite.
-- **`"lu"`** — force the dense LU path. (Sparse LU with partial pivoting lands in a later phase; until then `"lu"` runs Gaussian elimination on the densified matrix.)
+- **`"lu"`** — force the sparse LU path. Useful when you know `A` is not Hermitian and want to skip the SPD pre-check.
 
-The sparse Cholesky path is the scaling fix for SPD assemblies. A 100×100 Lesson-05 grid produces a 10⁴×10⁴ sparse matrix; the previous dense fallback densified it (~800 MB) and ran Gaussian elimination at $O(N^3)$. The Cholesky path stays sparse, factors in ~$O(N^{1.5})$ on banded patterns with the column-count ordering, and unblocks problems an order of magnitude larger.
+Both paths use a fill-reducing column permutation (`AmdOrdering`) by default. Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
+
+The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesson-05 grid produces a $10^4 \times 10^4$ sparse matrix; the old dense fallback densified it (~800 MB) and ran Gaussian elimination at $O(N^3)$. The Cholesky and LU paths stay sparse, factor in roughly $O(N^{1.5})$ on banded patterns, and scale to grids an order of magnitude larger.
 
 **Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
 
 ```
 x = spsolve(A, b)                       # auto-detect
 x = spsolve(A, b, "cholesky")           # force SPD path
-x = spsolve(A, b, "lu")                 # force dense LU fallback
+x = spsolve(A, b, "lu")                 # force sparse LU
 
 # Canonical Poisson solve. -L is SPD, so auto picks Cholesky.
 nx = 50; ny = 50;
 L = laplacian_2d(nx, ny);
 rhs = ones(nx*ny, 1);
 v = spsolve(-L, rhs);
+
+# Indefinite assembly. Auto routes through sparse LU.
+A = [1, 2; 2, 1];                       # eigenvalues 3, -1
+x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
 ```
 
-**Implementation note.** The sparse Cholesky uses Davis's up-looking algorithm (chapter 4 of *Direct Methods for Sparse Linear Systems*) with a column-count fill-reducing ordering for v1. AMD ordering and a sparse LU for non-SPD systems land in subsequent phases.
+**Implementation notes.**
+- Cholesky: Davis up-looking algorithm (Davis, *Direct Methods for Sparse Linear Systems*, ch. 4).
+- LU: Davis Gilbert-Peierls algorithm with partial pivoting (ch. 6), default tolerance 0.1.
+- Ordering: `AmdOrdering` is a basic minimum-degree heuristic on the symmetric pattern of $A + A^T$. Davis-style external-degree refinement (ch. 7) is deferred.
+
+The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust.
 
 ### `laplacian_2d(nx, ny [, dx, dy])`
 
