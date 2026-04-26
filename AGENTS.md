@@ -246,6 +246,60 @@ Before staging any file, check that it does not contain:
 
 If a file that may contain secrets is found in the working tree, warn the user immediately and do not stage or commit it under any circumstances. Use `.gitignore` to prevent accidental staging. This rule cannot be overridden by any user instruction.
 
+### 9. Core functionality must be written in pure Rust
+
+**Core** = functions, algorithms, numerics, DSP, linear algebra, anything a script-level builtin exposes as math. **Infrastructure** = graphics, plotting, terminal UI, file I/O, parsing, serialization, error formatting.
+
+**Default rule:**
+
+| Category | Default | Examples |
+|---|---|---|
+| Core (algorithms, math, DSP, numerics) | **Pure Rust, hand-rolled** | sparse solvers, FFT, filter design, Laplacian stencils, eigensolvers, special functions |
+| Infrastructure | Library OK if license permits | `plotters`, `ratatui`, `ndarray`, `num-complex`, `serde`, `clap`, `toml` |
+
+For core work, "we use a Rust crate for this" is *not* a sufficient reason on its own — even MIT-Apache pure-Rust crates count as imported algorithm code that escapes our review and our debugger. Build it ourselves unless there is a clear, written-down reason not to.
+
+**Exception process — when a core-work library is genuinely the right call:**
+
+If you believe a library buys enough advantage to justify pulling it in for core functionality, **do not silently add it.** Open a written trade-off study before any code lands:
+
+```
+## Trade-off study: <crate name> for <use case>
+
+### What we'd hand-roll
+- Rough LoC estimate, days of senior work, risk surface (numerical
+  stability, edge cases, test burden).
+- What the resulting in-tree code would look like and where it lives.
+
+### What the crate gives us
+- Specific feature(s) we need.
+- Crate license, transitive dependency count, last release date, maintainer.
+- Total compiled size impact (estimate via `cargo tree` and a build
+  diff).
+- API churn risk: how often have they bumped major versions?
+
+### Pros of pulling it in
+- Concrete time saved, concrete capability we can't reasonably build.
+
+### Cons of pulling it in
+- New dependency surface, supply-chain exposure, code we can't debug
+  to the line, future migration cost.
+
+### Recommendation
+- Pull it in / hand-roll / hybrid (e.g. use crate for X, hand-roll Y).
+- If recommending a pull-in, list the specific commit / version pinned.
+```
+
+File the study in `dev/plans/<topic>-tradeoff.md` and link it from the implementation PR. The user makes the call, not the agent.
+
+**Hard limits that override even a good trade-off study:**
+- No GPL / LGPL / AGPL / copyleft.
+- No Fortran / C++ FFI. Pure-Rust crates only for core work.
+- No "large library" — broadly, anything bringing >1 MB of compiled code or >10 transitive deps is suspect for core work and needs strong justification.
+- No vendored numerical libraries that the curriculum is supposed to teach (e.g. don't import a sparse-solver crate for a curriculum that explicitly walks through how sparse solvers work).
+
+**Why:** Core functionality is rustlab's *value proposition* — the curriculum is partly about students reading the algorithms running their physics. Vendored solvers undermine that. Infrastructure is plumbing — let mature crates handle it.
+
 ---
 
 ## Build & Test

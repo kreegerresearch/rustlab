@@ -422,8 +422,8 @@ Total upstream-rustlab work for items 1-7: ~3580 LoC of implementation + ~1100 L
 
 ## Decisions locked in this plan
 
-1. **§2.3 dep:** `faer` (pure Rust, MIT-or-Apache-2.0). Confirmed.
+1. **§2.3 sparse solver:** **hand-rolled, pure Rust, in `rustlab-core`.** `faer` was the original plan but was rejected as too large a library for core work. Per `AGENTS.md` Rule 9, core algorithms must be hand-rolled. Item 2 is now a multi-phase build: CSC storage → Cholesky (SPD) → LU (general) → simple fill-reducing ordering → wire-in. Reference: Davis, *Direct Methods for Sparse Linear Systems*. See the per-phase breakdown in `dev/plans/em_requests_queue.md` Item 2.
 2. **§2.6 home:** Phase 1 = scripted library in `rustlab_em`; Phase 2 = upstream `rustlab-em` workspace crate, only if graduation triggers fire.
-3. **§2.4 fallback:** none. Pure-Rust hand-rolled IRAM only. No `arpack-ng-sys`, no Fortran FFI.
+3. **§2.4 fallback:** none. Pure-Rust hand-rolled IRAM on top of the §2.3 hand-rolled LU/Cholesky. No `arpack-ng-sys`, no Fortran FFI.
 4. **§4 scope:** Option A (4-line pragmatic fix) ships in this plan. Options B (type-tagged value variant) and C (fully real-typed storage) deferred to a separate plan.
-5. **General licensing policy:** no GPL/LGPL/AGPL/copyleft, no Fortran/C++ FFI by default. Pure-Rust MIT/Apache or flag the gap.
+5. **Dependency policy** (`AGENTS.md` Rule 9): **core functionality must be written in pure Rust.** Libraries acceptable only for infrastructure (graphics, plotting, terminal UI, I/O, parsing). Any proposal to use a library on core work requires a written trade-off study at `dev/plans/<topic>-tradeoff.md` before code lands. Hard limits: no GPL/LGPL/copyleft, no Fortran/C++ FFI, no "large library", no vendored solvers the curriculum is supposed to teach.

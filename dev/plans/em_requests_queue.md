@@ -12,11 +12,11 @@
 
 ## Decisions already locked (do not revisit)
 
-1. **Sparse solver dep:** `faer` (pure Rust, MIT-or-Apache-2.0). Not UMFPACK (GPL). Not MKL.
-2. **Sparse eigensolver:** hand-rolled implicit-restart Arnoldi on `faer` LU; Lanczos for SPD. **No FFI.** Not `arpack-ng-sys`.
+1. **Sparse solver:** hand-rolled, pure Rust, in `rustlab-core`. **`faer` is rejected** (too large a library — see `AGENTS.md` Rule 9). UMFPACK rejected (GPL). MKL rejected. No FFI. Item 2 is now a multi-phase hand-roll, not a wrapper around an existing solver — see Item 2 for the breakdown.
+2. **Sparse eigensolver:** hand-rolled Arnoldi / Lanczos on top of the rustlab-core hand-rolled LU/Cholesky from Item 2. **No FFI.** Not `arpack-ng-sys`.
 3. **Yee + SC-PML home:** scripted library in `rustlab_em/lessons/_shared/em.r` (Phase 1). Workspace crate only on graduation trigger (Phase 2).
 4. **Real-typed elem-ops:** Option A (4-line guard zeroing imag when both inputs essentially real). Options B/C deferred.
-5. **General licensing policy:** no GPL/LGPL/AGPL/copyleft, no Fortran/C++ FFI by default. Pure-Rust MIT/Apache-2.0 or stop and ask.
+5. **Dependency policy** (`AGENTS.md` Rule 9): **core functionality must be written in pure Rust.** Libraries acceptable only for infrastructure (graphics, plotting, terminal UI, I/O, parsing). Any proposal to use a library on core work requires a written trade-off study at `dev/plans/<topic>-tradeoff.md` before code lands. Hard limits (override even a good trade-off study): no GPL/LGPL/copyleft, no Fortran/C++ FFI, no "large library", no vendored solvers the curriculum is supposed to teach.
 
 ---
 
@@ -89,38 +89,64 @@ Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]
 
 ---
 
-### `[ ]` Item 2 — §2.3 real `spsolve` (faer)
+### `[ ]` Item 2 — §2.3 real `spsolve` (hand-rolled, pure Rust)
 
-**Priority: CRITICAL — scaling cliff** · **Size: L (~700 LoC + tests)** · **Time: 3-5 days senior + 2 days perf/Octave** · **Deps: none upstream; pulls in `faer` 0.20**
+**Priority: CRITICAL — scaling cliff** · **Total size: ~2700 LoC (curriculum-grade) or ~3300 LoC (production-grade)** · **Time: 9-12 days curriculum-grade; 3-4 weeks production-grade** · **Deps: NONE — hand-rolled per AGENTS.md Rule 9**
 
 **Why second:** foundational. Every Laplacian/eigs item below depends on this scaling. Currently `spsolve` densifies internally — a 100×100 Lesson 05 grid produces a 10⁴×10⁴ matrix → ~800 MB densified.
 
-**Acceptance criteria:**
+**Why hand-rolled:** `faer` was the original plan but is too large a library for core work (~20 MB compiled, deep dep tree). Per `AGENTS.md` Rule 9, core algorithms must be pure Rust, hand-rolled, in-tree. The curriculum value of this code is partly that students can read the factorization solving their physics. See `feedback_licensing.md` and the policy section at the top of this doc.
+
+**Reference:** Davis, *Direct Methods for Sparse Linear Systems* (2006). Cholesky in ch. 4, LU with partial pivoting in ch. 6, AMD ordering in ch. 7. All algorithms here are well-trodden — read Davis before starting.
+
+**Phase breakdown (each phase = its own PR, pause between for review):**
+
+#### Phase 1 — CSC storage + conversions (~250 LoC + 80 tests; 1 day)
+- Add `SparseCsc<T>` type to `crates/rustlab-core/src/sparse_solve.rs` (or extend `types.rs`).
+- `SparseMat::to_csc()` and `SparseMat::to_csc_real()` (real-only path when `max |im| < 1e-12`).
+- CSC-form SpMV, transpose. Sanity tests.
+
+#### Phase 2 — Sparse Cholesky for SPD (~500 LoC + 200 tests; 2-3 days)
+- Up-looking variant from Davis ch. 4. Three sub-phases: elimination tree, symbolic, numeric.
+- Real and complex variants.
+- `SparseMat::cholesky() -> SparseChol`, `SparseChol::solve(&CVector) -> CVector`.
+- Forward substitution (Lx = b), backward substitution (Lᵀy = x).
+- **Unlocks Lessons 05-09** on its own (SPD Laplacian assemblies).
+- Tests: 4×4 hand-built SPD, round-trip on `laplacian_2d(20,20)`, eigenvalue check.
+
+#### Phase 3 — Sparse LU with partial pivoting (~700 LoC + 300 tests; 4-5 days)
+- Gilbert-Peierls algorithm from Davis ch. 6. DFS-based symbolic search per column, partial row pivoting, fill-in tracking.
+- `SparseMat::lu_factor() -> SparseLU`, `SparseLU::solve(&CVector) -> CVector`.
+- Real and complex.
+- **Unlocks Lesson 10** (FDFD with PML — complex, indefinite).
+- Tests: 4×4 hand-built non-SPD, complex matrix, near-singular pivot stability, comparison to dense Gaussian elimination.
+
+#### Phase 4 — Fill-reducing ordering (~200 LoC simple, 2-3 days; OR ~700 LoC AMD, 1-2 weeks)
+- **Without** ordering, factorization fills catastrophically. A 100×100 Laplacian's Cholesky factor is dense — O(N²) entries instead of O(N · √N).
+- **Curriculum-grade:** simple column-count / minimum-degree heuristic, ~3× worse than AMD but unblocks problems up to ~150×150 grids. **Recommended for v1.**
+- **Production-grade:** Approximate Minimum Degree (AMD), Davis ch. 7. ~700 LoC clean Rust port, unblocks problems up to ~500×500 grids. Defer unless v1 hits a curriculum wall.
+
+#### Phase 5 — Wire into `builtin_spsolve` (~150 LoC + 100 tests; 1 day)
+- Auto-detect SPD via `SparseMat::is_hermitian()` + `is_spd_estimate()` helpers (~40 LoC, **shared with Item 4**).
+- Dispatch: try Cholesky if SPD, fall back to LU.
+- Optional 3rd-arg override: `spsolve(A, b, "auto" | "lu" | "cholesky")`.
+- Replace body of `builtin_spsolve` at `builtins.rs:8005-...` (re-verify line; the file has grown since plan was written).
+- Preserve the `if x.len()==1` scalar-return shape.
+- Update `docs/functions.md` (rewrite the "converts to dense internally" disclaimer), `docs/quickref.md`, `AGENTS.md`, REPL help.
+
+**Acceptance criteria (apply to whole Item, verified before final phase merges):**
 - `spsolve(I, b) == b` on a 1000×1000 sparse identity within machine precision.
-- Round-trip on `laplacian_2d(50,50)` Poisson solve matches the dense reference.
-- 200×200 cavity-cross-section problem (~40k×40k) runs in <10s, doesn't OOM.
+- Round-trip on `laplacian_2d(50,50)` Poisson solve matches the dense reference within 1e-10 relative norm.
+- 200×200 cavity-cross-section problem (~40k×40k) runs in <30s with simple ordering, doesn't OOM. (<10s with AMD.)
 - Complex-RHS path tested (FDFD-style).
 - Singular matrix returns clear error, not a panic.
-- Octave reference comparison (`AGENTS.md:285-303`) passes for at least one PDE assembly.
-
-**File checklist:**
-- [ ] Add `faer = "0.20"` to `Cargo.toml [workspace.dependencies]`. **Verify license: MIT-or-Apache-2.0.**
-- [ ] Add `sparse-solve` feature to `crates/rustlab-core/Cargo.toml` (default-on in cli/script crate features).
-- [ ] Create `crates/rustlab-core/src/sparse_solve.rs`:
-  - `SparseMat::to_faer_csc()` conversion.
-  - `SparseMat::lu_factor() -> SparseLU` and `SparseLU::solve()`.
-  - `SparseMat::cholesky() -> SparseChol` (SPD path).
-  - Real-vs-complex auto-detection (`max |im| < 1e-12` → real path).
-- [ ] Add `SparseMat::is_hermitian()` and `SparseMat::is_spd_estimate()` helpers in `types.rs` (~40 LoC, **shared with Item 4**).
-- [ ] Replace body of `builtin_spsolve` at `builtins.rs:7909-7996` with thin call. Preserve the `if x.len()==1` scalar-return shape at lines 7986-7995.
-- [ ] Add optional 3rd-arg dispatch: `spsolve(A, b, "auto" | "lu" | "cholesky")`.
-- [ ] Tests in `crates/rustlab-core/src/tests.rs` (factor/solve algorithm) and `crates/rustlab-script/src/tests.rs` (builtin contract).
-- [ ] Update `docs/functions.md` (replace the "converts to dense internally" note at the existing `spsolve` section), `docs/quickref.md`, `AGENTS.md`, REPL help.
+- **Octave reference comparison** (`AGENTS.md:285-303`) passes for at least one PDE assembly.
 
 **Watch out for:**
-- faer's deterministic-mode flag (set it for reproducibility).
-- Symmetry detection cost — gate behind one-time check inside factorization, not every solve.
-- Tiny problems (n<100) may regress vs current dense path; accept it unless `perf/report.md` flags.
+- **Numerical robustness is earned, not free.** Real factorization libraries have decades of edge-case fixes baked in. Plan for at least one round of "this matrix factors but the answer is wrong" debugging.
+- **Indexing bugs are silent.** Sparse code with off-by-one bugs produces *wrong answers*, not panics. Use `assert!`-heavy debug builds + small hand-checked test matrices.
+- **Tiny-problem regression.** For n<100, hand-rolled sparse will be slower than the current dense fallback. Accept it; revisit only if `perf/report.md` flags a regression.
+- **Reordering is not optional past 100×100.** Don't ship Phase 1-3 without at least the simple ordering from Phase 4.
 
 **Verification command:** `cargo test --workspace -- spsolve` and run `lessons/05-poisson-laplace-bvp/*.r` (when those scripts exist).
 
