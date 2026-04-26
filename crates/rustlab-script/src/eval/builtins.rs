@@ -8002,19 +8002,139 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// `spsolve(A, b)` — solve A*x = b where A is sparse.
 /// Internally converts to dense and uses Gaussian elimination.
+/// `spsolve(A, b)` or `spsolve(A, b, mode)` — solve `A x = b` where `A` is sparse.
+///
+/// `mode` is one of `"auto"` (default), `"cholesky"`, or `"lu"`.
+/// - `"auto"` detects Hermitian-positive-definite structure via
+///   `SparseMat::is_spd_estimate` and dispatches to the hand-rolled sparse
+///   Cholesky path; on detection failure or factorization failure, falls
+///   back to the dense LU fallback.
+/// - `"cholesky"` forces the SPD path; returns an error if the input is
+///   not Hermitian positive definite.
+/// - `"lu"` forces the dense LU path (until Phase 3 ships sparse LU,
+///   "lu" routes through the existing dense Gaussian elimination).
 fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("spsolve", &args, 2)?;
-    let a = match &args[0] {
-        Value::SparseMatrix(sm) => sm.to_dense(),
-        Value::Matrix(m) => m.clone(),
+    check_args_range("spsolve", &args, 2, 3)?;
+    let mode = if args.len() == 3 {
+        match &args[2] {
+            Value::Str(s) => s.as_str(),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "spsolve: mode must be a string (\"auto\"|\"cholesky\"|\"lu\"), got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        "auto"
+    };
+    if !matches!(mode, "auto" | "cholesky" | "lu") {
+        return Err(ScriptError::type_err(format!(
+            "spsolve: unknown mode \"{mode}\"; expected \"auto\", \"cholesky\", or \"lu\""
+        )));
+    }
+
+    let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+
+    // The hand-rolled Cholesky path consumes a `SparseMat`. If the user
+    // passed a dense `Value::Matrix`, the SPD path is not attempted —
+    // we go straight to the dense fallback.
+    let sparse_input: Option<&SparseMat> = match &args[0] {
+        Value::SparseMatrix(sm) => Some(sm),
+        Value::Matrix(_) => None,
         other => {
             return Err(ScriptError::type_err(format!(
                 "spsolve: A must be a sparse or dense matrix, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
-    let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+
+    if let Some(sm) = sparse_input {
+        if sm.rows != sm.cols {
+            return Err(ScriptError::type_err(format!(
+                "spsolve: A must be square (got {}×{})",
+                sm.rows, sm.cols
+            )));
+        }
+        if sm.rows != b.len() {
+            return Err(ScriptError::type_err(format!(
+                "spsolve: A is {}×{} but b has length {}",
+                sm.rows,
+                sm.cols,
+                b.len()
+            )));
+        }
+
+        let try_cholesky = match mode {
+            "auto" => sm.is_spd_estimate(1e-10),
+            "cholesky" => true,
+            "lu" => false,
+            _ => unreachable!(),
+        };
+
+        if try_cholesky {
+            match try_sparse_cholesky(sm, &b) {
+                Ok(x) => return Ok(spsolve_pack(x)),
+                Err(e) => {
+                    if mode == "cholesky" {
+                        return Err(ScriptError::type_err(format!("spsolve: {e}")));
+                    }
+                    // "auto" silently falls through to dense LU fallback.
+                }
+            }
+        }
+    }
+
+    // Dense LU fallback. Used for "lu", "auto" with non-SPD,
+    // or any dense `Value::Matrix` input.
+    let a_dense = match &args[0] {
+        Value::SparseMatrix(sm) => sm.to_dense(),
+        Value::Matrix(m) => m.clone(),
+        _ => unreachable!(),
+    };
+    let x = dense_lu_solve(&a_dense, &b)?;
+    Ok(spsolve_pack(x))
+}
+
+/// Try the sparse Cholesky path. Returns `Err` if the matrix isn't SPD,
+/// can't be converted to the chosen scalar type, or the solve fails for
+/// any other reason. Detects "essentially real" inputs and routes to the
+/// `f64` solver to skip the 4× cost of complex factorization.
+fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
+    use rustlab_core::sparse_solve::{ColCountOrdering, SparseChol, SparseCsc, SparseSolveError};
+
+    // "Essentially real" detection: every entry's imag part below 1e-12.
+    let all_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12)
+        && b.iter().all(|c| c.im.abs() < 1e-12);
+
+    if all_real {
+        let csc: SparseCsc<f64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let chol =
+            SparseChol::factor(&csc, &ColCountOrdering).map_err(|e| e.to_string())?;
+        let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
+        let x_real = chol.solve(&b_real).map_err(|e| e.to_string())?;
+        Ok(Array1::from_iter(
+            x_real.into_iter().map(|v| Complex::new(v, 0.0)),
+        ))
+    } else {
+        let csc: SparseCsc<C64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let chol =
+            SparseChol::factor(&csc, &ColCountOrdering).map_err(|e| e.to_string())?;
+        let b_vec: Vec<C64> = b.iter().copied().collect();
+        let x_vec = chol.solve(&b_vec).map_err(|e| e.to_string())?;
+        Ok(Array1::from_vec(x_vec))
+    }
+}
+
+/// Dense Gaussian elimination with partial pivoting — the original
+/// `spsolve` implementation, retained as a fallback for non-SPD problems
+/// until Phase 3 ships a sparse LU.
+fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
     let n = a.nrows();
     if n != a.ncols() {
         return Err(ScriptError::type_err(format!(
@@ -8031,7 +8151,6 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             b.len()
         )));
     }
-    // Augmented [A | b]
     let mut aug: Array2<C64> = Array2::zeros((n, n + 1));
     for i in 0..n {
         for j in 0..n {
@@ -8039,7 +8158,6 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
         aug[[i, n]] = b[i];
     }
-    // Forward elimination with partial pivoting
     for k in 0..n {
         let mut max_idx = k;
         let mut max_val = aug[[k, k]].norm();
@@ -8070,7 +8188,6 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             }
         }
     }
-    // Back substitution
     let mut x: CVector = Array1::zeros(n);
     for i in (0..n).rev() {
         let mut s = aug[[i, n]];
@@ -8079,15 +8196,22 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
         x[i] = s / aug[[i, i]];
     }
+    Ok(x)
+}
+
+/// Wrap an `spsolve` result vector. Length-1 returns are unboxed to
+/// `Scalar` (real) or `Complex` so callers can use them in scalar
+/// context — matches existing rustlab convention.
+fn spsolve_pack(x: CVector) -> Value {
     if x.len() == 1 {
         let c = x[0];
         if c.im.abs() < 1e-12 {
-            Ok(Value::Scalar(c.re))
+            Value::Scalar(c.re)
         } else {
-            Ok(Value::Complex(c))
+            Value::Complex(c)
         }
     } else {
-        Ok(Value::Vector(x))
+        Value::Vector(x)
     }
 }
 

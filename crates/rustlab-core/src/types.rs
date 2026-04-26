@@ -307,6 +307,62 @@ impl SparseMat {
         }
         Ok(c)
     }
+
+    /// Test whether the matrix is Hermitian within `tol` per-entry: for
+    /// every stored entry `(i, j, v)`, there exists a stored entry
+    /// `(j, i, conj(v))` (within tolerance), and the diagonal entries
+    /// have negligible imaginary component. Returns `false` for
+    /// non-square matrices.
+    pub fn is_hermitian(&self, tol: f64) -> bool {
+        if self.rows != self.cols {
+            return false;
+        }
+        // Build a map (i, j) -> value for O(1) lookup.
+        use std::collections::HashMap;
+        let mut map: HashMap<(usize, usize), C64> = HashMap::with_capacity(self.entries.len());
+        for &(r, c, v) in &self.entries {
+            map.insert((r, c), v);
+        }
+        for &(r, c, v) in &self.entries {
+            if r == c {
+                if v.im.abs() > tol {
+                    return false;
+                }
+            } else {
+                let mirror = match map.get(&(c, r)) {
+                    Some(&m) => m,
+                    None => return false,
+                };
+                let expected = Complex::new(v.re, -v.im);
+                if (mirror - expected).norm() > tol {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Quick SPD-ish estimate: Hermitian AND every diagonal entry is
+    /// real-positive within `tol`. This is necessary for SPD but not
+    /// sufficient — an SPD-failure during factorization is still possible
+    /// for indefinite Hermitian matrices that pass the diagonal check.
+    /// Used as a cheap pre-filter to decide whether to attempt Cholesky.
+    pub fn is_spd_estimate(&self, tol: f64) -> bool {
+        if !self.is_hermitian(tol) {
+            return false;
+        }
+        // Diagonals must all be present and real-positive.
+        let mut seen_diag = vec![false; self.rows];
+        for &(r, c, v) in &self.entries {
+            if r == c {
+                if v.re <= tol || v.im.abs() > tol {
+                    return false;
+                }
+                seen_diag[r] = true;
+            }
+        }
+        seen_diag.iter().all(|&s| s)
+    }
 }
 
 /// Fixed-point rounding mode.

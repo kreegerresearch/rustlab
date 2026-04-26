@@ -6271,6 +6271,56 @@ mod sparse_tests {
     }
 
     #[test]
+    fn spsolve_laplacian_round_trip_sparse_path() {
+        // Negate the laplacian_2d so the matrix is SPD (positive-definite).
+        // The hand-rolled Cholesky should pick this up automatically under
+        // mode "auto" and produce a result matching dense LU to 1e-9.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(20, 20);\n\
+             rhs = ones(400, 1);\n\
+             x_auto     = spsolve(L, rhs);\n\
+             x_cholesky = spsolve(L, rhs, \"cholesky\");\n\
+             x_lu       = spsolve(L, rhs, \"lu\");\n\
+             diff_ac = norm(x_auto - x_cholesky);\n\
+             diff_al = norm(x_auto - x_lu);",
+        );
+        let diff_ac = get_scalar(&ev, "diff_ac");
+        let diff_al = get_scalar(&ev, "diff_al");
+        assert!(
+            diff_ac < 1e-10,
+            "auto vs cholesky disagreement: {diff_ac}"
+        );
+        assert!(diff_al < 1e-7, "auto vs lu disagreement: {diff_al}");
+    }
+
+    #[test]
+    fn spsolve_cholesky_mode_rejects_indefinite() {
+        // [[1, 2], [2, 1]] is symmetric but indefinite (eigenvalues 3, -1).
+        // is_spd_estimate returns false (negative eigenvalue), so "auto"
+        // skips Cholesky and falls back to dense LU. Forcing "cholesky"
+        // exposes the failure.
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "A = [1, 2; 2, 1]\n\
+                 As = sparse(A)\n\
+                 x = spsolve(As, [1; 1], \"cholesky\")",
+            )
+        });
+        assert!(
+            result.is_err(),
+            "expected error from cholesky on indefinite matrix"
+        );
+    }
+
+    #[test]
+    fn spsolve_unknown_mode_errors() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str("x = spsolve(speye(3), [1; 2; 3], \"banana\")")
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn spdiags_multi_diagonal() {
         // Build tridiagonal: [-1, 2, -1] on diags [-1, 0, 1]
         let ev = eval_str(
