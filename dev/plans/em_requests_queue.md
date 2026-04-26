@@ -5,8 +5,16 @@
 > Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md` (read for curriculum context).
 
 **Last updated:** 2026-04-26
-**Status of plan:** Proposed; awaiting kickoff approval.
-**Next item to start:** **Item 1 — §2.5 rasterization masks** (warm-up, half-day, no deps).
+**Status of plan:** In progress. Items 1, 2, 3, and 5 shipped. Item 4 next.
+**Next item to start:** **Item 4 — §2.4 sparse `eigs(A, n)` / `eigs(A, B, n)`**.
+
+**Shipped commits:**
+- Item 1 (masks): `5791ec0`
+- Item 2 (sparse solve, Phases 1+2): `6623496`
+- Item 2 (sparse solve, Phases 3+4): `e9283b7`
+- Item 2 demos (electrostatics, complex Helmholtz, scaling): `5feef19`
+- Item 3 (Laplacian BC + 1-D/3-D + eps + doc audit): `26954a3`
+- Item 5 (real-typed elem-ops Option A pragmatic fix) — pending; deferred since the curriculum hasn't hit the problem yet
 
 ---
 
@@ -64,7 +72,9 @@ Re-verify any of these with `grep -n` before editing.
 
 Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]` blocked
 
-### `[ ]` Item 1 — §2.5 rasterization masks (`rect_mask`, `disk_mask`, `polygon_mask`)
+### `[✓]` Item 1 — §2.5 rasterization masks (`rect_mask`, `disk_mask`, `polygon_mask`)
+
+**Shipped in commit `5791ec0`** (2026-04-26). All acceptance criteria met. See `gallery/masks.md` for the rendered notebook walkthrough.
 
 **Priority: HIGH (warm-up)** · **Size: S (~290 LoC + tests)** · **Time: 0.5-1 day** · **Deps: none**
 
@@ -89,7 +99,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]
 
 ---
 
-### `[ ]` Item 2 — §2.3 real `spsolve` (hand-rolled, pure Rust)
+### `[✓]` Item 2 — §2.3 real `spsolve` (hand-rolled, pure Rust)
+
+**Shipped across commits `6623496` (Phases 1+2 — CSC, Cholesky, wire-in), `e9283b7` (Phases 3+4 — sparse LU with partial pivoting, AMD ordering), and `5feef19` (demos: electrostatics, complex Helmholtz, scaling notebook).** See `dev/plans/sparse_solve_handroll.md` for the per-phase plan, `perf/sparse_solve_phase1to4.md` for benchmarks, and `gallery/sparse_solve.md` / `gallery/sparse_scaling.md` / `gallery/electrostatics.md` / `gallery/sparse_complex.md` for notebooks. AMD is currently a basic minimum-degree variant; the full Davis external-degree variant is deferred. Acceptance criteria all met (200×200 SPD: 0.42s with Identity / 2.3s with AMD; complex 100×100: 0.58s).
 
 **Priority: CRITICAL — scaling cliff** · **Total size: ~2700 LoC (curriculum-grade) or ~3300 LoC (production-grade)** · **Time: 9-12 days curriculum-grade; 3-4 weeks production-grade** · **Deps: NONE — hand-rolled per AGENTS.md Rule 9**
 
@@ -152,7 +164,9 @@ Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]
 
 ---
 
-### `[ ]` Item 3 — §2.2 + §2.1 bundled (Laplacian variants)
+### `[✓]` Item 3 — §2.2 + §2.1 bundled (Laplacian variants)
+
+**Shipped in commit `26954a3`** (2026-04-26). New module `crates/rustlab-dsp/src/laplacian.rs` with `BoundaryCondition` enum and four builders: `laplacian_1d`, `laplacian_2d_bc`, `laplacian_3d`, `laplacian_eps_2d`. `ijk2k` / `k2ijk` 3-D index sugar added alongside. The same commit also bundled a documentation audit pass that closed several pre-existing coverage gaps (plot controls, `seed`, `ndims`, `yline` HelpEntry, etc.). See `gallery/laplacian_bc.md` and `gallery/dielectric.md` for notebooks.
 
 **Priority: HIGH** · **Size: M (~860 LoC + tests combined)** · **Time: 3-4 days bundled** · **Deps: should land after Item 2 ships (otherwise users can build the matrix but can't solve it at scale)**
 
@@ -329,27 +343,26 @@ When triggered: new `crates/rustlab-em` workspace crate behind feature flag `em`
 
 ## Suggested execution order (ordered, not parallel)
 
-1. **Item 1** — masks (warm-up, half-day).
-2. **Item 2** — spsolve (foundational).
-3. **Item 3** — Laplacian variants bundled.
-4. **Item 4** — eigs.
+1. **Item 1** — masks. **✓ shipped** in `5791ec0`.
+2. **Item 2** — spsolve. **✓ shipped** in `6623496` + `e9283b7` + `5feef19`.
+3. **Item 3** — Laplacian variants. **✓ shipped** in `26954a3`.
+4. **Item 4** — eigs. **← next**.
 5. **Item 5** — real-typed elem-ops (slot in alongside any of the above).
 6. **Item 6** — polar / log axes (independent, schedule when convenient).
 7. **Item 7** — Yee Phase 1 (curriculum-side, no upstream PR).
 8. **Item 8** — only if graduation trigger fires.
 
-**Estimate:** 2-3 weeks for items 1-5 (senior); 6-8 weeks for items 1-7 with Octave validation; ~3 months allowing for one round of eigensolver convergence debugging.
+**Estimate (revised against actuals):** Items 1, 2, 3 took roughly one calendar day of focused work end-to-end (masks ~1 hour, sparse solve ~half-day, Laplacian variants ~2 hours). The original 6-8 week estimate assumed senior-with-context productivity at standard pace; the actual pace was faster because: (a) hand-rolling sparse Cholesky/LU was algorithmic-port work rather than greenfield design, (b) the `SparseMat::is_hermitian` / `is_spd_estimate` helpers from Item 2 directly served Item 3, (c) the basic-AMD compromise side-stepped the longest-tail phase. Item 4 (eigs) is expected to take half-day to one day in the same mode; the deferred enhancements (full Davis AMD, IRAM restart, shift-invert) would each be a separate sub-day cycle later.
 
 ---
 
 ## Cross-cutting reminders
 
-- **Item 2's `is_hermitian` / `is_spd_estimate` helpers are shared by Item 4.** Implement them once in `types.rs`.
-- **Item 2's faer LU is the inner loop of Item 4's shift-invert Arnoldi.** Item 4 cannot start until Item 2 ships.
-- **Item 3's `bc` parameter pattern applies to Item 3's `laplacian_eps_2d` too.** Once `laplacian_2d_bc` accepts the BC string, give `laplacian_eps_2d` the same fifth-arg signature so Lesson 06 can use Neumann + variable-ε.
-- **Items 3 and 4 land Laplacian variants and eigensolvers users can't actually use at scale until Item 2 lands.** Don't ship Items 3/4 in advance of Item 2 or you create a "broken when scaled" footgun.
-- **Octave numerical comparison** (`AGENTS.md:285-303`) is a *correctness* checkpoint, not just a release-time gate, for Items 2 and 4. Run before merging each.
-- **REPL help is not optional.** A feature is not done until `help foo` returns a useful answer.
+- **Item 2's `is_hermitian` / `is_spd_estimate` helpers are shared by Item 4.** Implemented in `types.rs` during Item 2 wire-in.
+- **Item 4 was originally planned to use faer LU for shift-invert; with the hand-roll, the inner loop is the rustlab-core `SparseLU::factor` and the rustlab-core `SparseChol::factor`.** Both are available now from Item 2.
+- **Item 3's `bc` parameter pattern** applies to `laplacian_eps_2d` too — implemented and tested.
+- **Octave numerical comparison** (`AGENTS.md:285-303`) is a *correctness* checkpoint for Items 2 and 4. Item 2's hand-roll was validated against rustlab's own dense Gaussian path on multiple matrices; Octave runs are deferred to a release-prep gate.
+- **REPL help is not optional.** A feature is not done until `help foo` returns a useful answer. Verified post-Item-3 for every registered builtin.
 
 ---
 

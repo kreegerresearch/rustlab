@@ -1,12 +1,16 @@
 # Implementation Plan — Hand-Rolled Sparse Solver (Item 2 of em_requests_queue)
 
-**Status:** Phases 1, 2, 3, 4 landed; Phase 5 (remove dense fallback for sparse input) effectively complete via the wire-in.
+**Status:** **Closed.** All five phases landed; acceptance criteria met. Future enhancements (full Davis AMD with external degree, IRAM restart for `eigs`, sparse-side row-pinning helper) tracked separately.
 **Date opened:** 2026-04-26.
 **Phase 1+2 commit:** `6623496` (CSC storage, sparse Cholesky for SPD, wire-in).
-**Phase 3+4 commit:** *(this commit)* — sparse LU with partial pivoting, AMD ordering as default for both paths.
+**Phase 3+4 commit:** `e9283b7` (sparse LU with partial pivoting, AMD ordering as default for both paths).
+**Demos commit:** `5feef19` (electrostatics, complex Helmholtz, scaling notebook, perf writeup).
+**Phase 5 status:** effectively complete via the Phase 1+2 wire-in; the dense LU fallback is intentionally retained for `Value::Matrix` inputs (sparse paths only run on `Value::SparseMatrix` inputs) — that's not a regression, it's the right behaviour for users explicitly providing dense matrices.
+
 **Source request:** `em_requests_queue.md` Item 2; underlying request `../rustlab_em/dev/rustlab/requests/em_requests.md` §2.3.
-**Target:** Production-grade (Phases 1-5 with AMD ordering), phase-by-phase PRs.
-**Total estimate:** ~3300 LoC implementation + ~1000 LoC tests, **3-4 weeks** senior-level work.
+**Outcome vs target:** plan said "production-grade (Phases 1-5 with AMD ordering), 3-4 calendar weeks". Actual ship: roughly half a working day across the three commits. Major scope reduction was the AMD implementation — basic minimum-degree (~270 LoC) shipped in lieu of full Davis AMD with external-degree refinement / supervariable detection (~700+ LoC). The basic AMD is competitive with `ColCountOrdering` on regular grids and beats it on irregular patterns; full Davis-AMD upgrade is a future enhancement.
+**Total LoC shipped:** ~2050 implementation + ~700 tests across `crates/rustlab-core/src/sparse_solve/` (csc, ordering, elimination_tree, cholesky, lu, mod, tests), plus ~350 LoC of dispatch in `builtins.rs` and ~50 LoC of `is_hermitian` / `is_spd_estimate` helpers in `types.rs`.
+**Performance vs acceptance criteria:** see `perf/sparse_solve_phase1to4.md`. 200×200 SPD factor + solve in 0.42s with Identity ordering / 2.3s with AMD (target was <30s with simple ordering, <10s with AMD — both met). Complex 100×100 lossy Helmholtz: 0.58s.
 
 This plan replaces the previously-locked `faer`-based design after `AGENTS.md` Rule 9 made hand-rolled pure Rust the policy for core algorithmic work.
 

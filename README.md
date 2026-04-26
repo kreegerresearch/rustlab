@@ -2,11 +2,12 @@
 
 A matrix algebra and DSP toolkit written in Rust — scriptable from the command line or embedded in your own applications.
 
-**[Browse the rendered notebook gallery →](gallery/)** — twelve worked
+**[Browse the rendered notebook gallery →](gallery/)** — twenty worked
 notebooks (DSP filter design, spectral estimation, vector calculus,
-contour and surface plots, sparse Laplacian solves, and more), all
-rendered with plots inline. GitHub displays them directly — no install
-needed to read.
+contour and surface plots, sparse direct solves with Cholesky and LU,
+multi-source electrostatics, dielectric Poisson, and more), all rendered
+with plots inline. GitHub displays them directly — no install needed
+to read.
 
 ---
 
@@ -325,7 +326,8 @@ rustlab ships with 180+ builtins. Here are the most commonly used; see [`docs/qu
 | **Streaming** | `state_init`, `filter_stream`, `audio_in`, `audio_out`, `audio_read`, `audio_write` |
 | **Structs** | `struct`, `isstruct`, `fieldnames`, `isfield`, `rmfield` |
 | **String arrays** | `{"a","b","c"}`, `iscell`, 1-based indexing, categorical `bar()` labels |
-| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `full`, `nnz`, `issparse`, `find` |
+| **Sparse** | `sparse`, `sparsevec`, `speye`, `spzeros`, `spdiags`, `sprand`, `spsolve`, `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, `laplacian_eps_2d`, `ij2k`, `k2ij`, `ijk2k`, `k2ijk`, `full`, `nnz`, `issparse`, `find`, `nonzeros` |
+| **Geometry** | `rect_mask`, `disk_mask`, `polygon_mask` (rasterization on a meshgrid) |
 | **Higher-order** | `arrayfun`, `feval`, `@(x) expr` (lambdas), `@name` (function handles) |
 | **Special** | `laguerre`, `legendre`, `factor`, `rk4`, `lyap`, `gram`, `freqresp` |
 | **Profiling** | `profile`, `profile_report` |

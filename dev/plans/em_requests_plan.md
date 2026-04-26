@@ -1,11 +1,25 @@
 # Implementation Plan — `em_requests.md` (nine asks)
 
-**Status:** Proposed
+**Status:** In progress. Items 1, 2, 3 shipped; Item 4 next; Items 5-7 pending.
 **Date opened:** 2026-04-26
 **Source:** `../rustlab_em/dev/rustlab/requests/em_requests.md`
 **Companion plan:** `dev/plans/rustlab_em_requests.md` (Phases 1-4 landed) — covers the *original* five EM requests; this plan covers the *additional* nine asks identified in the §2026-04 sweep.
+**Action queue:** `dev/plans/em_requests_queue.md` — execution-oriented companion to this plan, with per-item commit references.
 
 This plan turns `../rustlab_em/dev/rustlab/requests/em_requests.md` §2-§5 into a sized, sequenced work program against the rustlab tree at `/Users/mike/projects/2026/rustlab`.
+
+## Status snapshot
+
+| § | Item | Status | Commit(s) |
+|---|---|---|---|
+| §2.5 | rasterization masks | **shipped** | `5791ec0` |
+| §2.3 | sparse `spsolve` (Cholesky + LU + AMD) | **shipped** | `6623496`, `e9283b7`, `5feef19` |
+| §2.1 + §2.2 | Laplacian variants (BC, 1-D, 3-D, eps) | **shipped** | `26954a3` |
+| §2.4 | sparse `eigs(A, n)` and `eigs(A, B, n)` | **next** | — |
+| §4 | real-typed elem-ops (Option A) | pending | — |
+| §2.7 | polar / log axes | pending | — |
+| §2.6 Phase 1 | Yee + SC-PML scripted library | pending (curriculum-side) | — |
+| §2.6 Phase 2 | Yee + SC-PML native crate | blocked on graduation trigger | — |
 
 ## Licensing policy (applies to every dep choice in this plan)
 
@@ -16,9 +30,7 @@ This rules out, by name:
 - **`arpack-ng-sys`** (BSD-licensed but Fortran FFI) — disqualified for §2.4.
 - **MKL / Intel-licensed numerics** — disqualified anywhere.
 
-Confirmed acceptable:
-- **`faer`** (MIT-or-Apache-2.0, pure Rust) — primary dep for §2.3.
-- **`sprs`**, **`russell_sparse`**, **`lobpcg`**, **`ndarray-linalg`** — pure-Rust fallbacks if needed.
+**§2.3 outcome:** initially planned to use `faer` (MIT-or-Apache-2.0, pure Rust). User vetoed `faer` post-plan as "too large a library" — the constraint is broader than licensing. `AGENTS.md` Rule 9 codifies the new policy: core algorithms must be pure-Rust hand-roll. §2.3 was hand-rolled accordingly. See `dev/plans/sparse_solve_handroll.md` for the implementation plan and `perf/sparse_solve_phase1to4.md` for the resulting performance.
 
 ## Architectural facts the plan rests on
 

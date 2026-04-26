@@ -1,10 +1,12 @@
 # Development Plan: `rustlab_em` Feature Requests
 
-**Status:** Phases 1, 1.5, 2, 3, 4 landed — Phase 5 remaining
+**Status:** Phases 1, 1.5, 2, 3, 4 landed — Phase 5 (animation export) remaining.
 **Date opened:** 2026-04-22
-**Source:** `../rustlab_em/dev/rustlab/requests/*.md` (5 requests)
+**Source:** `../rustlab_em/dev/rustlab/requests/*.md` (5 originals)
 **Current rustlab version at plan creation:** `0.1.9`
 **Current rustlab version:** `0.1.11` (after Phase 4)
+
+**Follow-on work:** the curriculum's second sweep against rustlab is tracked in `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` (the §2026-04 sweep, nine asks). Phase 4 of *this* plan (laplacian stencil builder) was extended in the follow-on plan with BC selectors, 1-D / 3-D variants, and `laplacian_eps_2d` — see commit `26954a3`. Phase 5 (animation export) remains the lone un-shipped piece of this original five-request set.
 
 ---
 

@@ -155,6 +155,9 @@ together whenever a phase finishes.
 | Sparse Vectors and Matrices | `dev/plans/sparse.md` | Complete — all 4 phases (types, conversion, arithmetic, solver/utilities) |
 | Notebook System | `dev/plans/notebook_report.md` | Complete through Phase 6 (parse, execute, KaTeX, LaTeX/PDF, polish, multi-notebook) + light/dark theme support |
 | Notebook Future Features | `dev/plans/notebook_future.md` | Complete — template interpolation, string arrays, categorical bar charts |
+| Hand-Rolled Sparse Solver | `dev/plans/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
+| `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
+| Original `rustlab_em` Requests (5 originals) | `dev/plans/rustlab_em_requests.md` | Complete through Phase 4 — original five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d Phase 1). |
 
 ---
 
