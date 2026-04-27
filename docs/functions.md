@@ -469,6 +469,10 @@ ones(size(A))    # → ones matrix matching A's dimensions
 linspace(0.0, 1.0, 5)   # → [0.0, 0.25, 0.5, 0.75, 1.0]
 ```
 
+For the degenerate single-element case, rustlab follows the Octave / MATLAB convention: `linspace(a, b, 1)` returns `[b]` (the endpoint), not `[a]`. The numpy convention is the opposite — beware when porting numpy code.
+
+For `n = 0`, returns an empty vector.
+
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 

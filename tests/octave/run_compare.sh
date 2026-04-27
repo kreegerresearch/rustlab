@@ -41,19 +41,19 @@ echo "==> Generating rustlab CSV outputs..."
 
 echo
 echo "==> Generating Octave reference CSV outputs..."
-"$OCTAVE" --no-gui --quiet reference.m
-"$OCTAVE" --no-gui --quiet reference_full.m
+"$OCTAVE" --no-gui --no-window-system --quiet reference.m
+"$OCTAVE" --no-gui --no-window-system --quiet reference_full.m
 
 LOG=$(mktemp -t rustlab-octave-XXXXXX)
 trap 'rm -f "$LOG"' EXIT
 
 echo
 echo "==> Running DSP comparison suite (compare.m)..."
-"$OCTAVE" --no-gui --quiet compare.m | tee -a "$LOG"
+"$OCTAVE" --no-gui --no-window-system --quiet compare.m | tee -a "$LOG"
 
 echo
 echo "==> Running full comparison suite (compare_full.m)..."
-"$OCTAVE" --no-gui --quiet compare_full.m | tee -a "$LOG"
+"$OCTAVE" --no-gui --no-window-system --quiet compare_full.m | tee -a "$LOG"
 
 echo
 if grep -q "SOME TESTS FAILED" "$LOG"; then

@@ -118,6 +118,86 @@ T_ITER   = 1e-4;
 [p,f]=check('rk4 (final)',   'ref2_rk4_final.csv',    'out2_rk4_final.csv',    T_ITER);  pass_count+=p; fail_count+=f;
 [p,f]=check('rk4 (traj)',    'ref2_rk4_traj.csv',     'out2_rk4_traj.csv',     T_ITER);  pass_count+=p; fail_count+=f;
 
+% ── Vector calculus ───────────────────────────────────────────────────────────
+[p,f]=check('gradient (x, centre)',    'ref2_gradient_x_centre.csv',   'out2_gradient_x_centre.csv',   T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('gradient (x, interior)',  'ref2_gradient_x_interior.csv', 'out2_gradient_x_interior.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('gradient (y, interior)',  'ref2_gradient_y_interior.csv', 'out2_gradient_y_interior.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('divergence (centre)',  'ref2_divergence_centre.csv', 'out2_divergence_centre.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('divergence (corner)',  'ref2_divergence_corner.csv', 'out2_divergence_corner.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('curl (z, centre)',     'ref2_curl_centre.csv',       'out2_curl_centre.csv',       T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Sparse Laplacian builders ────────────────────────────────────────────────
+[p,f]=check('laplacian_2d (Dirichlet)', 'ref2_laplacian_2d_dirichlet.csv', 'out2_laplacian_2d_dirichlet.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('laplacian_2d (Neumann)',   'ref2_laplacian_2d_neumann.csv',   'out2_laplacian_2d_neumann.csv',   T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('laplacian_2d (periodic)',  'ref2_laplacian_2d_periodic.csv',  'out2_laplacian_2d_periodic.csv',  T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('laplacian_1d',             'ref2_laplacian_1d.csv',           'out2_laplacian_1d.csv',           T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('laplacian_eps_2d (eps=1)', 'ref2_laplacian_eps_unit.csv',     'out2_laplacian_eps_unit.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Sparse direct solve ──────────────────────────────────────────────────────
+[p,f]=check('spsolve (Poisson)',     'ref2_spsolve_v.csv',         'out2_spsolve_v.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Sparse partial eigensolver ───────────────────────────────────────────────
+[p,f]=check('eigs (smallest)',       'ref2_eigs_smallest.csv',     'out2_eigs_smallest.csv',     T_ITER); pass_count+=p; fail_count+=f;
+
+% ── Geometry masks ────────────────────────────────────────────────────────────
+[p,f]=check('disk_mask (area ≈ π)',  'ref2_disk_area.csv',         'out2_disk_area.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('rect_mask (count)',     'ref2_rect_count.csv',        'out2_rect_count.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('polygon_mask (square)', 'ref2_polygon_vs_rect_diff.csv', 'out2_polygon_vs_rect_diff.csv', T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Real-typed elem-ops (em_requests §4 Option A) ─────────────────────────────
+[p,f]=check('elem-div imag = 0',     'ref2_elemdiv_imag.csv',      'out2_elemdiv_imag.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('elem-mul imag = 0',     'ref2_elemmul_imag.csv',      'out2_elemmul_imag.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Edge cases ────────────────────────────────────────────────────────────────
+[p,f]=check('mod (negative)',        'ref2_mod_negative.csv',      'out2_mod_negative.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('mod (zero)',            'ref2_mod_zero.csv',          'out2_mod_zero.csv',          T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('single-element sin',    'ref2_single_sin.csv',        'out2_single_sin.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('single-element sum',    'ref2_single_sum.csv',        'out2_single_sum.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('single-element mean',   'ref2_single_mean.csv',       'out2_single_mean.csv',       T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('sort ties',             'ref2_sort_ties.csv',         'out2_sort_ties.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('log10 dynamic range',   'ref2_log_dynamic.csv',       'out2_log_dynamic.csv',       T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('atan2 quadrants',       'ref2_atan2_quadrants.csv',   'out2_atan2_quadrants.csv',   T_TRIG);  pass_count+=p; fail_count+=f;
+[p,f]=check('linspace (n=1)',        'ref2_linspace_single.csv',   'out2_linspace_single.csv',   T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('det diag 2x2',          'ref2_det_diag2.csv',         'out2_det_diag2.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('inv diag 2x2',          'ref2_inv_diag2.csv',         'out2_inv_diag2.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig (eye 3)',           'ref2_eig_eye3.csv',          'out2_eig_eye3.csv',          T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('norm zero vec',         'ref2_norm_zero.csv',         'out2_norm_zero.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+
+% ── Aggressive edge cases ────────────────────────────────────────────────────
+[p,f]=check('floor (neg/half)',      'ref2_floor_neg_half.csv',    'out2_floor_neg_half.csv',    T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('ceil (neg/half)',       'ref2_ceil_neg_half.csv',     'out2_ceil_neg_half.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('round (half)',          'ref2_round_half.csv',        'out2_round_half.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('sqrt(0)',               'ref2_sqrt_zero.csv',         'out2_sqrt_zero.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('sqrt(tiny)',            'ref2_sqrt_tiny.csv',         'out2_sqrt_tiny.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('log(1) and log(e)',     'ref2_log_one.csv',           'out2_log_one.csv',           T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('angle(real+)',          'ref2_angle_real_pos.csv',    'out2_angle_real_pos.csv',    T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('angle(real-)',          'ref2_angle_real_neg.csv',    'out2_angle_real_neg.csv',    T_TRIG);  pass_count+=p; fail_count+=f;
+[p,f]=check('angle(imag)',           'ref2_angle_imag.csv',        'out2_angle_imag.csv',        T_TRIG);  pass_count+=p; fail_count+=f;
+[p,f]=check('atan2(0, 0)',           'ref2_atan2_zero.csv',        'out2_atan2_zero.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('std (constant)',        'ref2_std_constant.csv',      'out2_std_constant.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('median (n=2)',          'ref2_median_two.csv',        'out2_median_two.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('cumsum (n=1)',          'ref2_cumsum_single.csv',     'out2_cumsum_single.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('trapz (n=2)',           'ref2_trapz_two.csv',         'out2_trapz_two.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('logspace (n=2)',        'ref2_logspace_two.csv',      'out2_logspace_two.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('reshape to row',        'ref2_reshape_to_row.csv',    'out2_reshape_to_row.csv',    T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('-1 * complex (re)',     'ref2_neg_complex_re.csv',    'out2_neg_complex_re.csv',    T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('-1 * complex (im)',     'ref2_neg_complex_im.csv',    'out2_neg_complex_im.csv',    T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('fft(zeros) (re)',       'ref2_fft_zeros_re.csv',      'out2_fft_zeros_re.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('fft(zeros) (im)',       'ref2_fft_zeros_im.csv',      'out2_fft_zeros_im.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('fft(delta) magnitude',  'ref2_fft_delta_mag.csv',     'out2_fft_delta_mag.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('fft round-trip',        'ref2_fft_roundtrip.csv',     'out2_fft_roundtrip.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('linsolve(I, b) = b',    'ref2_linsolve_identity.csv', 'out2_linsolve_identity.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('ctranspose (re)',       'ref2_ctranspose_re.csv',     'out2_ctranspose_re.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('ctranspose (im)',       'ref2_ctranspose_im.csv',     'out2_ctranspose_im.csv',     T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('transpose (im)',        'ref2_transpose_im.csv',      'out2_transpose_im.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('sort default',          'ref2_sort_default.csv',      'out2_sort_default.csv',      T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('argmin (1-based)',      'ref2_argmin_pos.csv',        'out2_argmin_pos.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('argmax (1-based)',      'ref2_argmax_pos.csv',        'out2_argmax_pos.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('colon step',            'ref2_colon_step.csv',        'out2_colon_step.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('colon decreasing',      'ref2_colon_decr.csv',        'out2_colon_decr.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('scalar + vector',       'ref2_scalar_add.csv',        'out2_scalar_add.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('scalar ./ vector',      'ref2_scalar_div.csv',        'out2_scalar_div.csv',        T_EXACT); pass_count+=p; fail_count+=f;
+
 fprintf('%s\n', repmat('-', 1, 70));
 fprintf('Total: %d passed, %d failed\n', pass_count, fail_count);
 if fail_count == 0

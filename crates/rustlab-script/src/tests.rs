@@ -6813,6 +6813,15 @@ mod sparse_tests {
     }
 
     #[test]
+    fn linspace_single_returns_endpoint_octave_convention() {
+        // Octave / MATLAB: linspace(a, b, 1) returns [b], not [a].
+        // (numpy returns [a]; rustlab follows Octave for ergonomic
+        // parity with curriculum scripts.)
+        let ev = eval_str("v = linspace(3, 7, 1)\nx = v(1)");
+        assert_eq!(get_scalar(&ev, "x"), 7.0);
+    }
+
+    #[test]
     fn elem_div_with_complex_input_preserves_imag() {
         // When even one operand has a nontrivial imag part, the
         // guard does NOT fire — imag is preserved.

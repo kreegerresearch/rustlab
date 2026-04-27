@@ -351,11 +351,18 @@ make octave-compare          # requires `octave` on PATH (brew install octave / 
 
 The target regenerates all `out*.csv` (rustlab) and `ref*.csv` (Octave) files in
 `tests/octave/`, then runs both `compare.m` (19 DSP cases) and `compare_full.m`
-(67 math/matrix/linalg/DSP/ODE cases). It exits nonzero if any case exceeds its
-per-suite tolerance (`T_EXACT=1e-9`, `T_FILTER=1e-6`, `T_FIRPM=1e-4`,
-`T_ITER=1e-4`). To add a new function, append a `save(...)` line to `rustlab_full.r`
-and a matching `csvwrite(...)` + `check(...)` pair to `reference_full.m` /
-`compare_full.m`.
+(112+ cases covering math, stats, matrix, linalg, sparse Laplacians, sparse direct
+solve, sparse eigs, geometry masks, vector calculus, real-typed elem-ops, FFT,
+and a swath of edge cases — empty/single-element inputs, banker's rounding, NaN
+boundaries, dynamic-range log, boundary-condition stencils, etc.). It exits
+nonzero if any case exceeds its per-suite tolerance (`T_EXACT=1e-9`,
+`T_FILTER=1e-6`, `T_FIRPM=1e-4`, `T_ITER=1e-4`). To add a new function, append
+a `save(...)` line to `rustlab_full.r` and a matching `csvwrite(...)` +
+`check(...)` pair to `reference_full.m` / `compare_full.m`.
+
+**Note:** the harness uses `octave --no-gui --no-window-system` to avoid Qt
+library issues on macOS Homebrew installs. If `--no-window-system` is missing,
+upgrade Octave (`brew upgrade octave`).
 
 ---
 

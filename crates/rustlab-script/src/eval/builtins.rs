@@ -1103,8 +1103,11 @@ fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
         return Ok(Value::Vector(Array1::zeros(0)));
     }
     if n == 1 {
+        // Octave / MATLAB convention: linspace(a, b, 1) returns [b],
+        // not [a] (numpy's choice). rustlab follows Octave for
+        // ergonomic parity with curriculum scripts.
         return Ok(Value::Vector(Array1::from_vec(vec![Complex::new(
-            start, 0.0,
+            stop, 0.0,
         )])));
     }
     let step = (stop - start) / (n - 1) as f64;

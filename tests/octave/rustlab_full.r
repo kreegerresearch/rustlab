@@ -195,3 +195,216 @@ t_rk4 = linspace(0.0, 1.0, 11)
 x_rk4 = rk4(f_decay, 1.0, t_rk4)
 save("out2_rk4_traj.csv", x_rk4)
 save("out2_rk4_final.csv", x_rk4(11))
+
+# ── Vector calculus on uniform grids ─────────────────────────────────────────
+# Test on a smooth analytic field: F(x, y) = x² + y². Gradient = (2x, 2y),
+# divergence of (x, y) = 2, curl of (-y, x) = 2 everywhere.
+# NOTE: at boundary cells, rustlab uses 2nd-order one-sided differences
+# (exact for quadratic) while Octave's gradient() uses 1st-order one-sided.
+# We compare *interior* points only; rustlab is intentionally more accurate
+# at boundaries than Octave-default-gradient.
+[Xv, Yv] = meshgrid(linspace(-1.0, 1.0, 11), linspace(-1.0, 1.0, 11))
+Fv = Xv .^ 2 + Yv .^ 2
+[Fxv, Fyv] = gradient(Fv, 0.2, 0.2)
+save("out2_gradient_x_centre.csv", Fxv(6, 6))   % interior: ≈ 0 (matches)
+save("out2_gradient_x_interior.csv", Fxv(7, 7)) % interior: 2*0.2 = 0.4 (matches)
+save("out2_gradient_y_interior.csv", Fyv(7, 7)) % interior: 2*0.2 = 0.4 (matches)
+
+# Divergence of radial field (x, y) is constant 2
+Dv = divergence(Xv, Yv, 0.2, 0.2)
+save("out2_divergence_centre.csv", Dv(6, 6))    % should be 2
+save("out2_divergence_corner.csv", Dv(1, 1))    % should be 2 too (boundary stencil exact for linear)
+
+# Curl of solid-body rotation (-y, x) is constant 2
+Cv = curl(-1 * Yv, Xv, 0.2, 0.2)
+save("out2_curl_centre.csv", Cv(6, 6))          % should be 2
+
+# ── Sparse Laplacian builders ────────────────────────────────────────────────
+# laplacian_2d on 4x3 grid with Dirichlet BC. Densify and save.
+L2d = full(laplacian_2d(4, 3, 1.0, 1.0))
+save("out2_laplacian_2d_dirichlet.csv", reshape(L2d, 1, 144))
+
+# laplacian_2d with Neumann BC — corner cell diag becomes -2
+L2d_neu = full(laplacian_2d(4, 3, 1.0, 1.0, "neumann"))
+save("out2_laplacian_2d_neumann.csv", reshape(L2d_neu, 1, 144))
+
+# laplacian_2d with periodic BC — wrap-around entries
+L2d_per = full(laplacian_2d(4, 3, 1.0, 1.0, "periodic"))
+save("out2_laplacian_2d_periodic.csv", reshape(L2d_per, 1, 144))
+
+# laplacian_1d
+L1d = full(laplacian_1d(5, 1.0, "dirichlet"))
+save("out2_laplacian_1d.csv", reshape(L1d, 1, 25))
+
+# laplacian_eps_2d with eps≡1 should equal laplacian_2d
+eps_unit = ones(3, 4)
+Le1 = full(laplacian_eps_2d(eps_unit, 1.0, 1.0))
+save("out2_laplacian_eps_unit.csv", reshape(Le1, 1, 144))
+
+# ── Sparse direct solve ──────────────────────────────────────────────────────
+# Build a SPD Poisson system and check the solve.
+A_pois = -1 * laplacian_2d(5, 4)
+# Build a known v_exact, compute rhs = A * v_exact, then verify spsolve recovers.
+v_exact = sin(linspace(0.1, 1.9, 20))
+rhs = full(A_pois) * transpose(v_exact)
+v_sol = spsolve(A_pois, transpose(rhs))
+save("out2_spsolve_v.csv", v_sol)
+
+# ── Sparse partial eigensolver ───────────────────────────────────────────────
+# Smallest eigenvalue of -laplacian_2d on a 4x5 grid.
+L_eig = -1 * laplacian_2d(4, 5)
+[V_eig, D_eig] = eigs(L_eig, 1, "sm")
+save("out2_eigs_smallest.csv", real(D_eig(1)))
+
+# ── Geometry masks ────────────────────────────────────────────────────────────
+# Disk mask area should approximate π * r² for fine grids.
+[Xd, Yd] = meshgrid(linspace(-1.5, 1.5, 100), linspace(-1.5, 1.5, 100))
+D_mask = disk_mask(Xd, Yd, 0.0, 0.0, 1.0)
+disk_area = sum(sum(D_mask)) * (3.0 / 99.0) ^ 2
+save("out2_disk_area.csv", disk_area)
+
+# Rectangle mask — exact count
+[Xr, Yr] = meshgrid(linspace(0.0, 1.0, 11), linspace(0.0, 1.0, 11))
+R_mask = rect_mask(Xr, Yr, 0.0, 0.0, 1.0, 1.0)
+save("out2_rect_count.csv", sum(sum(R_mask)))
+
+# Polygon mask: square should equal rect_mask. Use OFF-GRID sampling
+# so that no test cell sits exactly on a polygon edge — PNPOLY's tie-
+# break behaviour is implementation-defined on edges, which would
+# otherwise produce spurious mismatches. The unit-test in
+# rustlab-dsp/src/rasterize.rs uses the same trick.
+[Xr2, Yr2] = meshgrid(linspace(-0.25, 1.25, 60) + 0.0125, linspace(-0.25, 1.25, 60) + 0.0125)
+R2 = rect_mask(Xr2, Yr2, 0.0, 0.0, 1.0, 1.0)
+P2 = polygon_mask(Xr2, Yr2, [0,0; 1,0; 1,1; 0,1])
+save("out2_polygon_vs_rect_diff.csv", sum(sum(abs(P2 - R2))))
+
+# ── Real-typed elem-ops (em_requests §4 Option A) ─────────────────────────────
+u_real = [1.0, 2.0, 3.0, 4.0]
+v_real = [5.0, 6.0, 7.0, 8.0]
+w_div = u_real ./ v_real
+save("out2_elemdiv_imag.csv", max(abs(imag(w_div))))   % should be exactly 0
+
+w_mul = u_real .* v_real
+save("out2_elemmul_imag.csv", max(abs(imag(w_mul))))   % should be exactly 0
+
+# ── Edge cases: math ──────────────────────────────────────────────────────────
+# mod with negative dividend (rustlab uses Octave-compatible modulo)
+save("out2_mod_negative.csv", mod(-7.0, 3.0))      % should be 2 (Octave: -7 mod 3 = 2)
+save("out2_mod_zero.csv",     mod(0.0, 5.0))       % should be 0
+
+# Single-element operations
+save("out2_single_sin.csv",   sin([0.5]))
+save("out2_single_sum.csv",   sum([42.0]))
+save("out2_single_mean.csv",  mean([3.14]))
+
+# Sort with ties (should be stable for equal values)
+save("out2_sort_ties.csv",    sort([3.0, 1.0, 3.0, 1.0, 2.0]))
+
+# Large dynamic range
+save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))
+
+# atan2 quadrant boundaries
+save("out2_atan2_quadrants.csv", atan2([1.0, 1.0, -1.0, -1.0], [1.0, -1.0, -1.0, 1.0]))
+
+# linspace with single point (degenerate)
+# rustlab: linspace(a, b, 1) returns [a]
+save("out2_linspace_single.csv", linspace(3.0, 7.0, 1))
+
+# ── Edge cases: linear algebra ────────────────────────────────────────────────
+# Diagonal 2x2 — det and inv have closed-form answers (sanity)
+D2 = [3.0, 0.0; 0.0, 7.0]
+save("out2_det_diag2.csv", det(D2))
+save("out2_inv_diag2.csv", reshape(inv(D2), 1, 4))
+
+# eig of identity
+save("out2_eig_eye3.csv", sort(eig(eye(3))))
+
+# Norm of zero vector
+save("out2_norm_zero.csv", norm([0.0, 0.0, 0.0]))
+
+# ── Aggressive edge cases ─────────────────────────────────────────────────────
+# floor/ceil/round on negatives, halves, small-magnitude
+save("out2_floor_neg_half.csv", floor([-0.5, -1.5, -2.5, 0.5, 1.5, 2.5]))
+save("out2_ceil_neg_half.csv",  ceil([-0.5, -1.5, -2.5, 0.5, 1.5, 2.5]))
+save("out2_round_half.csv",     round([-0.5, -1.5, -2.5, 0.5, 1.5, 2.5]))   % banker's vs half-to-even
+
+# sqrt at boundaries
+save("out2_sqrt_zero.csv",      sqrt([0.0]))
+save("out2_sqrt_tiny.csv",      sqrt([1e-300]))
+
+# log near singularity
+save("out2_log_one.csv",        log([1.0, exp(1.0)]))    % log(1)=0, log(e)=1
+
+# angle / atan2 of pure-imaginary and pure-real
+save("out2_angle_real_pos.csv", angle([5.0]))            % 0
+save("out2_angle_real_neg.csv", angle([-5.0]))           % π
+save("out2_angle_imag.csv",     angle([j*3.0]))          % π/2
+save("out2_atan2_zero.csv",     atan2(0.0, 0.0))         % 0 by convention
+
+# stats on degenerate inputs
+save("out2_std_constant.csv",   std([5.0, 5.0, 5.0, 5.0]))    % 0 exactly
+save("out2_median_two.csv",     median([3.0, 1.0]))           % 2 (mean of two middles)
+
+# cumsum with single element
+save("out2_cumsum_single.csv",  cumsum([42.0]))
+
+# trapz with 2 points (single trapezoid)
+save("out2_trapz_two.csv",      trapz([0.0, 1.0], [0.0, 1.0]))   % 0.5
+
+# logspace edge cases
+save("out2_logspace_two.csv",   logspace(0.0, 2.0, 2))         % [1, 100]
+
+# matrix ops on 1x1 (use a 1x1 via `[[x]]`)
+M11 = [3.5; 0.0]
+M11 = [3.5]                                                      % row vector — det/inv don't accept
+% Skip — handled via 2x2 above.
+
+# Reshape boundary
+save("out2_reshape_to_row.csv", reshape([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 1, 6))
+
+# Negate a complex vector via element op
+neg_test = -1 * [1.0+j*2.0, 3.0-j*1.0]
+save("out2_neg_complex_re.csv", real(neg_test))
+save("out2_neg_complex_im.csv", imag(neg_test))
+
+# fft of all-zeros
+save("out2_fft_zeros_re.csv",   real(fft(zeros(8, 1))))
+save("out2_fft_zeros_im.csv",   imag(fft(zeros(8, 1))))
+
+# fft of a delta — should have constant magnitude
+delta = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+F_delta = fft(delta)
+save("out2_fft_delta_mag.csv",  abs(F_delta))             % all 1s
+
+# inverse fft round-trip
+sig = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+roundtrip = real(ifft(fft(sig)))
+save("out2_fft_roundtrip.csv",  roundtrip)                % equals sig
+
+# Matrix power-edge: solve I x = b returns b
+I3 = eye(3)
+b3 = [7.0; 11.0; 13.0]
+save("out2_linsolve_identity.csv", linsolve(I3, b3))
+
+# Hermitian conjugate-transpose vs plain transpose
+zc = [1.0+j*2.0, 3.0+j*4.0]
+save("out2_ctranspose_re.csv",  real(zc'))                % conj transpose: [1, 3]
+save("out2_ctranspose_im.csv",  imag(zc'))                % conj transpose: [-2, -4]
+save("out2_transpose_im.csv",   imag(transpose(zc)))      % plain: [+2, +4]
+
+# Sort descending — rustlab default is ascending
+save("out2_sort_default.csv",   sort([3.0, 1.0, 2.0]))    % [1, 2, 3]
+
+# argmin/argmax 1-based
+save("out2_argmin_pos.csv",     argmin([5.0, 1.0, 3.0]))  % 2
+save("out2_argmax_pos.csv",     argmax([5.0, 9.0, 3.0]))  % 2
+
+# Test `:` operator
+save("out2_colon_step.csv",     1:2:9)                    % [1, 3, 5, 7, 9]
+save("out2_colon_decr.csv",     5:-1:1)                   % [5, 4, 3, 2, 1]
+
+# Vector/scalar broadcasting
+save("out2_scalar_add.csv",     5.0 + [1.0, 2.0, 3.0])
+save("out2_scalar_div.csv",     12.0 ./ [2.0, 3.0, 4.0])
+
+print("done")
