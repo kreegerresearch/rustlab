@@ -214,17 +214,6 @@ impl Value {
         m
     }
 
-    /// Promote a value to CVector
-    #[allow(dead_code)]
-    fn promote_to_cvector(v: Value) -> Result<CVector, String> {
-        match v {
-            Value::Scalar(n) => Ok(Array1::from_vec(vec![Self::scalar_to_c64(n)])),
-            Value::Complex(c) => Ok(Array1::from_vec(vec![c])),
-            Value::Vector(v) => Ok(v),
-            other => Err(format!("cannot promote {} to vector", other.type_name())),
-        }
-    }
-
     /// Conjugate transpose: `A'`
     /// A row vector (1×n) becomes a column vector stored as Matrix(n×1).
     /// A Matrix is conjugate-transposed normally.

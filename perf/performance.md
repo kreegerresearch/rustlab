@@ -1,28 +1,37 @@
 # Performance & Binary Size
 
-Measurements taken on the current `main` build (v0.1.1, Apple M-series arm64).
+Audit and recommendations document. Numbers in `## Current binary size`
+and `## Expected impact` are baseline-era estimates kept for historical
+context — the live, regenerated measurements live in
+[`report.md`](report.md), produced by `make perf` (or
+`bash perf/run_perf.sh`).
+
+| | |
+|---|---|
+| **Document scope** | dependency audit + release-profile recommendations |
+| **Audit baseline** | v0.1.1, Apple M-series arm64 |
+| **Current version** | 0.1.12 |
+| **Latest live numbers** | see [`perf/report.md`](report.md) |
 
 ---
 
 ## Running the benchmarks
 
-All benchmarks are `.r` scripts in this directory. Run them with the release
-binary and `time` to measure wall time:
+All benchmarks are `.r` scripts in this directory. The recommended path
+is `make perf`, which builds release, runs every `bench_*.r`, measures
+binary size, and rewrites `perf/report.md`:
 
 ```sh
-# Build release first (always measure release, not debug)
-cargo build --release
+make perf
+```
 
-# Individual workloads
+To run an individual workload by hand:
+
+```sh
+cargo build --release
 time ./target/release/rustlab run perf/bench_upfirdn.r
 time ./target/release/rustlab run perf/bench_fft.r
 time ./target/release/rustlab run perf/bench_linalg.r
-
-# All at once
-for f in perf/bench_*.r; do
-  echo "── $f ──"
-  time ./target/release/rustlab run "$f"
-done
 ```
 
 For more detailed profiling on macOS use `Instruments` or `samply`:
@@ -41,9 +50,18 @@ hyperfine --warmup 3 './target/release/rustlab run perf/bench_upfirdn.r'
 
 | Script | What it measures |
 |---|---|
-| `bench_upfirdn.r` | polyphase upfirdn — three signal sizes and rate ratios |
+| `bench_builtins.r` | element-wise builtins (`abs`, `exp`, `log`, `sqrt`, `sin`, `cos`, `tanh`, `sum`, `mean`, `std`, `sort`) at n=100 000 |
+| `bench_convolve.r` | direct convolution at four signal × kernel sizes |
 | `bench_fft.r` | FFT/IFFT round-trip — 1 K, 16 K, 128 K points |
+| `bench_filter_design.r` | FIR (`hann`, Kaiser, Parks–McClellan) and IIR Butterworth design |
+| `bench_interpreter.r` | scalar loop, indexed assignment, deep expression chain, function-call overhead |
 | `bench_linalg.r` | matrix multiply, inverse, and eigenvalues at 32–256 size |
+| `bench_upfirdn.r` | polyphase upfirdn — three signal sizes and rate ratios |
+
+> The DSP-heavy `Tensor3` work added in v0.1.11 / v0.1.12 is captured in
+> `baseline_pre_tensor3.md`, `post_phase4.md`, and `post_phase7.md`.
+> Compare those snapshots if you want to track regressions across the
+> tensor3 sweep.
 
 ---
 
@@ -51,17 +69,17 @@ hyperfine --warmup 3 './target/release/rustlab run perf/bench_upfirdn.r'
 
 | Build | Size |
 |---|---|
-| `cargo build --release` (baseline) | **4.3 MB** |
-| After `strip` | **3.7 MB** |
+| `cargo build --release` (audit baseline, v0.1.1) | **4.3 MB** |
+| After `strip` (audit baseline) | **3.7 MB** |
 
-The 0.6 MB difference is debug symbols embedded in the Mach-O binary.
-The `__TEXT` (code) section is **3.44 MB**; `__DATA` is 16 KB.
+For up-to-date sizes (after OPT-1/2/3 below) see
+[`report.md`](report.md) → "Binary Size".
 
 ---
 
 ## Dependency audit
 
-### `zip` — biggest avoidable cost
+### `zip` — biggest avoidable cost (✅ applied)
 
 `zip`'s default feature set includes every compression codec it supports:
 
@@ -84,27 +102,48 @@ The codebase uses **only `Stored` (no compression) for writing** and needs
 | `time` | No |
 
 **Fix:** pin zip to `default-features = false, features = ["deflate"]`.
+**Status:** applied in `Cargo.toml` (workspace dependency).
 
-### `rayon` — enabled but unused
+### `rayon` — was enabled but unused (✅ removed)
 
-`ndarray` is declared with `features = ["rayon"]` in the workspace, which
-compiles the full `rayon` thread-pool runtime into every crate that depends
-on `ndarray`. No code in the project calls `par_iter`, `par_azip`, or any
-other parallel ndarray operation.
+`ndarray` was previously declared with `features = ["rayon"]`, which
+compiled the full `rayon` thread-pool runtime into every crate that
+depends on `ndarray`. No code in the project calls `par_iter`,
+`par_azip`, or any other parallel ndarray operation.
 
 **Fix:** remove the `rayon` feature from the `ndarray` workspace dependency.
+**Status:** applied — `ndarray = "0.16"` (no features) in `Cargo.toml`.
 
-### No release profile
+### Release profile (✅ applied)
 
-The workspace has no `[profile.release]` section, so it uses Rust defaults:
-`opt-level = 3`, `lto = false`, `codegen-units = 16`, no stripping.
+The workspace originally had no `[profile.release]` section, so it used
+Rust defaults: `opt-level = 3`, `lto = false`, `codegen-units = 16`, no
+stripping. Without LTO the linker cannot inline or dead-strip across
+crate boundaries.
 
-Without LTO the linker cannot inline or dead-strip across crate boundaries,
-leaving unreachable code from large dependencies in the binary.
+The current workspace `Cargo.toml`:
+
+```toml
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+```
+
+**Status:** applied.
 
 ---
 
-## Recommended changes
+## Recommended changes (status)
+
+| ID | Change | Status |
+|----|--------|--------|
+| OPT-1 | `zip`: `default-features = false, features = ["deflate"]` | **applied** |
+| OPT-2 | `ndarray`: remove `features = ["rayon"]` (unused) | **applied** |
+| OPT-3 | `[profile.release]` — `lto = "thin"`, `codegen-units = 1`, `strip = "symbols"` | **applied** |
+
+Historical guidance below is kept for the next time we trim deps.
 
 ### 1. Trim `zip` features
 
@@ -133,8 +172,9 @@ ndarray = { version = "0.16", features = ["rayon"] }
 ndarray = "0.16"
 ```
 
-Removes the `rayon` thread-pool from all five crates. If parallel matrix
-operations are added in future, re-enable it only in the crate that needs it.
+Removes the `rayon` thread-pool from all crates that depend on `ndarray`.
+If parallel matrix operations are added in future, re-enable it only in
+the crate that needs it.
 
 ### 3. Add a release profile
 
@@ -148,34 +188,30 @@ codegen-units = 1       # single CGU lets LLVM see the whole program
 strip         = "symbols"  # drop debug symbols from the installed binary
 ```
 
-`lto = "thin"` gives most of the binary-size and speed benefit of full LTO
-with much faster link times. Use `lto = true` (fat LTO) for the smallest
-possible binary at the cost of longer release builds.
+`lto = "thin"` gives most of the binary-size and speed benefit of full
+LTO with much faster link times. Use `lto = true` (fat LTO) for the
+smallest possible binary at the cost of longer release builds.
 
 `panic = "abort"` can also be added to remove the unwinding machinery
-(saves ~50–100 KB), but check that any code relying on `catch_unwind` still
-works — `rustyline` uses it internally for the REPL, so leave this out unless
-you verify it is safe.
+(saves ~50–100 KB), but check that any code relying on `catch_unwind`
+still works — `rustyline` uses it internally for the REPL, so leave this
+out unless you verify it is safe.
 
 ### 4. Install-time stripping (`make install`)
 
-The Makefile copies the binary; `strip = "symbols"` in the profile will
-handle this automatically. If the profile strip is not added, the Makefile
-can do it explicitly:
-
-```makefile
-install: release
-	cp target/release/rustlab $(INSTALL_DIR)/rustlab
-	strip $(INSTALL_DIR)/rustlab
-	codesign --sign - --force $(INSTALL_DIR)/rustlab  # macOS only
-```
+The Makefile copies the binary; `strip = "symbols"` in the profile
+handles this automatically. Stripping in the Makefile is therefore
+unnecessary, but the macOS `codesign --sign - --force` step is still
+useful so the binary launches cleanly from `~/.local/bin/`.
 
 ---
 
-## Expected impact
+## Expected impact (audit-era estimates)
 
-These are estimates based on the dependency tree audit; measure after each
-change to confirm.
+These were estimates based on the dependency tree audit at v0.1.1 and
+have all been applied. For current measurements compare
+`perf/report.md` against the v0.1.1 baseline numbers (4.3 MB unstripped /
+3.7 MB stripped).
 
 | Change | Expected size reduction |
 |---|---|
@@ -183,9 +219,26 @@ change to confirm.
 | Remove `rayon` | ~150–250 KB |
 | Add `lto = "thin"` | ~200–400 KB (also improves runtime) |
 | `strip = "symbols"` | ~600 KB |
-| All four combined | **~1.3–1.7 MB** off the current 4.3 MB |
+| All four combined | **~1.3–1.7 MB** off the v0.1.1 4.3 MB |
 
-Final estimate: **~2.6–3.0 MB** installed binary.
+Audit-era projection: **~2.6–3.0 MB** installed binary.
+
+---
+
+## New work since the original audit (v0.1.2 → v0.1.12)
+
+The benchmark suite has grown well beyond the three original workloads.
+Each major sweep landed with a snapshot in this directory:
+
+| Snapshot | Sweep |
+|---|---|
+| `sparse_solve_phase1to4.md` | hand-rolled sparse Cholesky + sparse LU + AMD ordering (`em_requests` Item 2) |
+| `baseline_pre_tensor3.md` | reference run before the `Tensor3` plan |
+| `post_phase4.md` | `Tensor3` Phase 4 (`laplacian_3d`, `ij2k`/`k2ij` index helpers) |
+| `post_phase7.md` | `Tensor3` Phase 7 closing report |
+
+When a sweep adds new builtins, append them to `bench_*.r` (or add a new
+`bench_<feature>.r`) so the next `make perf` picks them up automatically.
 
 ---
 
@@ -197,6 +250,10 @@ Final estimate: **~2.6–3.0 MB** installed binary.
 - **`plotters`** is already pared down with `default-features = false` — good.
 - **`ratatui` / `crossterm`** are the terminal-rendering stack; they are
   well-scoped and unlikely to be a size issue.
-- Once `ndarray-linalg` is enabled (the stubbed `linalg` feature), it will
-  pull in BLAS/LAPACK — pin carefully and use the `accelerate` backend on
-  macOS to avoid bundling a BLAS implementation.
+- Pure-Rust hand-rolled sparse solvers (`crates/rustlab-core/src/sparse_solve/`)
+  and sparse eigensolvers (`crates/rustlab-core/src/sparse_eig/`) keep us
+  off `ndarray-linalg` / BLAS / LAPACK. Per AGENTS.md Rule 9, any future
+  proposal to bring those in needs an explicit trade-off study.
+- If `bench_interpreter`'s scalar-loop time creeps past ~1 ms / 10 K
+  additions, that is the signal to revisit interpreter dispatch (bytecode
+  compile pass, JIT, or specialised numeric fast path).

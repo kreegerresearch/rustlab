@@ -4,7 +4,7 @@
 **Date opened:** 2026-04-22
 **Date completed:** 2026-04-22
 **Target version bump:** unknown (likely a minor: `0.1.9` → `0.2.0` given new `Value` variant)
-**Driver:** `em_lab` Lesson 09 (FDTD) and the 3D variants of request #1 (`gradient3`, `divergence3`, `curl3`). See sibling plan `dev/plans/em_lab_requests.md`.
+**Driver:** `rustlab_em` Lesson 09 (FDTD) and the 3D variants of request #1 (`gradient3`, `divergence3`, `curl3`). See sibling plan `dev/plans/rustlab_em_requests.md`.
 **Total estimate:** 8–12 focused days, dominated by indexing (Step 3).
 
 ---
@@ -66,7 +66,7 @@ key reason the blast radius is manageable despite the large ref count.
 
 ## Mandatory workflow rules
 
-Same as the parent plan (`dev/plans/em_lab_requests.md`). Summarised here so
+Same as the parent plan (`dev/plans/rustlab_em_requests.md`). Summarised here so
 this doc stands alone:
 
 1. **Plan-first.** Phase 0 below must complete before any code is written.
@@ -427,8 +427,8 @@ workaround.
 
 1. **Start with Phase 0.** The 7 open decisions above have real downstream
    consequences. Do not guess; get answers.
-2. **Read `dev/plans/em_lab_requests.md` first.** This plan is a dependency
-   of the em_lab Phase 1.5 (3D vector calculus) — context from the parent
+2. **Read `dev/plans/rustlab_em_requests.md` first.** This plan is a dependency
+   of the rustlab_em Phase 1.5 (3D vector calculus) — context from the parent
    plan may shape priorities.
 3. **Benchmark discipline.** Capture baseline before writing code, diff at
    the end of Phase 4 and Phase 7. Do not skip this step — it's cheap and
@@ -445,7 +445,7 @@ workaround.
    mega-commit for the whole plan is discouraged. Confirm with Mike before
    starting.
 7. **Never `git push --force`.** Standard repo rule; see global `CLAUDE.md`.
-8. **After Phase 7 lands**, update `dev/plans/em_lab_requests.md` Phase 1
+8. **After Phase 7 lands**, update `dev/plans/rustlab_em_requests.md` Phase 1
    to re-enable the deferred 3D operators (`gradient3`, `divergence3`,
    `curl3`), and mark this plan `Status: Complete`.
 
@@ -466,4 +466,4 @@ workaround.
 | `reshape` implementation | `builtins.rs:2920` |
 | REPL help registry | `crates/rustlab-cli/src/commands/repl.rs` (`HelpEntry`, `print_help_list`) |
 | Benchmarks | `perf/run_perf.sh` + `perf/bench_*.r` |
-| Parent plan (em_lab requests) | `dev/plans/em_lab_requests.md` |
+| Parent plan (rustlab_em requests) | `dev/plans/rustlab_em_requests.md` |
