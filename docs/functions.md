@@ -19,6 +19,25 @@ Complete reference for all built-in functions and constants available in the rus
 
 ## Math
 
+### Type-preservation note for element-wise operators
+
+rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
+
+```
+u = [1.0, 2.0, 3.0]
+v = [4.0, 5.0, 6.0]
+w = u ./ v          % w has imag(w) ≡ 0 exactly
+```
+
+The guard fires only when **both** operands are essentially real. Pass a complex operand and the imag part is preserved, so phasor / lossy-material code is unaffected:
+
+```
+z = [1+j, 2+j]
+w = z ./ [3, 4]     % w has nonzero imag — z's complex content is preserved
+```
+
+This applies to `.*`, `./`, and `.^` on `Vector` and `Matrix` types. Other operators (`*`, `/`, `inv`, `fft`, etc.) still produce complex outputs even on real inputs — extending the no-noise behaviour to those would require a typed-real value variant, which is tracked as a future plan.
+
 ### `abs(x)`
 Absolute value or magnitude. Element-wise on all numeric types.
 - Scalar: `abs(-3.0)` → `3.0`
@@ -1844,6 +1863,44 @@ streamplot(X, Y, U, V, "r");        % red streamlines
 ```
 
 Same `hold on` / backend behaviour as `quiver`.
+
+### `loglog(x, y [, opts])` / `semilogx(x, y [, opts])` / `semilogy(x, y [, opts])`
+
+Log-axis line plots. Implemented as **pre-transform shims** over `plot()`: the data is mapped through `log10` and the resulting axes are labeled `log10(x)` / `log10(y)` to indicate the transform. Power-law data renders as a straight line on `loglog`, exponential decay as a straight line on `semilogy`, etc.
+
+```
+% Power law y = x^2 looks like a straight line of slope 2.
+x = logspace(0, 3, 50);
+y = x .^ 2;
+loglog(x, y);
+
+% Bode-style frequency response.
+f = logspace(0, 4, 200);
+H = freqz_eval(f, ...);
+semilogx(f, 20 * log10(abs(H)))
+```
+
+`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error.
+
+Tick labels are the log10 values themselves (0, 1, 2, 3 instead of 1, 10, 100, 1000). Proper LogCoord-style axes with decade labels are tracked as a future enhancement; the pre-transform shim correctly captures the curve shapes that the curriculum needs.
+
+### `polar(theta, r [, opts])`
+
+Polar plot via Cartesian pre-transform: plots `(r·cos(θ), r·sin(θ))` and labels the axes accordingly. `theta` is in radians; both arguments must be real-valued.
+
+```
+% Three-petal rose curve.
+theta = linspace(0, 2*pi, 360);
+r = 1 + 0.3 * cos(3 * theta);
+polar(theta, r);
+
+% Antenna pattern (Hertzian dipole).
+theta = linspace(-pi, pi, 360);
+r = abs(sin(theta));
+polar(theta, r)
+```
+
+Radial gridlines and angular tick labels are tracked as a future enhancement; the pre-transform plot still produces the correct closed shape and is sufficient for visual verification of antenna lobes, polar response curves, etc.
 
 ---
 

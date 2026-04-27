@@ -960,6 +960,10 @@ primary     = NUMBER | STRING | IDENT
 | `find` | `find(S)` | `[I,J,V]` tuple for sparse matrix, `[I,V]` for sparse vector (1-based) |
 | `spsolve` | `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto detects SPD (Hermitian + real-positive diagonal); SPD routes to hand-rolled sparse Cholesky, otherwise to hand-rolled sparse LU with partial pivoting. Both paths use AMD ordering by default. Real-vs-complex auto-detection at the entries level. Dense Value::Matrix input still uses the legacy dense Gaussian elimination. |
 | `eigs` | `[V, D] = eigs(A, n [, which])` / `[V, D] = eigs(A, B, n [, which])` | Sparse partial eigensolver. Returns the `n` smallest (`"sm"`, default) or largest (`"lm"`) eigenpairs. Standard problem `A x = λ x` or generalized `A x = λ B x` for B SPD. Auto-routes Hermitian inputs to hand-rolled Lanczos (with full reorthogonalization), general inputs to hand-rolled Arnoldi. The small dense problem is solved via Jacobi (symmetric) or shifted-QR (general). Implicit restart and shift-invert are deferred to a follow-up. |
+| `loglog` | `loglog(x, y [, opts])` | Log-log line plot — x and y must be strictly positive. Implemented as a pre-transform via log10 (axes labeled "log10(x)", "log10(y)"). Same option syntax as `plot()`. |
+| `semilogx` | `semilogx(x, y [, opts])` | Log-x linear-y plot. Pre-transform shim. |
+| `semilogy` | `semilogy(x, y [, opts])` | Linear-x log-y plot. Pre-transform shim. |
+| `polar` | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)`. theta in radians; both real-valued. |
 | `spdiags` | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals; D=0 main, >0 super, <0 sub |
 | `sprand` | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `laplacian_1d` | `laplacian_1d(n [, dx] [, bc])` | Sparse tridiagonal Laplacian on a 1-D grid. `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"`. |

@@ -187,6 +187,33 @@ impl Value {
         }
     }
 
+    /// Em_requests §4 Option A — real-input → real-output for element-
+    /// wise ops. rustlab stores everything as `Complex<f64>`; when both
+    /// operands of an elem-op are essentially real (every imag part below
+    /// `f64::EPSILON`), the result's imag part is floating-point noise.
+    /// Zero it so `real(...)` wrappers aren't needed downstream.
+    fn vector_all_real(v: &CVector) -> bool {
+        v.iter().all(|c| c.im.abs() < f64::EPSILON)
+    }
+
+    fn matrix_all_real(m: &CMatrix) -> bool {
+        m.iter().all(|c| c.im.abs() < f64::EPSILON)
+    }
+
+    fn vector_zero_imag(mut v: CVector) -> CVector {
+        for c in v.iter_mut() {
+            c.im = 0.0;
+        }
+        v
+    }
+
+    fn matrix_zero_imag(mut m: CMatrix) -> CMatrix {
+        for c in m.iter_mut() {
+            c.im = 0.0;
+        }
+        m
+    }
+
     /// Promote a value to CVector
     #[allow(dead_code)]
     fn promote_to_cvector(v: Value) -> Result<CVector, String> {
@@ -880,6 +907,15 @@ impl Value {
                             })),
                             _ => unreachable!(),
                         };
+                        // §4 Option A: real-input → real-output for elem-ops.
+                        let result = if matches!(op, ElemMul | ElemDiv | ElemPow)
+                            && Self::vector_all_real(a)
+                            && Self::vector_all_real(b)
+                        {
+                            Self::vector_zero_imag(result)
+                        } else {
+                            result
+                        };
                         Ok(Value::Vector(result))
                     }
                     Div => Err(
@@ -981,7 +1017,13 @@ impl Value {
                             b.ncols()
                         ));
                     }
-                    Ok(Value::Matrix(a * b))
+                    let result = a * b;
+                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
+                        Self::matrix_zero_imag(result)
+                    } else {
+                        result
+                    };
+                    Ok(Value::Matrix(result))
                 }
                 ElemDiv => {
                     if a.shape() != b.shape() {
@@ -993,7 +1035,13 @@ impl Value {
                             b.ncols()
                         ));
                     }
-                    Ok(Value::Matrix(a / b))
+                    let result = a / b;
+                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
+                        Self::matrix_zero_imag(result)
+                    } else {
+                        result
+                    };
+                    Ok(Value::Matrix(result))
                 }
                 Div => Err(
                     "use ./ for element-wise matrix division; or inv(A)*B for left-divide"
@@ -1019,9 +1067,14 @@ impl Value {
                             (y * ln_x).exp()
                         })
                         .collect();
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?,
-                    ))
+                    let result = Array2::from_shape_vec((rows, cols), data)
+                        .map_err(|e| e.to_string())?;
+                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
+                        Self::matrix_zero_imag(result)
+                    } else {
+                        result
+                    };
+                    Ok(Value::Matrix(result))
                 }
                 _ => unreachable!(),
             },

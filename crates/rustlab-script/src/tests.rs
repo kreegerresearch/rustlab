@@ -6710,6 +6710,123 @@ mod sparse_tests {
         assert!(result.is_err());
     }
 
+    // ── Real-typed elem-ops (em_requests §4 Option A) ─────────────
+
+    #[test]
+    fn elem_div_of_real_vectors_has_zero_imag() {
+        // ./ between two real-valued vectors should produce a result
+        // whose imaginary part is exactly zero, not 1e-11 noise.
+        let ev = eval_str(
+            "u = [1.0, 2.0, 3.0]\n\
+             v = [4.0, 5.0, 6.0]\n\
+             w = u ./ v\n\
+             max_imag = max(abs(imag(w)))",
+        );
+        assert_eq!(get_scalar(&ev, "max_imag"), 0.0);
+    }
+
+    #[test]
+    fn elem_mul_of_real_vectors_has_zero_imag() {
+        let ev = eval_str(
+            "u = [1.0, 2.0, 3.0]\n\
+             v = [4.0, 5.0, 6.0]\n\
+             w = u .* v\n\
+             max_imag = max(abs(imag(w)))",
+        );
+        assert_eq!(get_scalar(&ev, "max_imag"), 0.0);
+    }
+
+    #[test]
+    fn elem_pow_of_real_vectors_has_zero_imag() {
+        let ev = eval_str(
+            "u = [1.0, 2.0, 3.0]\n\
+             v = [2.0, 2.0, 2.0]\n\
+             w = u .^ v\n\
+             max_imag = max(abs(imag(w)))",
+        );
+        assert_eq!(get_scalar(&ev, "max_imag"), 0.0);
+    }
+
+    #[test]
+    fn elem_div_of_real_matrices_has_zero_imag() {
+        let ev = eval_str(
+            "A = [1.0, 2.0; 3.0, 4.0]\n\
+             B = [4.0, 5.0; 6.0, 7.0]\n\
+             C = A ./ B\n\
+             max_imag = max(max(abs(imag(C))))",
+        );
+        assert_eq!(get_scalar(&ev, "max_imag"), 0.0);
+    }
+
+    // ── Log-axis and polar plots ───────────────────────────────────
+
+    #[test]
+    fn loglog_smoke_test() {
+        // Just verifies it runs and labels the axes.
+        eval_str(
+            "loglog([1, 10, 100], [1, 100, 10000])",
+        );
+    }
+
+    #[test]
+    fn loglog_rejects_nonpositive() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str("loglog([-1, 1, 10], [1, 1, 1])")
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn semilogx_smoke_test() {
+        eval_str(
+            "semilogx([1, 10, 100], [0.5, 1.0, 1.5])",
+        );
+    }
+
+    #[test]
+    fn semilogy_smoke_test() {
+        eval_str(
+            "semilogy([1, 2, 3], [1, 10, 100])",
+        );
+    }
+
+    #[test]
+    fn polar_smoke_test() {
+        // Use a vector of ones (length 100, not a 1x100 matrix).
+        eval_str(
+            "theta = linspace(0, 2*pi, 100)\n\
+             r = 0 * theta + 1\n\
+             polar(theta, r)",
+        );
+    }
+
+    #[test]
+    fn polar_rejects_length_mismatch() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "theta = linspace(0, 2*pi, 100)\n\
+                 r = [1, 2]\n\
+                 polar(theta, r)",
+            )
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn elem_div_with_complex_input_preserves_imag() {
+        // When even one operand has a nontrivial imag part, the
+        // guard does NOT fire — imag is preserved.
+        let ev = eval_str(
+            "u = [1.0 + 1.0*j, 2.0]\n\
+             v = [3.0, 4.0]\n\
+             w = u ./ v\n\
+             im0 = imag(w(1))",
+        );
+        // First entry: (1 + j) / 3 = 1/3 + (1/3)j, so imag ≈ 0.333.
+        let im0 = get_scalar(&ev, "im0");
+        assert!((im0 - 1.0 / 3.0).abs() < 1e-12, "got {im0}");
+    }
+
     #[test]
     fn ijk2k_and_k2ijk_roundtrip() {
         // For (i, j, kk) = (2, 3, 4) on ny=5, nx=6:

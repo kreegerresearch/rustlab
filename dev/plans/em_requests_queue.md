@@ -5,16 +5,30 @@
 > Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md` (read for curriculum context).
 
 **Last updated:** 2026-04-26
-**Status of plan:** In progress. Items 1, 2, 3, and 5 shipped. Item 4 next.
-**Next item to start:** **Item 4 — §2.4 sparse `eigs(A, n)` / `eigs(A, B, n)`**.
+**Status of plan:** All upstream-rustlab items shipped. Curriculum-side
+items (§2.6 Phase 1) deferred to when lessons need them; the spec is
+filed.
 
-**Shipped commits:**
+**Shipped:**
 - Item 1 (masks): `5791ec0`
 - Item 2 (sparse solve, Phases 1+2): `6623496`
 - Item 2 (sparse solve, Phases 3+4): `e9283b7`
 - Item 2 demos (electrostatics, complex Helmholtz, scaling): `5feef19`
 - Item 3 (Laplacian BC + 1-D/3-D + eps + doc audit): `26954a3`
-- Item 5 (real-typed elem-ops Option A pragmatic fix) — pending; deferred since the curriculum hasn't hit the problem yet
+- Item 4 (sparse `eigs(A, n)` / `eigs(A, B, n)`): `7eb5672`
+- Item 5 (real-typed elem-ops Option A) and Item 6 (log/polar plot
+  shims): pending commit (about to land)
+
+**Filed (no upstream code):**
+- Item 7 spec → `rustlab_em/dev/rustlab/requests/yee-and-pml-builders.md`
+  with `Status: Discussion`. Phase 1 (scripted library in
+  `rustlab_em/lessons/_shared/em.r`) lands when curriculum drafts
+  Lessons 10/11/13. Phase 2 (upstream `rustlab-em` crate) waits for a
+  graduation trigger (3-D Yee, >5s assembly, second physics
+  curriculum, language-feature wall).
+
+**Item 8 (Phase 2 native crate):** blocked on graduation triggers;
+not currently scheduled.
 
 ---
 
@@ -70,13 +84,15 @@ Re-verify any of these with `grep -n` before editing.
 
 ## Shipped — archive
 
-Detailed implementation plans for these items have been removed (the work is in main; the per-item file checklists and watch-outs were one-time guides). One-line summaries with commit references and gallery links are kept here.
+Detailed implementation plans have been removed (work is in main; per-item file checklists and watch-outs were one-time guides). One-line summaries with commit references and gallery links are kept here.
 
 | § | Item | Commit(s) | Notebook(s) |
 |---|---|---|---|
 | §2.5 | rasterization masks (`rect_mask`, `disk_mask`, `polygon_mask`) | `5791ec0` | `gallery/masks.md` |
 | §2.3 | sparse `spsolve` (5 phases hand-rolled: CSC, Cholesky, LU, AMD, wire-in) | `6623496`, `e9283b7`, `5feef19` | `gallery/sparse_solve.md`, `gallery/sparse_scaling.md`, `gallery/electrostatics.md`, `gallery/sparse_complex.md` |
 | §2.1 + §2.2 | Laplacian BC selector + 1-D / 3-D variants + `laplacian_eps_2d` + `ijk2k` / `k2ijk` (plus a doc-audit pass) | `26954a3` | `gallery/laplacian_bc.md`, `gallery/dielectric.md` |
+| §2.4 | sparse partial eigensolver `eigs(A, n)` / `eigs(A, B, n)` (Lanczos + Arnoldi + Jacobi + Hessenberg-QR) | `7eb5672` | `gallery/eigs.md` |
+| §4 + §2.7 | real-typed elem-ops (Option A) and log/polar plot shims (`loglog`, `semilogx`, `semilogy`, `polar`) | (pending) | `gallery/log_polar.md` (pending) |
 
 Per-phase plan for §2.3 lives at `dev/plans/sparse_solve_handroll.md` (now closed). Performance writeup at `perf/sparse_solve_phase1to4.md`.
 
@@ -86,7 +102,9 @@ Per-phase plan for §2.3 lives at `dev/plans/sparse_solve_handroll.md` (now clos
 
 Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]` blocked
 
-### `[~]` Item 4 — §2.4 `eigs(A, n)` and `eigs(A, B, n)`
+### `[✓]` Item 4 — §2.4 `eigs(A, n)` and `eigs(A, B, n)`
+
+**Shipped in commit `7eb5672`** (2026-04-26). Hand-rolled Lanczos for SPD inputs, Arnoldi for general; small dense subproblem via cyclic Jacobi (symmetric) or shifted QR (Hessenberg). Generalized form `A x = λ B x` reduces via `SparseChol(B)`. Implicit restart and shift-invert deferred to follow-up. See `gallery/eigs.md` for the walkthrough notebook.
 
 **Priority: HIGH** · **Size: L (~1200 LoC + tests)** · **Deps: Item 2 (uses rustlab-core `SparseLU::factor` and `SparseChol::factor` for shift-invert)**
 

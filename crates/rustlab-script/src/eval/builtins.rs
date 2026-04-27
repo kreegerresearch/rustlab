@@ -148,6 +148,10 @@ impl BuiltinRegistry {
         r.register("xlabel", builtin_xlabel);
         r.register("ylabel", builtin_ylabel);
         r.register("title", builtin_title);
+        r.register("loglog", builtin_loglog);
+        r.register("semilogx", builtin_semilogx);
+        r.register("semilogy", builtin_semilogy);
+        r.register("polar", builtin_polar);
         r.register("xlim", builtin_xlim);
         r.register("ylim", builtin_ylim);
         r.register("subplot", builtin_subplot);
@@ -2517,6 +2521,187 @@ fn builtin_ylabel(args: Vec<Value>) -> Result<Value, ScriptError> {
     FIGURE.with(|fig| fig.borrow_mut().current_mut().ylabel = label);
     sync_figure_outputs();
     Ok(Value::None)
+}
+
+// ── Log-axis and polar plots (em_requests §2.7 — pretransform shims) ──
+
+fn vector_arg<'a>(args: &'a [Value], idx: usize, name: &str, role: &str) -> Result<&'a CVector, ScriptError> {
+    match args.get(idx) {
+        Some(Value::Vector(v)) => Ok(v),
+        Some(other) => Err(ScriptError::type_err(format!(
+            "{name}: {role} must be a vector, got {}",
+            other.type_name()
+        ))),
+        None => Err(ScriptError::type_err(format!(
+            "{name}: missing {role} argument"
+        ))),
+    }
+}
+
+/// Element-wise transform of a real-valued `Vector` via a closure.
+/// Returns a new `Value::Vector` with imag part zeroed (the inputs are
+/// asserted real-positive elsewhere; the transform is real-valued).
+fn vector_transform(
+    name: &str,
+    role: &str,
+    v: &CVector,
+    f: impl Fn(f64) -> f64,
+) -> Result<CVector, ScriptError> {
+    let out: CVector = v
+        .iter()
+        .map(|c| {
+            if c.im.abs() > 1e-12 {
+                Err(ScriptError::type_err(format!(
+                    "{name}: {role} must be real-valued (got nontrivial imag part)"
+                )))
+            } else {
+                Ok(Complex::new(f(c.re), 0.0))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
+    Ok(out)
+}
+
+fn assert_strictly_positive(name: &str, role: &str, v: &CVector) -> Result<(), ScriptError> {
+    for c in v.iter() {
+        if c.re <= 0.0 || !c.re.is_finite() {
+            return Err(ScriptError::type_err(format!(
+                "{name}: {role} must be strictly positive (got {})",
+                c.re
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// `loglog(x, y [, opts])` — log-log plot. Pre-transforms both axes
+/// via `log10` and labels the axes with the `log10(...)` convention.
+/// `x` and `y` must be strictly positive.
+fn builtin_loglog(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("loglog", &args, 2, 8)?;
+    let x = vector_arg(&args, 0, "loglog", "x")?;
+    let y = vector_arg(&args, 1, "loglog", "y")?;
+    assert_strictly_positive("loglog", "x", x)?;
+    assert_strictly_positive("loglog", "y", y)?;
+    let lx = vector_transform("loglog", "x", x, |v| v.log10())?;
+    let ly = vector_transform("loglog", "y", y, |v| v.log10())?;
+
+    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(ly)];
+    new_args.extend(args.into_iter().skip(2));
+    let r = builtin_plot(new_args)?;
+
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        let cur = f.current_mut();
+        if cur.xlabel.is_empty() {
+            cur.xlabel = "log10(x)".into();
+        }
+        if cur.ylabel.is_empty() {
+            cur.ylabel = "log10(y)".into();
+        }
+    });
+    sync_figure_outputs();
+    Ok(r)
+}
+
+/// `semilogx(x, y [, opts])` — log-x, linear-y plot.
+fn builtin_semilogx(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("semilogx", &args, 2, 8)?;
+    let x = vector_arg(&args, 0, "semilogx", "x")?;
+    let y = vector_arg(&args, 1, "semilogx", "y")?;
+    assert_strictly_positive("semilogx", "x", x)?;
+    let lx = vector_transform("semilogx", "x", x, |v| v.log10())?;
+
+    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(y.clone())];
+    new_args.extend(args.into_iter().skip(2));
+    let r = builtin_plot(new_args)?;
+
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        let cur = f.current_mut();
+        if cur.xlabel.is_empty() {
+            cur.xlabel = "log10(x)".into();
+        }
+    });
+    sync_figure_outputs();
+    Ok(r)
+}
+
+/// `semilogy(x, y [, opts])` — linear-x, log-y plot.
+fn builtin_semilogy(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("semilogy", &args, 2, 8)?;
+    let x = vector_arg(&args, 0, "semilogy", "x")?;
+    let y = vector_arg(&args, 1, "semilogy", "y")?;
+    assert_strictly_positive("semilogy", "y", y)?;
+    let ly = vector_transform("semilogy", "y", y, |v| v.log10())?;
+
+    let mut new_args: Vec<Value> = vec![Value::Vector(x.clone()), Value::Vector(ly)];
+    new_args.extend(args.into_iter().skip(2));
+    let r = builtin_plot(new_args)?;
+
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        let cur = f.current_mut();
+        if cur.ylabel.is_empty() {
+            cur.ylabel = "log10(y)".into();
+        }
+    });
+    sync_figure_outputs();
+    Ok(r)
+}
+
+/// `polar(theta, r [, opts])` — polar plot via Cartesian pre-transform:
+/// plots `(r·cos(θ), r·sin(θ))` and labels the axes accordingly.
+/// `theta` is in radians.
+fn builtin_polar(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("polar", &args, 2, 8)?;
+    let theta = vector_arg(&args, 0, "polar", "theta")?;
+    let r = vector_arg(&args, 1, "polar", "r")?;
+    if theta.len() != r.len() {
+        return Err(ScriptError::type_err(format!(
+            "polar: theta and r must be the same length (got {} vs {})",
+            theta.len(),
+            r.len()
+        )));
+    }
+    let xs: CVector = theta
+        .iter()
+        .zip(r.iter())
+        .map(|(t, ri)| {
+            if t.im.abs() > 1e-12 || ri.im.abs() > 1e-12 {
+                Err(ScriptError::type_err(
+                    "polar: theta and r must be real-valued".into(),
+                ))
+            } else {
+                Ok(Complex::new(ri.re * t.re.cos(), 0.0))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into();
+    let ys: CVector = theta
+        .iter()
+        .zip(r.iter())
+        .map(|(t, ri)| Complex::new(ri.re * t.re.sin(), 0.0))
+        .collect::<Vec<_>>()
+        .into();
+
+    let mut new_args: Vec<Value> = vec![Value::Vector(xs), Value::Vector(ys)];
+    new_args.extend(args.into_iter().skip(2));
+    let res = builtin_plot(new_args)?;
+
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        let cur = f.current_mut();
+        if cur.xlabel.is_empty() {
+            cur.xlabel = "r·cos(θ)".into();
+        }
+        if cur.ylabel.is_empty() {
+            cur.ylabel = "r·sin(θ)".into();
+        }
+    });
+    sync_figure_outputs();
+    Ok(res)
 }
 
 /// title("text") — set title on current subplot.

@@ -405,6 +405,10 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
 | `quiver(X, Y, U, V [, scale | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; auto-scaled. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
 | `streamplot(X, Y, U, V [, density | seeds | "title" | "c"])` | RK4 streamlines from a default 10×10 seed grid or an explicit Nx2 seeds matrix; midpoint arrowhead per line. Same overlay/backend behaviour as `quiver`. |
+| `loglog(x, y [, opts])` | Log-log plot (x, y > 0); pre-transforms via log10 |
+| `semilogx(x, y [, opts])` | Log-x, linear-y plot (x > 0) |
+| `semilogy(x, y [, opts])` | Linear-x, log-y plot (y > 0) |
+| `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)` |
 
 ---
 
