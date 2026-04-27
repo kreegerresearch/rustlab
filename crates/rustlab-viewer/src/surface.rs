@@ -246,96 +246,82 @@ fn paint_surface(painter: &Painter, rect: Rect, data: &Surface3dData, cam: &Surf
     // Each grid cell becomes **two triangles** (split along the p00↔p11
     // diagonal). A world-space rectangle can project to a *non-convex*
     // (bowtie) quadrilateral in screen space on surfaces with steep
-    // features at certain yaw / pitch angles; `Shape::convex_polygon`
-    // assumes convex input, so bowties stretched polygons across the
-    // viewport. Any triangle is trivially convex so this form always
-    // renders correctly.
+    // features at certain yaw / pitch angles; emitting individual
+    // triangles instead of quads avoids that.
     //
-    // **No stroke.** Fill-colour strokes miter-join at vertex corners, and
-    // for thin sliver triangles (ridgelines, saddle creases, rim of tall
-    // peaks) the miter length explodes, producing long radial spikes.
-    // Adjacent triangles share corner vertices by exact value so egui
-    // tessellates them seam-free without any stroke at all.
+    // **Single-mesh rendering.** Triangles are aggregated into one
+    // `egui::Mesh`. Adjacent triangles share grid-corner *vertices by
+    // index* — that's the trick. egui's tessellator anti-aliases each
+    // shape's perimeter, so emitting each triangle as its own
+    // `Shape::convex_polygon` would feather the edge alpha at every
+    // shared cell border, leaving a 1-pixel darker band that looks like
+    // an unwanted grid line. Within a single Mesh, AA is applied only
+    // to the silhouette where the mesh ends — internal edges between
+    // shared-vertex triangles render seam-free.
     //
-    // **Back-face culling.** For a height-field surface (z = f(x, y))
-    // viewed from above, triangles whose projected 2-D winding is CCW are
-    // back-faces (the underside / the far side of a ridge) and should be
-    // hidden — otherwise the painter's-algorithm sort lets the saddle's
-    // valley floor or the ripples' underside bleed through the front of
-    // the surface as large translucent planes. World-space triangles are
-    // built CCW in (x, y); `to_screen` flips y (egui y points down), so
-    // front-facing triangles end up CW in screen space (negative 2-D
-    // cross product). Cull where the cross product is non-negative.
-    struct Tri {
-        depth: f64,
-        pts: [Pos2; 3],
-        color: Color32,
-    }
-    // Signed 2-D area × 2 of a triangle in screen space; positive for CCW
-    // (back-facing), negative for CW (front-facing) after the y-flip.
+    // **Back-face culling.** For a height-field surface viewed from
+    // above, triangles whose projected 2-D winding is CCW are
+    // back-faces (the underside / the far side of a ridge) and should
+    // be hidden — otherwise the painter's algorithm lets the saddle's
+    // valley floor or the ripples' underside bleed through the front
+    // of the surface as large translucent planes. World-space
+    // triangles are built CCW in (x, y); `to_screen` flips y (egui y
+    // points down), so front-facing triangles end up CW in screen
+    // space (negative 2-D cross product). Cull where the 2-D cross
+    // product is non-positive.
     fn signed_area_2x(a: Pos2, b: Pos2, c: Pos2) -> f32 {
         (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
     }
     let nrows = data.nrows;
     let ncols = data.ncols;
-    let mut tris: Vec<Tri> = Vec::with_capacity((nrows - 1) * (ncols - 1) * 2);
+
+    // Build the projected vertex grid once. Index `r * ncols + c` is
+    // the corner at (data.x[c], data.y[r], z(r, c)).
+    let mut verts: Vec<(Pos2, Color32)> = Vec::with_capacity(nrows * ncols);
+    for r in 0..nrows {
+        for c in 0..ncols {
+            let z = data.z_at(r, c);
+            let p = project(data.x[c], data.y[r], z);
+            // Per-vertex colour from z (smoother shading than per-cell
+            // average; collapses to per-cell when neighbours have
+            // similar z).
+            let t = ((z - b.zmin) / z_span).clamp(0.0, 1.0);
+            let (rr, gg, bb) = colormap_rgb(t, &data.colorscale);
+            verts.push((to_screen(p.0, p.2), Color32::from_rgb(rr, gg, bb)));
+        }
+    }
+    let idx = |r: usize, c: usize| -> u32 { (r * ncols + c) as u32 };
+
+    let mut mesh = egui::epaint::Mesh::default();
+    mesh.vertices.reserve(nrows * ncols);
+    for &(pos, color) in &verts {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos,
+            uv: egui::epaint::WHITE_UV,
+            color,
+        });
+    }
     for r in 0..(nrows - 1) {
         for c in 0..(ncols - 1) {
-            let z00 = data.z_at(r, c);
-            let z10 = data.z_at(r, c + 1);
-            let z11 = data.z_at(r + 1, c + 1);
-            let z01 = data.z_at(r + 1, c);
-            let p00 = project(data.x[c], data.y[r], z00);
-            let p10 = project(data.x[c + 1], data.y[r], z10);
-            let p11 = project(data.x[c + 1], data.y[r + 1], z11);
-            let p01 = project(data.x[c], data.y[r + 1], z01);
-            let zc = (z00 + z10 + z11 + z01) * 0.25;
-            let t = (zc - b.zmin) / z_span;
-            let (rr, gg, bb) = colormap_rgb(t, &data.colorscale);
-            let color = Color32::from_rgb(rr, gg, bb);
+            // Triangle A: (p00, p10, p11) — CCW in world x/y.
+            let i00 = idx(r, c);
+            let i10 = idx(r, c + 1);
+            let i11 = idx(r + 1, c + 1);
+            let i01 = idx(r + 1, c);
+            let p00 = verts[i00 as usize].0;
+            let p10 = verts[i10 as usize].0;
+            let p11 = verts[i11 as usize].0;
+            let p01 = verts[i01 as usize].0;
 
-            // Triangle A: (p00, p10, p11). World vertices go BL→BR→TR
-            // (CCW in world x/y); for this projection convention, the
-            // projected 2-D cross product is **positive** when the
-            // triangle's world normal points toward the camera
-            // (front-facing) and negative when it points away.
-            let a0 = to_screen(p00.0, p00.2);
-            let a1 = to_screen(p10.0, p10.2);
-            let a2 = to_screen(p11.0, p11.2);
-            if signed_area_2x(a0, a1, a2) > 0.0 {
-                tris.push(Tri {
-                    depth: (p00.1 + p10.1 + p11.1) / 3.0,
-                    pts: [a0, a1, a2],
-                    color,
-                });
+            if signed_area_2x(p00, p10, p11) > 0.0 {
+                mesh.indices.extend_from_slice(&[i00, i10, i11]);
             }
-
-            // Triangle B: (p00, p11, p01). Same CCW winding, same sign.
-            let b0 = to_screen(p00.0, p00.2);
-            let b1 = to_screen(p11.0, p11.2);
-            let b2 = to_screen(p01.0, p01.2);
-            if signed_area_2x(b0, b1, b2) > 0.0 {
-                tris.push(Tri {
-                    depth: (p00.1 + p11.1 + p01.1) / 3.0,
-                    pts: [b0, b1, b2],
-                    color,
-                });
+            if signed_area_2x(p00, p11, p01) > 0.0 {
+                mesh.indices.extend_from_slice(&[i00, i11, i01]);
             }
         }
     }
-    tris.sort_by(|a, b| {
-        a.depth
-            .partial_cmp(&b.depth)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    for t in &tris {
-        painter.add(Shape::convex_polygon(
-            t.pts.to_vec(),
-            t.color,
-            Stroke::NONE,
-        ));
-    }
+    painter.add(Shape::mesh(mesh));
 
     // Axis tick labels: min/max on each axis.
     let label_color = Color32::from_rgb(200, 200, 210);
