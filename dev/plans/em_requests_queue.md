@@ -68,145 +68,27 @@ Re-verify any of these with `grep -n` before editing.
 
 ---
 
+## Shipped — archive
+
+Detailed implementation plans for these items have been removed (the work is in main; the per-item file checklists and watch-outs were one-time guides). One-line summaries with commit references and gallery links are kept here.
+
+| § | Item | Commit(s) | Notebook(s) |
+|---|---|---|---|
+| §2.5 | rasterization masks (`rect_mask`, `disk_mask`, `polygon_mask`) | `5791ec0` | `gallery/masks.md` |
+| §2.3 | sparse `spsolve` (5 phases hand-rolled: CSC, Cholesky, LU, AMD, wire-in) | `6623496`, `e9283b7`, `5feef19` | `gallery/sparse_solve.md`, `gallery/sparse_scaling.md`, `gallery/electrostatics.md`, `gallery/sparse_complex.md` |
+| §2.1 + §2.2 | Laplacian BC selector + 1-D / 3-D variants + `laplacian_eps_2d` + `ijk2k` / `k2ijk` (plus a doc-audit pass) | `26954a3` | `gallery/laplacian_bc.md`, `gallery/dielectric.md` |
+
+Per-phase plan for §2.3 lives at `dev/plans/sparse_solve_handroll.md` (now closed). Performance writeup at `perf/sparse_solve_phase1to4.md`.
+
+---
+
 ## Queue
 
 Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]` blocked
 
-### `[✓]` Item 1 — §2.5 rasterization masks (`rect_mask`, `disk_mask`, `polygon_mask`)
+### `[~]` Item 4 — §2.4 `eigs(A, n)` and `eigs(A, B, n)`
 
-**Shipped in commit `5791ec0`** (2026-04-26). All acceptance criteria met. See `gallery/masks.md` for the rendered notebook walkthrough.
-
-**Priority: HIGH (warm-up)** · **Size: S (~290 LoC + tests)** · **Time: 0.5-1 day** · **Deps: none**
-
-**Why first:** smallest item, no dependencies, unblocks Lesson 04 (the curriculum pivot lesson — currently has only a notebook draft, no `lessons/04-*` directory yet).
-
-**Acceptance criteria:**
-- `disk_mask(meshgrid output, 0, 0, 1)` summed × cell area on a 100×100 grid approximates π to ~1%.
-- `polygon_mask(X, Y, [0 0; 1 0; 1 1; 0 1])` equals `rect_mask(X, Y, 0, 0, 1, 1)` exactly.
-- Empty / single-vertex / collinear polygons return all-zero matrix without panicking.
-
-**File checklist:**
-- [ ] Create `crates/rustlab-dsp/src/rasterize.rs` (~90 LoC algorithm: ray-casting + element-wise comparisons).
-- [ ] Add `mod rasterize;` to `crates/rustlab-dsp/src/lib.rs`.
-- [ ] Add three builtins (`builtin_rect_mask`, `builtin_disk_mask`, `builtin_polygon_mask`) in `builtins.rs` near existing geometry builtins.
-- [ ] Register all three near `builtins.rs:273` (alongside `laplacian_2d`).
-- [ ] Add three `HelpEntry` records in `repl.rs` (after line 13).
-- [ ] Add the three names to the appropriate category slice in `repl.rs:813` `categories` table.
-- [ ] Tests in `crates/rustlab-dsp/src/tests.rs` (algorithm) and `crates/rustlab-script/src/tests.rs` (builtin contract).
-- [ ] Update `docs/functions.md`, `docs/quickref.md`, `AGENTS.md` function table.
-
-**Verification command:** `cargo test --workspace -- rasterize` then `cargo test --workspace --features viewer`.
-
----
-
-### `[✓]` Item 2 — §2.3 real `spsolve` (hand-rolled, pure Rust)
-
-**Shipped across commits `6623496` (Phases 1+2 — CSC, Cholesky, wire-in), `e9283b7` (Phases 3+4 — sparse LU with partial pivoting, AMD ordering), and `5feef19` (demos: electrostatics, complex Helmholtz, scaling notebook).** See `dev/plans/sparse_solve_handroll.md` for the per-phase plan, `perf/sparse_solve_phase1to4.md` for benchmarks, and `gallery/sparse_solve.md` / `gallery/sparse_scaling.md` / `gallery/electrostatics.md` / `gallery/sparse_complex.md` for notebooks. AMD is currently a basic minimum-degree variant; the full Davis external-degree variant is deferred. Acceptance criteria all met (200×200 SPD: 0.42s with Identity / 2.3s with AMD; complex 100×100: 0.58s).
-
-**Priority: CRITICAL — scaling cliff** · **Total size: ~2700 LoC (curriculum-grade) or ~3300 LoC (production-grade)** · **Time: 9-12 days curriculum-grade; 3-4 weeks production-grade** · **Deps: NONE — hand-rolled per AGENTS.md Rule 9**
-
-**Why second:** foundational. Every Laplacian/eigs item below depends on this scaling. Currently `spsolve` densifies internally — a 100×100 Lesson 05 grid produces a 10⁴×10⁴ matrix → ~800 MB densified.
-
-**Why hand-rolled:** `faer` was the original plan but is too large a library for core work (~20 MB compiled, deep dep tree). Per `AGENTS.md` Rule 9, core algorithms must be pure Rust, hand-rolled, in-tree. The curriculum value of this code is partly that students can read the factorization solving their physics. See `feedback_licensing.md` and the policy section at the top of this doc.
-
-**Reference:** Davis, *Direct Methods for Sparse Linear Systems* (2006). Cholesky in ch. 4, LU with partial pivoting in ch. 6, AMD ordering in ch. 7. All algorithms here are well-trodden — read Davis before starting.
-
-**Phase breakdown (each phase = its own PR, pause between for review):**
-
-#### Phase 1 — CSC storage + conversions (~250 LoC + 80 tests; 1 day)
-- Add `SparseCsc<T>` type to `crates/rustlab-core/src/sparse_solve.rs` (or extend `types.rs`).
-- `SparseMat::to_csc()` and `SparseMat::to_csc_real()` (real-only path when `max |im| < 1e-12`).
-- CSC-form SpMV, transpose. Sanity tests.
-
-#### Phase 2 — Sparse Cholesky for SPD (~500 LoC + 200 tests; 2-3 days)
-- Up-looking variant from Davis ch. 4. Three sub-phases: elimination tree, symbolic, numeric.
-- Real and complex variants.
-- `SparseMat::cholesky() -> SparseChol`, `SparseChol::solve(&CVector) -> CVector`.
-- Forward substitution (Lx = b), backward substitution (Lᵀy = x).
-- **Unlocks Lessons 05-09** on its own (SPD Laplacian assemblies).
-- Tests: 4×4 hand-built SPD, round-trip on `laplacian_2d(20,20)`, eigenvalue check.
-
-#### Phase 3 — Sparse LU with partial pivoting (~700 LoC + 300 tests; 4-5 days)
-- Gilbert-Peierls algorithm from Davis ch. 6. DFS-based symbolic search per column, partial row pivoting, fill-in tracking.
-- `SparseMat::lu_factor() -> SparseLU`, `SparseLU::solve(&CVector) -> CVector`.
-- Real and complex.
-- **Unlocks Lesson 10** (FDFD with PML — complex, indefinite).
-- Tests: 4×4 hand-built non-SPD, complex matrix, near-singular pivot stability, comparison to dense Gaussian elimination.
-
-#### Phase 4 — Fill-reducing ordering (~200 LoC simple, 2-3 days; OR ~700 LoC AMD, 1-2 weeks)
-- **Without** ordering, factorization fills catastrophically. A 100×100 Laplacian's Cholesky factor is dense — O(N²) entries instead of O(N · √N).
-- **Curriculum-grade:** simple column-count / minimum-degree heuristic, ~3× worse than AMD but unblocks problems up to ~150×150 grids. **Recommended for v1.**
-- **Production-grade:** Approximate Minimum Degree (AMD), Davis ch. 7. ~700 LoC clean Rust port, unblocks problems up to ~500×500 grids. Defer unless v1 hits a curriculum wall.
-
-#### Phase 5 — Wire into `builtin_spsolve` (~150 LoC + 100 tests; 1 day)
-- Auto-detect SPD via `SparseMat::is_hermitian()` + `is_spd_estimate()` helpers (~40 LoC, **shared with Item 4**).
-- Dispatch: try Cholesky if SPD, fall back to LU.
-- Optional 3rd-arg override: `spsolve(A, b, "auto" | "lu" | "cholesky")`.
-- Replace body of `builtin_spsolve` at `builtins.rs:8005-...` (re-verify line; the file has grown since plan was written).
-- Preserve the `if x.len()==1` scalar-return shape.
-- Update `docs/functions.md` (rewrite the "converts to dense internally" disclaimer), `docs/quickref.md`, `AGENTS.md`, REPL help.
-
-**Acceptance criteria (apply to whole Item, verified before final phase merges):**
-- `spsolve(I, b) == b` on a 1000×1000 sparse identity within machine precision.
-- Round-trip on `laplacian_2d(50,50)` Poisson solve matches the dense reference within 1e-10 relative norm.
-- 200×200 cavity-cross-section problem (~40k×40k) runs in <30s with simple ordering, doesn't OOM. (<10s with AMD.)
-- Complex-RHS path tested (FDFD-style).
-- Singular matrix returns clear error, not a panic.
-- **Octave reference comparison** (`AGENTS.md:285-303`) passes for at least one PDE assembly.
-
-**Watch out for:**
-- **Numerical robustness is earned, not free.** Real factorization libraries have decades of edge-case fixes baked in. Plan for at least one round of "this matrix factors but the answer is wrong" debugging.
-- **Indexing bugs are silent.** Sparse code with off-by-one bugs produces *wrong answers*, not panics. Use `assert!`-heavy debug builds + small hand-checked test matrices.
-- **Tiny-problem regression.** For n<100, hand-rolled sparse will be slower than the current dense fallback. Accept it; revisit only if `perf/report.md` flags a regression.
-- **Reordering is not optional past 100×100.** Don't ship Phase 1-3 without at least the simple ordering from Phase 4.
-
-**Verification command:** `cargo test --workspace -- spsolve` and run `lessons/05-poisson-laplace-bvp/*.r` (when those scripts exist).
-
----
-
-### `[✓]` Item 3 — §2.2 + §2.1 bundled (Laplacian variants)
-
-**Shipped in commit `26954a3`** (2026-04-26). New module `crates/rustlab-dsp/src/laplacian.rs` with `BoundaryCondition` enum and four builders: `laplacian_1d`, `laplacian_2d_bc`, `laplacian_3d`, `laplacian_eps_2d`. `ijk2k` / `k2ijk` 3-D index sugar added alongside. The same commit also bundled a documentation audit pass that closed several pre-existing coverage gaps (plot controls, `seed`, `ndims`, `yline` HelpEntry, etc.). See `gallery/laplacian_bc.md` and `gallery/dielectric.md` for notebooks.
-
-**Priority: HIGH** · **Size: M (~860 LoC + tests combined)** · **Time: 3-4 days bundled** · **Deps: should land after Item 2 ships (otherwise users can build the matrix but can't solve it at scale)**
-
-Bundles two requests because they touch the same module and same `bc` plumbing:
-- **§2.2** `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` — variable-coefficient flux-conservative.
-- **§2.1** `laplacian_2d` BC extensions (4th arg `"dirichlet"` default | `"neumann"` | `"periodic"`) + `laplacian_1d` + `laplacian_3d`.
-
-**Acceptance criteria:**
-- `laplacian_eps_2d` with `eps_map ≡ 1.0` equals `laplacian_2d` exactly.
-- Flux conservation: interior row sums of `laplacian_eps_2d` are 0.
-- Dirichlet `λ_min` matches analytic π²(m²+n²)/L² for `laplacian_2d_bc(20,20,_,_,"dirichlet")`.
-- Neumann variant has zero eigenvalue (constant null-space).
-- Periodic variant has 2-D Fourier-mode eigenvalues `4 sin²(πk/N)`.
-- `laplacian_3d` round-trip on a known analytic test case.
-- Existing `laplacian_2d` 2-arg and 4-arg call sites still work (backwards-compat).
-
-**File checklist:**
-- [ ] Create `crates/rustlab-dsp/src/laplacian.rs` (model on `vector_calc.rs:103`).
-- [ ] Add `mod laplacian;` to `crates/rustlab-dsp/src/lib.rs`.
-- [ ] Implement: `laplacian_eps_2d`, `laplacian_2d_bc`, `laplacian_1d`, `laplacian_3d`.
-  - Column-major flat indexing `k = j·ny + i` (2-D); `k = (kk·nx + j)·ny + i` (3-D).
-  - **Verify Tensor3 axis convention** in `rustlab-core/src/types.rs:11` — `(rows, cols, pages) = (ny, nx, nz)`.
-- [ ] Extend `builtin_laplacian_2d` at `builtins.rs:8107` to accept optional 5th string arg. Change `check_args_range("laplacian_2d", &args, 2, 4)` → `2, 5`.
-- [ ] Add `builtin_laplacian_eps_2d`, `builtin_laplacian_1d`, `builtin_laplacian_3d`.
-- [ ] Register all four near `builtins.rs:273`.
-- [ ] Add `ijk2k` / `k2ijk` 3-D index sugar (~30 LoC).
-- [ ] HelpEntry + categories for each new builtin.
-- [ ] Tests in `rustlab-dsp/src/tests.rs` (5 invariants above).
-- [ ] Update `docs/functions.md` (rewrite the "Neumann and periodic … not implemented in v1" disclaimer near the `laplacian_2d` section), `docs/quickref.md`, `AGENTS.md`.
-
-**Watch out for:**
-- **Periodic + spsolve = singular.** Document the row-pinning workaround in `docs/functions.md`: zero row 1, set `(1,1)=1`, pin RHS.
-- **Harmonic mean must be at cell faces, not arithmetic mean.** Document explicitly.
-- Lesson 06 (`iron_core_shielding.r` — not yet drafted) wants Neumann + variable-ε — make sure `laplacian_eps_2d` accepts the same `bc` arg as `laplacian_2d_bc`.
-
----
-
-### `[ ]` Item 4 — §2.4 `eigs(A, n)` and `eigs(A, B, n)`
-
-**Priority: HIGH** · **Size: L (~1200 LoC + tests)** · **Time: 5-8 days senior with Krylov experience; 2-3 weeks otherwise** · **Deps: Item 2 (uses faer LU for shift-invert)**
+**Priority: HIGH** · **Size: L (~1200 LoC + tests)** · **Deps: Item 2 (uses rustlab-core `SparseLU::factor` and `SparseChol::factor` for shift-invert)**
 
 **Read before starting:** Saad, *Iterative Methods for Sparse Linear Systems*, ch. 6-8 (Arnoldi / IRAM / Lanczos).
 
