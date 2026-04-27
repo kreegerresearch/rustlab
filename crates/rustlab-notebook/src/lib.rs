@@ -291,7 +291,9 @@ fn render_output(
 ) {
     match format {
         Format::Html => {
-            let html = render::render_html(title, rendered, theme, nav);
+            let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            let html =
+                render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav);
             write_output(out_path, html.as_bytes());
         }
         Format::Markdown { obsidian } => {

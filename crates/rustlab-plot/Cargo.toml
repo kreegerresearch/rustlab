@@ -19,6 +19,7 @@ ratatui    = "0.29"
 crossterm  = "0.28"
 thiserror.workspace    = true
 serde_json = "1"
+gif.workspace          = true
 
 # Optional viewer deps (only pulled in with `--features viewer`)
 rustlab-proto = { workspace = true, optional = true }
@@ -30,6 +31,7 @@ plotters   = { version = "0.3", default-features = false, features = [
     "svg_backend",
     "bitmap_backend",
     "bitmap_encoder",
+    "ttf",
     "all_series",
     "all_elements",
     "full_palette",

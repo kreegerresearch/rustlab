@@ -39,10 +39,14 @@ examples/*.toml
 # `make notebooks` writes everything into gallery/:
 #   gallery/<name>.md           committed → GitHub-browseable Markdown
 #   gallery/plots/<name>/*.svg  committed → referenced by .md inline
+#   gallery/plots/<name>/*.gif  committed → animated GIFs from saveanim()
 #   gallery/<name>.html         ignored   → bulky Plotly bundles, local view
 #   gallery/index.html          ignored   → generated index for the HTML build
-# The carve-outs below override the global *.svg and *.html rules for the
-# gallery's committed assets.
+# The carve-outs below override the global *.html rule for the gallery's
+# committed assets. SVG and GIF aren't globally gitignored, but listing
+# them here keeps the policy explicit.
 gallery/*.html
+gallery/*.gif
 !gallery/
 !gallery/**/*.svg
+!gallery/plots/**/*.gif

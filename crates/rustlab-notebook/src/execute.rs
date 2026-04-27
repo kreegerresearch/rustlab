@@ -1,7 +1,7 @@
 use crate::parse::{Block, CalloutKind};
 use rustlab_plot::{
-    clear_notebook_figures, set_plot_context, take_notebook_figures, FigureState, PlotContext,
-    FIGURE,
+    clear_notebook_animations, clear_notebook_figures, set_plot_context, take_notebook_animations,
+    take_notebook_figures, FigureState, NotebookAnimation, PlotContext, FIGURE,
 };
 use rustlab_script::Evaluator;
 
@@ -19,6 +19,11 @@ pub enum Rendered {
         /// Each `savefig()` call captures a snapshot; if the block ends
         /// with unsaved plot state, a final snapshot is appended.
         figures: Vec<FigureState>,
+        /// One captured animation per `saveanim()` call in the block.
+        /// In notebook mode `saveanim()` does not write the user's path —
+        /// the renderer decides where to put the standalone HTML and how
+        /// to embed it (inline div for HTML output, link for Markdown).
+        animations: Vec<NotebookAnimation>,
         /// If true, source code should be hidden in rendered output.
         hidden: bool,
         /// If set, wrap output in a collapsible disclosure widget.
@@ -66,6 +71,7 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
                 }
                 // Drop any stray savefig snapshots from a prior block.
                 clear_notebook_figures();
+                clear_notebook_animations();
 
                 // Capture text output during execution
                 rustlab_script::start_capture();
@@ -91,11 +97,14 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
                     });
                 }
 
+                let animations = take_notebook_animations();
+
                 rendered.push(Rendered::Code {
                     source: source.clone(),
                     text_output,
                     error,
                     figures,
+                    animations,
                     hidden: directives.hidden,
                     details: directives.details.clone(),
                     grid_cols: directives.grid_cols,

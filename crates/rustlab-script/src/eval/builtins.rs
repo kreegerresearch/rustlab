@@ -141,6 +141,8 @@ impl BuiltinRegistry {
         r.register("stem", builtin_stem);
         r.register("plotdb", builtin_plotdb);
         r.register("savefig", builtin_savefig);
+        r.register("frame", builtin_frame);
+        r.register("saveanim", builtin_saveanim);
         // Figure state control
         r.register("figure", builtin_figure);
         r.register("hold", builtin_hold);
@@ -2367,6 +2369,73 @@ fn builtin_savefig(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("savefig", &args, 1)?;
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
     render_figure_file(&path).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    Ok(Value::None)
+}
+
+/// frame() — snapshot the current figure into the animation frame buffer
+/// and clear trace data while preserving subplot layout, axes, titles,
+/// limits, hold, and grid. Pair with saveanim() to flush.
+fn builtin_frame(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("frame", &args, 0)?;
+    rustlab_plot::push_frame();
+    rustlab_plot::clear_figure_traces();
+    Ok(Value::None)
+}
+
+/// saveanim(path) / saveanim(path, fps) — flush the animation frame buffer
+/// to disk. The path extension picks the format: `.html` / `.htm` →
+/// self-contained Plotly animation; `.gif` → animated GIF (per-frame
+/// NeuQuant palette). Buffer is cleared on success. `fps` defaults to 10.
+fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("saveanim", &args, 1, 2)?;
+    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let fps = if args.len() == 2 {
+        match &args[1] {
+            Value::Scalar(n) => *n,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "saveanim: fps must be a scalar, got {}",
+                    other
+                )));
+            }
+        }
+    } else {
+        10.0
+    };
+    let lower = path.to_lowercase();
+    let format = if lower.ends_with(".html") || lower.ends_with(".htm") {
+        rustlab_plot::NotebookAnimationFormat::Html
+    } else if lower.ends_with(".gif") {
+        rustlab_plot::NotebookAnimationFormat::Gif
+    } else {
+        return Err(ScriptError::runtime(
+            "saveanim: supported output formats are .html / .htm (Plotly) and .gif"
+                .to_string(),
+        ));
+    };
+    if rustlab_plot::frames_len() == 0 {
+        return Err(ScriptError::runtime(
+            "saveanim: no frames captured (call frame() at least once)".to_string(),
+        ));
+    }
+    // Notebook mode: capture for the renderer instead of writing the user
+    // path (which the notebook executor has CWD'd to the source dir, not
+    // the gallery output dir). The renderer writes the per-format file and
+    // emits the right embed for each output format.
+    if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Notebook {
+        rustlab_plot::push_notebook_animation_snapshot(fps, format);
+        return Ok(Value::None);
+    }
+    match format {
+        rustlab_plot::NotebookAnimationFormat::Html => {
+            rustlab_plot::render_animation_html(&path, fps)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+        }
+        rustlab_plot::NotebookAnimationFormat::Gif => {
+            rustlab_plot::render_animation_gif(&path, fps)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+        }
+    }
     Ok(Value::None)
 }
 

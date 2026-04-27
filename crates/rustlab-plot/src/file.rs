@@ -146,6 +146,32 @@ pub fn render_figure_state_to_file_themed(
     }
 }
 
+/// Render a given FigureState into an RGB pixel buffer (3 bytes per pixel,
+/// row-major, top-to-bottom). Returns `(buf, w, h)`. Mirrors the size logic
+/// of `render_figure_state_to_file_themed` so static PNG output and animated
+/// GIF output have identical resolution per subplot.
+///
+/// Used by `render_animation_gif` to rasterize frames before quantizing them
+/// for GIF encoding. Public so other animated-raster backends (APNG, MP4)
+/// can reuse the same pipeline if they're ever added.
+pub fn render_figure_state_to_rgb_buffer(
+    fig: &FigureState,
+    theme: &ThemeColors,
+) -> Result<(Vec<u8>, u32, u32), PlotError> {
+    let rows = fig.subplot_rows;
+    let cols = fig.subplot_cols;
+    let w = (cols as u32 * 900).min(3600);
+    let h = (rows as u32 * 500).min(3000);
+    let palette = ThemePalette::from(theme);
+
+    let mut buf = vec![0u8; (w * h * 3) as usize];
+    {
+        let root = BitMapBackend::with_buffer(&mut buf, (w, h)).into_drawing_area();
+        render_to_backend(root, fig, rows, cols, &palette)?;
+    }
+    Ok((buf, w, h))
+}
+
 fn render_to_backend<DB>(
     root: DrawingArea<DB, plotters::coord::Shift>,
     fig: &FigureState,

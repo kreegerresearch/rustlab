@@ -35,6 +35,7 @@ pub fn render_latex(
                 text_output,
                 error,
                 figures,
+                animations,
                 hidden,
                 details,
                 grid_cols,
@@ -90,6 +91,20 @@ pub fn render_latex(
                     body.push_str(&format!(
                         "\\begin{{center}}\n\\includesvg[width={width}]{{{}/plot-{plot_idx}}}\n\\end{{center}}\n\n",
                         href_prefix,
+                    ));
+                }
+
+                // Animations cannot embed in a static PDF — emit a note
+                // pointing the reader at the HTML / GIF version.
+                for anim in animations {
+                    let kind = match anim.format {
+                        rustlab_plot::NotebookAnimationFormat::Html => "Plotly HTML",
+                        rustlab_plot::NotebookAnimationFormat::Gif => "GIF",
+                    };
+                    body.push_str(&format!(
+                        "\\begin{{quote}}\\textit{{[{kind} animation: {} frames at {:.0} fps — view in HTML output]}}\\end{{quote}}\n\n",
+                        anim.frames.len(),
+                        anim.fps,
                     ));
                 }
             }
@@ -574,6 +589,7 @@ mod tests {
             text_output: String::new(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
@@ -595,6 +611,7 @@ mod tests {
             text_output: "ans = 42".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: true,
             details: None,
             grid_cols: None,
@@ -619,6 +636,7 @@ mod tests {
             text_output: "ans = 1".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
@@ -641,6 +659,7 @@ mod tests {
             text_output: "   \n  ".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
@@ -665,6 +684,7 @@ mod tests {
             text_output: String::new(),
             error: Some("undefined variable".to_string()),
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,

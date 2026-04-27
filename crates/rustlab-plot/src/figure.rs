@@ -432,6 +432,7 @@ pub fn figure_new() -> u32 {
     save_current();
     let output = default_new_output();
     FIGURE.with(|f| f.borrow_mut().reset());
+    crate::animation::clear_frames();
     crate::html::clear_html_figure_path();
     let id = STORE.with(|s| {
         let mut store = s.borrow_mut();
@@ -453,6 +454,7 @@ pub fn figure_new() -> u32 {
 pub fn figure_new_html(path: &str) -> u32 {
     save_current();
     FIGURE.with(|f| f.borrow_mut().reset());
+    crate::animation::clear_frames();
     crate::html::set_html_figure_path(path);
     let id = STORE.with(|s| {
         let mut store = s.borrow_mut();
@@ -475,6 +477,7 @@ pub fn figure_switch(id: u32) -> Result<u32, crate::PlotError> {
     }
 
     save_current();
+    crate::animation::clear_frames();
 
     let stored = STORE.with(|s| s.borrow_mut().figures.remove(&id));
     if let Some(stored) = stored {
