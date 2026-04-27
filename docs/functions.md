@@ -1931,6 +1931,59 @@ savefig("heatmap.svg")
 savefig("report.html")    % interactive Plotly HTML with zoom/pan/hover
 ```
 
+### `frame()`
+
+Snapshot the current figure into the animation frame buffer, then clear the trace data on the active figure so the next loop iteration starts with a clean canvas. Subplot layout, axis labels, titles, limits, hold state, and grid setting are preserved across the call — only `series`, `heatmap`, `surface`, `contours`, `quivers`, and `streamlines` are wiped.
+
+```
+figure()
+for k = 1:60
+  Ez = step(k);
+  imagesc(Ez, "viridis")
+  title(sprintf("t = %d", k))     % set title AFTER imagesc — imagesc clears it
+  frame()
+end
+saveanim("wave.html", 30)
+```
+
+Calling `figure()` or `figure(N)` clears the frame buffer in addition to its existing reset behaviour, so "start a new animation" is the natural pattern.
+
+### `saveanim(path)` / `saveanim(path, fps)`
+
+Flush the animation frame buffer to disk. The path extension picks the output format. `fps` defaults to 10 and controls per-frame display duration.
+
+| Extension | Output | When to use |
+|---|---|---|
+| `.html` / `.htm` | Self-contained Plotly animation with play/pause buttons and a per-frame slider (`1000/fps` ms per frame). | Interactive viewing in a browser; embeds inside the rendered HTML notebook. |
+| `.gif` | Animated GIF, per-frame NeuQuant palette quantization. GIF stores delays in centiseconds — fps above ~100 rounds to the same 1 cs floor. | Portable, GitHub-renders inline in Markdown, embeds in PDFs (via the LaTeX `animate` package), shareable. |
+
+- **Path extension**: `.html`, `.htm`, or `.gif` only. Other extensions (`.svg`, `.png`, `.mp4`) return a clear error.
+- **Empty buffer**: errors with `saveanim: no frames captured (call frame() at least once)`.
+- **On success**: the buffer is drained, so a subsequent `frame()` loop starts clean without an explicit `figure()`.
+
+**Memory + size budget.** `frame()` clones the full `FigureState` (every plotted vector, every heatmap matrix). For a 200×200 heatmap × 500 frames the buffer holds ~160 MB before flush. Output sizes vary by format:
+
+| Demo | Plotly HTML | Animated GIF |
+|---|---|---|
+| 60 frames, 100×100 heatmap | ~13 MB | ~5 MB |
+| 120 frames, 100×100 heatmap | ~26 MB | ~10 MB |
+
+Plotly bundles are typically 2–3× larger than the equivalent GIF for heatmap-style data, but render at full resolution and have hover/zoom. GIF is fixed-resolution but trivially portable.
+
+```
+% Travelling Gaussian pulse — same loop, two output formats
+[X, Y] = meshgrid(linspace(-3, 3, 100), linspace(-3, 3, 100));
+figure()
+for k = 1:60
+  c = (k - 30) * 0.1;
+  Z = exp(-((X - c).^2 + Y.^2));
+  imagesc(Z, "viridis"); title(sprintf("k = %d", k))
+  frame()
+end
+saveanim("pulse.html", 30)        % interactive Plotly
+% saveanim("pulse.gif", 30)       % or portable GIF
+```
+
 ## Figure & Plot Controls
 
 These functions configure the figure that the next chart-creation call (`plot`, `stem`, `imagesc`, `contour`, `quiver`, `streamplot`, etc.) will populate. They have no effect on the math — only on the rendered output.

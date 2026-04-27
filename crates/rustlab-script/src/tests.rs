@@ -5227,6 +5227,118 @@ mod figure_state_tests {
             "expected dim error, got: {msg}"
         );
     }
+
+    // ─── Animation: frame() / saveanim() ────────────────────────────────────
+
+    fn run_or_err(src: &str) -> Result<(), crate::error::ScriptError> {
+        rustlab_plot::clear_frames();
+        reset_figure();
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = crate::Evaluator::new();
+        ev.run(&stmts)
+    }
+
+    #[test]
+    fn frame_builtin_snapshots_imagesc() {
+        rustlab_plot::clear_frames();
+        run("imagesc([1,2;3,4]);\nframe();\nimagesc([5,6;7,8]);\nframe();");
+        assert_eq!(rustlab_plot::frames_len(), 2);
+        rustlab_plot::clear_frames();
+    }
+
+    #[test]
+    fn frame_clears_traces_for_next_step() {
+        rustlab_plot::clear_frames();
+        reset_figure();
+        // imagesc() clears title at hold-off; the canonical pattern sets
+        // title AFTER imagesc — same call order users will use in scripts.
+        let src = "imagesc([1,2;3,4]);\ntitle(\"Wave\");\nxlabel(\"x\");\nframe();\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = crate::Evaluator::new();
+        ev.run(&stmts).unwrap();
+        FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            assert_eq!(sp.title, "Wave", "title preserved across frame()");
+            assert_eq!(sp.xlabel, "x", "xlabel preserved across frame()");
+            assert!(sp.heatmap.is_none(), "heatmap cleared by frame()");
+        });
+        rustlab_plot::clear_frames();
+    }
+
+    #[test]
+    fn figure_clears_frame_buffer() {
+        rustlab_plot::clear_frames();
+        run("imagesc([1,2;3,4]);\nframe();\nimagesc([5,6;7,8]);\nframe();");
+        assert_eq!(rustlab_plot::frames_len(), 2);
+        run("figure();");
+        assert_eq!(rustlab_plot::frames_len(), 0);
+    }
+
+    #[test]
+    fn saveanim_rejects_empty_buffer() {
+        rustlab_plot::clear_frames();
+        let err =
+            run_or_err("saveanim(\"/tmp/rustlab_anim_empty.html\");").expect_err("should error");
+        assert!(err.to_string().contains("no frames captured"));
+    }
+
+    #[test]
+    fn saveanim_rejects_unknown_extension() {
+        rustlab_plot::clear_frames();
+        let err = run_or_err(
+            "imagesc([1,2;3,4]);\nframe();\nsaveanim(\"/tmp/rustlab_anim_bad.mp4\");",
+        )
+        .expect_err("should error");
+        assert!(
+            err.to_string().contains(".html") && err.to_string().contains(".gif"),
+            "error should mention both supported extensions: {err}"
+        );
+        rustlab_plot::clear_frames();
+    }
+
+    #[test]
+    fn saveanim_gif_writes_file() {
+        rustlab_plot::clear_frames();
+        let path = std::env::temp_dir().join("rustlab_anim_roundtrip.gif");
+        let path_str = path.to_str().unwrap().to_string();
+        let src = format!(
+            "imagesc([1,2;3,4]);\nframe();\nimagesc([5,6;7,8]);\nframe();\nsaveanim(\"{}\", 10);",
+            path_str
+        );
+        run(&src);
+        let bytes = std::fs::read(&path).expect("gif written");
+        // GIF89a header — 6-byte ASCII signature.
+        assert_eq!(&bytes[..6], b"GIF89a", "gif header missing");
+        // Should be more than just the header.
+        assert!(bytes.len() > 100, "gif body too small: {} bytes", bytes.len());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn saveanim_round_trip_clears_buffer() {
+        rustlab_plot::clear_frames();
+        let path = std::env::temp_dir().join("rustlab_anim_roundtrip.html");
+        let path_str = path.to_str().unwrap().to_string();
+        let src = format!(
+            "imagesc([1,2;3,4]);\nframe();\nimagesc([5,6;7,8]);\nframe();\nimagesc([9,8;7,6]);\nframe();\nsaveanim(\"{}\", 30);",
+            path_str
+        );
+        run(&src);
+        let body = std::fs::read_to_string(&path).expect("file written");
+        assert!(body.contains("Plotly.newPlot("), "plotly init present");
+        assert!(body.contains("var frames_plot = ["), "frames array present");
+        assert!(body.contains("Play"), "play button present");
+        assert_eq!(
+            rustlab_plot::frames_len(),
+            0,
+            "saveanim should drain buffer"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 // ─── Tier 2e: Struct operations ─────────────────────────────────────────────

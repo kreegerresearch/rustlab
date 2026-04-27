@@ -432,6 +432,30 @@ Supported extensions: `.svg`, `.png`, `.html`.
 
 ---
 
+## Animation (multi-frame Plotly HTML)
+
+Capture a sequence of figure snapshots inside a loop, then flush them as a single self-contained HTML file with a Plotly play/pause control and per-frame slider.
+
+| Function | Description |
+|---|---|
+| `frame()` | Snapshot the current figure into the animation buffer; clears trace data so the next iteration starts clean. Subplot layout, titles, axis labels, and limits survive. |
+| `saveanim(path)` / `saveanim(path, fps)` | Flush the buffer to disk. Path extension picks the format: `.html` / `.htm` → self-contained Plotly animation with play/pause + slider; `.gif` → animated GIF (per-frame NeuQuant palette, GitHub-renderable). `fps` defaults to 10. Errors if the buffer is empty or the extension is unsupported. Buffer is cleared on success; calling `figure()` also clears it. |
+
+```rustlab
+figure()
+for k = 1:60
+  Ez = step(k);
+  imagesc(Ez, "viridis"); title(sprintf("frame %d", k))
+  frame()
+end
+saveanim("wave.html", 30)        % interactive Plotly
+saveanim("wave.gif", 30)         % portable GIF (embeds in markdown / PDF)
+```
+
+MP4 / animated SVG / APNG export is not supported in this release — other path extensions return a clear error.
+
+---
+
 ## Figure Controls (apply to the next `plot`/`stem`/… call)
 
 | Function | Description |

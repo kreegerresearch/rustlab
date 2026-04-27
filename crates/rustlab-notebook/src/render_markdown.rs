@@ -63,6 +63,7 @@ pub fn render_markdown(
                 text_output,
                 error,
                 figures,
+                animations,
                 hidden,
                 details,
                 grid_cols: _,
@@ -106,6 +107,44 @@ pub fn render_markdown(
                         "![plot {plot_idx}]({}/plot-{plot_idx}.svg)\n\n",
                         href_prefix
                     ));
+                }
+
+                // Animations.
+                // .html-format animations are too bulky to commit (multi-MB
+                // Plotly bundles, and GitHub strips iframes anyway) so we
+                // emit a placeholder note pointing at the HTML notebook.
+                // .gif-format animations are written to plot_dir as
+                // sidecars and embedded inline — GitHub markdown renders
+                // animated GIFs in `![..](..)` references natively.
+                for anim in animations {
+                    plot_idx += 1;
+                    match anim.format {
+                        rustlab_plot::NotebookAnimationFormat::Html => {
+                            body.push_str(&format!(
+                                "> ▶ **Animation: {} frames at {:.0} fps** — open the HTML version of this notebook to view.\n\n",
+                                anim.frames.len(),
+                                anim.fps,
+                            ));
+                        }
+                        rustlab_plot::NotebookAnimationFormat::Gif => {
+                            let gif_path =
+                                plot_dir.join(format!("anim-{plot_idx}.gif"));
+                            if let Err(e) = rustlab_plot::write_animation_gif(
+                                &gif_path.to_string_lossy(),
+                                &anim.frames,
+                                anim.fps,
+                            ) {
+                                eprintln!(
+                                    "warning: could not write anim-{plot_idx}.gif: {e}"
+                                );
+                                continue;
+                            }
+                            body.push_str(&format!(
+                                "![animation {plot_idx}]({}/anim-{plot_idx}.gif)\n\n",
+                                href_prefix
+                            ));
+                        }
+                    }
                 }
 
                 if details.is_some() {
@@ -187,6 +226,7 @@ mod tests {
             text_output: String::new(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
@@ -202,6 +242,7 @@ mod tests {
             text_output: "answer: 42".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: true,
             details: None,
             grid_cols: None,
@@ -218,6 +259,7 @@ mod tests {
             text_output: String::new(),
             error: Some("undefined variable 'x'".to_string()),
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
@@ -263,6 +305,7 @@ mod tests {
             text_output: String::new(),
             error: None,
             figures: vec![fig],
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,

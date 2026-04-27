@@ -971,6 +971,8 @@ primary     = NUMBER | STRING | IDENT
 | `semilogx` | `semilogx(x, y [, opts])` | Log-x linear-y plot. Pre-transform shim. |
 | `semilogy` | `semilogy(x, y [, opts])` | Linear-x log-y plot. Pre-transform shim. |
 | `polar` | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)`. theta in radians; both real-valued. |
+| `frame` | `frame()` | Snapshot the current figure into the per-thread animation frame buffer, then strip trace data from FIGURE so the next loop iteration starts clean. Subplot layout, axis labels, titles, limits, hold, and grid setting are preserved. `figure()` / `figure(N)` clears the buffer. |
+| `saveanim` | `saveanim(path)` / `saveanim(path, fps)` | Flush the animation buffer to disk. Path extension picks the format: `.html` / `.htm` → self-contained Plotly animation with play/pause + slider; `.gif` → animated GIF (per-frame NeuQuant palette). `fps` defaults to 10. Errors on empty buffer or unsupported extension. Buffer is drained on success. MP4 / SVG animation deferred. |
 | `spdiags` | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals; D=0 main, >0 super, <0 sub |
 | `sprand` | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `laplacian_1d` | `laplacian_1d(n [, dx] [, bc])` | Sparse tridiagonal Laplacian on a 1-D grid. `bc` is `"dirichlet"` (default), `"neumann"`, or `"periodic"`. |

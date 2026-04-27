@@ -2,10 +2,17 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::NotebookNav;
 use pulldown_cmark::{html::push_html, Options, Parser};
+use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
-use rustlab_plot::ThemeColors;
+use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
+use std::path::Path;
 
-/// Render executed notebook blocks into a self-contained HTML string.
+/// Render executed notebook blocks into an HTML string.
+///
+/// HTML inline plots stay self-contained, but animated-GIF sidecars
+/// require a per-notebook plot directory: `plot_dir` is where GIF files
+/// are written and `plot_href_prefix` is the relative path used inside
+/// `<img src=...>` (same convention as the Markdown renderer).
 ///
 /// `nav` is `Some` when the notebook is part of a multi-notebook directory
 /// render — it carries an "← Index" link for the sidebar plus prev/next
@@ -13,9 +20,13 @@ use rustlab_plot::ThemeColors;
 pub fn render_html(
     title: &str,
     blocks: &[Rendered],
+    plot_dir: &Path,
+    plot_href_prefix: &str,
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
 ) -> String {
+    let _ = std::fs::create_dir_all(plot_dir);
+    let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
@@ -67,6 +78,7 @@ pub fn render_html(
                 text_output,
                 error,
                 figures,
+                animations,
                 hidden,
                 details,
                 grid_cols,
@@ -121,6 +133,44 @@ pub fn render_html(
                             body.push_str("<div class=\"plot-container\">\n");
                             body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
                             body.push_str("\n</div>\n");
+                        }
+                    }
+                }
+
+                // Animations (one per saveanim call).
+                // .html output: inline Plotly div (play/pause + slider).
+                // .gif output: sidecar GIF in plot_dir, embedded via <img>.
+                for anim in animations {
+                    plot_idx += 1;
+                    match anim.format {
+                        NotebookAnimationFormat::Html => {
+                            let div_id = format!("anim-{plot_idx}");
+                            body.push_str("<div class=\"plot-container\">\n");
+                            body.push_str(&render_animation_inline(
+                                &anim.frames,
+                                &div_id,
+                                anim.fps,
+                                theme,
+                            ));
+                            body.push_str("\n</div>\n");
+                        }
+                        NotebookAnimationFormat::Gif => {
+                            let gif_path =
+                                plot_dir.join(format!("anim-{plot_idx}.gif"));
+                            if let Err(e) = rustlab_plot::write_animation_gif(
+                                &gif_path.to_string_lossy(),
+                                &anim.frames,
+                                anim.fps,
+                            ) {
+                                eprintln!(
+                                    "warning: could not write anim-{plot_idx}.gif: {e}"
+                                );
+                                continue;
+                            }
+                            body.push_str(&format!(
+                                "<div class=\"plot-container\"><img src=\"{}/anim-{plot_idx}.gif\" alt=\"animation {plot_idx}\" /></div>\n",
+                                href_prefix
+                            ));
                         }
                     }
                 }
@@ -1436,7 +1486,7 @@ mod tests {
     #[test]
     fn render_html_basic_structure() {
         let blocks = vec![Rendered::Markdown("# Hello".to_string())];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
@@ -1450,11 +1500,12 @@ mod tests {
             text_output: "ans = 42".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
@@ -1467,11 +1518,12 @@ mod tests {
             text_output: String::new(),
             error: Some("undefined variable".to_string()),
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
     }
@@ -1483,11 +1535,12 @@ mod tests {
             text_output: "ans = 42".to_string(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: true,
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
@@ -1502,11 +1555,12 @@ mod tests {
             text_output: "   \n  ".to_string(), // whitespace only
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         // Source shown, but no output div
         assert!(html.contains("class=\"source\""));
         assert!(!html.contains("class=\"output\""));
@@ -1514,26 +1568,26 @@ mod tests {
 
     #[test]
     fn render_html_katex_included() {
-        let html = render_html("Test", &[], test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
     }
 
     #[test]
     fn render_html_plotly_included() {
-        let html = render_html("Test", &[], test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("plotly"));
     }
 
     #[test]
     fn render_html_nav_toggle() {
-        let html = render_html("Test", &[], test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("nav-toggle"));
     }
 
     #[test]
     fn render_html_title_escaped() {
-        let html = render_html("A <script> & \"test\"", &[], test_theme(), None);
+        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("A &lt;script&gt; &amp; &quot;test&quot;"));
     }
 
@@ -1544,11 +1598,12 @@ mod tests {
             text_output: String::new(),
             error: None,
             figures: Vec::new(),
+            animations: Vec::new(),
             hidden: false,
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
@@ -1559,7 +1614,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Section One\n\n## Sub Section".to_string(),
         )];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("heading-1"));
         assert!(html.contains("heading-2"));
         assert!(html.contains("Section One"));
@@ -1603,7 +1658,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "See [other](other.md) for details".to_string(),
         )];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains("other.html"));
         assert!(!html.contains("other.md"));
     }
@@ -1692,7 +1747,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             r"$$\begin{pmatrix}0 & 1 \\ 1 & 0\end{pmatrix}$$".to_string(),
         )];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         // The `\\` must reach the rendered HTML so KaTeX can split rows.
         assert!(
             html.contains(r"\\"),
@@ -1706,7 +1761,7 @@ mod tests {
             kind: CalloutKind::Note,
             content: r"see $$a \\ b$$".to_string(),
         }];
-        let html = render_html("Test", &blocks, test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         assert!(html.contains(r"\\"));
     }
 
@@ -1722,7 +1777,7 @@ mod tests {
 
     #[test]
     fn render_html_no_nav_for_single_file() {
-        let html = render_html("Test", &[], test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
         // Single-file renders keep the sidebar layout, no topbar.
         assert!(!html.contains("class=\"page-nav\""));
         assert!(!html.contains("&larr; Index"));
@@ -1739,7 +1794,7 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("Filter Analysis", &[], test_theme(), Some(&nav));
+        let html = render_html("Filter Analysis", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         // Topbar present with breadcrumb.
         assert!(html.contains("class=\"topbar-layout\""));
         assert!(html.contains("class=\"topbar\""));
@@ -1761,7 +1816,7 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("A <script> & \"x\"", &[], test_theme(), Some(&nav));
+        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("A &lt;script&gt; &amp; &quot;x&quot;"));
     }
 
@@ -1772,7 +1827,7 @@ mod tests {
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
         };
-        let html = render_html("Test", &[], test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("class=\"page-nav\""));
         assert!(html.contains("class=\"prev\""));
         assert!(html.contains("href=\"intro.html\""));
@@ -1790,7 +1845,7 @@ mod tests {
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
         };
-        let html = render_html("Test", &[], test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("class=\"page-nav\""));
         assert!(!html.contains("class=\"prev\""));
         assert!(html.contains("class=\"next\""));
@@ -1803,7 +1858,7 @@ mod tests {
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("class=\"prev\""));
         assert!(!html.contains("class=\"next\""));
     }
@@ -1815,7 +1870,7 @@ mod tests {
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
     }

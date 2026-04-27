@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod ascii;
 pub mod contour;
 pub mod error;
@@ -13,6 +14,12 @@ pub mod viewer_client;
 #[cfg(feature = "viewer")]
 pub mod viewer_live;
 
+pub use animation::{
+    clear_figure_traces, clear_frames, clear_notebook_animations, frames_len, push_frame,
+    push_notebook_animation_snapshot, render_animation_doc, render_animation_gif,
+    render_animation_html, render_animation_inline, take_frames, take_notebook_animations,
+    write_animation_gif, NotebookAnimation, NotebookAnimationFormat,
+};
 pub use ascii::{
     imagesc_terminal, plot_complex, plot_db, plot_histogram, plot_real, push_xy_bar, push_xy_line,
     push_xy_scatter, push_xy_stem, render_figure_terminal, stem_real, surf_terminal,
@@ -25,7 +32,10 @@ pub use figure::{
     FigureState, HeatmapData, LineStyle, PlotContext, PlotKind, QuiverData, Series, SeriesColor,
     StreamlineData, SubplotState, SurfaceData, FIGURE,
 };
-pub use file::{render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed};
+pub use file::{
+    render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed,
+    render_figure_state_to_rgb_buffer,
+};
 pub use html::{
     clear_html_figure_path, render_figure_html, render_figure_plotly_div, set_html_figure_path,
     sync_html_file,

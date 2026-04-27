@@ -253,6 +253,10 @@ const HELP: &[HelpEntry] = &[
         detail: "plotdb(Hz)  or  plotdb(Hz, \"title\")\n  Hz is the 2×n matrix returned by freqz()\n  x-axis: Hz, y-axis: dB magnitude" },
     HelpEntry { name: "savefig",  brief: "Save current figure to PNG, SVG, or interactive HTML",
         detail: "savefig(\"file.svg\")    — save current figure as SVG\nsavefig(\"file.png\")    — save current figure as PNG\nsavefig(\"file.html\")   — save as interactive Plotly HTML\n\n  Extension determines format: .svg, .png, or .html\n  .html exports all subplots with interactive zoom/pan/hover (Plotly CDN)\n  Build the figure first with plot/stem/bar/scatter/plotdb/imagesc/histogram." },
+    HelpEntry { name: "frame",    brief: "Snapshot current figure into the animation frame buffer",
+        detail: "frame()\n  Clones the current figure into the per-thread animation buffer, then\n  clears trace data on the active figure (series, heatmap, surface,\n  contours, quivers, streamlines) so the next loop iteration starts\n  with a clean canvas. Subplot layout, axis labels, titles, limits,\n  hold state, and grid setting are preserved.\n\n  Pair with saveanim() to flush. Calling figure() also clears the\n  buffer.\n\nExample:\n  figure()\n  for k = 1:60\n    Ez = step(k); imagesc(Ez, \"viridis\")\n    title(sprintf(\"frame %d\", k))   % set AFTER imagesc\n    frame()\n  end\n  saveanim(\"wave.html\", 30)" },
+    HelpEntry { name: "saveanim", brief: "Flush the animation frame buffer to a Plotly HTML or animated GIF file",
+        detail: "saveanim(\"file.html\")        — Plotly HTML at default 10 fps\nsaveanim(\"file.html\", fps)   — Plotly HTML at given frame rate\nsaveanim(\"file.gif\", fps)    — animated GIF, per-frame NeuQuant palette\n\n  .html / .htm: self-contained Plotly document with play/pause + slider.\n  .gif: portable GIF that embeds in markdown / PDFs / chat.\n  Buffer is drained on success.\n  Errors on empty buffer or unsupported extension. MP4 / SVG animation\n  not supported in this release." },
     HelpEntry { name: "imagesc",  brief: "Display matrix as a colour heatmap in the terminal",
         detail: "imagesc(M)\nimagesc(M, colormap)\n  colormap: \"viridis\" (default), \"jet\", \"hot\", \"gray\"\n  Press any key to close." },
     HelpEntry { name: "surf",     brief: "3D surface plot of a Z matrix",
@@ -956,6 +960,7 @@ fn print_help_list() {
                 "plot", "stem", "bar", "scatter", "hline", "yline", "plotdb", "imagesc", "surf",
                 "loglog", "semilogx", "semilogy", "polar",
                 "contour", "contourf", "quiver", "streamplot", "savefig", "hist",
+                "frame", "saveanim",
             ],
         ),
         (
