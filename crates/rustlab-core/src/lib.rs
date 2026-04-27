@@ -1,4 +1,5 @@
 pub mod error;
+pub mod sparse_eig;
 pub mod sparse_solve;
 pub mod traits;
 pub mod types;

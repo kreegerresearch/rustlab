@@ -6622,6 +6622,94 @@ mod sparse_tests {
         assert!(get_scalar(&ev, "err") < 1e-12);
     }
 
+    // ── Sparse eigensolver `eigs` ─────────────────────────────────
+
+    #[test]
+    fn eigs_smallest_of_negated_laplacian() {
+        // For -laplacian_2d (SPD) on an nx×ny grid with unit spacing
+        // and Dirichlet BC, eigenvalues are
+        //   λ_{m,n} = 4 - 2·cos(mπ/(nx+1)) - 2·cos(nπ/(ny+1)).
+        // The smallest is at (m, n) = (1, 1).
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(6, 7);\n\
+             [V, D] = eigs(L, 1, \"sm\");\n\
+             lam = D(1);",
+        );
+        let lam = get_scalar(&ev, "lam");
+        let expected = 4.0
+            - 2.0 * (std::f64::consts::PI / 7.0).cos()
+            - 2.0 * (std::f64::consts::PI / 8.0).cos();
+        let rel = (lam - expected).abs() / expected.abs();
+        assert!(rel < 0.02, "got {lam}, expected ~{expected}, rel err {rel}");
+    }
+
+    #[test]
+    fn eigs_largest_of_negated_laplacian() {
+        // Largest eigenvalue is at (m, n) = (nx, ny):
+        //   4 - 2·cos(nx·π/(nx+1)) - 2·cos(ny·π/(ny+1))
+        // (the cosines are negative there, so the eigenvalue is large).
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(6, 7);\n\
+             [V, D] = eigs(L, 1, \"lm\");\n\
+             lam = D(1);",
+        );
+        let lam = get_scalar(&ev, "lam");
+        let expected = 4.0
+            - 2.0 * (6.0 * std::f64::consts::PI / 7.0).cos()
+            - 2.0 * (7.0 * std::f64::consts::PI / 8.0).cos();
+        let rel = (lam - expected).abs() / expected.abs();
+        assert!(rel < 0.02, "got {lam}, expected ~{expected}, rel err {rel}");
+    }
+
+    #[test]
+    fn eigs_returns_tuple_of_vectors_and_values() {
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(4, 5);\n\
+             [V, D] = eigs(L, 2, \"sm\");\n\
+             nv = length(D);\n\
+             s = size(V);\n\
+             vr = s(1);\n\
+             vc = s(2);",
+        );
+        assert_eq!(get_scalar(&ev, "nv"), 2.0);
+        assert_eq!(get_scalar(&ev, "vr"), 20.0);
+        assert_eq!(get_scalar(&ev, "vc"), 2.0);
+    }
+
+    #[test]
+    fn eigs_default_which_is_sm() {
+        // Calling without explicit "sm" should give the same answer.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(5, 6);\n\
+             [V1, D1] = eigs(L, 1);\n\
+             [V2, D2] = eigs(L, 1, \"sm\");\n\
+             diff = abs(D1(1) - D2(1));",
+        );
+        assert!(get_scalar(&ev, "diff") < 1e-10);
+    }
+
+    #[test]
+    fn eigs_rejects_dense_input() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "L = -1 * full(laplacian_2d(3, 3));\n\
+                 [V, D] = eigs(L, 1, \"sm\");",
+            )
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn eigs_rejects_too_many() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "L = -1 * laplacian_2d(3, 3);\n\
+                 [V, D] = eigs(L, 100, \"sm\");",
+            )
+        });
+        assert!(result.is_err());
+    }
+
     #[test]
     fn ijk2k_and_k2ijk_roundtrip() {
         // For (i, j, kk) = (2, 3, 4) on ny=5, nx=6:

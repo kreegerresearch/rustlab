@@ -971,6 +971,41 @@ v = eig(M)       # → complex vector with eigenvalues ~[3+0i, 1+0i]
 - Eigenvalues are returned in convergence order, not sorted.
 - The sum of eigenvalues equals `trace(M)`; the product equals `det(M)`.
 
+### `eigs(A, n)` / `eigs(A, n, which)` / `eigs(A, B, n)` / `eigs(A, B, n, which)`
+
+Sparse partial eigensolver. Returns a tuple `[V, D]` where `V` is a dense `n_rows × n` matrix of eigenvectors (column `k` is the eigenvector for `D(k)`) and `D` is a length-`n` vector of eigenvalues.
+
+- `which` is `"sm"` (smallest magnitude, default) or `"lm"` (largest magnitude).
+- `eigs(A, n[, which])` solves the standard problem `A x = λ x`.
+- `eigs(A, B, n[, which])` solves the generalized problem `A x = λ B x` with `B` Hermitian positive-definite.
+- `A` (and `B`) must be **sparse** — call `sparse(A)` first if you have a dense matrix. Use `eig` for dense problems.
+
+Auto-routing:
+- Hermitian / SPD `A` → hand-rolled symmetric Lanczos with full reorthogonalization.
+- General `A` → hand-rolled Arnoldi.
+- Generalized `eigs(A, B, n)` reduces to a standard problem via the existing `SparseChol` factor of `B` and routes through Arnoldi.
+
+```
+% Smallest 4 eigenpairs of a 100-grid Laplacian.
+nx = 10; ny = 10;
+L = -1 * laplacian_2d(nx, ny);
+[V, D] = eigs(L, 4, "sm");
+
+% Largest 2 eigenvalues.
+[V, D] = eigs(L, 2, "lm");
+
+% Generalized: A x = λ B x  (B SPD).
+[V, D] = eigs(A, B, 6, "sm");
+```
+
+**Convergence and limits.** The default Krylov dimension is `min(n_rows, max(6n+10, 40))`. For matrices with closely-spaced eigenvalues (clusters), Lanczos may need more iterations to resolve them. **Implicit restart** and **shift-invert** are not yet implemented; if convergence is poor on a particular system, the next steps in `dev/plans/em_requests_queue.md` cover those enhancements.
+
+**Hand-rolled algorithm references:**
+- Symmetric Lanczos with full reorthogonalization — Saad, *Numerical Methods for Large Eigenvalue Problems*, ch. 6; Golub & Van Loan §10.1.
+- Arnoldi for general matrices — Saad ch. 8; Golub & Van Loan §10.5.
+- Small dense symmetric eigenproblem at the centre of Lanczos via cyclic Jacobi rotations.
+- Small dense Hessenberg eigenproblem via shifted QR + inverse iteration (eigenvectors).
+
 ### `laguerre(n, alpha, x)`
 Associated Laguerre polynomial L_n^α(x) computed via 3-term recurrence.
 ```

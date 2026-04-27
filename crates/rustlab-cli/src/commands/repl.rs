@@ -153,6 +153,8 @@ const HELP: &[HelpEntry] = &[
         detail: "linsolve(A, b)  — A is n×n (dense or sparse), b is a length-n vector\n  Sparse A is converted to dense internally.\n  Returns x as a vector." },
     HelpEntry { name: "eig",      brief: "Eigenvalues of a square matrix",
         detail: "eig(M)  — returns a complex vector of eigenvalues\n  Uses QR iteration via Hessenberg reduction." },
+    HelpEntry { name: "eigs",     brief: "Sparse partial eigensolver — Lanczos / Arnoldi",
+        detail: "[V, D] = eigs(A, n)\n[V, D] = eigs(A, n, which)         — \"sm\" (default) | \"lm\"\n[V, D] = eigs(A, B, n)            — generalized A x = λ B x; B SPD\n[V, D] = eigs(A, B, n, which)\n\n  A (and B) must be sparse — call sparse(A) first if dense.\n  Returns:\n    V — n_rows × n dense matrix of eigenvectors (column k ↔ D(k))\n    D — length-n vector of eigenvalues\n\nDispatch:\n  Hermitian / SPD A → hand-rolled Lanczos with full reorthogonalization.\n  General A         → hand-rolled Arnoldi with modified Gram-Schmidt.\n  Generalized form  → reduce via SparseChol(B), route through Arnoldi.\n\nDefault Krylov dimension is min(n_rows, max(6n+10, 40)). Implicit restart\nand shift-invert are deferred; if convergence stalls on a closely-spaced\nspectrum, increase the matrix size or wait for the next phase.\n\nExample:\n  L = -1 * laplacian_2d(20, 20);   % SPD form: -∇²\n  [V, D] = eigs(L, 4, \"sm\");        % four lowest eigenmodes" },
     HelpEntry { name: "laguerre", brief: "Associated Laguerre polynomial  L_n^α(x)",
         detail: "laguerre(n, alpha, x)  — 3-term recurrence; x may be scalar/vector/matrix\n  Used for hydrogen radial wavefunctions." },
     HelpEntry { name: "legendre", brief: "Associated Legendre polynomial  P_l^m(x)",
@@ -874,7 +876,7 @@ fn print_help_list() {
         (
             "Linear Algebra",
             &[
-                "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve", "eig",
+                "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve", "eig", "eigs",
                 "svd", "laguerre", "legendre", "factor", "roots",
             ],
         ),

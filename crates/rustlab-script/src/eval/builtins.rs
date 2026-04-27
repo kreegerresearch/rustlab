@@ -188,6 +188,7 @@ impl BuiltinRegistry {
         r.register("expm", builtin_expm);
         r.register("linsolve", builtin_linsolve);
         r.register("eig", builtin_eig);
+        r.register("eigs", builtin_eigs);
         // Special functions
         r.register("laguerre", builtin_laguerre);
         r.register("legendre", builtin_legendre);
@@ -5134,6 +5135,91 @@ fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
     let h = hessenberg_reduce(m);
     let vals = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(e))?;
     Ok(Value::Vector(Array1::from_vec(vals)))
+}
+
+/// `eigs(A, n)` / `eigs(A, n, which)` / `eigs(A, B, n)` / `eigs(A, B, n, which)`
+///
+/// Sparse partial eigensolver. Returns the `n` eigenvalues selected by
+/// `which` (`"sm"` smallest-magnitude, default; `"lm"` largest-magnitude)
+/// of the standard problem `A x = λ x` or, when `B` is supplied, the
+/// generalized problem `A x = λ B x` (with `B` Hermitian positive
+/// definite).
+///
+/// Returns `[V, D]` where `V` is a dense `n_rows × n` matrix of
+/// eigenvectors (one column per eigenvalue) and `D` is a length-`n`
+/// vector of eigenvalues — same shape convention as MATLAB / Octave's
+/// `eigs` and consistent with the dense `eig`.
+fn builtin_eigs(args: Vec<Value>) -> Result<Value, ScriptError> {
+    use rustlab_core::sparse_eig::{eigs as core_eigs, eigs_gen as core_eigs_gen, Which};
+
+    check_args_range("eigs", &args, 2, 4)?;
+
+    // Decide between standard `eigs(A, n[, which])` and generalized
+    // `eigs(A, B, n[, which])` based on the second argument's type.
+    let (a, b_opt, n_arg_idx) = match &args[1] {
+        Value::SparseMatrix(b) => (
+            // generalized form: A and B both sparse
+            unwrap_sparse(&args[0], "eigs", "A")?,
+            Some(b),
+            2,
+        ),
+        Value::Matrix(_) => {
+            return Err(ScriptError::type_err(
+                "eigs: matrix arguments must be sparse — call sparse(A) first".into(),
+            ));
+        }
+        _ => (unwrap_sparse(&args[0], "eigs", "A")?, None, 1),
+    };
+
+    if args.len() <= n_arg_idx {
+        return Err(ScriptError::type_err(
+            "eigs: missing required argument `n` (number of eigenvalues)".into(),
+        ));
+    }
+    let n = args[n_arg_idx]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("eigs: n: {e}")))?;
+
+    let which = if args.len() > n_arg_idx + 1 {
+        match &args[n_arg_idx + 1] {
+            Value::Str(s) => Which::from_str(s.as_str())
+                .map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "eigs: which must be a string (\"sm\"|\"lm\"), got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        Which::SmallestMagnitude
+    };
+
+    let result = match b_opt {
+        Some(b) => core_eigs_gen(a, b, n, which, None)
+            .map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?,
+        None => core_eigs(a, n, which, None)
+            .map_err(|e| ScriptError::type_err(format!("eigs: {e}")))?,
+    };
+
+    Ok(Value::Tuple(vec![
+        Value::Matrix(result.vectors),
+        Value::Vector(result.values),
+    ]))
+}
+
+fn unwrap_sparse<'a>(
+    value: &'a Value,
+    fn_name: &str,
+    arg_name: &str,
+) -> Result<&'a SparseMat, ScriptError> {
+    match value {
+        Value::SparseMatrix(sm) => Ok(sm),
+        other => Err(ScriptError::type_err(format!(
+            "{fn_name}: {arg_name} must be a sparse matrix, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn builtin_whos_file(args: Vec<Value>) -> Result<Value, ScriptError> {
