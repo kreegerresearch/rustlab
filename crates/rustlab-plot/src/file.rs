@@ -822,8 +822,16 @@ where
         let (ymin, ymax) = bounds(&sd.y);
         (xmin, xmax, ymin, ymax)
     } else if let Some(hm) = &sp.heatmap {
-        let nrows = hm.z.len();
-        let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
+        let (nrows, ncols) = match hm.kind {
+            crate::figure::HeatmapKind::ImageRgba => {
+                (hm.rgba_height as usize, hm.rgba_width as usize)
+            }
+            _ => {
+                let nrows = hm.z.len();
+                let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
+                (nrows, ncols)
+            }
+        };
         (0.0, ncols as f64, 0.0, nrows as f64)
     } else {
         return Ok(());
@@ -834,7 +842,11 @@ where
     // is square. This matches Plotly's `scaleanchor: "x"` behaviour and gives
     // `imagesc` cells a 1:1 aspect — parity with the HTML renderer.
     let caption_h = if sp.title.is_empty() { 0u32 } else { CAPTION_H_EST };
-    let (chart_area, cbar_info) = if sp.heatmap.is_some() {
+    let needs_colorbar = matches!(
+        sp.heatmap.as_ref().map(|h| &h.kind),
+        Some(crate::figure::HeatmapKind::Imagesc) | Some(crate::figure::HeatmapKind::Heatmap)
+    );
+    let (chart_area, cbar_info) = if needs_colorbar {
         let (panel_w, panel_h) = root.dim_in_pixel();
         let cbar_total = COLORBAR_GUTTER + COLORBAR_WIDTH + COLORBAR_LABEL_AREA;
         let split_x = (panel_w as i32 - cbar_total as i32).max(50);
@@ -850,6 +862,16 @@ where
         let data_bot = data_top + side as i32;
         let _ = panel_h; // unused but documents that we considered total height
         (chart_area, Some((cbar_side, data_top, data_bot)))
+    } else if sp.heatmap.is_some() {
+        // ImageRgba: square chart area, no colorbar gutter — raw pixels have
+        // no scale to display.
+        let (panel_w, panel_h) = root.dim_in_pixel();
+        let data_w_avail = panel_w.saturating_sub(2 * MARGIN + Y_LABEL_AREA);
+        let data_h_avail = panel_h.saturating_sub(2 * MARGIN + X_LABEL_AREA + caption_h);
+        let side = data_w_avail.min(data_h_avail).max(1);
+        let req_cw = side + 2 * MARGIN + Y_LABEL_AREA;
+        let req_ch = side + 2 * MARGIN + X_LABEL_AREA + caption_h;
+        (root.clone().shrink((0, 0), (req_cw, req_ch)), None)
     } else {
         (root.clone(), None)
     };
@@ -871,16 +893,73 @@ where
         .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
         .map_err(err)?;
 
-    chart
-        .configure_mesh()
-        .disable_mesh()
-        .axis_style(axis_style)
-        .label_style(label_style)
-        .axis_desc_style(desc_style)
-        .x_desc(sp.xlabel.as_str())
-        .y_desc(sp.ylabel.as_str())
-        .draw()
-        .map_err(err)?;
+    // Heatmap kind with both axis label vectors gets categorical tick
+    // formatters; otherwise use the default numeric mesh.
+    let heatmap_labels = sp.heatmap.as_ref().and_then(|h| {
+        if matches!(h.kind, crate::figure::HeatmapKind::Heatmap) {
+            match (h.x_labels.clone(), h.y_labels.clone()) {
+                (Some(xl), Some(yl)) => Some((xl, yl, h.z.len())),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    });
+    if let Some((xl_c, yl_c, nrows_c)) = heatmap_labels {
+        chart
+            .configure_mesh()
+            .disable_mesh()
+            .axis_style(axis_style)
+            .label_style(label_style)
+            .axis_desc_style(desc_style)
+            .x_desc(sp.xlabel.as_str())
+            .y_desc(sp.ylabel.as_str())
+            // Request len+1 ticks across [0, len]; plotters picks "nice"
+            // values and this hint lands them at every integer cell boundary
+            // (0, 1, ..., len), so each label slot gets a tick.
+            .x_labels(xl_c.len() + 1)
+            .y_labels(yl_c.len() + 1)
+            .x_label_formatter(&|v| {
+                // Tick at integer v labels the column whose left edge is at v.
+                let rounded = v.round();
+                if (*v - rounded).abs() > 1e-6 {
+                    return String::new();
+                }
+                let idx = rounded as isize;
+                if idx >= 0 && (idx as usize) < xl_c.len() {
+                    xl_c[idx as usize].clone()
+                } else {
+                    String::new()
+                }
+            })
+            .y_label_formatter(&|v| {
+                // Row 0 sits at the top (chart-y = nrows). Tick at integer v
+                // labels the row whose top edge is at v: row_idx = nrows - v.
+                let rounded = v.round();
+                if (*v - rounded).abs() > 1e-6 {
+                    return String::new();
+                }
+                let row_idx = (nrows_c as isize) - (rounded as isize);
+                if row_idx >= 0 && (row_idx as usize) < yl_c.len() {
+                    yl_c[row_idx as usize].clone()
+                } else {
+                    String::new()
+                }
+            })
+            .draw()
+            .map_err(err)?;
+    } else {
+        chart
+            .configure_mesh()
+            .disable_mesh()
+            .axis_style(axis_style)
+            .label_style(label_style)
+            .axis_desc_style(desc_style)
+            .x_desc(sp.xlabel.as_str())
+            .y_desc(sp.ylabel.as_str())
+            .draw()
+            .map_err(err)?;
+    }
 
     // Gridlines first so heatmap cells / filled contours render on top.
     if sp.grid {
@@ -891,42 +970,73 @@ where
     // colorscale) so the colorbar pass can use the same range.
     let mut heatmap_meta: Option<(f64, f64, String)> = None;
     if let Some(hm) = &sp.heatmap {
-        let nrows = hm.z.len();
-        let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
-        if nrows > 0 && ncols > 0 {
-            let vals: Vec<f64> = hm.z.iter().flat_map(|row| row.iter().copied()).collect();
-            let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
-            let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            // Match Plotly's auto-zmin/zmax behaviour: scale to the actual
-            // data range. Even a floating-point-noise spread (e.g. divU on a
-            // linear field where range ~ 1e-15 from rounding) gets that tiny
-            // range mapped across the full colormap, exactly as Plotly does.
-            // Only when the range is *literally* zero (every cell bit-equal
-            // to every other cell) do we collapse to a single mid-colormap
-            // value — division by zero would otherwise yield NaN.
-            let raw_range = max_v - min_v;
-            let degenerate = raw_range == 0.0;
-            let range = if degenerate { 1.0 } else { raw_range };
-            let cell_w = (x_hi - x_lo) / ncols as f64;
-            let cell_h = (y_hi - y_lo) / nrows as f64;
-            for r in 0..nrows {
-                for c in 0..ncols {
-                    let v = vals[r * ncols + c];
-                    let t = if degenerate { 0.5 } else { (v - min_v) / range };
-                    let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
-                    let color = RGBColor(rr, gg, bb);
-                    let x0 = x_lo + c as f64 * cell_w;
-                    // Flip y so row 0 sits at the top of the chart.
-                    let y0 = y_hi - (r as f64 + 1.0) * cell_h;
-                    chart
-                        .draw_series(std::iter::once(Rectangle::new(
-                            [(x0, y0), (x0 + cell_w, y0 + cell_h)],
-                            color.filled(),
-                        )))
-                        .map_err(err)?;
+        match hm.kind {
+            crate::figure::HeatmapKind::ImageRgba => {
+                if let Some(rgba) = &hm.rgba {
+                    let ncols = hm.rgba_width as usize;
+                    let nrows = hm.rgba_height as usize;
+                    if nrows > 0 && ncols > 0 && rgba.len() >= nrows * ncols * 4 {
+                        let cell_w = (x_hi - x_lo) / ncols as f64;
+                        let cell_h = (y_hi - y_lo) / nrows as f64;
+                        for r in 0..nrows {
+                            for c in 0..ncols {
+                                let off = (r * ncols + c) * 4;
+                                let color = RGBColor(rgba[off], rgba[off + 1], rgba[off + 2]);
+                                let x0 = x_lo + c as f64 * cell_w;
+                                // Flip y so row 0 sits at the top.
+                                let y0 = y_hi - (r as f64 + 1.0) * cell_h;
+                                chart
+                                    .draw_series(std::iter::once(Rectangle::new(
+                                        [(x0, y0), (x0 + cell_w, y0 + cell_h)],
+                                        color.filled(),
+                                    )))
+                                    .map_err(err)?;
+                            }
+                        }
+                    }
                 }
             }
-            heatmap_meta = Some((min_v, max_v, hm.colorscale.clone()));
+            _ => {
+                let nrows = hm.z.len();
+                let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
+                if nrows > 0 && ncols > 0 {
+                    let vals: Vec<f64> =
+                        hm.z.iter().flat_map(|row| row.iter().copied()).collect();
+                    let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
+                    let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    // Match Plotly's auto-zmin/zmax behaviour: scale to the
+                    // actual data range. Even a floating-point-noise spread
+                    // (e.g. divU on a linear field where range ~ 1e-15 from
+                    // rounding) gets that tiny range mapped across the full
+                    // colormap, exactly as Plotly does. Only when the range
+                    // is *literally* zero (every cell bit-equal to every
+                    // other cell) do we collapse to a single mid-colormap
+                    // value — division by zero would otherwise yield NaN.
+                    let raw_range = max_v - min_v;
+                    let degenerate = raw_range == 0.0;
+                    let range = if degenerate { 1.0 } else { raw_range };
+                    let cell_w = (x_hi - x_lo) / ncols as f64;
+                    let cell_h = (y_hi - y_lo) / nrows as f64;
+                    for r in 0..nrows {
+                        for c in 0..ncols {
+                            let v = vals[r * ncols + c];
+                            let t = if degenerate { 0.5 } else { (v - min_v) / range };
+                            let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
+                            let color = RGBColor(rr, gg, bb);
+                            let x0 = x_lo + c as f64 * cell_w;
+                            // Flip y so row 0 sits at the top of the chart.
+                            let y0 = y_hi - (r as f64 + 1.0) * cell_h;
+                            chart
+                                .draw_series(std::iter::once(Rectangle::new(
+                                    [(x0, y0), (x0 + cell_w, y0 + cell_h)],
+                                    color.filled(),
+                                )))
+                                .map_err(err)?;
+                        }
+                    }
+                    heatmap_meta = Some((min_v, max_v, hm.colorscale.clone()));
+                }
+            }
         }
     }
 
@@ -1556,6 +1666,7 @@ mod tests {
                     vec![1.0, 0.1, 0.5],
                 ],
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
         render_figure_file(&path).expect("heatmap render should succeed");
@@ -1617,6 +1728,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z,
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
     }
@@ -1642,6 +1754,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z,
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -1723,6 +1836,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -1898,6 +2012,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z: vec![vec![2.0; 8]; 8],
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
         render_figure_file(&path).expect("constant heatmap should render");
@@ -2186,6 +2301,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z,
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
             sp.contours.push(crate::figure::ContourData {
                 z: vec![vec![0.0; 2]; 2],
@@ -2224,6 +2340,7 @@ mod tests {
             sp.heatmap = Some(crate::figure::HeatmapData {
                 z: z.clone(),
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
             sp.contours.push(crate::figure::ContourData {
                 z,

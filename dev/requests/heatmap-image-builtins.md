@@ -1,7 +1,21 @@
 # Plan: Add `heatmap()` and `image()` Builtins
 
 **Status**: Approved, not started  
-**Date**: 2026-04-18
+**Date**: 2026-04-18 (revised 2026-05-01)
+
+## Revision notes (2026-05-01)
+
+- `saveimagesc` / `builtin_saveimagesc` was removed before this plan was authored; all references below are dropped.
+- `HeatmapData` is now constructed in nine call sites (one production, eight tests) — Phase 1 site list updated. The animation-export PR (`60592fe`) added one new test site in `animation.rs`.
+- Line numbers refreshed against `main` (HEAD = `60592fe`).
+- Design decision locked: the new label fields live on `HeatmapData` itself ("option A") rather than reusing `SubplotState.x_labels`. Rationale: heatmap labels die with the heatmap on `hold off`, so coupling them to `HeatmapData`'s lifetime avoids the manual-clear footgun the bar chart already deals with (`file.rs:1540`). The bar chart keeps using `SubplotState.x_labels` unchanged.
+- Added a real-matrix sanity check for `image(R,G,B)` (Phase 3) — silently dropping non-zero imag parts is unfriendly.
+
+### Decisions captured 2026-05-01
+
+1. **Y-axis orientation: row 0 at top** for `heatmap()` and `image()` (the standard image/data orientation). Today's `imagesc` SVG already flips this way (`file.rs:920`); Plotly HTML for `imagesc` does **not** (no `y` array, no `autorange: reversed`), so HTML currently shows row 0 at the bottom — a pre-existing SVG/HTML divergence. This plan emits `yaxis.autorange: "reversed"` for `Heatmap` and `ImageRgba` kinds so HTML matches SVG. **`Imagesc` HTML output is left unchanged in this PR**; the existing divergence is tracked as a follow-up rather than fixed implicitly here.
+2. **SVG axis tick labels for `Heatmap` kind: implement.** Follow the existing bar-chart pattern (`file.rs:311-335`) — pass label vectors into `x_label_formatter` / `y_label_formatter` closures and request `ncols`/`nrows` ticks. Edge-aligned ticks (cells run `[c, c+1]`, ticks land at integer cell boundaries) — same trade-off the bar chart already accepts. HTML/Plotly stays cell-centered natively via the `x:`/`y:` text arrays.
+3. **Empty-data handling: return an error.** `heatmap([])` and `image([])` (and any zero-row or zero-col matrix) return `ScriptError::type_err("heatmap: matrix must be non-empty")` / equivalent for `image`. Today's `imagesc_terminal` returns `PlotError::EmptyData`; the new builtins should fail at the script-error layer before pushing any FIGURE state.
 
 ## Context
 
@@ -48,13 +62,12 @@ Pushes HeatmapData into FIGURE thread-local state (figure.rs)
 
 | What | File | Line |
 |------|------|------|
-| `HeatmapData { z, colorscale }` | `crates/rustlab-plot/src/figure.rs` | ~85 |
-| `SubplotState.heatmap: Option<HeatmapData>` | `crates/rustlab-plot/src/figure.rs` | ~105 |
-| `SubplotState.x_labels: Option<Vec<String>>` | `crates/rustlab-plot/src/figure.rs` | ~103 |
+| `HeatmapData { z, colorscale }` | `crates/rustlab-plot/src/figure.rs` | ~100 |
+| `SubplotState.heatmap: Option<HeatmapData>` | `crates/rustlab-plot/src/figure.rs` | ~194 |
+| `SubplotState.x_labels: Option<Vec<String>>` | `crates/rustlab-plot/src/figure.rs` | ~192 |
 | `colormap_rgb(t, name) -> (u8,u8,u8)` | `crates/rustlab-plot/src/figure.rs` | ~389 |
-| `imagesc_terminal()` | `crates/rustlab-plot/src/ascii.rs` | ~290 |
-| `builtin_imagesc()` | `crates/rustlab-script/src/eval/builtins.rs` | ~2026 |
-| `builtin_saveimagesc()` (deprecated) | `crates/rustlab-script/src/eval/builtins.rs` | ~2049 |
+| `imagesc_terminal()` | `crates/rustlab-plot/src/ascii.rs` | ~367 |
+| `builtin_imagesc()` | `crates/rustlab-script/src/eval/builtins.rs` | ~2855 |
 | Plotly heatmap trace generation | `crates/rustlab-plot/src/html.rs` | ~164 |
 | SVG/PNG heatmap rendering | `crates/rustlab-plot/src/file.rs` | ~72, ~280 |
 | Viewer RGBA pre-rendering | `crates/rustlab-plot/src/viewer_live.rs` | ~261 |
@@ -67,8 +80,8 @@ Pushes HeatmapData into FIGURE thread-local state (figure.rs)
 1. Extracts `.norm()` of each complex element -> `vals: Vec<f64>`
 2. Computes min/max for normalization
 3. Builds `z: Vec<Vec<f64>>` row-major
-4. **Pushes** `HeatmapData { z, colorscale }` into `FIGURE` thread-local (lines ~300-317)
-5. Early-returns if Notebook context or non-terminal stdout
+4. **Pushes** `HeatmapData { z, colorscale }` into `FIGURE` thread-local (`ascii.rs:383-398`)
+5. Early-returns if Notebook/Headless context or non-terminal stdout
 6. Renders colored blocks via crossterm/ratatui using `colormap_rgb(t, colormap)`
 
 The problem for new builtins: step 4 pushes a plain `HeatmapData`. The new builtins need to push enriched data (with labels or RGBA), so they can't delegate the FIGURE push to `imagesc_terminal`.
@@ -106,14 +119,35 @@ pub struct HeatmapData {
 }
 ```
 
-**Update all existing `HeatmapData` construction sites** with default values for new fields. There are exactly 2 sites:
+**Add a `Default` impl** so test sites can migrate with `..Default::default()`:
 
-1. `crates/rustlab-plot/src/ascii.rs` line ~313 (inside `imagesc_terminal`)
-2. `crates/rustlab-script/src/eval/builtins.rs` inside `builtin_saveimagesc` (~line 2068)
+```rust
+impl Default for HeatmapData {
+    fn default() -> Self {
+        Self {
+            z: Vec::new(),
+            colorscale: String::new(),
+            kind: HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        }
+    }
+}
+```
 
-Add to each: `kind: HeatmapKind::Imagesc, x_labels: None, y_labels: None, rgba: None, rgba_width: 0, rgba_height: 0`
+**Update existing `HeatmapData` construction sites.** There are nine — one production, eight in test modules:
 
-**Export `HeatmapKind`** from `crates/rustlab-plot/src/lib.rs` (line ~30, alongside existing `HeatmapData` export).
+| Site | Kind | Migration |
+|---|---|---|
+| `crates/rustlab-plot/src/ascii.rs:394` (`imagesc_terminal`) | production | Set `kind: HeatmapKind::Imagesc` and other new fields explicitly |
+| `crates/rustlab-plot/src/html.rs:752` | test | `..Default::default()` |
+| `crates/rustlab-plot/src/animation.rs:448` | test (`set_heatmap_2x2`) | `..Default::default()` |
+| `crates/rustlab-plot/src/file.rs:1552, 1617, 1642, 1723, 1898, 2186, 2224` | test | `..Default::default()` |
+
+**Export `HeatmapKind`** from `crates/rustlab-plot/src/lib.rs` (alongside existing `HeatmapData` export).
 
 ## Phase 2: Refactor terminal rendering
 
@@ -154,7 +188,7 @@ Export all three from `crates/rustlab-plot/src/lib.rs`.
 
 ### `heatmap()`
 
-Register (~line 152, after `imagesc`): `r.register("heatmap", builtin_heatmap);`
+Register (~line 163, after `imagesc`): `r.register("heatmap", builtin_heatmap);`
 
 Signatures:
 - `heatmap(M)` - numeric indices as labels
@@ -166,11 +200,12 @@ Signatures:
 Where `xlabels`/`ylabels` are string arrays like `["Mon", "Tue", "Wed"]`.
 
 Implementation:
-1. Parse args - detect leading `Value::StringArray` types vs matrix/scalar
+1. Parse args - detect leading `Value::StringArray` (pattern from `builtin_bar:7085`) vs matrix/scalar
 2. Extract matrix, take `.norm()` for complex support (same as imagesc)
-3. Validate label lengths: `xlabels.len() == ncols`, `ylabels.len() == nrows`
-4. Build `z: Vec<Vec<f64>>` from matrix values
-5. Push into FIGURE:
+3. **Empty-matrix check**: if `nrows == 0 || ncols == 0`, return `ScriptError::type_err("heatmap: matrix must be non-empty")` *before* pushing FIGURE state
+4. Validate label lengths: `xlabels.len() == ncols`, `ylabels.len() == nrows` — error otherwise
+5. Build `z: Vec<Vec<f64>>` from matrix values
+6. Push into FIGURE:
    ```rust
    sp.heatmap = Some(HeatmapData {
        z,
@@ -186,7 +221,7 @@ Implementation:
 6. Call `render_heatmap_tui()` for terminal display (best-effort, no labels in TUI)
 7. Call `sync_figure_outputs()`
 
-**Note on string arrays**: Check how existing builtins parse `Value::StringArray`. The bar chart builtin (`builtin_bar`) already handles string array labels at ~line 4740. Follow that pattern.
+**Note on string arrays**: Match the pattern in `builtin_bar` (~line 7085). Branch on `if let Value::StringArray(labels) = &args[0]` to detect the labeled form, then `labels.clone()` to get an owned `Vec<String>` for the `HeatmapData`.
 
 ### `image()`
 
@@ -201,12 +236,13 @@ Implementation:
 1. Parse args:
    - 1 arg (matrix) -> grayscale
    - 2 args (matrix, string) -> matrix + colormap
-   - 3 args (matrix, matrix, matrix) -> RGB
-2. Build RGBA buffer:
+   - 3 args (matrix, matrix, matrix) -> RGB; require all three to share `(nrows, ncols)`, else `ScriptError::type_err`
+2. **Empty-matrix check**: if `nrows == 0 || ncols == 0` on any input, return `ScriptError::type_err("image: matrix must be non-empty")` *before* pushing FIGURE state
+3. Build RGBA buffer:
    - **Grayscale**: `v = val.norm().clamp(0.0, 255.0) as u8; [v, v, v, 255]`
    - **Colormap**: `t = val.norm().clamp(0.0, 255.0) / 255.0; colormap_rgb(t, name) -> [r, g, b, 255]`
-   - **RGB**: `r = R[i][j].re.clamp(0.0, 255.0) as u8` (use `.re` not `.norm()` for RGB channels), same for g, b; `[r, g, b, 255]`
-3. Push into FIGURE:
+   - **RGB**: `r = R[i][j].re.clamp(0.0, 255.0) as u8` (use `.re` not `.norm()` for RGB channels), same for g, b; `[r, g, b, 255]`. **Reject** matrices with non-trivial imaginary parts: if any `|im| > 1e-9` in R/G/B, return `ScriptError::type_err("image: RGB channels must be real matrices")` rather than silently dropping the imag component.
+4. Push into FIGURE:
    ```rust
    sp.heatmap = Some(HeatmapData {
        z: vec![],  // not used for ImageRgba
@@ -219,8 +255,8 @@ Implementation:
        rgba_height: nrows as u32,
    });
    ```
-4. Call `render_image_tui()` for terminal (best-effort)
-5. Call `sync_figure_outputs()`
+5. Call `render_image_tui()` for terminal (best-effort)
+6. Call `sync_figure_outputs()`
 
 ## Phase 4: Update rendering backends
 
@@ -244,7 +280,7 @@ In `render_figure_plotly_div`, expand the heatmap trace block (~line 164) to bra
   xaxis: "x", yaxis: "y"
 }
 ```
-Plotly handles categorical axes natively from text x/y arrays.
+Plotly handles categorical axes natively from text x/y arrays. Also emit `autorange: "reversed"` on the panel's `yaxis` layout entry for `Heatmap` kind so row 0 lands at the top (standard image/data orientation, matching what `imagesc` SVG already does at `file.rs:920`).
 
 **`ImageRgba`**: Emit `type: "image"` trace. Build z as 3D JSON array where each pixel is `[r,g,b,a]`:
 ```javascript
@@ -254,7 +290,7 @@ Plotly handles categorical axes natively from text x/y arrays.
   xaxis: "x", yaxis: "y"
 }
 ```
-No colorscale needed. Skip the `scaleanchor` square aspect ratio logic for images.
+No colorscale needed. **Keep** the `scaleanchor` square-aspect logic (`html.rs:150`) — images need fixed aspect or pixels stretch when the panel resizes. Also emit `autorange: "reversed"` on the panel's `yaxis` so row 0 is at the top.
 
 ### 4b. SVG/PNG
 
@@ -264,21 +300,88 @@ In `render_to_backend` heatmap branch (~line 72), branch on `hm.kind`:
 
 **`Imagesc`**: No change (existing `render_imagesc_to_backend` call).
 
-**`Heatmap`**: Call `render_imagesc_to_backend` (same colored rectangles). Optionally add axis label rendering via plotters tick formatters if feasible, otherwise just use the same rendering as Imagesc (labels will show in the Plotly/HTML output).
+**`Heatmap`**: Same colored rectangles and same row-0-at-top y-flip as `Imagesc` (`y0 = y_hi - (r + 1) * cell_h`, `file.rs:920`). Adds categorical tick label rendering via plotters formatters.
 
-**`ImageRgba`**: New helper `render_image_rgba_to_backend`:
+The current `Imagesc` mesh setup at `file.rs:874-883` is one `chart.configure_mesh().disable_mesh()...draw()` chain. For `Heatmap` kind, branch the mesh configuration to install x/y label formatters that look up `hm.x_labels` / `hm.y_labels` by index. Pattern mirrors the bar chart's `x_label_formatter` at `file.rs:322-333`:
+
 ```rust
-fn render_image_rgba_to_backend<DB>(
-    root: DrawingArea<DB, ...>, width: usize, height: usize,
-    rgba: &[u8], caption: &str,
-) -> Result<(), PlotError>
+if let (Some(xlbls), Some(ylbls)) = (hm.x_labels.as_ref(), hm.y_labels.as_ref()) {
+    let xlbls_c = xlbls.clone();
+    let ylbls_c = ylbls.clone();
+    let nrows_c = nrows;
+    chart.configure_mesh()
+        .disable_mesh()
+        .axis_style(axis_style)
+        .label_style(label_style.clone())
+        .axis_desc_style(desc_style.clone())
+        .x_desc(sp.xlabel.as_str())
+        .y_desc(sp.ylabel.as_str())
+        .x_labels(xlbls_c.len())
+        .y_labels(ylbls_c.len())
+        .x_label_formatter(&|v| {
+            let rounded = v.round();
+            if (*v - rounded).abs() > 1e-6 { return String::new(); }
+            let idx = rounded as isize;
+            if idx >= 0 && (idx as usize) < xlbls_c.len() {
+                xlbls_c[idx as usize].clone()
+            } else { String::new() }
+        })
+        .y_label_formatter(&|v| {
+            // Row 0 is at the top: chart y = nrows means row 0; chart y = 0 means row nrows-1.
+            let rounded = v.round();
+            if (*v - rounded).abs() > 1e-6 { return String::new(); }
+            let chart_y = rounded as isize;
+            let row_idx = (nrows_c as isize) - 1 - chart_y;
+            if row_idx >= 0 && (row_idx as usize) < ylbls_c.len() {
+                ylbls_c[row_idx as usize].clone()
+            } else { String::new() }
+        })
+        .draw().map_err(err)?;
+} else {
+    /* existing Imagesc mesh chain */
+}
 ```
-Draw colored rectangles from RGBA directly. Each pixel at `(col, row)`:
+
+Where one of `x_labels` / `y_labels` is `Some` and the other is `None`, only that axis gets a formatter — the other uses the default numeric mesh. (Build the mesh chain conditionally; plotters' fluent API doesn't admit a clean "skip if None" so this may need a small helper or two parallel branches.)
+
+Tick alignment is on cell edges, not centers — the same trade-off the bar chart accepts at `file.rs:322`. HTML output remains cell-centered via Plotly's `x:`/`y:` text arrays.
+
+**`ImageRgba`**: New helper `render_image_rgba_to_backend`. Draw colored rectangles from RGBA directly using the same y-flip as `imagesc` so row 0 ends up at the top of the chart:
+
 ```rust
-let offset = (row * width + col) * 4;
-let color = RGBColor(rgba[offset], rgba[offset+1], rgba[offset+2]);
+for r in 0..height {
+    for c in 0..width {
+        let off = (r * width + c) * 4;
+        let color = RGBColor(rgba[off], rgba[off+1], rgba[off+2]);
+        let x0 = c as f64;
+        let y0 = height as f64 - (r as f64 + 1.0); // row 0 at top
+        chart.draw_series(std::iter::once(Rectangle::new(
+            [(x0, y0), (x0 + 1.0, y0 + 1.0)],
+            color.filled(),
+        )))?;
+    }
+}
 ```
-Row 0 at top (image convention), so y-coordinate = `row` not `height - 1 - row`.
+
+**Also branch the colorbar gutter split** (`file.rs:836-855`). The current code splits a colorbar strip whenever `sp.heatmap.is_some()`. For `ImageRgba` this is meaningless — there's no scale to show. Gate the split on `Imagesc | Heatmap`:
+
+```rust
+let needs_colorbar = matches!(
+    sp.heatmap.as_ref().map(|h| &h.kind),
+    Some(HeatmapKind::Imagesc) | Some(HeatmapKind::Heatmap)
+);
+let (chart_area, cbar_info) = if needs_colorbar {
+    /* existing split logic */
+} else if sp.heatmap.is_some() {
+    /* ImageRgba: square chart area, no gutter */
+    /* compute side from min(data_w_avail, data_h_avail), shrink root to a square */
+    (square_chart_area, None)
+} else {
+    (root.clone(), None)
+};
+```
+
+The colorbar render at `file.rs:960` already guards on `cbar_info.is_some()`, so passing `None` for `ImageRgba` cleanly skips it.
 
 ### 4c. Viewer
 
@@ -316,7 +419,7 @@ if hm.kind == HeatmapKind::ImageRgba {
 
 **File: `crates/rustlab-cli/src/commands/repl.rs`**
 
-Add `HelpEntry` for `heatmap` and `image` after the `imagesc` entry (~line 230):
+Add `HelpEntry` for `heatmap` and `image` after the `imagesc` entry (~line 260):
 
 ```rust
 HelpEntry { name: "heatmap", brief: "Labeled heatmap with categorical axis labels",
@@ -325,7 +428,7 @@ HelpEntry { name: "image", brief: "Raw pixel display (no normalization, values 0
     detail: "image(M)              -- grayscale (values 0-255)\nimage(M, \"colormap\")  -- single channel with colormap\nimage(R, G, B)        -- true-color RGB (values 0-255)\n\nValues clamped to [0, 255]. No min/max normalization (unlike imagesc)." },
 ```
 
-Add `"heatmap"` and `"image"` to the "Plotting" category list (~line 863).
+Add `"heatmap"` and `"image"` to the "Plotting" category list (~line 960).
 
 ## Files to Modify (summary)
 

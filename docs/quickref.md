@@ -400,6 +400,8 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `hline(y)` / `hline(y, color, label)` | Horizontal reference line (dashed); `yline()` alias |
 | `plotdb(Hz)` / `plotdb(Hz, "title")` | dB frequency response (Hz from `freqz` or `spectrum`) |
 | `imagesc(M)` / `imagesc(M, cmap)` | Matrix heatmap; colormaps: `"viridis"` `"jet"` `"hot"` `"gray"` |
+| `heatmap(M)` / `heatmap(M, "title")` / `heatmap(xlabels, ylabels, M [, "title" [, cmap]])` | Heatmap with categorical axis labels; row 0 at top; xlabels/ylabels are string arrays |
+| `image(M)` / `image(M, cmap)` / `image(R, G, B)` | Raw pixel display, values clamped 0..255, no normalisation; RGB form takes three real matrices |
 | `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, cmap)` | 3D surface; interactive rotate/zoom in viewer, Plotly 3D in HTML |
 | `contour(Z)` / `contour(X, Y, Z [, n|levels [, "color"]])` | Line contours; honours `hold on` for overlay on `imagesc`. Terminal: not rendered. |
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |

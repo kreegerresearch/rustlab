@@ -95,13 +95,53 @@ pub struct Series {
     pub kind: PlotKind,
 }
 
-/// 2D heatmap data for a subplot (produced by `imagesc`).
+/// Discriminator for the three heatmap-shaped builtins: continuous-value
+/// `imagesc`, label-axis `heatmap`, and raw-pixel `image`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeatmapKind {
+    /// `imagesc`: continuous values, min/max normalisation, colormap applied.
+    Imagesc,
+    /// `heatmap`: like `Imagesc` but with categorical axis labels.
+    Heatmap,
+    /// `image`: raw RGBA pixel data, no normalisation. Uses `rgba`/`rgba_width`/
+    /// `rgba_height` instead of `z`/`colorscale`.
+    ImageRgba,
+}
+
+/// 2D heatmap data for a subplot (produced by `imagesc`, `heatmap`, `image`).
 #[derive(Debug, Clone)]
 pub struct HeatmapData {
-    /// Row-major matrix values (magnitudes). `z[row][col]`.
+    /// Row-major matrix values (magnitudes). `z[row][col]`. Empty for `ImageRgba`.
     pub z: Vec<Vec<f64>>,
     /// Colorscale name (rustlab convention: "viridis", "jet", "hot", "gray").
+    /// Empty for `ImageRgba`.
     pub colorscale: String,
+    /// Which builtin produced this heatmap.
+    pub kind: HeatmapKind,
+    /// Column labels (`Heatmap` kind). `Some(["Mon","Tue",...])` when set.
+    pub x_labels: Option<Vec<String>>,
+    /// Row labels (`Heatmap` kind).
+    pub y_labels: Option<Vec<String>>,
+    /// Pre-rendered RGBA pixels (`ImageRgba` kind), row-major top-to-bottom.
+    /// `4 * rgba_width * rgba_height` bytes.
+    pub rgba: Option<Vec<u8>>,
+    pub rgba_width: u32,
+    pub rgba_height: u32,
+}
+
+impl Default for HeatmapData {
+    fn default() -> Self {
+        Self {
+            z: Vec::new(),
+            colorscale: String::new(),
+            kind: HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        }
+    }
 }
 
 /// 3D surface data for a subplot (produced by `surf`).

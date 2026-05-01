@@ -448,6 +448,7 @@ mod tests {
             sp.heatmap = Some(HeatmapData {
                 z: vec![vec![value, value], vec![value, value]],
                 colorscale: "viridis".to_string(),
+                ..Default::default()
             });
         });
     }

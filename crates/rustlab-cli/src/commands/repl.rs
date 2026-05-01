@@ -259,6 +259,10 @@ const HELP: &[HelpEntry] = &[
         detail: "saveanim(\"file.html\")        — Plotly HTML at default 10 fps\nsaveanim(\"file.html\", fps)   — Plotly HTML at given frame rate\nsaveanim(\"file.gif\", fps)    — animated GIF, per-frame NeuQuant palette\n\n  .html / .htm: self-contained Plotly document with play/pause + slider.\n  .gif: portable GIF that embeds in markdown / PDFs / chat.\n  Buffer is drained on success.\n  Errors on empty buffer or unsupported extension. MP4 / SVG animation\n  not supported in this release." },
     HelpEntry { name: "imagesc",  brief: "Display matrix as a colour heatmap in the terminal",
         detail: "imagesc(M)\nimagesc(M, colormap)\n  colormap: \"viridis\" (default), \"jet\", \"hot\", \"gray\"\n  Press any key to close." },
+    HelpEntry { name: "heatmap",  brief: "Heatmap with categorical axis labels",
+        detail: "heatmap(M)\nheatmap(M, \"title\")\nheatmap(xlabels, ylabels, M)\nheatmap(xlabels, ylabels, M, \"title\")\nheatmap(xlabels, ylabels, M, \"title\", \"colormap\")\n\n  xlabels, ylabels: string arrays such as {\"Mon\", \"Tue\", \"Wed\"}.\n  colormap: \"viridis\" (default), \"jet\", \"hot\", \"gray\".\n  Row 0 is rendered at the top (image/data orientation).\n\nExample:\n  heatmap({\"A\",\"B\",\"C\"}, {\"X\",\"Y\"}, [1,2,3;4,5,6], \"demo\");" },
+    HelpEntry { name: "image",    brief: "Raw pixel display (no normalisation, values 0–255)",
+        detail: "image(M)              — grayscale (values 0..255)\nimage(M, \"colormap\")  — single channel mapped through colormap\nimage(R, G, B)        — true-colour RGB (each channel 0..255, real-valued)\n\n  Values are clamped to [0, 255]; no min/max normalisation (unlike imagesc).\n  RGB form requires three real matrices of identical shape.\n  Row 0 is rendered at the top." },
     HelpEntry { name: "surf",     brief: "3D surface plot of a Z matrix",
         detail: "surf(Z)              — plot Z with x=1..cols, y=1..rows\nsurf(X, Y, Z)        — X, Y may be vectors or meshgrid matrices\nsurf(X, Y, Z, cmap)  — with colormap \"viridis\"|\"jet\"|\"hot\"|\"gray\"\n\nTerminal:  renders as a heatmap of Z.\nViewer:    interactive 3D surface — left-drag rotate, scroll zoom,\n           shift+scroll scale Z, right-drag pan, R resets.\nHTML:      Plotly 3D surface (draggable in browser).\nSVG/PNG:   static isometric wireframe.\n\nExample:\n  [X, Y] = meshgrid(linspace(-3, 3, 40), linspace(-3, 3, 40));\n  Z = sin(X.^2 + Y.^2); surf(X, Y, Z);" },
     HelpEntry { name: "contour",  brief: "Line contour plot of a 2-D scalar field",
@@ -957,7 +961,8 @@ fn print_help_list() {
         (
             "Plotting",
             &[
-                "plot", "stem", "bar", "scatter", "hline", "yline", "plotdb", "imagesc", "surf",
+                "plot", "stem", "bar", "scatter", "hline", "yline", "plotdb", "imagesc",
+                "heatmap", "image", "surf",
                 "loglog", "semilogx", "semilogy", "polar",
                 "contour", "contourf", "quiver", "streamplot", "savefig", "hist",
                 "frame", "saveanim",

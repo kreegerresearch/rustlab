@@ -15,9 +15,11 @@ use rustlab_dsp::{
     ifft, quantize_scalar, snr_db, upfirdn, IirFilter, QFmtSpec, WindowFunction,
 };
 use rustlab_plot::{
-    compute_histogram, histogram_matrix, imagesc_terminal, plot_db, plot_histogram, push_xy_bar,
-    push_xy_line, push_xy_scatter, push_xy_stem, render_figure_file, render_figure_terminal,
-    surf_terminal, sync_figure_outputs, LineStyle, LiveFigure, LivePlot, SeriesColor, FIGURE,
+    colormap_rgb, compute_histogram, histogram_matrix, imagesc_terminal, plot_db, plot_histogram,
+    push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem, render_figure_file,
+    render_figure_terminal, render_heatmap_tui, render_image_tui, surf_terminal,
+    sync_figure_outputs, HeatmapData, HeatmapKind, LineStyle, LiveFigure, LivePlot, SeriesColor,
+    FIGURE,
 };
 use std::collections::HashMap;
 use std::io::{Read as IoRead, Write as IoWrite};
@@ -161,6 +163,8 @@ impl BuiltinRegistry {
         r.register("hline", builtin_hline);
         r.register("yline", builtin_hline); // common alias
         r.register("imagesc", builtin_imagesc);
+        r.register("heatmap", builtin_heatmap);
+        r.register("image", builtin_image);
         r.register("surf", builtin_surf);
         r.register("contour", builtin_contour);
         r.register("contourf", builtin_contourf);
@@ -2874,6 +2878,262 @@ fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     imagesc_terminal(&matrix, "", &colormap).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("heatmap", &args, 1, 5)?;
+
+    let labeled = matches!(&args[0], Value::StringArray(_));
+    let (xlabels, ylabels, matrix_idx) = if labeled {
+        if args.len() < 3 {
+            return Err(ScriptError::type_err(
+                "heatmap: labeled form requires heatmap(xlabels, ylabels, M[, title[, colormap]])"
+                    .to_string(),
+            ));
+        }
+        let xl = match &args[0] {
+            Value::StringArray(v) => v.clone(),
+            _ => unreachable!(),
+        };
+        let yl = match &args[1] {
+            Value::StringArray(v) => v.clone(),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "heatmap: ylabels must be a string array, got {}",
+                    other
+                )))
+            }
+        };
+        (Some(xl), Some(yl), 2usize)
+    } else {
+        if args.len() > 2 {
+            return Err(ScriptError::type_err(
+                "heatmap: unlabeled form is heatmap(M) or heatmap(M, title); \
+                 use heatmap(xlabels, ylabels, M, ...) for categorical labels"
+                    .to_string(),
+            ));
+        }
+        (None, None, 0usize)
+    };
+
+    let matrix: CMatrix = match &args[matrix_idx] {
+        Value::Matrix(m) => m.clone(),
+        Value::Vector(v) => {
+            let n = v.len();
+            Array2::from_shape_fn((n, 1), |(i, _)| v[i])
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "heatmap: expected matrix, got {}",
+                other
+            )))
+        }
+    };
+    let (nrows, ncols) = (matrix.nrows(), matrix.ncols());
+    if nrows == 0 || ncols == 0 {
+        return Err(ScriptError::type_err(
+            "heatmap: matrix must be non-empty".to_string(),
+        ));
+    }
+
+    if let Some(ref xl) = xlabels {
+        if xl.len() != ncols {
+            return Err(ScriptError::type_err(format!(
+                "heatmap: xlabels length ({}) must match column count ({})",
+                xl.len(),
+                ncols
+            )));
+        }
+    }
+    if let Some(ref yl) = ylabels {
+        if yl.len() != nrows {
+            return Err(ScriptError::type_err(format!(
+                "heatmap: ylabels length ({}) must match row count ({})",
+                yl.len(),
+                nrows
+            )));
+        }
+    }
+
+    let title = if args.len() > matrix_idx + 1 {
+        args[matrix_idx + 1]
+            .to_str()
+            .map_err(ScriptError::type_err)?
+    } else {
+        String::new()
+    };
+    let colormap = if args.len() > matrix_idx + 2 {
+        args[matrix_idx + 2]
+            .to_str()
+            .map_err(ScriptError::type_err)?
+    } else {
+        "viridis".to_string()
+    };
+
+    let vals: Vec<f64> = matrix.iter().map(|c| c.norm()).collect();
+    let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = (max_v - min_v).max(1e-12);
+    let z: Vec<Vec<f64>> = (0..nrows)
+        .map(|r| (0..ncols).map(|c| vals[r * ncols + c]).collect())
+        .collect();
+
+    let title_for_state = title.clone();
+    let colormap_for_state = colormap.clone();
+    let xlabels_for_state = xlabels.clone();
+    let ylabels_for_state = ylabels.clone();
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            let sp = fig.current_mut();
+            sp.series.clear();
+            sp.title.clear();
+        }
+        let sp = fig.current_mut();
+        if !title_for_state.is_empty() && sp.title.is_empty() {
+            sp.title = title_for_state;
+        }
+        sp.heatmap = Some(HeatmapData {
+            z,
+            colorscale: colormap_for_state,
+            kind: HeatmapKind::Heatmap,
+            x_labels: xlabels_for_state,
+            y_labels: ylabels_for_state,
+            ..Default::default()
+        });
+    });
+
+    render_heatmap_tui(&vals, nrows, ncols, min_v, range, &title, &colormap)
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("image", &args, 1, 3)?;
+
+    fn to_matrix(v: &Value, name: &str) -> Result<CMatrix, ScriptError> {
+        match v {
+            Value::Matrix(m) => Ok(m.clone()),
+            Value::Vector(vec) => {
+                let n = vec.len();
+                Ok(Array2::from_shape_fn((n, 1), |(i, _)| vec[i]))
+            }
+            other => Err(ScriptError::type_err(format!(
+                "image: {} must be a matrix, got {}",
+                name, other
+            ))),
+        }
+    }
+
+    fn check_real(name: &str, m: &CMatrix) -> Result<(), ScriptError> {
+        for v in m.iter() {
+            if v.im.abs() > 1e-9 {
+                return Err(ScriptError::type_err(format!(
+                    "image: {} channel must be a real matrix (got non-zero imag part)",
+                    name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    enum Mode {
+        Grayscale,
+        Colormap(String),
+        Rgb,
+    }
+    let mode = match args.len() {
+        1 => Mode::Grayscale,
+        2 => match &args[1] {
+            Value::Str(s) => Mode::Colormap(s.clone()),
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "image: 2nd arg must be a colormap name, got {}",
+                    other
+                )))
+            }
+        },
+        3 => Mode::Rgb,
+        _ => unreachable!(),
+    };
+
+    let m0 = to_matrix(&args[0], "matrix")?;
+    let (nrows, ncols) = (m0.nrows(), m0.ncols());
+    if nrows == 0 || ncols == 0 {
+        return Err(ScriptError::type_err(
+            "image: matrix must be non-empty".to_string(),
+        ));
+    }
+
+    let mut rgba = Vec::with_capacity(nrows * ncols * 4);
+    match &mode {
+        Mode::Grayscale => {
+            for r in 0..nrows {
+                for c in 0..ncols {
+                    let v = m0[[r, c]].norm().clamp(0.0, 255.0) as u8;
+                    rgba.extend_from_slice(&[v, v, v, 255]);
+                }
+            }
+        }
+        Mode::Colormap(name) => {
+            for r in 0..nrows {
+                for c in 0..ncols {
+                    let v = m0[[r, c]].norm().clamp(0.0, 255.0);
+                    let t = v / 255.0;
+                    let (rr, gg, bb) = colormap_rgb(t, name);
+                    rgba.extend_from_slice(&[rr, gg, bb, 255]);
+                }
+            }
+        }
+        Mode::Rgb => {
+            let mg = to_matrix(&args[1], "G channel")?;
+            let mb = to_matrix(&args[2], "B channel")?;
+            if mg.nrows() != nrows
+                || mg.ncols() != ncols
+                || mb.nrows() != nrows
+                || mb.ncols() != ncols
+            {
+                return Err(ScriptError::type_err(
+                    "image: R, G, B matrices must share the same shape".to_string(),
+                ));
+            }
+            check_real("R", &m0)?;
+            check_real("G", &mg)?;
+            check_real("B", &mb)?;
+            for r in 0..nrows {
+                for c in 0..ncols {
+                    let rr = m0[[r, c]].re.clamp(0.0, 255.0) as u8;
+                    let gg = mg[[r, c]].re.clamp(0.0, 255.0) as u8;
+                    let bb = mb[[r, c]].re.clamp(0.0, 255.0) as u8;
+                    rgba.extend_from_slice(&[rr, gg, bb, 255]);
+                }
+            }
+        }
+    }
+
+    let rgba_for_state = rgba.clone();
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            let sp = fig.current_mut();
+            sp.series.clear();
+            sp.title.clear();
+        }
+        let sp = fig.current_mut();
+        sp.heatmap = Some(HeatmapData {
+            kind: HeatmapKind::ImageRgba,
+            rgba: Some(rgba_for_state),
+            rgba_width: ncols as u32,
+            rgba_height: nrows as u32,
+            ..Default::default()
+        });
+    });
+
+    render_image_tui(&rgba, ncols, nrows, "")
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)
 }

@@ -358,33 +358,47 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
 
         // Send heatmap if present
         if let Some(hm) = &panel.heatmap {
-            let height = hm.z.len();
-            let width = if height > 0 { hm.z[0].len() } else { 0 };
+            let (width, height, rgba) = match hm.kind {
+                crate::figure::HeatmapKind::ImageRgba => {
+                    if let Some(buf) = &hm.rgba {
+                        (hm.rgba_width as usize, hm.rgba_height as usize, buf.clone())
+                    } else {
+                        (0, 0, Vec::new())
+                    }
+                }
+                _ => {
+                    let height = hm.z.len();
+                    let width = if height > 0 { hm.z[0].len() } else { 0 };
+                    if width == 0 || height == 0 {
+                        (0, 0, Vec::new())
+                    } else {
+                        let mut min_v = f64::INFINITY;
+                        let mut max_v = f64::NEG_INFINITY;
+                        for row in &hm.z {
+                            for &v in row {
+                                if v < min_v {
+                                    min_v = v;
+                                }
+                                if v > max_v {
+                                    max_v = v;
+                                }
+                            }
+                        }
+                        let range = (max_v - min_v).max(1e-12);
+                        let mut rgba = Vec::with_capacity(width * height * 4);
+                        for row in &hm.z {
+                            for &v in row {
+                                let t = (v - min_v) / range;
+                                let (r, g, b) =
+                                    crate::figure::colormap_rgb(t, &hm.colorscale);
+                                rgba.extend_from_slice(&[r, g, b, 255]);
+                            }
+                        }
+                        (width, height, rgba)
+                    }
+                }
+            };
             if width > 0 && height > 0 {
-                // Compute min/max for normalization
-                let mut min_v = f64::INFINITY;
-                let mut max_v = f64::NEG_INFINITY;
-                for row in &hm.z {
-                    for &v in row {
-                        if v < min_v {
-                            min_v = v;
-                        }
-                        if v > max_v {
-                            max_v = v;
-                        }
-                    }
-                }
-                let range = (max_v - min_v).max(1e-12);
-
-                // Pre-render to RGBA using the colormap
-                let mut rgba = Vec::with_capacity(width * height * 4);
-                for row in &hm.z {
-                    for &v in row {
-                        let t = (v - min_v) / range;
-                        let (r, g, b) = crate::figure::colormap_rgb(t, &hm.colorscale);
-                        rgba.extend_from_slice(&[r, g, b, 255]);
-                    }
-                }
                 conn.client.send_nowait(&ViewerMsg::PanelHeatmap {
                     fig_id,
                     panel: idx as u16,

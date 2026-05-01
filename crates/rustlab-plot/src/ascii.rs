@@ -394,10 +394,35 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
         sp.heatmap = Some(crate::figure::HeatmapData {
             z,
             colorscale: colormap.to_string(),
+            kind: crate::figure::HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
         });
     });
 
-    // Notebook / Headless mode: FIGURE state is set, no terminal render needed
+    render_heatmap_tui(&vals, nrows, ncols, min_v, range, title, colormap)
+}
+
+/// Render a heatmap to the terminal using colored block characters from a
+/// row-major scalar buffer. Pure rendering — does **not** touch FIGURE state.
+/// `heatmap()` and `image()` builtins use this after pushing their own
+/// `HeatmapData`.
+///
+/// Honours the same Notebook/Headless and non-TTY early-return guards as
+/// `imagesc_terminal`.
+pub fn render_heatmap_tui(
+    vals: &[f64],
+    nrows: usize,
+    ncols: usize,
+    min_v: f64,
+    range: f64,
+    title: &str,
+    colormap: &str,
+) -> Result<(), PlotError> {
+    // Notebook / Headless mode: FIGURE state already set by caller; skip TUI.
     match crate::figure::plot_context() {
         crate::figure::PlotContext::Notebook | crate::figure::PlotContext::Headless => {
             return Ok(());
@@ -424,7 +449,6 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
         let inner_h = (area.height as usize).saturating_sub(2);
         let inner_w = (area.width as usize).saturating_sub(2);
 
-        // Map nrows×ncols → terminal rows × (terminal_cols / 2) pixels (2 chars per pixel)
         let px_cols = inner_w / 2;
         let disp_rows = nrows.min(inner_h);
         let disp_cols = ncols.min(px_cols);
@@ -435,7 +459,7 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(disp_cols);
             for dc in 0..disp_cols {
                 let mc = dc * ncols / disp_cols.max(1);
-                let v = matrix[[mr.min(nrows - 1), mc.min(ncols - 1)]].norm();
+                let v = vals[mr.min(nrows - 1) * ncols + mc.min(ncols - 1)];
                 let t = (v - min_v) / range;
                 let (r, g, b) = colormap_rgb(t, colormap);
                 spans.push(Span::styled("  ", Style::default().bg(Color::Rgb(r, g, b))));
@@ -443,11 +467,88 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
             tui_lines.push(TuiLine::from(spans));
         }
 
+        let max_v = min_v + range;
         let subtitle = format!("{} [{}, {}]", colormap, fmt_g(min_v), fmt_g(max_v));
         let full_title = if title.is_empty() {
             subtitle.clone()
         } else {
             format!("{} — {}", title, subtitle)
+        };
+
+        let para = Paragraph::new(tui_lines)
+            .block(Block::default().borders(Borders::ALL).title(full_title));
+        f.render_widget(para, area);
+    });
+
+    if let Err(e) = result {
+        restore_terminal();
+        return Err(PlotError::Terminal(e.to_string()));
+    }
+    let k = wait_for_key();
+    restore_terminal();
+    k
+}
+
+/// Render a raw RGBA image to the terminal using colored block characters.
+/// Reads `(r, g, b)` directly from the buffer; no normalisation or colormap.
+/// Pure rendering — does **not** touch FIGURE state.
+///
+/// `rgba` is row-major top-to-bottom, 4 bytes per pixel
+/// (`rgba.len() == 4 * width * height`).
+pub fn render_image_tui(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    title: &str,
+) -> Result<(), PlotError> {
+    match crate::figure::plot_context() {
+        crate::figure::PlotContext::Notebook | crate::figure::PlotContext::Headless => {
+            return Ok(());
+        }
+        crate::figure::PlotContext::Terminal => {}
+    }
+
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+
+    execute!(stdout(), EnterAlternateScreen)?;
+    enable_raw_mode()?;
+    let backend = CrosstermBackend::new(stdout());
+    let mut terminal = Terminal::new(backend).map_err(|e| {
+        restore_terminal();
+        PlotError::Terminal(e.to_string())
+    })?;
+
+    let result = terminal.draw(|f| {
+        let area = f.area();
+        let inner_h = (area.height as usize).saturating_sub(2);
+        let inner_w = (area.width as usize).saturating_sub(2);
+
+        let px_cols = inner_w / 2;
+        let disp_rows = height.min(inner_h);
+        let disp_cols = width.min(px_cols);
+
+        let mut tui_lines: Vec<TuiLine> = Vec::with_capacity(disp_rows);
+        for dr in 0..disp_rows {
+            let mr = dr * height / disp_rows.max(1);
+            let mut spans: Vec<Span<'static>> = Vec::with_capacity(disp_cols);
+            for dc in 0..disp_cols {
+                let mc = dc * width / disp_cols.max(1);
+                let off = (mr.min(height - 1) * width + mc.min(width - 1)) * 4;
+                let r = rgba[off];
+                let g = rgba[off + 1];
+                let b = rgba[off + 2];
+                spans.push(Span::styled("  ", Style::default().bg(Color::Rgb(r, g, b))));
+            }
+            tui_lines.push(TuiLine::from(spans));
+        }
+
+        let full_title = if title.is_empty() {
+            format!("image {}x{}", width, height)
+        } else {
+            format!("{} — image {}x{}", title, width, height)
         };
 
         let para = Paragraph::new(tui_lines)

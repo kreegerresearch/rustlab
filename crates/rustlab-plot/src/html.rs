@@ -146,14 +146,26 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         } else {
             String::new()
         };
-        // Square aspect ratio for heatmaps
-        let yaxis_extra = if panel.heatmap.is_some() {
+        // Square aspect ratio for heatmaps. For `heatmap()` and `image()` also
+        // reverse the y-axis so row 0 lands at the top (standard image/data
+        // orientation). `imagesc` HTML output is left unflipped to preserve
+        // existing behaviour; the SVG/HTML divergence on imagesc is tracked
+        // separately.
+        let yaxis_extra = if let Some(hm) = &panel.heatmap {
             let anchor = if axis_suffix.is_empty() {
                 "x".to_string()
             } else {
                 format!("x{axis_suffix}")
             };
-            format!(r#", scaleanchor: "{anchor}""#)
+            let reversed = matches!(
+                hm.kind,
+                crate::figure::HeatmapKind::Heatmap | crate::figure::HeatmapKind::ImageRgba
+            );
+            if reversed {
+                format!(r#", scaleanchor: "{anchor}", autorange: "reversed""#)
+            } else {
+                format!(r#", scaleanchor: "{anchor}""#)
+            }
         } else {
             String::new()
         };
@@ -238,23 +250,99 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
 
         // Heatmap trace (takes precedence when present)
         if let Some(hm) = &panel.heatmap {
-            let plotly_cmap = match hm.colorscale.as_str() {
-                "jet" => "Jet",
-                "hot" => "Hot",
-                "gray" => "Greys",
-                _ => "Viridis",
-            };
-            // Build z as JSON 2D array
-            let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
-            let z_json = format!("[{}]", z_rows.join(","));
-            traces.push_str(&format!(
-                r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
+            match hm.kind {
+                crate::figure::HeatmapKind::Imagesc => {
+                    let plotly_cmap = match hm.colorscale.as_str() {
+                        "jet" => "Jet",
+                        "hot" => "Hot",
+                        "gray" => "Greys",
+                        _ => "Viridis",
+                    };
+                    let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
+                    let z_json = format!("[{}]", z_rows.join(","));
+                    traces.push_str(&format!(
+                        r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
-                z = z_json,
-                cmap = plotly_cmap,
-                xa = xaxis_ref,
-                ya = yaxis_ref,
-            ));
+                        z = z_json,
+                        cmap = plotly_cmap,
+                        xa = xaxis_ref,
+                        ya = yaxis_ref,
+                    ));
+                }
+                crate::figure::HeatmapKind::Heatmap => {
+                    let plotly_cmap = match hm.colorscale.as_str() {
+                        "jet" => "Jet",
+                        "hot" => "Hot",
+                        "gray" => "Greys",
+                        _ => "Viridis",
+                    };
+                    let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
+                    let z_json = format!("[{}]", z_rows.join(","));
+                    let x_field = if let Some(labels) = &hm.x_labels {
+                        let parts: Vec<String> = labels
+                            .iter()
+                            .map(|l| format!("\"{}\"", escape_js(l)))
+                            .collect();
+                        format!(", x: [{}]", parts.join(","))
+                    } else {
+                        String::new()
+                    };
+                    let y_field = if let Some(labels) = &hm.y_labels {
+                        let parts: Vec<String> = labels
+                            .iter()
+                            .map(|l| format!("\"{}\"", escape_js(l)))
+                            .collect();
+                        format!(", y: [{}]", parts.join(","))
+                    } else {
+                        String::new()
+                    };
+                    traces.push_str(&format!(
+                        r#"{{ z: {z}{xfield}{yfield}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                        z = z_json,
+                        xfield = x_field,
+                        yfield = y_field,
+                        cmap = plotly_cmap,
+                        xa = xaxis_ref,
+                        ya = yaxis_ref,
+                    ));
+                }
+                crate::figure::HeatmapKind::ImageRgba => {
+                    if let Some(rgba) = &hm.rgba {
+                        let w = hm.rgba_width as usize;
+                        let h = hm.rgba_height as usize;
+                        let mut z_json = String::from("[");
+                        for r in 0..h {
+                            if r > 0 {
+                                z_json.push(',');
+                            }
+                            z_json.push('[');
+                            for c in 0..w {
+                                if c > 0 {
+                                    z_json.push(',');
+                                }
+                                let off = (r * w + c) * 4;
+                                z_json.push_str(&format!(
+                                    "[{},{},{},{}]",
+                                    rgba[off],
+                                    rgba[off + 1],
+                                    rgba[off + 2],
+                                    rgba[off + 3]
+                                ));
+                            }
+                            z_json.push(']');
+                        }
+                        z_json.push(']');
+                        traces.push_str(&format!(
+                            r#"{{ z: {z}, type: "image", xaxis: "{xa}", yaxis: "{ya}" }},
+"#,
+                            z = z_json,
+                            xa = xaxis_ref,
+                            ya = yaxis_ref,
+                        ));
+                    }
+                }
+            }
         }
 
         // Contour overlays (rendered above heatmap, below series).
@@ -752,6 +840,7 @@ mod tests {
         fig.current_mut().heatmap = Some(HeatmapData {
             z: z.clone(),
             colorscale: "viridis".to_string(),
+            ..Default::default()
         });
         fig.current_mut().contours.push(ContourData {
             z,
