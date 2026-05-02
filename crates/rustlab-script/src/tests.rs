@@ -1766,11 +1766,51 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
         assert_eq!(vals.len(), 0);
     }
 
+    fn get_complex_matrix_dims(ev: &Evaluator, name: &str) -> (usize, usize) {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (m.nrows(), m.ncols()),
+            other => panic!("expected Matrix for '{name}', got {other:?}"),
+        }
+    }
+
     #[test]
-    fn empty_assign_matrix_row_col_not_yet_supported() {
-        // Matrix row/column deletion is a follow-up; for now we error rather
-        // than silently misbehave.
-        let _err = eval_err("M = [1,2;3,4]\nM(1, :) = []");
+    fn empty_assign_matrix_row_deletion() {
+        let ev = eval_str("M = [1,2,3;4,5,6;7,8,9]\nM(2, :) = []");
+        let (r, c) = get_complex_matrix_dims(&ev, "M");
+        assert_eq!((r, c), (2, 3));
+    }
+
+    #[test]
+    fn empty_assign_matrix_col_deletion() {
+        let ev = eval_str("M = [1,2,3;4,5,6;7,8,9]\nM(:, 2) = []");
+        let (r, c) = get_complex_matrix_dims(&ev, "M");
+        assert_eq!((r, c), (3, 2));
+    }
+
+    #[test]
+    fn empty_assign_matrix_multi_row_deletion() {
+        let ev = eval_str("M = [1,2,3;4,5,6;7,8,9]\nM([1, 3], :) = []");
+        let (r, c) = get_complex_matrix_dims(&ev, "M");
+        assert_eq!((r, c), (1, 3));
+    }
+
+    #[test]
+    fn empty_assign_matrix_full_clear() {
+        let ev = eval_str("M = [1,2;3,4]\nM(:, :) = []");
+        let (r, c) = get_complex_matrix_dims(&ev, "M");
+        assert_eq!((r, c), (0, 0));
+    }
+
+    #[test]
+    fn empty_assign_matrix_single_element_errors() {
+        // Element deletion would leave a hole — must error like matlab/octave.
+        let _err = eval_err("M = [1,2;3,4]\nM(1) = []");
+    }
+
+    #[test]
+    fn empty_assign_matrix_two_scalar_indices_errors() {
+        // Both indices scalar → no full row or column → error.
+        let _err = eval_err("M = [1,2;3,4]\nM(1, 1) = []");
     }
 
     #[test]

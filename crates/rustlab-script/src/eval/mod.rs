@@ -8,7 +8,7 @@ pub mod value;
 use crate::ast::{Expr, Stmt, StmtKind};
 use crate::error::ScriptError;
 pub use builtins::BuiltinRegistry;
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use num_complex::Complex;
 pub use profile::FnStats;
 use rustlab_core::C64;
@@ -977,60 +977,112 @@ impl Evaluator {
         Ok(())
     }
 
-    /// `v(idx) = []` — remove the indexed elements from a vector and
-    /// write the shortened result back. Octave/matlab compatibility.
+    /// `v(idx) = []` and `M(rows, :) = []` / `M(:, cols) = []` —
+    /// remove the indexed positions and write the shortened result back.
+    /// Octave/matlab compatibility.
     fn exec_index_delete(
         &mut self,
         name: &str,
         indices: &[Expr],
         suppress: bool,
     ) -> Result<(), ScriptError> {
-        // Single-index vector deletion is the supported form for now;
-        // matrix row/column deletion (`M(i, :) = []`) is a follow-up.
-        if indices.len() != 1 {
-            return Err(ScriptError::runtime(format!(
-                "[]-deletion: only single-index vector deletion is supported \
-                 (matrix row/column deletion is a follow-up); got {} indices",
-                indices.len()
-            )));
-        }
-
-        // Snapshot the variable so we can resolve `end` and build the new value.
-        let v = match self.env.get(name) {
-            Some(Value::Vector(v)) => v.clone(),
-            Some(other) => {
-                return Err(ScriptError::runtime(format!(
-                    "[]-deletion: '{}' must be a vector for v(idx) = [] deletion, got {}",
-                    name,
-                    other.type_name()
-                )))
+        let new_val = match (indices.len(), self.env.get(name).cloned()) {
+            // ── Single-index forms ──────────────────────────────────────────
+            (1, Some(Value::Vector(v))) => {
+                let len = v.len();
+                self.env
+                    .insert("end".to_string(), Value::Scalar(len as f64));
+                let idx_val = self.eval_expr(&indices[0])?;
+                self.env.remove("end");
+                let mut to_remove =
+                    Value::resolve_index_dim(&idx_val, len).map_err(ScriptError::runtime)?;
+                to_remove.sort_unstable();
+                to_remove.dedup();
+                let kept: Vec<C64> = (0..len)
+                    .filter(|i| to_remove.binary_search(i).is_err())
+                    .map(|i| v[i])
+                    .collect();
+                Value::Vector(Array1::from_vec(kept))
             }
-            None => {
+
+            // ── Matrix row/column deletion (one axis Value::All, other a list) ──
+            (2, Some(Value::Matrix(m))) => {
+                let nrows = m.nrows();
+                let ncols = m.ncols();
+                self.env
+                    .insert("end".to_string(), Value::Scalar(nrows as f64));
+                let idx0 = self.eval_expr(&indices[0])?;
+                self.env
+                    .insert("end".to_string(), Value::Scalar(ncols as f64));
+                let idx1 = self.eval_expr(&indices[1])?;
+                self.env.remove("end");
+
+                let row_all = matches!(idx0, Value::All);
+                let col_all = matches!(idx1, Value::All);
+
+                if row_all && col_all {
+                    // M(:, :) = [] → empty matrix
+                    Value::Matrix(Array2::zeros((0, 0)))
+                } else if col_all {
+                    // M(rows, :) = [] → drop the listed rows
+                    let mut to_remove = Value::resolve_index_dim(&idx0, nrows)
+                        .map_err(ScriptError::runtime)?;
+                    to_remove.sort_unstable();
+                    to_remove.dedup();
+                    let kept_rows: Vec<usize> = (0..nrows)
+                        .filter(|r| to_remove.binary_search(r).is_err())
+                        .collect();
+                    let new_nrows = kept_rows.len();
+                    let new = Array2::from_shape_fn((new_nrows, ncols), |(i, j)| {
+                        m[[kept_rows[i], j]]
+                    });
+                    Value::Matrix(new)
+                } else if row_all {
+                    // M(:, cols) = [] → drop the listed columns
+                    let mut to_remove = Value::resolve_index_dim(&idx1, ncols)
+                        .map_err(ScriptError::runtime)?;
+                    to_remove.sort_unstable();
+                    to_remove.dedup();
+                    let kept_cols: Vec<usize> = (0..ncols)
+                        .filter(|c| to_remove.binary_search(c).is_err())
+                        .collect();
+                    let new_ncols = kept_cols.len();
+                    let new = Array2::from_shape_fn((nrows, new_ncols), |(i, j)| {
+                        m[[i, kept_cols[j]]]
+                    });
+                    Value::Matrix(new)
+                } else {
+                    return Err(ScriptError::runtime(
+                        "[]-deletion on a matrix: one of the two indices must be `:` \
+                         (deleting individual elements would leave a hole)"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            // ── Unsupported shapes ──────────────────────────────────────────
+            (1, Some(Value::Matrix(_))) => {
+                return Err(ScriptError::runtime(
+                    "[]-deletion on a matrix: use M(rows, :) = [] or M(:, cols) = [] \
+                     (single-index `M(k) = []` is not supported — would leave a hole)"
+                        .to_string(),
+                ));
+            }
+            (n, Some(other)) => {
+                return Err(ScriptError::runtime(format!(
+                    "[]-deletion: '{}' is a {}; expected vector or matrix, got {} indices",
+                    name,
+                    other.type_name(),
+                    n
+                )));
+            }
+            (_, None) => {
                 return Err(ScriptError::runtime(format!(
                     "[]-deletion: undefined variable '{}'",
                     name
-                )))
+                )));
             }
         };
-        let len = v.len();
-
-        // Resolve the index expression with `end` bound to the vector length.
-        self.env
-            .insert("end".to_string(), Value::Scalar(len as f64));
-        let idx_val = self.eval_expr(&indices[0])?;
-        self.env.remove("end");
-
-        let mut to_remove = Value::resolve_index_dim(&idx_val, len)
-            .map_err(ScriptError::runtime)?;
-        // Sort + dedup so each position is removed exactly once.
-        to_remove.sort_unstable();
-        to_remove.dedup();
-
-        let kept: Vec<C64> = (0..len)
-            .filter(|i| to_remove.binary_search(i).is_err())
-            .map(|i| v[i])
-            .collect();
-        let new_val = Value::Vector(Array1::from_vec(kept));
 
         if !suppress && self.echo_enabled() {
             let display = new_val.format_display(self.number_format);

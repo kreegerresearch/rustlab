@@ -17,7 +17,7 @@
 | 7 | Matrix + row/column vector implicit expansion errors | High | open |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
-| 10 | `v(2:3) = []` (matrix-deletion assign) errors | Medium | **shipped 2026-05-02** (vector form; matrix row/column deletion is a follow-up) |
+| 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
 
 ## Things that already match (no work needed)
@@ -248,7 +248,14 @@ Supported single-index forms on a Vector (matches octave):
 
 Tests: 7 in-process tests covering each form plus the dedup behaviour and the explicit "matrix row/col not yet supported" error.
 
-**Matrix row/column deletion (`M(i, :) = []`, `M(:, j) = []`) deferred** as a follow-up. The current path returns a clear error rather than silently misbehaving. To implement, extend `exec_index_delete` to handle the two-index case where one index is `Value::All` and the other resolves to a list of rows or columns to drop.
+**Matrix row/column deletion shipped** in the same session:
+
+- `M(rows, :) = []` drops the listed rows; `rows` may be a scalar, range, or index list.
+- `M(:, cols) = []` drops the listed columns.
+- `M(:, :) = []` clears the matrix to a 0×0 result.
+- `M(k) = []` (single-index) and `M(i, j) = []` (both scalar) are rejected with a clear "would leave a hole" error, matching octave/matlab.
+
+5 new in-process tests cover row deletion, column deletion, multi-row deletion, full clear, and the two error paths.
 
 ### 11. `sort(v, "descend")` ✅ shipped 2026-05-02
 
