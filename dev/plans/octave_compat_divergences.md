@@ -17,7 +17,7 @@
 | 7 | Matrix + row/column vector implicit expansion errors | High | open |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
-| 10 | `v(2:3) = []` (matrix-deletion assign) errors | Medium | open |
+| 10 | `v(2:3) = []` (matrix-deletion assign) errors | Medium | **shipped 2026-05-02** (vector form; matrix row/column deletion is a follow-up) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
 
 ## Things that already match (no work needed)
@@ -235,16 +235,20 @@ Tests: 4 in-process tests (`find_on_dense_vector`, `find_on_dense_matrix_uses_co
 
 **Multi-output `[I, J] = find(M)` and `[I, J, V] = find(M)` are deferred** — they require nargout plumbing (option B in §8). Today's tuple-output form is reserved for the sparse cases where multi-output is the only sensible shape.
 
-### 10. `v(2:3) = []` (matrix-deletion assign)
+### 10. `v(2:3) = []` (matrix-deletion assign) ✅ shipped 2026-05-02 (vector form)
 
-```
-rustlab> v = [10,20,30,40,50]; v(2:3) = []
-type error: expected scalar, got vector
-```
+The `IndexAssign` evaluator now detects an empty right-hand side (`Value::Vector` or `Value::Matrix` with zero elements) and routes to `exec_index_delete`, which removes the indexed positions and writes the shortened vector back.
 
-**Octave/matlab:** `v(2:3) = []` removes elements at those indices, leaving `[10 40 50]`. Same syntax works for matrix rows/cols: `M(2, :) = []` deletes a row.
+Supported single-index forms on a Vector (matches octave):
+- `v(k) = []` — single scalar index
+- `v(2:3) = []` — range
+- `v([2, 4]) = []` — explicit index list (duplicates de-dupe automatically)
+- `v(end) = []`, `v(end-1:end) = []` — `end` keyword resolves against the current vector length
+- `v(:) = []` — full deletion, leaves an empty vector
 
-**Where to fix:** the assignment evaluator (`eval/mod.rs`). When the RHS is the empty vector/matrix, dispatch to a "delete" operation that builds the result by skipping the indexed positions instead of trying to assign. Needs care for matrix row/column deletion (`M(2, :) = []`).
+Tests: 7 in-process tests covering each form plus the dedup behaviour and the explicit "matrix row/col not yet supported" error.
+
+**Matrix row/column deletion (`M(i, :) = []`, `M(:, j) = []`) deferred** as a follow-up. The current path returns a clear error rather than silently misbehaving. To implement, extend `exec_index_delete` to handle the two-index case where one index is `Value::All` and the other resolves to a list of rows or columns to drop.
 
 ### 11. `sort(v, "descend")` ✅ shipped 2026-05-02
 

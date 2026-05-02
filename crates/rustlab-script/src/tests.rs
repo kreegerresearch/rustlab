@@ -1728,6 +1728,60 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn empty_assign_deletes_vector_range() {
+        let ev = eval_str("v = [10, 20, 30, 40, 50]\nv(2:3) = []");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![10.0, 40.0, 50.0]);
+    }
+
+    #[test]
+    fn empty_assign_deletes_vector_scalar() {
+        let ev = eval_str("v = [10, 20, 30, 40, 50]\nv(3) = []");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![10.0, 20.0, 40.0, 50.0]);
+    }
+
+    #[test]
+    fn empty_assign_deletes_vector_index_list() {
+        let ev = eval_str("v = [10, 20, 30, 40, 50]\nv([2, 4]) = []");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![10.0, 30.0, 50.0]);
+    }
+
+    #[test]
+    fn empty_assign_with_end_keyword() {
+        let ev = eval_str("v = [10, 20, 30, 40, 50]\nv(end) = []");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn empty_assign_full_colon_yields_empty() {
+        let ev = eval_str("v = [10, 20, 30]\nv(:) = []");
+        let vals = get_complex_vector(&ev, "v");
+        assert_eq!(vals.len(), 0);
+    }
+
+    #[test]
+    fn empty_assign_matrix_row_col_not_yet_supported() {
+        // Matrix row/column deletion is a follow-up; for now we error rather
+        // than silently misbehave.
+        let _err = eval_err("M = [1,2;3,4]\nM(1, :) = []");
+    }
+
+    #[test]
+    fn empty_assign_dedups_repeat_indices() {
+        let ev = eval_str("v = [10, 20, 30]\nv([1, 1]) = []");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![20.0, 30.0]);
+    }
+
+    #[test]
     fn find_on_dense_vector() {
         let ev = eval_str("v = find([0, 5, 0, -3, 0, 7])");
         let vals = get_complex_vector(&ev, "v");

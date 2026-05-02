@@ -285,7 +285,7 @@ impl Value {
     }
 
     /// Resolve an index value to a list of 0-based indices for a dimension of `dim_len`.
-    fn resolve_index_dim(idx: &Value, dim_len: usize) -> Result<Vec<usize>, String> {
+    pub fn resolve_index_dim(idx: &Value, dim_len: usize) -> Result<Vec<usize>, String> {
         match idx {
             Value::All => Ok((0..dim_len).collect()),
             Value::Scalar(n) => {

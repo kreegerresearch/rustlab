@@ -520,6 +520,20 @@ impl Evaluator {
             } => {
                 let val = self.eval_expr(expr)?;
 
+                // Octave/matlab `[]` deletion: when the right-hand side is an
+                // empty vector or matrix, the assignment removes the indexed
+                // elements from the container instead of writing into them.
+                // Vector form `v(idx) = []` is supported; matrix row/column
+                // deletion (`M(i, :) = []`) is a follow-up.
+                let rhs_is_empty = match &val {
+                    Value::Vector(v) => v.is_empty(),
+                    Value::Matrix(m) => m.is_empty(),
+                    _ => false,
+                };
+                if rhs_is_empty {
+                    return self.exec_index_delete(name, indices, *suppress);
+                }
+
                 // Evaluate indices with `end` bound to current container length (if any).
                 // Tensor3 with 3 indices gets per-dim `end` binding.
                 let idx_vals: Vec<Value> = if indices.len() == 3
@@ -960,6 +974,73 @@ impl Evaluator {
                 val.type_name()
             ));
         }
+        Ok(())
+    }
+
+    /// `v(idx) = []` — remove the indexed elements from a vector and
+    /// write the shortened result back. Octave/matlab compatibility.
+    fn exec_index_delete(
+        &mut self,
+        name: &str,
+        indices: &[Expr],
+        suppress: bool,
+    ) -> Result<(), ScriptError> {
+        // Single-index vector deletion is the supported form for now;
+        // matrix row/column deletion (`M(i, :) = []`) is a follow-up.
+        if indices.len() != 1 {
+            return Err(ScriptError::runtime(format!(
+                "[]-deletion: only single-index vector deletion is supported \
+                 (matrix row/column deletion is a follow-up); got {} indices",
+                indices.len()
+            )));
+        }
+
+        // Snapshot the variable so we can resolve `end` and build the new value.
+        let v = match self.env.get(name) {
+            Some(Value::Vector(v)) => v.clone(),
+            Some(other) => {
+                return Err(ScriptError::runtime(format!(
+                    "[]-deletion: '{}' must be a vector for v(idx) = [] deletion, got {}",
+                    name,
+                    other.type_name()
+                )))
+            }
+            None => {
+                return Err(ScriptError::runtime(format!(
+                    "[]-deletion: undefined variable '{}'",
+                    name
+                )))
+            }
+        };
+        let len = v.len();
+
+        // Resolve the index expression with `end` bound to the vector length.
+        self.env
+            .insert("end".to_string(), Value::Scalar(len as f64));
+        let idx_val = self.eval_expr(&indices[0])?;
+        self.env.remove("end");
+
+        let mut to_remove = Value::resolve_index_dim(&idx_val, len)
+            .map_err(ScriptError::runtime)?;
+        // Sort + dedup so each position is removed exactly once.
+        to_remove.sort_unstable();
+        to_remove.dedup();
+
+        let kept: Vec<C64> = (0..len)
+            .filter(|i| to_remove.binary_search(i).is_err())
+            .map(|i| v[i])
+            .collect();
+        let new_val = Value::Vector(Array1::from_vec(kept));
+
+        if !suppress && self.echo_enabled() {
+            let display = new_val.format_display(self.number_format);
+            if self.color_output && !output::capturing() {
+                output::script_println(&format!("\x1b[32m{}\x1b[0m = {}", name, display));
+            } else {
+                output::script_println(&format!("{} = {}", name, display));
+            }
+        }
+        self.env.insert(name.to_string(), new_val);
         Ok(())
     }
 
