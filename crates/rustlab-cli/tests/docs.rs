@@ -77,9 +77,9 @@ fn docs_search_filters_by_substring() {
         .expect("docs --search runs");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // 'eigen' substring should match the eig and eigsys briefs.
+    // 'eigen' substring should match the eig brief and the sparse eigs brief.
     assert!(stdout.contains("eig"), "search 'eigen' should hit eig");
-    assert!(stdout.contains("eigsys"), "search 'eigen' should hit eigsys");
+    assert!(stdout.contains("eigs"), "search 'eigen' should hit eigs");
 }
 
 #[test]

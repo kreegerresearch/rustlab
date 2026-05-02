@@ -110,7 +110,7 @@ rustlab window --type kaiser --length 64 --beta 8.6 --plot
 
 ### The `.rlab` language extension
 
-**rustlab is its own language** — a domain-specific language for DSP and matrix modeling. It is not a flavour of R, and it does not always follow octave/matlab convention either (the `eigsys` builtin, the `j`-only imaginary unit, the `viewer on` / `viewer off` REPL controls, the notebook subsystem, and many others are rustlab-native).
+**rustlab is its own language** — a domain-specific language for DSP and matrix modeling. It is not a flavour of R, and it does not always follow octave/matlab convention either (the `j`-only imaginary unit, the `viewer on` / `viewer off` REPL controls, the in-process notebook subsystem, the `frame()` / `saveanim()` animation API, and many others are rustlab-native).
 
 rustlab modelling files use the `.rlab` extension. Until a native rustlab GitHub Linguist definition is published, **MATLAB syntax highlighting is used as a temporary visual proxy** — and only as a proxy. Do not infer that any matlab idiom is supported in rustlab just because the highlighter colours it.
 

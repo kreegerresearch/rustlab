@@ -207,8 +207,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
 | `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition. 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). |
+| `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
-| `[V, D] = eigsys(M)` | Same V as `[V, D] = eig(M)`, but D is returned as a length-N vector instead of a diagonal matrix — useful when you want to index `D(k)`. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `roots(p)` | Roots of polynomial with coefficients p |

@@ -209,7 +209,6 @@ impl BuiltinRegistry {
         r.register("expm", builtin_expm);
         r.register("linsolve", builtin_linsolve);
         r.register_nargout("eig", builtin_eig_nargout);
-        r.register("eigsys", builtin_eigsys);
         r.register("eigs", builtin_eigs);
         // Special functions
         r.register("laguerre", builtin_laguerre);
@@ -6207,46 +6206,37 @@ fn eig_hessenberg(h_in: &CMatrix) -> Result<Vec<C64>, String> {
 ///                 eigenvalues (matlab convention; `diag(D)` extracts the
 ///                 vector). The eigenvalues of `D(k, k)` correspond to
 ///                 column `V(:, k)`.
-fn builtin_eig_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    if nargout >= 2 {
-        // Reuse eigsys's V + eigenvalue-vector pipeline, then promote D
-        // from the rustlab-style vector to matlab's diagonal matrix.
-        let result = builtin_eigsys(args)?;
-        let (v_mat, d_vec) = match result {
-            Value::Tuple(mut t) if t.len() == 2 => {
-                let d = t.remove(1);
-                let v = t.remove(0);
-                (v, d)
-            }
+/// Optional output-form override for the eig family. `eig(_, "vector")` /
+/// `eig(_, "matrix")` (matlab convention) lets callers force D's shape
+/// independent of nargout. Without a flag, D defaults to a column vector
+/// in 1-output context and a diagonal matrix in 2-output context (matlab).
+#[derive(Clone, Copy, PartialEq)]
+enum EigDShape {
+    Vector,
+    Matrix,
+}
+
+/// Strip a trailing `Value::Str("vector"|"matrix")` from `args` if present.
+/// Returns `(flag, args_without_flag_slice)`. Errors on any other string.
+fn parse_eig_d_shape<'a>(
+    name: &str,
+    args: &'a [Value],
+) -> Result<(Option<EigDShape>, &'a [Value]), ScriptError> {
+    if let Some(Value::Str(s)) = args.last() {
+        let flag = match s.as_str() {
+            "vector" => EigDShape::Vector,
+            "matrix" => EigDShape::Matrix,
             other => {
-                return Err(ScriptError::runtime(format!(
-                    "eig: internal error — eigsys returned {} (expected Tuple)",
-                    other.type_name()
+                return Err(ScriptError::type_err(format!(
+                    "{}: output-form flag must be \"vector\" or \"matrix\", got \"{}\"",
+                    name, other
                 )))
             }
         };
-        let d_diag = match d_vec {
-            Value::Vector(arr) => {
-                let n = arr.len();
-                let mat = Array2::from_shape_fn((n, n), |(i, j)| {
-                    if i == j {
-                        arr[i]
-                    } else {
-                        Complex::new(0.0, 0.0)
-                    }
-                });
-                Value::Matrix(mat)
-            }
-            other => {
-                return Err(ScriptError::runtime(format!(
-                    "eig: internal error — expected eigenvalue vector, got {}",
-                    other.type_name()
-                )))
-            }
-        };
-        return Ok(Value::Tuple(vec![v_mat, d_diag]));
+        Ok((Some(flag), &args[..args.len() - 1]))
+    } else {
+        Ok((None, args))
     }
-    builtin_eig(args)
 }
 
 /// Resolve eig's input(s) to the effective standard-form matrix:
@@ -6307,66 +6297,36 @@ fn eig_resolve_input(name: &str, args: &[Value]) -> Result<CMatrix, ScriptError>
     Ok(inv_b.dot(&a))
 }
 
-fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("eig", &args, 1, 2)?;
-    let m = eig_resolve_input("eig", &args)?;
+/// Compute eigenvalues (always) and eigenvectors (when `want_v`) of a square
+/// dense complex matrix. One place that owns the Hessenberg-reduce + shifted
+/// QR + inverse-iteration pipeline used by every `eig` entry point.
+/// `name` is woven into error messages for context.
+fn compute_eig_dense(
+    name: &str,
+    m: &CMatrix,
+    want_v: bool,
+) -> Result<(Vec<C64>, Option<CMatrix>), ScriptError> {
     if m.nrows() == 0 {
-        return Err(ScriptError::type_err(
-            "eig: matrix must be non-empty".to_string(),
-        ));
+        return Err(ScriptError::type_err(format!(
+            "{}: matrix must be non-empty",
+            name
+        )));
     }
-    let h = hessenberg_reduce(&m);
-    let vals = eig_hessenberg(&h).map_err(ScriptError::runtime)?;
-    // Return as an N×1 column vector — matches octave/matlab orientation.
+    let h = hessenberg_reduce(m);
+    let vals = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(format!("{}: {}", name, e)))?;
+    if !want_v {
+        return Ok((vals, None));
+    }
     let n = vals.len();
-    let col = Array2::from_shape_fn((n, 1), |(i, _)| vals[i]);
-    Ok(Value::Matrix(col))
-}
-
-/// `[V, D] = eigsys(A)` — dense full eigendecomposition.
-///
-/// Returns `[V, D]` where `V` is the `n × n` matrix of eigenvectors (one per
-/// column) and `D` is a length-`n` vector of eigenvalues, in the same order
-/// as the columns of `V`. Same shape convention as `eigs` (the sparse
-/// partial solver).
-///
-/// `eig(A)` returns just the eigenvalue vector — use that when you do not
-/// need eigenvectors. `eigsys(A)` is the right choice when you need both.
-///
-/// Algorithm: eigenvalues via Hessenberg reduction + shifted QR (the same
-/// pipeline `eig` uses). Each eigenvector recovered by shifted inverse
-/// iteration on the original matrix `A`. Defective matrices may produce an
-/// ill-conditioned `V`; the eigenvalues remain accurate.
-fn builtin_eigsys(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("eigsys", &args, 1, 2)?;
-    // Scalar 1-arg fast path keeps the 1×1 result trivial.
-    if args.len() == 1 {
-        if let Value::Scalar(n) = &args[0] {
-            let v = Array2::from_shape_fn((1, 1), |_| Complex::new(1.0, 0.0));
-            let d = Array1::from_vec(vec![Complex::new(*n, 0.0)]);
-            return Ok(Value::Tuple(vec![Value::Matrix(v), Value::Vector(d)]));
-        }
-    }
-    let m = eig_resolve_input("eigsys", &args)?;
-    if m.nrows() == 0 {
-        return Err(ScriptError::type_err(
-            "eigsys: matrix must be non-empty".to_string(),
-        ));
-    }
-
-    let h = hessenberg_reduce(&m);
-    let vals = eig_hessenberg(&h)
-        .map_err(|e| ScriptError::runtime(format!("eigsys: {}", e)))?;
-    let n = vals.len();
-
     let mut v_mat: CMatrix = Array2::zeros((n, n));
     for (k, &lambda) in vals.iter().enumerate() {
-        let v = inverse_iteration_cx(&m, lambda, 40).map_err(|e| {
+        let v = inverse_iteration_cx(m, lambda, 40).map_err(|e| {
             ScriptError::runtime(format!(
-                "eigsys: eigenvector for λ_{}={} could not be recovered ({}). \
+                "{}: eigenvector for λ_{}={} could not be recovered ({}). \
                  The matrix may be defective (repeated eigenvalues with fewer \
                  linearly independent eigenvectors than algebraic multiplicity); \
                  use eig(A) for eigenvalues only.",
+                name,
                 k + 1,
                 lambda,
                 e
@@ -6376,11 +6336,48 @@ fn builtin_eigsys(args: Vec<Value>) -> Result<Value, ScriptError> {
             v_mat[[i, k]] = v[i];
         }
     }
+    Ok((vals, Some(v_mat)))
+}
 
-    Ok(Value::Tuple(vec![
-        Value::Matrix(v_mat),
-        Value::Vector(Array1::from_vec(vals)),
-    ]))
+/// Wrap an eigenvalue list as `Value::Matrix`, either an `N×1` column or an
+/// `N×N` diagonal matrix. The flag overrides the default shape; otherwise
+/// `default_diag` (set by the caller per its nargout context) decides.
+fn eigenvalues_to_value(vals: &[C64], flag: Option<EigDShape>, default_diag: bool) -> Value {
+    let want_diag = match flag {
+        Some(EigDShape::Matrix) => true,
+        Some(EigDShape::Vector) => false,
+        None => default_diag,
+    };
+    let n = vals.len();
+    let zero = Complex::new(0.0, 0.0);
+    if want_diag {
+        Value::Matrix(Array2::from_shape_fn((n, n), |(i, j)| {
+            if i == j { vals[i] } else { zero }
+        }))
+    } else {
+        Value::Matrix(Array2::from_shape_fn((n, 1), |(i, _)| vals[i]))
+    }
+}
+
+fn builtin_eig_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    check_args_range("eig", &args, 1, 3)?;
+    let (flag, rest) = parse_eig_d_shape("eig", &args)?;
+    if rest.is_empty() {
+        return Err(ScriptError::type_err(
+            "eig: missing matrix argument".to_string(),
+        ));
+    }
+    let m = eig_resolve_input("eig", rest)?;
+    let want_v = nargout >= 2;
+    // Default D shape: matrix when destructured to [V, D] (matlab), vector
+    // for the bare `e = eig(A)` form. The flag overrides.
+    let default_diag = want_v;
+    let (vals, v_opt) = compute_eig_dense("eig", &m, want_v)?;
+    let d = eigenvalues_to_value(&vals, flag, default_diag);
+    match v_opt {
+        Some(v_mat) => Ok(Value::Tuple(vec![Value::Matrix(v_mat), d])),
+        None => Ok(d),
+    }
 }
 
 /// `eigs(A, n)` / `eigs(A, n, which)` / `eigs(A, B, n)` / `eigs(A, B, n, which)`
@@ -7583,7 +7580,7 @@ fn inverse_iteration_cx(
     // (near-)triangular shifted matrices the iterate doesn't get trapped
     // in the e_0 invariant subspace — `e_0` collapses to the eigenvector
     // for the leading diagonal entry no matter which shift is in use,
-    // which produced wrong eigenvectors for triangular inputs in eigsys.
+    // which produced wrong eigenvectors for triangular inputs.
     // Same pattern as the core helper in
     // `rustlab-core/src/sparse_eig/hessenberg_eig.rs`.
     let mut v: CVector = Array1::from_iter(

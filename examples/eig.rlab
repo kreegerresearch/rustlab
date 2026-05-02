@@ -1,8 +1,8 @@
 # Dense eigendecomposition — eig(A) and the generalized eig(A, B).
 #
 # Demonstrates: eig(A) standard, [V, D] = eig(A), eig(A, B) generalized,
-# [V, D] = eig(A, B), and the eigsys form (V + eigenvalue *vector*).
-# Sparse partial eigs are covered separately in examples/eigs.r.
+# [V, D] = eig(A, B), and the "vector"/"matrix" output-form flag.
+# Sparse partial eigs are covered separately in examples/eigs.rlab.
 
 # ── 1. Standard form: eig(A) returns a column vector of eigenvalues ──
 A = [4, 1, 0; 0, 2, 1; 0, 0, 5];
@@ -36,11 +36,15 @@ print(D2)
 print("residual ||A*V - B*V*D||:");
 print(norm(A2*V2 - B*V2*D2))
 
-# ── 5. eigsys: same V, but D is a vector ────────────────────────────
-% Useful when you want to index eigenvalues directly: eigsys's D is
-% a length-N vector instead of a diagonal matrix.
-[Vs, Ds] = eigsys(A2);
-print("eigsys D (vector):");
+# ── 5. Output-form flag: eig(A, "vector") returns D as a vector ────
+% Useful when you want eigenvalues directly indexable as D(k) instead
+% of a diagonal matrix. The flag also accepts "matrix" (the 2-output
+% default) for explicit opt-in to the matlab convention.
+[Vs, Ds] = eig(A2, "vector");
+print("D as vector:");
 print(Ds)
+% Passing "matrix" forces a diagonal D even in single-output context.
+print("D forced as diagonal matrix:");
+print(eig(A2, "matrix"))
 
 print(1)   % sentinel for "we got this far without errors"

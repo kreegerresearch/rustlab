@@ -143,7 +143,7 @@ Both are deferred to a follow-up cycle; see
 | `[V, D] = eig(A)`                           | dense, all eigenpairs; `D` is a diagonal matrix   |
 | `e = eig(A, B)`                             | dense generalized `A·v = λ·B·v` (B invertible)    |
 | `[V, D] = eig(A, B)`                        | dense generalized eigenpairs                      |
-| `[V, D] = eigsys(A)`                        | same as `[V, D] = eig(A)` but `D` as a vector     |
+| `eig(A, "vector")` / `eig(A, "matrix")`     | output-form flag: force `D` to a column vector or a diagonal matrix regardless of nargout |
 | `[V, D] = eigs(A, n)`                       | sparse, n smallest (default)                      |
 | `[V, D] = eigs(A, n, "sm")`                 | same                                              |
 | `[V, D] = eigs(A, n, "lm")`                 | sparse, n largest                                 |

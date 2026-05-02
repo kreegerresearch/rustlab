@@ -983,16 +983,37 @@ expm(zeros(3,3))          # → eye(3)
 - For diagonal or real-symmetric matrices the result is exact to double precision.
 - `expm(scalar)` returns `exp(scalar)`.
 
-### `eig(M)`
-Eigenvalues of a square matrix `M`. Returns a complex vector of length `n`.
-Uses Hessenberg reduction followed by single-shift QR iteration with Wilkinson shifts.
+### `eig(A)` / `[V, D] = eig(A)` / `eig(A, B)` / output-form flag
+
+Dense eigendecomposition (`A` square; `B` square, same size, invertible).
+Hand-rolled Hessenberg reduction + shifted QR (Wilkinson) for the eigenvalues;
+shifted inverse iteration on `A` (or `inv(B)·A` for the generalized form) for
+each eigenvector.
+
 ```
-M = [2,1;1,2]
-v = eig(M)       # → complex vector with eigenvalues ~[3+0i, 1+0i]
+v = eig([2,1;1,2])            # N×1 column of eigenvalues, ~[3; 1]
+[V, D] = eig([2,1;1,2])       # V eigenvector matrix; D diagonal matrix (matlab default)
+e = eig(A, B)                 # generalized: A·v = λ·B·v
+[V, D] = eig(A, B)            # generalized eigenvectors and eigenvalues
 ```
-- Input must be a square matrix (or scalar, which returns a 1-element vector).
+
+**Output-form flag** (matlab convention) — overrides the default D shape:
+
+```
+eig(A, "vector")              # D as N×1 column vector
+eig(A, "matrix")              # D as N×N diagonal matrix
+[V, D] = eig(A, "vector")     # D vector even with two outputs
+[V, D] = eig(A, B, "matrix")  # generalized + explicit diagonal
+```
+
+- 1-output default is the column vector; 2-output default is the diagonal matrix.
+- The flag is parsed off the tail of the argument list, so it composes with
+  both the standard and generalized forms.
 - Eigenvalues are returned in convergence order, not sorted.
-- The sum of eigenvalues equals `trace(M)`; the product equals `det(M)`.
+- Defective matrices may produce an ill-conditioned `V`; the eigenvalues
+  remain accurate.
+- Generalized form requires `B` invertible. SPD-aware Cholesky reduction is
+  a future optimisation; QZ for non-invertible `B` is deferred.
 
 ### `eigs(A, n)` / `eigs(A, n, which)` / `eigs(A, B, n)` / `eigs(A, B, n, which)`
 
