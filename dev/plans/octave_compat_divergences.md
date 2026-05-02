@@ -209,7 +209,13 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
 #### Suggested PR sequence
 
 1. **PR-1: Fix the inverse-iteration bug.** ✅ **Shipped 2026-05-02.** Initial vector in `inverse_iteration_cx` switched from `e_0` to the sine-of-index pattern the core helper uses. Regression test `eigsys_upper_triangular_residuals_near_zero` covers the `[4,1,0; 0,2,1; 0,0,5]` case (residuals all < 1e-9).
-2. **PR-2: Eigenvalue orientation.** `eig(A)` returns `N×1` column instead of `1×N` row. Sweep examples/notebooks for callers that depend on row orientation. Probably a small list — `eig(A)` is usually printed or fed into matrix expressions.
+2. **PR-2: Eigenvalue orientation.** `eig(A)` returns `N×1` column instead of `1×N` row. **Blocked — needs prerequisite work.** Attempted 2026-05-02 and reverted: changing the return type from `Value::Vector` to `Value::Matrix(N, 1)` broke `sort(eig(A))`, `min(eig(A))`, etc., because the rustlab type system treats `Value::Vector` (1D) and `Value::Matrix(N, 1)` (2D column) as separate types and most "vector-accepting" builtins only accept the former. The matlab idiom is "any 1-D-shaped thing is a vector," which rustlab does not implement.
+
+   **Prerequisite (PR-2a):** add a `to_complex_vec_view` helper that flattens `Value::Vector`, `Value::Matrix(N, 1)`, and `Value::Matrix(1, N)` to a common `Vec<C64>` shape. Sweep ~30 vector-accepting builtins (`sort`, `min`, `max`, `sum`, `mean`, `std`, `prod`, `cumsum`, `argmin`, `argmax`, `median`, `norm`, `dot`, `cross`, `outer`, `trapz`, `unique`, etc.) and route through the helper.
+
+   Once PR-2a lands, PR-2 itself becomes a one-line return-shape change with no downstream breakage.
+
+   Note: PR-2a is also the underlying fix for divergence #6 (`length(M)`) — once "vector" is shape-agnostic, `length` of any 1-D-shaped value should return the obvious length.
 3. **PR-3: nargout option B.** Add `BuiltinKind` enum to the registry; update evaluator to pass `nargout` to the new variant. No user-visible change yet.
 4. **PR-4: Eig family overload.** `eig` becomes nargout-aware. 1-output → values vector; 2-output → `[V, D]` with D as diagonal matrix. `eigsys` becomes a deprecated alias (one-release grace period). `eigs` 2-output form switches D from vector to diagonal matrix (matches matlab; small breaking change).
 5. **PR-5: Dense generalized `eig(A, B)`.** Implement via Cholesky-of-B (when B is SPD) or QZ decomposition (general B). Cholesky-route is the common case and is straightforward; QZ is a bigger lift and can be a follow-up if needed. Both 1- and 2-output forms.

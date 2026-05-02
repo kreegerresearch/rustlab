@@ -1543,7 +1543,13 @@ mod eig_tests {
     fn get_complex_vector(ev: &Evaluator, name: &str) -> Vec<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
-            other => panic!("expected Vector for '{name}', got {other:?}"),
+            // `eig(A)` returns an N×1 column vector (matlab orientation);
+            // `eigsys(A)`'s D is still a 1D Vector. Accept both — we only
+            // care about the eigenvalue sequence in these tests.
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
+            other => panic!("expected Vector or 1D Matrix for '{name}', got {other:?}"),
         }
     }
 
@@ -1754,6 +1760,10 @@ mod phase1_tests {
     fn get_complex_vector(ev: &Evaluator, name: &str) -> Vec<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
+            // `eig(A)` returns an N×1 column matrix; accept that shape too.
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
@@ -1971,6 +1981,10 @@ mod phase2_tests {
     fn get_complex_vector(ev: &Evaluator, name: &str) -> Vec<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
+            // `eig(A)` returns an N×1 column matrix; accept that shape too.
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
@@ -2114,6 +2128,10 @@ mod phase3_tests {
     fn get_complex_vector(ev: &Evaluator, name: &str) -> Vec<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
+            // `eig(A)` returns an N×1 column matrix; accept that shape too.
+            Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
+                m.iter().copied().collect()
+            }
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
