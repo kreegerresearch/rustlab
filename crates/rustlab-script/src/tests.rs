@@ -1728,6 +1728,61 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn broadcast_matrix_plus_row_vector() {
+        let ev = eval_str("M = [1,2,3;4,5,6]\nR = M + [10, 20, 30]");
+        let r = get_complex_matrix(&ev, "R");
+        assert_eq!((r.nrows(), r.ncols()), (2, 3));
+        let expect = [[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]];
+        for i in 0..2 {
+            for j in 0..3 {
+                assert!((r[[i, j]].re - expect[i][j]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_matrix_plus_column_vector_matrix() {
+        let ev = eval_str("M = [1,2,3;4,5,6]\nC = [100; 200]\nR = M + C");
+        let r = get_complex_matrix(&ev, "R");
+        let expect = [[101.0, 102.0, 103.0], [204.0, 205.0, 206.0]];
+        for i in 0..2 {
+            for j in 0..3 {
+                assert!((r[[i, j]].re - expect[i][j]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_col_plus_row_outer_shape() {
+        // [1; 2] (2×1) + [10, 20, 30] (1×3) → 2×3 outer-add
+        let ev = eval_str("R = [1; 2] + [10, 20, 30]");
+        let r = get_complex_matrix(&ev, "R");
+        let expect = [[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]];
+        for i in 0..2 {
+            for j in 0..3 {
+                assert!((r[[i, j]].re - expect[i][j]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_elementwise_multiply() {
+        let ev = eval_str("M = [1,2,3;4,5,6]\nR = M .* [10, 20, 30]");
+        let r = get_complex_matrix(&ev, "R");
+        let expect = [[10.0, 40.0, 90.0], [40.0, 100.0, 180.0]];
+        for i in 0..2 {
+            for j in 0..3 {
+                assert!((r[[i, j]].re - expect[i][j]).abs() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn broadcast_incompatible_dims_errors() {
+        let _err = eval_err("R = [1, 2; 3, 4] + [10, 20, 30]");
+    }
+
+    #[test]
     fn empty_assign_deletes_vector_range() {
         let ev = eval_str("v = [10, 20, 30, 40, 50]\nv(2:3) = []");
         let vals = get_complex_vector(&ev, "v");

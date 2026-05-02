@@ -214,6 +214,99 @@ impl Value {
         m
     }
 
+    /// Octave/matlab implicit expansion: broadcast two matrices to a common
+    /// shape. Each dimension must be equal between the two, or one of them
+    /// must be 1 (the singleton dimension is repeated to fill the other).
+    fn broadcast_pair(a: &CMatrix, b: &CMatrix) -> Result<(CMatrix, CMatrix), String> {
+        let (am, an) = (a.nrows(), a.ncols());
+        let (bm, bn) = (b.nrows(), b.ncols());
+        let nrows = if am == bm {
+            am
+        } else if am == 1 {
+            bm
+        } else if bm == 1 {
+            am
+        } else {
+            return Err(format!(
+                "implicit expansion: row dimensions [{}] and [{}] are incompatible (must match, or one must be 1)",
+                am, bm
+            ));
+        };
+        let ncols = if an == bn {
+            an
+        } else if an == 1 {
+            bn
+        } else if bn == 1 {
+            an
+        } else {
+            return Err(format!(
+                "implicit expansion: column dimensions [{}] and [{}] are incompatible (must match, or one must be 1)",
+                an, bn
+            ));
+        };
+        let a_exp = if (am, an) == (nrows, ncols) {
+            a.clone()
+        } else {
+            Array2::from_shape_fn((nrows, ncols), |(i, j)| {
+                a[[if am == 1 { 0 } else { i }, if an == 1 { 0 } else { j }]]
+            })
+        };
+        let b_exp = if (bm, bn) == (nrows, ncols) {
+            b.clone()
+        } else {
+            Array2::from_shape_fn((nrows, ncols), |(i, j)| {
+                b[[if bm == 1 { 0 } else { i }, if bn == 1 { 0 } else { j }]]
+            })
+        };
+        Ok((a_exp, b_exp))
+    }
+
+    /// Apply an elementwise op (Add / Sub / ElemMul / ElemDiv / ElemPow / Pow)
+    /// to two matrices, with implicit expansion. Real-real inputs collapse
+    /// floating-point imag noise back to zero, matching the existing
+    /// matrix-matrix code path.
+    fn elementwise_with_broadcast(a: &CMatrix, b: &CMatrix, op: BinOp) -> Result<CMatrix, String> {
+        use BinOp::*;
+        let (a_exp, b_exp) = Self::broadcast_pair(a, b)?;
+        let result = match op {
+            Add => &a_exp + &b_exp,
+            Sub => &a_exp - &b_exp,
+            ElemMul => &a_exp * &b_exp,
+            ElemDiv => &a_exp / &b_exp,
+            ElemPow | Pow => {
+                let rows = a_exp.nrows();
+                let cols = a_exp.ncols();
+                let data: Vec<C64> = a_exp
+                    .iter()
+                    .zip(b_exp.iter())
+                    .map(|(&x, &y)| {
+                        let ln_x = Complex::new(x.norm().ln(), x.arg());
+                        (y * ln_x).exp()
+                    })
+                    .collect();
+                Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?
+            }
+            _ => {
+                return Err(format!(
+                    "elementwise_with_broadcast: op {:?} is not elementwise",
+                    op
+                ))
+            }
+        };
+        if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
+            Ok(Self::matrix_zero_imag(result))
+        } else {
+            Ok(result)
+        }
+    }
+
+    /// Promote a `Value::Vector` to a `1×N` row matrix, leaving the
+    /// existing matrix layout convention (vector → row by default).
+    fn vector_to_row_matrix(v: &CVector) -> CMatrix {
+        let n = v.len();
+        Array2::from_shape_fn((1, n), |(_, j)| v[j])
+    }
+
     /// Conjugate transpose: `A'`
     /// A row vector (1×n) becomes a column vector stored as Matrix(n×1).
     /// A Matrix is conjugate-transposed normally.
@@ -972,98 +1065,15 @@ impl Value {
                     }
                     Ok(Value::Matrix(a.dot(b)))
                 }
-                Add => {
-                    if a.shape() != b.shape() {
-                        return Err(format!(
-                            "matrix size mismatch for +: [{}×{}] vs [{}×{}]",
-                            a.nrows(),
-                            a.ncols(),
-                            b.nrows(),
-                            b.ncols()
-                        ));
-                    }
-                    Ok(Value::Matrix(a + b))
-                }
-                Sub => {
-                    if a.shape() != b.shape() {
-                        return Err(format!(
-                            "matrix size mismatch for -: [{}×{}] vs [{}×{}]",
-                            a.nrows(),
-                            a.ncols(),
-                            b.nrows(),
-                            b.ncols()
-                        ));
-                    }
-                    Ok(Value::Matrix(a - b))
-                }
-                ElemMul => {
-                    if a.shape() != b.shape() {
-                        return Err(format!(
-                            "matrix size mismatch for .*: [{}×{}] vs [{}×{}]",
-                            a.nrows(),
-                            a.ncols(),
-                            b.nrows(),
-                            b.ncols()
-                        ));
-                    }
-                    let result = a * b;
-                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
-                        Self::matrix_zero_imag(result)
-                    } else {
-                        result
-                    };
-                    Ok(Value::Matrix(result))
-                }
-                ElemDiv => {
-                    if a.shape() != b.shape() {
-                        return Err(format!(
-                            "matrix size mismatch for ./: [{}×{}] vs [{}×{}]",
-                            a.nrows(),
-                            a.ncols(),
-                            b.nrows(),
-                            b.ncols()
-                        ));
-                    }
-                    let result = a / b;
-                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
-                        Self::matrix_zero_imag(result)
-                    } else {
-                        result
-                    };
-                    Ok(Value::Matrix(result))
+                Add | Sub | ElemMul | ElemDiv => {
+                    Self::elementwise_with_broadcast(a, b, op).map(Value::Matrix)
                 }
                 Div => Err(
                     "use ./ for element-wise matrix division; or inv(A)*B for left-divide"
                         .to_string(),
                 ),
                 ElemPow | Pow => {
-                    if a.shape() != b.shape() {
-                        return Err(format!(
-                            "matrix size mismatch for .^: [{}×{}] vs [{}×{}]",
-                            a.nrows(),
-                            a.ncols(),
-                            b.nrows(),
-                            b.ncols()
-                        ));
-                    }
-                    let rows = a.nrows();
-                    let cols = a.ncols();
-                    let data: Vec<C64> = a
-                        .iter()
-                        .zip(b.iter())
-                        .map(|(&x, &y)| {
-                            let ln_x = Complex::new(x.norm().ln(), x.arg());
-                            (y * ln_x).exp()
-                        })
-                        .collect();
-                    let result = Array2::from_shape_vec((rows, cols), data)
-                        .map_err(|e| e.to_string())?;
-                    let result = if Self::matrix_all_real(a) && Self::matrix_all_real(b) {
-                        Self::matrix_zero_imag(result)
-                    } else {
-                        result
-                    };
-                    Ok(Value::Matrix(result))
+                    Self::elementwise_with_broadcast(a, b, op).map(Value::Matrix)
                 }
                 _ => unreachable!(),
             },
@@ -1090,6 +1100,12 @@ impl Value {
                         }
                         Ok(Value::Matrix(Array2::from_shape_vec((nrows, ncols), data)
                             .map_err(|e| e.to_string())?))
+                    }
+                    Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
+                        // Implicit expansion: treat the row Vector as a 1×N row
+                        // matrix and broadcast against the M×K matrix.
+                        let v_row = Self::vector_to_row_matrix(v);
+                        Self::elementwise_with_broadcast(m, &v_row, op).map(Value::Matrix)
                     }
                     _ => Err(format!(
                         "operator {:?} not defined for matrix and vector; use .* ./ .^ for element-wise ops",
@@ -1120,6 +1136,12 @@ impl Value {
                         } else {
                             Ok(Value::Vector(result))
                         }
+                    }
+                    Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
+                        // Implicit expansion: row Vector promoted to 1×N matrix
+                        // on the lhs, then broadcast against M×K rhs.
+                        let v_row = Self::vector_to_row_matrix(v);
+                        Self::elementwise_with_broadcast(&v_row, m, op).map(Value::Matrix)
                     }
                     _ => Err(format!(
                         "operator {:?} not defined for vector and matrix; use .* ./ .^ for element-wise ops",

@@ -308,6 +308,12 @@ save("out2_find_dense_vec.csv",   find([0.0, 5.0, 0.0, -3.0, 0.0, 7.0]))
 # find() on a dense matrix — column-major linear indices (octave convention)
 save("out2_find_dense_mat.csv",   find([0.0, 2.0; 3.0, 0.0]))
 
+# Implicit expansion (broadcasting): row vector down rows, column vector across cols.
+M_bcast = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]
+save("out2_bcast_mat_plus_row.csv", M_bcast + [10.0, 20.0, 30.0])
+save("out2_bcast_mat_plus_col.csv", M_bcast + [100.0; 200.0])
+save("out2_bcast_col_plus_row.csv", [1.0; 2.0] + [10.0, 20.0, 30.0])
+
 # Large dynamic range
 save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))
 

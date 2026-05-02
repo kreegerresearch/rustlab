@@ -14,7 +14,7 @@
 | 4 | `sum(M, dim)` axis-selector form not supported | **High** | open |
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | open |
-| 7 | Matrix + row/column vector implicit expansion errors | High | open |
+| 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
@@ -118,20 +118,19 @@ rustlab> length([1, 2, 3; 4, 5, 6])
 
 **Where to fix:** `builtin_length` / `len` — change from "return nrows" to "return max(nrows, ncols)".
 
-### 7. Implicit expansion (matrix + row/col vector)
+### 7. Implicit expansion (matrix + row/col vector) ✅ shipped 2026-05-02
 
-```
-rustlab> [1, 2; 3, 4] + [10, 20]
-error: operator Add not defined for matrix and vector; use .* ./ .^ for element-wise ops
-```
+`Value::binop` now broadcasts:
 
-**Octave/matlab:** since R2016b. `[1 2; 3 4] + [10 20]` → `[11 22; 13 24]` (row vec broadcasts down rows). `[1 2; 3 4] + [10; 20]` → `[11 12; 23 24]` (col vec broadcasts across cols).
+- Matrix-matrix elementwise (`+`, `-`, `.*`, `./`, `.^`, `.^`) with implicit expansion: each dim must match between the two, or one of them must be `1` (the singleton repeats to fill the other).
+- Matrix + Vector (and Vector + Matrix) for the same op set: the `Value::Vector` is promoted to a `1×N` row matrix and then broadcast against the matrix shape — so `M(2×3) + [10, 20, 30]` and `M(2×3) .* [10, 20, 30]` both work.
+- Outer-shape ops via singleton broadcasting: `[1; 2] + [10, 20, 30]` → `2×3` matrix.
 
-**Where to fix:** binary-op evaluation in `crates/rustlab-script/src/eval/value.rs`. Today it dispatches on shape pairs and rejects mismatch; needs a broadcast pre-step that promotes a `1×N` row vector or `N×1` column vector to the matrix's shape before the elementwise op. Matrix-matrix with one singleton dim should also broadcast.
+Implementation: two new helpers on `Value` — `broadcast_pair(a, b)` does the dim-compatibility check and shape expansion, and `elementwise_with_broadcast(a, b, op)` runs the elementwise op on the expanded pair (with the existing real-real-collapses-imag noise rule preserved). The `Vector` arm uses a small `vector_to_row_matrix` helper to promote.
 
-The error message at the top is the rejection path — replace it with the broadcast.
+Tests: 5 new in-process tests (M + row, M + col, col + row, `.*` broadcast, incompatible dims error) plus three new octave-compare cases (`bcast M + row`, `bcast M + col`, `bcast col + row`). All match octave at machine precision.
 
-**Edge case:** scalar broadcasting already works (the audit confirmed `scalar + vector` and `scalar ./ vector`); only the matrix↔vector dimension is missing.
+Scalar-vector broadcasting already worked and is unchanged. Vector-Vector broadcasting (without explicit row/col distinction) is also unchanged for now — `Value::Vector` is row-shaped by convention, so `[1, 2, 3] + [10; 20; 30]` works because the `Value::Matrix(3, 1)` lhs triggers the new broadcast path.
 
 ### 8. Eig family: collapse to one name and align with octave/matlab
 

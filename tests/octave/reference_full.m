@@ -346,6 +346,12 @@ csvwrite('ref2_sort_descend.csv', sort([3 1 4 1 5 9 2 6], 'descend'));
 csvwrite('ref2_find_dense_vec.csv', find([0 5 0 -3 0 7]));
 csvwrite('ref2_find_dense_mat.csv', find([0 2; 3 0]));
 
+% Implicit expansion (broadcasting) — octave R2016b semantics.
+M_bcast = [1 2 3; 4 5 6];
+csvwrite('ref2_bcast_mat_plus_row.csv', M_bcast + [10 20 30]);
+csvwrite('ref2_bcast_mat_plus_col.csv', M_bcast + [100; 200]);
+csvwrite('ref2_bcast_col_plus_row.csv', [1; 2] + [10 20 30]);
+
 csvwrite('ref2_log_dynamic.csv',  log10([1e-10 1e10]));
 
 csvwrite('ref2_atan2_quadrants.csv', atan2([1 1 -1 -1], [1 -1 -1 1]));
