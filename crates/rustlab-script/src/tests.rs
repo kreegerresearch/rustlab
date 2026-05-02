@@ -1968,6 +1968,97 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn eig_two_output_returns_diagonal_d() {
+        // [V, D] = eig(A) — V matrix + D diagonal matrix (matlab convention).
+        let ev = eval_str("A = [2, 1; 1, 2]\n[V, D] = eig(A)");
+        match ev.get("D").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 2));
+                // Off-diagonal entries are zero.
+                assert!(m[[0, 1]].re.abs() < 1e-12);
+                assert!(m[[1, 0]].re.abs() < 1e-12);
+                // Diagonal entries are eigenvalues 1 and 3 in some order.
+                let diag: Vec<f64> = vec![m[[0, 0]].re, m[[1, 1]].re];
+                let mut sorted = diag.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                assert!((sorted[0] - 1.0).abs() < 1e-10);
+                assert!((sorted[1] - 3.0).abs() < 1e-10);
+            }
+            other => panic!("expected D Matrix, got {other:?}"),
+        }
+        match ev.get("V").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+            other => panic!("expected V Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_one_output_unchanged() {
+        let ev = eval_str("v = eig([2, 1; 1, 2])");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+            }
+            other => panic!("expected column matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sort_two_output_returns_indices() {
+        // [s, idx] = sort(v): idx is the 1-based permutation.
+        let ev = eval_str("v = [3, 1, 4, 1, 5, 9, 2, 6]\n[s, idx] = sort(v)");
+        let s = get_complex_vector(&ev, "s");
+        let idx = get_complex_vector(&ev, "idx");
+        let sorted: Vec<f64> = s.iter().map(|c| c.re).collect();
+        assert_eq!(sorted, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0]);
+        // First "1" at original position 2; second "1" at position 4.
+        let positions: Vec<f64> = idx.iter().map(|c| c.re).collect();
+        assert_eq!(positions[0], 2.0);
+        assert_eq!(positions[1], 4.0);
+        assert_eq!(positions[7], 6.0); // 9 was at position 6
+    }
+
+    #[test]
+    fn sort_one_output_unchanged() {
+        let ev = eval_str("s = sort([3, 1, 4, 1, 5, 9, 2, 6])");
+        let s = get_complex_vector(&ev, "s");
+        let sorted: Vec<f64> = s.iter().map(|c| c.re).collect();
+        assert_eq!(sorted, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn find_two_output_returns_subscripts() {
+        // [I, J] = find(M) for M = [0, 2; 3, 0]: nonzeros at (2, 1) and (1, 2)
+        // in column-major order.
+        let ev = eval_str("[I, J] = find([0, 2; 3, 0])");
+        let i = get_complex_vector(&ev, "I");
+        let j = get_complex_vector(&ev, "J");
+        let irs: Vec<f64> = i.iter().map(|c| c.re).collect();
+        let jrs: Vec<f64> = j.iter().map(|c| c.re).collect();
+        assert_eq!(irs, vec![2.0, 1.0]);
+        assert_eq!(jrs, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn find_three_output_returns_values_too() {
+        let ev = eval_str("[I, J, V] = find([0, 2; 3, 0])");
+        let v = get_complex_vector(&ev, "V");
+        let vals: Vec<f64> = v.iter().map(|c| c.re).collect();
+        assert_eq!(vals, vec![3.0, 2.0]);
+    }
+
+    #[test]
+    fn find_two_output_on_dense_vector_returns_indices_and_values() {
+        let ev = eval_str("[I, V] = find([0, 5, 0, -3, 0, 7])");
+        let i = get_complex_vector(&ev, "I");
+        let v = get_complex_vector(&ev, "V");
+        let irs: Vec<f64> = i.iter().map(|c| c.re).collect();
+        let vrs: Vec<f64> = v.iter().map(|c| c.re).collect();
+        assert_eq!(irs, vec![2.0, 4.0, 6.0]);
+        assert_eq!(vrs, vec![5.0, -3.0, 7.0]);
+    }
+
+    #[test]
     fn matrix_literal_space_separated() {
         // [1 2 3] should equal [1, 2, 3] — octave-compatible whitespace
         // separator inside matrix literals.

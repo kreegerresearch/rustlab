@@ -428,7 +428,24 @@ impl Evaluator {
                 expr,
                 suppress,
             } => {
-                let val = self.eval_expr(expr)?;
+                // For a top-level builtin call with multi-output destructuring,
+                // pass the LHS name count as `nargout` so the builtin can
+                // dispatch on caller arity (matlab-style overloading). Lambdas,
+                // user functions, and non-Call expressions go through the
+                // normal eval path.
+                let val = match expr {
+                    Expr::Call { name, args }
+                        if !self.env.contains_key(name)
+                            && !self.user_fns.contains_key(name) =>
+                    {
+                        let vals: Vec<Value> = args
+                            .iter()
+                            .map(|a| self.eval_expr(a))
+                            .collect::<Result<_, _>>()?;
+                        self.call_builtin_tracked_nargout(name, vals, names.len())?
+                    }
+                    _ => self.eval_expr(expr)?,
+                };
                 match val {
                     Value::Tuple(values) => {
                         if values.len() < names.len() {
@@ -1839,12 +1856,23 @@ impl Evaluator {
 
     /// Call a builtin, recording timing and IO bytes if profiling is active for this name.
     fn call_builtin_tracked(&mut self, name: &str, vals: Vec<Value>) -> Result<Value, ScriptError> {
+        self.call_builtin_tracked_nargout(name, vals, 1)
+    }
+
+    /// Same as [`call_builtin_tracked`] but with the matlab-style `nargout`
+    /// hint forwarded to nargout-aware builtins (`eig`, `sort`, `find`, …).
+    fn call_builtin_tracked_nargout(
+        &mut self,
+        name: &str,
+        vals: Vec<Value>,
+        nargout: usize,
+    ) -> Result<Value, ScriptError> {
         if !self.profiler.should_track(name) {
-            return self.builtins.call(name, vals);
+            return self.builtins.call_with_nargout(name, vals, nargout);
         }
         let in_bytes: u64 = vals.iter().map(Self::value_bytes).sum();
         let t0 = std::time::Instant::now();
-        let result = self.builtins.call(name, vals);
+        let result = self.builtins.call_with_nargout(name, vals, nargout);
         let ns = t0.elapsed().as_nanos() as u64;
         if let Ok(ref v) = result {
             self.profiler

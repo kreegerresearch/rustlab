@@ -26,9 +26,20 @@ use std::io::{Read as IoRead, Write as IoWrite};
 use std::sync::{Arc, Mutex};
 
 pub type BuiltinFn = fn(Vec<Value>) -> Result<Value, ScriptError>;
+/// Nargout-aware builtin signature. The `nargout` argument is the number of
+/// outputs the call site expects: `1` for `e = eig(A)`, `2` for
+/// `[V, D] = eig(A)`, etc. Most builtins ignore it; only the few that
+/// overload on caller arity (`eig`, `sort`, `find`, `svd` …) need it.
+pub type BuiltinFnNargout = fn(Vec<Value>, usize) -> Result<Value, ScriptError>;
+
+#[derive(Clone, Copy)]
+enum BuiltinKind {
+    Stateless(BuiltinFn),
+    Nargout(BuiltinFnNargout),
+}
 
 pub struct BuiltinRegistry {
-    map: HashMap<String, BuiltinFn>,
+    map: HashMap<String, BuiltinKind>,
 }
 
 impl BuiltinRegistry {
@@ -130,7 +141,7 @@ impl BuiltinRegistry {
         r.register("cumsum", builtin_cumsum);
         r.register("argmin", builtin_argmin);
         r.register("argmax", builtin_argmax);
-        r.register("sort", builtin_sort);
+        r.register_nargout("sort", builtin_sort_nargout);
         r.register("trapz", builtin_trapz);
         r.register("len", builtin_len);
         r.register("length", builtin_len); // alias for len
@@ -197,7 +208,7 @@ impl BuiltinRegistry {
         r.register("inv", builtin_inv);
         r.register("expm", builtin_expm);
         r.register("linsolve", builtin_linsolve);
-        r.register("eig", builtin_eig);
+        r.register_nargout("eig", builtin_eig_nargout);
         r.register("eigsys", builtin_eigsys);
         r.register("eigs", builtin_eigs);
         // Special functions
@@ -278,7 +289,7 @@ impl BuiltinRegistry {
         r.register("issparse", builtin_issparse);
         r.register("full", builtin_full);
         r.register("nonzeros", builtin_nonzeros);
-        r.register("find", builtin_find);
+        r.register_nargout("find", builtin_find_nargout);
         r.register("spsolve", builtin_spsolve);
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
@@ -310,12 +321,29 @@ impl BuiltinRegistry {
     }
 
     pub fn register(&mut self, name: impl Into<String>, f: BuiltinFn) {
-        self.map.insert(name.into(), f);
+        self.map.insert(name.into(), BuiltinKind::Stateless(f));
+    }
+
+    /// Register a nargout-aware builtin. The function receives the number of
+    /// outputs the call site expects and may dispatch on it (matlab-style
+    /// overloading on caller arity).
+    pub fn register_nargout(&mut self, name: impl Into<String>, f: BuiltinFnNargout) {
+        self.map.insert(name.into(), BuiltinKind::Nargout(f));
     }
 
     pub fn call(&self, name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
+        self.call_with_nargout(name, args, 1)
+    }
+
+    pub fn call_with_nargout(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        nargout: usize,
+    ) -> Result<Value, ScriptError> {
         match self.map.get(name) {
-            Some(f) => f(args),
+            Some(BuiltinKind::Stateless(f)) => f(args),
+            Some(BuiltinKind::Nargout(f)) => f(args, nargout),
             None => Err(ScriptError::undefined_fn(name.to_string())),
         }
     }
@@ -1904,6 +1932,96 @@ fn builtin_argmax(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// sort(v) — sort a vector ascending by real part; preserves imaginary components.
+/// Nargout-aware dispatch for `sort`:
+///   nargout == 1: returns the sorted output, same shape as input.
+///   nargout >= 2: returns `[sorted, idx]` where `idx` is the 1-based
+///                 permutation that produces `sorted` from the input —
+///                 `sorted(k) == input(idx(k))` for vectors/1-D matrices.
+fn builtin_sort_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    if nargout < 2 {
+        return builtin_sort(args);
+    }
+    check_args_range("sort", &args, 1, 2)?;
+    let descending = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) => match s.as_str() {
+                "ascend" => false,
+                "descend" => true,
+                other => {
+                    return Err(ScriptError::type_err(format!(
+                        "sort: direction must be \"ascend\" or \"descend\", got \"{}\"",
+                        other
+                    )))
+                }
+            },
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "sort: 2nd argument must be a direction string, got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    } else {
+        false
+    };
+
+    /// Sort a flat slice of complex values by real part, returning the sorted
+    /// values plus the 1-based permutation indices.
+    fn sort_with_indices(elements: &[C64], descending: bool) -> (Vec<C64>, Vec<f64>) {
+        let mut paired: Vec<(usize, C64)> = elements.iter().copied().enumerate().collect();
+        paired.sort_by(|(_, a), (_, b)| {
+            let ord = a
+                .re
+                .partial_cmp(&b.re)
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if descending {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+        let sorted: Vec<C64> = paired.iter().map(|(_, v)| *v).collect();
+        let indices: Vec<f64> = paired.iter().map(|(i, _)| (*i + 1) as f64).collect();
+        (sorted, indices)
+    }
+
+    let (sorted, indices, original): (Value, Value, &Value) = match &args[0] {
+        Value::Vector(v) => {
+            let elements: Vec<C64> = v.iter().copied().collect();
+            let (sorted, idx) = sort_with_indices(&elements, descending);
+            (
+                Value::Vector(Array1::from_vec(sorted)),
+                Value::Vector(Array1::from_iter(
+                    idx.into_iter().map(|f| Complex::new(f, 0.0)),
+                )),
+                &args[0],
+            )
+        }
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            let elements: Vec<C64> = m.iter().copied().collect();
+            let (sorted, idx) = sort_with_indices(&elements, descending);
+            let s_mat = Array2::from_shape_fn((nrows, ncols), |(i, j)| sorted[i * ncols + j]);
+            let i_mat = Array2::from_shape_fn((nrows, ncols), |(i, j)| {
+                Complex::new(idx[i * ncols + j], 0.0)
+            });
+            (Value::Matrix(s_mat), Value::Matrix(i_mat), &args[0])
+        }
+        Value::Scalar(_) => {
+            return Ok(Value::Tuple(vec![args[0].clone(), Value::Scalar(1.0)]));
+        }
+        _ => {
+            return Err(ScriptError::type_err(
+                "sort: argument must be a vector, scalar, or 1-D-shaped matrix"
+                    .to_string(),
+            ))
+        }
+    };
+    let _ = original;
+    Ok(Value::Tuple(vec![sorted, indices]))
+}
+
 fn builtin_sort(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("sort", &args, 1, 2)?;
 
@@ -6011,6 +6129,55 @@ fn eig_hessenberg(h_in: &CMatrix) -> Result<Vec<C64>, String> {
 
 /// eig(M) — eigenvalues of a square matrix.
 /// Returns a complex Vector of length n.
+/// Nargout-aware dispatch for `eig`:
+///   nargout == 1 (default): return an `N×1` column matrix of eigenvalues.
+///   nargout >= 2: return `[V, D]` — V is the `N×N` matrix of eigenvectors
+///                 (one per column), D is a diagonal `N×N` matrix of
+///                 eigenvalues (matlab convention; `diag(D)` extracts the
+///                 vector). The eigenvalues of `D(k, k)` correspond to
+///                 column `V(:, k)`.
+fn builtin_eig_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    if nargout >= 2 {
+        // Reuse eigsys's V + eigenvalue-vector pipeline, then promote D
+        // from the rustlab-style vector to matlab's diagonal matrix.
+        let result = builtin_eigsys(args)?;
+        let (v_mat, d_vec) = match result {
+            Value::Tuple(mut t) if t.len() == 2 => {
+                let d = t.remove(1);
+                let v = t.remove(0);
+                (v, d)
+            }
+            other => {
+                return Err(ScriptError::runtime(format!(
+                    "eig: internal error — eigsys returned {} (expected Tuple)",
+                    other.type_name()
+                )))
+            }
+        };
+        let d_diag = match d_vec {
+            Value::Vector(arr) => {
+                let n = arr.len();
+                let mat = Array2::from_shape_fn((n, n), |(i, j)| {
+                    if i == j {
+                        arr[i]
+                    } else {
+                        Complex::new(0.0, 0.0)
+                    }
+                });
+                Value::Matrix(mat)
+            }
+            other => {
+                return Err(ScriptError::runtime(format!(
+                    "eig: internal error — expected eigenvalue vector, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        return Ok(Value::Tuple(vec![v_mat, d_diag]));
+    }
+    builtin_eig(args)
+}
+
 fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("eig", &args, 1)?;
     let m = match &args[0] {
@@ -9051,6 +9218,82 @@ fn builtin_nonzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// index `(j - 1) * nrows + i`.
 /// For sparse vectors, returns the tuple `[I, V]`.
 /// For sparse matrices, returns the tuple `[I, J, V]`.
+/// Nargout-aware dispatch for `find`:
+///   nargout == 1 (default): linear (column-major) indices for dense input;
+///                           `[I, V]` tuple for sparse vectors,
+///                           `[I, J, V]` for sparse matrices.
+///   nargout == 2 on dense matrix: `[I, J]` row+col subscripts (1-based).
+///   nargout == 2 on dense vector: `[I, V]` indices + values.
+///   nargout >= 3 on dense matrix: `[I, J, V]` row + col + nonzero values.
+fn builtin_find_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    if nargout < 2 {
+        return builtin_find(args);
+    }
+    check_args("find", &args, 1)?;
+    match &args[0] {
+        Value::Vector(v) => {
+            let mut idx: Vec<C64> = Vec::new();
+            let mut vals: Vec<C64> = Vec::new();
+            for (i, &c) in v.iter().enumerate() {
+                if c.re != 0.0 || c.im != 0.0 {
+                    idx.push(Complex::new((i + 1) as f64, 0.0));
+                    vals.push(c);
+                }
+            }
+            Ok(Value::Tuple(vec![
+                Value::Vector(Array1::from_vec(idx)),
+                Value::Vector(Array1::from_vec(vals)),
+            ]))
+        }
+        Value::Matrix(m) => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            let mut rows: Vec<C64> = Vec::new();
+            let mut cols: Vec<C64> = Vec::new();
+            let mut vals: Vec<C64> = Vec::new();
+            for c in 0..ncols {
+                for r in 0..nrows {
+                    let z = m[[r, c]];
+                    if z.re != 0.0 || z.im != 0.0 {
+                        rows.push(Complex::new((r + 1) as f64, 0.0));
+                        cols.push(Complex::new((c + 1) as f64, 0.0));
+                        vals.push(z);
+                    }
+                }
+            }
+            let row_v = Value::Vector(Array1::from_vec(rows));
+            let col_v = Value::Vector(Array1::from_vec(cols));
+            let val_v = Value::Vector(Array1::from_vec(vals));
+            if nargout >= 3 {
+                Ok(Value::Tuple(vec![row_v, col_v, val_v]))
+            } else {
+                Ok(Value::Tuple(vec![row_v, col_v]))
+            }
+        }
+        // Sparse paths: existing single-output forms already produce tuples.
+        Value::SparseVector(_) | Value::SparseMatrix(_) => builtin_find(args),
+        Value::Scalar(n) => {
+            // Trivial 1-element case: return the same shape as the dense
+            // single-output form, in tuple form.
+            if *n != 0.0 {
+                Ok(Value::Tuple(vec![
+                    Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)])),
+                    Value::Vector(Array1::from_vec(vec![Complex::new(*n, 0.0)])),
+                ]))
+            } else {
+                Ok(Value::Tuple(vec![
+                    Value::Vector(Array1::from_vec(vec![])),
+                    Value::Vector(Array1::from_vec(vec![])),
+                ]))
+            }
+        }
+        other => Err(ScriptError::type_err(format!(
+            "find: expected vector, matrix, or sparse; got {}",
+            other.type_name()
+        ))),
+    }
+}
+
 fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("find", &args, 1)?;
     match &args[0] {

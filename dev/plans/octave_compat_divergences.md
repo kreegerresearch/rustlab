@@ -15,7 +15,7 @@
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
-| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
+| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **partial 2026-05-02** (PR-1/2/2a/3/4 shipped; PR-5 dense generalized open) |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
@@ -65,8 +65,27 @@ Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(
 **Update 2026-05-02 (continued):** `std`, `median`, `cumsum` axis reductions also shipped. `median(M)` and `std(M)` produce per-column scalars in a `1×ncols` row; `cumsum(M)` produces a same-shape matrix of running totals along the chosen dim. All three accept the `dim` arg. Two helpers (`median_of_real_slice`, `std_of_slice`) factored out of the per-column logic.
 
 **Still open:**
-- `min(M, [], 2)` / `max(M, [], 2)` numeric dim form: deferred per the elementwise-vs-dim ambiguity above.
-- `argmin`/`argmax` matrix axis form: similar (single-output is fine for vectors today).
+- `min(M, [], 2)` / `max(M, [], 2)` numeric dim form: deferred per the elementwise-vs-dim ambiguity (see pickup roadmap below).
+- `argmin`/`argmax` matrix axis form: same shape pattern, also waiting on the same disambiguation question.
+
+#### Pickup roadmap for `min(M, dim)` / `max(M, dim)`
+
+The reason this is hard: `min` and `max` already have a 2-arg form `min(a, b)` for scalar/elementwise comparison. matlab has the same overlap and resolves it with an empty `[]` placeholder — `min(M, [], 2)` for "min of M along dim 2." Two reasonable paths in rustlab:
+
+1. **Match matlab strictly: accept `min(M, [], dim)` with `[]` as an explicit empty.** Pros: anyone porting matlab code wins immediately. Cons: requires `[]` to be representable as an arg — today `[]` is parsed as an empty matrix (`Value::Matrix(0, 0)`), so the dispatch could be: 3 args where args[1] is a 0×0 matrix → axis form. Code changes:
+   - `builtin_min` and `builtin_max`: extend the arg count check from 2 to 3; when 3 args and middle is empty, route to the same column-reduction code that `sum(M, dim)` uses.
+   - Add tests `min([1, 2; 3, 0], [], 1)` → `[1, 0]` and `min([1, 2; 3, 0], [], 2)` → `[1; 0]`.
+
+2. **Diverge from matlab: accept `min(M, "dim", 2)` with a string flag.** Pros: no overlap with the 2-arg form. Cons: matlab users will trip over it.
+
+**Recommend path 1.** It's slightly more code but matches matlab idioms users will copy-paste from documentation. The `[]` empty-matrix parse is already in the lexer/parser.
+
+#### Pickup roadmap for `argmin(M)` / `argmax(M)` axis form
+
+Today `argmin(v)` returns a scalar 1-based index. matlab's `argmin(M)` returns a row vector of per-column argmin indices. Same pattern as `min(M)` after PR-2 — easy follow-on. Both functions already accept `Matrix(N, 1)` and `Matrix(1, N)` from the PR-2a partial; what's left is the M×N case (M>1, N>1) returning a row of N argmin indices. With nargout option B already shipped, `[m, i] = min(M)` could also return values + indices in one call (matlab does this).
+
+Code locations:
+- `crates/rustlab-script/src/eval/builtins.rs` — search for `fn builtin_min`, `fn builtin_max`, `fn builtin_argmin`, `fn builtin_argmax`. The `parse_reduction_dim` helper and the column-iteration pattern from `sum`/`mean`/`prod` apply directly.
 
 ### 5. `zeros(n)` is a row vector, not a square matrix
 
@@ -75,11 +94,49 @@ rustlab> size(zeros(3))
 [1 3]               % rustlab returns 1×3 row vector
 ```
 
-**Octave/matlab:** `zeros(3)` → `3×3` matrix of zeros (single-arg = square shape). `zeros(3, 1)` for a column, `zeros(1, 3)` for a row.
+**Octave/matlab:** `zeros(3)` → `3×3` matrix. `zeros(3, 1)` for a column, `zeros(1, 3)` for a row.
 
-**Where to fix:** `builtin_zeros`, `builtin_ones`, `builtin_eye`, `builtin_rand`, `builtin_randn`. Single integer arg → `n×n` matrix. Two args → `n×m`. Single integer arg producing a row vector is the numpy convention, not the octave one.
+#### Why this is deferred
 
-**Compat note:** this change *will break existing rustlab scripts* that rely on `zeros(N)` giving a row vector. Search the example scripts and notebooks before flipping. May want a deprecation warning first, then flip in a major version.
+This is a hard breaking change. A user script that today says `randn(1000)` allocates 1,000 cells; after the fix it would allocate 1,000,000. Every example, notebook, gallery, test, and external user script that calls `zeros(N)` / `ones(N)` / `rand(N)` / `randn(N)` with a single integer arg expecting a row vector would silently change behavior — and in the random-matrix case, blow up memory. **Pickup needs a deprecation cycle, not an opportunistic flip.**
+
+#### Pickup roadmap
+
+Three-step plan, ordered for safety:
+
+1. **Add a deprecation warning, but don't change behavior.** Emit `eprintln!("warning: zeros(N) currently returns a 1×N row vector; this will change to N×N in a future release. Use zeros(1, N) for a row vector or zeros(N, N) for a square matrix to make the intent explicit.")` once per process from `builtin_zeros` / `builtin_ones` / `builtin_rand` / `builtin_randn` when called with a single integer arg. Same warning text in each. Use a `OnceCell` or atomic flag so the warning fires once per builtin per process. Land this and let it bake for at least one release cycle so users see it.
+
+2. **Sweep the in-tree call sites.** Known callers as of 2026-05-02 (audit baseline):
+
+   | File | Call | Intended shape |
+   |---|---|---|
+   | `examples/audio/spectrum_monitor.r:59` | `ring = zeros(fft_size)` | row vector — change to `zeros(1, fft_size)` |
+   | `examples/stats.r:24` | `ones(512)` | row vector — change to `ones(1, 512)` |
+   | `crates/rustlab-script/src/tests.rs:856` | `v = zeros(5)` | row vector — change to `zeros(1, 5)` |
+   | `crates/rustlab-script/src/tests.rs:868` | `v = ones(4)` | row vector — change to `ones(1, 4)` |
+   | `crates/rustlab-script/src/tests.rs:896` | `v = ones(7)` | row vector — change to `ones(1, 7)` |
+   | `crates/rustlab-script/src/tests.rs:6417` | `zeros(3);` (no assertion) | n/a — leave |
+   | `crates/rustlab-script/src/tests.rs:6425` | `ones(3);` (no assertion) | n/a — leave |
+
+   Re-run `grep -rEn "zeros\([0-9]+\)\|zeros\([a-zA-Z_]+\)\|ones\([0-9]+\)\|ones\([a-zA-Z_]+\)\|randn\([0-9]+\)\|rand\([0-9]+\)"` against `examples/`, `tests/`, `crates/rustlab-script/src/tests.rs`, and `tests/octave/rustlab_full.r` at pickup time — the list above could grow.
+
+3. **Flip the default.** Change `builtin_zeros`, `builtin_ones`, `builtin_rand`, `builtin_randn` (and consider `randi`) so a single integer arg returns an `n×n` matrix instead of a `1×n` vector. `builtin_eye` is already `n×n` for one arg — leave unchanged. Drop the deprecation warning. Document the breaking change clearly in the commit message and the next release notes.
+
+#### Code locations
+
+- `crates/rustlab-script/src/eval/builtins.rs:1081` — `builtin_zeros`
+- `crates/rustlab-script/src/eval/builtins.rs:1091` — `builtin_ones`
+- `crates/rustlab-script/src/eval/builtins.rs:1125` — `builtin_rand`
+- `crates/rustlab-script/src/eval/builtins.rs:1143` — `builtin_randn`
+- `crates/rustlab-script/src/eval/builtins.rs:4604` — `builtin_eye` (already correct)
+- All four use the helper `unpack_size_args(&args, name)` — that function is the disambiguation point.
+
+#### Tests to add at flip time
+
+- `zeros(3)` shape is `[3, 3]` (currently `[1, 3]`).
+- `zeros(N, M)` 2-arg form unchanged.
+- `eye(3)` continues to be `3×3` identity.
+- An octave-compare case `zeros_single_arg` with `csvwrite('ref2_zeros_single.csv', size(zeros(3)))` etc.
 
 ### 6. `length(M)` returns wrong dimension ✅ shipped 2026-05-02
 
@@ -182,10 +239,15 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
    The full PR-2a sweep (~30 vector-accepting builtins) is still in progress as a follow-on. The currently-shipped subset is enough to unblock the matlab `sort(eig(A))` idiom and similar pipelines. Functions yet to be migrated include `sum`, `mean`, `std`, `prod`, `cumsum`, `median`, `norm`, `dot`, `cross`, `outer`, `trapz` — most already accept matrix input via flat reduction, so the migration is primarily about confirming behavior on `Matrix(N, 1)` and adding tests.
 
    Note: PR-2a is also the underlying fix for divergence #6 (`length(M)`) — once "vector" is shape-agnostic, `length` of any 1-D-shaped value should return the obvious length.
-3. **PR-3: nargout option B.** Add `BuiltinKind` enum to the registry; update evaluator to pass `nargout` to the new variant. No user-visible change yet.
-4. **PR-4: Eig family overload.** `eig` becomes nargout-aware. 1-output → values vector; 2-output → `[V, D]` with D as diagonal matrix. `eigsys` becomes a deprecated alias (one-release grace period). `eigs` 2-output form switches D from vector to diagonal matrix (matches matlab; small breaking change).
-5. **PR-5: Dense generalized `eig(A, B)`.** Implement via Cholesky-of-B (when B is SPD) or QZ decomposition (general B). Cholesky-route is the common case and is straightforward; QZ is a bigger lift and can be a follow-up if needed. Both 1- and 2-output forms.
+3. **PR-3: nargout option B.** ✅ **shipped 2026-05-02.** `BuiltinFnNargout = fn(Vec<Value>, usize) -> Result<Value, ScriptError>` and a private `BuiltinKind { Stateless, Nargout }` registry enum landed. `BuiltinRegistry::register_nargout` registers nargout-aware builtins; the evaluator's `MultiAssign` handler intercepts top-level `Expr::Call` to a registered builtin and forwards `names.len()` as the nargout hint. Most ~170 builtins are unchanged.
+4. **PR-4: Eig family overload.** ✅ **shipped 2026-05-02.** `eig` is nargout-aware: `e = eig(A)` returns the `N×1` column vector of eigenvalues; `[V, D] = eig(A)` returns V (eigenvector matrix) plus D as a **diagonal matrix** (matlab convention). Internally the 2-output path reuses `eigsys`'s pipeline and promotes the eigenvalue vector to `diag(eigvalues)`. `eigsys` continues to ship as a one-release alias (returns the same V + vector D for callers that prefer the rustlab convention; `diag(D)` extracts the vector from `eig`-2-output's diagonal matrix). The matlab idiom `[V, D] = eig(A); D` now produces a diagonal matrix as expected.
+5. **PR-5: Dense generalized `eig(A, B)`.** Open. Two-arg `eig(A, B)` for `A·v = λ·B·v` is the next item in the eig family. Approach: when B is SPD (Hermitian + positive-real diagonal) reduce via Cholesky `B = L·L^H` and run standard `eig(L^{-1}·A·L^{-H})`; for general B fall back to a QZ decomposition (bigger lift, deferred). The 1-output form returns the column vector of generalized eigenvalues; the 2-output `[V, D] = eig(A, B)` returns V + diagonal D. Both forms share the same nargout dispatch already in place.
 6. **PR-6 (optional, low priority): "vector"/"matrix" flags** for explicit D shape control. Useful for porting matlab code that explicitly opts out of the diagonal-matrix default.
+
+In addition, **two other builtins were migrated to the new nargout path in the same session:**
+
+- **`sort`:** `[s, idx] = sort(v)` returns the sorted vector + the 1-based permutation indices. Works on `Vector`, scalar, and 1-D-shaped `Matrix(N, 1)` / `Matrix(1, N)`. Single-output sort is unchanged.
+- **`find`:** dense input now overloads on nargout. `[I, J] = find(M)` returns row + column subscripts (column-major order, matching octave). `[I, J, V] = find(M)` adds the nonzero values. `[I, V] = find(v)` for dense vectors returns indices + values. Single-output `find(M)` continues to return linear indices.
 
 Each PR adds an octave-comparison case to `tests/octave/compare_full.m` so the regression is locked in.
 
