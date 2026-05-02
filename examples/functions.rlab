@@ -52,3 +52,23 @@ fieldnames(filter_spec)
 # Remove a field (returns new struct)
 trimmed = rmfield(filter_spec, "type")
 print(trimmed)
+
+# ── Multi-output user functions: function [a, b, ...] = name(args) ───────────
+% Matlab convention: bracket the output list to declare more than one
+% return value. Caller destructures with `[p, q] = ...` to receive them
+% in order; a bare `v = ...` picks just the first output.
+function [m, idx] = max_with_pos(v)
+  m = max(v)
+  idx = argmax(v)
+end
+
+[best, where] = max_with_pos([3, 1, 4, 1, 5, 9, 2, 6])
+print("max value:")
+print(best)
+print("at 1-based position:")
+print(where)
+
+% Single-output use of the same multi-output function — picks only `m`.
+just_max = max_with_pos([10, 20, 5])
+print("just_max:")
+print(just_max)

@@ -323,14 +323,65 @@ impl Parser {
         self.advance(); // consume 'function'
         self.skip_newlines();
 
-        // Determine if signature is  `retvar = name(params)`  or  `name(params)`
-        // Look ahead: IDENT EQ IDENT LPAREN  →  return-var form
-        let (return_var, name) = if self.pos + 3 < self.tokens.len()
+        // Three signature shapes:
+        //   function name(params) ... end                  → 0 outputs
+        //   function retvar = name(params) ... end         → 1 output
+        //   function [a, b, ...] = name(params) ... end    → N outputs (matlab)
+        let (return_vars, name) = if self.pos < self.tokens.len()
+            && self.tokens[self.pos].token == Token::LBracket
+        {
+            // [a, b, ...] = name(params) — multi-output form.
+            self.advance(); // consume '['
+            let mut names: Vec<String> = Vec::new();
+            loop {
+                match self.peek_token().clone() {
+                    Token::Ident(s) => {
+                        self.advance();
+                        names.push(s);
+                    }
+                    other => {
+                        return Err(ScriptError::Parse {
+                            line: self.current_line(),
+                            msg: format!(
+                                "expected identifier in function output list, got {:?}",
+                                other
+                            ),
+                        })
+                    }
+                }
+                if self.peek_token() == &Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            self.expect(&Token::RBracket)?;
+            if names.is_empty() {
+                return Err(ScriptError::Parse {
+                    line: self.current_line(),
+                    msg: "function output list cannot be empty — write `function name(...)` for no return"
+                        .to_string(),
+                });
+            }
+            self.expect(&Token::Eq)?;
+            let line_now = self.current_line();
+            let n = match self.advance() {
+                Token::Ident(s) => s.clone(),
+                other => {
+                    return Err(ScriptError::Parse {
+                        line: line_now,
+                        msg: format!("expected function name after '=', got {:?}", other),
+                    })
+                }
+            };
+            (names, n)
+        } else if self.pos + 3 < self.tokens.len()
             && matches!(self.tokens[self.pos].token, Token::Ident(_))
             && self.tokens[self.pos + 1].token == Token::Eq
             && matches!(self.tokens[self.pos + 2].token, Token::Ident(_))
             && self.tokens[self.pos + 3].token == Token::LParen
         {
+            // retvar = name(params) — single-output form.
             let ret = match self.advance() {
                 Token::Ident(s) => s.clone(),
                 _ => unreachable!(),
@@ -340,8 +391,9 @@ impl Parser {
                 Token::Ident(s) => s.clone(),
                 _ => unreachable!(),
             };
-            (Some(ret), n)
+            (vec![ret], n)
         } else {
+            // No-output form: name(params).
             let n = match self.peek_token().clone() {
                 Token::Ident(s) => {
                     self.advance();
@@ -354,7 +406,7 @@ impl Parser {
                     })
                 }
             };
-            (None, n)
+            (Vec::new(), n)
         };
 
         // Parameter list
@@ -374,7 +426,7 @@ impl Parser {
             StmtKind::FunctionDef {
                 name,
                 params,
-                return_var,
+                return_vars,
                 body,
             },
             line,

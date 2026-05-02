@@ -20,11 +20,14 @@ pub enum StmtKind {
     },
     /// bare expression — suppress=true when line ends with `;`
     Expr(Expr, bool),
-    /// `function [retvar =] name(params) ... end`
+    /// `function [retvar =] name(params) ... end` or
+    /// `function [a, b, ...] = name(params) ... end` (matlab multi-output).
+    /// `return_vars` is empty for a no-return body, length 1 for the
+    /// classic single-output form, length >= 2 for multi-output.
     FunctionDef {
         name: String,
         params: Vec<String>,
-        return_var: Option<String>,
+        return_vars: Vec<String>,
         body: Vec<Stmt>,
     },
     /// `object.field = expr` — struct field assignment

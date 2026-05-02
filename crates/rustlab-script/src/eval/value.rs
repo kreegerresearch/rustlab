@@ -466,31 +466,49 @@ impl Value {
                 other => Err(format!("invalid index type: {}", other.type_name())),
             },
             Value::Matrix(m) => {
-                // Single index selects a row (1-based). If the matrix has a single
-                // column (Nx1), unwrap the 1-element row to a scalar — the user is
-                // treating the column as a 1D vector.
+                // Single-arg matrix indexing follows matlab convention:
+                // the matrix is flattened in column-major order and the
+                // index/indices pick elements from that flat view.
+                //   M(k)   → scalar element at 1-based linear position k
+                //   M(I)   → vector of picks for each k in I (preserves I's length)
+                //   M(:)   → full column-major flatten as a vector
+                // Use M(i, :) for a row, M(:, j) for a column.
+                let pick = |k_one_based: f64| -> Result<C64, String> {
+                    let k0 = Self::one_based_to_zero(k_one_based)?;
+                    let total = m.nrows() * m.ncols();
+                    if k0 >= total {
+                        return Err(format!(
+                            "linear index {} out of bounds ({}×{} = {} elements)",
+                            k_one_based as i64, m.nrows(), m.ncols(), total
+                        ));
+                    }
+                    // column-major: k0 = col * nrows + row
+                    let col = k0 / m.nrows();
+                    let row = k0 % m.nrows();
+                    Ok(m[[row, col]])
+                };
                 match &idx {
-                    Value::Scalar(n) => {
-                        let i = Self::one_based_to_zero(*n)?;
-                        if i >= m.nrows() {
-                            return Err(format!(
-                                "row index {} out of bounds ({} rows)",
-                                n,
-                                m.nrows()
-                            ));
+                    Value::Scalar(k) => {
+                        let c = pick(*k)?;
+                        if c.im.abs() < 1e-12 {
+                            Ok(Value::Scalar(c.re))
+                        } else {
+                            Ok(Value::Complex(c))
                         }
-                        if m.ncols() == 1 {
-                            let c = m[[i, 0]];
-                            return if c.im.abs() < 1e-12 {
-                                Ok(Value::Scalar(c.re))
-                            } else {
-                                Ok(Value::Complex(c))
-                            };
-                        }
-                        Ok(Value::Vector(m.row(i).to_owned()))
+                    }
+                    Value::Vector(idx_v) => {
+                        let picks: Result<Vec<C64>, _> =
+                            idx_v.iter().map(|c| pick(c.re)).collect();
+                        Ok(Value::Vector(Array1::from_vec(picks?)))
+                    }
+                    // 1-D-shaped matrix (1×N or N×1) used as an index list —
+                    // treat its entries as the linear indices.
+                    Value::Matrix(idx_m) if idx_m.nrows() == 1 || idx_m.ncols() == 1 => {
+                        let picks: Result<Vec<C64>, _> =
+                            idx_m.iter().map(|c| pick(c.re)).collect();
+                        Ok(Value::Vector(Array1::from_vec(picks?)))
                     }
                     Value::All => {
-                        // M(:) — linearize to column vector (column-major order)
                         let mut flat_data: Vec<C64> = Vec::with_capacity(m.nrows() * m.ncols());
                         for c in 0..m.ncols() {
                             for r in 0..m.nrows() {
@@ -500,7 +518,7 @@ impl Value {
                         Ok(Value::Vector(Array1::from_vec(flat_data)))
                     }
                     other => Err(format!(
-                        "matrix single-index with {} not supported; use M(i,j) for element access",
+                        "matrix single-index with {} not supported; use M(i,j) or M(linear) or M(I) where I is a numeric vector",
                         other.type_name()
                     )),
                 }
@@ -825,24 +843,37 @@ impl Value {
         }
     }
 
+    /// Truth value for the short-circuit logical operators `&&` / `||`.
+    /// Matches matlab/octave: scalars are truthy iff non-zero (complex iff
+    /// either part is non-zero). Matrix/Vector operands error — matlab
+    /// requires explicit `any(...)`/`all(...)` to collapse them first.
+    pub fn is_truthy_for_logical(&self) -> Result<bool, String> {
+        match self {
+            Value::Bool(b) => Ok(*b),
+            Value::Scalar(s) => Ok(*s != 0.0),
+            Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
+            other => Err(format!(
+                "&&/||: operand must be scalar (got {}); use any() or all() to reduce a matrix/vector",
+                other.type_name()
+            )),
+        }
+    }
+
     pub fn binop(op: BinOp, lhs: Value, rhs: Value) -> Result<Value, String> {
         use BinOp::*;
 
-        // Logical operators: both sides must be Bool
+        // Logical operators: scalar truthiness, eager. Short-circuiting is
+        // handled in the evaluator (`Expr::BinOp` arm) so that `false && rhs`
+        // never evaluates rhs at all. This direct path exists for callers
+        // that already have both values in hand.
         if matches!(op, And | Or) {
-            return match (&lhs, &rhs) {
-                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(match op {
-                    And => *a && *b,
-                    Or => *a || *b,
-                    _ => unreachable!(),
-                })),
-                _ => Err(format!(
-                    "'{}' requires bool operands, got {} and {}",
-                    if op == And { "&&" } else { "||" },
-                    lhs.type_name(),
-                    rhs.type_name()
-                )),
-            };
+            let a = lhs.is_truthy_for_logical()?;
+            let b = rhs.is_truthy_for_logical()?;
+            return Ok(Value::Bool(match op {
+                And => a && b,
+                Or => a || b,
+                _ => unreachable!(),
+            }));
         }
 
         // Comparison operators: compare scalar/complex values, return Bool

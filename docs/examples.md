@@ -189,8 +189,8 @@ savefig("lowpass_response.svg")
 4. **`stem(real(h), ...); savefig("lowpass_impulse.svg")`** — saves the same stem plot as a vector SVG file.
 
 5. **`Hz = freqz(h, 512, 44100.0)`** — evaluates the frequency response at 512 points from 0 to the Nyquist frequency. Returns a 2×512 matrix:
-   - Row 1 (`Hz(1)`) — frequency axis in Hz
-   - Row 2 (`Hz(2)`) — complex frequency response H(f)
+   - Row 1 (`Hz(1, :)`) — frequency axis in Hz
+   - Row 2 (`Hz(2, :)`) — complex frequency response H(f)
 
 6. **`plotdb(Hz, ...)`** — interactive terminal chart showing 20·log₁₀|H(f)| (dB magnitude) on the y-axis and frequency in Hz on the x-axis.
 
@@ -524,8 +524,8 @@ savefig("kaiser_lp_output.svg")
 2. **`stem(real(h_lp), ...); savefig("kaiser_lp_impulse.svg")`** — saves the impulse response as a stem plot SVG. For Kaiser-windowed filters, the taper is more pronounced than a Hann window, reflecting the higher stopband attenuation.
 
 3. **`H_lp = freqz(h_lp, 512, sr)`** — evaluates `H(f)` at 512 frequency points. Returns a 2×512 matrix:
-   - Row 1 (`H_lp(1)`) — frequency axis in Hz
-   - Row 2 (`H_lp(2)`) — complex frequency response H(f)
+   - Row 1 (`H_lp(1, :)`) — frequency axis in Hz
+   - Row 2 (`H_lp(2, :)`) — complex frequency response H(f)
 
 4. **`plotdb(H_lp, ...)`** — interactive terminal dB-magnitude chart with a Hz x-axis. The Kaiser filter's equiripple stopband is visible as a flat floor at −60 dB.
 

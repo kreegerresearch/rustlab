@@ -423,17 +423,24 @@ gelu([-2.0, 0.0, 2.0])                # → [~-0.045, 0.0, ~1.955]
 - Allows small negative outputs near `x ≈ -0.17` — unlike ReLU.
 - Approaches identity for large positive `x`; approaches zero for large negative `x`.
 
-### `layernorm(v)` / `layernorm(v, eps)`
+### `layernorm(v)` / `layernorm(v, eps)` / `layernorm(M[, dim[, eps]])`
 Layer normalisation: subtracts the mean and divides by the population standard deviation.
-`y = (v − mean(v)) / sqrt(var(v) + eps)`
+`y = (x − mean(x)) / sqrt(var(x) + eps)`
 ```
 y = layernorm([1.0, 2.0, 3.0, 4.0, 5.0])   # zero mean, ~unit variance
 layernorm(v, 1e-8)                           # custom epsilon
+Y = layernorm(M)                             # per-row by default (ML convention)
+Y = layernorm(M, 1)                          # per-column
+Y = layernorm(M, 2, 1e-8)                    # per-row, custom eps
 ```
 - `eps` defaults to `1e-5` and prevents division by zero for constant inputs.
 - Uses **population variance** (divides by N, not N-1).
-- Output has zero mean and variance ≈ 1.0 for any non-constant input.
+- Output has zero mean and variance ≈ 1.0 for each normalised slice.
+- Matrix form normalises each row (`dim=2`, default — ML convention where rows are samples and columns are features) or each column (`dim=1`) independently.
+- 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of `dim`.
 - Single scalar input returns `0.0`.
+
+> Note: `layernorm`'s per-row default deliberately diverges from `sum`/`mean`/`std` (which default to `dim=1`). The ML/transformer convention dominates here.
 
 ### `tanh(x)` (activation context)
 Hyperbolic tangent used as a classic bounded activation function. See also `tanh` in the Math section.

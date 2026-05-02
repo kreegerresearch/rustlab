@@ -19,6 +19,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `Inf`, `NaN` | IEEE infinity and Not-a-Number |
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
 | `v(1)`, `v(end)`, `v(2:4)` | 1-based indexing; `end` = last element; slice returns Vector |
+| `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
 | `f(args)(i)` | Chain call and index without a temporary variable |
@@ -31,6 +32,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `*` | Matrix multiply |
 | `'` | Conjugate transpose |
 | `.'` | Non-conjugate transpose |
+| `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero); rhs only evaluated if lhs is not decisive |
 | `+=`, `-=`, `*=`, `/=` | Compound assignment: `x += 1` is equivalent to `x = x + 1` |
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
@@ -46,7 +48,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `while cond` … `end` | While loop; condition is Bool, Scalar (nonzero), or Complex |
 | `if expr` … `elseif expr` … `else` … `end` | Conditional; `elseif` and `else` are optional; single-line: `if cond, body; end` |
 | `switch expr` … `case val` … `otherwise` … `end` | Match value against cases; first match wins; `otherwise` is default |
-| `function [out] = name(args)` … `end` | User-defined function |
+| `function [out] = name(args)` … `end` | User-defined function (single output) |
+| `function [a, b, ...] = name(args)` … `end` | Multi-output user function (matlab convention); destructure with `[p, q, ...] = name(...)`; bare `v = name(...)` picks only the first output |
 | `return` | Early return from a function |
 | `@(x, y) expr` | Anonymous function (lambda); captures current env by snapshot |
 | `@name` | Function handle — reference to a builtin or user function |
@@ -300,7 +303,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `softmax(v)` | Softmax probability distribution (numerically stable) |
 | `relu(v)` | Rectified linear unit: max(0, x), element-wise |
 | `gelu(v)` | Gaussian error linear unit, element-wise |
-| `layernorm(v)` / `layernorm(v, eps)` | Layer normalization: (v − mean) / std |
+| `layernorm(v)` / `layernorm(v, eps)` | Layer normalization on a vector: (v − mean) / std |
+| `layernorm(M)` / `layernorm(M, dim)` / `layernorm(M, dim, eps)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 
 ---
 
