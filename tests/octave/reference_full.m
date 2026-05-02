@@ -361,6 +361,10 @@ csvwrite('ref2_mean_matrix_dim2.csv',    mean(M_red, 2));
 csvwrite('ref2_prod_matrix_default.csv', prod(M_red));
 csvwrite('ref2_max_matrix_default.csv',  max(M_red));
 csvwrite('ref2_min_matrix_default.csv',  min(M_red));
+csvwrite('ref2_median_matrix_default.csv', median(M_red));
+csvwrite('ref2_std_matrix_default.csv',    std(M_red));
+csvwrite('ref2_cumsum_matrix_default.csv', cumsum(M_red));
+csvwrite('ref2_cumsum_matrix_dim2.csv',    cumsum(M_red, 2));
 
 csvwrite('ref2_log_dynamic.csv',  log10([1e-10 1e10]));
 

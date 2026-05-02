@@ -323,6 +323,10 @@ save("out2_mean_matrix_dim2.csv",    mean(M_red, 2))
 save("out2_prod_matrix_default.csv", prod(M_red))
 save("out2_max_matrix_default.csv",  max(M_red))
 save("out2_min_matrix_default.csv",  min(M_red))
+save("out2_median_matrix_default.csv", median(M_red))
+save("out2_std_matrix_default.csv",    std(M_red))
+save("out2_cumsum_matrix_default.csv", cumsum(M_red))
+save("out2_cumsum_matrix_dim2.csv",    cumsum(M_red, 2))
 
 # Large dynamic range
 save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))

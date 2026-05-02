@@ -10,8 +10,8 @@
 |---|---|---|---|
 | 1 | Matrix literal requires commas; spaces rejected | High (parser) | open |
 | 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
-| 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **partial 2026-05-02** (sum/mean/max/min/prod done; std/median/cumsum pending) |
-| 4 | `sum(M, dim)` axis-selector form not supported | **High** | **partial 2026-05-02** (sum/mean/prod accept dim; max/min defer due to elementwise-form ambiguity) |
+| 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **shipped 2026-05-02** (sum/mean/max/min/prod/std/median/cumsum) |
+| 4 | `sum(M, dim)` axis-selector form not supported | **High** | **partial 2026-05-02** (sum/mean/prod/std/median/cumsum accept dim; max/min defer due to elementwise-form ambiguity) |
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
@@ -66,8 +66,9 @@ Two helpers `parse_reduction_dim` and `complex_to_value` are shared across these
 
 Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(sum(M))` idiom, `min(scalar, scalar)` 2-arg form, error path for invalid dim). 7 new octave-compare cases — `sum(M) default`, `sum(M, 2)`, `mean(M) default`, `mean(M, 2)`, `prod(M) default`, `max(M) default`, `min(M) default` — all match octave at machine precision.
 
+**Update 2026-05-02 (continued):** `std`, `median`, `cumsum` axis reductions also shipped. `median(M)` and `std(M)` produce per-column scalars in a `1×ncols` row; `cumsum(M)` produces a same-shape matrix of running totals along the chosen dim. All three accept the `dim` arg. Two helpers (`median_of_real_slice`, `std_of_slice`) factored out of the per-column logic.
+
 **Still open:**
-- `std`, `median`, `cumsum`: the same axis treatment hasn't been added yet. `std` and `median` have more complex per-column logic; `cumsum` is straightforward but slightly different (returns same-shape matrix of running totals). Follow-on work.
 - `min(M, [], 2)` / `max(M, [], 2)` numeric dim form: deferred per the elementwise-vs-dim ambiguity above.
 - `argmin`/`argmax` matrix axis form: similar (single-output is fine for vectors today).
 

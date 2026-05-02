@@ -1481,40 +1481,137 @@ fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
+/// Median of a slice of complex values, comparing by real part.
+fn median_of_real_slice(vals: &[C64]) -> f64 {
+    let mut reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+    reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = reals.len();
+    if n % 2 == 1 {
+        reals[n / 2]
+    } else {
+        (reals[n / 2 - 1] + reals[n / 2]) / 2.0
+    }
+}
+
+/// Sample standard deviation of a slice of complex values (real part-aware,
+/// dividing by `n - 1`). Returns 0 for length-1 slices.
+fn std_of_slice(vals: &[C64]) -> f64 {
+    if vals.len() <= 1 {
+        return 0.0;
+    }
+    let n = vals.len() as f64;
+    let mean: C64 = vals.iter().copied().sum::<C64>() / n;
+    let variance: f64 =
+        vals.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / (n - 1.0);
+    variance.sqrt()
+}
+
+/// median(v) — middle value of a vector / 1-D-shaped matrix → scalar.
+/// median(M) — column medians → row matrix `1×ncols`.
+/// median(M, 1) / median(M, 2) — explicit axis.
 fn builtin_median(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("median", &args, 1)?;
+    check_args_range("median", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("median", &args)?;
     match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            let mut reals: Vec<f64> = v.iter().map(|c| c.re).collect();
-            reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let n = reals.len();
-            let m = if n % 2 == 1 {
-                reals[n / 2]
-            } else {
-                (reals[n / 2 - 1] + reals[n / 2]) / 2.0
-            };
-            Ok(Value::Scalar(m))
+        Value::Vector(v) if !v.is_empty() => match dim_arg {
+            Some(1) => Ok(args[0].clone()),
+            _ => {
+                let vals: Vec<C64> = v.iter().copied().collect();
+                Ok(Value::Scalar(median_of_real_slice(&vals)))
+            }
+        },
+        Value::Matrix(m) if !m.is_empty() => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 1 || ncols == 1 {
+                let vals: Vec<C64> = m.iter().copied().collect();
+                return Ok(Value::Scalar(median_of_real_slice(&vals)));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            match dim {
+                1 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
+                    for j in 0..ncols {
+                        let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+                        data[j] = Complex::new(median_of_real_slice(&col), 0.0);
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((1, ncols), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                2 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
+                    for i in 0..nrows {
+                        let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
+                        data[i] = Complex::new(median_of_real_slice(&row), 0.0);
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((nrows, 1), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                _ => unreachable!(),
+            }
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
         _ => Err(ScriptError::type_err(
-            "median: argument must be a non-empty vector or scalar".to_string(),
+            "median: argument must be a non-empty vector, matrix, or scalar".to_string(),
         )),
     }
 }
 
+/// std(v) — sample standard deviation of a vector / 1-D-shaped matrix → scalar.
+/// std(M) — column std → row matrix `1×ncols`.
+/// std(M, 1) / std(M, 2) — explicit axis.
 fn builtin_std(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("std", &args, 1)?;
+    check_args_range("std", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("std", &args)?;
     match &args[0] {
-        Value::Vector(v) if v.len() > 1 => {
-            let n = v.len() as f64;
-            let mean: Complex<f64> = v.iter().copied().sum::<Complex<f64>>() / n;
-            let variance: f64 = v.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / (n - 1.0);
-            Ok(Value::Scalar(variance.sqrt()))
+        Value::Vector(v) => match dim_arg {
+            Some(1) => Ok(args[0].clone()),
+            _ => {
+                let vals: Vec<C64> = v.iter().copied().collect();
+                Ok(Value::Scalar(std_of_slice(&vals)))
+            }
+        },
+        Value::Matrix(m) if !m.is_empty() => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 1 || ncols == 1 {
+                let vals: Vec<C64> = m.iter().copied().collect();
+                return Ok(Value::Scalar(std_of_slice(&vals)));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            match dim {
+                1 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
+                    for j in 0..ncols {
+                        let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+                        data[j] = Complex::new(std_of_slice(&col), 0.0);
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((1, ncols), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                2 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
+                    for i in 0..nrows {
+                        let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
+                        data[i] = Complex::new(std_of_slice(&row), 0.0);
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((nrows, 1), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                _ => unreachable!(),
+            }
         }
-        Value::Vector(v) if v.len() == 1 => Ok(Value::Scalar(0.0)),
         Value::Scalar(_) | Value::Complex(_) => Ok(Value::Scalar(0.0)),
         _ => Err(ScriptError::type_err(
-            "std: argument must be a non-empty vector or scalar".to_string(),
+            "std: argument must be a non-empty vector, matrix, or scalar".to_string(),
         )),
     }
 }
@@ -1667,16 +1764,74 @@ fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// cumsum(v) — cumulative sum of a vector. Returns a vector of the same length.
+/// cumsum(v) — running total of a vector / 1-D-shaped matrix → same-shape result.
+/// cumsum(M) — running total along dim 1 (each column independently).
+/// cumsum(M, 1) / cumsum(M, 2) — explicit axis.
 fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("cumsum", &args, 1)?;
+    check_args_range("cumsum", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("cumsum", &args)?;
     match &args[0] {
         Value::Vector(v) => {
-            let mut acc = Complex::new(0.0, 0.0);
-            let result: CVector = Array1::from_iter(v.iter().map(|&x| {
-                acc += x;
-                acc
-            }));
-            Ok(Value::Vector(result))
+            // Vector behaves like a 1×N row matrix. dim=1 is a no-op (each
+            // column has length 1, so cumsum is the identity).
+            match dim_arg {
+                Some(1) => Ok(args[0].clone()),
+                _ => {
+                    let mut acc = Complex::new(0.0, 0.0);
+                    let result: CVector = Array1::from_iter(v.iter().map(|&x| {
+                        acc += x;
+                        acc
+                    }));
+                    Ok(Value::Vector(result))
+                }
+            }
+        }
+        Value::Matrix(m) => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 0 || ncols == 0 {
+                return Ok(Value::Matrix(m.clone()));
+            }
+            // 1-D-shaped matrix (column or row vector form): treat as a vector
+            // and accumulate along the long axis. Preserve the input shape.
+            if nrows == 1 || ncols == 1 {
+                let mut acc = Complex::new(0.0, 0.0);
+                let mut data: Vec<C64> = Vec::with_capacity(nrows * ncols);
+                for &x in m.iter() {
+                    acc += x;
+                    data.push(acc);
+                }
+                return Ok(Value::Matrix(
+                    Array2::from_shape_vec((nrows, ncols), data)
+                        .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                ));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            let mut out = m.clone();
+            match dim {
+                1 => {
+                    // Cumulative along columns (top to bottom).
+                    for j in 0..ncols {
+                        let mut acc = Complex::new(0.0, 0.0);
+                        for i in 0..nrows {
+                            acc += m[[i, j]];
+                            out[[i, j]] = acc;
+                        }
+                    }
+                }
+                2 => {
+                    // Cumulative along rows (left to right).
+                    for i in 0..nrows {
+                        let mut acc = Complex::new(0.0, 0.0);
+                        for j in 0..ncols {
+                            acc += m[[i, j]];
+                            out[[i, j]] = acc;
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            Ok(Value::Matrix(out))
         }
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
         Value::Complex(c) => Ok(Value::Complex(*c)),

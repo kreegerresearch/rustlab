@@ -1905,6 +1905,83 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn median_matrix_default_is_column_medians() {
+        let ev = eval_str("R = median([1, 2, 3; 4, 5, 6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 2.5);
+                assert_eq!(m[[0, 1]].re, 3.5);
+                assert_eq!(m[[0, 2]].re, 4.5);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn std_matrix_default_is_column_stds() {
+        let ev = eval_str("R = std([1, 2, 3; 4, 5, 6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                // Each column has values [k, k+3] for k=1,2,3 → std = sqrt(4.5) = 2.121...
+                for j in 0..3 {
+                    assert!((m[[0, j]].re - (4.5_f64).sqrt()).abs() < 1e-12);
+                }
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cumsum_matrix_default_is_per_column() {
+        let ev = eval_str("R = cumsum([1, 2, 3; 4, 5, 6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 3));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[1, 0]].re, 5.0);
+                assert_eq!(m[[0, 1]].re, 2.0);
+                assert_eq!(m[[1, 1]].re, 7.0);
+                assert_eq!(m[[0, 2]].re, 3.0);
+                assert_eq!(m[[1, 2]].re, 9.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cumsum_matrix_dim_2_is_per_row() {
+        let ev = eval_str("R = cumsum([1, 2, 3; 4, 5, 6], 2)");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 3));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[0, 1]].re, 3.0);
+                assert_eq!(m[[0, 2]].re, 6.0);
+                assert_eq!(m[[1, 0]].re, 4.0);
+                assert_eq!(m[[1, 1]].re, 9.0);
+                assert_eq!(m[[1, 2]].re, 15.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cumsum_column_matrix_preserves_shape() {
+        let ev = eval_str("R = cumsum([1; 2; 3])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (3, 1));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[1, 0]].re, 3.0);
+                assert_eq!(m[[2, 0]].re, 6.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn min_two_scalars_unchanged() {
         // min(a, b) elementwise-style scalar comparison still works.
         let ev = eval_str("m = min(7, 3)");
