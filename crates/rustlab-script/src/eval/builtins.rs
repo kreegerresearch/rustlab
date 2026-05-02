@@ -6924,9 +6924,22 @@ fn inverse_iteration_cx(
         ))
     })?;
 
-    // Initial vector: unit in first component
-    let mut v: CVector = Array1::zeros(n);
-    v[0] = Complex::new(1.0, 0.0);
+    // Initial vector: a sine-of-index pattern. Diverse enough that for
+    // (near-)triangular shifted matrices the iterate doesn't get trapped
+    // in the e_0 invariant subspace — `e_0` collapses to the eigenvector
+    // for the leading diagonal entry no matter which shift is in use,
+    // which produced wrong eigenvectors for triangular inputs in eigsys.
+    // Same pattern as the core helper in
+    // `rustlab-core/src/sparse_eig/hessenberg_eig.rs`.
+    let mut v: CVector = Array1::from_iter(
+        (0..n).map(|i| Complex::new(((i + 1) as f64 * 0.7).sin(), 0.0)),
+    );
+    let init_norm: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+    if init_norm > 0.0 {
+        for c in v.iter_mut() {
+            *c /= init_norm;
+        }
+    }
 
     for _ in 0..max_iter {
         // v = inv * v

@@ -1691,6 +1691,31 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     fn eigsys_non_square_errors() {
         let _err = eval_err("eigsys([1,2,3;4,5,6])");
     }
+
+    #[test]
+    fn eigsys_upper_triangular_residuals_near_zero() {
+        // Regression: with the original e_0 starting vector, inverse iteration
+        // could not move out of the e_0 invariant subspace for upper-triangular
+        // shifted matrices. Eigenvectors for non-leading eigenvalues collapsed
+        // to [1; 0; 0] and ‖A·V_k − D_k·V_k‖ went to ~1 instead of ~1e-15.
+        let src = "
+A = [4, 1, 0; 0, 2, 1; 0, 0, 5];
+[V, D] = eigsys(A);
+r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
+r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
+r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+";
+        let ev = eval_str(src);
+        for name in &["r1", "r2", "r3"] {
+            let r = get_scalar(&ev, name);
+            assert!(
+                r < 1e-9,
+                "{} residual = {} (expected ~0 for upper-triangular A)",
+                name,
+                r
+            );
+        }
+    }
 }
 
 // ── Phase 1: Language Foundations ────────────────────────────────────────────
