@@ -236,19 +236,17 @@ fn run_banner_emits_rustlab_identifier_to_stderr() {
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Single line-anchored check: catches truncation, missing version, or
+    // word-reorder regressions that the looser `contains` checks would miss.
+    let banner_line_present = stderr.lines().any(|line| {
+        line.starts_with("rustlab ")
+            && line.contains(" — interpreting ")
+            && line.ends_with(" (.rlab)")
+    });
     assert!(
-        stderr.contains("rustlab"),
-        "banner missing 'rustlab' in stderr:\n{}",
-        stderr
-    );
-    assert!(
-        stderr.contains("interpreting"),
-        "banner missing 'interpreting' in stderr:\n{}",
-        stderr
-    );
-    assert!(
-        stderr.contains(".rlab"),
-        "banner missing '.rlab' marker in stderr:\n{}",
+        banner_line_present,
+        "banner not found or mangled in stderr — expected a line of the form\n  \
+         `rustlab <version> — interpreting <path> (.rlab)`\nactual stderr:\n{}",
         stderr
     );
 }

@@ -2089,16 +2089,19 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     #[test]
     fn eig_two_output_returns_diagonal_d() {
         // [V, D] = eig(A) — V matrix + D diagonal matrix (matlab convention).
-        let ev = eval_str("A = [2, 1; 1, 2]\n[V, D] = eig(A)");
+        // Verify shape, eigenvalues, and the residual ‖A·V − V·D‖ which is
+        // the contract that V's columns line up with D's diagonal.
+        let ev = eval_str(
+            "A = [2, 1; 1, 2]\n\
+             [V, D] = eig(A);\n\
+             r = norm(A*V - V*D);",
+        );
         match ev.get("D").unwrap() {
             Value::Matrix(m) => {
                 assert_eq!((m.nrows(), m.ncols()), (2, 2));
-                // Off-diagonal entries are zero.
                 assert!(m[[0, 1]].re.abs() < 1e-12);
                 assert!(m[[1, 0]].re.abs() < 1e-12);
-                // Diagonal entries are eigenvalues 1 and 3 in some order.
-                let diag: Vec<f64> = vec![m[[0, 0]].re, m[[1, 1]].re];
-                let mut sorted = diag.clone();
+                let mut sorted = vec![m[[0, 0]].re, m[[1, 1]].re];
                 sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 assert!((sorted[0] - 1.0).abs() < 1e-10);
                 assert!((sorted[1] - 3.0).abs() < 1e-10);
@@ -2109,6 +2112,15 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
             Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
             other => panic!("expected V Matrix, got {other:?}"),
         }
+        let r = match ev.get("r").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar residual, got {other:?}"),
+        };
+        assert!(
+            r < 1e-10,
+            "residual ‖A·V − V·D‖ = {} (expected ~0; eigenvector and eigenvalue columns must align)",
+            r
+        );
     }
 
     #[test]

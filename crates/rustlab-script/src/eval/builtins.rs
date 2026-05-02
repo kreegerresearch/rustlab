@@ -1535,60 +1535,24 @@ fn builtin_error(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// mean(M) — average along dim 1 (columns) → row matrix `1×ncols`.
 /// mean(M, 1) / mean(M, 2) — explicit axis.
 fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("mean", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("mean", &args)?;
-    match &args[0] {
-        Value::Vector(v) if !v.is_empty() => match dim_arg {
-            Some(1) => Ok(args[0].clone()),
-            _ => {
-                let sum: C64 = v.iter().copied().sum();
-                Ok(complex_to_value(sum / v.len() as f64))
+    dispatch_matrix_reduction(
+        "mean",
+        &args,
+        |elems| {
+            if elems.is_empty() {
+                return Err(ScriptError::type_err(
+                    "mean: argument must be a non-empty vector, matrix, or scalar".to_string(),
+                ));
             }
+            let s: C64 = elems.iter().copied().sum();
+            Ok(complex_to_value(s / elems.len() as f64))
         },
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            if nrows == 1 || ncols == 1 {
-                let sum: C64 = m.iter().copied().sum();
-                return Ok(complex_to_value(sum / m.len() as f64));
-            }
-            let dim = dim_arg.unwrap_or(1);
-            match dim {
-                1 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
-                    for ((_, j), &x) in m.indexed_iter() {
-                        data[j] += x;
-                    }
-                    for c in data.iter_mut() {
-                        *c /= nrows as f64;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((1, ncols), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                2 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
-                    for ((i, _), &x) in m.indexed_iter() {
-                        data[i] += x;
-                    }
-                    for c in data.iter_mut() {
-                        *c /= ncols as f64;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((nrows, 1), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        }
-        Value::Scalar(s) => Ok(Value::Scalar(*s)),
-        Value::Complex(c) => Ok(Value::Complex(*c)),
-        _ => Err(ScriptError::type_err(
-            "mean: argument must be a non-empty vector, matrix, or scalar".to_string(),
-        )),
-    }
+        |m, dim| {
+            matrix_axis_collect_then(m, dim, |slice| {
+                slice.iter().copied().sum::<C64>() / slice.len() as f64
+            })
+        },
+    )
 }
 
 /// Median of a slice of complex values, comparing by real part.
@@ -1620,110 +1584,38 @@ fn std_of_slice(vals: &[C64]) -> f64 {
 /// median(M) — column medians → row matrix `1×ncols`.
 /// median(M, 1) / median(M, 2) — explicit axis.
 fn builtin_median(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("median", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("median", &args)?;
-    match &args[0] {
-        Value::Vector(v) if !v.is_empty() => match dim_arg {
-            Some(1) => Ok(args[0].clone()),
-            _ => {
-                let vals: Vec<C64> = v.iter().copied().collect();
-                Ok(Value::Scalar(median_of_real_slice(&vals)))
+    dispatch_matrix_reduction(
+        "median",
+        &args,
+        |elems| {
+            if elems.is_empty() {
+                return Err(ScriptError::type_err(
+                    "median: argument must be a non-empty vector, matrix, or scalar".to_string(),
+                ));
             }
+            Ok(Value::Scalar(median_of_real_slice(elems)))
         },
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            if nrows == 1 || ncols == 1 {
-                let vals: Vec<C64> = m.iter().copied().collect();
-                return Ok(Value::Scalar(median_of_real_slice(&vals)));
-            }
-            let dim = dim_arg.unwrap_or(1);
-            match dim {
-                1 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
-                    for j in 0..ncols {
-                        let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
-                        data[j] = Complex::new(median_of_real_slice(&col), 0.0);
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((1, ncols), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                2 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
-                    for i in 0..nrows {
-                        let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
-                        data[i] = Complex::new(median_of_real_slice(&row), 0.0);
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((nrows, 1), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        }
-        Value::Scalar(s) => Ok(Value::Scalar(*s)),
-        _ => Err(ScriptError::type_err(
-            "median: argument must be a non-empty vector, matrix, or scalar".to_string(),
-        )),
-    }
+        |m, dim| {
+            matrix_axis_collect_then(m, dim, |slice| {
+                Complex::new(median_of_real_slice(slice), 0.0)
+            })
+        },
+    )
 }
 
 /// std(v) — sample standard deviation of a vector / 1-D-shaped matrix → scalar.
 /// std(M) — column std → row matrix `1×ncols`.
 /// std(M, 1) / std(M, 2) — explicit axis.
 fn builtin_std(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("std", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("std", &args)?;
-    match &args[0] {
-        Value::Vector(v) => match dim_arg {
-            Some(1) => Ok(args[0].clone()),
-            _ => {
-                let vals: Vec<C64> = v.iter().copied().collect();
-                Ok(Value::Scalar(std_of_slice(&vals)))
-            }
+    dispatch_matrix_reduction(
+        "std",
+        &args,
+        // std_of_slice handles empty (returns 0.0) and length-1 cases.
+        |elems| Ok(Value::Scalar(std_of_slice(elems))),
+        |m, dim| {
+            matrix_axis_collect_then(m, dim, |slice| Complex::new(std_of_slice(slice), 0.0))
         },
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            if nrows == 1 || ncols == 1 {
-                let vals: Vec<C64> = m.iter().copied().collect();
-                return Ok(Value::Scalar(std_of_slice(&vals)));
-            }
-            let dim = dim_arg.unwrap_or(1);
-            match dim {
-                1 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
-                    for j in 0..ncols {
-                        let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
-                        data[j] = Complex::new(std_of_slice(&col), 0.0);
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((1, ncols), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                2 => {
-                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
-                    for i in 0..nrows {
-                        let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
-                        data[i] = Complex::new(std_of_slice(&row), 0.0);
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((nrows, 1), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        }
-        Value::Scalar(_) | Value::Complex(_) => Ok(Value::Scalar(0.0)),
-        _ => Err(ScriptError::type_err(
-            "std: argument must be a non-empty vector, matrix, or scalar".to_string(),
-        )),
-    }
+    )
 }
 
 /// Parse the optional `dim` argument (1 or 2) used by matrix-axis reducers.
@@ -1754,123 +1646,138 @@ fn complex_to_value(s: C64) -> Value {
     }
 }
 
-/// sum(v) — sum of all elements of a vector / 1-D-shaped matrix → scalar.
-/// sum(M) — sum along dim 1 (columns) → row matrix `1×ncols` (octave default).
-/// sum(M, 1) — explicit column sums.
-/// sum(M, 2) — row sums → column matrix `nrows×1`.
-fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("sum", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("sum", &args)?;
-    match &args[0] {
-        Value::Vector(v) => {
-            // Vector behaves like a 1×N row matrix. dim=1 is a no-op; dim=2
-            // (or default) reduces to a scalar.
-            match dim_arg {
-                Some(1) => Ok(args[0].clone()),
-                _ => Ok(complex_to_value(v.iter().copied().sum())),
-            }
+/// For each column (`dim=1`) or row (`dim=2`) of `m`, collect that
+/// dimension's elements into a `Vec<C64>`, apply `f`, and place the
+/// result in the corresponding cell of a `1×ncols` (`dim=1`) or
+/// `nrows×1` (`dim=2`) output matrix. Used by every matrix-axis reducer
+/// (`sum`, `mean`, `prod`, `median`, `std`) so the column/row iteration
+/// + output-shape construction live in exactly one place.
+fn matrix_axis_collect_then(
+    m: &CMatrix,
+    dim: usize,
+    f: impl Fn(&[C64]) -> C64,
+) -> CMatrix {
+    let nrows = m.nrows();
+    let ncols = m.ncols();
+    match dim {
+        1 => {
+            let data: Vec<C64> = (0..ncols)
+                .map(|j| {
+                    let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+                    f(&col)
+                })
+                .collect();
+            Array2::from_shape_vec((1, ncols), data).expect("dim=1 shape is 1×ncols")
         }
+        2 => {
+            let data: Vec<C64> = (0..nrows)
+                .map(|i| {
+                    let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
+                    f(&row)
+                })
+                .collect();
+            Array2::from_shape_vec((nrows, 1), data).expect("dim=2 shape is nrows×1")
+        }
+        _ => unreachable!("dim is always 1 or 2 by construction (parse_reduction_dim)"),
+    }
+}
+
+/// Common dispatch envelope for matrix-axis reducers. Handles:
+///
+/// - `Value::Vector`: `dim=1` is identity (vector behaves like a 1×N row,
+///   so reducing along the singleton row dim yields the same vector);
+///   default and `dim=2` apply `flat_reduce` to all elements.
+/// - `Value::Matrix`: empty matrix returns `Scalar(0.0)`; 1-D-shaped matrix
+///   (`1×N` or `N×1`) is treated as a vector and `flat_reduce` is applied
+///   over all elements; general `M×N` matrix dispatches to `axis_reduce`
+///   along the chosen `dim` (default 1, the octave first-non-singleton-dim
+///   rule for matrices with `M > 1`).
+/// - `Value::Scalar` / `Value::Complex`: cloned through.
+///
+/// `flat_reduce` returns a `Value` directly because different reducers map
+/// the flat-input case to different shapes (scalar for sum/mean/prod/median,
+/// scalar for std, etc.). Returning `Result` lets a reducer reject empty
+/// input cleanly (e.g. mean errors on empty per current behavior).
+fn dispatch_matrix_reduction<FlatF, AxisF>(
+    name: &str,
+    args: &[Value],
+    flat_reduce: FlatF,
+    axis_reduce: AxisF,
+) -> Result<Value, ScriptError>
+where
+    FlatF: Fn(&[C64]) -> Result<Value, ScriptError>,
+    AxisF: Fn(&CMatrix, usize) -> CMatrix,
+{
+    check_args_range(name, args, 1, 2)?;
+    let dim_arg = parse_reduction_dim(name, args)?;
+    match &args[0] {
+        Value::Vector(v) => match dim_arg {
+            Some(1) => Ok(args[0].clone()),
+            _ => {
+                let elements: Vec<C64> = v.iter().copied().collect();
+                flat_reduce(&elements)
+            }
+        },
         Value::Matrix(m) => {
             let nrows = m.nrows();
             let ncols = m.ncols();
             if nrows == 0 || ncols == 0 {
                 return Ok(Value::Scalar(0.0));
             }
-            // 1-D-shaped matrix → reduce all to scalar (octave first-non-
-            // singleton-dim rule).
             if nrows == 1 || ncols == 1 {
-                return Ok(complex_to_value(m.iter().copied().sum()));
+                let elements: Vec<C64> = m.iter().copied().collect();
+                return flat_reduce(&elements);
             }
             let dim = dim_arg.unwrap_or(1);
-            match dim {
-                1 => {
-                    // Row of column sums.
-                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
-                    for ((_, j), &x) in m.indexed_iter() {
-                        data[j] += x;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((1, ncols), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                2 => {
-                    // Column of row sums.
-                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
-                    for ((i, _), &x) in m.indexed_iter() {
-                        data[i] += x;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((nrows, 1), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                _ => unreachable!(),
-            }
+            Ok(Value::Matrix(axis_reduce(m, dim)))
         }
-        Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Scalar(s) => Ok(Value::Scalar(*s)),
         Value::Complex(c) => Ok(Value::Complex(*c)),
         other => Err(ScriptError::type_err(format!(
-            "sum: unsupported type {}",
+            "{}: unsupported type {}",
+            name,
             other.type_name()
         ))),
     }
+}
+
+/// sum(v) — sum of all elements of a vector / 1-D-shaped matrix → scalar.
+/// sum(M) — sum along dim 1 (columns) → row matrix `1×ncols` (octave default).
+/// sum(M, 1) — explicit column sums.
+/// sum(M, 2) — row sums → column matrix `nrows×1`.
+fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
+    dispatch_matrix_reduction(
+        "sum",
+        &args,
+        |elems| Ok(complex_to_value(elems.iter().copied().sum())),
+        |m, dim| matrix_axis_collect_then(m, dim, |slice| slice.iter().copied().sum()),
+    )
 }
 
 /// prod(v) — product of all elements of a vector / 1-D-shaped matrix → scalar.
 /// prod(M) — product along dim 1 (columns) → row matrix `1×ncols`.
 /// prod(M, 1) / prod(M, 2) — explicit axis.
 fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("prod", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("prod", &args)?;
     let one = Complex::new(1.0, 0.0);
-    match &args[0] {
-        Value::Vector(v) if !v.is_empty() => match dim_arg {
-            Some(1) => Ok(args[0].clone()),
-            _ => Ok(complex_to_value(
-                v.iter().copied().fold(one, |acc, x| acc * x),
-            )),
-        },
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            if nrows == 1 || ncols == 1 {
-                return Ok(complex_to_value(
-                    m.iter().copied().fold(one, |acc, x| acc * x),
+    dispatch_matrix_reduction(
+        "prod",
+        &args,
+        |elems| {
+            if elems.is_empty() {
+                return Err(ScriptError::type_err(
+                    "prod: argument must be a non-empty vector, matrix, or scalar".to_string(),
                 ));
             }
-            let dim = dim_arg.unwrap_or(1);
-            match dim {
-                1 => {
-                    let mut data = vec![one; ncols];
-                    for ((_, j), &x) in m.indexed_iter() {
-                        data[j] = data[j] * x;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((1, ncols), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                2 => {
-                    let mut data = vec![one; nrows];
-                    for ((i, _), &x) in m.indexed_iter() {
-                        data[i] = data[i] * x;
-                    }
-                    Ok(Value::Matrix(
-                        Array2::from_shape_vec((nrows, 1), data)
-                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
-                    ))
-                }
-                _ => unreachable!(),
-            }
-        }
-        Value::Scalar(n) => Ok(Value::Scalar(*n)),
-        Value::Complex(c) => Ok(Value::Complex(*c)),
-        other => Err(ScriptError::type_err(format!(
-            "prod: unsupported type {}",
-            other.type_name()
-        ))),
-    }
+            Ok(complex_to_value(
+                elems.iter().copied().fold(one, |acc, x| acc * x),
+            ))
+        },
+        |m, dim| {
+            matrix_axis_collect_then(m, dim, |slice| {
+                slice.iter().copied().fold(one, |acc, x| acc * x)
+            })
+        },
+    )
 }
 
 /// cumsum(v) — cumulative sum of a vector. Returns a vector of the same length.
