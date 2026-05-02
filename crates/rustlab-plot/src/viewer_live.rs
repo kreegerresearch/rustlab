@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn compute_figure_title_promotes_single_subplot_title() {
-        // The canonical surf.r pattern: figure(); surf(...); title("Foo")
+        // The canonical surf.rlab pattern: figure(); surf(...); title("Foo")
         // ends up as a 1×1 figure with subplot 0 holding "Foo".
         let mut fig = FigureState::new();
         fig.current_mut().title = "Gaussian: exp(-(x^2 + y^2) / 2)".to_string();

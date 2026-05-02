@@ -270,10 +270,10 @@ The home decision is now resolved as a **two-phase plan** rather than a binary c
 
 ### Phase 1 (now): script library in `rustlab_em`
 
-Ship the helpers as scripted rustlab in `lessons/_shared/em.r` (or equivalent path; standardize so every EM lesson can `run("../_shared/em.r")` consistently). Implementations:
+Ship the helpers as scripted rustlab in `lessons/_shared/em.rlab` (or equivalent path; standardize so every EM lesson can `run("../_shared/em.rlab")` consistently). Implementations:
 
 ```r
-# in lessons/_shared/em.r
+# in lessons/_shared/em.rlab
 function [Ce, Ch] = yee_curl_2d(nx, ny, dx, dy)
   # ... build sparse curl operators in script
 end
@@ -291,9 +291,9 @@ end
 
 **Concretely for Phase 1:**
 - File spec upstream as `dev/rustlab/requests/yee-and-pml-builders.md`, `Status: Discussion`. Captures the conversation and the proposed API even before any code lands.
-- Implement `yee_curl_2d` and `scpml_stretch` as scripted functions in `../rustlab_em/lessons/_shared/em.r`.
+- Implement `yee_curl_2d` and `scpml_stretch` as scripted functions in `../rustlab_em/lessons/_shared/em.rlab`.
 - Add a `lessons/_shared/README.md` explaining the import pattern.
-- Lessons 10/11/13 use `run("../_shared/em.r")` to import.
+- Lessons 10/11/13 use `run("../_shared/em.rlab")` to import.
 - **Zero rustlab upstream changes.**
 
 ### Phase 2 (later, if triggered): promote to workspace crate
@@ -307,12 +307,12 @@ end
 **If Phase 2 is triggered:** new crate `rustlab-em` in the workspace, gated behind feature flag `em` (default-off — opt-in for users who want EM-specific builders). ~700 LoC including Yee discretization, SC-PML coordinate stretching, basic tests, integration with `SparseMat`. Builtins (in `rustlab-script`) ~150 LoC. Tests ~250 LoC.
 
 **Codebase impact:**
-- **Phase 1: XS upstream (~10 LoC of `dev/rustlab/requests/yee-and-pml-builders.md` only) + ~300 LoC of scripted `em.r` in rustlab_em.**
+- **Phase 1: XS upstream (~10 LoC of `dev/rustlab/requests/yee-and-pml-builders.md` only) + ~300 LoC of scripted `em.rlab` in rustlab_em.**
 - Phase 2 (if triggered): L (~1100 LoC + tests upstream).
 
 **Risks / open questions:**
 - SC-PML implementations have many small wrong-sign-or-wrong-axis bugs. Validate against an Octave reference port (per `AGENTS.md:285-303`) before declaring Phase 1 done.
-- The `lessons/_shared/em.r` import path becomes a soft contract — once Lessons 10/11/13 depend on it, breaking changes in the script API need a deprecation path.
+- The `lessons/_shared/em.rlab` import path becomes a soft contract — once Lessons 10/11/13 depend on it, breaking changes in the script API need a deprecation path.
 - If Phase 2 is triggered late (Lesson 14 has already shipped scripted Yee), the upgrade migrates lesson scripts from script-imports to native builtins. Plan a one-PR migration when the time comes.
 
 **Ship-as: Phase 1 is curriculum-side work, no upstream rustlab PR. Phase 2 (if triggered) gets its own PR. Sized: Phase 1 is 2-3 days in `rustlab_em`. Phase 2 is ~1 week upstream when triggered.**
@@ -415,7 +415,7 @@ Total upstream-rustlab work for items 1-7: ~3580 LoC of implementation + ~1100 L
 ## Cross-cutting concerns
 
 1. **`faer` for §2.3 unlocks §2.4.** The same LU object is the inner loop of shift-invert Arnoldi. Single biggest force-multiplier in the plan and the strongest reason to do §2.3 first.
-2. **`bc` parameter pattern from §2.1 generalizes to §2.2.** Once `laplacian_2d` accepts the BC string, give `laplacian_eps_2d` the same fifth-arg signature. Trivial; document so Lesson 06 (`iron_core_shielding.r`) can use Neumann + variable-ε.
+2. **`bc` parameter pattern from §2.1 generalizes to §2.2.** Once `laplacian_2d` accepts the BC string, give `laplacian_eps_2d` the same fifth-arg signature. Trivial; document so Lesson 06 (`iron_core_shielding.rlab`) can use Neumann + variable-ε.
 3. **Column-major ordering and `ij2k`/`k2ij` consistency.** Every new Laplacian variant uses the same `k = (j-1)·ny + i` flattening so user scripts can compose with `reshape(V, ny, nx)`. Add `ijk2k`/`k2ijk` when shipping `laplacian_3d`.
 4. **SPD detection in one place.** `SparseMat::is_hermitian()` and `SparseMat::is_spd_estimate()` in `rustlab-core/src/types.rs`, used by both §2.3 (Cholesky path) and §2.4 (Lanczos vs Arnoldi). ~40 LoC.
 5. **All Laplacian variants and `laplacian_eps_2d` benefit from §2.3 landing first.** Without real `spsolve`, users on a 200×200 grid still can't solve the systems even if the matrix is built correctly. Don't ship the Laplacian work in advance of the solver fix or you create a "broken when scaled" footgun.

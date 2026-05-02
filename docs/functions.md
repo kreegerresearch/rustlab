@@ -679,7 +679,7 @@ y      = upfirdn(x, h, 3, 2)
 # len(y) ≈ len(x) * 3/2
 ```
 
-See `examples/upfirdn.r` for a runnable demonstration of all three cases.
+See `examples/upfirdn.rlab` for a runnable demonstration of all three cases.
 
 ### `window(name, n)`
 Generate a standalone window function vector of length `n`.
@@ -1294,7 +1294,7 @@ T2 = load("/tmp/T.npy")
 ndims(T2)                           # → 3
 ```
 
-See `examples/tensor3/tensor3.r` for a full runnable demo.
+See `examples/tensor3/tensor3.rlab` for a full runnable demo.
 
 ---
 
@@ -2490,9 +2490,9 @@ clear; clf;
 ```
 
 ### `run` (script include)
-Execute another `.r` file, merging its variables and function definitions into the current scope. Works in both the REPL and inside scripts.
+Execute another `.rlab` file, merging its variables and function definitions into the current scope. Works in both the REPL and inside scripts.
 ```
-run helper_functions.r
+run helper_functions.rlab
 result = my_helper(42)
 ```
 
@@ -2754,7 +2754,7 @@ H = freqresp(A, B, C, D, w)
 
 Real-time, frame-by-frame FIR filtering via stdin/stdout raw PCM. Rustlab acts as a pure stream processor — any byte source (microphone bridge, network socket, file) can feed it.
 
-**Architecture:** `producer | rustlab run filter.r | consumer`
+**Architecture:** `producer | rustlab run filter.rlab | consumer`
 
 The streaming pipeline is stateless from the script's perspective: `state_init` allocates a history buffer, `filter_stream` advances it by one frame and returns the updated state, and `audio_read`/`audio_write` handle stdin/stdout I/O as raw f32 little-endian PCM.
 
@@ -2856,14 +2856,14 @@ Rustlab has no audio hardware support by design. Use an external bridge to conne
 **Full macOS pipeline:**
 ```sh
 sox -d -r 44100 -c 1 -b 32 -e float -t raw - \
-  | rustlab run filter.r \
+  | rustlab run filter.rlab \
   | sox -r 44100 -c 1 -b 32 -e float -t raw - -d
 ```
 
 **TCP network DSP node (any platform):**
 ```sh
 # Terminal 1: start rustlab as a server on two ports
-nc -l 9999 | rustlab run filter.r | nc -l 9998
+nc -l 9999 | rustlab run filter.rlab | nc -l 9998
 
 # Terminal 2: send audio in
 cat /tmp/audio.raw | nc localhost 9999
@@ -2959,7 +2959,7 @@ while true
 end
 ```
 
-See `examples/audio/spectrum_monitor.r` for the full annotated script.
+See `examples/audio/spectrum_monitor.rlab` for the full annotated script.
 
 ---
 
@@ -2971,7 +2971,7 @@ These are interactive commands available in the `rustlab` REPL only (not in scri
 |---------|-------------|
 | `whos` | List all variables with type, size, and value preview |
 | `clear` | Remove all user-defined variables (keeps `j`, `pi`, `e`) |
-| `run <file>` | Execute a `.r` script; its variables persist in the session. File-relative paths (`savefig`, `save`, `load`) resolve relative to the script's own directory. |
+| `run <file>` | Execute a `.rlab` script; its variables persist in the session. File-relative paths (`savefig`, `save`, `load`) resolve relative to the script's own directory. |
 | `ls [path]` | List directory contents |
 | `cd [path]` | Change working directory |
 | `pwd` | Print current working directory |

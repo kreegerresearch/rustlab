@@ -98,15 +98,15 @@ Three-step plan, ordered for safety:
 
    | File | Call | Intended shape |
    |---|---|---|
-   | `examples/audio/spectrum_monitor.r:59` | `ring = zeros(fft_size)` | row vector — change to `zeros(1, fft_size)` |
-   | `examples/stats.r:24` | `ones(512)` | row vector — change to `ones(1, 512)` |
+   | `examples/audio/spectrum_monitor.rlab:59` | `ring = zeros(fft_size)` | row vector — change to `zeros(1, fft_size)` |
+   | `examples/stats.rlab:24` | `ones(512)` | row vector — change to `ones(1, 512)` |
    | `crates/rustlab-script/src/tests.rs:856` | `v = zeros(5)` | row vector — change to `zeros(1, 5)` |
    | `crates/rustlab-script/src/tests.rs:868` | `v = ones(4)` | row vector — change to `ones(1, 4)` |
    | `crates/rustlab-script/src/tests.rs:896` | `v = ones(7)` | row vector — change to `ones(1, 7)` |
    | `crates/rustlab-script/src/tests.rs:6417` | `zeros(3);` (no assertion) | n/a — leave |
    | `crates/rustlab-script/src/tests.rs:6425` | `ones(3);` (no assertion) | n/a — leave |
 
-   Re-run `grep -rEn "zeros\([0-9]+\)\|zeros\([a-zA-Z_]+\)\|ones\([0-9]+\)\|ones\([a-zA-Z_]+\)\|randn\([0-9]+\)\|rand\([0-9]+\)"` against `examples/`, `tests/`, `crates/rustlab-script/src/tests.rs`, and `tests/octave/rustlab_full.r` at pickup time — the list above could grow.
+   Re-run `grep -rEn "zeros\([0-9]+\)\|zeros\([a-zA-Z_]+\)\|ones\([0-9]+\)\|ones\([a-zA-Z_]+\)\|randn\([0-9]+\)\|rand\([0-9]+\)"` against `examples/`, `tests/`, `crates/rustlab-script/src/tests.rs`, and `tests/octave/rustlab_full.rlab` at pickup time — the list above could grow.
 
 3. **Flip the default.** Change `builtin_zeros`, `builtin_ones`, `builtin_rand`, `builtin_randn` (and consider `randi`) so a single integer arg returns an `n×n` matrix instead of a `1×n` vector. `builtin_eye` is already `n×n` for one arg — leave unchanged. Drop the deprecation warning. Document the breaking change clearly in the commit message and the next release notes.
 
@@ -296,7 +296,7 @@ Two related forms still open:
 
 **Item #8 (eig family) is its own multi-PR sequence** — see the §8 detail. Order: fix `inverse_iteration_cx` bug → fix orientation → add nargout (option B) → overload `eig` and align `eigs` D shape → add dense generalized `eig(A, B)`. The bug fix is a prerequisite for the others; the rest can be split or bundled at the implementer's discretion.
 
-**After each PR:** add the relevant case(s) to `tests/octave/compare_full.m` + `tests/octave/rustlab_full.r` so the regression is locked in by the existing octave-comparison suite.
+**After each PR:** add the relevant case(s) to `tests/octave/compare_full.m` + `tests/octave/rustlab_full.rlab` so the regression is locked in by the existing octave-comparison suite.
 
 ## Coverage gaps (separate from divergences)
 
@@ -315,7 +315,7 @@ These are lower priority than the divergences above (they probably *do* match) b
 
 ## How to verify after each fix
 
-1. Add the exact octave-vs-rustlab numeric/structural case to `tests/octave/rustlab_full.r` (rustlab side) and `tests/octave/reference_full.m` (octave side).
+1. Add the exact octave-vs-rustlab numeric/structural case to `tests/octave/rustlab_full.rlab` (rustlab side) and `tests/octave/reference_full.m` (octave side).
 2. Add the assertion to `tests/octave/compare_full.m`.
 3. Run `bash tests/octave/run_compare.sh` — should pass at the relevant tolerance (most are 1e-9, exact-arithmetic cases at machine precision).
 4. Run `cargo test --workspace` to verify no regressions in the in-process Rust tests.

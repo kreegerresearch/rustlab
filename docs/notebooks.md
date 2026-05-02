@@ -375,7 +375,7 @@ my-project/
     filter_design.md
     validation.md
   scripts/
-    preprocess.r           # standalone rustlab scripts
+    preprocess.rlab           # standalone rustlab scripts
 ```
 
 ## Multi-Notebook Rendering

@@ -76,7 +76,7 @@ print(norm(test_n))      % → ~3e-12 (machine precision)
 
 The residual is at floating-point noise — confirming the null space.
 A practical Neumann solve requires pin-and-solve to remove the
-constant-shift ambiguity; see the `examples/laplacian_bc.r` script
+constant-shift ambiguity; see the `examples/laplacian_bc.rlab` script
 for the (slightly verbose) idiom.
 
 ## Periodic — wrap-around

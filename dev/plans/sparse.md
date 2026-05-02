@@ -1,7 +1,7 @@
 # Development Plan: Sparse Vectors and Matrices
 
 **Status:** Complete (all 4 phases)
-**Target example:** `examples/sparse/sparse.r`
+**Target example:** `examples/sparse/sparse.rlab`
 
 ---
 
@@ -288,7 +288,7 @@ power-iteration eigensolver for the dominant eigenvalue.
   types and sizes; extend it to show `sparse [m×n, nnz=k, fill=p%]` for
   sparse values.
 
-- [ ] **4f. Example script** `examples/sparse.r`:
+- [ ] **4f. Example script** `examples/sparse.rlab`:
   ```
   # Construction
   S = sparse([1,2,3,1], [1,2,3,3], [10.0,20.0,30.0,5.0], 3, 3)
@@ -353,7 +353,7 @@ The project compiles and all existing tests pass at the end of every session.
 | `crates/rustlab-script/src/eval/mod.rs` | 2 (index-write) |
 | `crates/rustlab-core/src/sparse.rs` *(new)* | 3 |
 | `crates/rustlab-script/src/tests.rs` | 1, 2, 3, 4 |
-| `examples/sparse.r` *(new)* | 4 |
+| `examples/sparse.rlab` *(new)* | 4 |
 | `docs/quickref.md` | 4 |
 | `AGENTS.md` | 4 |
 

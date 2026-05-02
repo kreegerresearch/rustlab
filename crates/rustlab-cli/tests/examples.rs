@@ -26,7 +26,7 @@ fn workspace_root() -> PathBuf {
 /// Returns the process exit status.
 fn run_example(name: &str) -> std::process::ExitStatus {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join(format!("{name}.r"));
+    let script = workspace_root().join("examples").join(format!("{name}.rlab"));
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     Command::new(bin)
@@ -87,7 +87,7 @@ fn example_trig_special() {
 #[test]
 fn example_fixed_point() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("fixed_point.r");
+    let script = workspace_root().join("examples").join("fixed_point.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)
@@ -208,4 +208,47 @@ fn example_toml_filter_chain() {
 #[test]
 fn example_toml_io() {
     run_example_ok("toml_io");
+}
+
+// ── Interpreter banner ─────────────────────────────────────────────────────
+//
+// Locks in the always-on stderr banner that explicitly identifies rustlab as
+// the handler for `.rlab` files. The banner is emitted from
+// `commands/run::execute` before script evaluation begins.
+
+#[test]
+fn run_banner_emits_rustlab_identifier_to_stderr() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let script = workspace_root().join("examples").join("eig.rlab");
+    let bin = env!("CARGO_BIN_EXE_rustlab");
+
+    let output = Command::new(bin)
+        .args(["run", script.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to launch rustlab for banner test");
+
+    assert!(
+        output.status.success(),
+        "banner test: rustlab run failed with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rustlab"),
+        "banner missing 'rustlab' in stderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("interpreting"),
+        "banner missing 'interpreting' in stderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains(".rlab"),
+        "banner missing '.rlab' marker in stderr:\n{}",
+        stderr
+    );
 }

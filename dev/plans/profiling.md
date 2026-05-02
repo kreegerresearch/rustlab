@@ -2,7 +2,7 @@
 
 **Status:** Complete (both phases implemented in commit 6cff8e5)
 **Primary trigger:** `profile(fft, myfun)` call in script
-**Secondary trigger:** `rustlab run --profile script.r` CLI flag
+**Secondary trigger:** `rustlab run --profile script.rlab` CLI flag
 
 ---
 
@@ -410,7 +410,7 @@ and writes the table to stderr.
   output.  CLI adds nothing extra here — both `profile()` in-script and
   `--profile` share the same print path.
 
-- [x] **2d.** Smoke-test: `rustlab run --profile examples/fft.r` — verify table
+- [x] **2d.** Smoke-test: `rustlab run --profile examples/fft.rlab` — verify table
   appears on stderr, `fft` is in the top rows.
 
 ---

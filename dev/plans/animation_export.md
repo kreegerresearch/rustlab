@@ -190,12 +190,12 @@ Each phase is a single commit with tests + docs. Phases land sequentially; no pa
 - `AGENTS.md` function table.
 
 **Acceptance**
-- A hand-written `examples/animation_smoke.r` (kept short, not yet a polished example) renders to a viewable `gallery/animation_smoke.html` with a play bar and slider.
+- A hand-written `examples/animation_smoke.rlab` (kept short, not yet a polished example) renders to a viewable `gallery/animation_smoke.html` with a play bar and slider.
 
 ### Phase 3 — Example + notebook + gallery integration
 
 **What lands**
-- `examples/animation_wave.r` — small standalone (~30 lines): seed RNG, build a 60-frame travelling Gaussian pulse on a 100×100 grid, save `gallery/animation_wave.html`. No FDTD physics yet — that belongs in `rustlab_em`. Just enough to demonstrate the API and produce a shareable artefact.
+- `examples/animation_wave.rlab` — small standalone (~30 lines): seed RNG, build a 60-frame travelling Gaussian pulse on a 100×100 grid, save `gallery/animation_wave.html`. No FDTD physics yet — that belongs in `rustlab_em`. Just enough to demonstrate the API and produce a shareable artefact.
 - `examples/notebooks/animation.md` — the lesson-style notebook version of the example, with prose explaining `frame()` / `saveanim()` semantics, the memory budget, and limitations (HTML-only in this release).
 - `gallery/animation.html` (rendered by `make notebooks`).
 - Update `examples/notebooks/README.md` and `gallery/README.md` to list the new notebook.

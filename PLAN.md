@@ -1,7 +1,7 @@
 # RustLab MVP — Plan
 
 ## Context
-Build a Rust-based matrix algebra / DSP toolkit (`rustlab`) — a CLI + scripting tool targeting signal processing workflows. The user wants complex-number-native operations, FIR/IIR/convolution/windowing for MVP, a custom `.r` script format, and ratatui terminal plotting. Matrix decompositions (LU, SVD, etc.) are deferred but the architecture must accommodate them easily.
+Build a Rust-based matrix algebra / DSP toolkit (`rustlab`) — a CLI + scripting tool targeting signal processing workflows. The user wants complex-number-native operations, FIR/IIR/convolution/windowing for MVP, a custom `.rlab` script format, and ratatui terminal plotting. Matrix decompositions (LU, SVD, etc.) are deferred but the architecture must accommodate them easily.
 
 ---
 
@@ -15,12 +15,12 @@ rustlab/
 │   ├── rustlab-core/            # types, traits, no DSP
 │   ├── rustlab-dsp/             # FIR, IIR, conv, windowing
 │   ├── rustlab-plot/            # ratatui terminal plots
-│   ├── rustlab-script/          # lexer → parser → evaluator for .r files
+│   ├── rustlab-script/          # lexer → parser → evaluator for .rlab files
 │   └── rustlab-cli/             # clap binary; assembles all crates
 ├── examples/
-│   ├── lowpass.r
-│   ├── bandpass.r
-│   └── complex_basics.r
+│   ├── lowpass.rlab
+│   ├── bandpass.rlab
+│   └── complex_basics.rlab
 └── docs/
     └── examples.md
 ```
@@ -64,7 +64,7 @@ Dependency order (no cycles): `core ← dsp ← script ← cli`, `core ← plot 
 ### `rustlab-cli`
 - Binary named `rustlab`
 - Subcommands via clap derive:
-  - `run <script.r>` — execute a `.r` script
+  - `run <script.rlab>` — execute a `.rlab` script
   - `filter fir --taps N --cutoff F --sr F [--type low|high|band] [--window hann]`
   - `filter iir --order N --cutoff F --sr F [--type low|high]`
   - `convolve --signal <file> --kernel <file> [--method direct|overlap-add]`
@@ -74,7 +74,7 @@ Dependency order (no cycles): `core ← dsp ← script ← cli`, `core ← plot 
 
 ---
 
-## Scripting Language Grammar (`.r` files)
+## Scripting Language Grammar (`.rlab` files)
 
 ```
 program     ::= stmt*
@@ -125,7 +125,7 @@ c = a * b             # complex multiply
 4. **`rustlab-plot`** — ratatui charts (real, complex, stem)
 5. **`rustlab-script`** — lexer → parser → `Value` enum → `BuiltinRegistry` → evaluator
 6. **`rustlab-cli`** — wire all subcommands; `run` delegates to script engine
-7. **Example scripts** — `examples/lowpass.r`, `examples/bandpass.r`, `examples/complex_basics.r`
+7. **Example scripts** — `examples/lowpass.rlab`, `examples/bandpass.rlab`, `examples/complex_basics.rlab`
 8. **Documentation** — `README.md` (quickstart + syntax reference) + `docs/examples.md`
 
 ---
@@ -135,7 +135,7 @@ c = a * b             # complex multiply
 ```sh
 cargo build --workspace
 cargo test --workspace
-rustlab run examples/lowpass.r
+rustlab run examples/lowpass.rlab
 rustlab filter fir --taps 32 --cutoff 1000 --sr 44100 --type low --window hann
 rustlab window --type hann --length 64
 ```

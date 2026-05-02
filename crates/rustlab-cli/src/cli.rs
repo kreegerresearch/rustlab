@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 #[command(
     name    = "rustlab",
     version = env!("CARGO_PKG_VERSION"),
-    about   = "Matrix algebra and DSP toolkit with a scriptable .r language",
+    about   = "Matrix algebra and DSP toolkit with a scriptable .rlab language",
     long_about = None,
 )]
 pub struct Cli {
@@ -17,7 +17,7 @@ pub struct Cli {
 pub enum Commands {
     /// Start the interactive REPL (default when no subcommand given)
     Repl,
-    /// Execute a .r script file
+    /// Execute a .rlab script file
     Run(crate::commands::run::RunArgs),
     /// Design and apply digital filters
     #[command(subcommand)]

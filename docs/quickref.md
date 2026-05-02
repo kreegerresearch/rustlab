@@ -2,7 +2,7 @@
 
 Concise cheat sheet for the rustlab scripting language. Full signatures and examples: `docs/functions.md`.
 
-Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
+Run a script: `rustlab run script.rlab` — Interactive REPL: `rustlab`
 
 > **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented.
 
@@ -36,7 +36,7 @@ Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
 | `;` | Suppress output on a statement |
 | `#` / `%` | Comment |
 | `...` | Line continuation — rest of line ignored, statement continues on next line |
-| `run file.r` | Execute a script file; merges variables and functions into current scope |
+| `run file.rlab` | Execute a script file; merges variables and functions into current scope |
 | `error('msg')` | Halt execution with an error message |
 | `clear` | Remove all user variables and functions; keeps built-in constants |
 | `clf` | Clear current figure (reset subplots, series, labels) |
@@ -618,4 +618,4 @@ while true
   audio_write(dst, y)
 end
 ```
-Run as: `sox -d ... | rustlab run filter.r | sox ... -d` (see `examples/audio/`)
+Run as: `sox -d ... | rustlab run filter.rlab | sox ... -d` (see `examples/audio/`)

@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(dirname "$0")/filter.r"
+SCRIPT="$(dirname "$0")/filter.rlab"
 SR=44100
 FRAME=256
 # Use exactly 170 frames so input length is a clean multiple of FRAME.

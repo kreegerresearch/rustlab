@@ -5,4 +5,4 @@
   docs/examples.md    — annotated example walkthroughs
   README.md           — quickstart and CLI usage
 
-Script extension: .r   Run: rustlab run script.r   REPL: rustlab
+Script extension: .rlab   Run: rustlab run script.rlab   REPL: rustlab

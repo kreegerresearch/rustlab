@@ -42,7 +42,7 @@ my-analysis/
     filter_design.md   — filter analysis with interactive plots
     validation.md      — test results against reference data
   scripts/
-    preprocess.r       — standalone rustlab scripts
+    preprocess.rlab       — standalone rustlab scripts
 ```
 
 `rustlab-notebook` renders the `.md` files into interactive HTML reports.
@@ -268,7 +268,7 @@ rustlab-notebook render notebooks/           → notebooks/*.html + index.html
 - ✓ Cross-notebook links (`[see filter design](filter_design.md)`) resolve
   to the rendered HTML equivalents (`.md` → `.html` rewriting)
 - ✓ Each notebook has its own independent evaluator state
-- A `<!-- include: setup.r -->` directive could run shared setup code
+- A `<!-- include: setup.rlab -->` directive could run shared setup code
   before the notebook's own blocks (deferred to future)
 
 ---

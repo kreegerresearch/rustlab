@@ -2,7 +2,7 @@
 //!
 //! `rustlab-script` provides a small, scientific scripting language designed for
 //! interactive signal-processing work. Scripts are stored in plain text files
-//! with a `.r` extension and executed by passing their source text to [`run`].
+//! with a `.rlab` extension and executed by passing their source text to [`run`].
 //!
 //! # Language overview
 //!
@@ -43,7 +43,7 @@ pub use eval::output::{capturing, start_capture, stop_capture};
 pub use eval::Evaluator;
 pub use eval::Value;
 
-/// Execute a `.r` script from source text.
+/// Execute a `.rlab` script from source text.
 ///
 /// This is the primary entry point for the scripting subsystem. It runs the
 /// full pipeline in sequence:
@@ -68,7 +68,7 @@ pub fn run(source: &str) -> Result<(), ScriptError> {
     ev.run_script(&stmts)
 }
 
-/// Execute a `.r` script with `--profile`-style tracking of all function calls.
+/// Execute a `.rlab` script with `--profile`-style tracking of all function calls.
 /// Equivalent to calling `profile()` at the top of the script.
 /// The profiling report is printed to stderr at the end.
 pub fn run_profiled(source: &str) -> Result<(), ScriptError> {

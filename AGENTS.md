@@ -8,7 +8,7 @@ Read it before making any changes.
 ## Project Overview
 
 **rustlab** is a Rust CLI and scripting toolkit for matrix algebra and digital signal processing (DSP).
-It provides a simple scripting language (`.r` files), an interactive REPL, and direct CLI commands for filter design, convolution, and plotting.
+It provides a simple scripting language (`.rlab` files), an interactive REPL, and direct CLI commands for filter design, convolution, and plotting.
 
 Key properties:
 - All numeric types are complex by default (`Complex<f64>`)
@@ -33,7 +33,7 @@ rustlab/
 │   ├── rustlab-plot/       # ratatui charts + HTML export — depends on core only
 │   ├── rustlab-proto/      # IPC wire protocol for rustlab↔viewer communication
 │   ├── rustlab-viewer/     # standalone egui plot viewer (separate binary)
-│   ├── rustlab-script/     # .r language interpreter — depends on core, dsp, plot
+│   ├── rustlab-script/     # .rlab language interpreter — depends on core, dsp, plot
 │   └── rustlab-cli/        # binary `rustlab` — depends on all crates
 ├── dev/
 │   └── plans/              # multi-phase development plans (see section below)
@@ -41,18 +41,18 @@ rustlab/
 ├── examples/               # 19+ top-level scripts, plus subdirectories:
 │   ├── controls/           # 14 control systems examples (tf, bode, lqr, ode, etc.)
 │   ├── audio/              # real-time audio: filter, spectrum monitor, platform launchers
-│   │   ├── filter.r          # FIR lowpass script used by all launchers
-│   │   ├── passthrough.r     # minimal stdin→stdout loopback
-│   │   ├── spectrum_monitor.r  # live two-panel terminal plot (waveform + FFT)
+│   │   ├── filter.rlab          # FIR lowpass script used by all launchers
+│   │   ├── passthrough.rlab     # minimal stdin→stdout loopback
+│   │   ├── spectrum_monitor.rlab  # live two-panel terminal plot (waveform + FFT)
 │   │   ├── spectrum_monitor.sh # platform-aware launcher (macOS/Linux/synthetic)
 │   │   ├── macos.sh          # sox-based live audio pipeline (macOS)
 │   │   ├── linux.sh          # arecord/aplay pipeline (Linux ALSA)
 │   │   ├── wsl.sh            # PulseAudio / WSL2 pipeline
 │   │   ├── tcp.sh            # socat/nc TCP streaming (cross-platform)
 │   │   └── test_filter.sh    # CI-friendly end-to-end test (no mic/speakers)
-│   ├── complex_basics.r, vectors.r, lowpass.r, bandpass.r, fft.r, ...
-│   ├── firpm.r, upfirdn.r, fixed_point.r, ml_activations.r, ...
-│   └── lambda.r, profiling.r, save_load.r, ...
+│   ├── complex_basics.rlab, vectors.rlab, lowpass.rlab, bandpass.rlab, fft.rlab, ...
+│   ├── firpm.rlab, upfirdn.rlab, fixed_point.rlab, ml_activations.rlab, ...
+│   └── lambda.rlab, profiling.rlab, save_load.rlab, ...
 └── docs/
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
@@ -318,7 +318,7 @@ cargo test --workspace
 cargo doc --workspace --no-deps --open
 
 # Run a script directly without installing
-cargo run -p rustlab-cli --bin rustlab -- run examples/lowpass.r
+cargo run -p rustlab-cli --bin rustlab -- run examples/lowpass.rlab
 ```
 
 ### Installing the binary
@@ -357,7 +357,7 @@ and a swath of edge cases — empty/single-element inputs, banker's rounding, Na
 boundaries, dynamic-range log, boundary-condition stencils, etc.). It exits
 nonzero if any case exceeds its per-suite tolerance (`T_EXACT=1e-9`,
 `T_FILTER=1e-6`, `T_FIRPM=1e-4`, `T_ITER=1e-4`). To add a new function, append
-a `save(...)` line to `rustlab_full.r` and a matching `csvwrite(...)` +
+a `save(...)` line to `rustlab_full.rlab` and a matching `csvwrite(...)` +
 `check(...)` pair to `reference_full.m` / `compare_full.m`.
 
 **Note:** the harness uses `octave --no-gui --no-window-system` to avoid Qt
@@ -424,7 +424,7 @@ make perf                       # second run — rules out cold-cache noise
 
 On **both** runs:
 
-- All seven `bench_*.r` scripts must report `PASS`.
+- All seven `bench_*.rlab` scripts must report `PASS`.
 - All timings must be under the thresholds declared in the `AI_ANALYSIS` block
   of `perf/run_perf.sh` (`bench_builtins > 300 ms`, `bench_fft > 100 ms`, etc.).
   If a single run exceeds a threshold but the other is clean, investigate
@@ -577,7 +577,7 @@ the release binary works on a clean environment:
 ```sh
 make install
 rustlab --version                # must print the new version
-rustlab run examples/lowpass.r   # must exit 0 with a plot
+rustlab run examples/lowpass.rlab   # must exit 0 with a plot
 ```
 
 ### Release rules (do not violate)
@@ -695,7 +695,7 @@ rustlab-viewer --socket PATH    # custom socket path
 
 ### `rustlab-script`
 
-**Purpose:** Interpreter for `.r` script files and the REPL. Depends on core, dsp, and plot.
+**Purpose:** Interpreter for `.rlab` script files and the REPL. Depends on core, dsp, and plot.
 
 **Key files:**
 - `src/lexer.rs` — hand-written lexer → `Vec<Spanned<Token>>`
@@ -795,7 +795,7 @@ Documented for users in `docs/notebooks.md` ("Plot output layout").
 
 ## Scripting Language Reference
 
-Scripts use the `.r` extension. Run with `rustlab run script.r` or enter statements interactively in the REPL.
+Scripts use the `.rlab` extension. Run with `rustlab run script.rlab` or enter statements interactively in the REPL.
 
 ### Grammar (informal)
 
@@ -818,7 +818,7 @@ stmt        = IDENT ("=" | "+=" | "-=" | "*=" | "/=") range_expr [";"] "\n"  # a
             | "switch" range_expr                         # switch/case
                 ("case" range_expr stmt*)*
                 ["otherwise" stmt*] "end"
-            | "run" FILEPATH [";"] "\n"                    # execute .r script
+            | "run" FILEPATH [";"] "\n"                    # execute .rlab script
             | "format" IDENT [";"] "\n"                    # display mode (commas, default)
             | "#" ... "\n"                                  # comment
             | "..." ... "\n"                                # line continuation
@@ -859,7 +859,7 @@ primary     = NUMBER | STRING | IDENT
 | Switch / case | `switch expr case v1 ... otherwise ... end` | Match value against cases; first match wins |
 | For loop | `for i = 1:n ... end` | Iterates over range or vector; loop var stays in scope |
 | While loop | `while cond ... end` | Repeats body while cond is truthy; cond may be Bool, Scalar (nonzero), or Complex |
-| Run (include) | `run file.r` | Execute a .r script; merges variables and functions into current scope |
+| Run (include) | `run file.rlab` | Execute a .rlab script; merges variables and functions into current scope |
 | Line continuation | `x = a + ...` (newline) `  b` | `...` skips rest of line; statement continues on next line |
 | Single-quote strings | `'hello'` | Alternative string delimiters; context-dependent (transpose after `)`, `]`, ident, number) |
 | String indexing | `s(3)`, `s(1:5)`, `s(:)` | 1-based; returns string; `end` supported |
@@ -1142,7 +1142,7 @@ Run example scripts and assert they exit cleanly:
 #[test]
 fn example_lowpass_runs() {
     let status = Command::new(env!("CARGO_BIN_EXE_rustlab"))
-        .args(["run", "examples/lowpass.r"])
+        .args(["run", "examples/lowpass.rlab"])
         .status().unwrap();
     assert!(status.success());
 }

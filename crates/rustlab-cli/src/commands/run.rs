@@ -15,7 +15,7 @@ pub enum PlotMode {
 
 #[derive(Args)]
 pub struct RunArgs {
-    /// Path to a .r script file
+    /// Path to a .rlab script file
     pub script: std::path::PathBuf,
 
     /// Profile all function calls and print a report to stderr on exit.
@@ -37,6 +37,16 @@ pub fn execute(args: RunArgs) -> Result<()> {
         .script
         .canonicalize()
         .with_context(|| format!("failed to resolve path {:?}", args.script))?;
+    // Always-on banner: rustlab explicitly identifies itself as the handler
+    // for .rlab files. Goes to stderr so script stdout stays clean for
+    // pipelines. The user-facing `rlab` extension is rustlab's own — until
+    // a native GitHub Linguist definition exists, MATLAB highlighting is
+    // used as a temporary visual proxy (see .gitattributes).
+    eprintln!(
+        "rustlab {} — interpreting {} (.rlab)",
+        env!("CARGO_PKG_VERSION"),
+        script.display()
+    );
     let source =
         std::fs::read_to_string(&script).with_context(|| format!("failed to read {:?}", script))?;
     if let Some(dir) = script.parent() {

@@ -214,7 +214,7 @@ and then `sync_figure_outputs()`. Eliminates the double viewer sync.
 ### B. `--batch` flag on `rustlab run`
 
 ```
-rustlab run --batch script.r
+rustlab run --batch script.rlab
 ```
 
 Sets `PlotContext::Notebook` so scripts that `savefig()` to disk can run

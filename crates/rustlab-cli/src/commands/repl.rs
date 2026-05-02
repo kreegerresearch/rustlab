@@ -403,8 +403,8 @@ const HELP: &[HelpEntry] = &[
     HelpEntry { name: "function", brief: "Define a named function",
         detail: "function y = foo(x)\n  y = x * 2\nend\n\nfunction bar(a, b)\n  print(a + b)\nend\n\nSyntax:\n  function retvar = name(param1, param2, ...)\n    body\n  end\n  function name(param, ...)   % no return value\n    body\n  end\n\nuse 'return' to exit early." },
     // Filesystem / script loading
-    HelpEntry { name: "run", brief: "Run a .r script file in the current session",
-        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .r scripts (for sourcing shared functions).\n  Example: run calculate_helpers.r" },
+    HelpEntry { name: "run", brief: "Run a .rlab script file in the current session",
+        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .rlab scripts (for sourcing shared functions).\n  Example: run calculate_helpers.rlab" },
     HelpEntry { name: "ls",  brief: "List directory contents",
         detail: "ls          — list current directory\nls <path>   — list the given directory" },
     HelpEntry { name: "cd",  brief: "Change working directory",
@@ -470,14 +470,14 @@ const HELP: &[HelpEntry] = &[
         detail: "feval(\"name\", arg1, arg2, ...)  — invoke any builtin or user function by name\n  Useful for dynamic/generic dispatch.\n\nExample:\n  feval(\"sin\", pi/2)   →  1.0\n  feval(\"my_fn\", x)" },
     // Profiling
     HelpEntry { name: "profile", brief: "Enable in-script call profiling",
-        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.r" },
+        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.rlab" },
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
         detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
     // Streaming DSP
     HelpEntry { name: "state_init", brief: "Allocate a FIR history buffer of n zeros",
         detail: "state_init(n)  — allocate FIR state for a filter with n+1 taps\n  n = length(h) - 1  where h is the coefficient vector\n\nReturns an opaque fir_state handle. Pass it to filter_stream each frame.\nTwo independent handles allow stereo (or any multi-channel) processing\nwith no shared state.\n\nExample:\n  h  = firpm(64, [0, 0.04, 0.05, 1.0], [1, 1, 0, 0])\n  st = state_init(length(h) - 1)" },
     HelpEntry { name: "filter_stream", brief: "Overlap-save FIR filtering — one frame at a time",
-        detail: "filter_stream(frame, h, state)  →  [output_frame, state]\n  frame  — input samples (Vector, length N)\n  h      — FIR coefficients (Vector, length M)\n  state  — fir_state handle from state_init(length(h)-1)\n\nReturns a Tuple: output frame (length N) and the updated state handle.\nThe state is mutated in place — no heap reallocation per frame.\nOutput matches convolve(full_signal, h) to within floating-point precision.\n\nRun with external audio bridge:\n  sox -d -t raw -r 44100 -e float -b 32 -c 1 - \\\n    | rustlab run filter.r \\\n    | sox -t raw -r 44100 -e float -b 32 -c 1 - -d\n\nExample:\n  [out, st] = filter_stream(frame, h, st)" },
+        detail: "filter_stream(frame, h, state)  →  [output_frame, state]\n  frame  — input samples (Vector, length N)\n  h      — FIR coefficients (Vector, length M)\n  state  — fir_state handle from state_init(length(h)-1)\n\nReturns a Tuple: output frame (length N) and the updated state handle.\nThe state is mutated in place — no heap reallocation per frame.\nOutput matches convolve(full_signal, h) to within floating-point precision.\n\nRun with external audio bridge:\n  sox -d -t raw -r 44100 -e float -b 32 -c 1 - \\\n    | rustlab run filter.rlab \\\n    | sox -t raw -r 44100 -e float -b 32 -c 1 - -d\n\nExample:\n  [out, st] = filter_stream(frame, h, st)" },
     // Audio I/O
     HelpEntry { name: "audio_in", brief: "Create a stdin PCM input handle",
         detail: "audio_in(sr, n)  — metadata handle for reading audio from stdin\n  sr — sample rate in Hz (e.g. 44100.0)\n  n  — frame size in samples (e.g. 256)\n\nOpens no hardware. audio_read(adc) reads n × 4 bytes of f32-LE PCM\nfrom stdin and blocks until the full frame arrives.\n\nExample:\n  adc = audio_in(44100.0, 256)" },
