@@ -158,6 +158,7 @@ together whenever a phase finishes.
 | Hand-Rolled Sparse Solver | `dev/plans/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
 | `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
 | Original `rustlab_em` Requests (5 originals) | `dev/plans/rustlab_em_requests.md` | Complete through Phase 4 — original five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d Phase 1). |
+| `rustlab_llm` Gap Closure (v0.3) | `~/.claude/plans/lively-roaming-abelson.md` | Complete — all four open gaps shipped: short-circuit `&&`/`\|\|`, `M(I)` linear-index gather (with `M(scalar)` flip), `layernorm(M)` matrix overload, multi-output user functions `function [a, b] = name(x)`. Tour example/notebook in `examples/language_v0_3.{rlab,md}`. |
 
 ---
 

@@ -5,7 +5,7 @@ pub mod rng;
 pub mod toml_io;
 pub mod value;
 
-use crate::ast::{Expr, Stmt, StmtKind};
+use crate::ast::{BinOp, Expr, Stmt, StmtKind};
 use crate::error::ScriptError;
 pub use builtins::BuiltinRegistry;
 use ndarray::{Array1, Array2};
@@ -20,7 +20,9 @@ pub use value::Value;
 struct UserFn {
     name: String,
     params: Vec<String>,
-    return_var: Option<String>,
+    /// Declared output variables. Empty for a no-return body, length 1 for
+    /// the classic single-output form, length >= 2 for matlab multi-output.
+    return_vars: Vec<String>,
     body: Vec<Stmt>,
 }
 
@@ -186,7 +188,7 @@ impl Evaluator {
             StmtKind::FunctionDef {
                 name,
                 params,
-                return_var,
+                return_vars,
                 body,
             } => {
                 self.user_fns.insert(
@@ -194,7 +196,7 @@ impl Evaluator {
                     UserFn {
                         name: name.clone(),
                         params: params.clone(),
-                        return_var: return_var.clone(),
+                        return_vars: return_vars.clone(),
                         body: body.clone(),
                     },
                 );
@@ -428,12 +430,28 @@ impl Evaluator {
                 expr,
                 suppress,
             } => {
-                // For a top-level builtin call with multi-output destructuring,
-                // pass the LHS name count as `nargout` so the builtin can
-                // dispatch on caller arity (matlab-style overloading). Lambdas,
-                // user functions, and non-Call expressions go through the
-                // normal eval path.
+                // For a top-level Call with multi-output destructuring, pass
+                // the LHS name count as `nargout` so the callee can dispatch
+                // on caller arity (matlab-style overloading). Three Call
+                // shapes are handled here:
+                //   - registered builtin (not in env, not in user_fns) →
+                //     `call_builtin_tracked_nargout`
+                //   - user function → `eval_user_fn_nargout`
+                //   - lambda or non-Call expression → fall through to the
+                //     normal eval path (the resulting `Value::Tuple` is
+                //     destructured below)
                 let val = match expr {
+                    Expr::Call { name, args }
+                        if !self.env.contains_key(name)
+                            && self.user_fns.contains_key(name) =>
+                    {
+                        let func = self.user_fns.get(name).cloned().unwrap();
+                        let vals: Vec<Value> = args
+                            .iter()
+                            .map(|a| self.eval_expr(a))
+                            .collect::<Result<_, _>>()?;
+                        self.eval_user_fn_nargout(func, vals, names.len())?
+                    }
                     Expr::Call { name, args }
                         if !self.env.contains_key(name)
                             && !self.user_fns.contains_key(name) =>
@@ -1156,6 +1174,23 @@ impl Evaluator {
                 v.not().map_err(|e| ScriptError::type_err(e))
             }
             Expr::BinOp { op, lhs, rhs } => {
+                // Short-circuit logical ops: evaluate rhs only when lhs is
+                // not decisive. Matches matlab/octave `&&` / `||`.
+                if matches!(op, BinOp::And | BinOp::Or) {
+                    let l = self.eval_expr(lhs)?;
+                    let lt = l.is_truthy_for_logical().map_err(ScriptError::type_err)?;
+                    let decisive = match op {
+                        BinOp::And => !lt,
+                        BinOp::Or => lt,
+                        _ => unreachable!(),
+                    };
+                    if decisive {
+                        return Ok(Value::Bool(lt));
+                    }
+                    let r = self.eval_expr(rhs)?;
+                    let rt = r.is_truthy_for_logical().map_err(ScriptError::type_err)?;
+                    return Ok(Value::Bool(rt));
+                }
                 let l = self.eval_expr(lhs)?;
                 let r = self.eval_expr(rhs)?;
                 Value::binop(*op, l, r).map_err(|e| ScriptError::type_err(e))
@@ -1784,7 +1819,26 @@ impl Evaluator {
     }
 
     /// Call a user-defined function with scope isolation.
+    /// Single-output convenience wrapper — defers to the nargout-aware
+    /// path with `nargout=1` so a bare `p = userfn(x)` always picks the
+    /// first declared output.
     fn eval_user_fn(&mut self, func: UserFn, args: Vec<Value>) -> Result<Value, ScriptError> {
+        self.eval_user_fn_nargout(func, args, 1)
+    }
+
+    /// Call a user-defined function with an explicit `nargout` request.
+    /// `nargout` is the number of values the caller wants:
+    ///   - `0` — caller is using the call as a statement; return `Value::None`.
+    ///   - `1` — back-compat: return a single `Value` (not a `Tuple`).
+    ///   - `n >= 2` — return a `Value::Tuple` of the first `n` declared outputs.
+    /// Multi-output errors when `nargout` exceeds declared outputs or when
+    /// any picked output variable was never assigned in the body.
+    fn eval_user_fn_nargout(
+        &mut self,
+        func: UserFn,
+        args: Vec<Value>,
+        nargout: usize,
+    ) -> Result<Value, ScriptError> {
         if args.len() != func.params.len() {
             return Err(ScriptError::runtime(format!(
                 "function expects {} argument(s), got {}",
@@ -1830,11 +1884,43 @@ impl Evaluator {
             }
             Ok(()) => {}
         }
-        // Extract return value from function scope
-        let ret_val = if let Some(ref ret) = func.return_var {
-            self.env.get(ret.as_str()).cloned().unwrap_or(Value::None)
-        } else {
+        // Build the return based on declared outputs and the caller's nargout.
+        // - 0 declared OR nargout=0 → None
+        // - 1 picked → single Value (back-compat: never a Tuple)
+        // - n >= 2 picked → Tuple of the first n declared outputs
+        // For the classic single-output case (1 declared, body never assigned
+        // it) we fall back to None to match prior behaviour. Multi-output
+        // missing-assignment is loud — matlab errors and so do we.
+        let declared = func.return_vars.len();
+        let ret_val = if declared == 0 || nargout == 0 {
             Value::None
+        } else if nargout > declared {
+            // Restore env before erroring so subsequent calls don't see leftover state.
+            self.env = saved_env;
+            self.in_function = saved_in_fn;
+            self.profiler.exit_higher_order();
+            return Err(ScriptError::runtime(format!(
+                "function '{}' declares {} output(s), but caller asked for {}",
+                func.name, declared, nargout
+            )));
+        } else if nargout == 1 {
+            // Back-compat path: 1-output single value, missing assignment → None.
+            self.env
+                .get(func.return_vars[0].as_str())
+                .cloned()
+                .unwrap_or(Value::None)
+        } else {
+            let mut vals: Vec<Value> = Vec::with_capacity(nargout);
+            for ret in func.return_vars.iter().take(nargout) {
+                let v = self.env.get(ret.as_str()).cloned().ok_or_else(|| {
+                    ScriptError::runtime(format!(
+                        "function '{}': output '{}' was not assigned in the body",
+                        func.name, ret
+                    ))
+                })?;
+                vals.push(v);
+            }
+            Value::Tuple(vals)
         };
         // Restore outer env and function flag
         self.env = saved_env;

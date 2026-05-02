@@ -217,6 +217,20 @@ last = v(end)              # 10
 tail = v(end-2:end)        # [8, 9, 10]
 ```
 
+**Matrix indexing** uses 1-based subscripts. Two-arg form picks rows /
+columns; single-arg form is column-major linear (matlab convention):
+
+```
+M = [10, 20; 30, 40; 50, 60]
+M(2, 1)                    # 30   (row 2, col 1)
+M(2, :)                    # [30, 40]   (row 2)
+M(:, 1)                    # [10; 30; 50]   (column 1)
+M(:)                       # [10, 30, 50, 20, 40, 60]   (col-major flatten)
+M(2)                       # 30   (2nd col-major linear element)
+M([1, 4, 6])               # [10, 20, 60]   (vector of linear picks)
+M(find([0, 1, 0, 1, 0, 1])) # [30, 20, 60]  (round-trips with find's linear indices)
+```
+
 **Concatenation** — place vectors inside `[...]` to join them:
 
 ```
@@ -249,6 +263,21 @@ t = v'                     # conjugate transpose (for real data, same values)
 All operators broadcast scalars onto vectors and matrices automatically.
 `v .^ 2` squares every element; `2 .^ v` raises 2 to each element of v.
 
+### Logical Operators (`&&`, `||`)
+
+Short-circuit logical and / or, matlab convention. Both operands must be
+scalars (Bool, Scalar, or Complex); use `any(...)` / `all(...)` to
+collapse a matrix or vector first. Non-zero scalars are truthy.
+
+```
+% RHS only evaluated when LHS isn't decisive — guard divide-by-zero:
+safe = (x != 0) && (1.0 / x > 0)
+
+% Matlab-style truthiness:
+1 && 2          % → true
+0 || 3          % → true
+```
+
 ### Non-conjugate Transpose
 
 Use `.'` for non-conjugate transpose (swaps rows and columns without conjugating):
@@ -261,12 +290,18 @@ C = A'      # conjugate transpose (Hermitian)
 
 ### Destructuring Assignment
 
-Functions that return multiple values can be unpacked:
+Functions that return multiple values can be unpacked. Built-in
+multi-output functions like `svd`, `eig`, `step`, and user-defined
+multi-output functions (see below) all share the same destructure
+syntax:
 
 ```
 [U, S, V] = svd(A)
 [y, t] = step(G)
+[v, idx] = max_with_pos(x)   % user-defined, see Functions section
 ```
+
+A bare `v = ...` picks just the first declared output.
 
 ### Chained Call-and-Index
 
@@ -311,6 +346,17 @@ function [y] = safe_div(a, b)
   end
   y = a / b
 end
+
+# Multi-output user function (matlab convention) — bracket the output
+# list to declare more than one return. The caller destructures with
+# `[p, q] = ...`; a bare `v = ...` picks just the first output.
+function [m, idx] = max_with_pos(v)
+  m = max(v)
+  idx = argmax(v)
+end
+
+[best, where] = max_with_pos([3, 1, 4, 1, 5, 9, 2, 6])   % best=9, where=6
+just_best     = max_with_pos([10, 20, 5])                 % → 20
 ```
 
 ### Anonymous Functions and Handles
@@ -657,7 +703,8 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 | `examples/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
 | `examples/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |
 | `examples/random.rlab` | Random number generation: rand, randn, randi |
-| `examples/functions.rlab` | User-defined functions with multiple return values |
+| `examples/functions.rlab` | User-defined functions, structs, multi-output `[a, b] = ...` form |
+| `examples/language_v0_3.rlab` | Tour of v0.3 language additions: multi-output user fns, `&&`/`\|\|`, linear `M(I)`, matrix `layernorm` |
 | `examples/lambda.rlab` | Anonymous functions, function handles, arrayfun |
 | `examples/lambda_pipeline.rlab` | Functional pipeline patterns with lambdas |
 | `examples/save_load.rlab` | NPY, NPZ, and CSV round-trip save/load |

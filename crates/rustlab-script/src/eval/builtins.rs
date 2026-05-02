@@ -8037,32 +8037,133 @@ fn builtin_gelu(args: Vec<Value>) -> Result<Value, ScriptError> {
     })
 }
 
-/// layernorm(v) or layernorm(v, eps) — layer normalisation: (v - mean) / sqrt(var + eps).
-/// Uses population variance (divides by N, not N-1).
+/// Layer-normalise a flat slice in place: `(x - mean) / sqrt(var + eps)`,
+/// population variance (divide by N). Single owner of the formula, used by
+/// both the vector and matrix forms of `layernorm`.
+fn layernorm_slice_inplace(slice: &mut [C64], eps: f64) {
+    let n = slice.len() as f64;
+    let mean: C64 = slice.iter().copied().sum::<C64>() / n;
+    let variance: f64 = slice.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / n;
+    let std_dev = (variance + eps).sqrt();
+    for x in slice.iter_mut() {
+        *x = (*x - mean) / std_dev;
+    }
+}
+
+/// Layer normalisation: `(x - mean) / sqrt(var + eps)`, population variance.
+///
+/// Forms:
+/// - `layernorm(v)` / `layernorm(v, eps)` — vector input; normalise across
+///   all elements. Unchanged from the original signature.
+/// - `layernorm(M)` / `layernorm(M, dim)` / `layernorm(M, dim, eps)` —
+///   matrix input; normalise each row (`dim=2`, default) or each column
+///   (`dim=1`) independently. Per-row default matches the ML/transformer
+///   convention where rows are samples and columns are features —
+///   intentionally diverges from `sum`/`mean`/`std` which default to dim=1.
+/// - 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of
+///   `dim`, matching how `sum`/`mean` handle the same shapes.
 fn builtin_layernorm(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("layernorm", &args, 1, 2)?;
-    let eps = if args.len() == 2 {
-        args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?
-    } else {
-        1e-5
-    };
+    check_args_range("layernorm", &args, 1, 3)?;
     match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            let n = v.len() as f64;
-            let mean: C64 = v.iter().copied().sum::<C64>() / n;
-            let variance: f64 = v.iter().map(|&x| (x - mean).norm_sqr()).sum::<f64>() / n;
-            let std_dev = (variance + eps).sqrt();
-            let result: CVector = v.mapv(|c| (c - mean) / std_dev);
-            Ok(Value::Vector(result))
-        }
-        Value::Scalar(s) => {
-            // Single scalar: mean == s, variance == 0, result == 0 (no information)
-            let _ = s;
+        Value::Scalar(_) => {
+            // Single scalar: mean == s, variance == 0; layernorm collapses to 0.
             Ok(Value::Scalar(0.0))
         }
-        _ => Err(ScriptError::type_err(
-            "layernorm: argument must be a non-empty vector or scalar".to_string(),
-        )),
+        Value::Vector(v) if !v.is_empty() => {
+            if args.len() > 2 {
+                return Err(ScriptError::type_err(
+                    "layernorm: vector form takes at most 2 args (v[, eps])".to_string(),
+                ));
+            }
+            let eps = if args.len() == 2 {
+                args[1].to_scalar().map_err(ScriptError::type_err)?
+            } else {
+                1e-5
+            };
+            let mut data: Vec<C64> = v.iter().copied().collect();
+            layernorm_slice_inplace(&mut data, eps);
+            Ok(Value::Vector(Array1::from_vec(data)))
+        }
+        Value::Matrix(m) => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 0 || ncols == 0 {
+                return Err(ScriptError::type_err(
+                    "layernorm: matrix must be non-empty".to_string(),
+                ));
+            }
+            // 1-D-shaped matrix routes through the vector formula so
+            // layernorm([1;2;3]) == layernorm of the same as a vector.
+            if nrows == 1 || ncols == 1 {
+                if args.len() > 2 {
+                    return Err(ScriptError::type_err(
+                        "layernorm: 1-D-shaped matrix takes at most 2 args (M[, eps])".to_string(),
+                    ));
+                }
+                let eps = if args.len() == 2 {
+                    args[1].to_scalar().map_err(ScriptError::type_err)?
+                } else {
+                    1e-5
+                };
+                let mut data: Vec<C64> = m.iter().copied().collect();
+                layernorm_slice_inplace(&mut data, eps);
+                return Ok(Value::Matrix(
+                    Array2::from_shape_vec((nrows, ncols), data)
+                        .expect("preserves 1-D matrix shape"),
+                ));
+            }
+            // 2-D matrix: optional dim (default 2 = per-row, ML convention)
+            // and optional eps follow.
+            let dim = if args.len() >= 2 {
+                let d = args[1]
+                    .to_scalar()
+                    .map_err(|e| ScriptError::type_err(format!("layernorm: dim: {}", e)))?
+                    as i64;
+                if d != 1 && d != 2 {
+                    return Err(ScriptError::type_err(format!(
+                        "layernorm: dim must be 1 or 2, got {}",
+                        d
+                    )));
+                }
+                d as usize
+            } else {
+                2
+            };
+            let eps = if args.len() == 3 {
+                args[2]
+                    .to_scalar()
+                    .map_err(|e| ScriptError::type_err(format!("layernorm: eps: {}", e)))?
+            } else {
+                1e-5
+            };
+            let mut out: CMatrix = m.clone();
+            match dim {
+                2 => {
+                    for i in 0..nrows {
+                        let mut row: Vec<C64> = (0..ncols).map(|j| out[[i, j]]).collect();
+                        layernorm_slice_inplace(&mut row, eps);
+                        for j in 0..ncols {
+                            out[[i, j]] = row[j];
+                        }
+                    }
+                }
+                1 => {
+                    for j in 0..ncols {
+                        let mut col: Vec<C64> = (0..nrows).map(|i| out[[i, j]]).collect();
+                        layernorm_slice_inplace(&mut col, eps);
+                        for i in 0..nrows {
+                            out[[i, j]] = col[i];
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            Ok(Value::Matrix(out))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "layernorm: argument must be a non-empty vector, matrix, or scalar (got {})",
+            other.type_name()
+        ))),
     }
 }
 

@@ -139,8 +139,47 @@ mod bool_tests {
     }
 
     #[test]
-    fn and_on_non_bool_errors() {
-        assert!(Value::binop(BinOp::And, Value::Scalar(1.0), Value::Scalar(1.0)).is_err());
+    fn and_or_accept_scalar_truthiness() {
+        // matlab convention: && / || coerce non-zero scalars to true.
+        let r = Value::binop(BinOp::And, Value::Scalar(1.0), Value::Scalar(2.0)).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+        let r = Value::binop(BinOp::And, Value::Scalar(0.0), Value::Scalar(2.0)).unwrap();
+        assert!(matches!(r, Value::Bool(false)));
+        let r = Value::binop(BinOp::Or, Value::Scalar(0.0), Value::Scalar(3.0)).unwrap();
+        assert!(matches!(r, Value::Bool(true)));
+    }
+
+    #[test]
+    fn and_or_reject_matrix_operand() {
+        // Matlab requires any()/all() to collapse a matrix before &&/||.
+        let m = Value::Matrix(ndarray::Array2::from_shape_vec(
+            (1, 2),
+            vec![num_complex::Complex::new(1.0, 0.0); 2],
+        ).unwrap());
+        assert!(Value::binop(BinOp::And, m, Value::Scalar(1.0)).is_err());
+    }
+
+    #[test]
+    fn short_circuit_and_skips_rhs() {
+        // Side-effecting rhs (1/0) would error if evaluated. With short-circuit
+        // && in the evaluator, the false lhs makes rhs unreachable.
+        let ev = eval_str("b = (1 < 0) && (1/0 > 0)");
+        assert!(!get_bool(&ev, "b"));
+    }
+
+    #[test]
+    fn short_circuit_or_skips_rhs() {
+        let ev = eval_str("b = (1 < 2) || (1/0 > 0)");
+        assert!(get_bool(&ev, "b"));
+    }
+
+    #[test]
+    fn and_or_scalar_form_in_script() {
+        // `1 && 0` style — bare scalars without comparison wrappers.
+        let ev = eval_str("a = 1 && 2\nb = 0 || 3\nc = 0 && 1");
+        assert!(get_bool(&ev, "a"));
+        assert!(get_bool(&ev, "b"));
+        assert!(!get_bool(&ev, "c"));
     }
 
     #[test]
@@ -1270,14 +1309,82 @@ mod matrix_tests {
     }
 
     #[test]
-    fn mxn_single_index_still_returns_row() {
-        // Preserve existing behavior: M(i) on a general MxN matrix returns
-        // the i-th row as a vector. Only Nx1 matrices are unwrapped to scalar.
-        let ev = eval_str("M = [1.0, 2.0; 3.0, 4.0];\nr = M(1);");
+    fn mxn_single_index_returns_linear_element() {
+        // Matlab convention: M(k) on a matrix is column-major linear indexing.
+        // For [1,2;3,4]: column-major flatten is [1, 3, 2, 4], so M(1)=1, M(2)=3, M(3)=2, M(4)=4.
+        // Use M(i, :) when you want the i-th row.
+        let ev = eval_str("M = [1.0, 2.0; 3.0, 4.0];\na = M(1)\nb = M(2)\nc = M(3)\nd = M(4)");
+        assert!(close(get_scalar(&ev, "a"), 1.0, 1e-12));
+        assert!(close(get_scalar(&ev, "b"), 3.0, 1e-12));
+        assert!(close(get_scalar(&ev, "c"), 2.0, 1e-12));
+        assert!(close(get_scalar(&ev, "d"), 4.0, 1e-12));
+    }
+
+    #[test]
+    fn matrix_explicit_row_via_colon() {
+        // M(i, :) is the new way to extract a row after the M(scalar) flip.
+        let ev = eval_str("M = [1.0, 2.0; 3.0, 4.0];\nr = M(1, :);");
         let r = get_vector(&ev, "r");
         assert_eq!(r.len(), 2);
         assert!(close(r[0], 1.0, 1e-12));
         assert!(close(r[1], 2.0, 1e-12));
+    }
+
+    #[test]
+    fn matrix_vector_index_returns_linear_picks() {
+        // M([k1, k2, ...]) picks linear indices from the col-major flatten.
+        let ev = eval_str("M = [1.0, 2.0; 3.0, 4.0];\np = M([1, 4, 2])");
+        let p = get_vector(&ev, "p");
+        assert_eq!(p.len(), 3);
+        assert!(close(p[0], 1.0, 1e-12)); // col-major[1] = M(1,1) = 1
+        assert!(close(p[1], 4.0, 1e-12)); // col-major[4] = M(2,2) = 4
+        assert!(close(p[2], 3.0, 1e-12)); // col-major[2] = M(2,1) = 3
+    }
+
+    #[test]
+    fn matrix_linear_index_with_index_vector_from_find() {
+        // find(v) returns 1-based indices in storage order; M(find(...))
+        // round-trips when the index list is generated externally.
+        // M = [1,2;3,4]: col-major flatten = [1, 3, 2, 4].
+        // Linear positions of the elements > 2 (i.e. 3 and 4) are 2 and 4.
+        let ev = eval_str("M = [1.0, 2.0; 3.0, 4.0];\nv = M(find([0, 1, 0, 1]))");
+        let v = get_vector(&ev, "v");
+        assert_eq!(v.len(), 2);
+        // find returns positions [2, 4]; M([2, 4]) = [3, 4]
+        assert!(close(v[0], 3.0, 1e-12));
+        assert!(close(v[1], 4.0, 1e-12));
+    }
+
+    #[test]
+    fn matrix_linear_index_out_of_range_errors() {
+        let src = "M = [1, 2; 3, 4]\nM(99)\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut got_err = false;
+        for stmt in &stmts {
+            if ev.exec_stmt(stmt).is_err() {
+                got_err = true;
+                break;
+            }
+        }
+        assert!(got_err, "M(99) on a 2x2 matrix should error");
+    }
+
+    #[test]
+    fn matrix_linear_index_zero_errors() {
+        let src = "M = [1, 2; 3, 4]\nM(0)\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut got_err = false;
+        for stmt in &stmts {
+            if ev.exec_stmt(stmt).is_err() {
+                got_err = true;
+                break;
+            }
+        }
+        assert!(got_err, "M(0) should error (1-based indexing)");
     }
 }
 
@@ -2729,6 +2836,132 @@ mod phase1_tests {
         } else {
             panic!("expected struct");
         }
+    }
+
+    // ── 1c-multi: user-defined multi-output functions ────────────────────────
+
+    #[test]
+    fn user_fn_two_output_basic() {
+        // function [a, b] = pair(x); a = x+1; b = x-1; end
+        // [p, q] = pair(5)  →  p=6, q=4
+        let src = "\
+function [a, b] = pair(x)\n\
+  a = x + 1\n\
+  b = x - 1\n\
+end\n\
+[p, q] = pair(5)\n";
+        let ev = eval_str(src);
+        match ev.get("p").unwrap() {
+            Value::Scalar(n) => assert!((n - 6.0).abs() < 1e-12),
+            other => panic!("expected scalar p, got {other:?}"),
+        }
+        match ev.get("q").unwrap() {
+            Value::Scalar(n) => assert!((n - 4.0).abs() < 1e-12),
+            other => panic!("expected scalar q, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_fn_three_output_basic() {
+        let src = "\
+function [a, b, c] = triple(x)\n\
+  a = x\n\
+  b = x * 2\n\
+  c = x * 3\n\
+end\n\
+[p, q, r] = triple(4)\n";
+        let ev = eval_str(src);
+        let p = match ev.get("p").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
+        let q = match ev.get("q").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
+        let r = match ev.get("r").unwrap() { Value::Scalar(n) => *n, _ => panic!() };
+        assert!((p - 4.0).abs() < 1e-12);
+        assert!((q - 8.0).abs() < 1e-12);
+        assert!((r - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn user_fn_single_output_classic_form_unchanged() {
+        // Pre-existing single-output syntax still works exactly as before.
+        let src = "\
+function y = sq(x)\n\
+  y = x * x\n\
+end\n\
+v = sq(7)\n";
+        let ev = eval_str(src);
+        match ev.get("v").unwrap() {
+            Value::Scalar(n) => assert!((n - 49.0).abs() < 1e-12),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_fn_one_output_from_multi_decl() {
+        // Matlab nargout=1 behavior: function declares [a, b] but caller
+        // wants only one value — picks the first declared output.
+        let src = "\
+function [a, b] = pair(x)\n\
+  a = x + 1\n\
+  b = x - 1\n\
+end\n\
+v = pair(10)\n";
+        let ev = eval_str(src);
+        match ev.get("v").unwrap() {
+            Value::Scalar(n) => assert!((n - 11.0).abs() < 1e-12),
+            other => panic!("expected scalar (first output), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn user_fn_arity_mismatch_too_many_errors() {
+        // function declares 2 outputs; caller asks for 3 → error
+        let src = "\
+function [a, b] = pair(x)\n\
+  a = x + 1\n\
+  b = x - 1\n\
+end\n\
+[p, q, r] = pair(5)\n";
+        let formatted = src.to_string();
+        let tokens = lexer::tokenize(&formatted).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut got_err = false;
+        for stmt in &stmts {
+            if ev.exec_stmt(stmt).is_err() {
+                got_err = true;
+                break;
+            }
+        }
+        assert!(got_err, "asking for 3 outputs from a 2-output fn should error");
+    }
+
+    #[test]
+    fn user_fn_multi_output_missing_assignment_errors() {
+        // function declares [a, b] but body only assigns a.
+        let src = "\
+function [a, b] = halfpair(x)\n\
+  a = x\n\
+end\n\
+[p, q] = halfpair(5)\n";
+        let formatted = src.to_string();
+        let tokens = lexer::tokenize(&formatted).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut got_err = false;
+        for stmt in &stmts {
+            if ev.exec_stmt(stmt).is_err() {
+                got_err = true;
+                break;
+            }
+        }
+        assert!(got_err, "missing output assignment should error");
+    }
+
+    #[test]
+    fn user_fn_empty_output_list_parse_errors() {
+        // function [] = ...  is a parse error (the empty bracket form).
+        let src = "function [] = nothing(x)\n  a = x\nend\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        assert!(parser::parse(tokens).is_err());
     }
 
     // ── 1d: disp / fprintf ───────────────────────────────────────────────────
@@ -4186,13 +4419,88 @@ mod ml_tests {
     }
 
     #[test]
-    fn layernorm_wrong_arg_errors() {
+    fn layernorm_vector_three_args_errors() {
         let src = format!("{}\n", "y = layernorm([1.0, 2.0], 1.0, 2.0)");
         let tokens = lexer::tokenize(&src).unwrap();
         let stmts = parser::parse(tokens).unwrap();
         let mut ev = Evaluator::new();
         let result = ev.exec_stmt(&stmts[0]);
-        assert!(result.is_err(), "layernorm with 3 args should error");
+        assert!(result.is_err(), "layernorm vector form with 3 args should error");
+    }
+
+    // ── layernorm matrix overload (per-row by default) ────────────────────────
+
+    #[test]
+    fn layernorm_matrix_default_is_per_row() {
+        // ML convention: each row is a sample, columns are features.
+        // After layernorm each row should have mean ~0 and variance ~1.
+        let ev = eval_str("Y = layernorm([1, 2, 3, 4, 5; 10, 20, 30, 40, 50])");
+        let m = match ev.get("Y").unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix, got {other:?}"),
+        };
+        assert_eq!((m.nrows(), m.ncols()), (2, 5));
+        for i in 0..m.nrows() {
+            let row: Vec<f64> = (0..m.ncols()).map(|j| m[[i, j]].re).collect();
+            let mean: f64 = row.iter().sum::<f64>() / row.len() as f64;
+            let var: f64 = row.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / row.len() as f64;
+            assert!(mean.abs() < 1e-10, "row {} mean = {}", i, mean);
+            assert!((var - 1.0).abs() < 1e-4, "row {} var = {}", i, var);
+        }
+    }
+
+    #[test]
+    fn layernorm_matrix_dim_1_is_per_column() {
+        let ev = eval_str("Y = layernorm([1, 10; 2, 20; 3, 30; 4, 40; 5, 50], 1)");
+        let m = match ev.get("Y").unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix, got {other:?}"),
+        };
+        assert_eq!((m.nrows(), m.ncols()), (5, 2));
+        for j in 0..m.ncols() {
+            let col: Vec<f64> = (0..m.nrows()).map(|i| m[[i, j]].re).collect();
+            let mean: f64 = col.iter().sum::<f64>() / col.len() as f64;
+            let var: f64 = col.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / col.len() as f64;
+            assert!(mean.abs() < 1e-10, "col {} mean = {}", j, mean);
+            assert!((var - 1.0).abs() < 1e-4, "col {} var = {}", j, var);
+        }
+    }
+
+    #[test]
+    fn layernorm_matrix_three_arg_dim_eps() {
+        // dim=2, eps=1.0 — large eps means rows are "soft" normalized.
+        let ev = eval_str("Y = layernorm([1, 2, 3; 4, 5, 6], 2, 1.0)");
+        let m = match ev.get("Y").unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix, got {other:?}"),
+        };
+        // Each row still has zero mean.
+        for i in 0..m.nrows() {
+            let row_mean: f64 = (0..m.ncols()).map(|j| m[[i, j]].re).sum::<f64>() / m.ncols() as f64;
+            assert!(row_mean.abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn layernorm_one_dim_matrix_routes_through_vector() {
+        // 3×1 column should layernorm as if a vector.
+        let ev = eval_str("Y = layernorm([1; 2; 3])");
+        let m = match ev.get("Y").unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix, got {other:?}"),
+        };
+        assert_eq!((m.nrows(), m.ncols()), (3, 1));
+        let mean: f64 = (0..3).map(|i| m[[i, 0]].re).sum::<f64>() / 3.0;
+        assert!(mean.abs() < 1e-10);
+    }
+
+    #[test]
+    fn layernorm_matrix_invalid_dim_errors() {
+        let src = "Y = layernorm([1, 2; 3, 4], 99)\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        assert!(ev.exec_stmt(&stmts[0]).is_err());
     }
 }
 
@@ -6743,13 +7051,14 @@ mod optional_arg_tests {
         assert_err("norm([1], 2, 3)");
     }
 
-    // ── layernorm: accept 1-2 args ──────────────────────────────────────
+    // ── layernorm: vector form accepts 1-2 args; matrix accepts 1-3 ────
     #[test]
     fn layernorm_zero_args() {
         assert_err("layernorm()");
     }
     #[test]
-    fn layernorm_three_args() {
+    fn layernorm_vector_three_args_caps() {
+        // [1] is a vector, so it caps at 2 args (v[, eps]).
         assert_err("layernorm([1], 1, 2)");
     }
 
