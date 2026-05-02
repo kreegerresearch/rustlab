@@ -1583,20 +1583,54 @@ fn builtin_argmax(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// sort(v) — sort a vector ascending by real part; preserves imaginary components.
 fn builtin_sort(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("sort", &args, 1)?;
+    check_args_range("sort", &args, 1, 2)?;
+
+    // Optional 2nd argument: "ascend" (default) or "descend" — matches the
+    // octave/matlab string-flag form. The numeric-dim form `sort(M, dim)` is
+    // not yet supported (matrix-axis reductions are a separate plan item).
+    let descending = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) => match s.as_str() {
+                "ascend" => false,
+                "descend" => true,
+                other => {
+                    return Err(ScriptError::type_err(format!(
+                        "sort: direction must be \"ascend\" or \"descend\", got \"{}\"",
+                        other
+                    )))
+                }
+            },
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "sort: 2nd argument must be a direction string \"ascend\" or \"descend\", got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    } else {
+        false
+    };
+
+    let cmp_real = |a: &f64, b: &f64| {
+        let ord = a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
+        if descending { ord.reverse() } else { ord }
+    };
+    let cmp_cx = |a: &C64, b: &C64| {
+        let ord = a.re.partial_cmp(&b.re).unwrap_or(std::cmp::Ordering::Equal);
+        if descending { ord.reverse() } else { ord }
+    };
+
     match &args[0] {
         Value::Vector(v) => {
             if is_real_vector(v) {
-                // Fast path: sort f64 values (half the memory, no partial_cmp unwrap).
                 let mut reals: Vec<f64> = v.iter().map(|c| c.re).collect();
-                reals
-                    .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                reals.sort_unstable_by(cmp_real);
                 Ok(Value::Vector(Array1::from_iter(
                     reals.into_iter().map(|r| Complex::new(r, 0.0)),
                 )))
             } else {
                 let mut sorted: Vec<C64> = v.iter().copied().collect();
-                sorted.sort_by(|a, b| a.re.partial_cmp(&b.re).unwrap_or(std::cmp::Ordering::Equal));
+                sorted.sort_by(cmp_cx);
                 Ok(Value::Vector(Array1::from_vec(sorted)))
             }
         }

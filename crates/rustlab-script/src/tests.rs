@@ -1699,6 +1699,44 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn sort_default_is_ascending() {
+        let ev = eval_str("v = sort([3, 1, 4, 1, 5, 9, 2, 6])");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn sort_ascend_explicit_string() {
+        let ev = eval_str("v = sort([3, 1, 4, 1, 5, 9, 2, 6], \"ascend\")");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn sort_descend() {
+        let ev = eval_str("v = sort([3, 1, 4, 1, 5, 9, 2, 6], \"descend\")");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![9.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn sort_invalid_direction_errors() {
+        let _err = eval_err("sort([1,2,3], \"backwards\")");
+    }
+
+    #[test]
+    fn sort_descend_complex_uses_real_part() {
+        // Complex sort orders by real part (matches the existing 1-arg behavior).
+        let ev = eval_str("v = sort([3+1*j, 1-2*j, 2+0*j], \"descend\")");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![3.0, 2.0, 1.0]);
+    }
+
+    #[test]
     fn eigsys_upper_triangular_residuals_near_zero() {
         // Regression: with the original e_0 starting vector, inverse iteration
         // could not move out of the e_0 invariant subspace for upper-triangular

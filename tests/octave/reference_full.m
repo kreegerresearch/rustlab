@@ -342,6 +342,7 @@ csvwrite('ref2_single_sum.csv',   sum([42]));
 csvwrite('ref2_single_mean.csv',  mean([3.14]));
 
 csvwrite('ref2_sort_ties.csv',    sort([3 1 3 1 2]));
+csvwrite('ref2_sort_descend.csv', sort([3 1 4 1 5 9 2 6], 'descend'));
 
 csvwrite('ref2_log_dynamic.csv',  log10([1e-10 1e10]));
 

@@ -300,6 +300,9 @@ save("out2_single_mean.csv",  mean([3.14]))
 # Sort with ties (should be stable for equal values)
 save("out2_sort_ties.csv",    sort([3.0, 1.0, 3.0, 1.0, 2.0]))
 
+# Sort descending — string-flag form
+save("out2_sort_descend.csv", sort([3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0], "descend"))
+
 # Large dynamic range
 save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))
 

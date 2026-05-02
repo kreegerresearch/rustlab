@@ -179,7 +179,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `mean(v)` | Arithmetic mean |
 | `median(v)` | Median (real parts; average of two middles for even length) |
 | `std(v)` | Standard deviation (N-1 denominator) |
-| `sort(v)` | Sort ascending by real part |
+| `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` | Sort by real part; default ascending |
 | `trapz(v)` / `trapz(x, v)` | Trapezoidal integration (unit or explicit spacing) |
 | `hist(v)` / `hist(v, n)` | Histogram; returns 2×n matrix (bin centers, counts). Alias: `histogram()` |
 | `histogram(v); savefig(file)` | Save histogram to PNG or SVG |

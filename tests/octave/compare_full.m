@@ -155,6 +155,7 @@ T_ITER   = 1e-4;
 [p,f]=check('single-element sum',    'ref2_single_sum.csv',        'out2_single_sum.csv',        T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('single-element mean',   'ref2_single_mean.csv',       'out2_single_mean.csv',       T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('sort ties',             'ref2_sort_ties.csv',         'out2_sort_ties.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('sort descend',          'ref2_sort_descend.csv',      'out2_sort_descend.csv',      T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('log10 dynamic range',   'ref2_log_dynamic.csv',       'out2_log_dynamic.csv',       T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('atan2 quadrants',       'ref2_atan2_quadrants.csv',   'out2_atan2_quadrants.csv',   T_TRIG);  pass_count+=p; fail_count+=f;
 [p,f]=check('linspace (n=1)',        'ref2_linspace_single.csv',   'out2_linspace_single.csv',   T_EXACT); pass_count+=p; fail_count+=f;

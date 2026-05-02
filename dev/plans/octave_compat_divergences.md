@@ -18,7 +18,7 @@
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | open |
 | 10 | `v(2:3) = []` (matrix-deletion assign) errors | Medium | open |
-| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | open |
+| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
 
 ## Things that already match (no work needed)
 
@@ -245,16 +245,13 @@ type error: expected scalar, got vector
 
 **Where to fix:** the assignment evaluator (`eval/mod.rs`). When the RHS is the empty vector/matrix, dispatch to a "delete" operation that builds the result by skipping the indexed positions instead of trying to assign. Needs care for matrix row/column deletion (`M(2, :) = []`).
 
-### 11. `sort(v, "descend")`
+### 11. `sort(v, "descend")` ✅ shipped 2026-05-02
 
-```
-rustlab> sort([3,1,4,1,5,9,2,6], "descend")
-wrong number of arguments for 'sort': expected 1, got 2
-```
+String-flag form `sort(v, "ascend")` / `sort(v, "descend")` accepted by `builtin_sort`. 5 in-process tests + a new octave-compare case (`sort_descend`) lock it in (max_err 0 against octave reference).
 
-**Octave/matlab:** `sort(v, "ascend")` (default) or `"descend"`. `sort(v, dim)` for matrix with axis. `[s, idx] = sort(v)` returns sorted values + permutation indices.
-
-**Where to fix:** `builtin_sort` — accept the optional direction string and the optional dim arg. Multi-output return for the index permutation.
+Two related forms still open:
+- **`sort(v, dim)` numeric-axis form for matrix input** — deferred until matrix reductions (#2/#3/#4) and the broader vector-type unification (PR-2a in §8) land.
+- **`[s, idx] = sort(v)` permutation indices** — needs nargout plumbing (option B in §8).
 
 ## Implementation suggestions
 
