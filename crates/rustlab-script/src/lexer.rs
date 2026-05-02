@@ -79,13 +79,69 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
     let chars: Vec<char> = source.chars().collect();
     let mut pos = 0;
     let mut line = 1usize;
+    // Track depth inside `[...]` and `{...}` so the whitespace handler below
+    // can decide whether a space is a column separator (octave/matlab style)
+    // or just decoration outside a literal.
+    let mut bracket_depth: i32 = 0;
+    let mut brace_depth: i32 = 0;
 
     while pos < chars.len() {
         let ch = chars[pos];
 
         match ch {
             ' ' | '\t' | '\r' => {
+                // Skip the whitespace run.
                 pos += 1;
+                while pos < chars.len()
+                    && (chars[pos] == ' ' || chars[pos] == '\t' || chars[pos] == '\r')
+                {
+                    pos += 1;
+                }
+                // Octave/matlab matrix-literal whitespace rule: inside `[...]`
+                // or `{...}`, whitespace between an operand and the start of
+                // another operand acts as a column separator (synthetic
+                // comma). A leading `+` or `-` immediately followed by an
+                // operand (no whitespace after) is treated as unary,
+                // marking the start of a new signed element — `[1 -2]` →
+                // `[1, -2]`. With whitespace on both sides (`[1 - 2]`) the
+                // operator stays binary.
+                if (bracket_depth > 0 || brace_depth > 0) && pos < chars.len() {
+                    let prev_is_operand = matches!(
+                        tokens.last().map(|t| &t.token),
+                        Some(Token::Number(_))
+                            | Some(Token::Ident(_))
+                            | Some(Token::Str(_))
+                            | Some(Token::RParen)
+                            | Some(Token::RBracket)
+                            | Some(Token::RBrace)
+                            | Some(Token::Apostrophe)
+                            | Some(Token::DotApostrophe)
+                            | Some(Token::End)
+                    );
+                    if prev_is_operand {
+                        let nxt = chars[pos];
+                        let next_after = chars.get(pos + 1).copied();
+                        let starts_operand = nxt.is_ascii_digit()
+                            || nxt.is_ascii_alphabetic()
+                            || nxt == '_'
+                            || nxt == '('
+                            || nxt == '['
+                            || nxt == '{'
+                            || nxt == '"'
+                            || (nxt == '.'
+                                && next_after.map_or(false, |c| c.is_ascii_digit()));
+                        let is_unary_signed = (nxt == '+' || nxt == '-')
+                            && next_after.map_or(false, |c| {
+                                !matches!(c, ' ' | '\t' | '\r' | '\n' | '=')
+                            });
+                        if starts_operand || is_unary_signed {
+                            tokens.push(Spanned {
+                                token: Token::Comma,
+                                line,
+                            });
+                        }
+                    }
+                }
             }
             '#' | '%' => {
                 // Comment: skip until newline (don't consume the newline)
@@ -324,6 +380,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                 pos += 1;
             }
             '[' => {
+                bracket_depth += 1;
                 tokens.push(Spanned {
                     token: Token::LBracket,
                     line,
@@ -331,6 +388,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                 pos += 1;
             }
             ']' => {
+                bracket_depth = bracket_depth.saturating_sub(1).max(0);
                 tokens.push(Spanned {
                     token: Token::RBracket,
                     line,
@@ -338,6 +396,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                 pos += 1;
             }
             '{' => {
+                brace_depth += 1;
                 tokens.push(Spanned {
                     token: Token::LBrace,
                     line,
@@ -345,6 +404,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                 pos += 1;
             }
             '}' => {
+                brace_depth = brace_depth.saturating_sub(1).max(0);
                 tokens.push(Spanned {
                     token: Token::RBrace,
                     line,

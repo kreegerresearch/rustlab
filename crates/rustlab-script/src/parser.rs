@@ -1090,13 +1090,20 @@ impl Parser {
         Ok(lhs)
     }
 
-    // unary = ('-' | '!') unary | factor
+    // unary = ('+' | '-' | '!') unary | factor
     //
     // Unary minus/not sits BELOW power (`^`, `.^`) so `-x.^2` parses as
     // `-(x.^2)` — matching Octave precedence. The RHS of `^`/`.^`
     // also goes through unary so `2^-3` still parses as `2^(-3)`.
+    // Unary `+` is a no-op pass-through; it exists so octave-style
+    // matrix literals like `[1 +2]` work after the lexer's
+    // whitespace-as-separator rule.
     fn parse_unary(&mut self) -> Result<Expr, ScriptError> {
         match self.peek_token() {
+            Token::Plus => {
+                self.advance();
+                self.parse_unary()
+            }
             Token::Minus => {
                 self.advance();
                 let inner = self.parse_unary()?;

@@ -1968,6 +1968,67 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn matrix_literal_space_separated() {
+        // [1 2 3] should equal [1, 2, 3] — octave-compatible whitespace
+        // separator inside matrix literals.
+        let ev = eval_str("v = [1 2 3]");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn matrix_literal_space_with_unary_minus() {
+        // [1 -2] should be [1, -2] (unary), not [1 - 2] = [-1] (binary).
+        let ev = eval_str("v = [1 -2 3 -4]");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![1.0, -2.0, 3.0, -4.0]);
+    }
+
+    #[test]
+    fn matrix_literal_binary_minus_with_spaces_both_sides() {
+        // [1 - 2] should be [-1] — whitespace on both sides keeps minus binary.
+        let ev = eval_str("v = [1 - 2]");
+        let vals = get_complex_vector(&ev, "v");
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].re, -1.0);
+    }
+
+    #[test]
+    fn matrix_literal_unary_plus() {
+        let ev = eval_str("v = [1 +2]");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn matrix_literal_two_d_with_whitespace_columns_and_semicolon_rows() {
+        let ev = eval_str("M = [1 2; 3 4]");
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 2));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[0, 1]].re, 2.0);
+                assert_eq!(m[[1, 0]].re, 3.0);
+                assert_eq!(m[[1, 1]].re, 4.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_array_space_separated() {
+        // Inside braces too: { "a" "b" "c" } should equal { "a", "b", "c" }.
+        let ev = eval_str("s = {\"a\" \"b\" \"c\"}");
+        match ev.get("s").unwrap() {
+            Value::StringArray(arr) => assert_eq!(arr, &vec!["a", "b", "c"]),
+            other => panic!("expected StringArray, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn cumsum_column_matrix_preserves_shape() {
         let ev = eval_str("R = cumsum([1; 2; 3])");
         match ev.get("R").unwrap() {

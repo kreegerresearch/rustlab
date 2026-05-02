@@ -8,7 +8,7 @@
 
 | # | Divergence | Severity | Status |
 |---|---|---|---|
-| 1 | Matrix literal requires commas; spaces rejected | High (parser) | open |
+| 1 | Matrix literal requires commas; spaces rejected | High (parser) | **shipped 2026-05-02** |
 | 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
 | 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **shipped 2026-05-02** (sum/mean/max/min/prod/std/median/cumsum) |
 | 4 | `sum(M, dim)` axis-selector form not supported | **High** | **partial 2026-05-02** (sum/mean/prod/std/median/cumsum accept dim; max/min defer due to elementwise-form ambiguity) |
@@ -39,19 +39,15 @@ Confirmed by audit + numeric suite. Listed here so a future reader doesn't go re
 
 ## Per-item detail
 
-### 1. Matrix literal requires commas
+### 1. Matrix literal requires commas ✅ shipped 2026-05-02
 
-```
-rustlab> [1 2; 3 4]
-parse error: expected RBracket, got Number(2.0)
-rustlab> [1, 2; 3, 4]    % works
-```
+The lexer now tracks `[...]` and `{...}` depth. When whitespace appears between an operand-ending token (number, identifier, string, `)`, `]`, `}`, `'`, `.'`, `end`) and the start of a new operand, it emits a synthetic `Comma` so the parser sees the same shape as the explicit-comma form.
 
-**Octave/matlab:** both `[1 2; 3 4]` and `[1, 2; 3, 4]` are valid. Whitespace is a column separator inside `[]`.
+The unary `+`/`-` disambiguation matches octave: `[1 -2]` is `[1, -2]` (whitespace before `-`, no whitespace after → unary) while `[1 - 2]` is `[-1]` (whitespace on both sides → binary). The parser also gained a unary `+` pass-through so `[1 +2]` works.
 
-**Where to fix:** lexer / parser inside `crates/rustlab-script/src/lexer.rs` + `parser.rs`. The change is local to the `[...]` matrix-literal grammar — switch from "comma is required between elements" to "comma OR whitespace separates elements; newline OR `;` separates rows". Watch for existing tests that depend on whitespace being insignificant outside literals.
+Inside `{...}` (string-array literals) the same rule fires, so `{"a" "b" "c"}` is now equivalent to `{"a", "b", "c"}`.
 
-**Tests to add:** snapshot of mixed-syntax literals (`[1 2 3]`, `[1, 2, 3]`, `[1 2; 3 4]`, `[1, 2; 3, 4]`, plus the cursed mixed `[1, 2 3; 4 5, 6]` octave accepts).
+7 new in-process tests cover space-separated rows, semicolon-separated 2-D matrices, both flavours of unary minus, unary plus, the binary-minus-with-spaces-on-both-sides case, and the brace-literal form. All 148 octave-compare cases still pass.
 
 ### 2/3/4. Matrix axis reductions — partial ✅ shipped 2026-05-02
 
