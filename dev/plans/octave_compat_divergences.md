@@ -13,7 +13,7 @@
 | 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | open |
 | 4 | `sum(M, dim)` axis-selector form not supported | **High** | open |
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
-| 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | open |
+| 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
@@ -107,16 +107,9 @@ rustlab> size(zeros(3))
 
 **Compat note:** this change *will break existing rustlab scripts* that rely on `zeros(N)` giving a row vector. Search the example scripts and notebooks before flipping. May want a deprecation warning first, then flip in a major version.
 
-### 6. `length(M)` returns wrong dimension
+### 6. `length(M)` returns wrong dimension ✅ shipped 2026-05-02
 
-```
-rustlab> length([1, 2, 3; 4, 5, 6])
-2                   % rustlab returns nrows
-```
-
-**Octave/matlab:** `length(M)` → `max(size(M))` → 3 for a 2×3 matrix. The "longest dimension" convention. Vectors land at their own length naturally.
-
-**Where to fix:** `builtin_length` / `len` — change from "return nrows" to "return max(nrows, ncols)".
+`builtin_len` (which both `len` and `length` register against) now returns `max(nrows, ncols)` for a `Value::Matrix`, matching octave/matlab's "longest dimension" convention. `Value::Vector` is unchanged (already returned its length). 3 in-process tests cover the matrix, column-vector-matrix, and vector cases. No octave-compare drift across all 137 cases.
 
 ### 7. Implicit expansion (matrix + row/col vector) ✅ shipped 2026-05-02
 

@@ -1783,6 +1783,41 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn length_of_matrix_returns_max_dim() {
+        // Octave/matlab convention: length(M) = max(size(M)). For a 2×3 matrix
+        // the length is 3, not 2 (which is what `nrows` would give).
+        let ev = eval_str("L = length([1,2,3;4,5,6])");
+        let l = match ev.get("L").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar for length, got {other:?}"),
+        };
+        assert_eq!(l, 3.0);
+    }
+
+    #[test]
+    fn length_of_column_vector_matrix() {
+        let ev = eval_str("L = length([1; 2; 3; 4])");
+        let l = match ev.get("L").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar, got {other:?}"),
+        };
+        assert_eq!(l, 4.0);
+    }
+
+    #[test]
+    fn length_of_row_matrix() {
+        // 1×N matrix; length should be N (the longer dimension).
+        let ev = eval_str("L = length([10, 20, 30, 40, 50] .+ 0 * [1, 2, 3, 4, 5])");
+        let l = match ev.get("L").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar, got {other:?}"),
+        };
+        // The expression above is still a Vector, but length(Vector(5)) = 5.
+        // Confirms the change doesn't affect the existing Vector path.
+        assert_eq!(l, 5.0);
+    }
+
+    #[test]
     fn eig_returns_column_matrix() {
         // eig(A) should return an N×1 column matrix (octave/matlab orientation).
         let ev = eval_str("v = eig([2,1;1,2])");

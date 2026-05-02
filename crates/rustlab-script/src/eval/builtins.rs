@@ -1744,7 +1744,11 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("len", &args, 1)?;
     match &args[0] {
         Value::Vector(v) => Ok(Value::Scalar(v.len() as f64)),
-        Value::Matrix(m) => Ok(Value::Scalar(m.nrows() as f64)),
+        // Octave/matlab convention: length(M) = max(size(M)). For column or
+        // row vectors this gives the natural length; for general matrices
+        // it gives the longest dimension. Use numel(M) for total element
+        // count and size(M) for full shape information.
+        Value::Matrix(m) => Ok(Value::Scalar(m.nrows().max(m.ncols()) as f64)),
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
