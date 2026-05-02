@@ -21,11 +21,12 @@ This analysis uses **1024** samples at a sample rate of
 Templates can contain any valid rustlab expression, not just variables:
 
 ```rustlab
+seed(42)
 x = randn(n_samples);
 signal_power = sum(x .* x) / length(x);
 ```
 
-The signal has 1024 samples with mean power 1.0514.
+The signal has 1024 samples with mean power 0.9950.
 The Nyquist frequency is 8000 Hz.
 
 ## Format Specifiers

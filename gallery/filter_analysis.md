@@ -52,6 +52,7 @@ where $w[n]$ is white Gaussian noise. We apply the filter via convolution
 $y = h * x$:
 
 ```rustlab
+seed(42)
 n = 0:255;
 x = sin(2*pi*0.1*n) + 0.5*randn(256);
 y = convolve(h, x);

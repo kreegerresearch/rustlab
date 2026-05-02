@@ -19,6 +19,7 @@ ${fs} Hz, giving a total duration of ${duration:%,.3f} seconds.
 Templates can contain any valid rustlab expression, not just variables:
 
 ```rustlab
+seed(42)
 x = randn(n_samples);
 signal_power = sum(x .* x) / length(x);
 ```
