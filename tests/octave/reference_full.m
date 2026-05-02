@@ -352,6 +352,16 @@ csvwrite('ref2_bcast_mat_plus_row.csv', M_bcast + [10 20 30]);
 csvwrite('ref2_bcast_mat_plus_col.csv', M_bcast + [100; 200]);
 csvwrite('ref2_bcast_col_plus_row.csv', [1; 2] + [10 20 30]);
 
+% Matrix axis reductions — default is column-wise (dim 1).
+M_red = [1 2 3; 4 5 6];
+csvwrite('ref2_sum_matrix_default.csv',  sum(M_red));
+csvwrite('ref2_sum_matrix_dim2.csv',     sum(M_red, 2));
+csvwrite('ref2_mean_matrix_default.csv', mean(M_red));
+csvwrite('ref2_mean_matrix_dim2.csv',    mean(M_red, 2));
+csvwrite('ref2_prod_matrix_default.csv', prod(M_red));
+csvwrite('ref2_max_matrix_default.csv',  max(M_red));
+csvwrite('ref2_min_matrix_default.csv',  min(M_red));
+
 csvwrite('ref2_log_dynamic.csv',  log10([1e-10 1e10]));
 
 csvwrite('ref2_atan2_quadrants.csv', atan2([1 1 -1 -1], [1 -1 -1 1]));

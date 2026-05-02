@@ -9,9 +9,9 @@
 | # | Divergence | Severity | Status |
 |---|---|---|---|
 | 1 | Matrix literal requires commas; spaces rejected | High (parser) | open |
-| 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | open |
-| 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | open |
-| 4 | `sum(M, dim)` axis-selector form not supported | **High** | open |
+| 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
+| 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **partial 2026-05-02** (sum/mean/max/min/prod done; std/median/cumsum pending) |
+| 4 | `sum(M, dim)` axis-selector form not supported | **High** | **partial 2026-05-02** (sum/mean/prod accept dim; max/min defer due to elementwise-form ambiguity) |
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
@@ -53,46 +53,23 @@ rustlab> [1, 2; 3, 4]    % works
 
 **Tests to add:** snapshot of mixed-syntax literals (`[1 2 3]`, `[1, 2, 3]`, `[1 2; 3 4]`, `[1, 2; 3, 4]`, plus the cursed mixed `[1, 2 3; 4 5, 6]` octave accepts).
 
-### 2. `sum(M)` on matrix collapses to scalar
+### 2/3/4. Matrix axis reductions — partial ✅ shipped 2026-05-02
 
-```
-rustlab> sum([1, 2; 3, 4])
-10                  % flat sum
-```
+`sum`, `mean`, `prod`, `max`, `min` now follow the octave/matlab "first non-singleton dim" reduction rule on matrix input:
 
-**Octave:** `sum([1 2; 3 4])` → `[4 6]` — a `1×ncols` row vector of column sums.
+- `sum(M)` for an `M×N` matrix with `M > 1`, `N > 1`: returns a `1×N` row matrix of column sums (default = dim 1).
+- `sum(Vector)` or `sum(Matrix(1, N))` or `sum(Matrix(N, 1))`: scalar (the 1-D-shaped reduction). matlab's `sum(sum(M))` idiom for "total" still works.
+- `sum(M, 1)` and `sum(M, 2)`: explicit dim selector. `dim=1` reduces columns, `dim=2` reduces rows. Same for `mean` and `prod`.
+- `min(M)` / `max(M)`: column min/max → row matrix. **`min(M, dim)` and `max(M, dim)` not yet supported** — the 2-arg form `min(a, b)` (elementwise scalar comparison) ambiguates with the dim arg in matlab too (matlab uses `min(M, [], 2)` with an empty placeholder). The 2-scalar form continues to work; matrix dim selector deferred.
 
-This is the matlab "default reduce along dim 1" convention. **Paired with item #4 below** — fixing the dim default and adding the dim arg is one change.
+Two helpers `parse_reduction_dim` and `complex_to_value` are shared across these reducers.
 
-**Where to fix:** `crates/rustlab-script/src/eval/builtins.rs` — `builtin_sum` (and the underlying matrix-handling code). For `Value::Matrix`: when no dim arg, reduce along dim 1 → `Vector(column_sums)`; for `Value::Vector`/`Value::Scalar`: keep current behavior. Vectors stay scalar-result.
+Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(sum(M))` idiom, `min(scalar, scalar)` 2-arg form, error path for invalid dim). 7 new octave-compare cases — `sum(M) default`, `sum(M, 2)`, `mean(M) default`, `mean(M, 2)`, `prod(M) default`, `max(M) default`, `min(M) default` — all match octave at machine precision.
 
-Edge case octave handles: a `1×N` row vector reduced gives back a scalar (because dim 1 has length 1, octave's auto rule picks "first non-singleton dimension"). Decide: match exactly, or always pick dim 1 for matrices. Cleanest is the octave rule.
-
-### 3. `mean` / `max` / `min` / `std` / `prod` / `cumsum` on matrix
-
-Same pattern as #2: today they collapse to a single scalar instead of returning a row vector of column reductions.
-
-```
-rustlab> mean([1, 2; 3, 4; 5, 6])
-3.5                 % flat mean
-rustlab> max([1, 2; 3, 4])
-4                   % flat max
-```
-
-**Octave:** `mean([1 2; 3 4; 5 6])` → `[3 4]`; `max([1 2; 3 4])` → `[3 4]`.
-
-**Functions to update:** `builtin_mean`, `builtin_median`, `builtin_max`, `builtin_min`, `builtin_std`, `builtin_prod`, `builtin_cumsum`, `builtin_argmax`, `builtin_argmin`, `builtin_any`, `builtin_all`. Audit the full reduction surface.
-
-### 4. `sum(M, dim)` axis arg
-
-```
-rustlab> sum([1, 2; 3, 4], 1)
-error: wrong number of arguments for 'sum': expected 1, got 2
-```
-
-**Octave:** `sum(M, 1)` → row vector (column sums); `sum(M, 2)` → column vector (row sums). Many octave programs use this.
-
-**Where to fix:** every reducer in #3. Accept an optional second positional `dim` argument; default to "first non-singleton dimension" (matches octave). For `dim == 1` reduce columns → row vector; for `dim == 2` reduce rows → column vector.
+**Still open:**
+- `std`, `median`, `cumsum`: the same axis treatment hasn't been added yet. `std` and `median` have more complex per-column logic; `cumsum` is straightforward but slightly different (returns same-shape matrix of running totals). Follow-on work.
+- `min(M, [], 2)` / `max(M, [], 2)` numeric dim form: deferred per the elementwise-vs-dim ambiguity above.
+- `argmin`/`argmax` matrix axis form: similar (single-output is fine for vectors today).
 
 ### 5. `zeros(n)` is a row vector, not a square matrix
 

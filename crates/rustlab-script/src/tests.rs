@@ -1783,6 +1783,138 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn sum_matrix_default_is_column_sums() {
+        // sum(M) reduces along dim 1 (columns) by default → 1×N row matrix.
+        let ev = eval_str("R = sum([1,2,3;4,5,6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 5.0);
+                assert_eq!(m[[0, 1]].re, 7.0);
+                assert_eq!(m[[0, 2]].re, 9.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sum_matrix_dim_2_is_row_sums() {
+        let ev = eval_str("R = sum([1,2,3;4,5,6], 2)");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 6.0);
+                assert_eq!(m[[1, 0]].re, 15.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sum_of_column_vector_matrix_is_scalar() {
+        // 1-D-shaped matrix collapses to a scalar via the first-non-singleton-dim rule.
+        let ev = eval_str("s = sum([1; 2; 3; 4])");
+        match ev.get("s").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 10.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sum_double_idiom_gives_total() {
+        // sum(sum(M)) is the matlab idiom for "total of all elements".
+        let ev = eval_str("t = sum(sum([1,2;3,4]))");
+        match ev.get("t").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 10.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sum_invalid_dim_errors() {
+        let _err = eval_err("sum([1,2;3,4], 3)");
+    }
+
+    #[test]
+    fn mean_matrix_default_is_column_means() {
+        let ev = eval_str("R = mean([1,2,3;4,5,6;7,8,9])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert!((m[[0, 0]].re - 4.0).abs() < 1e-12);
+                assert!((m[[0, 1]].re - 5.0).abs() < 1e-12);
+                assert!((m[[0, 2]].re - 6.0).abs() < 1e-12);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mean_matrix_dim_2_is_row_means() {
+        let ev = eval_str("R = mean([1,2,3;4,5,6;7,8,9], 2)");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (3, 1));
+                assert!((m[[0, 0]].re - 2.0).abs() < 1e-12);
+                assert!((m[[1, 0]].re - 5.0).abs() < 1e-12);
+                assert!((m[[2, 0]].re - 8.0).abs() < 1e-12);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prod_matrix_default_is_column_prods() {
+        let ev = eval_str("R = prod([1,2;3,4;5,6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 2));
+                assert_eq!(m[[0, 0]].re, 15.0);
+                assert_eq!(m[[0, 1]].re, 48.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_matrix_default_is_column_maxes() {
+        let ev = eval_str("R = max([1,5,3;4,2,6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 4.0);
+                assert_eq!(m[[0, 1]].re, 5.0);
+                assert_eq!(m[[0, 2]].re, 6.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_matrix_default_is_column_mins() {
+        let ev = eval_str("R = min([1,5,3;4,2,6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[0, 1]].re, 2.0);
+                assert_eq!(m[[0, 2]].re, 3.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_two_scalars_unchanged() {
+        // min(a, b) elementwise-style scalar comparison still works.
+        let ev = eval_str("m = min(7, 3)");
+        match ev.get("m").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 3.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn length_of_matrix_returns_max_dim() {
         // Octave/matlab convention: length(M) = max(size(M)). For a 2×3 matrix
         // the length is 3, not 2 (which is what `nrows` would give).
@@ -1806,14 +1938,13 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
 
     #[test]
     fn length_of_row_matrix() {
-        // 1×N matrix; length should be N (the longer dimension).
-        let ev = eval_str("L = length([10, 20, 30, 40, 50] .+ 0 * [1, 2, 3, 4, 5])");
+        // 1×N matrix produced by sum reduction; length should be N
+        // (the longer dimension), not 1 (the row count).
+        let ev = eval_str("R = sum([1,2,3,4,5; 10,20,30,40,50])\nL = length(R)");
         let l = match ev.get("L").unwrap() {
             Value::Scalar(n) => *n,
             other => panic!("expected scalar, got {other:?}"),
         };
-        // The expression above is still a Vector, but length(Vector(5)) = 5.
-        // Confirms the change doesn't affect the existing Vector path.
         assert_eq!(l, 5.0);
     }
 

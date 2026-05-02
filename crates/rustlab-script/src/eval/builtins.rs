@@ -1308,13 +1308,14 @@ fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_min(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("min", &args, 1, 2)?;
-    if args.len() == 2 {
-        let a = args[0]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("min: {}", e)))?;
-        let b = args[1]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("min: {}", e)))?;
+    // Two-scalar form `min(a, b)` retained — only fires when both args are
+    // genuinely scalar. Matrix-input axis reductions take precedence below.
+    if args.len() == 2
+        && matches!(args[0], Value::Scalar(_))
+        && matches!(args[1], Value::Scalar(_))
+    {
+        let a = args[0].to_scalar().unwrap();
+        let b = args[1].to_scalar().unwrap();
         return Ok(Value::Scalar(a.min(b)));
     }
     match &args[0] {
@@ -1323,8 +1324,25 @@ fn builtin_min(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(m))
         }
         Value::Matrix(m) if !m.is_empty() => {
-            let v = m.iter().map(|c| c.re).fold(f64::INFINITY, f64::min);
-            Ok(Value::Scalar(v))
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            // 1-D-shaped matrix → flat reduction → scalar.
+            if nrows == 1 || ncols == 1 {
+                let v = m.iter().map(|c| c.re).fold(f64::INFINITY, f64::min);
+                return Ok(Value::Scalar(v));
+            }
+            // 2-D matrix → row vector of column mins (default dim 1).
+            let mut data = vec![f64::INFINITY; ncols];
+            for ((_, j), x) in m.indexed_iter() {
+                if x.re < data[j] {
+                    data[j] = x.re;
+                }
+            }
+            let cdata: Vec<C64> = data.into_iter().map(|r| Complex::new(r, 0.0)).collect();
+            Ok(Value::Matrix(
+                Array2::from_shape_vec((1, ncols), cdata)
+                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
+            ))
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
         _ => Err(ScriptError::type_err(
@@ -1335,13 +1353,12 @@ fn builtin_min(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_max(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("max", &args, 1, 2)?;
-    if args.len() == 2 {
-        let a = args[0]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("max: {}", e)))?;
-        let b = args[1]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("max: {}", e)))?;
+    if args.len() == 2
+        && matches!(args[0], Value::Scalar(_))
+        && matches!(args[1], Value::Scalar(_))
+    {
+        let a = args[0].to_scalar().unwrap();
+        let b = args[1].to_scalar().unwrap();
         return Ok(Value::Scalar(a.max(b)));
     }
     match &args[0] {
@@ -1350,8 +1367,23 @@ fn builtin_max(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(m))
         }
         Value::Matrix(m) if !m.is_empty() => {
-            let v = m.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
-            Ok(Value::Scalar(v))
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 1 || ncols == 1 {
+                let v = m.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
+                return Ok(Value::Scalar(v));
+            }
+            let mut data = vec![f64::NEG_INFINITY; ncols];
+            for ((_, j), x) in m.indexed_iter() {
+                if x.re > data[j] {
+                    data[j] = x.re;
+                }
+            }
+            let cdata: Vec<C64> = data.into_iter().map(|r| Complex::new(r, 0.0)).collect();
+            Ok(Value::Matrix(
+                Array2::from_shape_vec((1, ncols), cdata)
+                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
+            ))
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
         _ => Err(ScriptError::type_err(
@@ -1389,25 +1421,56 @@ fn builtin_error(args: Vec<Value>) -> Result<Value, ScriptError> {
     Err(ScriptError::runtime(msg))
 }
 
+/// mean(v) — average of all elements of a vector / 1-D-shaped matrix → scalar.
+/// mean(M) — average along dim 1 (columns) → row matrix `1×ncols`.
+/// mean(M, 1) / mean(M, 2) — explicit axis.
 fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("mean", &args, 1)?;
+    check_args_range("mean", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("mean", &args)?;
     match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            let sum: Complex<f64> = v.iter().copied().sum();
-            let result = sum / v.len() as f64;
-            if result.im.abs() < 1e-12 {
-                Ok(Value::Scalar(result.re))
-            } else {
-                Ok(Value::Complex(result))
+        Value::Vector(v) if !v.is_empty() => match dim_arg {
+            Some(1) => Ok(args[0].clone()),
+            _ => {
+                let sum: C64 = v.iter().copied().sum();
+                Ok(complex_to_value(sum / v.len() as f64))
             }
-        }
+        },
         Value::Matrix(m) if !m.is_empty() => {
-            let sum: Complex<f64> = m.iter().copied().sum();
-            let result = sum / m.len() as f64;
-            if result.im.abs() < 1e-12 {
-                Ok(Value::Scalar(result.re))
-            } else {
-                Ok(Value::Complex(result))
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 1 || ncols == 1 {
+                let sum: C64 = m.iter().copied().sum();
+                return Ok(complex_to_value(sum / m.len() as f64));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            match dim {
+                1 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
+                    for ((_, j), &x) in m.indexed_iter() {
+                        data[j] += x;
+                    }
+                    for c in data.iter_mut() {
+                        *c /= nrows as f64;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((1, ncols), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                2 => {
+                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
+                    for ((i, _), &x) in m.indexed_iter() {
+                        data[i] += x;
+                    }
+                    for c in data.iter_mut() {
+                        *c /= ncols as f64;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((nrows, 1), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                _ => unreachable!(),
             }
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
@@ -1456,24 +1519,86 @@ fn builtin_std(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// sum(v) — sum of all elements. Returns Complex if any imaginary part is non-negligible.
+/// Parse the optional `dim` argument (1 or 2) used by matrix-axis reducers.
+fn parse_reduction_dim(name: &str, args: &[Value]) -> Result<Option<usize>, ScriptError> {
+    if args.len() < 2 {
+        return Ok(None);
+    }
+    let d = args[1]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("{}: dim: {}", name, e)))?
+        as i64;
+    if d != 1 && d != 2 {
+        return Err(ScriptError::type_err(format!(
+            "{}: dim must be 1 or 2, got {}",
+            name, d
+        )));
+    }
+    Ok(Some(d as usize))
+}
+
+/// Wrap a complex sum/reduction result, collapsing imaginary noise to zero
+/// when it's negligible.
+fn complex_to_value(s: C64) -> Value {
+    if s.im.abs() < 1e-12 {
+        Value::Scalar(s.re)
+    } else {
+        Value::Complex(s)
+    }
+}
+
+/// sum(v) — sum of all elements of a vector / 1-D-shaped matrix → scalar.
+/// sum(M) — sum along dim 1 (columns) → row matrix `1×ncols` (octave default).
+/// sum(M, 1) — explicit column sums.
+/// sum(M, 2) — row sums → column matrix `nrows×1`.
 fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("sum", &args, 1)?;
+    check_args_range("sum", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("sum", &args)?;
     match &args[0] {
         Value::Vector(v) => {
-            let s: C64 = v.iter().copied().sum();
-            if s.im.abs() < 1e-12 {
-                Ok(Value::Scalar(s.re))
-            } else {
-                Ok(Value::Complex(s))
+            // Vector behaves like a 1×N row matrix. dim=1 is a no-op; dim=2
+            // (or default) reduces to a scalar.
+            match dim_arg {
+                Some(1) => Ok(args[0].clone()),
+                _ => Ok(complex_to_value(v.iter().copied().sum())),
             }
         }
         Value::Matrix(m) => {
-            let s: C64 = m.iter().copied().sum();
-            if s.im.abs() < 1e-12 {
-                Ok(Value::Scalar(s.re))
-            } else {
-                Ok(Value::Complex(s))
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 0 || ncols == 0 {
+                return Ok(Value::Scalar(0.0));
+            }
+            // 1-D-shaped matrix → reduce all to scalar (octave first-non-
+            // singleton-dim rule).
+            if nrows == 1 || ncols == 1 {
+                return Ok(complex_to_value(m.iter().copied().sum()));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            match dim {
+                1 => {
+                    // Row of column sums.
+                    let mut data = vec![Complex::new(0.0, 0.0); ncols];
+                    for ((_, j), &x) in m.indexed_iter() {
+                        data[j] += x;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((1, ncols), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                2 => {
+                    // Column of row sums.
+                    let mut data = vec![Complex::new(0.0, 0.0); nrows];
+                    for ((i, _), &x) in m.indexed_iter() {
+                        data[i] += x;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((nrows, 1), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                _ => unreachable!(),
             }
         }
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
@@ -1485,30 +1610,51 @@ fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// prod(v) — product of all elements. Returns Complex if any imaginary part is non-negligible.
+/// prod(v) — product of all elements of a vector / 1-D-shaped matrix → scalar.
+/// prod(M) — product along dim 1 (columns) → row matrix `1×ncols`.
+/// prod(M, 1) / prod(M, 2) — explicit axis.
 fn builtin_prod(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("prod", &args, 1)?;
+    check_args_range("prod", &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim("prod", &args)?;
+    let one = Complex::new(1.0, 0.0);
     match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            let p: C64 = v
-                .iter()
-                .copied()
-                .fold(Complex::new(1.0, 0.0), |acc, x| acc * x);
-            if p.im.abs() < 1e-12 {
-                Ok(Value::Scalar(p.re))
-            } else {
-                Ok(Value::Complex(p))
-            }
-        }
+        Value::Vector(v) if !v.is_empty() => match dim_arg {
+            Some(1) => Ok(args[0].clone()),
+            _ => Ok(complex_to_value(
+                v.iter().copied().fold(one, |acc, x| acc * x),
+            )),
+        },
         Value::Matrix(m) if !m.is_empty() => {
-            let p: C64 = m
-                .iter()
-                .copied()
-                .fold(Complex::new(1.0, 0.0), |acc, x| acc * x);
-            if p.im.abs() < 1e-12 {
-                Ok(Value::Scalar(p.re))
-            } else {
-                Ok(Value::Complex(p))
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 1 || ncols == 1 {
+                return Ok(complex_to_value(
+                    m.iter().copied().fold(one, |acc, x| acc * x),
+                ));
+            }
+            let dim = dim_arg.unwrap_or(1);
+            match dim {
+                1 => {
+                    let mut data = vec![one; ncols];
+                    for ((_, j), &x) in m.indexed_iter() {
+                        data[j] = data[j] * x;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((1, ncols), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                2 => {
+                    let mut data = vec![one; nrows];
+                    for ((i, _), &x) in m.indexed_iter() {
+                        data[i] = data[i] * x;
+                    }
+                    Ok(Value::Matrix(
+                        Array2::from_shape_vec((nrows, 1), data)
+                            .map_err(|e| ScriptError::runtime(e.to_string()))?,
+                    ))
+                }
+                _ => unreachable!(),
             }
         }
         Value::Scalar(n) => Ok(Value::Scalar(*n)),

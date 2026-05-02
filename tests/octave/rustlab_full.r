@@ -314,6 +314,16 @@ save("out2_bcast_mat_plus_row.csv", M_bcast + [10.0, 20.0, 30.0])
 save("out2_bcast_mat_plus_col.csv", M_bcast + [100.0; 200.0])
 save("out2_bcast_col_plus_row.csv", [1.0; 2.0] + [10.0, 20.0, 30.0])
 
+# Matrix axis reductions — default is column-wise (dim 1).
+M_red = [1.0, 2.0, 3.0; 4.0, 5.0, 6.0]
+save("out2_sum_matrix_default.csv",  sum(M_red))
+save("out2_sum_matrix_dim2.csv",     sum(M_red, 2))
+save("out2_mean_matrix_default.csv", mean(M_red))
+save("out2_mean_matrix_dim2.csv",    mean(M_red, 2))
+save("out2_prod_matrix_default.csv", prod(M_red))
+save("out2_max_matrix_default.csv",  max(M_red))
+save("out2_min_matrix_default.csv",  min(M_red))
+
 # Large dynamic range
 save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))
 
