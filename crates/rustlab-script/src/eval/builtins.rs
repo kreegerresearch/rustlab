@@ -1554,9 +1554,20 @@ fn builtin_argmin(args: Vec<Value>) -> Result<Value, ScriptError> {
                 .unwrap();
             Ok(Value::Scalar((idx + 1) as f64))
         }
+        // 1-D-shaped matrix: treat as a vector and return a 1-based scalar index.
+        Value::Matrix(m) if (m.nrows() == 1 || m.ncols() == 1) && !m.is_empty() => {
+            let idx = m
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
+                .map(|(i, _)| i)
+                .unwrap();
+            Ok(Value::Scalar((idx + 1) as f64))
+        }
         Value::Scalar(_) => Ok(Value::Scalar(1.0)),
         _ => Err(ScriptError::type_err(
-            "argmin: argument must be a non-empty vector".to_string(),
+            "argmin: argument must be a non-empty vector, scalar, or 1-D-shaped matrix"
+                .to_string(),
         )),
     }
 }
@@ -1574,9 +1585,19 @@ fn builtin_argmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                 .unwrap();
             Ok(Value::Scalar((idx + 1) as f64))
         }
+        Value::Matrix(m) if (m.nrows() == 1 || m.ncols() == 1) && !m.is_empty() => {
+            let idx = m
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
+                .map(|(i, _)| i)
+                .unwrap();
+            Ok(Value::Scalar((idx + 1) as f64))
+        }
         Value::Scalar(_) => Ok(Value::Scalar(1.0)),
         _ => Err(ScriptError::type_err(
-            "argmax: argument must be a non-empty vector".to_string(),
+            "argmax: argument must be a non-empty vector, scalar, or 1-D-shaped matrix"
+                .to_string(),
         )),
     }
 }
@@ -1634,9 +1655,32 @@ fn builtin_sort(args: Vec<Value>) -> Result<Value, ScriptError> {
                 Ok(Value::Vector(Array1::from_vec(sorted)))
             }
         }
+        // Octave/matlab compat: a 1-D-shaped matrix (column vector or single
+        // row) is treated as a vector by sort. The output keeps the same
+        // shape so downstream code that depends on column-vs-row continues
+        // to work.
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            let mut elements: Vec<C64> = m.iter().copied().collect();
+            let any_nonzero_im = elements.iter().any(|c| c.im.abs() > 1e-12);
+            if !any_nonzero_im {
+                let mut reals: Vec<f64> = elements.iter().map(|c| c.re).collect();
+                reals.sort_unstable_by(cmp_real);
+                elements = reals.into_iter().map(|r| Complex::new(r, 0.0)).collect();
+            } else {
+                elements.sort_by(cmp_cx);
+            }
+            let result = Array2::from_shape_fn((nrows, ncols), |(i, j)| {
+                elements[i * ncols + j]
+            });
+            Ok(Value::Matrix(result))
+        }
         Value::Scalar(_) => Ok(args[0].clone()),
         _ => Err(ScriptError::type_err(
-            "sort: argument must be a vector or scalar".to_string(),
+            "sort: argument must be a vector, scalar, or 1-D-shaped matrix \
+             (column vector or single row)"
+                .to_string(),
         )),
     }
 }
@@ -5667,7 +5711,10 @@ fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
     let m = match &args[0] {
         Value::Matrix(m) => m,
         Value::Scalar(n) => {
-            return Ok(Value::Vector(Array1::from_vec(vec![Complex::new(*n, 0.0)])));
+            // Scalar → 1×1 problem; return a 1×1 column matrix to match
+            // the orientation of the general case.
+            let v = Array2::from_shape_fn((1, 1), |_| Complex::new(*n, 0.0));
+            return Ok(Value::Matrix(v));
         }
         other => {
             return Err(ScriptError::type_err(format!(
@@ -5686,7 +5733,10 @@ fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let h = hessenberg_reduce(m);
     let vals = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(e))?;
-    Ok(Value::Vector(Array1::from_vec(vals)))
+    // Return as an N×1 column vector — matches octave/matlab orientation.
+    let n = vals.len();
+    let col = Array2::from_shape_fn((n, 1), |(i, _)| vals[i]);
+    Ok(Value::Matrix(col))
 }
 
 /// `[V, D] = eigsys(A)` — dense full eigendecomposition.

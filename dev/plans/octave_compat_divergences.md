@@ -208,11 +208,11 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
 #### Suggested PR sequence
 
 1. **PR-1: Fix the inverse-iteration bug.** ✅ **Shipped 2026-05-02.** Initial vector in `inverse_iteration_cx` switched from `e_0` to the sine-of-index pattern the core helper uses. Regression test `eigsys_upper_triangular_residuals_near_zero` covers the `[4,1,0; 0,2,1; 0,0,5]` case (residuals all < 1e-9).
-2. **PR-2: Eigenvalue orientation.** `eig(A)` returns `N×1` column instead of `1×N` row. **Blocked — needs prerequisite work.** Attempted 2026-05-02 and reverted: changing the return type from `Value::Vector` to `Value::Matrix(N, 1)` broke `sort(eig(A))`, `min(eig(A))`, etc., because the rustlab type system treats `Value::Vector` (1D) and `Value::Matrix(N, 1)` (2D column) as separate types and most "vector-accepting" builtins only accept the former. The matlab idiom is "any 1-D-shaped thing is a vector," which rustlab does not implement.
+2. **PR-2: Eigenvalue orientation.** ✅ **shipped 2026-05-02.** `eig(A)` returns an `N×1` column matrix (octave/matlab orientation) instead of a `1×N` row vector.
 
-   **Prerequisite (PR-2a):** add a `to_complex_vec_view` helper that flattens `Value::Vector`, `Value::Matrix(N, 1)`, and `Value::Matrix(1, N)` to a common `Vec<C64>` shape. Sweep ~30 vector-accepting builtins (`sort`, `min`, `max`, `sum`, `mean`, `std`, `prod`, `cumsum`, `argmin`, `argmax`, `median`, `norm`, `dot`, `cross`, `outer`, `trapz`, `unique`, etc.) and route through the helper.
+   PR-2a (vector-type unification) landed alongside this for the most-common idioms — `sort`, `argmin`, `argmax`, `min`, `max` now accept `Matrix(N, 1)` and `Matrix(1, N)` as 1-D-shaped inputs. `sort` preserves the column/row shape on output; argmin/argmax return a scalar 1-based position in storage order; min/max already worked on matrices (flat reduction).
 
-   Once PR-2a lands, PR-2 itself becomes a one-line return-shape change with no downstream breakage.
+   The full PR-2a sweep (~30 vector-accepting builtins) is still in progress as a follow-on. The currently-shipped subset is enough to unblock the matlab `sort(eig(A))` idiom and similar pipelines. Functions yet to be migrated include `sum`, `mean`, `std`, `prod`, `cumsum`, `median`, `norm`, `dot`, `cross`, `outer`, `trapz` — most already accept matrix input via flat reduction, so the migration is primarily about confirming behavior on `Matrix(N, 1)` and adding tests.
 
    Note: PR-2a is also the underlying fix for divergence #6 (`length(M)`) — once "vector" is shape-agnostic, `length` of any 1-D-shaped value should return the obvious length.
 3. **PR-3: nargout option B.** Add `BuiltinKind` enum to the registry; update evaluator to pass `nargout` to the new variant. No user-visible change yet.

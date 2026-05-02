@@ -1783,6 +1783,69 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn eig_returns_column_matrix() {
+        // eig(A) should return an N×1 column matrix (octave/matlab orientation).
+        let ev = eval_str("v = eig([2,1;1,2])");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 2, "eig: expected nrows=2, got {}", m.nrows());
+                assert_eq!(m.ncols(), 1, "eig: expected ncols=1, got {}", m.ncols());
+            }
+            other => panic!("expected Matrix for eig() result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sort_accepts_column_matrix_preserves_shape() {
+        let ev = eval_str("c = [3; 1; 2]\ns = sort(c)");
+        match ev.get("s").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (3, 1));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[1, 0]].re, 2.0);
+                assert_eq!(m[[2, 0]].re, 3.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn argmax_accepts_column_matrix() {
+        let ev = eval_str("c = [3; 1; 4; 1; 5; 9; 2; 6]\nk = argmax(c)");
+        let k = match ev.get("k").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected Scalar, got {other:?}"),
+        };
+        assert_eq!(k, 6.0);
+    }
+
+    #[test]
+    fn argmin_accepts_column_matrix() {
+        let ev = eval_str("c = [3; 1; 4; 1; 5]\nk = argmin(c)");
+        let k = match ev.get("k").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected Scalar, got {other:?}"),
+        };
+        // First occurrence of minimum (1) is at position 2.
+        assert_eq!(k, 2.0);
+    }
+
+    #[test]
+    fn sort_eig_pipeline_works() {
+        // The matlab idiom sort(eig(A)) — broke before PR-2a because eig
+        // started returning a column matrix and sort rejected matrix input.
+        let ev = eval_str("A = [3, 1; 1, 3]\ns = sort(eig(A))");
+        match ev.get("s").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert!((m[[0, 0]].re - 2.0).abs() < 1e-10);
+                assert!((m[[1, 0]].re - 4.0).abs() < 1e-10);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn empty_assign_deletes_vector_range() {
         let ev = eval_str("v = [10, 20, 30, 40, 50]\nv(2:3) = []");
         let vals = get_complex_vector(&ev, "v");
