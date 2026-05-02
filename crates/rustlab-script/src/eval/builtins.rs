@@ -8688,10 +8688,43 @@ fn builtin_nonzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// `find(S)` — return [I, J, V] (1-based) for sparse matrix, [I, V] for sparse vector.
+/// `find(X)` — 1-based positions of nonzero elements.
+///
+/// For dense vectors, returns a vector of 1-based element indices.
+/// For dense matrices, returns a vector of 1-based **column-major** linear
+/// indices (octave/matlab convention): element `M(i, j)` lands at linear
+/// index `(j - 1) * nrows + i`.
+/// For sparse vectors, returns the tuple `[I, V]`.
+/// For sparse matrices, returns the tuple `[I, J, V]`.
 fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("find", &args, 1)?;
     match &args[0] {
+        Value::Vector(v) => {
+            let indices: Vec<C64> = v
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.re != 0.0 || c.im != 0.0)
+                .map(|(i, _)| Complex::new((i + 1) as f64, 0.0))
+                .collect();
+            Ok(Value::Vector(Array1::from_vec(indices)))
+        }
+        Value::Matrix(m) => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            let mut indices: Vec<C64> = Vec::new();
+            // Walk column-major so the resulting linear indices match
+            // octave/matlab's `M(:)` traversal order.
+            for c in 0..ncols {
+                for r in 0..nrows {
+                    let z = m[[r, c]];
+                    if z.re != 0.0 || z.im != 0.0 {
+                        let lin = c * nrows + r + 1;
+                        indices.push(Complex::new(lin as f64, 0.0));
+                    }
+                }
+            }
+            Ok(Value::Vector(Array1::from_vec(indices)))
+        }
         Value::SparseVector(sv) => {
             let indices: Vec<C64> = sv
                 .entries
@@ -8722,8 +8755,16 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
                 Value::Vector(Array1::from_vec(vals)),
             ]))
         }
+        Value::Scalar(n) => {
+            // Scalar: 1-element "vector"; index 1 if nonzero, empty otherwise.
+            if *n != 0.0 {
+                Ok(Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)])))
+            } else {
+                Ok(Value::Vector(Array1::from_vec(vec![])))
+            }
+        }
         other => Err(ScriptError::type_err(format!(
-            "find: expected sparse, got {}",
+            "find: expected vector, matrix, sparse vector, or sparse matrix; got {}",
             other.type_name()
         ))),
     }

@@ -303,6 +303,11 @@ save("out2_sort_ties.csv",    sort([3.0, 1.0, 3.0, 1.0, 2.0]))
 # Sort descending — string-flag form
 save("out2_sort_descend.csv", sort([3.0, 1.0, 4.0, 1.0, 5.0, 9.0, 2.0, 6.0], "descend"))
 
+# find() on a dense vector — 1-based positions of nonzeros
+save("out2_find_dense_vec.csv",   find([0.0, 5.0, 0.0, -3.0, 0.0, 7.0]))
+# find() on a dense matrix — column-major linear indices (octave convention)
+save("out2_find_dense_mat.csv",   find([0.0, 2.0; 3.0, 0.0]))
+
 # Large dynamic range
 save("out2_log_dynamic.csv",  log10([1e-10, 1e10]))
 

@@ -343,6 +343,8 @@ csvwrite('ref2_single_mean.csv',  mean([3.14]));
 
 csvwrite('ref2_sort_ties.csv',    sort([3 1 3 1 2]));
 csvwrite('ref2_sort_descend.csv', sort([3 1 4 1 5 9 2 6], 'descend'));
+csvwrite('ref2_find_dense_vec.csv', find([0 5 0 -3 0 7]));
+csvwrite('ref2_find_dense_mat.csv', find([0 2; 3 0]));
 
 csvwrite('ref2_log_dynamic.csv',  log10([1e-10 1e10]));
 

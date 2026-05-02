@@ -16,7 +16,7 @@
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | open |
 | 7 | Matrix + row/column vector implicit expansion errors | High | open |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | open |
-| 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | open |
+| 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` (matrix-deletion assign) errors | Medium | open |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
 
@@ -223,16 +223,17 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
 
 Each PR adds an octave-comparison case to `tests/octave/compare_full.m` so the regression is locked in.
 
-### 9. `find(M)` on dense matrix
+### 9. `find(M)` on dense matrix ✅ shipped 2026-05-02 (single-output form)
 
-```
-rustlab> find([0,2;3,0])
-type error: find: expected sparse, got matrix
-```
+`builtin_find` now accepts `Value::Vector`, `Value::Matrix`, and `Value::Scalar` in addition to the existing sparse cases.
 
-**Octave/matlab:** `find(M)` works on any array. Returns linear column-major indices of nonzero elements. `[I, J] = find(M)` returns row+col subscripts. `[I, J, V] = find(M)` adds values.
+- `find(v)` (dense vector) → vector of 1-based element indices.
+- `find(M)` (dense matrix) → vector of 1-based **column-major** linear indices, matching octave's `find(M)` traversal of `M(:)`.
+- `find(scalar)` → `[1]` if nonzero, empty otherwise.
 
-**Where to fix:** `builtin_find` in `builtins.rs` — accept `Value::Matrix` and `Value::Vector` in addition to sparse. Single-output → vector of linear indices. Multi-output → tuple of `[I, J]` or `[I, J, V]`. Use column-major linear indexing (matches octave and rustlab's existing reshape convention).
+Tests: 4 in-process tests (`find_on_dense_vector`, `find_on_dense_matrix_uses_column_major_indices`, `find_on_all_zeros_returns_empty`, `find_on_scalar`) plus two new octave-compare cases (`find dense vector`, `find dense matrix`). All match octave at machine precision.
+
+**Multi-output `[I, J] = find(M)` and `[I, J, V] = find(M)` are deferred** — they require nargout plumbing (option B in §8). Today's tuple-output form is reserved for the sparse cases where multi-output is the only sensible shape.
 
 ### 10. `v(2:3) = []` (matrix-deletion assign)
 

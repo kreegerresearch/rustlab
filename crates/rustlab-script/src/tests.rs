@@ -1728,6 +1728,42 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn find_on_dense_vector() {
+        let ev = eval_str("v = find([0, 5, 0, -3, 0, 7])");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn find_on_dense_matrix_uses_column_major_indices() {
+        // M = [0 2; 3 0]; column-major traversal: M(1,1)=0, M(2,1)=3, M(1,2)=2,
+        // M(2,2)=0. Linear indices of nonzeros are 2 (for 3) and 3 (for 2).
+        let ev = eval_str("v = find([0, 2; 3, 0])");
+        let vals = get_complex_vector(&ev, "v");
+        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
+        assert_eq!(reals, vec![2.0, 3.0]);
+    }
+
+    #[test]
+    fn find_on_all_zeros_returns_empty() {
+        let ev = eval_str("v = find([0, 0, 0])");
+        let vals = get_complex_vector(&ev, "v");
+        assert_eq!(vals.len(), 0);
+    }
+
+    #[test]
+    fn find_on_scalar() {
+        let ev_nz = eval_str("v = find(7)");
+        let ev_z = eval_str("v = find(0)");
+        let vnz = get_complex_vector(&ev_nz, "v");
+        let vz = get_complex_vector(&ev_z, "v");
+        assert_eq!(vnz.len(), 1);
+        assert_eq!(vnz[0].re, 1.0);
+        assert_eq!(vz.len(), 0);
+    }
+
+    #[test]
     fn sort_descend_complex_uses_real_part() {
         // Complex sort orders by real part (matches the existing 1-arg behavior).
         let ev = eval_str("v = sort([3+1*j, 1-2*j, 2+0*j], \"descend\")");
