@@ -171,15 +171,18 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
-| `sum(v)` | Sum all elements |
+| `sum(v)` / `sum(M)` / `sum(M, dim)` | Sum elements: vector → scalar; matrix → row of column sums (default dim 1) or column of row sums (dim 2). `sum(sum(M))` is the matlab idiom for total. |
 | `prod(v)` | Product of all elements |
-| `cumsum(v)` | Cumulative sum |
-| `min(v)`, `max(v)`, `min(a,b)`, `max(a,b)` | Min / max of vector or two scalars |
-| `argmin(v)`, `argmax(v)` | 1-based index of min / max |
-| `mean(v)` | Arithmetic mean |
+| `cumsum(v)` / `cumsum(M)` / `cumsum(M, dim)` | Running totals; matrix → same shape, per-column by default. |
+| `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-scalar form is elementwise; 3-arg `[]`-placeholder form selects axis (matlab convention). |
+| `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. |
+| `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
+| `median(v)` / `median(M)` / `median(M, dim)` | Median by real part; same axis rules. |
+| `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. |
+| `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
 | `median(v)` | Median (real parts; average of two middles for even length) |
 | `std(v)` | Standard deviation (N-1 denominator) |
-| `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` | Sort by real part; default ascending |
+| `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
 | `trapz(v)` / `trapz(x, v)` | Trapezoidal integration (unit or explicit spacing) |
 | `hist(v)` / `hist(v, n)` | Histogram; returns 2×n matrix (bin centers, counts). Alias: `histogram()` |
 | `histogram(v); savefig(file)` | Save histogram to PNG or SVG |
@@ -201,8 +204,9 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `det(M)` | Determinant |
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
-| `eig(M)` | Eigenvalues (column vector) |
-| `[V, D] = eigsys(M)` | Dense full eigendecomposition; V is n×n eigenvector matrix (one per column), D is length-n eigenvalue vector. Same shape contract as `eigs`. |
+| `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition. 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). |
+| `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
+| `[V, D] = eigsys(M)` | Same V as `[V, D] = eig(M)`, but D is returned as a length-N vector instead of a diagonal matrix — useful when you want to index `D(k)`. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `roots(p)` | Roots of polynomial with coefficients p |
@@ -338,7 +342,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `nnz(S)` | Number of stored non-zero entries |
 | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros(S)` | Vector of non-zero values in storage order |
-| `find(S)` | `[I,J,V]` for sparse matrix, `[I,V]` for sparse vector (1-based) |
+| `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / `find(S)` | Nargout-aware. Dense vector → 1-based indices; dense matrix → column-major linear indices (or `[I, J]` / `[I, J, V]` subscripts). Sparse: `[I, V]` (vec) or `[I, J, V]` (mat). |
 | `S(i,j)` | Index read (returns 0 for absent entries) |
 | `S(i,j) = val` | Index write (setting to 0 removes the entry) |
 | `transpose(S)` | Non-conjugate transpose (stays sparse) |

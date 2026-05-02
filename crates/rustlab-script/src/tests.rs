@@ -1968,6 +1968,125 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
+    fn eig_generalized_one_output() {
+        // eig(A, B) returns eigenvalues of the generalized problem A·v = λ·B·v.
+        // For A=[3 1; 1 3], B=diag(2, 1) the reduced matrix inv(B)·A is
+        // [1.5, 0.5; 1, 3], whose eigenvalues are (9 ± √17) / 4.
+        let ev = eval_str("A = [3, 1; 1, 3]\nB = [2, 0; 0, 1]\ne = eig(A, B)");
+        match ev.get("e").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                let mut vals = vec![m[[0, 0]].re, m[[1, 0]].re];
+                vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let lo = (9.0 - 17_f64.sqrt()) / 4.0;
+                let hi = (9.0 + 17_f64.sqrt()) / 4.0;
+                assert!((vals[0] - lo).abs() < 1e-10);
+                assert!((vals[1] - hi).abs() < 1e-10);
+            }
+            other => panic!("expected column matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_generalized_two_output_residual_near_zero() {
+        // [V, D] = eig(A, B): residual ‖A·V − B·V·D‖ should vanish.
+        let ev = eval_str(
+            "A = [3, 1; 1, 3]\nB = [2, 0; 0, 1]\n\
+             [V, D] = eig(A, B);\n\
+             r = norm(A*V - B*V*D);",
+        );
+        let r = match ev.get("r").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar, got {other:?}"),
+        };
+        assert!(r < 1e-10, "generalized eig residual = {} (expected ~0)", r);
+    }
+
+    #[test]
+    fn eig_generalized_singular_b_errors() {
+        let _err = eval_err("eig([1, 2; 3, 4], [0, 0; 0, 0])");
+    }
+
+    #[test]
+    fn eig_generalized_size_mismatch_errors() {
+        let _err = eval_err("eig([1, 2; 3, 4], [1, 0, 0; 0, 1, 0; 0, 0, 1])");
+    }
+
+    #[test]
+    fn min_axis_three_arg_form() {
+        // min(M, [], 1) and min(M, [], 2) — matlab axis form via empty placeholder.
+        let ev = eval_str(
+            "M = [1, 5, 3; 4, 2, 6]\n\
+             c = min(M, [], 1);\n\
+             r = min(M, [], 2);",
+        );
+        // c should be a 1x3 row of column mins.
+        match ev.get("c").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[0, 1]].re, 2.0);
+                assert_eq!(m[[0, 2]].re, 3.0);
+            }
+            other => panic!("expected Matrix for c, got {other:?}"),
+        }
+        // r should be a 2x1 column of row mins.
+        match ev.get("r").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 1.0);
+                assert_eq!(m[[1, 0]].re, 2.0);
+            }
+            other => panic!("expected Matrix for r, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_axis_three_arg_form() {
+        let ev = eval_str("R = max([1, 5, 3; 4, 2, 6], [], 2)");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 5.0);
+                assert_eq!(m[[1, 0]].re, 6.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn argmin_matrix_default_is_column_argmins() {
+        let ev = eval_str("R = argmin([1, 5, 3; 4, 2, 6])");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 1.0); // col 1: min is at row 1
+                assert_eq!(m[[0, 1]].re, 2.0); // col 2: min at row 2
+                assert_eq!(m[[0, 2]].re, 1.0); // col 3: min at row 1
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn argmax_matrix_dim_2() {
+        let ev = eval_str("R = argmax([1, 5, 3; 4, 2, 6], 2)");
+        match ev.get("R").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 2.0); // row 1: max 5 at col 2
+                assert_eq!(m[[1, 0]].re, 3.0); // row 2: max 6 at col 3
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_three_arg_non_empty_middle_errors() {
+        let _err = eval_err("min([1, 2; 3, 4], 99, 1)");
+    }
+
+    #[test]
     fn eig_two_output_returns_diagonal_d() {
         // [V, D] = eig(A) — V matrix + D diagonal matrix (matlab convention).
         let ev = eval_str("A = [2, 1; 1, 2]\n[V, D] = eig(A)");

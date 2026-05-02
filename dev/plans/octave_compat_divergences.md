@@ -11,11 +11,11 @@
 | 1 | Matrix literal requires commas; spaces rejected | High (parser) | **shipped 2026-05-02** |
 | 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
 | 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **shipped 2026-05-02** (sum/mean/max/min/prod/std/median/cumsum) |
-| 4 | `sum(M, dim)` axis-selector form not supported | **High** | **partial 2026-05-02** (sum/mean/prod/std/median/cumsum accept dim; max/min defer due to elementwise-form ambiguity) |
+| 4 | `sum(M, dim)` axis-selector form not supported | **High** | **shipped 2026-05-02** (all reducers + max/min via `[]` placeholder + argmin/argmax dim) |
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
-| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **partial 2026-05-02** (PR-1/2/2a/3/4 shipped; PR-5 dense generalized open) |
+| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-5; PR-6 vector/matrix flag remains low-priority) |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
@@ -64,28 +64,16 @@ Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(
 
 **Update 2026-05-02 (continued):** `std`, `median`, `cumsum` axis reductions also shipped. `median(M)` and `std(M)` produce per-column scalars in a `1×ncols` row; `cumsum(M)` produces a same-shape matrix of running totals along the chosen dim. All three accept the `dim` arg. Two helpers (`median_of_real_slice`, `std_of_slice`) factored out of the per-column logic.
 
-**Still open:**
-- `min(M, [], 2)` / `max(M, [], 2)` numeric dim form: deferred per the elementwise-vs-dim ambiguity (see pickup roadmap below).
-- `argmin`/`argmax` matrix axis form: same shape pattern, also waiting on the same disambiguation question.
+**Update 2026-05-02 (continued):** the remaining axis-form items shipped via path 1 (matlab `[]`-placeholder convention).
 
-#### Pickup roadmap for `min(M, dim)` / `max(M, dim)`
+- `min(M, [], 1)`, `min(M, [], 2)`, `max(M, [], 1)`, `max(M, [], 2)`: 3-arg form with the empty-matrix placeholder selects the reduction axis. The 2-scalar `min(a, b)` form still works.
+- `argmin(M)`, `argmin(M, 1)`, `argmin(M, 2)`, `argmax(M)`, `argmax(M, 1)`, `argmax(M, 2)`: matrix → row vector of per-column argmins (default dim 1) or column vector of per-row argmins (dim 2). Vector and 1-D-matrix inputs continue to return a scalar.
+- Two helpers (`is_empty_matrix_placeholder`, `matrix_axis_extremum`, `matrix_axis_argmin_argmax`) factored out of the per-column logic.
 
-The reason this is hard: `min` and `max` already have a 2-arg form `min(a, b)` for scalar/elementwise comparison. matlab has the same overlap and resolves it with an empty `[]` placeholder — `min(M, [], 2)` for "min of M along dim 2." Two reasonable paths in rustlab:
+5 new in-process tests (axis form for min/max, argmin/argmax default + dim 2, error path for non-empty middle arg) plus three new octave-compare cases land at machine precision.
 
-1. **Match matlab strictly: accept `min(M, [], dim)` with `[]` as an explicit empty.** Pros: anyone porting matlab code wins immediately. Cons: requires `[]` to be representable as an arg — today `[]` is parsed as an empty matrix (`Value::Matrix(0, 0)`), so the dispatch could be: 3 args where args[1] is a 0×0 matrix → axis form. Code changes:
-   - `builtin_min` and `builtin_max`: extend the arg count check from 2 to 3; when 3 args and middle is empty, route to the same column-reduction code that `sum(M, dim)` uses.
-   - Add tests `min([1, 2; 3, 0], [], 1)` → `[1, 0]` and `min([1, 2; 3, 0], [], 2)` → `[1; 0]`.
-
-2. **Diverge from matlab: accept `min(M, "dim", 2)` with a string flag.** Pros: no overlap with the 2-arg form. Cons: matlab users will trip over it.
-
-**Recommend path 1.** It's slightly more code but matches matlab idioms users will copy-paste from documentation. The `[]` empty-matrix parse is already in the lexer/parser.
-
-#### Pickup roadmap for `argmin(M)` / `argmax(M)` axis form
-
-Today `argmin(v)` returns a scalar 1-based index. matlab's `argmin(M)` returns a row vector of per-column argmin indices. Same pattern as `min(M)` after PR-2 — easy follow-on. Both functions already accept `Matrix(N, 1)` and `Matrix(1, N)` from the PR-2a partial; what's left is the M×N case (M>1, N>1) returning a row of N argmin indices. With nargout option B already shipped, `[m, i] = min(M)` could also return values + indices in one call (matlab does this).
-
-Code locations:
-- `crates/rustlab-script/src/eval/builtins.rs` — search for `fn builtin_min`, `fn builtin_max`, `fn builtin_argmin`, `fn builtin_argmax`. The `parse_reduction_dim` helper and the column-iteration pattern from `sum`/`mean`/`prod` apply directly.
+**Still open in this divergence cluster:**
+- Multi-output `[m, i] = min(M)` / `[m, i] = max(M)` for combined value + index. Nargout plumbing is already in place (see §8 PR-3); this is a small follow-on. Same for `[m, i] = min(v)` on a vector.
 
 ### 5. `zeros(n)` is a row vector, not a square matrix
 
@@ -241,7 +229,7 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
    Note: PR-2a is also the underlying fix for divergence #6 (`length(M)`) — once "vector" is shape-agnostic, `length` of any 1-D-shaped value should return the obvious length.
 3. **PR-3: nargout option B.** ✅ **shipped 2026-05-02.** `BuiltinFnNargout = fn(Vec<Value>, usize) -> Result<Value, ScriptError>` and a private `BuiltinKind { Stateless, Nargout }` registry enum landed. `BuiltinRegistry::register_nargout` registers nargout-aware builtins; the evaluator's `MultiAssign` handler intercepts top-level `Expr::Call` to a registered builtin and forwards `names.len()` as the nargout hint. Most ~170 builtins are unchanged.
 4. **PR-4: Eig family overload.** ✅ **shipped 2026-05-02.** `eig` is nargout-aware: `e = eig(A)` returns the `N×1` column vector of eigenvalues; `[V, D] = eig(A)` returns V (eigenvector matrix) plus D as a **diagonal matrix** (matlab convention). Internally the 2-output path reuses `eigsys`'s pipeline and promotes the eigenvalue vector to `diag(eigvalues)`. `eigsys` continues to ship as a one-release alias (returns the same V + vector D for callers that prefer the rustlab convention; `diag(D)` extracts the vector from `eig`-2-output's diagonal matrix). The matlab idiom `[V, D] = eig(A); D` now produces a diagonal matrix as expected.
-5. **PR-5: Dense generalized `eig(A, B)`.** Open. Two-arg `eig(A, B)` for `A·v = λ·B·v` is the next item in the eig family. Approach: when B is SPD (Hermitian + positive-real diagonal) reduce via Cholesky `B = L·L^H` and run standard `eig(L^{-1}·A·L^{-H})`; for general B fall back to a QZ decomposition (bigger lift, deferred). The 1-output form returns the column vector of generalized eigenvalues; the 2-output `[V, D] = eig(A, B)` returns V + diagonal D. Both forms share the same nargout dispatch already in place.
+5. **PR-5: Dense generalized `eig(A, B)`.** ✅ **shipped 2026-05-02.** Two-arg `eig(A, B)` for `A·v = λ·B·v` reduces to standard `eig(inv(B)·A)` — the eigenvalues are the same and the eigenvector matrix is unchanged. Both 1-output (`e = eig(A, B)` → column vector) and 2-output (`[V, D] = eig(A, B)` → V + diagonal D) forms share the existing nargout dispatch. The implementation requires B invertible; SPD-aware Cholesky reduction is a future optimization, and QZ for non-invertible B is deferred. A small `eig_resolve_input` helper handles both the 1-arg and 2-arg cases for `eig` and `eigsys`. 4 in-process tests cover the standard form, generalized 1-output, generalized 2-output residual, singular B, and size mismatch.
 6. **PR-6 (optional, low priority): "vector"/"matrix" flags** for explicit D shape control. Useful for porting matlab code that explicitly opts out of the diagonal-matrix default.
 
 In addition, **two other builtins were migrated to the new nargout path in the same session:**

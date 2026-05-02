@@ -139,14 +139,20 @@ Both are deferred to a follow-up cycle; see
 
 | Form                                       | What it does                                       |
 |-------------------------------------------|---------------------------------------------------|
-| `[V, D] = eigs(A, n)`                       | n smallest (default)                              |
+| `e = eig(A)`                                | dense, all eigenvalues (column vector)            |
+| `[V, D] = eig(A)`                           | dense, all eigenpairs; `D` is a diagonal matrix   |
+| `e = eig(A, B)`                             | dense generalized `A·v = λ·B·v` (B invertible)    |
+| `[V, D] = eig(A, B)`                        | dense generalized eigenpairs                      |
+| `[V, D] = eigsys(A)`                        | same as `[V, D] = eig(A)` but `D` as a vector     |
+| `[V, D] = eigs(A, n)`                       | sparse, n smallest (default)                      |
 | `[V, D] = eigs(A, n, "sm")`                 | same                                              |
-| `[V, D] = eigs(A, n, "lm")`                 | n largest                                          |
-| `[V, D] = eigs(A, B, n)`                    | generalized A x = λ B x, smallest, B SPD          |
-| `[V, D] = eigs(A, B, n, "lm")`              | generalized, largest                              |
+| `[V, D] = eigs(A, n, "lm")`                 | sparse, n largest                                 |
+| `[V, D] = eigs(A, B, n)`                    | sparse generalized (B SPD), smallest              |
+| `[V, D] = eigs(A, B, n, "lm")`              | sparse generalized, largest                       |
 
-`A` and `B` must be **sparse** (call `sparse(A)` first if dense). Use
-`eig(A)` for dense problems where you want all the eigenvalues at once.
+The sparse forms (`eigs`) require both `A` and `B` to be sparse — call
+`sparse(A)` first if you have a dense matrix. The dense form (`eig`)
+works directly on `Value::Matrix` inputs and returns *all* eigenpairs.
 
 ## Background — why hand-rolled
 
