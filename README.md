@@ -459,6 +459,29 @@ Execute a `.rlab` script file.
 rustlab run examples/bandpass.rlab
 ```
 
+### `rustlab docs [TOPIC]`
+
+Look up rustlab builtin function documentation from the shell — same data
+as the REPL's `help` / `?` commands, no need to launch the REPL just to
+remember what arguments `firpm` takes.
+
+```sh
+rustlab docs                       # list every builtin grouped by category
+rustlab docs eig                   # detail for one builtin (usage + examples)
+rustlab docs Plotting              # list one category
+rustlab docs --search eigen        # substring match across names + briefs
+rustlab docs --json                # machine-readable dump (one object per builtin)
+```
+
+The `--json` form prints a JSON array of `{name, category, brief, detail}`
+records covering every builtin (~250 entries). Useful for editor
+extensions, autocomplete plugins, and AI tooling that wants a single
+authoritative index without re-implementing the categories table.
+
+When the topic doesn't match any builtin or category name, `rustlab docs`
+prints a "No help found" message and exits with a non-zero status — handy
+in scripts that probe for support of a particular feature.
+
 ### `rustlab filter fir [OPTIONS]`
 
 Design an FIR filter and print coefficients to stdout (one per line).

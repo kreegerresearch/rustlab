@@ -739,6 +739,7 @@ rustlab-viewer --socket PATH    # custom socket path
 - `src/commands/window.rs` — generates window, prints values, optional `--plot`
 - `src/commands/plot.rs` — reads CSV, dispatches to plot functions
 - `src/commands/notebook.rs` — `rustlab notebook render` subcommand, delegates to `rustlab_notebook`
+- `src/commands/docs.rs` — `rustlab docs` subcommand. Surfaces the REPL's `HELP` and `CATEGORIES` tables (which live as `pub` items in `commands/repl.rs`) from the shell. Forms: `docs` (list-all by category), `docs <name>` (detail), `docs <category>` (single-category list), `docs --search <q>` (substring match over names+briefs), `docs --json` (machine-readable dump for editor extensions / AI tooling). Unknown topic exits non-zero with a "No help found" message. Tests in `tests/docs.rs`.
 
 **Default behaviour:** `rustlab` with no arguments starts the REPL.
 

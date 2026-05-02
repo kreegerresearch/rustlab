@@ -4,7 +4,9 @@ Concise cheat sheet for the rustlab scripting language. Full signatures and exam
 
 Run a script: `rustlab run script.rlab` — Interactive REPL: `rustlab`
 
-> **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented.
+Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs Plotting` (category), `rustlab docs --search query` (substring match), `rustlab docs --json` (machine-readable index of every builtin).
+
+> **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented. For a programmatic index, run `rustlab docs --json` and parse the result.
 
 ---
 

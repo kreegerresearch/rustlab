@@ -10,13 +10,14 @@ use crate::color;
 
 // ─── Help text ────────────────────────────────────────────────────────────────
 
-struct HelpEntry {
-    name: &'static str,
-    brief: &'static str,
-    detail: &'static str,
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct HelpEntry {
+    pub name: &'static str,
+    pub brief: &'static str,
+    pub detail: &'static str,
 }
 
-const HELP: &[HelpEntry] = &[
+pub const HELP: &[HelpEntry] = &[
     // Math
     HelpEntry { name: "abs",    brief: "Absolute value / magnitude",
         detail: "abs(x)  — scalar, complex, vector, or matrix\n  Returns element-wise magnitude; complex inputs give their L2 norm per element.\n  abs([-1, 2; -3, 4])  →  [1, 2; 3, 4]" },
@@ -842,23 +843,17 @@ pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
     }
 }
 
-fn print_help_list() {
-    println!();
-    println!(
-        "  {:<26}  {}",
-        color::bold("Command / Topic"),
-        color::bold("Description")
-    );
-    println!("  {}", color::dim(&"-".repeat(60)));
-
-    let categories = [
+/// Categorical grouping of `HELP` entries used by `print_help_list` and the
+/// `rustlab docs` subcommand. Each tuple is `(category-name, &[entry-names])`.
+/// Public so that out-of-crate tooling and `commands/docs.rs` can iterate.
+pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Math",
             &[
                 "abs", "angle", "real", "imag", "conj", "cos", "sin", "acos", "asin", "atan",
                 "atan2", "tanh", "sinh", "cosh", "sqrt", "exp", "log", "log10", "log2", "floor",
                 "ceil", "round", "sign", "mod",
-            ][..],
+            ],
         ),
         (
             "ML / Activation",
@@ -1053,9 +1048,18 @@ fn print_help_list() {
             ],
         ),
         ("Filesystem", &["run", "ls", "cd", "pwd"]),
-    ];
+];
 
-    for (cat, names) in &categories {
+pub fn print_help_list() {
+    println!();
+    println!(
+        "  {:<26}  {}",
+        color::bold("Command / Topic"),
+        color::bold("Description")
+    );
+    println!("  {}", color::dim(&"-".repeat(60)));
+
+    for (cat, names) in CATEGORIES {
         println!("\n  {}:", color::bold_yellow(cat));
         for &n in *names {
             if let Some(e) = HELP.iter().find(|e| e.name == n) {
@@ -1072,23 +1076,44 @@ fn print_help_list() {
     println!();
 }
 
-fn print_help_detail(topic: &str) {
-    match HELP.iter().find(|e| e.name == topic) {
-        Some(e) => {
-            println!();
-            println!("  {}  —  {}", color::bold_cyan(e.name), e.brief);
-            println!();
-            for line in e.detail.lines() {
-                println!("  {}", line);
-            }
-            println!();
+/// Print the detail block for one builtin. If `topic` doesn't match an entry
+/// name, fall back to checking the categories list (case-insensitive) and list
+/// that category's entries instead. Returns `true` on a hit, `false` when
+/// neither name nor category matched.
+pub fn print_help_detail(topic: &str) -> bool {
+    if let Some(e) = HELP.iter().find(|e| e.name == topic) {
+        println!();
+        println!("  {}  —  {}", color::bold_cyan(e.name), e.brief);
+        println!();
+        for line in e.detail.lines() {
+            println!("  {}", line);
         }
-        None => println!(
-            "No help found for '{}'.  Type {} for a full list.",
-            color::yellow(&format!("'{}'", topic)),
-            color::bold("'help'")
-        ),
+        println!();
+        return true;
     }
+
+    // Try as a category name (case-insensitive).
+    if let Some((cat, names)) = CATEGORIES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(topic))
+    {
+        println!();
+        println!("  {}:", color::bold_yellow(cat));
+        for &n in *names {
+            if let Some(e) = HELP.iter().find(|e| e.name == n) {
+                println!("    {:<24}  {}", color::cyan(e.name), e.brief);
+            }
+        }
+        println!();
+        return true;
+    }
+
+    println!(
+        "No help found for '{}'.  Type {} for a full list.",
+        color::yellow(&format!("'{}'", topic)),
+        color::bold("'help'")
+    );
+    false
 }
 
 // ─── Tab completion helper ────────────────────────────────────────────────────

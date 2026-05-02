@@ -3378,6 +3378,8 @@ dependencies = [
  "rustlab-plot",
  "rustlab-script",
  "rustyline",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
