@@ -202,6 +202,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
 | `eig(M)` | Eigenvalues (column vector) |
+| `[V, D] = eigsys(M)` | Dense full eigendecomposition; V is n×n eigenvector matrix (one per column), D is length-n eigenvalue vector. Same shape contract as `eigs`. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `roots(p)` | Roots of polynomial with coefficients p |

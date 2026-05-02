@@ -198,6 +198,7 @@ impl BuiltinRegistry {
         r.register("expm", builtin_expm);
         r.register("linsolve", builtin_linsolve);
         r.register("eig", builtin_eig);
+        r.register("eigsys", builtin_eigsys);
         r.register("eigs", builtin_eigs);
         // Special functions
         r.register("laguerre", builtin_laguerre);
@@ -5654,6 +5655,79 @@ fn builtin_eig(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::Vector(Array1::from_vec(vals)))
 }
 
+/// `[V, D] = eigsys(A)` — dense full eigendecomposition.
+///
+/// Returns `[V, D]` where `V` is the `n × n` matrix of eigenvectors (one per
+/// column) and `D` is a length-`n` vector of eigenvalues, in the same order
+/// as the columns of `V`. Same shape convention as `eigs` (the sparse
+/// partial solver).
+///
+/// `eig(A)` returns just the eigenvalue vector — use that when you do not
+/// need eigenvectors. `eigsys(A)` is the right choice when you need both.
+///
+/// Algorithm: eigenvalues via Hessenberg reduction + shifted QR (the same
+/// pipeline `eig` uses). Each eigenvector recovered by shifted inverse
+/// iteration on the original matrix `A`. Defective matrices may produce an
+/// ill-conditioned `V`; the eigenvalues remain accurate.
+fn builtin_eigsys(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("eigsys", &args, 1)?;
+    let m = match &args[0] {
+        Value::Matrix(m) => m.clone(),
+        Value::Scalar(n) => {
+            let v = Array2::from_shape_fn((1, 1), |_| Complex::new(1.0, 0.0));
+            let d = Array1::from_vec(vec![Complex::new(*n, 0.0)]);
+            return Ok(Value::Tuple(vec![Value::Matrix(v), Value::Vector(d)]));
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "eigsys: expected a square matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let rows = m.nrows();
+    let cols = m.ncols();
+    if rows != cols {
+        return Err(ScriptError::type_err(format!(
+            "eigsys: matrix must be square (got {}×{})",
+            rows, cols
+        )));
+    }
+    if rows == 0 {
+        return Err(ScriptError::type_err(
+            "eigsys: matrix must be non-empty".to_string(),
+        ));
+    }
+
+    let h = hessenberg_reduce(&m);
+    let vals = eig_hessenberg(&h)
+        .map_err(|e| ScriptError::runtime(format!("eigsys: {}", e)))?;
+    let n = vals.len();
+
+    let mut v_mat: CMatrix = Array2::zeros((n, n));
+    for (k, &lambda) in vals.iter().enumerate() {
+        let v = inverse_iteration_cx(&m, lambda, 40).map_err(|e| {
+            ScriptError::runtime(format!(
+                "eigsys: eigenvector for λ_{}={} could not be recovered ({}). \
+                 The matrix may be defective (repeated eigenvalues with fewer \
+                 linearly independent eigenvectors than algebraic multiplicity); \
+                 use eig(A) for eigenvalues only.",
+                k + 1,
+                lambda,
+                e
+            ))
+        })?;
+        for i in 0..n {
+            v_mat[[i, k]] = v[i];
+        }
+    }
+
+    Ok(Value::Tuple(vec![
+        Value::Matrix(v_mat),
+        Value::Vector(Array1::from_vec(vals)),
+    ]))
+}
+
 /// `eigs(A, n)` / `eigs(A, n, which)` / `eigs(A, B, n)` / `eigs(A, B, n, which)`
 ///
 /// Sparse partial eigensolver. Returns the `n` eigenvalues selected by
@@ -6845,7 +6919,7 @@ fn inverse_iteration_cx(
 
     let inv = matrix_inv(&shifted).map_err(|e| {
         ScriptError::type_err(format!(
-            "lqr: inverse iteration failed (singular shift): {}",
+            "inverse iteration failed (singular shift): {}",
             e
         ))
     })?;

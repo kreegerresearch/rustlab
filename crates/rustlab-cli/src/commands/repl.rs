@@ -152,7 +152,9 @@ const HELP: &[HelpEntry] = &[
     HelpEntry { name: "linsolve", brief: "Solve the linear system  A*x = b",
         detail: "linsolve(A, b)  — A is n×n (dense or sparse), b is a length-n vector\n  Sparse A is converted to dense internally.\n  Returns x as a vector." },
     HelpEntry { name: "eig",      brief: "Eigenvalues of a square matrix",
-        detail: "eig(M)  — returns a complex vector of eigenvalues\n  Uses QR iteration via Hessenberg reduction." },
+        detail: "eig(M)  — returns a complex vector of eigenvalues\n  Uses QR iteration via Hessenberg reduction.\n  For eigenvectors as well, use [V, D] = eigsys(M)." },
+    HelpEntry { name: "eigsys",   brief: "Dense full eigendecomposition — eigenvectors and eigenvalues",
+        detail: "[V, D] = eigsys(M)\n  V — n×n complex matrix; column k is the eigenvector for D(k).\n  D — length-n complex vector of eigenvalues.\n\n  Same shape contract as eigs. Algorithm: eig() for the eigenvalues,\n  then shifted inverse iteration on M for each eigenvector.\n\n  Defective matrices (repeated eigenvalues without enough independent\n  eigenvectors) raise a runtime error — use eig(M) for values only.\n\nExample:\n  A = [2 1 0; 1 2 1; 0 1 2];\n  [V, D] = eigsys(A);\n  norm(A * V(:,1)' - D(1) * V(:,1)')   % ~ 1e-15" },
     HelpEntry { name: "eigs",     brief: "Sparse partial eigensolver — Lanczos / Arnoldi",
         detail: "[V, D] = eigs(A, n)\n[V, D] = eigs(A, n, which)         — \"sm\" (default) | \"lm\"\n[V, D] = eigs(A, B, n)            — generalized A x = λ B x; B SPD\n[V, D] = eigs(A, B, n, which)\n\n  A (and B) must be sparse — call sparse(A) first if dense.\n  Returns:\n    V — n_rows × n dense matrix of eigenvectors (column k ↔ D(k))\n    D — length-n vector of eigenvalues\n\nDispatch:\n  Hermitian / SPD A → hand-rolled Lanczos with full reorthogonalization.\n  General A         → hand-rolled Arnoldi with modified Gram-Schmidt.\n  Generalized form  → reduce via SparseChol(B), route through Arnoldi.\n\nDefault Krylov dimension is min(n_rows, max(6n+10, 40)). Implicit restart\nand shift-invert are deferred; if convergence stalls on a closely-spaced\nspectrum, increase the matrix size or wait for the next phase.\n\nExample:\n  L = -1 * laplacian_2d(20, 20);   % SPD form: -∇²\n  [V, D] = eigs(L, 4, \"sm\");        % four lowest eigenmodes" },
     HelpEntry { name: "laguerre", brief: "Associated Laguerre polynomial  L_n^α(x)",
@@ -892,7 +894,8 @@ fn print_help_list() {
         (
             "Linear Algebra",
             &[
-                "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve", "eig", "eigs",
+                "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve",
+                "eig", "eigsys", "eigs",
                 "svd", "laguerre", "legendre", "factor", "roots",
             ],
         ),

@@ -1632,6 +1632,65 @@ mod eig_tests {
     fn eig_non_square_errors() {
         let _err = eval_err("eig([1,2,3;4,5,6])");
     }
+
+    fn get_complex_matrix(
+        ev: &Evaluator,
+        name: &str,
+    ) -> ndarray::Array2<num_complex::Complex<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected Matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eigsys_symmetric_residuals_near_zero() {
+        // For each (V_k, D_k), residual ||A·V_k − D_k·V_k|| should vanish.
+        let src = "
+A = [2, 1, 0; 1, 2, 1; 0, 1, 2];
+[V, D] = eigsys(A);
+r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
+r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
+r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
+";
+        let ev = eval_str(src);
+        for name in &["r1", "r2", "r3"] {
+            let r = get_scalar(&ev, name);
+            assert!(r < 1e-10, "{} residual = {} (expected ~0)", name, r);
+        }
+    }
+
+    #[test]
+    fn eigsys_returns_n_eigenvectors_and_eigenvalues() {
+        let ev = eval_str("A = [4, 1; 2, 3]\n[V, D] = eigsys(A)");
+        let v = get_complex_matrix(&ev, "V");
+        let d = get_complex_vector(&ev, "D");
+        assert_eq!(v.nrows(), 2);
+        assert_eq!(v.ncols(), 2);
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn eigsys_eigenvalues_match_eig() {
+        // eigsys's D should match eig() on the same input (modulo column order).
+        let ev = eval_str(
+            "A = [3, 1, 0; 0, 2, 1; 0, 0, 5]\nd1 = eig(A)\n[V, d2] = eigsys(A)",
+        );
+        let mut a = get_complex_vector(&ev, "d1");
+        let mut b = get_complex_vector(&ev, "d2");
+        a.sort_by(|x, y| x.re.partial_cmp(&y.re).unwrap());
+        b.sort_by(|x, y| x.re.partial_cmp(&y.re).unwrap());
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert!((x.re - y.re).abs() < 1e-8);
+            assert!((x.im - y.im).abs() < 1e-8);
+        }
+    }
+
+    #[test]
+    fn eigsys_non_square_errors() {
+        let _err = eval_err("eigsys([1,2,3;4,5,6])");
+    }
 }
 
 // ── Phase 1: Language Foundations ────────────────────────────────────────────
