@@ -17,8 +17,8 @@ context — the live, regenerated measurements live in
 
 ## Running the benchmarks
 
-All benchmarks are `.r` scripts in this directory. The recommended path
-is `make perf`, which builds release, runs every `bench_*.r`, measures
+All benchmarks are `.rlab` scripts in this directory. The recommended path
+is `make perf`, which builds release, runs every `bench_*.rlab`, measures
 binary size, and rewrites `perf/report.md`:
 
 ```sh
@@ -29,19 +29,19 @@ To run an individual workload by hand:
 
 ```sh
 cargo build --release
-time ./target/release/rustlab run perf/bench_upfirdn.r
-time ./target/release/rustlab run perf/bench_fft.r
-time ./target/release/rustlab run perf/bench_linalg.r
+time ./target/release/rustlab run perf/bench_upfirdn.rlab
+time ./target/release/rustlab run perf/bench_fft.rlab
+time ./target/release/rustlab run perf/bench_linalg.rlab
 ```
 
 For more detailed profiling on macOS use `Instruments` or `samply`:
 
 ```sh
 # samply (cargo install samply)
-samply record ./target/release/rustlab run perf/bench_upfirdn.r
+samply record ./target/release/rustlab run perf/bench_upfirdn.rlab
 
 # hyperfine for statistical wall-time (cargo install hyperfine)
-hyperfine --warmup 3 './target/release/rustlab run perf/bench_upfirdn.r'
+hyperfine --warmup 3 './target/release/rustlab run perf/bench_upfirdn.rlab'
 ```
 
 ---
@@ -50,13 +50,13 @@ hyperfine --warmup 3 './target/release/rustlab run perf/bench_upfirdn.r'
 
 | Script | What it measures |
 |---|---|
-| `bench_builtins.r` | element-wise builtins (`abs`, `exp`, `log`, `sqrt`, `sin`, `cos`, `tanh`, `sum`, `mean`, `std`, `sort`) at n=100 000 |
-| `bench_convolve.r` | direct convolution at four signal × kernel sizes |
-| `bench_fft.r` | FFT/IFFT round-trip — 1 K, 16 K, 128 K points |
-| `bench_filter_design.r` | FIR (`hann`, Kaiser, Parks–McClellan) and IIR Butterworth design |
-| `bench_interpreter.r` | scalar loop, indexed assignment, deep expression chain, function-call overhead |
-| `bench_linalg.r` | matrix multiply, inverse, and eigenvalues at 32–256 size |
-| `bench_upfirdn.r` | polyphase upfirdn — three signal sizes and rate ratios |
+| `bench_builtins.rlab` | element-wise builtins (`abs`, `exp`, `log`, `sqrt`, `sin`, `cos`, `tanh`, `sum`, `mean`, `std`, `sort`) at n=100 000 |
+| `bench_convolve.rlab` | direct convolution at four signal × kernel sizes |
+| `bench_fft.rlab` | FFT/IFFT round-trip — 1 K, 16 K, 128 K points |
+| `bench_filter_design.rlab` | FIR (`hann`, Kaiser, Parks–McClellan) and IIR Butterworth design |
+| `bench_interpreter.rlab` | scalar loop, indexed assignment, deep expression chain, function-call overhead |
+| `bench_linalg.rlab` | matrix multiply, inverse, and eigenvalues at 32–256 size |
+| `bench_upfirdn.rlab` | polyphase upfirdn — three signal sizes and rate ratios |
 
 > The DSP-heavy `Tensor3` work added in v0.1.11 / v0.1.12 is captured in
 > `baseline_pre_tensor3.md`, `post_phase4.md`, and `post_phase7.md`.
@@ -237,8 +237,8 @@ Each major sweep landed with a snapshot in this directory:
 | `post_phase4.md` | `Tensor3` Phase 4 (`laplacian_3d`, `ij2k`/`k2ij` index helpers) |
 | `post_phase7.md` | `Tensor3` Phase 7 closing report |
 
-When a sweep adds new builtins, append them to `bench_*.r` (or add a new
-`bench_<feature>.r`) so the next `make perf` picks them up automatically.
+When a sweep adds new builtins, append them to `bench_*.rlab` (or add a new
+`bench_<feature>.rlab`) so the next `make perf` picks them up automatically.
 
 ---
 

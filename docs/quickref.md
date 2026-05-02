@@ -2,9 +2,11 @@
 
 Concise cheat sheet for the rustlab scripting language. Full signatures and examples: `docs/functions.md`.
 
-Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
+Run a script: `rustlab run script.rlab` — Interactive REPL: `rustlab`
 
-> **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented.
+Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs Plotting` (category), `rustlab docs --search query` (substring match), `rustlab docs --json` (machine-readable index of every builtin).
+
+> **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented. For a programmatic index, run `rustlab docs --json` and parse the result.
 
 ---
 
@@ -36,7 +38,7 @@ Run a script: `rustlab run script.r` — Interactive REPL: `rustlab`
 | `;` | Suppress output on a statement |
 | `#` / `%` | Comment |
 | `...` | Line continuation — rest of line ignored, statement continues on next line |
-| `run file.r` | Execute a script file; merges variables and functions into current scope |
+| `run file.rlab` | Execute a script file; merges variables and functions into current scope |
 | `error('msg')` | Halt execution with an error message |
 | `clear` | Remove all user variables and functions; keeps built-in constants |
 | `clf` | Clear current figure (reset subplots, series, labels) |
@@ -205,8 +207,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
 | `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition. 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). |
+| `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
-| `[V, D] = eigsys(M)` | Same V as `[V, D] = eig(M)`, but D is returned as a length-N vector instead of a diagonal matrix — useful when you want to index `D(k)`. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `roots(p)` | Roots of polynomial with coefficients p |
@@ -618,4 +620,4 @@ while true
   audio_write(dst, y)
 end
 ```
-Run as: `sox -d ... | rustlab run filter.r | sox ... -d` (see `examples/audio/`)
+Run as: `sox -d ... | rustlab run filter.rlab | sox ... -d` (see `examples/audio/`)

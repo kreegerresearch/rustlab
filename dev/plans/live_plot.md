@@ -1,6 +1,6 @@
 # Development Plan: Live Plot & Spectrum Monitor
 
-**Target example:** `examples/audio/spectrum_monitor.r`
+**Target example:** `examples/audio/spectrum_monitor.rlab`
 **Current phase:** complete
 **Status:** All phases complete
 **Depends on:** `audio_streaming.md` Phases 1–4 (for the example script only; Phases 1–2 of this plan are independent)
@@ -343,7 +343,7 @@ fn builtin_mag2db(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 ### 3b. Example script — spectrum monitor
 
-- **File:** `examples/audio/spectrum_monitor.r`
+- **File:** `examples/audio/spectrum_monitor.rlab`
 
 ```r
 # Real-time audio spectrum monitor
@@ -372,7 +372,7 @@ while true
 end
 ```
 
-- **File:** `examples/audio/spectrum_monitor_annotated.r` — same script with
+- **File:** `examples/audio/spectrum_monitor_annotated.rlab` — same script with
   comments explaining windowing, why only the first half of the FFT is shown
   (Nyquist), the dB floor, and frame-rate arithmetic.
 

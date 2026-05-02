@@ -22,7 +22,7 @@ Test scripts live in `tests/octave/`:
 | File | Purpose |
 |------|---------|
 | `reference.m` | Octave script; computes reference values and writes `ref_*.csv` |
-| `rustlab_outputs.r` | Rustlab script; computes the same values and writes `out_*.csv` |
+| `rustlab_outputs.rlab` | Rustlab script; computes the same values and writes `out_*.csv` |
 | `compare.m` | Octave script; reads both CSV sets, reports max absolute error and PASS/FAIL per test |
 
 To reproduce:
@@ -30,7 +30,7 @@ To reproduce:
 ```sh
 cd tests/octave
 octave --no-gui reference.m
-cargo run -q -- run rustlab_outputs.r
+cargo run -q -- run rustlab_outputs.rlab
 octave --no-gui compare.m
 ```
 

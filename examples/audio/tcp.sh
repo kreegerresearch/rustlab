@@ -48,7 +48,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(dirname "$0")/filter.r"
+SCRIPT="$(dirname "$0")/filter.rlab"
 SR=44100
 IN_PORT="${IN_PORT:-9999}"
 OUT_PORT="${OUT_PORT:-9998}"

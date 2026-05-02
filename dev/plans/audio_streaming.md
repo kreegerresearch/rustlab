@@ -1,6 +1,6 @@
 # Development Plan: Real-Time Audio Streaming & Explicit Filter State
 
-**Target example:** `examples/audio/realtime_fir.r`
+**Target example:** `examples/audio/realtime_fir.rlab`
 **Current phase:** complete
 **Status:** All phases complete (implemented in commit d37a630)
 
@@ -16,7 +16,7 @@ and makes the audio pipeline testable without any hardware.
 
 ```
 sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
-  | rustlab run filter.r \
+  | rustlab run filter.rlab \
   | sox -t raw -r 44100 -e float -b 32 -c 1 - -d
 ```
 
@@ -363,12 +363,12 @@ This is the only structural change to `Evaluator` in this entire plan.
 
 ### 3i. Example scripts
 
-**`examples/audio/realtime_fir.r`**
+**`examples/audio/realtime_fir.rlab`**
 ```r
 # Real-time FIR lowpass: Parks-McClellan, cutoff ~1 kHz at 44100 Hz
 # Run with:
 #   sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
-#     | rustlab run examples/audio/realtime_fir.r \
+#     | rustlab run examples/audio/realtime_fir.rlab \
 #     | sox -t raw -r 44100 -e float -b 32 -c 1 - -d
 
 sr     = 44100.0;
@@ -388,7 +388,7 @@ while true
 end
 ```
 
-**`examples/audio/passthrough.r`**
+**`examples/audio/passthrough.rlab`**
 ```r
 # Minimal passthrough — useful for testing the pipeline with no DSP
 adc = audio_in(44100.0, 256);

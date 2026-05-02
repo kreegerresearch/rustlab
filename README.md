@@ -68,7 +68,7 @@ rustlab --version
 ### Run a script
 
 ```sh
-rustlab run examples/lowpass.r
+rustlab run examples/lowpass.rlab
 ```
 
 ### Interactive REPL
@@ -106,9 +106,56 @@ rustlab window --type kaiser --length 64 --beta 8.6 --plot
 
 ---
 
+## Environment & Tooling
+
+### The `.rlab` language extension
+
+**rustlab is its own language** — a domain-specific language for DSP and matrix modeling. It is not a flavour of R, and it does not always follow octave/matlab convention either (the `j`-only imaginary unit, the `viewer on` / `viewer off` REPL controls, the in-process notebook subsystem, the `frame()` / `saveanim()` animation API, and many others are rustlab-native).
+
+rustlab modelling files use the `.rlab` extension. Until a native rustlab GitHub Linguist definition is published, **MATLAB syntax highlighting is used as a temporary visual proxy** — and only as a proxy. Do not infer that any matlab idiom is supported in rustlab just because the highlighter colours it.
+
+### Visual Studio Code
+
+```jsonc
+// settings.json
+"files.associations": {
+    "*.rlab": "matlab"
+}
+```
+
+### Neovim
+
+```lua
+-- init.lua
+vim.filetype.add({
+  extension = {
+    rlab = 'matlab',
+  },
+})
+```
+
+### Vim
+
+```vim
+" .vimrc
+autocmd BufRead,BufNewFile *.rlab setfiletype matlab
+```
+
+### GitHub language detection
+
+Repository highlighting is managed via `.gitattributes`:
+
+```
+*.rlab linguist-language=MATLAB
+```
+
+GitHub's project page language bar will show "MATLAB" — this is the temporary proxy mapping. The actual language is rustlab; the mapping will be replaced with a native rustlab Linguist definition when one is published.
+
+---
+
 ## Scripting Language Reference
 
-rustlab scripts use the `.r` extension. The interpreter is line-oriented: each statement is one line.
+rustlab scripts use the `.rlab` extension. The interpreter is line-oriented: each statement is one line.
 
 ### Variables and Assignment
 
@@ -406,11 +453,34 @@ savefig("heatmap.svg")
 
 ### `rustlab run <script>`
 
-Execute a `.r` script file.
+Execute a `.rlab` script file.
 
 ```sh
-rustlab run examples/bandpass.r
+rustlab run examples/bandpass.rlab
 ```
+
+### `rustlab docs [TOPIC]`
+
+Look up rustlab builtin function documentation from the shell — same data
+as the REPL's `help` / `?` commands, no need to launch the REPL just to
+remember what arguments `firpm` takes.
+
+```sh
+rustlab docs                       # list every builtin grouped by category
+rustlab docs eig                   # detail for one builtin (usage + examples)
+rustlab docs Plotting              # list one category
+rustlab docs --search eigen        # substring match across names + briefs
+rustlab docs --json                # machine-readable dump (one object per builtin)
+```
+
+The `--json` form prints a JSON array of `{name, category, brief, detail}`
+records covering every builtin (~250 entries). Useful for editor
+extensions, autocomplete plugins, and AI tooling that wants a single
+authoritative index without re-implementing the categories table.
+
+When the topic doesn't match any builtin or category name, `rustlab docs`
+prints a "No help found" message and exits with a non-zero status — handy
+in scripts that probe for support of a particular feature.
 
 ### `rustlab filter fir [OPTIONS]`
 
@@ -581,52 +651,52 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 
 | File | Description |
 |------|-------------|
-| `examples/complex_basics.r` | Complex number arithmetic, magnitude, phase, complex vectors |
-| `examples/vectors.r` | Range operator, indexing, concatenation, element-wise ops, transpose |
-| `examples/trig_special.r` | Trig, hyperbolic, Laguerre, and Legendre functions |
-| `examples/stats.r` | Statistics: mean, median, std, histogram, trapz |
-| `examples/matrix_ops.r` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |
-| `examples/random.r` | Random number generation: rand, randn, randi |
-| `examples/functions.r` | User-defined functions with multiple return values |
-| `examples/lambda.r` | Anonymous functions, function handles, arrayfun |
-| `examples/lambda_pipeline.r` | Functional pipeline patterns with lambdas |
-| `examples/save_load.r` | NPY, NPZ, and CSV round-trip save/load |
-| `examples/profiling.r` | Call profiling with profile() and profile_report() |
+| `examples/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
+| `examples/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
+| `examples/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
+| `examples/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
+| `examples/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |
+| `examples/random.rlab` | Random number generation: rand, randn, randi |
+| `examples/functions.rlab` | User-defined functions with multiple return values |
+| `examples/lambda.rlab` | Anonymous functions, function handles, arrayfun |
+| `examples/lambda_pipeline.rlab` | Functional pipeline patterns with lambdas |
+| `examples/save_load.rlab` | NPY, NPZ, and CSV round-trip save/load |
+| `examples/profiling.rlab` | Call profiling with profile() and profile_report() |
 
 ### DSP and filter design
 
 | File | Description |
 |------|-------------|
-| `examples/lowpass.r` | Design and inspect a 32-tap Hann-windowed FIR lowpass filter |
-| `examples/bandpass.r` | Bandpass filter design and application to a synthetic dual-tone signal |
-| `examples/fft.r` | Compute and plot the spectrum of a two-tone signal; round-trip FFT/IFFT |
-| `examples/kaiser_fir.r` | Auto-designed Kaiser FIR lowpass, highpass, bandpass, and notch filters |
-| `examples/firpm.r` | Parks-McClellan optimal equiripple FIR design |
-| `examples/upfirdn.r` | Polyphase interpolation, decimation, and rational rate conversion |
-| `examples/fixed_point.r` | Fixed-point quantization and SNR bitwidth study |
-| `examples/ml_activations.r` | ML activation functions: softmax, relu, gelu, layernorm |
+| `examples/lowpass.rlab` | Design and inspect a 32-tap Hann-windowed FIR lowpass filter |
+| `examples/bandpass.rlab` | Bandpass filter design and application to a synthetic dual-tone signal |
+| `examples/fft.rlab` | Compute and plot the spectrum of a two-tone signal; round-trip FFT/IFFT |
+| `examples/kaiser_fir.rlab` | Auto-designed Kaiser FIR lowpass, highpass, bandpass, and notch filters |
+| `examples/firpm.rlab` | Parks-McClellan optimal equiripple FIR design |
+| `examples/upfirdn.rlab` | Polyphase interpolation, decimation, and rational rate conversion |
+| `examples/fixed_point.rlab` | Fixed-point quantization and SNR bitwidth study |
+| `examples/ml_activations.rlab` | ML activation functions: softmax, relu, gelu, layernorm |
 
 ### Control systems (`examples/controls/`)
 
 | File | Description |
 |------|-------------|
-| `examples/controls/transfer_function.r` | Transfer function creation and arithmetic |
-| `examples/controls/pole_zero.r` | Pole-zero analysis |
-| `examples/controls/step_response.r` | Unit step response |
-| `examples/controls/bode_plot.r` | Bode magnitude and phase |
-| `examples/controls/stability_margins.r` | Gain and phase margins |
-| `examples/controls/state_space.r` | State-space conversion |
-| `examples/controls/controllability.r` | Controllability and observability |
-| `examples/controls/lqr_design.r` | LQR optimal control |
-| `examples/controls/root_locus.r` | Root locus plotting |
-| `examples/controls/linear_algebra.r` | Lyapunov, Gramians, SVD |
-| `examples/controls/ode.r` | ODE integration with rk4 |
-| `examples/controls/design.r` | CARE, DARE, pole placement |
+| `examples/controls/transfer_function.rlab` | Transfer function creation and arithmetic |
+| `examples/controls/pole_zero.rlab` | Pole-zero analysis |
+| `examples/controls/step_response.rlab` | Unit step response |
+| `examples/controls/bode_plot.rlab` | Bode magnitude and phase |
+| `examples/controls/stability_margins.rlab` | Gain and phase margins |
+| `examples/controls/state_space.rlab` | State-space conversion |
+| `examples/controls/controllability.rlab` | Controllability and observability |
+| `examples/controls/lqr_design.rlab` | LQR optimal control |
+| `examples/controls/root_locus.rlab` | Root locus plotting |
+| `examples/controls/linear_algebra.rlab` | Lyapunov, Gramians, SVD |
+| `examples/controls/ode.rlab` | ODE integration with rk4 |
+| `examples/controls/design.rlab` | CARE, DARE, pole placement |
 
 Run any example with:
 
 ```sh
-rustlab run examples/<name>.r
+rustlab run examples/<name>.rlab
 ```
 
 ### Real-time audio examples (`examples/audio/`)
@@ -635,9 +705,9 @@ Rustlab can process raw PCM audio streams via stdin/stdout with no audio library
 
 | File | Description |
 |------|-------------|
-| `examples/audio/filter.r` | Core FIR lowpass script — reads stdin, writes stdout, handles EOF cleanly |
-| `examples/audio/passthrough.r` | Minimal stdin → stdout loopback (pipeline test) |
-| `examples/audio/spectrum_monitor.r` | Live two-panel terminal plot: waveform + FFT spectrum in dB |
+| `examples/audio/filter.rlab` | Core FIR lowpass script — reads stdin, writes stdout, handles EOF cleanly |
+| `examples/audio/passthrough.rlab` | Minimal stdin → stdout loopback (pipeline test) |
+| `examples/audio/spectrum_monitor.rlab` | Live two-panel terminal plot: waveform + FFT spectrum in dB |
 | `examples/audio/spectrum_monitor.sh` | Platform-aware launcher for spectrum monitor (macOS/Linux/synthetic) |
 | `examples/audio/macos.sh` | Live microphone → lowpass filter → speakers (requires `sox`) |
 | `examples/audio/linux.sh` | Same via ALSA `arecord`/`aplay` |
@@ -648,7 +718,7 @@ Rustlab can process raw PCM audio streams via stdin/stdout with no audio library
 **Quickstart (macOS):**
 ```sh
 sox -d -r 44100 -c 1 -b 32 -e float -t raw - \
-  | rustlab run examples/audio/filter.r \
+  | rustlab run examples/audio/filter.rlab \
   | sox -r 44100 -c 1 -b 32 -e float -t raw - -d
 ```
 

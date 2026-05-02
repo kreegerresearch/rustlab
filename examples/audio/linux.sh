@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(dirname "$0")/filter.r"
+SCRIPT="$(dirname "$0")/filter.rlab"
 SR=44100
 ALSA_IN="${ALSA_IN:-default}"
 ALSA_OUT="${ALSA_OUT:-default}"

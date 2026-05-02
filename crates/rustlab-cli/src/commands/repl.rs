@@ -10,13 +10,14 @@ use crate::color;
 
 // ─── Help text ────────────────────────────────────────────────────────────────
 
-struct HelpEntry {
-    name: &'static str,
-    brief: &'static str,
-    detail: &'static str,
+#[derive(Clone, Copy, serde::Serialize)]
+pub struct HelpEntry {
+    pub name: &'static str,
+    pub brief: &'static str,
+    pub detail: &'static str,
 }
 
-const HELP: &[HelpEntry] = &[
+pub const HELP: &[HelpEntry] = &[
     // Math
     HelpEntry { name: "abs",    brief: "Absolute value / magnitude",
         detail: "abs(x)  — scalar, complex, vector, or matrix\n  Returns element-wise magnitude; complex inputs give their L2 norm per element.\n  abs([-1, 2; -3, 4])  →  [1, 2; 3, 4]" },
@@ -152,9 +153,7 @@ const HELP: &[HelpEntry] = &[
     HelpEntry { name: "linsolve", brief: "Solve the linear system  A*x = b",
         detail: "linsolve(A, b)  — A is n×n (dense or sparse), b is a length-n vector\n  Sparse A is converted to dense internally.\n  Returns x as a vector." },
     HelpEntry { name: "eig",      brief: "Eigenvalues / eigendecomposition (nargout-aware)",
-        detail: "e = eig(A)         — N×1 column vector of eigenvalues\n[V, D] = eig(A)    — V eigenvector matrix (column k ↔ D(k,k))\n                     D diagonal matrix of eigenvalues (matlab convention)\ne = eig(A, B)      — generalized: A·v = λ·B·v\n[V, D] = eig(A, B) — generalized eigenvectors and eigenvalues\n\n  Standard form algorithm: hand-rolled Hessenberg reduction +\n  shifted QR for the eigenvalues, then shifted inverse iteration\n  on A (or inv(B)·A for the generalized form) for each eigenvector.\n  Defective matrices may produce an ill-conditioned V; the eigenvalues\n  remain accurate.\n  Generalized form requires B invertible (Cholesky-route for SPD B is\n  a future optimization; QZ for non-invertible B is deferred).\n\nExample:\n  A = [3, 1; 1, 3]; B = [2, 0; 0, 1];\n  [V, D] = eig(A, B);\n  norm(A*V - B*V*D)         % ~ 1e-15" },
-    HelpEntry { name: "eigsys",   brief: "Dense full eigendecomposition (V + eigenvalue vector)",
-        detail: "[V, D] = eigsys(A)\n  V — n×n complex matrix; column k is the eigenvector for D(k).\n  D — length-n complex vector of eigenvalues.\n\n  Same V as eig(A) 2-output; D here is a vector, not a diagonal matrix.\n  Useful when you want the eigenvalues directly indexable as D(k).\n  Equivalent shape to eigs (sparse partial solver).\n\n  For matlab-compatible diagonal-matrix D, use [V, D] = eig(A) instead." },
+        detail: "e = eig(A)                    — N×1 column vector of eigenvalues\n[V, D] = eig(A)               — V eigenvector matrix (column k ↔ D(k,k))\n                                D diagonal matrix of eigenvalues (matlab default)\ne = eig(A, B)                 — generalized: A·v = λ·B·v\n[V, D] = eig(A, B)            — generalized eigenvectors and eigenvalues\n\nOutput-form flag (matlab convention) — overrides the default D shape:\n  eig(A, \"vector\")              — D as N×1 column vector\n  eig(A, \"matrix\")              — D as N×N diagonal matrix\n  [V, D] = eig(A, \"vector\")     — D vector even with two outputs\n  [V, D] = eig(A, B, \"matrix\")  — generalized form, explicit diagonal\n\n  Standard form algorithm: hand-rolled Hessenberg reduction +\n  shifted QR for the eigenvalues, then shifted inverse iteration\n  on A (or inv(B)·A for the generalized form) for each eigenvector.\n  Defective matrices may produce an ill-conditioned V; the eigenvalues\n  remain accurate.\n  Generalized form requires B invertible (Cholesky-route for SPD B is\n  a future optimization; QZ for non-invertible B is deferred).\n\nExample:\n  A = [3, 1; 1, 3]; B = [2, 0; 0, 1];\n  [V, D] = eig(A, B);\n  norm(A*V - B*V*D)         % ~ 1e-15" },
     HelpEntry { name: "eigs",     brief: "Sparse partial eigensolver — Lanczos / Arnoldi",
         detail: "[V, D] = eigs(A, n)\n[V, D] = eigs(A, n, which)         — \"sm\" (default) | \"lm\"\n[V, D] = eigs(A, B, n)            — generalized A x = λ B x; B SPD\n[V, D] = eigs(A, B, n, which)\n\n  A (and B) must be sparse — call sparse(A) first if dense.\n  Returns:\n    V — n_rows × n dense matrix of eigenvectors (column k ↔ D(k))\n    D — length-n vector of eigenvalues\n\nDispatch:\n  Hermitian / SPD A → hand-rolled Lanczos with full reorthogonalization.\n  General A         → hand-rolled Arnoldi with modified Gram-Schmidt.\n  Generalized form  → reduce via SparseChol(B), route through Arnoldi.\n\nDefault Krylov dimension is min(n_rows, max(6n+10, 40)). Implicit restart\nand shift-invert are deferred; if convergence stalls on a closely-spaced\nspectrum, increase the matrix size or wait for the next phase.\n\nExample:\n  L = -1 * laplacian_2d(20, 20);   % SPD form: -∇²\n  [V, D] = eigs(L, 4, \"sm\");        % four lowest eigenmodes" },
     HelpEntry { name: "laguerre", brief: "Associated Laguerre polynomial  L_n^α(x)",
@@ -403,8 +402,8 @@ const HELP: &[HelpEntry] = &[
     HelpEntry { name: "function", brief: "Define a named function",
         detail: "function y = foo(x)\n  y = x * 2\nend\n\nfunction bar(a, b)\n  print(a + b)\nend\n\nSyntax:\n  function retvar = name(param1, param2, ...)\n    body\n  end\n  function name(param, ...)   % no return value\n    body\n  end\n\nuse 'return' to exit early." },
     // Filesystem / script loading
-    HelpEntry { name: "run", brief: "Run a .r script file in the current session",
-        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .r scripts (for sourcing shared functions).\n  Example: run calculate_helpers.r" },
+    HelpEntry { name: "run", brief: "Run a .rlab script file in the current session",
+        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .rlab scripts (for sourcing shared functions).\n  Example: run calculate_helpers.rlab" },
     HelpEntry { name: "ls",  brief: "List directory contents",
         detail: "ls          — list current directory\nls <path>   — list the given directory" },
     HelpEntry { name: "cd",  brief: "Change working directory",
@@ -470,14 +469,14 @@ const HELP: &[HelpEntry] = &[
         detail: "feval(\"name\", arg1, arg2, ...)  — invoke any builtin or user function by name\n  Useful for dynamic/generic dispatch.\n\nExample:\n  feval(\"sin\", pi/2)   →  1.0\n  feval(\"my_fn\", x)" },
     // Profiling
     HelpEntry { name: "profile", brief: "Enable in-script call profiling",
-        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.r" },
+        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.rlab" },
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
         detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
     // Streaming DSP
     HelpEntry { name: "state_init", brief: "Allocate a FIR history buffer of n zeros",
         detail: "state_init(n)  — allocate FIR state for a filter with n+1 taps\n  n = length(h) - 1  where h is the coefficient vector\n\nReturns an opaque fir_state handle. Pass it to filter_stream each frame.\nTwo independent handles allow stereo (or any multi-channel) processing\nwith no shared state.\n\nExample:\n  h  = firpm(64, [0, 0.04, 0.05, 1.0], [1, 1, 0, 0])\n  st = state_init(length(h) - 1)" },
     HelpEntry { name: "filter_stream", brief: "Overlap-save FIR filtering — one frame at a time",
-        detail: "filter_stream(frame, h, state)  →  [output_frame, state]\n  frame  — input samples (Vector, length N)\n  h      — FIR coefficients (Vector, length M)\n  state  — fir_state handle from state_init(length(h)-1)\n\nReturns a Tuple: output frame (length N) and the updated state handle.\nThe state is mutated in place — no heap reallocation per frame.\nOutput matches convolve(full_signal, h) to within floating-point precision.\n\nRun with external audio bridge:\n  sox -d -t raw -r 44100 -e float -b 32 -c 1 - \\\n    | rustlab run filter.r \\\n    | sox -t raw -r 44100 -e float -b 32 -c 1 - -d\n\nExample:\n  [out, st] = filter_stream(frame, h, st)" },
+        detail: "filter_stream(frame, h, state)  →  [output_frame, state]\n  frame  — input samples (Vector, length N)\n  h      — FIR coefficients (Vector, length M)\n  state  — fir_state handle from state_init(length(h)-1)\n\nReturns a Tuple: output frame (length N) and the updated state handle.\nThe state is mutated in place — no heap reallocation per frame.\nOutput matches convolve(full_signal, h) to within floating-point precision.\n\nRun with external audio bridge:\n  sox -d -t raw -r 44100 -e float -b 32 -c 1 - \\\n    | rustlab run filter.rlab \\\n    | sox -t raw -r 44100 -e float -b 32 -c 1 - -d\n\nExample:\n  [out, st] = filter_stream(frame, h, st)" },
     // Audio I/O
     HelpEntry { name: "audio_in", brief: "Create a stdin PCM input handle",
         detail: "audio_in(sr, n)  — metadata handle for reading audio from stdin\n  sr — sample rate in Hz (e.g. 44100.0)\n  n  — frame size in samples (e.g. 256)\n\nOpens no hardware. audio_read(adc) reads n × 4 bytes of f32-LE PCM\nfrom stdin and blocks until the full frame arrives.\n\nExample:\n  adc = audio_in(44100.0, 256)" },
@@ -842,23 +841,17 @@ pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
     }
 }
 
-fn print_help_list() {
-    println!();
-    println!(
-        "  {:<26}  {}",
-        color::bold("Command / Topic"),
-        color::bold("Description")
-    );
-    println!("  {}", color::dim(&"-".repeat(60)));
-
-    let categories = [
+/// Categorical grouping of `HELP` entries used by `print_help_list` and the
+/// `rustlab docs` subcommand. Each tuple is `(category-name, &[entry-names])`.
+/// Public so that out-of-crate tooling and `commands/docs.rs` can iterate.
+pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Math",
             &[
                 "abs", "angle", "real", "imag", "conj", "cos", "sin", "acos", "asin", "atan",
                 "atan2", "tanh", "sinh", "cosh", "sqrt", "exp", "log", "log10", "log2", "floor",
                 "ceil", "round", "sign", "mod",
-            ][..],
+            ],
         ),
         (
             "ML / Activation",
@@ -895,7 +888,7 @@ fn print_help_list() {
             "Linear Algebra",
             &[
                 "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve",
-                "eig", "eigsys", "eigs",
+                "eig", "eigs",
                 "svd", "laguerre", "legendre", "factor", "roots",
             ],
         ),
@@ -1053,9 +1046,18 @@ fn print_help_list() {
             ],
         ),
         ("Filesystem", &["run", "ls", "cd", "pwd"]),
-    ];
+];
 
-    for (cat, names) in &categories {
+pub fn print_help_list() {
+    println!();
+    println!(
+        "  {:<26}  {}",
+        color::bold("Command / Topic"),
+        color::bold("Description")
+    );
+    println!("  {}", color::dim(&"-".repeat(60)));
+
+    for (cat, names) in CATEGORIES {
         println!("\n  {}:", color::bold_yellow(cat));
         for &n in *names {
             if let Some(e) = HELP.iter().find(|e| e.name == n) {
@@ -1072,23 +1074,44 @@ fn print_help_list() {
     println!();
 }
 
-fn print_help_detail(topic: &str) {
-    match HELP.iter().find(|e| e.name == topic) {
-        Some(e) => {
-            println!();
-            println!("  {}  —  {}", color::bold_cyan(e.name), e.brief);
-            println!();
-            for line in e.detail.lines() {
-                println!("  {}", line);
-            }
-            println!();
+/// Print the detail block for one builtin. If `topic` doesn't match an entry
+/// name, fall back to checking the categories list (case-insensitive) and list
+/// that category's entries instead. Returns `true` on a hit, `false` when
+/// neither name nor category matched.
+pub fn print_help_detail(topic: &str) -> bool {
+    if let Some(e) = HELP.iter().find(|e| e.name == topic) {
+        println!();
+        println!("  {}  —  {}", color::bold_cyan(e.name), e.brief);
+        println!();
+        for line in e.detail.lines() {
+            println!("  {}", line);
         }
-        None => println!(
-            "No help found for '{}'.  Type {} for a full list.",
-            color::yellow(&format!("'{}'", topic)),
-            color::bold("'help'")
-        ),
+        println!();
+        return true;
     }
+
+    // Try as a category name (case-insensitive).
+    if let Some((cat, names)) = CATEGORIES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(topic))
+    {
+        println!();
+        println!("  {}:", color::bold_yellow(cat));
+        for &n in *names {
+            if let Some(e) = HELP.iter().find(|e| e.name == n) {
+                println!("    {:<24}  {}", color::cyan(e.name), e.brief);
+            }
+        }
+        println!();
+        return true;
+    }
+
+    println!(
+        "No help found for '{}'.  Type {} for a full list.",
+        color::yellow(&format!("'{}'", topic)),
+        color::bold("'help'")
+    );
+    false
 }
 
 // ─── Tab completion helper ────────────────────────────────────────────────────

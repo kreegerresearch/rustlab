@@ -36,8 +36,8 @@ echo "==> octave  : $OCTAVE"
 
 echo
 echo "==> Generating rustlab CSV outputs..."
-"$RUSTLAB" run rustlab_outputs.r
-"$RUSTLAB" run rustlab_full.r
+"$RUSTLAB" run rustlab_outputs.rlab
+"$RUSTLAB" run rustlab_full.rlab
 
 echo
 echo "==> Generating Octave reference CSV outputs..."

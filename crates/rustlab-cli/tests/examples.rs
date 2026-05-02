@@ -26,7 +26,7 @@ fn workspace_root() -> PathBuf {
 /// Returns the process exit status.
 fn run_example(name: &str) -> std::process::ExitStatus {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join(format!("{name}.r"));
+    let script = workspace_root().join("examples").join(format!("{name}.rlab"));
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     Command::new(bin)
@@ -87,7 +87,7 @@ fn example_trig_special() {
 #[test]
 fn example_fixed_point() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("fixed_point.r");
+    let script = workspace_root().join("examples").join("fixed_point.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)
@@ -208,4 +208,45 @@ fn example_toml_filter_chain() {
 #[test]
 fn example_toml_io() {
     run_example_ok("toml_io");
+}
+
+// ── Interpreter banner ─────────────────────────────────────────────────────
+//
+// Locks in the always-on stderr banner that explicitly identifies rustlab as
+// the handler for `.rlab` files. The banner is emitted from
+// `commands/run::execute` before script evaluation begins.
+
+#[test]
+fn run_banner_emits_rustlab_identifier_to_stderr() {
+    let dir = TempDir::new().expect("failed to create temp dir");
+    let script = workspace_root().join("examples").join("eig.rlab");
+    let bin = env!("CARGO_BIN_EXE_rustlab");
+
+    let output = Command::new(bin)
+        .args(["run", script.to_str().unwrap()])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to launch rustlab for banner test");
+
+    assert!(
+        output.status.success(),
+        "banner test: rustlab run failed with {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Single line-anchored check: catches truncation, missing version, or
+    // word-reorder regressions that the looser `contains` checks would miss.
+    let banner_line_present = stderr.lines().any(|line| {
+        line.starts_with("rustlab ")
+            && line.contains(" — interpreting ")
+            && line.ends_with(" (.rlab)")
+    });
+    assert!(
+        banner_line_present,
+        "banner not found or mangled in stderr — expected a line of the form\n  \
+         `rustlab <version> — interpreting <path> (.rlab)`\nactual stderr:\n{}",
+        stderr
+    );
 }

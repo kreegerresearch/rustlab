@@ -42,13 +42,13 @@ strip /tmp/rustlab_perf_stripped
 STRIPPED_SIZE_H=$(ls -lh /tmp/rustlab_perf_stripped | awk '{print $5}')
 rm /tmp/rustlab_perf_stripped
 
-# ── discover and run all bench_*.r scripts ────────────────────────────────────
+# ── discover and run all bench_*.rlab scripts ────────────────────────────────
 
 echo "Running benchmarks..."
 
 # Collect bench scripts sorted by name
 BENCH_SCRIPTS=()
-for f in "$PERF_DIR"/bench_*.r; do
+for f in "$PERF_DIR"/bench_*.rlab; do
     [ -f "$f" ] && BENCH_SCRIPTS+=("$f")
 done
 
@@ -59,7 +59,7 @@ BENCH_STATUS_ALL=()
 BENCH_OUT_ALL=()
 
 for script in "${BENCH_SCRIPTS[@]}"; do
-    name=$(basename "$script" .r)
+    name=$(basename "$script" .rlab)
     echo "  $name..."
     run_bench "$script"
     BENCH_NAMES+=("$name")

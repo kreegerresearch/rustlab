@@ -1543,9 +1543,7 @@ mod eig_tests {
     fn get_complex_vector(ev: &Evaluator, name: &str) -> Vec<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
             Value::Vector(v) => v.to_vec(),
-            // `eig(A)` returns an N×1 column vector (matlab orientation);
-            // `eigsys(A)`'s D is still a 1D Vector. Accept both — we only
-            // care about the eigenvalue sequence in these tests.
+            // `eig(A)` returns an N×1 column vector (matlab orientation).
             Value::Matrix(m) if m.ncols() == 1 || m.nrows() == 1 => {
                 m.iter().copied().collect()
             }
@@ -1650,11 +1648,11 @@ mod eig_tests {
     }
 
     #[test]
-    fn eigsys_symmetric_residuals_near_zero() {
+    fn eig_two_output_vector_residuals_near_zero() {
         // For each (V_k, D_k), residual ||A·V_k − D_k·V_k|| should vanish.
         let src = "
 A = [2, 1, 0; 1, 2, 1; 0, 1, 2];
-[V, D] = eigsys(A);
+[V, D] = eig(A, \"vector\");
 r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
 r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
 r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
@@ -1667,8 +1665,8 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
-    fn eigsys_returns_n_eigenvectors_and_eigenvalues() {
-        let ev = eval_str("A = [4, 1; 2, 3]\n[V, D] = eigsys(A)");
+    fn eig_two_output_returns_n_eigenvectors_and_eigenvalues() {
+        let ev = eval_str("A = [4, 1; 2, 3]\n[V, D] = eig(A, \"vector\")");
         let v = get_complex_matrix(&ev, "V");
         let d = get_complex_vector(&ev, "D");
         assert_eq!(v.nrows(), 2);
@@ -1677,10 +1675,10 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
-    fn eigsys_eigenvalues_match_eig() {
-        // eigsys's D should match eig() on the same input (modulo column order).
+    fn eig_two_output_vector_eigenvalues_match_one_output() {
+        // [V, D] = eig(A, "vector") D should match eig(A) (modulo order).
         let ev = eval_str(
-            "A = [3, 1, 0; 0, 2, 1; 0, 0, 5]\nd1 = eig(A)\n[V, d2] = eigsys(A)",
+            "A = [3, 1, 0; 0, 2, 1; 0, 0, 5]\nd1 = eig(A)\n[V, d2] = eig(A, \"vector\")",
         );
         let mut a = get_complex_vector(&ev, "d1");
         let mut b = get_complex_vector(&ev, "d2");
@@ -1691,11 +1689,6 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
             assert!((x.re - y.re).abs() < 1e-8);
             assert!((x.im - y.im).abs() < 1e-8);
         }
-    }
-
-    #[test]
-    fn eigsys_non_square_errors() {
-        let _err = eval_err("eigsys([1,2,3;4,5,6])");
     }
 
     #[test]
@@ -2089,16 +2082,19 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     #[test]
     fn eig_two_output_returns_diagonal_d() {
         // [V, D] = eig(A) — V matrix + D diagonal matrix (matlab convention).
-        let ev = eval_str("A = [2, 1; 1, 2]\n[V, D] = eig(A)");
+        // Verify shape, eigenvalues, and the residual ‖A·V − V·D‖ which is
+        // the contract that V's columns line up with D's diagonal.
+        let ev = eval_str(
+            "A = [2, 1; 1, 2]\n\
+             [V, D] = eig(A);\n\
+             r = norm(A*V - V*D);",
+        );
         match ev.get("D").unwrap() {
             Value::Matrix(m) => {
                 assert_eq!((m.nrows(), m.ncols()), (2, 2));
-                // Off-diagonal entries are zero.
                 assert!(m[[0, 1]].re.abs() < 1e-12);
                 assert!(m[[1, 0]].re.abs() < 1e-12);
-                // Diagonal entries are eigenvalues 1 and 3 in some order.
-                let diag: Vec<f64> = vec![m[[0, 0]].re, m[[1, 1]].re];
-                let mut sorted = diag.clone();
+                let mut sorted = vec![m[[0, 0]].re, m[[1, 1]].re];
                 sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 assert!((sorted[0] - 1.0).abs() < 1e-10);
                 assert!((sorted[1] - 3.0).abs() < 1e-10);
@@ -2109,6 +2105,15 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
             Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
             other => panic!("expected V Matrix, got {other:?}"),
         }
+        let r = match ev.get("r").unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar residual, got {other:?}"),
+        };
+        assert!(
+            r < 1e-10,
+            "residual ‖A·V − V·D‖ = {} (expected ~0; eigenvector and eigenvalue columns must align)",
+            r
+        );
     }
 
     #[test]
@@ -2120,6 +2125,92 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
             }
             other => panic!("expected column matrix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn eig_one_output_vector_flag_is_default() {
+        // `v = eig(A, "vector")` matches the bare `v = eig(A)` shape.
+        let ev = eval_str("v = eig([2, 1; 1, 2], \"vector\")");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 1)),
+            other => panic!("expected 2x1 column matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_one_output_matrix_flag_returns_diagonal() {
+        // `D = eig(A, "matrix")` returns the diagonal-matrix form even in
+        // single-output context.
+        let ev = eval_str("D = eig([2, 1; 1, 2], \"matrix\")");
+        match ev.get("D").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 2));
+                assert!(m[[0, 1]].re.abs() < 1e-12);
+                assert!(m[[1, 0]].re.abs() < 1e-12);
+                let mut diag = vec![m[[0, 0]].re, m[[1, 1]].re];
+                diag.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                assert!((diag[0] - 1.0).abs() < 1e-10);
+                assert!((diag[1] - 3.0).abs() < 1e-10);
+            }
+            other => panic!("expected 2x2 diagonal matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_two_output_vector_flag_returns_column_d() {
+        // `[V, D] = eig(A, "vector")` overrides the default diagonal form
+        // and gives D as an N-element column vector instead.
+        let ev = eval_str(
+            "A = [2, 1; 1, 2]\n\
+             [V, D] = eig(A, \"vector\");",
+        );
+        match ev.get("D").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 1)),
+            other => panic!("expected 2x1 column matrix for D, got {other:?}"),
+        }
+        match ev.get("V").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+            other => panic!("expected 2x2 V, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_two_output_matrix_flag_matches_default() {
+        // `[V, D] = eig(A, "matrix")` is the explicit form of the default.
+        let ev = eval_str(
+            "A = [2, 1; 1, 2]\n\
+             [V, D] = eig(A, \"matrix\");",
+        );
+        match ev.get("D").unwrap() {
+            Value::Matrix(m) => assert_eq!((m.nrows(), m.ncols()), (2, 2)),
+            other => panic!("expected 2x2 diagonal D, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_generalized_with_flag() {
+        // Flag is parsed off the tail, so `eig(A, B, "matrix")` still
+        // routes through the generalized inv(B)·A path.
+        let ev = eval_str(
+            "A = [2, 0; 0, 3]\n\
+             B = [1, 0; 0, 1]\n\
+             D = eig(A, B, \"matrix\");",
+        );
+        match ev.get("D").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 2));
+                let mut diag = vec![m[[0, 0]].re, m[[1, 1]].re];
+                diag.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                assert!((diag[0] - 2.0).abs() < 1e-10);
+                assert!((diag[1] - 3.0).abs() < 1e-10);
+            }
+            other => panic!("expected 2x2 diagonal D, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eig_unknown_flag_errors() {
+        let _err = eval_err("eig([1, 0; 0, 2], \"diagonal\")");
     }
 
     #[test]
@@ -2499,14 +2590,14 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
-    fn eigsys_upper_triangular_residuals_near_zero() {
+    fn eig_upper_triangular_residuals_near_zero() {
         // Regression: with the original e_0 starting vector, inverse iteration
         // could not move out of the e_0 invariant subspace for upper-triangular
         // shifted matrices. Eigenvectors for non-leading eigenvalues collapsed
         // to [1; 0; 0] and ‖A·V_k − D_k·V_k‖ went to ~1 instead of ~1e-15.
         let src = "
 A = [4, 1, 0; 0, 2, 1; 0, 0, 5];
-[V, D] = eigsys(A);
+[V, D] = eig(A, \"vector\");
 r1 = norm(A * V(:,1)' - D(1) * V(:,1)');
 r2 = norm(A * V(:,2)' - D(2) * V(:,2)');
 r3 = norm(A * V(:,3)' - D(3) * V(:,3)');

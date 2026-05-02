@@ -1,0 +1,6 @@
+# rustlab modelling files. The `.rlab` extension is rustlab's own; the
+# linguist mapping below uses MATLAB highlighting as a TEMPORARY visual
+# proxy for GitHub's language bar until a native rustlab Linguist
+# definition is published. rustlab is its own language and does not
+# always follow octave/matlab conventions.
+*.rlab linguist-language=MATLAB

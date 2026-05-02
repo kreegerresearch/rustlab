@@ -4,7 +4,7 @@ This document walks through the scripts in `examples/` step by step.
 
 ---
 
-## `examples/complex_basics.r`
+## `examples/complex_basics.rlab`
 
 **Full script:**
 
@@ -57,12 +57,12 @@ savefig("complex_magnitude.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/complex_basics.r
+rustlab run examples/complex_basics.rlab
 ```
 
 ---
 
-## `examples/vectors.r`
+## `examples/vectors.rlab`
 
 **Full script:**
 
@@ -137,12 +137,12 @@ savefig("sinusoid_magnitude.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/vectors.r
+rustlab run examples/vectors.rlab
 ```
 
 ---
 
-## `examples/lowpass.r`
+## `examples/lowpass.rlab`
 
 **Full script:**
 
@@ -205,12 +205,12 @@ rustlab filter fir --taps 32 --cutoff 1000 --sr 44100 --window hann
 **Run it:**
 
 ```sh
-rustlab run examples/lowpass.r
+rustlab run examples/lowpass.rlab
 ```
 
 ---
 
-## `examples/bandpass.r`
+## `examples/bandpass.rlab`
 
 **Full script:**
 
@@ -274,12 +274,12 @@ savefig("bandpass_output.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/bandpass.r
+rustlab run examples/bandpass.rlab
 ```
 
 ---
 
-## `examples/fft.r`
+## `examples/fft.rlab`
 
 **Full script:**
 
@@ -353,12 +353,12 @@ savefig("fft_reconstructed.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/fft.r
+rustlab run examples/fft.rlab
 ```
 
 ---
 
-## `examples/save_load.r`
+## `examples/save_load.rlab`
 
 **Full script:**
 
@@ -447,12 +447,12 @@ print("Saved session_response.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/save_load.r
+rustlab run examples/save_load.rlab
 ```
 
 ---
 
-## `examples/kaiser_fir.r`
+## `examples/kaiser_fir.rlab`
 
 **Full script:**
 
@@ -565,12 +565,12 @@ Narrowing `tbw` (sharper transition) or increasing `attn` both increase the tap 
 **Run it:**
 
 ```sh
-rustlab run examples/kaiser_fir.r
+rustlab run examples/kaiser_fir.rlab
 ```
 
 ---
 
-## `examples/upfirdn.r`
+## `examples/upfirdn.rlab`
 
 Demonstrates the three fundamental use cases of `upfirdn`: interpolation,
 decimation, and rational sample-rate conversion. All three share the same
@@ -647,12 +647,12 @@ savefig("upfirdn_src32.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/upfirdn.r
+rustlab run examples/upfirdn.rlab
 ```
 
 ---
 
-## `examples/audio/filter.r` — Real-time FIR streaming
+## `examples/audio/filter.rlab` — Real-time FIR streaming
 
 **Full script:**
 
@@ -699,7 +699,7 @@ end
 ```sh
 # macOS (sox required):
 sox -d -r 44100 -c 1 -b 32 -e float -t raw - \
-  | rustlab run examples/audio/filter.r \
+  | rustlab run examples/audio/filter.rlab \
   | sox -r 44100 -c 1 -b 32 -e float -t raw - -d
 
 # Hardware-free test:
@@ -708,7 +708,7 @@ bash examples/audio/test_filter.sh
 
 ---
 
-## `examples/audio/spectrum_monitor.r` — Live FFT spectrum monitor
+## `examples/audio/spectrum_monitor.rlab` — Live FFT spectrum monitor
 
 Captures microphone input and displays a continuously updating two-panel
 terminal plot using `figure_live`:
@@ -753,7 +753,7 @@ end
 
 ---
 
-## `examples/vector_calc.r`
+## `examples/vector_calc.rlab`
 
 **Full script:**
 
@@ -817,12 +817,12 @@ print(Fxc(11, 11))     # ≈ 0 + j
 **Run it:**
 
 ```sh
-rustlab run examples/vector_calc.r
+rustlab run examples/vector_calc.rlab
 ```
 
 ---
 
-## `examples/tensor3/tensor3.r`
+## `examples/tensor3/tensor3.rlab`
 
 **Full script:**
 
@@ -899,12 +899,12 @@ print(ndims(T_loaded))           # → 3
 **Run it:**
 
 ```sh
-rustlab run examples/tensor3/tensor3.r
+rustlab run examples/tensor3/tensor3.rlab
 ```
 
 ---
 
-## `examples/contour.r`
+## `examples/contour.rlab`
 
 **Full script:**
 
@@ -963,12 +963,12 @@ savefig("/tmp/rustlab_contour_overlay.html");
 **Run it:**
 
 ```sh
-rustlab run examples/contour.r
+rustlab run examples/contour.rlab
 # Then open the generated files in /tmp/, e.g.:
 open /tmp/rustlab_contour_overlay.html
 ```
 
-## `examples/quiver.r`
+## `examples/quiver.rlab`
 
 Arrow plots (`quiver`) and streamlines (`streamplot`) for 2-D vector fields, including uniform flow, vortex, saddle, custom seeds, and the canonical overlay patterns (|E|² heatmap with E arrows; equipotentials with field lines).
 
@@ -1027,13 +1027,13 @@ savefig("/tmp/rustlab_heatmap_quiver.html");
 ### Running
 
 ```sh
-rustlab run examples/quiver.r
+rustlab run examples/quiver.rlab
 # Then open the generated files in /tmp/, e.g.:
 open /tmp/rustlab_heatmap_quiver.html
 open /tmp/rustlab_contour_stream.html
 ```
 
-## `examples/laplacian.r`
+## `examples/laplacian.rlab`
 
 The canonical Poisson demo: build the 5-point sparse Laplacian on a uniform grid, solve `∇²V = ρ` with a known analytic source, verify the residual against the exact solution, and visualise the result.
 
@@ -1084,13 +1084,13 @@ print(err)       # → very small (< 1e-10)
 ### Running
 
 ```sh
-rustlab run examples/laplacian.r
+rustlab run examples/laplacian.rlab
 open /tmp/rustlab_laplacian_solution.html
 ```
 
 ---
 
-## `examples/masks.r`
+## `examples/masks.rlab`
 
 Shape rasterization on a meshgrid: `rect_mask`, `disk_mask`, `polygon_mask`, plus boolean composition for building material-map-style geometry.
 
@@ -1145,6 +1145,6 @@ print(sum(sum(unit_disk)) * step * step)    # → 3.135 (0.2% off π)
 ### Running
 
 ```sh
-rustlab run examples/masks.r
+rustlab run examples/masks.rlab
 open /tmp/rustlab_mask_device.html
 ```

@@ -49,7 +49,7 @@ pub enum StmtKind {
         cases: Vec<(Expr, Vec<Stmt>)>,
         otherwise: Vec<Stmt>,
     },
-    /// `run path` — execute another .r script and merge its definitions
+    /// `run path` — execute another .rlab script and merge its definitions
     Run { path: String },
     /// `format commas` / `format default` — change display mode
     Format { mode: String },

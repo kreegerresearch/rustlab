@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(dirname "$0")/spectrum_monitor.r"
+SCRIPT="$(dirname "$0")/spectrum_monitor.rlab"
 SR=44100
 
 if [[ "${1:-}" == "--test" ]]; then

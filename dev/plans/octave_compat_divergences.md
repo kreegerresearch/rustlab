@@ -15,7 +15,7 @@
 | 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
-| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-5; PR-6 vector/matrix flag remains low-priority) |
+| 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-6 all landed; eig now matches matlab's full surface) |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
@@ -98,15 +98,15 @@ Three-step plan, ordered for safety:
 
    | File | Call | Intended shape |
    |---|---|---|
-   | `examples/audio/spectrum_monitor.r:59` | `ring = zeros(fft_size)` | row vector — change to `zeros(1, fft_size)` |
-   | `examples/stats.r:24` | `ones(512)` | row vector — change to `ones(1, 512)` |
+   | `examples/audio/spectrum_monitor.rlab:59` | `ring = zeros(fft_size)` | row vector — change to `zeros(1, fft_size)` |
+   | `examples/stats.rlab:24` | `ones(512)` | row vector — change to `ones(1, 512)` |
    | `crates/rustlab-script/src/tests.rs:856` | `v = zeros(5)` | row vector — change to `zeros(1, 5)` |
    | `crates/rustlab-script/src/tests.rs:868` | `v = ones(4)` | row vector — change to `ones(1, 4)` |
    | `crates/rustlab-script/src/tests.rs:896` | `v = ones(7)` | row vector — change to `ones(1, 7)` |
    | `crates/rustlab-script/src/tests.rs:6417` | `zeros(3);` (no assertion) | n/a — leave |
    | `crates/rustlab-script/src/tests.rs:6425` | `ones(3);` (no assertion) | n/a — leave |
 
-   Re-run `grep -rEn "zeros\([0-9]+\)\|zeros\([a-zA-Z_]+\)\|ones\([0-9]+\)\|ones\([a-zA-Z_]+\)\|randn\([0-9]+\)\|rand\([0-9]+\)"` against `examples/`, `tests/`, `crates/rustlab-script/src/tests.rs`, and `tests/octave/rustlab_full.r` at pickup time — the list above could grow.
+   Re-run `grep -rEn "zeros\([0-9]+\)\|zeros\([a-zA-Z_]+\)\|ones\([0-9]+\)\|ones\([a-zA-Z_]+\)\|randn\([0-9]+\)\|rand\([0-9]+\)"` against `examples/`, `tests/`, `crates/rustlab-script/src/tests.rs`, and `tests/octave/rustlab_full.rlab` at pickup time — the list above could grow.
 
 3. **Flip the default.** Change `builtin_zeros`, `builtin_ones`, `builtin_rand`, `builtin_randn` (and consider `randi`) so a single integer arg returns an `n×n` matrix instead of a `1×n` vector. `builtin_eye` is already `n×n` for one arg — leave unchanged. Drop the deprecation warning. Document the breaking change clearly in the commit message and the next release notes.
 
@@ -219,7 +219,7 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
 
 #### Suggested PR sequence
 
-1. **PR-1: Fix the inverse-iteration bug.** ✅ **Shipped 2026-05-02.** Initial vector in `inverse_iteration_cx` switched from `e_0` to the sine-of-index pattern the core helper uses. Regression test `eigsys_upper_triangular_residuals_near_zero` covers the `[4,1,0; 0,2,1; 0,0,5]` case (residuals all < 1e-9).
+1. **PR-1: Fix the inverse-iteration bug.** ✅ **Shipped 2026-05-02.** Initial vector in `inverse_iteration_cx` switched from `e_0` to the sine-of-index pattern the core helper uses. Regression test `eig_upper_triangular_residuals_near_zero` covers the `[4,1,0; 0,2,1; 0,0,5]` case (residuals all < 1e-9). (Originally landed with the test named `eigsys_…`; renamed when `eigsys` was removed in step 7.)
 2. **PR-2: Eigenvalue orientation.** ✅ **shipped 2026-05-02.** `eig(A)` returns an `N×1` column matrix (octave/matlab orientation) instead of a `1×N` row vector.
 
    PR-2a (vector-type unification) landed alongside this for the most-common idioms — `sort`, `argmin`, `argmax`, `min`, `max` now accept `Matrix(N, 1)` and `Matrix(1, N)` as 1-D-shaped inputs. `sort` preserves the column/row shape on output; argmin/argmax return a scalar 1-based position in storage order; min/max already worked on matrices (flat reduction).
@@ -230,7 +230,8 @@ e         = eig(A, B)            % generalized: A·v = λ·B·v
 3. **PR-3: nargout option B.** ✅ **shipped 2026-05-02.** `BuiltinFnNargout = fn(Vec<Value>, usize) -> Result<Value, ScriptError>` and a private `BuiltinKind { Stateless, Nargout }` registry enum landed. `BuiltinRegistry::register_nargout` registers nargout-aware builtins; the evaluator's `MultiAssign` handler intercepts top-level `Expr::Call` to a registered builtin and forwards `names.len()` as the nargout hint. Most ~170 builtins are unchanged.
 4. **PR-4: Eig family overload.** ✅ **shipped 2026-05-02.** `eig` is nargout-aware: `e = eig(A)` returns the `N×1` column vector of eigenvalues; `[V, D] = eig(A)` returns V (eigenvector matrix) plus D as a **diagonal matrix** (matlab convention). Internally the 2-output path reuses `eigsys`'s pipeline and promotes the eigenvalue vector to `diag(eigvalues)`. `eigsys` continues to ship as a one-release alias (returns the same V + vector D for callers that prefer the rustlab convention; `diag(D)` extracts the vector from `eig`-2-output's diagonal matrix). The matlab idiom `[V, D] = eig(A); D` now produces a diagonal matrix as expected.
 5. **PR-5: Dense generalized `eig(A, B)`.** ✅ **shipped 2026-05-02.** Two-arg `eig(A, B)` for `A·v = λ·B·v` reduces to standard `eig(inv(B)·A)` — the eigenvalues are the same and the eigenvector matrix is unchanged. Both 1-output (`e = eig(A, B)` → column vector) and 2-output (`[V, D] = eig(A, B)` → V + diagonal D) forms share the existing nargout dispatch. The implementation requires B invertible; SPD-aware Cholesky reduction is a future optimization, and QZ for non-invertible B is deferred. A small `eig_resolve_input` helper handles both the 1-arg and 2-arg cases for `eig` and `eigsys`. 4 in-process tests cover the standard form, generalized 1-output, generalized 2-output residual, singular B, and size mismatch.
-6. **PR-6 (optional, low priority): "vector"/"matrix" flags** for explicit D shape control. Useful for porting matlab code that explicitly opts out of the diagonal-matrix default.
+6. **PR-6: `"vector"` / `"matrix"` output-form flags.** ✅ **shipped 2026-05-02.** `eig(A, "vector")` and `eig(A, "matrix")` (also `eig(A, B, …)` generalized) override the default D shape: vector forces N×1 column, matrix forces N×N diagonal. The flag is parsed off the tail of the argument list so it composes with both the standard and generalized forms. KISS/DRY refactor pulled the Hessenberg+QR + inverse-iteration pipeline into a single `compute_eig_dense` helper used by `builtin_eig_nargout`; the previous indirection where `eig_nargout` called `eigsys` then converted D was removed. 7 new in-process tests cover all flag forms (1-out vector default, 1-out matrix override, 2-out vector override, 2-out matrix default, generalized + flag, unknown-flag error).
+7. **`eigsys` removed.** ✅ **shipped 2026-05-02.** Once `eig(A, "vector")` covered every shape `eigsys` produced, the function became strictly redundant. Removed from the registry, REPL HelpEntry, completion list, AGENTS reference, quickref, the `examples/eig.rlab` walkthrough, and the `examples/notebooks/eigs.md` table. Pre-existing tests retargeted to the `eig(_, "vector")` form. Breaking change for any external script that called `eigsys` directly — pre-1.0 cleanup, no compat shim left behind.
 
 In addition, **two other builtins were migrated to the new nargout path in the same session:**
 
@@ -296,7 +297,7 @@ Two related forms still open:
 
 **Item #8 (eig family) is its own multi-PR sequence** — see the §8 detail. Order: fix `inverse_iteration_cx` bug → fix orientation → add nargout (option B) → overload `eig` and align `eigs` D shape → add dense generalized `eig(A, B)`. The bug fix is a prerequisite for the others; the rest can be split or bundled at the implementer's discretion.
 
-**After each PR:** add the relevant case(s) to `tests/octave/compare_full.m` + `tests/octave/rustlab_full.r` so the regression is locked in by the existing octave-comparison suite.
+**After each PR:** add the relevant case(s) to `tests/octave/compare_full.m` + `tests/octave/rustlab_full.rlab` so the regression is locked in by the existing octave-comparison suite.
 
 ## Coverage gaps (separate from divergences)
 
@@ -315,7 +316,7 @@ These are lower priority than the divergences above (they probably *do* match) b
 
 ## How to verify after each fix
 
-1. Add the exact octave-vs-rustlab numeric/structural case to `tests/octave/rustlab_full.r` (rustlab side) and `tests/octave/reference_full.m` (octave side).
+1. Add the exact octave-vs-rustlab numeric/structural case to `tests/octave/rustlab_full.rlab` (rustlab side) and `tests/octave/reference_full.m` (octave side).
 2. Add the assertion to `tests/octave/compare_full.m`.
 3. Run `bash tests/octave/run_compare.sh` — should pass at the relevant tolerance (most are 1e-9, exact-arithmetic cases at machine precision).
 4. Run `cargo test --workspace` to verify no regressions in the in-process Rust tests.

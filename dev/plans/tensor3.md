@@ -39,7 +39,7 @@ phase.
 | `Array3<C64>` | ✅ | `num_complex::Complex<f64>` works with `ndarray::Array3` out of the box |
 | No existing `Array3` / `Tensor3` references anywhere in the tree | ✅ | `grep -r "Array3\|Tensor3"` returns nothing — greenfield |
 | `rustlab-core::types.rs` is the canonical type-alias home | ✅ | `CVector = Array1<C64>` and `CMatrix = Array2<C64>` already live there |
-| Existing benchmarks in `perf/` for pre/post-landing comparison | ✅ | `perf/bench_*.r` + `perf/run_perf.sh` |
+| Existing benchmarks in `perf/` for pre/post-landing comparison | ✅ | `perf/bench_*.rlab` + `perf/run_perf.sh` |
 
 ---
 
@@ -361,7 +361,7 @@ workaround.
 - `crates/rustlab-cli/src/commands/repl.rs`:
   - `HelpEntry { name, brief, detail }` for each new builtin.
   - Add each name to the appropriate category slice in `print_help_list()`.
-- `examples/tensor3/` directory with a short `.r` script exercising build,
+- `examples/tensor3/` directory with a short `.rlab` script exercising build,
   slice, arithmetic, save/load.
 
 ---
@@ -389,8 +389,8 @@ workaround.
 **Verification protocol:**
 - Capture baseline via `perf/run_perf.sh` in Phase 0.
 - Re-run at the end of Phase 4 (arithmetic) and Phase 7 (final).
-- Require max regression <2% across `bench_builtins.r`, `bench_convolve.r`,
-  `bench_fft.r`, `bench_linalg.r`. Larger deltas → stop and flag to Mike.
+- Require max regression <2% across `bench_builtins.rlab`, `bench_convolve.rlab`,
+  `bench_fft.rlab`, `bench_linalg.rlab`. Larger deltas → stop and flag to Mike.
 
 ---
 
@@ -465,5 +465,5 @@ workaround.
 | Builtins registration | `crates/rustlab-script/src/eval/builtins.rs:~line 125–260` |
 | `reshape` implementation | `builtins.rs:2920` |
 | REPL help registry | `crates/rustlab-cli/src/commands/repl.rs` (`HelpEntry`, `print_help_list`) |
-| Benchmarks | `perf/run_perf.sh` + `perf/bench_*.r` |
+| Benchmarks | `perf/run_perf.sh` + `perf/bench_*.rlab` |
 | Parent plan (rustlab_em requests) | `dev/plans/rustlab_em_requests.md` |

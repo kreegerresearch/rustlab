@@ -5,4 +5,13 @@
   docs/examples.md    — annotated example walkthroughs
   README.md           — quickstart and CLI usage
 
-Script extension: .r   Run: rustlab run script.r   REPL: rustlab
+Script extension: .rlab   Run: rustlab run script.rlab   REPL: rustlab
+
+Builtin docs from the shell:
+  rustlab docs              list every builtin grouped by category
+  rustlab docs <name>       detail for one builtin (e.g. rustlab docs eig)
+  rustlab docs <category>   list one category (e.g. rustlab docs Plotting)
+  rustlab docs --search <q> substring match over names and briefs
+  rustlab docs --json       complete index as JSON (~250 entries with name,
+                            category, brief, detail) — recommended for AI
+                            tooling that wants a one-call authoritative dump

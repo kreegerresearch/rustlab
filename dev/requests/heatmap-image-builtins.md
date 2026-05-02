@@ -457,7 +457,7 @@ Build and test after each phase to catch errors early.
 ## Verification
 
 1. `cargo test --workspace` - all tests pass, existing imagesc behavior unchanged
-2. Run `examples/matrix_ops.r` - existing imagesc still works
+2. Run `examples/matrix_ops.rlab` - existing imagesc still works
 3. Notebook test: create a notebook with `heatmap()` and `image()` calls, `cargo run -- notebook render`, verify Plotly charts appear correctly in the HTML
 4. `savefig` test:
    - `heatmap(["A","B","C"], ["X","Y"], [1,2,3;4,5,6], "Test"); savefig("/tmp/hm.svg")` - produces SVG

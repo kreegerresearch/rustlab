@@ -22,7 +22,7 @@ filed.
 **Filed (no upstream code):**
 - Item 7 spec → `rustlab_em/dev/rustlab/requests/yee-and-pml-builders.md`
   with `Status: Discussion`. Phase 1 (scripted library in
-  `rustlab_em/lessons/_shared/em.r`) lands when curriculum drafts
+  `rustlab_em/lessons/_shared/em.rlab`) lands when curriculum drafts
   Lessons 10/11/13. Phase 2 (upstream `rustlab-em` crate) waits for a
   graduation trigger (3-D Yee, >5s assembly, second physics
   curriculum, language-feature wall).
@@ -36,7 +36,7 @@ not currently scheduled.
 
 1. **Sparse solver:** hand-rolled, pure Rust, in `rustlab-core`. **`faer` is rejected** (too large a library — see `AGENTS.md` Rule 9). UMFPACK rejected (GPL). MKL rejected. No FFI. Item 2 is now a multi-phase hand-roll, not a wrapper around an existing solver — see Item 2 for the breakdown.
 2. **Sparse eigensolver:** hand-rolled Arnoldi / Lanczos on top of the rustlab-core hand-rolled LU/Cholesky from Item 2. **No FFI.** Not `arpack-ng-sys`.
-3. **Yee + SC-PML home:** scripted library in `rustlab_em/lessons/_shared/em.r` (Phase 1). Workspace crate only on graduation trigger (Phase 2).
+3. **Yee + SC-PML home:** scripted library in `rustlab_em/lessons/_shared/em.rlab` (Phase 1). Workspace crate only on graduation trigger (Phase 2).
 4. **Real-typed elem-ops:** Option A (4-line guard zeroing imag when both inputs essentially real). Options B/C deferred.
 5. **Dependency policy** (`AGENTS.md` Rule 9): **core functionality must be written in pure Rust.** Libraries acceptable only for infrastructure (graphics, plotting, terminal UI, I/O, parsing). Any proposal to use a library on core work requires a written trade-off study at `dev/plans/<topic>-tradeoff.md` before code lands. Hard limits (override even a good trade-off study): no GPL/LGPL/copyleft, no Fortran/C++ FFI, no "large library", no vendored solvers the curriculum is supposed to teach.
 
@@ -210,10 +210,10 @@ Status legend: `[ ]` not started · `[~]` in progress · `[✓]` shipped · `[B]
 - Octave reference comparison (`AGENTS.md:285-303`) for at least one assembly.
 
 **File checklist:**
-- [ ] Create `../rustlab_em/lessons/_shared/em.r` with `yee_curl_2d` and `scpml_stretch` scripted implementations.
+- [ ] Create `../rustlab_em/lessons/_shared/em.rlab` with `yee_curl_2d` and `scpml_stretch` scripted implementations.
 - [ ] Create `../rustlab_em/lessons/_shared/README.md` documenting the import pattern.
 - [ ] File spec upstream as `../rustlab_em/dev/rustlab/requests/yee-and-pml-builders.md` with `Status: Discussion` — captures the API even though no upstream code lands.
-- [ ] When Lessons 10/11/13 draft, they `run("../_shared/em.r")` to import.
+- [ ] When Lessons 10/11/13 draft, they `run("../_shared/em.rlab")` to import.
 
 **Graduation triggers (escalate to Phase 2 / native crate if any fire):**
 - Lesson 14 capstone needs 3-D Yee.

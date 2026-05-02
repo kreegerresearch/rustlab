@@ -1,6 +1,6 @@
 # Development Plan: Control Systems Toolbox
 
-**Target example:** `examples/controls/classical_control.r`
+**Target example:** `examples/controls/classical_control.rlab`
 **Current phase:** complete
 **Status:** All phases complete (Phase 6 implemented 2026-04-04)
 
