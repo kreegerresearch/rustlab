@@ -59,7 +59,7 @@ bar(regions, q2, "Q2 Revenue")
 ```
 
 ```text
-5
+12
 ```
 
 ![plot 2](plots/string_arrays/plot-2.svg)
