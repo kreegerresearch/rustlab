@@ -484,4 +484,99 @@ mod tests {
             _ => panic!("expected Code block"),
         }
     }
+
+    /// Regression: `figure()` with no args used to call `default_new_output()`,
+    /// which returned `Terminal` and overwrote the notebook's `Html`
+    /// suppression — every subsequent plot then entered the ratatui alt
+    /// screen and blocked on a keypress. `PlotContext::Notebook` makes the
+    /// suppression sticky so `figure()` cannot break it.
+    #[test]
+    fn notebook_figure_call_does_not_override_suppression() {
+        let blocks = vec![Block::Code {
+            source: "x = 0:10; figure(); plot(x, sin(x));".to_string(),
+            directives: crate::parse::CodeDirectives::default(),
+        }];
+        let rendered = execute_notebook(&blocks);
+        match &rendered[0] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "unexpected error: {error:?}");
+                assert_eq!(figures.len(), 1);
+            }
+            _ => panic!("expected Code block"),
+        }
+        assert_eq!(
+            rustlab_plot::plot_context(),
+            PlotContext::Notebook,
+            "PlotContext must remain Notebook after figure()"
+        );
+        assert!(
+            matches!(
+                rustlab_plot::current_figure_output(),
+                rustlab_plot::FigureOutput::Html(_)
+            ),
+            "current figure output must be Html(_), got {:?}",
+            rustlab_plot::current_figure_output()
+        );
+    }
+
+    /// Regression: `imagesc()` in a notebook block must not enter the
+    /// ratatui alternate screen or block on keypress. If the early-return
+    /// guard in `render_heatmap_tui` regresses, this test hangs the suite.
+    #[test]
+    fn notebook_imagesc_does_not_block() {
+        let blocks = vec![Block::Code {
+            source: "A = [1 2 3; 4 5 6; 7 8 9]; imagesc(A);".to_string(),
+            directives: crate::parse::CodeDirectives::default(),
+        }];
+        let rendered = execute_notebook(&blocks);
+        match &rendered[0] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "unexpected error: {error:?}");
+                assert_eq!(figures.len(), 1, "expected one heatmap snapshot");
+            }
+            _ => panic!("expected Code block"),
+        }
+    }
+
+    /// Regression: multiple `figure()` calls in one block must not break
+    /// suppression. Without explicit `savefig()` between them only the
+    /// final figure is captured (existing contract), but the block must
+    /// complete cleanly with no terminal leak — if suppression broke,
+    /// the second `plot()` would block on a keypress.
+    #[test]
+    fn notebook_multiple_figures_in_block() {
+        let a = tmp_path("multi_a");
+        let b = tmp_path("multi_b");
+        let src = format!(
+            "figure(); plot(1:5); savefig('{a}'); figure(); plot(1:5, (1:5).^2); savefig('{b}');"
+        );
+        let blocks = vec![Block::Code {
+            source: src,
+            directives: crate::parse::CodeDirectives::default(),
+        }];
+        let rendered = execute_notebook(&blocks);
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+        match &rendered[0] {
+            Rendered::Code {
+                figures,
+                text_output,
+                error,
+                ..
+            } => {
+                assert!(error.is_none(), "unexpected error: {error:?}");
+                assert_eq!(
+                    figures.len(),
+                    2,
+                    "expected two figure snapshots, got {}",
+                    figures.len()
+                );
+                assert!(
+                    text_output.trim().is_empty(),
+                    "no terminal output should leak: {text_output:?}"
+                );
+            }
+            _ => panic!("expected Code block"),
+        }
+    }
 }

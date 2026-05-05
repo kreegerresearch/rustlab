@@ -1773,6 +1773,55 @@ mod tests {
         assert_eq!(rewritten, src);
     }
 
+    #[test]
+    fn protect_math_aligned_environment_preserves_each_row() {
+        let src = r"$$\begin{aligned} a &= 1 \\ b &= 2 \\ c &= 3 \end{aligned}$$";
+        let (_, stash) = protect_math(src);
+        assert_eq!(stash.len(), 1);
+        assert_eq!(
+            stash[0].matches(r"\\").count(),
+            2,
+            "expected 2 row separators in aligned environment, got {:?}",
+            stash[0]
+        );
+    }
+
+    #[test]
+    fn protect_math_inline_smallmatrix_preserves_separator() {
+        let src = r"see $\begin{smallmatrix}a \\ b\end{smallmatrix}$ inline";
+        let (_, stash) = protect_math(src);
+        assert_eq!(stash.len(), 1);
+        assert!(
+            stash[0].contains(r"\\"),
+            "inline smallmatrix lost row separator: {:?}",
+            stash[0]
+        );
+    }
+
+    #[test]
+    fn protect_math_cases_preserves_each_branch() {
+        let src = r"$$f(x) = \begin{cases} 0 & x<0 \\ 1 & x \ge 0 \end{cases}$$";
+        let (_, stash) = protect_math(src);
+        assert_eq!(stash.len(), 1);
+        assert_eq!(
+            stash[0].matches(r"\\").count(),
+            1,
+            "cases environment lost branch separator: {:?}",
+            stash[0]
+        );
+    }
+
+    #[test]
+    fn protect_math_empty_display_span() {
+        // `$$$$` is a degenerate empty display span. Whatever protect_math
+        // does with it, the round-trip must not panic and restore_math must
+        // reconstruct the input verbatim.
+        let src = "before $$$$ after";
+        let (rewritten, stash) = protect_math(src);
+        let restored = restore_math(&rewritten, &stash);
+        assert_eq!(restored, src);
+    }
+
     // ── Cross-notebook navigation (Option B) ──
 
     #[test]
