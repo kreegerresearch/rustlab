@@ -7,14 +7,18 @@ UNAME       := $(shell uname)
 all: help
 
 build:
-	$(CARGO) build --workspace --features viewer
+	$(CARGO) build --bin rustlab --features viewer
+	$(CARGO) build -p rustlab-viewer
+	$(CARGO) build -p rustlab-notebook --features mermaid
 
 release:
-	$(CARGO) build --release --features viewer
-	$(CARGO) build --release -p rustlab-notebook
+	$(CARGO) build --release --bin rustlab --features viewer
+	$(CARGO) build --release -p rustlab-viewer
+	$(CARGO) build --release -p rustlab-notebook --features mermaid
 
 test:
 	$(CARGO) test --workspace --features viewer
+	$(CARGO) test -p rustlab-notebook --features mermaid
 
 install: release
 	mkdir -p $(INSTALL_DIR)

@@ -16,10 +16,14 @@ name = "rustlab-notebook"
 path = "src/main.rs"
 
 [features]
-default = ["mermaid"]
+# No defaults: workspace feature unification would otherwise pull mermaid's
+# dep chain (mermaid-rs-renderer, fontdb, ttf-parser, blake3 — ~1.3 MiB) into
+# the main `rustlab` binary. The standalone `rustlab-notebook` bin opts in
+# explicitly via the Makefile (`cargo build -p rustlab-notebook --features
+# mermaid`); without the feature, mermaid blocks fall back to verbatim source.
+default = []
 # Server-side Mermaid diagram rendering. Adds resvg/usvg/fontdb to the dep
-# tree (~5 crates) plus blake3 for source caching. Disable for a smaller
-# build; Mermaid blocks fall back to verbatim source.
+# tree (~5 crates) plus blake3 for source caching.
 mermaid = ["dep:mermaid-rs-renderer", "dep:blake3"]
 
 [dependencies]
