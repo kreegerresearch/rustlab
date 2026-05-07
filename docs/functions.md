@@ -2022,6 +2022,17 @@ Open a new figure. Subsequent chart calls draw into it. With `hold off` (the def
 ### `clf()`
 Clear the current figure's series, titles, and axes — convenient at the top of a notebook cell or example script.
 
+### `close` / `close all` / `close(N)`
+Dismiss figures.
+
+- `close` — remove the current figure from the figure store.
+- `close all` (or `close("all")`) — remove every open figure in one go.
+- `close(N)` — remove the figure with handle `N` (the value `figure()` returned).
+
+When `rustlab-viewer` is connected, `close` also closes the corresponding viewer window; `close all` clears every viewer window via a single `Reset` message and keeps the IPC connection itself open so subsequent plots route to fresh viewer figures. Closing the active figure switches focus to the most recently used remaining figure; closing the last one resets to a fresh anonymous figure on the terminal.
+
+`close` is for the regular figures returned by `figure()`. To release an animation-style `LiveFigure` handle (see `figure_live`), use `figure_close(fig)` instead.
+
 ### `hold("on")` / `hold("off")` / `hold(1)` / `hold(0)`
 Toggle whether the next chart call clears the figure first. With `hold on`, multiple `plot` / `quiver` / `contour` calls overlay on the same axes — the canonical pattern for combining heatmaps with field arrows.
 

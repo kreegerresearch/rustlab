@@ -140,6 +140,9 @@ impl Parser {
                 Token::Viewer => {
                     stmts.push(self.parse_on_off_stmt("viewer")?);
                 }
+                Token::Close => {
+                    stmts.push(self.parse_close_stmt()?);
+                }
                 Token::Else | Token::ElseIf => {
                     return Err(ScriptError::Parse {
                         line: self.current_line(),
@@ -537,6 +540,7 @@ impl Parser {
             Token::Hold => self.parse_on_off_stmt("hold"),
             Token::Grid => self.parse_on_off_stmt("grid"),
             Token::Viewer => self.parse_on_off_stmt("viewer"),
+            Token::Close => self.parse_close_stmt(),
             Token::LBracket if self.is_multi_assign() => self.parse_multi_assign(),
             Token::Ident(_) => {
                 if self.is_field_assignment() {
@@ -764,6 +768,72 @@ impl Parser {
                 self.peek_token()
             ),
         })
+    }
+
+    /// Parse `close`, `close all`, `close N`, or `close(...)`. All forms
+    /// desugar to a regular builtin call so the AST stays small.
+    ///   close            → close()
+    ///   close all        → close("all")
+    ///   close N          → close(N)
+    ///   close(args...)   → close(args...)   (function-call form)
+    fn parse_close_stmt(&mut self) -> Result<Stmt, ScriptError> {
+        let line = self.current_line();
+        self.advance(); // consume `close` keyword
+
+        // Bare `close` — close current figure.
+        if matches!(
+            self.peek_token(),
+            Token::Newline | Token::Eof | Token::Semicolon
+        ) {
+            let suppress = self.consume_stmt_end()?;
+            let call = Expr::Call {
+                name: "close".to_string(),
+                args: vec![],
+            };
+            return Ok(Stmt::new(StmtKind::Expr(call, suppress), line));
+        }
+
+        // `close all` bareword — close every figure.
+        if let Token::Ident(s) = self.peek_token() {
+            if s == "all" {
+                self.advance();
+                let suppress = self.consume_stmt_end()?;
+                let call = Expr::Call {
+                    name: "close".to_string(),
+                    args: vec![Expr::Str("all".to_string())],
+                };
+                return Ok(Stmt::new(StmtKind::Expr(call, suppress), line));
+            }
+        }
+
+        // `close(args...)` — function-call form.
+        if matches!(self.peek_token(), Token::LParen) {
+            self.advance(); // consume '('
+            let mut args = Vec::new();
+            if !matches!(self.peek_token(), Token::RParen) {
+                args.push(self.parse_range_expr()?);
+                while matches!(self.peek_token(), Token::Comma) {
+                    self.advance();
+                    args.push(self.parse_range_expr()?);
+                }
+            }
+            self.expect(&Token::RParen)?;
+            let suppress = self.consume_stmt_end()?;
+            let call = Expr::Call {
+                name: "close".to_string(),
+                args,
+            };
+            return Ok(Stmt::new(StmtKind::Expr(call, suppress), line));
+        }
+
+        // `close N` (bareword arg) — desugar to close(N).
+        let arg = self.parse_range_expr()?;
+        let suppress = self.consume_stmt_end()?;
+        let call = Expr::Call {
+            name: "close".to_string(),
+            args: vec![arg],
+        };
+        Ok(Stmt::new(StmtKind::Expr(call, suppress), line))
     }
 
     fn parse_format_stmt(&mut self) -> Result<Stmt, ScriptError> {

@@ -323,6 +323,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "clear  — deletes every user-defined variable and function; built-in constants (j, pi, e) are kept\n  Works in both REPL and scripts. No parentheses needed." },
     HelpEntry { name: "clf", brief: "Clear current figure",
         detail: "clf  — reset the figure state (clear all subplot series, titles, labels)\n  Works in both REPL and scripts. No parentheses needed." },
+    HelpEntry { name: "close", brief: "Dismiss figures (current, by ID, or all)",
+        detail: "close            — dismiss the current figure\nclose all        — dismiss every open figure\nclose(N)         — dismiss figure with handle N (returned by `figure()`)\nclose(\"all\")     — same as `close all` (function-call form)\n\nWith the external rustlab-viewer connected, `close` also closes the\ncorresponding viewer window; `close all` clears every viewer window in\nthe session in one Reset message. The viewer connection itself stays\nopen — subsequent plots route to fresh viewer figures.\n\nClosing the active figure switches to the most-recently-used remaining\nfigure; closing the last one resets to a fresh anonymous figure routed\nto the terminal.\n\nNote: `figure_close(fig)` is a different builtin that releases an\nanimation `LiveFigure` handle (see `figure_live`). Use `close` for the\nregular figures returned by `figure()`." },
     HelpEntry { name: "compound_assign", brief: "Compound assignment operators (+=, -=, *=, /=)",
         detail: "x += expr   — equivalent to x = x + expr\nx -= expr   — equivalent to x = x - expr\nx *= expr   — equivalent to x = x * expr\nx /= expr   — equivalent to x = x / expr\n\n  s = 0\n  for i = 1:10\n    s += i\n  end" },
     // Structs
@@ -967,8 +969,8 @@ pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Figure Controls",
             &[
-                "figure", "clf", "hold", "grid", "viewer", "xlabel", "ylabel", "title", "xlim",
-                "ylim", "subplot", "legend",
+                "figure", "clf", "close", "hold", "grid", "viewer", "xlabel", "ylabel", "title",
+                "xlim", "ylim", "subplot", "legend",
             ],
         ),
         (

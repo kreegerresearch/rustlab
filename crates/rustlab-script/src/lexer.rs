@@ -62,6 +62,7 @@ pub enum Token {
     Hold,      // hold
     Grid,      // grid
     Viewer,    // viewer
+    Close,     // close
     Dot,       // . (field access)
     // Structure
     Newline,
@@ -543,6 +544,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                     "hold" => Token::Hold,
                     "grid" => Token::Grid,
                     "viewer" => Token::Viewer,
+                    "close" => Token::Close,
                     _ => Token::Ident(ident),
                 };
                 tokens.push(Spanned { token: tok, line });

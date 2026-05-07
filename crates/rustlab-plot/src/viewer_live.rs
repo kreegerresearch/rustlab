@@ -219,6 +219,33 @@ pub fn disconnect_viewer() {
     VIEWER_SESSION.with(|s| *s.borrow_mut() = None);
 }
 
+/// Tell a connected viewer to close a single figure window. No-op when no
+/// viewer is connected, so callers from `close()` can use it unconditionally.
+/// Send is best-effort: a failure here just means the viewer window is
+/// gone, in which case the user already has nothing to close.
+pub fn viewer_close(fig_id: u32) {
+    VIEWER_CONN.with(|c| {
+        if let Some(ref mut conn) = *c.borrow_mut() {
+            let _ = conn.client.send_nowait(&ViewerMsg::Close { fig_id });
+        }
+    });
+}
+
+/// Tell a connected viewer to close every figure window. No-op when no
+/// viewer is connected. Used by `close all`. Keeps the connection itself
+/// open so subsequent plots route to fresh viewer figures.
+pub fn viewer_reset() {
+    VIEWER_CONN.with(|c| {
+        if let Some(ref mut conn) = *c.borrow_mut() {
+            let _ = conn.client.send_nowait(&ViewerMsg::Reset);
+            // The viewer just emptied its figure map; force a fresh
+            // FigureOpen on the next sync by clearing layout/title state.
+            conn.layout = (0, 0);
+            conn.last_figure_title = String::new();
+        }
+    });
+}
+
 /// Start a new figure in the viewer, keeping the previous one visible.
 /// No-op if the viewer is not connected.
 pub fn viewer_new_figure() {

@@ -5849,6 +5849,92 @@ ref_full = convolve(x, h);
     fn figure_close_wrong_type_errors() {
         assert!(try_run("figure_close(42);").is_err());
     }
+
+    // ── close / close all (regular figures, distinct from figure_close) ────
+
+    #[test]
+    fn close_bareword_parses_as_call_to_close() {
+        // `close` (no args) desugars to a call expr so the regular builtin
+        // dispatcher handles it.
+        let src = "close\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0].kind {
+            crate::ast::StmtKind::Expr(crate::ast::Expr::Call { name, args }, _) => {
+                assert_eq!(name, "close");
+                assert!(args.is_empty(), "expected zero args, got {:?}", args);
+            }
+            other => panic!("expected Expr::Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn close_all_bareword_parses_with_string_arg() {
+        // `close all` desugars to `close("all")`.
+        let src = "close all\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        assert_eq!(stmts.len(), 1);
+        match &stmts[0].kind {
+            crate::ast::StmtKind::Expr(crate::ast::Expr::Call { name, args }, _) => {
+                assert_eq!(name, "close");
+                assert_eq!(args.len(), 1);
+                match &args[0] {
+                    crate::ast::Expr::Str(s) => assert_eq!(s, "all"),
+                    other => panic!("expected Str(\"all\"), got {:?}", other),
+                }
+            }
+            other => panic!("expected Expr::Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn close_function_call_with_id_parses() {
+        // `close(2)` — function-call form with a numeric ID.
+        let src = "close(2)\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        match &stmts[0].kind {
+            crate::ast::StmtKind::Expr(crate::ast::Expr::Call { name, args }, _) => {
+                assert_eq!(name, "close");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected Expr::Call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn close_runs_without_open_figures() {
+        // `close` and `close all` must be safe when no figures exist —
+        // matlab parity.
+        try_run("close").expect("bare close should be a noop");
+        try_run("close all").expect("close all should be a noop");
+        try_run("close(\"all\")").expect("close(\"all\") should be a noop");
+    }
+
+    #[test]
+    fn close_id_dismisses_specific_figure() {
+        // Open a figure, capture its handle, close by handle. Then close again
+        // (no-op). Then close all (also a no-op since the store is empty).
+        let _ev = try_run("fig = figure(); close(fig); close(fig); close all")
+            .expect("close-by-id should run cleanly");
+        // Side-effect verification: current figure id is back to 0.
+        assert_eq!(rustlab_plot::current_figure_id(), 0);
+    }
+
+    #[test]
+    fn close_rejects_negative_or_fractional_id() {
+        assert!(try_run("close(-1)").is_err());
+        assert!(try_run("close(1.5)").is_err());
+        assert!(try_run("close(0)").is_err());
+    }
+
+    #[test]
+    fn close_rejects_unknown_string() {
+        // `close("none")` — only "all" is accepted.
+        assert!(try_run("close(\"none\")").is_err());
+    }
 }
 
 // ─── Tier 1: Arg-count and type error tests ─────────────────────────────────

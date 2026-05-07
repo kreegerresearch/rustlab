@@ -27,11 +27,12 @@ pub use ascii::{
 };
 pub use error::PlotError;
 pub use figure::{
-    clear_notebook_figures, colormap_rgb, current_figure_id, current_figure_output, figure_new,
-    figure_new_html, figure_switch, plot_context, push_notebook_figure_snapshot,
-    set_current_figure_output, set_plot_context, take_notebook_figures, ContourData, FigureOutput,
-    FigureState, HeatmapData, HeatmapKind, LineStyle, PlotContext, PlotKind, QuiverData, Series, SeriesColor,
-    StreamlineData, SubplotState, SurfaceData, FIGURE,
+    clear_notebook_figures, close_all_figures, close_figure, colormap_rgb, current_figure_id,
+    current_figure_output, figure_new, figure_new_html, figure_switch, plot_context,
+    push_notebook_figure_snapshot, set_current_figure_output, set_plot_context,
+    take_notebook_figures, ContourData, FigureOutput, FigureState, HeatmapData, HeatmapKind,
+    LineStyle, PlotContext, PlotKind, QuiverData, Series, SeriesColor, StreamlineData,
+    SubplotState, SurfaceData, FIGURE,
 };
 pub use file::{
     render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed,
@@ -48,7 +49,7 @@ pub use viewer_live::ViewerFigure;
 #[cfg(feature = "viewer")]
 pub use viewer_live::{
     connect_viewer, connect_viewer_named, disconnect_viewer, sync_viewer, viewer_active,
-    viewer_new_figure,
+    viewer_close, viewer_new_figure, viewer_reset,
 };
 
 use rustlab_core::RVector;

@@ -564,6 +564,175 @@ pub fn set_current_figure_output(output: FigureOutput) {
     STORE.with(|s| s.borrow_mut().current_output = output);
 }
 
+/// Close figure `id`. Removes it from the store and, when its output is
+/// `Viewer`, tells the connected viewer to close its corresponding window.
+/// If `id` is the active figure, the active slot is reset (next-most-recent
+/// stored figure if any, otherwise an empty anonymous figure).
+///
+/// Returns `true` when a figure was actually closed, `false` when `id` was
+/// neither stored nor active.
+pub fn close_figure(id: u32) -> bool {
+    if id == 0 {
+        return false;
+    }
+    let was_current = STORE.with(|s| s.borrow().current_id == id);
+
+    // Determine the wire-level fig_id (Viewer output carries its own id
+    // distinct from the FigureStore key) and remove the entry.
+    let stored_output = if was_current {
+        Some(STORE.with(|s| s.borrow().current_output.clone()))
+    } else {
+        STORE
+            .with(|s| s.borrow_mut().figures.remove(&id))
+            .map(|st| st.output)
+    };
+
+    let mut closed = false;
+    if let Some(output) = stored_output {
+        closed = true;
+        #[cfg(feature = "viewer")]
+        if let FigureOutput::Viewer(fig_id) = output {
+            crate::viewer_live::viewer_close(fig_id);
+        }
+        #[cfg(not(feature = "viewer"))]
+        {
+            let _ = output;
+        }
+    }
+
+    if was_current {
+        // Pick the highest remaining stored ID as the new active figure.
+        let next = STORE.with(|s| s.borrow().figures.keys().copied().max());
+        if let Some(next_id) = next {
+            let stored = STORE.with(|s| s.borrow_mut().figures.remove(&next_id));
+            if let Some(stored) = stored {
+                restore(stored);
+                STORE.with(|s| s.borrow_mut().current_id = next_id);
+            }
+        } else {
+            // Store is empty — reset to anonymous, terminal-routed state.
+            FIGURE.with(|f| f.borrow_mut().reset());
+            crate::animation::clear_frames();
+            crate::html::clear_html_figure_path();
+            STORE.with(|s| {
+                let mut store = s.borrow_mut();
+                store.current_id = 0;
+                store.current_output = FigureOutput::Terminal;
+            });
+        }
+    }
+    closed
+}
+
+/// Close every figure: empty the store, reset the active workspace, and
+/// (when connected) tell the viewer to drop all figure windows in one
+/// `Reset` message. Idempotent.
+pub fn close_all_figures() {
+    STORE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.figures.clear();
+        store.current_id = 0;
+        store.current_output = FigureOutput::Terminal;
+    });
+    FIGURE.with(|f| f.borrow_mut().reset());
+    crate::animation::clear_frames();
+    crate::html::clear_html_figure_path();
+    #[cfg(feature = "viewer")]
+    crate::viewer_live::viewer_reset();
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::*;
+
+    /// Reset thread-local state so tests don't bleed into one another.
+    /// Each `#[test]` runs on its own thread, but cargo can reuse threads
+    /// across tests within a test binary, so explicit cleanup is safer.
+    fn reset_state() {
+        close_all_figures();
+        STORE.with(|s| {
+            let mut store = s.borrow_mut();
+            store.next_id = 1;
+        });
+    }
+
+    #[test]
+    fn close_current_with_no_figures_is_noop() {
+        reset_state();
+        // No figure() called yet — current_id == 0.
+        assert_eq!(current_figure_id(), 0);
+        assert!(!close_figure(0)); // 0 is reserved for "no figure", refuses
+        assert!(!close_figure(99)); // unknown id
+        assert_eq!(current_figure_id(), 0);
+    }
+
+    #[test]
+    fn close_current_falls_back_to_most_recent() {
+        reset_state();
+        // The first figure_new() call promotes the anonymous current figure
+        // (id 0) to a real id, then allocates a new one — so we collect every
+        // real id by walking the store after building three figures.
+        let a = figure_new();
+        let b = figure_new();
+        let c = figure_new();
+        assert_eq!(current_figure_id(), c);
+
+        // Close the active figure repeatedly. Each close must yield a
+        // strictly smaller current id (highest remaining picked first), and
+        // current_output must remain a valid variant. Eventually current_id
+        // reaches 0 and the workspace falls back to Terminal.
+        let mut prev = c;
+        loop {
+            assert!(close_figure(prev));
+            let next = current_figure_id();
+            assert!(next < prev, "current id should shrink: was {}, now {}", prev, next);
+            if next == 0 {
+                break;
+            }
+            prev = next;
+        }
+        assert_eq!(current_figure_id(), 0);
+        assert!(matches!(current_figure_output(), FigureOutput::Terminal));
+        // a, b were intermediate fallback IDs; reference them so the
+        // compiler doesn't warn about unused locals.
+        let _ = (a, b);
+    }
+
+    #[test]
+    fn close_inactive_id_leaves_current_alone() {
+        reset_state();
+        let a = figure_new();
+        let b = figure_new();
+        assert_eq!(current_figure_id(), b);
+        // Close a (the inactive one). b stays current.
+        assert!(close_figure(a));
+        assert_eq!(current_figure_id(), b);
+        // Re-closing a is a no-op.
+        assert!(!close_figure(a));
+    }
+
+    #[test]
+    fn close_all_empties_store_and_resets_active() {
+        reset_state();
+        let _ = figure_new();
+        let _ = figure_new();
+        let _ = figure_new();
+        close_all_figures();
+        assert_eq!(current_figure_id(), 0);
+        assert!(matches!(current_figure_output(), FigureOutput::Terminal));
+        let count = STORE.with(|s| s.borrow().figures.len());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn close_all_is_idempotent() {
+        reset_state();
+        close_all_figures();
+        close_all_figures();
+        assert_eq!(current_figure_id(), 0);
+    }
+}
+
 // ─── Colormap ──────────────────────────────────────────────────────────────
 
 /// Interpolate a colormap at normalised position t ∈ [0,1].

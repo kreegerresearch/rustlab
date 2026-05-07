@@ -44,6 +44,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `error('msg')` | Halt execution with an error message |
 | `clear` | Remove all user variables and functions; keeps built-in constants |
 | `clf` | Clear current figure (reset subplots, series, labels) |
+| `close` / `close all` / `close(N)` | Dismiss the current figure / all figures / a figure by handle (also closes viewer windows when connected) |
 | `for i = 1:n` … `end` | For loop; also iterates over a vector |
 | `while cond` … `end` | While loop; condition is Bool, Scalar (nonzero), or Complex |
 | `if expr` … `elseif expr` … `else` … `end` | Conditional; `elseif` and `else` are optional; single-line: `if cond, body; end` |

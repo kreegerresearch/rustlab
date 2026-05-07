@@ -313,6 +313,7 @@ impl BuiltinRegistry {
         r.register("plot_labels", builtin_plot_labels);
         r.register("figure_draw", builtin_figure_draw);
         r.register("figure_close", builtin_figure_close);
+        r.register("close", builtin_close);
         r.register("mag2db", builtin_mag2db);
         r.register("sleep", builtin_sleep);
 
@@ -9207,6 +9208,10 @@ fn builtin_figure_draw(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// `figure_close(fig)` — restore the terminal and release the figure.
 /// After this call the figure handle is inert; further draw/update calls error.
+///
+/// Note: this releases an animation-style `LiveFigure` handle. To dismiss
+/// regular figures from the figure store (the kind returned by `figure()`),
+/// use `close` / `close all` instead.
 fn builtin_figure_close(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("figure_close", &args, 1)?;
     let Value::LiveFigure(fig) = &args[0] else {
@@ -9218,6 +9223,75 @@ fn builtin_figure_close(args: Vec<Value>) -> Result<Value, ScriptError> {
     // .take() drops the LiveFigure, firing Drop → disable_raw_mode + LeaveAlternateScreen.
     fig.lock().unwrap().take();
     Ok(Value::None)
+}
+
+/// `close` / `close()` — dismiss the current figure.
+/// `close(N)` — dismiss figure with numeric handle `N`.
+/// `close("all")` / `close all` — dismiss every open figure.
+///
+/// Removes the figure from the multi-figure store and, when the figure is
+/// rendering through `rustlab-viewer`, sends the viewer a `Close` (or
+/// `Reset` for `all`) so its window goes away. Closing the active figure
+/// falls back to the most recently used remaining figure, or to a fresh
+/// anonymous workspace when the store is empty.
+fn builtin_close(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() {
+        let id = rustlab_plot::current_figure_id();
+        if id != 0 {
+            rustlab_plot::close_figure(id);
+        }
+        return Ok(Value::None);
+    }
+    if args.len() > 1 {
+        return Err(ScriptError::type_err(format!(
+            "close: expected 0 or 1 argument, got {}",
+            args.len()
+        )));
+    }
+    match &args[0] {
+        Value::Str(s) => {
+            if s.eq_ignore_ascii_case("all") {
+                rustlab_plot::close_all_figures();
+                Ok(Value::None)
+            } else {
+                Err(ScriptError::type_err(format!(
+                    "close: unknown string argument {:?} (use \"all\" or a numeric ID)",
+                    s
+                )))
+            }
+        }
+        Value::Scalar(n) => {
+            if !n.is_finite() || *n <= 0.0 || n.fract() != 0.0 {
+                return Err(ScriptError::type_err(format!(
+                    "close: figure ID must be a positive integer, got {}",
+                    n
+                )));
+            }
+            let id = *n as u32;
+            rustlab_plot::close_figure(id);
+            Ok(Value::None)
+        }
+        Value::Complex(c) => {
+            if c.im.abs() > 1e-12 {
+                return Err(ScriptError::type_err(
+                    "close: figure ID must be real-valued".to_string(),
+                ));
+            }
+            let n = c.re;
+            if !n.is_finite() || n <= 0.0 || n.fract() != 0.0 {
+                return Err(ScriptError::type_err(format!(
+                    "close: figure ID must be a positive integer, got {}",
+                    n
+                )));
+            }
+            rustlab_plot::close_figure(n as u32);
+            Ok(Value::None)
+        }
+        other => Err(ScriptError::type_err(format!(
+            "close: expected figure ID or \"all\", got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 /// `mag2db(X)` — convert magnitude to dB: 20·log10(|X|), floored at −200 dB.
