@@ -108,6 +108,28 @@ pub fn render_latex(
                     ));
                 }
             }
+            Rendered::Mermaid {
+                source,
+                hidden,
+                details,
+                caption,
+            } => {
+                if *hidden {
+                    continue;
+                }
+                if let Some(title) = details {
+                    body.push_str(&format!("\\paragraph{{{}}}\n\n", escape_latex(title)));
+                }
+                plot_idx += 1;
+                emit_mermaid_latex(
+                    &mut body,
+                    source,
+                    plot_dir,
+                    &href_prefix,
+                    plot_idx,
+                    caption.as_deref(),
+                );
+            }
             Rendered::Callout { kind, content } => {
                 let label = match kind {
                     CalloutKind::Note => "Note",
@@ -367,6 +389,60 @@ fn escape_latex(s: &str) -> String {
         }
     }
     out
+}
+
+/// Render a Mermaid block into the LaTeX body. On success, writes
+/// `<plot_dir>/diagram-<idx>.svg` and emits a `\begin{figure}…\includesvg…`
+/// float. On failure or with the `mermaid` feature disabled, falls back to
+/// `\begin{verbatim}` containing the source.
+fn emit_mermaid_latex(
+    body: &mut String,
+    source: &str,
+    #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] plot_dir: &Path,
+    #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] href_prefix: &str,
+    #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] diagram_idx: usize,
+    #[cfg_attr(not(feature = "mermaid"), allow(unused_variables))] caption: Option<&str>,
+) {
+    #[cfg(feature = "mermaid")]
+    {
+        match crate::mermaid::render_to_svg_file(source, plot_dir, diagram_idx) {
+            Ok(_) => {
+                body.push_str("\\begin{figure}[htbp]\n  \\centering\n  ");
+                body.push_str(&format!(
+                    "\\includesvg[width=0.8\\linewidth]{{{href_prefix}/diagram-{diagram_idx}}}\n"
+                ));
+                if let Some(cap) = caption {
+                    body.push_str(&format!("  \\caption{{{}}}\n", escape_latex(cap)));
+                }
+                body.push_str("\\end{figure}\n\n");
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: mermaid render failed for diagram-{diagram_idx}, embedding source: {e}"
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "mermaid"))]
+    {
+        warn_mermaid_disabled_once_latex();
+    }
+    body.push_str("\\begin{verbatim}\n");
+    body.push_str(source);
+    body.push_str("\n\\end{verbatim}\n\n");
+}
+
+#[cfg(not(feature = "mermaid"))]
+fn warn_mermaid_disabled_once_latex() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "warning: rustlab-notebook built without 'mermaid' feature. \
+             Mermaid blocks rendered as verbatim source in LaTeX/PDF output."
+        );
+    }
 }
 
 #[cfg(test)]
@@ -714,5 +790,96 @@ mod tests {
         );
         assert!(tex.contains("\\subsection{Analysis}"));
         assert!(tex.contains("$x^2$"));
+    }
+
+    // ── Mermaid blocks ──
+
+    fn mermaid_plot_dir(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rustlab_render_latex_mermaid_{}_{}",
+            std::process::id(),
+            tag,
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        p
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn mermaid_emits_figure_with_includesvg() {
+        let dir = mermaid_plot_dir("fig");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        assert!(tex.contains("\\begin{figure}[htbp]"));
+        assert!(tex.contains("\\includesvg[width=0.8\\linewidth]{plots/test/diagram-1}"));
+        assert!(tex.contains("\\end{figure}"));
+        assert!(dir.join("diagram-1.svg").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn mermaid_caption_present_when_set() {
+        let dir = mermaid_plot_dir("cap");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: Some("Signal flow".to_string()),
+        }];
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        assert!(tex.contains("\\caption{Signal flow}"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn mermaid_no_caption_omits_command() {
+        let dir = mermaid_plot_dir("nocap");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        assert!(!tex.contains("\\caption{"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mermaid_hidden_omits_figure() {
+        let dir = mermaid_plot_dir("hidden");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: true,
+            details: None,
+            caption: None,
+        }];
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        assert!(!tex.contains("\\begin{figure}"));
+        assert!(!tex.contains("\\includesvg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(feature = "mermaid"))]
+    #[test]
+    fn mermaid_feature_disabled_emits_verbatim() {
+        let dir = mermaid_plot_dir("disabled");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        assert!(tex.contains("\\begin{verbatim}"));
+        assert!(tex.contains("flowchart LR"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

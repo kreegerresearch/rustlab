@@ -155,6 +155,7 @@ together whenever a phase finishes.
 | Sparse Vectors and Matrices | `dev/plans/sparse.md` | Complete — all 4 phases (types, conversion, arithmetic, solver/utilities) |
 | Notebook System | `dev/plans/notebook_report.md` | Complete through Phase 6 (parse, execute, KaTeX, LaTeX/PDF, polish, multi-notebook) + light/dark theme support |
 | Notebook Future Features | `dev/plans/notebook_future.md` | Complete — template interpolation, string arrays, categorical bar charts |
+| Notebook Mermaid Diagrams | `dev/plans/notebook_mermaid.md` | Phase 1 complete — pure-Rust SVG via `mermaid-rs-renderer` behind `mermaid` Cargo feature (default-on). Inline `<svg>` in HTML, `\includesvg` figure in LaTeX/PDF, ` ```mermaid ` fence in Markdown. Hashed cache, `<!-- caption: -->`/`<!-- hide -->`/`<!-- details: -->` directives. |
 | Hand-Rolled Sparse Solver | `dev/plans/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
 | `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
 | Original `rustlab_em` Requests (5 originals) | `dev/plans/rustlab_em_requests.md` | Complete through Phase 4 — original five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d Phase 1). |
@@ -751,11 +752,12 @@ rustlab-viewer --socket PATH    # custom socket path
 **Key files:**
 - `src/lib.rs` — public API: `cmd_render`, `cmd_render_dir` (accepts optional `index_title`), `Format`, `NotebookNav`, `generate_index_html` (accepts an `index_body_html: &str`); contains `render_output` (per-format dispatch) and `plot_layout_for` (canonical `plots/<stem>/` rule shared by markdown + LaTeX)
 - `src/main.rs` — thin CLI wrapper (`rustlab-notebook render`)
-- `src/parse.rs` — parse notebook markdown into `Block` enum (Markdown / Code)
+- `src/parse.rs` — parse notebook markdown into `Block` enum (Markdown / Code / Mermaid / Callout / Exercise / Solution)
 - `src/execute.rs` — execute code blocks through `Evaluator`, produce `Rendered` blocks
 - `src/render.rs` — HTML rendering with themed CSS (Catppuccin Mocha/Latte)
 - `src/render_latex.rs` — LaTeX rendering (also used to drive PDF compilation in a tempdir)
 - `src/render_markdown.rs` — GitHub-flavored Markdown rendering with inline SVG plots
+- `src/mermaid.rs` — pure-Rust SVG rendering of ` ```mermaid ` blocks via `mermaid-rs-renderer` (gated behind the default-on `mermaid` Cargo feature). BLAKE3-hashed output cache lives under `plots/<notebook>/.cache/`. Wraps the upstream call in `catch_unwind` so a 0.2.x crate panic falls back to verbatim source instead of tearing down the render.
 
 **Theme support:** `--theme dark|light` flag (default: dark). Dark = Catppuccin Mocha, Light = Catppuccin Latte. Theme colors are defined in `rustlab-plot/src/theme.rs` (`Theme` enum + `ThemeColors` struct) and shared with the plot crate for consistent Plotly chart styling.
 

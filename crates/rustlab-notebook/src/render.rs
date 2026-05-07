@@ -182,6 +182,32 @@ pub fn render_html(
 
                 body.push_str("</div>\n");
             }
+            Rendered::Mermaid {
+                source,
+                hidden,
+                details,
+                caption,
+            } => {
+                if *hidden {
+                    continue;
+                }
+                if let Some(title) = details {
+                    body.push_str("<details class=\"code-details\">\n");
+                    body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
+                }
+                body.push_str("<figure class=\"mermaid\">\n");
+                emit_mermaid_html(&mut body, source, plot_dir);
+                if let Some(cap) = caption {
+                    body.push_str(&format!(
+                        "<figcaption>{}</figcaption>\n",
+                        escape_html(cap)
+                    ));
+                }
+                body.push_str("</figure>\n");
+                if details.is_some() {
+                    body.push_str("</details>\n");
+                }
+            }
             Rendered::Callout { kind, content } => {
                 let (class, label) = match kind {
                     CalloutKind::Note => ("note", "Note"),
@@ -681,6 +707,58 @@ pub fn render_html(
 /// Build the `<nav class="page-nav">` footer shown at the bottom of a
 /// notebook when it's part of a directory render. Returns an empty string
 /// when nav has no prev/index/next — keeps single-file output unchanged.
+/// Render a Mermaid block into the HTML body. Inline SVG on success;
+/// verbatim source in a `<pre>` on failure or when the `mermaid` feature
+/// is disabled at build time.
+fn emit_mermaid_html(body: &mut String, source: &str, _plot_dir: &std::path::Path) {
+    #[cfg(feature = "mermaid")]
+    {
+        match crate::mermaid::render_to_svg_string(source, _plot_dir) {
+            Ok(svg) => {
+                body.push_str(&strip_xml_decl(&svg));
+                body.push('\n');
+                return;
+            }
+            Err(e) => {
+                eprintln!("warning: mermaid render failed, embedding source: {e}");
+            }
+        }
+    }
+    #[cfg(not(feature = "mermaid"))]
+    {
+        warn_mermaid_disabled_once();
+    }
+    body.push_str("<pre class=\"mermaid-source\"><code>");
+    body.push_str(&escape_html(source));
+    body.push_str("</code></pre>\n");
+}
+
+/// Strip an XML declaration `<?xml ... ?>` from the start of an SVG
+/// string so it inlines cleanly inside HTML. Whitespace before the
+/// declaration is preserved as-is (the renderer typically emits none).
+#[cfg_attr(not(feature = "mermaid"), allow(dead_code))]
+fn strip_xml_decl(svg: &str) -> &str {
+    let trimmed = svg.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("<?xml") {
+        if let Some(end) = rest.find("?>") {
+            return rest[end + 2..].trim_start();
+        }
+    }
+    svg
+}
+
+#[cfg(not(feature = "mermaid"))]
+fn warn_mermaid_disabled_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "warning: rustlab-notebook built without 'mermaid' feature. \
+             Mermaid blocks rendered as verbatim source."
+        );
+    }
+}
+
 fn build_footer_nav(nav: &NotebookNav) -> String {
     if nav.prev.is_none() && nav.next.is_none() && nav.index_href.is_none() {
         return String::new();
@@ -1922,5 +2000,136 @@ mod tests {
         let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
+    }
+
+    // ── Mermaid blocks ──
+
+    fn mermaid_plot_dir(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "rustlab_render_html_mermaid_{}_{}",
+            std::process::id(),
+            tag,
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        p
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn render_html_mermaid_inline_svg() {
+        let dir = mermaid_plot_dir("inline");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(html.contains("<figure class=\"mermaid\">"));
+        assert!(html.contains("<svg"), "expected inline <svg> tag");
+        assert!(!html.contains("<?xml"), "XML decl should be stripped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_html_mermaid_no_cdn_script() {
+        // Regression: must never re-introduce a CDN dependency for Mermaid.
+        let dir = mermaid_plot_dir("nocdn");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(!html.contains("cdn.jsdelivr.net/npm/mermaid"));
+        assert!(!html.contains("mermaid.initialize("));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn render_html_mermaid_caption_emitted() {
+        let dir = mermaid_plot_dir("caption");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: Some("Signal flow".to_string()),
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(html.contains("<figcaption>Signal flow</figcaption>"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn render_html_mermaid_details_wrap() {
+        let dir = mermaid_plot_dir("details");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: Some("Architecture".to_string()),
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(html.contains("<details class=\"code-details\">"));
+        assert!(html.contains("<summary>Architecture</summary>"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_html_mermaid_hidden_omits() {
+        let dir = mermaid_plot_dir("hidden");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: true,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(!html.contains("<figure class=\"mermaid\">"));
+        assert!(!html.contains("<svg"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mermaid")]
+    #[test]
+    fn render_html_multiple_mermaid_blocks() {
+        let dir = mermaid_plot_dir("multi");
+        let blocks = vec![
+            Rendered::Mermaid {
+                source: "flowchart LR\n  A --> B\n".to_string(),
+                hidden: false,
+                details: None,
+                caption: None,
+            },
+            Rendered::Mermaid {
+                source: "flowchart TD\n  X --> Y\n".to_string(),
+                hidden: false,
+                details: None,
+                caption: None,
+            },
+        ];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let figs = html.matches("<figure class=\"mermaid\">").count();
+        assert_eq!(figs, 2, "expected two mermaid figures, got {figs}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(not(feature = "mermaid"))]
+    #[test]
+    fn render_html_mermaid_feature_disabled_falls_back_to_source() {
+        let dir = mermaid_plot_dir("disabled");
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\n  A --> B\n".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        assert!(html.contains("class=\"mermaid-source\""));
+        assert!(html.contains("flowchart LR"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

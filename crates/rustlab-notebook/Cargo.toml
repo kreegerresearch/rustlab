@@ -15,9 +15,18 @@ path = "src/lib.rs"
 name = "rustlab-notebook"
 path = "src/main.rs"
 
+[features]
+default = ["mermaid"]
+# Server-side Mermaid diagram rendering. Adds resvg/usvg/fontdb to the dep
+# tree (~5 crates) plus blake3 for source caching. Disable for a smaller
+# build; Mermaid blocks fall back to verbatim source.
+mermaid = ["dep:mermaid-rs-renderer", "dep:blake3"]
+
 [dependencies]
 rustlab-script.workspace = true
 rustlab-plot.workspace   = true
 clap                     = { version = "4", features = ["derive"] }
 pulldown-cmark           = "0.13"
 tempfile                 = "3"
+mermaid-rs-renderer      = { version = "0.2", optional = true, default-features = false }
+blake3                   = { version = "1",   optional = true }

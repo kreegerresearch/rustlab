@@ -1,4 +1,4 @@
-use crate::parse::{Block, CalloutKind};
+use crate::parse::{Block, CalloutKind, MermaidDirectives};
 use rustlab_plot::{
     clear_notebook_animations, clear_notebook_figures, set_plot_context, take_notebook_animations,
     take_notebook_figures, FigureState, NotebookAnimation, PlotContext, FIGURE,
@@ -30,6 +30,13 @@ pub enum Rendered {
         details: Option<String>,
         /// If set, tile image outputs N-across.
         grid_cols: Option<usize>,
+    },
+    /// A Mermaid diagram block. Renderers turn `source` into SVG.
+    Mermaid {
+        source: String,
+        hidden: bool,
+        details: Option<String>,
+        caption: Option<String>,
     },
     /// A callout box (note, tip, warning).
     Callout { kind: CalloutKind, content: String },
@@ -108,6 +115,15 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
                     hidden: directives.hidden,
                     details: directives.details.clone(),
                     grid_cols: directives.grid_cols,
+                });
+            }
+            Block::Mermaid { source, directives } => {
+                let MermaidDirectives { hidden, details, caption } = directives.clone();
+                rendered.push(Rendered::Mermaid {
+                    source: source.clone(),
+                    hidden,
+                    details,
+                    caption,
                 });
             }
             Block::Callout { kind, content } => {
@@ -535,6 +551,37 @@ mod tests {
                 assert_eq!(figures.len(), 1, "expected one heatmap snapshot");
             }
             _ => panic!("expected Code block"),
+        }
+    }
+
+    /// Mermaid blocks pass through to `Rendered::Mermaid` with no
+    /// evaluator interaction.
+    #[test]
+    fn notebook_mermaid_passthrough() {
+        use crate::parse::MermaidDirectives;
+        let blocks = vec![Block::Mermaid {
+            source: "flowchart LR\nA-->B".to_string(),
+            directives: MermaidDirectives {
+                hidden: false,
+                details: Some("Arch".into()),
+                caption: Some("Overview".into()),
+            },
+        }];
+        let rendered = execute_notebook(&blocks);
+        assert_eq!(rendered.len(), 1);
+        match &rendered[0] {
+            Rendered::Mermaid {
+                source,
+                hidden,
+                details,
+                caption,
+            } => {
+                assert_eq!(source, "flowchart LR\nA-->B");
+                assert!(!hidden);
+                assert_eq!(details.as_deref(), Some("Arch"));
+                assert_eq!(caption.as_deref(), Some("Overview"));
+            }
+            _ => panic!("expected Mermaid"),
         }
     }
 

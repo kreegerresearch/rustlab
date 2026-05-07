@@ -215,6 +215,57 @@ figure; imagesc(B)
 ```
 ````
 
+### Mermaid diagrams: ```` ```mermaid ```` blocks
+
+Fenced code blocks tagged `mermaid` are rendered as static SVG diagrams
+in all output formats (HTML, Markdown, LaTeX, PDF). Rendering is pure
+Rust via the `mermaid-rs-renderer` crate — no browser, no Node, no
+internet dependency. Notebooks render offline out of the box.
+
+````markdown
+```mermaid
+flowchart LR
+  A[ADC samples] --> B(FIR filter)
+  B --> C{Decimate?}
+  C -->|yes| D[Downsample x4]
+  C -->|no| E[Pass through]
+  D --> F[Output buffer]
+  E --> F
+```
+````
+
+Stackable directives:
+
+- `<!-- hide -->` — drop the diagram from output entirely.
+- `<!-- details: Title -->` — wrap the diagram in a collapsible
+  disclosure (HTML only; LaTeX gets a labelled paragraph).
+- `<!-- caption: Text -->` — figure caption. In HTML appears as
+  `<figcaption>`; in LaTeX as `\caption{...}` inside the float.
+
+````markdown
+<!-- caption: Filter pipeline -->
+```mermaid
+flowchart LR
+  In --> FIR --> Out
+```
+````
+
+Markdown output emits the original ` ```mermaid ` fence verbatim, so
+GitHub, Obsidian, and other Mermaid-aware viewers render the diagram
+client-side from the same source.
+
+**HTML output is static SVG**, not interactive. Mermaid.js's click /
+zoom / pan are not available — pixel-identical to the LaTeX/PDF render
+in exchange for offline rendering.
+
+**Caching.** Each rendered diagram is hashed (BLAKE3) and cached under
+`plots/<notebook>/.cache/`. Re-renders only redraw diagrams whose source
+has changed. Delete `.cache/` to force a full rebuild.
+
+**Disabling.** Build `rustlab-notebook` with `--no-default-features` to
+drop the renderer (and its `resvg`/`usvg`/`fontdb` dep tree). Mermaid
+blocks then emit verbatim source plus a one-time warning.
+
 ### Callouts: `<!-- note -->`, `<!-- tip -->`, `<!-- warning -->`
 
 Place one of the three tags on its own line, then the callout body on

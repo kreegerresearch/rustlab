@@ -151,6 +151,28 @@ pub fn render_markdown(
                     body.push_str("</details>\n\n");
                 }
             }
+            Rendered::Mermaid {
+                source,
+                hidden,
+                details,
+                caption,
+            } => {
+                if *hidden {
+                    continue;
+                }
+                if let Some(heading) = details {
+                    body.push_str(&format!("<details>\n<summary>{}</summary>\n\n", heading));
+                }
+                body.push_str("```mermaid\n");
+                body.push_str(source.trim_end());
+                body.push_str("\n```\n\n");
+                if let Some(cap) = caption {
+                    body.push_str(&format!("*{}*\n\n", cap.trim()));
+                }
+                if details.is_some() {
+                    body.push_str("</details>\n\n");
+                }
+            }
             Rendered::Callout { kind, content } => {
                 let label = match kind {
                     CalloutKind::Note => "Note",
@@ -340,5 +362,41 @@ mod tests {
     fn no_iframe_when_href_none() {
         let md = render_markdown("T", &[], &tmp_plot_dir(), "img", theme(), None);
         assert!(!md.contains("<iframe"));
+    }
+
+    #[test]
+    fn mermaid_md_passthrough_fence() {
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\nA-->B".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(md.contains("```mermaid\nflowchart LR\nA-->B\n```"));
+    }
+
+    #[test]
+    fn mermaid_md_caption_emitted_as_italic() {
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\nA-->B".to_string(),
+            hidden: false,
+            details: None,
+            caption: Some("Signal flow".to_string()),
+        }];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(md.contains("*Signal flow*"));
+    }
+
+    #[test]
+    fn mermaid_md_hidden_omits() {
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\nA-->B".to_string(),
+            hidden: true,
+            details: None,
+            caption: None,
+        }];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(!md.contains("```mermaid"));
     }
 }

@@ -7,6 +7,19 @@ pub struct CodeDirectives {
     pub details: Option<String>,
     /// Tile figure outputs N-across in a grid layout.
     pub grid_cols: Option<usize>,
+    /// Caption text (used by formats that support figure captions, e.g. LaTeX).
+    pub caption: Option<String>,
+}
+
+/// Directives that modify how a Mermaid diagram is displayed.
+#[derive(Debug, Clone, Default)]
+pub struct MermaidDirectives {
+    /// Hide the diagram entirely (block is parsed but produces no output).
+    pub hidden: bool,
+    /// Wrap output in a collapsible disclosure widget with this title.
+    pub details: Option<String>,
+    /// Caption text (used by formats that support figure captions, e.g. LaTeX).
+    pub caption: Option<String>,
 }
 
 /// The kind of callout box.
@@ -27,6 +40,11 @@ pub enum Block {
         source: String,
         directives: CodeDirectives,
     },
+    /// A ```mermaid fenced diagram block (rendered to SVG, not executed).
+    Mermaid {
+        source: String,
+        directives: MermaidDirectives,
+    },
     /// A callout box (note, tip, warning).
     Callout { kind: CalloutKind, content: String },
     /// Start of a numbered exercise.
@@ -46,7 +64,9 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
     let mut markdown_buf = String::new();
     let mut code_buf = String::new();
     let mut in_rustlab = false;
+    let mut in_mermaid = false;
     let mut code_directives = CodeDirectives::default();
+    let mut mermaid_directives = MermaidDirectives::default();
 
     // State for exercise/solution scope tracking
     let mut in_exercise = false;
@@ -76,6 +96,22 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
                 code_buf.push_str(line);
             }
             i += 1;
+        } else if in_mermaid {
+            if trimmed == "```" {
+                blocks.push(Block::Mermaid {
+                    source: code_buf.clone(),
+                    directives: mermaid_directives.clone(),
+                });
+                code_buf.clear();
+                in_mermaid = false;
+                mermaid_directives = MermaidDirectives::default();
+            } else {
+                if !code_buf.is_empty() {
+                    code_buf.push('\n');
+                }
+                code_buf.push_str(line);
+            }
+            i += 1;
         } else if trimmed == "```rustlab" || trimmed.starts_with("```rustlab ") {
             // Extract stacked code-block directives from the tail of the markdown buffer
             code_directives = extract_code_directives(&mut markdown_buf);
@@ -85,6 +121,14 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
                 markdown_buf.clear();
             }
             in_rustlab = true;
+            i += 1;
+        } else if trimmed == "```mermaid" || trimmed.starts_with("```mermaid ") {
+            mermaid_directives = extract_mermaid_directives(&mut markdown_buf);
+            if !markdown_buf.is_empty() {
+                blocks.push(Block::Markdown(markdown_buf.clone()));
+                markdown_buf.clear();
+            }
+            in_mermaid = true;
             i += 1;
         } else if let Some(directive) = parse_markdown_directive(trimmed) {
             match directive {
@@ -167,6 +211,11 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
             source: code_buf,
             directives: code_directives,
         });
+    } else if in_mermaid && !code_buf.is_empty() {
+        blocks.push(Block::Mermaid {
+            source: code_buf,
+            directives: mermaid_directives,
+        });
     }
     if !markdown_buf.is_empty() {
         blocks.push(Block::Markdown(markdown_buf));
@@ -216,6 +265,14 @@ fn parse_code_directive(trimmed: &str) -> Option<CodeDirectiveKind> {
             }
         }
     }
+    if let Some(rest) = trimmed.strip_prefix("<!-- caption:") {
+        if let Some(text) = rest.strip_suffix("-->") {
+            let text = text.trim();
+            if !text.is_empty() {
+                return Some(CodeDirectiveKind::Caption(text.to_string()));
+            }
+        }
+    }
     None
 }
 
@@ -223,6 +280,7 @@ enum CodeDirectiveKind {
     Hide,
     Details(String),
     Grid(usize),
+    Caption(String),
 }
 
 /// Scan backward from the tail of the markdown buffer to collect stacked
@@ -240,6 +298,7 @@ fn extract_code_directives(markdown_buf: &mut String) -> CodeDirectives {
             Some(CodeDirectiveKind::Hide) => directives.hidden = true,
             Some(CodeDirectiveKind::Details(title)) => directives.details = Some(title),
             Some(CodeDirectiveKind::Grid(n)) => directives.grid_cols = Some(n),
+            Some(CodeDirectiveKind::Caption(text)) => directives.caption = Some(text),
             None => break,
         }
         // Remove the directive line from the buffer
@@ -255,6 +314,41 @@ fn extract_code_directives(markdown_buf: &mut String) -> CodeDirectives {
     }
 
     // Trim trailing whitespace left behind
+    let trimmed_len = markdown_buf.trim_end().len();
+    markdown_buf.truncate(trimmed_len);
+
+    directives
+}
+
+/// Same as `extract_code_directives` but for Mermaid blocks. Mermaid does
+/// not support the `grid` directive (single SVG per block); other directives
+/// share the same vocabulary as code blocks.
+fn extract_mermaid_directives(markdown_buf: &mut String) -> MermaidDirectives {
+    let mut directives = MermaidDirectives::default();
+
+    loop {
+        let last_line = match markdown_buf.lines().last() {
+            Some(l) => l.trim().to_string(),
+            None => break,
+        };
+        match parse_code_directive(&last_line) {
+            Some(CodeDirectiveKind::Hide) => directives.hidden = true,
+            Some(CodeDirectiveKind::Details(title)) => directives.details = Some(title),
+            Some(CodeDirectiveKind::Caption(text)) => directives.caption = Some(text),
+            // Grid is meaningless for Mermaid (single SVG per block) — ignore but consume.
+            Some(CodeDirectiveKind::Grid(_)) => {}
+            None => break,
+        }
+        if let Some(pos) = markdown_buf.rfind(&last_line) {
+            let start = if pos > 0 && markdown_buf.as_bytes().get(pos - 1) == Some(&b'\n') {
+                pos - 1
+            } else {
+                pos
+            };
+            markdown_buf.truncate(start);
+        }
+    }
+
     let trimmed_len = markdown_buf.trim_end().len();
     markdown_buf.truncate(trimmed_len);
 
@@ -713,5 +807,86 @@ mod tests {
         // Solution contains markdown + code
         assert!(matches!(&blocks[3], Block::Markdown(s) if s.contains("Here it is")));
         assert!(matches!(&blocks[4], Block::Code { source, .. } if source == "x = 42"));
+    }
+
+    // ── Mermaid blocks ──
+
+    #[test]
+    fn mermaid_block_basic() {
+        let src = "Diagram:\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\nAfter.";
+        let blocks = parse_notebook(src);
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(&blocks[0], Block::Markdown(s) if s.contains("Diagram:")));
+        assert!(matches!(&blocks[1], Block::Mermaid { source, .. }
+            if source == "flowchart LR\n  A --> B"));
+        assert!(matches!(&blocks[2], Block::Markdown(s) if s.contains("After")));
+    }
+
+    #[test]
+    fn mermaid_with_hide() {
+        let src = "<!-- hide -->\n```mermaid\ngraph TD\nA-->B\n```";
+        let blocks = parse_notebook(src);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Mermaid { directives, .. } => assert!(directives.hidden),
+            _ => panic!("expected Mermaid"),
+        }
+    }
+
+    #[test]
+    fn mermaid_with_details() {
+        let src = "<!-- details: Architecture -->\n```mermaid\ngraph TD\nA-->B\n```";
+        let blocks = parse_notebook(src);
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::Mermaid { directives, .. } => {
+                assert_eq!(directives.details.as_deref(), Some("Architecture"));
+            }
+            _ => panic!("expected Mermaid"),
+        }
+    }
+
+    #[test]
+    fn mermaid_with_caption() {
+        let src = "<!-- caption: Signal flow -->\n```mermaid\nflowchart LR\nA-->B\n```";
+        let blocks = parse_notebook(src);
+        match &blocks[0] {
+            Block::Mermaid { directives, .. } => {
+                assert_eq!(directives.caption.as_deref(), Some("Signal flow"));
+            }
+            _ => panic!("expected Mermaid"),
+        }
+    }
+
+    #[test]
+    fn caption_then_rustlab_populates_code_directives() {
+        let src = "<!-- caption: My Plot -->\n```rustlab\nplot(1:10)\n```";
+        let blocks = parse_notebook(src);
+        match &blocks[0] {
+            Block::Code { directives, .. } => {
+                assert_eq!(directives.caption.as_deref(), Some("My Plot"));
+            }
+            _ => panic!("expected Code"),
+        }
+    }
+
+    #[test]
+    fn mermaid_after_rustlab_no_fence_leak() {
+        let src = "```rustlab\nx = 1\n```\n\n```mermaid\ngraph TD\nA-->B\n```";
+        let blocks = parse_notebook(src);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(&blocks[0], Block::Code { source, .. } if source == "x = 1"));
+        assert!(matches!(&blocks[1], Block::Mermaid { source, .. }
+            if source == "graph TD\nA-->B"));
+    }
+
+    #[test]
+    fn mermaid_special_chars_round_trip() {
+        let src = "```mermaid\nA & <B> --> C\n```";
+        let blocks = parse_notebook(src);
+        match &blocks[0] {
+            Block::Mermaid { source, .. } => assert_eq!(source, "A & <B> --> C"),
+            _ => panic!("expected Mermaid"),
+        }
     }
 }

@@ -1,4 +1,6 @@
 pub mod execute;
+#[cfg(feature = "mermaid")]
+pub mod mermaid;
 pub mod parse;
 pub mod render;
 pub mod render_latex;
