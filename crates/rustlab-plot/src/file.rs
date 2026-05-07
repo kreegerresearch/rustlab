@@ -172,6 +172,44 @@ pub fn render_figure_state_to_rgb_buffer(
     Ok((buf, w, h))
 }
 
+/// Render a single subplot panel into an RGBA pixel buffer (row-major, 4 bytes
+/// per pixel) using the same plotters pipeline as SVG/PNG output. Used by the
+/// viewer backend to display panels containing plot kinds the viewer can't
+/// render natively (contour, quiver, streamplot).
+pub fn render_panel_to_rgba(
+    sp: &SubplotState,
+    theme: &ThemeColors,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, PlotError> {
+    let palette = ThemePalette::from(theme);
+    let mut rgb = vec![0u8; (width * height * 3) as usize];
+    {
+        let root =
+            BitMapBackend::with_buffer(&mut rgb, (width, height)).into_drawing_area();
+        let err =
+            |e: DrawingAreaErrorKind<<BitMapBackend as DrawingBackend>::ErrorType>| {
+                PlotError::FileOutput(e.to_string())
+            };
+        root.fill(&palette.bg).map_err(err)?;
+        if sp.heatmap.is_some()
+            || !sp.contours.is_empty()
+            || !sp.quivers.is_empty()
+            || !sp.streamlines.is_empty()
+        {
+            render_heatmap_and_contours_to_backend(root.clone(), sp, &palette)?;
+        } else if !sp.series.is_empty() {
+            render_subplot_to_panel(&root, sp, &palette)?;
+        }
+        root.present().map_err(err)?;
+    }
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for px in rgb.chunks_exact(3) {
+        rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
+    }
+    Ok(rgba)
+}
+
 fn render_to_backend<DB>(
     root: DrawingArea<DB, plotters::coord::Shift>,
     fig: &FigureState,
@@ -2215,6 +2253,33 @@ mod tests {
             }
         }
         (x, y, u, v)
+    }
+
+    #[test]
+    fn render_panel_to_rgba_produces_nonzero_pixels_for_quiver() {
+        // Regression: the viewer relies on render_panel_to_rgba to display
+        // panels containing quiver/streamline/contour data. A successful
+        // render must produce 4-byte-per-pixel RGBA with at least some
+        // non-background pixels (the arrow strokes).
+        let (x, y, u, v) = uniform_field(8, 8, 1.0, 0.0);
+        let mut sp = SubplotState::new();
+        sp.quivers.push(crate::figure::QuiverData {
+            x, y, u, v,
+            scale: 1.0,
+            color: None,
+            title: None,
+        });
+        let theme = Theme::default();
+        let rgba = render_panel_to_rgba(&sp, theme.colors(), 200, 150)
+            .expect("panel rgba render");
+        assert_eq!(rgba.len(), 200 * 150 * 4);
+        // At least one pixel should differ from the background colour.
+        let bg_r = rgba[0];
+        let bg_g = rgba[1];
+        let bg_b = rgba[2];
+        let any_diff = rgba.chunks_exact(4)
+            .any(|p| p[0] != bg_r || p[1] != bg_g || p[2] != bg_b);
+        assert!(any_diff, "quiver panel rgba is uniformly background");
     }
 
     #[test]

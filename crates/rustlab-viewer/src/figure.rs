@@ -12,6 +12,10 @@ pub struct HeatmapImage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// When true, sample the texture with linear filtering for smooth zoom
+    /// (used for pre-rendered figure overlays). When false, use nearest-
+    /// neighbour to keep raw data heatmap cell boundaries crisp.
+    pub smooth: bool,
     /// Cached egui texture handle; created on first render.
     pub texture: Option<egui::TextureHandle>,
 }
@@ -172,11 +176,13 @@ impl FigureWindow {
                                     [hm.width as usize, hm.height as usize],
                                     &hm.rgba,
                                 );
-                                hm.texture = Some(ui.ctx().load_texture(
-                                    "heatmap",
-                                    image,
-                                    egui::TextureOptions::NEAREST,
-                                ));
+                                let opts = if hm.smooth {
+                                    egui::TextureOptions::LINEAR
+                                } else {
+                                    egui::TextureOptions::NEAREST
+                                };
+                                hm.texture =
+                                    Some(ui.ctx().load_texture("heatmap", image, opts));
                             }
                         }
 

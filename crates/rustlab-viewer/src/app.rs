@@ -107,6 +107,7 @@ impl ViewerApp {
                                 width: heatmap.width,
                                 height: heatmap.height,
                                 rgba: heatmap.rgba,
+                                smooth: heatmap.smooth,
                                 texture: None, // created on first render
                             });
                             fig.dirty = true;

@@ -115,6 +115,13 @@ pub struct WireHeatmap {
     pub height: u32,
     /// RGBA pixel data, row-major, 4 bytes per pixel.
     pub rgba: Vec<u8>,
+    /// Hint for the viewer: when true, sample with linear filtering so
+    /// upscaling under zoom looks smooth (used for pre-rendered figure
+    /// overlays — quiver, streamlines, contour). When false, the viewer
+    /// uses nearest-neighbour filtering to preserve cell boundaries on
+    /// raw data heatmaps. Defaults to false for backward compatibility.
+    #[serde(default)]
+    pub smooth: bool,
 }
 
 /// Raw 3D surface grid on the wire. The viewer handles projection/shading
@@ -356,6 +363,7 @@ mod tests {
                 rgba: vec![
                     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255,
                 ],
+                smooth: false,
             },
         };
         let mut buf = Vec::new();

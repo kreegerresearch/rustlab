@@ -430,6 +430,18 @@ pub fn render_heatmap_tui(
         crate::figure::PlotContext::Terminal => {}
     }
 
+    // When the current figure routes to HTML or the external viewer, the
+    // heatmap is rendered there — don't draw a TUI preview over it.
+    match crate::figure::current_figure_output() {
+        crate::figure::FigureOutput::Html(_) => return Ok(()),
+        #[cfg(feature = "viewer")]
+        crate::figure::FigureOutput::Viewer(_) => {
+            crate::viewer_live::sync_viewer();
+            return Ok(());
+        }
+        crate::figure::FigureOutput::Terminal => {}
+    }
+
     // Skip when stdout is not a real terminal (e.g. piped output, CI)
     use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
@@ -506,6 +518,18 @@ pub fn render_image_tui(
             return Ok(());
         }
         crate::figure::PlotContext::Terminal => {}
+    }
+
+    // When the current figure routes to HTML or the external viewer, the
+    // image is rendered there — don't draw a TUI preview over it.
+    match crate::figure::current_figure_output() {
+        crate::figure::FigureOutput::Html(_) => return Ok(()),
+        #[cfg(feature = "viewer")]
+        crate::figure::FigureOutput::Viewer(_) => {
+            crate::viewer_live::sync_viewer();
+            return Ok(());
+        }
+        crate::figure::FigureOutput::Terminal => {}
     }
 
     use std::io::IsTerminal;

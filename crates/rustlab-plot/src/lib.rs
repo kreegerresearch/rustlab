@@ -35,7 +35,7 @@ pub use figure::{
 };
 pub use file::{
     render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed,
-    render_figure_state_to_rgb_buffer,
+    render_figure_state_to_rgb_buffer, render_panel_to_rgba,
 };
 pub use html::{
     clear_html_figure_path, render_figure_html, render_figure_plotly_div, set_html_figure_path,

@@ -332,6 +332,48 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
     }
 
     for (idx, panel) in fig.subplots.iter().enumerate().take(n_panels) {
+        // Panels containing contour/quiver/streamplot data: the viewer's
+        // egui_plot backend doesn't render these natively, so pre-render the
+        // entire panel (heatmap + series + overlays) into an RGBA bitmap via
+        // plotters and ship it as a heatmap. Empty PanelUpdate clears any
+        // stale series so the viewer doesn't double-draw.
+        let needs_prerender =
+            !panel.contours.is_empty() || !panel.quivers.is_empty() || !panel.streamlines.is_empty();
+        if needs_prerender {
+            let theme = crate::theme::Theme::default();
+            // High-resolution pre-render so quiver/streamline/contour panels
+            // stay legible under several stops of zoom in the viewer. Paired
+            // with `smooth: true` so egui samples the texture with linear
+            // filtering instead of showing blocky pixels on magnification.
+            let (w, h) = (2400u32, 1600u32);
+            if let Ok(rgba) =
+                crate::file::render_panel_to_rgba(panel, theme.colors(), w, h)
+            {
+                conn.client.send_nowait(&ViewerMsg::PanelHeatmap {
+                    fig_id,
+                    panel: idx as u16,
+                    heatmap: WireHeatmap {
+                        width: w,
+                        height: h,
+                        rgba,
+                        smooth: true,
+                    },
+                })?;
+            }
+            conn.client.send_nowait(&ViewerMsg::PanelUpdate {
+                fig_id,
+                panel: idx as u16,
+                series: Vec::new(),
+            })?;
+            conn.client.send_nowait(&ViewerMsg::PanelLabels {
+                fig_id,
+                panel: idx as u16,
+                title: panel.title.clone(),
+                xlabel: panel.xlabel.clone(),
+                ylabel: panel.ylabel.clone(),
+            })?;
+            continue;
+        }
         // Send 3D surface if present (takes precedence over heatmap in the viewer).
         if let Some(sf) = &panel.surface {
             let nrows = sf.z.len();
@@ -406,6 +448,7 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                         width: width as u32,
                         height: height as u32,
                         rgba,
+                        smooth: false,
                     },
                 })?;
             }
