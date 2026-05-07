@@ -610,14 +610,22 @@ pub fn close_figure(id: u32) -> bool {
                 STORE.with(|s| s.borrow_mut().current_id = next_id);
             }
         } else {
-            // Store is empty — reset to anonymous, terminal-routed state.
+            // Store is empty — reset to an anonymous figure routed to the
+            // current default backend (viewer, notebook HTML, or terminal).
+            // Matches `figure_new()` so `close` followed by an implicit plot
+            // doesn't silently flip routing off the viewer.
             FIGURE.with(|f| f.borrow_mut().reset());
             crate::animation::clear_frames();
             crate::html::clear_html_figure_path();
+            let output = default_new_output();
+            #[cfg(feature = "viewer")]
+            if let FigureOutput::Viewer(fig_id) = &output {
+                crate::viewer_live::set_viewer_fig_id(*fig_id);
+            }
             STORE.with(|s| {
                 let mut store = s.borrow_mut();
                 store.current_id = 0;
-                store.current_output = FigureOutput::Terminal;
+                store.current_output = output;
             });
         }
     }
@@ -626,19 +634,27 @@ pub fn close_figure(id: u32) -> bool {
 
 /// Close every figure: empty the store, reset the active workspace, and
 /// (when connected) tell the viewer to drop all figure windows in one
-/// `Reset` message. Idempotent.
+/// `Reset` message. The viewer connection itself stays open — the active
+/// figure's output mode is recomputed via `default_new_output()` so the
+/// next plot continues to route to the viewer (or notebook HTML) instead
+/// of silently snapping back to the terminal. Idempotent.
 pub fn close_all_figures() {
-    STORE.with(|s| {
-        let mut store = s.borrow_mut();
-        store.figures.clear();
-        store.current_id = 0;
-        store.current_output = FigureOutput::Terminal;
-    });
     FIGURE.with(|f| f.borrow_mut().reset());
     crate::animation::clear_frames();
     crate::html::clear_html_figure_path();
     #[cfg(feature = "viewer")]
     crate::viewer_live::viewer_reset();
+    let output = default_new_output();
+    #[cfg(feature = "viewer")]
+    if let FigureOutput::Viewer(fig_id) = &output {
+        crate::viewer_live::set_viewer_fig_id(*fig_id);
+    }
+    STORE.with(|s| {
+        let mut store = s.borrow_mut();
+        store.figures.clear();
+        store.current_id = 0;
+        store.current_output = output;
+    });
 }
 
 #[cfg(test)]
@@ -730,6 +746,61 @@ mod close_tests {
         close_all_figures();
         close_all_figures();
         assert_eq!(current_figure_id(), 0);
+    }
+
+    #[test]
+    fn close_all_under_notebook_context_keeps_html_routing() {
+        // Regression: `close all` used to hardcode FigureOutput::Terminal,
+        // which silently flipped routing off the viewer (and off notebook
+        // HTML capture). It must instead recompute via default_new_output()
+        // so the surrounding plot context is preserved. The Notebook context
+        // is the testable proxy for this — it doesn't need a live IPC peer
+        // the way the viewer path does.
+        reset_state();
+        set_plot_context(PlotContext::Notebook);
+        let _ = figure_new();
+        close_all_figures();
+        match current_figure_output() {
+            FigureOutput::Html(_) => { /* expected */ }
+            other => panic!(
+                "close all under Notebook context should preserve HTML routing, got {:?}",
+                other
+            ),
+        }
+        // Restore so other tests on the same thread aren't affected.
+        set_plot_context(PlotContext::Terminal);
+        clear_notebook_figures();
+    }
+
+    #[test]
+    fn close_figure_empty_store_branch_recomputes_default_output() {
+        // Regression for the empty-store branch of close_figure(): it used
+        // to hardcode FigureOutput::Terminal, which silently flipped
+        // routing off the viewer (and off notebook HTML capture). Construct
+        // a "single active figure, no stored siblings" state directly so we
+        // exercise that branch without fighting the ghost-figure dance that
+        // figure_new() performs on its first call.
+        reset_state();
+        set_plot_context(PlotContext::Notebook);
+        STORE.with(|s| {
+            let mut store = s.borrow_mut();
+            store.current_id = 5;
+            store.current_output = FigureOutput::Html(String::new());
+            store.next_id = 6;
+            // figures map intentionally empty — the only figure is the
+            // active one, so closing it must fall through to the
+            // empty-store branch.
+        });
+        close_figure(5);
+        match current_figure_output() {
+            FigureOutput::Html(_) => { /* expected */ }
+            other => panic!(
+                "empty-store close branch under Notebook context should produce HTML routing, got {:?}",
+                other
+            ),
+        }
+        set_plot_context(PlotContext::Terminal);
+        clear_notebook_figures();
     }
 }
 
