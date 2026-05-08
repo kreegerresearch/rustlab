@@ -170,7 +170,15 @@ fn run_code_block(ev: &mut Evaluator, source: &str) -> Option<String> {
 ///
 /// - `${x}` evaluates expression `x` and inserts its Display representation
 /// - `${x:%,.2f}` evaluates `x` and formats it with sprintf
-/// - `\${...}` is an escape — produces literal `${...}`
+/// - When `${expr}` is encountered inside an already-open `$...$` inline-math
+///   span, the value is emitted plain (no extra `$`), so the surrounding
+///   `$<math> ${expr}$` source becomes `$<math> <value>$`.
+/// - When `${expr}$` appears in plain text (no math span open), the trailing
+///   `$` is consumed and the value is wrapped: output `$<value>$`. This keeps
+///   the source pattern Obsidian-compatible while producing valid math.
+/// - `\${...}` produces literal `${...}` (drops the backslash, escapes interp).
+/// - `\$` (any other follower) passes through verbatim and does *not* toggle
+///   inline-math state — this is the standard markdown escape for currency.
 /// - If the expression errors, inserts `<ERROR: message>`
 fn interpolate_markdown(md: &str, ev: &mut Evaluator) -> String {
     // Fast path: no templates
@@ -178,67 +186,108 @@ fn interpolate_markdown(md: &str, ev: &mut Evaluator) -> String {
         return md.to_string();
     }
 
-    let mut result = String::with_capacity(md.len());
     let chars: Vec<char> = md.chars().collect();
-    let len = chars.len();
+    let mut result = String::with_capacity(md.len());
     let mut i = 0;
+    // Tracks open `$...$` inline-math spans so `${expr}$` can decide whether
+    // to wrap (plain text) or stay bare (already inside math). Best-effort —
+    // ignores `$` inside code spans, which is the rare edge case.
+    let mut in_math = false;
 
-    while i < len {
-        // Check for escaped \${
-        if chars[i] == '\\'
-            && i + 1 < len
-            && chars[i + 1] == '$'
-            && i + 2 < len
-            && chars[i + 2] == '{'
-        {
-            result.push('$');
-            result.push('{');
-            i += 3;
-            continue;
-        }
-
-        // Check for ${
-        if chars[i] == '$' && i + 1 < len && chars[i + 1] == '{' {
-            i += 2; // skip ${
-
-            // Find matching }
-            let mut depth = 1;
-            let start = i;
-            while i < len && depth > 0 {
-                match chars[i] {
-                    '{' => depth += 1,
-                    '}' => depth -= 1,
-                    _ => {}
-                }
-                if depth > 0 {
-                    i += 1;
-                }
-            }
-
-            if depth != 0 {
-                // Unmatched brace — pass through literally
+    while i < chars.len() {
+        match &chars[i..] {
+            // `\${` → literal `${` (escapes interpolation). No math toggle.
+            ['\\', '$', '{', ..] => {
                 result.push_str("${");
-                result.push_str(&chars[start..].iter().collect::<String>());
-                break;
+                i += 3;
             }
-
-            let inner: String = chars[start..i].iter().collect();
-            i += 1; // skip closing }
-
-            // Split on first ':' for format spec (but not '::' or inside parens)
-            let (expr_str, fmt_spec) = split_expr_format(&inner);
-
-            // Evaluate the expression
-            let replacement = eval_template_expr(ev, expr_str, fmt_spec);
-            result.push_str(&replacement);
-            continue;
+            // `\$X` → verbatim `\$` (markdown's currency escape). No toggle.
+            ['\\', '$', ..] => {
+                result.push_str("\\$");
+                i += 2;
+            }
+            // `${...}` interpolation, optionally with math-wrap shorthand.
+            ['$', '{', ..] => match consume_interp(&chars, i, in_math, ev) {
+                Some((text, next)) => {
+                    result.push_str(&text);
+                    i = next;
+                }
+                None => {
+                    // Unmatched `}` — emit the rest verbatim and stop.
+                    result.extend(&chars[i..]);
+                    break;
+                }
+            },
+            // `$$` display-math fences pass through without toggling.
+            ['$', '$', ..] => {
+                result.push_str("$$");
+                i += 2;
+            }
+            // Plain `$` toggles inline-math state.
+            ['$', ..] => {
+                in_math = !in_math;
+                result.push('$');
+                i += 1;
+            }
+            [c, ..] => {
+                result.push(*c);
+                i += 1;
+            }
+            [] => break,
         }
-
-        result.push(chars[i]);
-        i += 1;
     }
-
     result
+}
+
+/// Consume `${expr}` (and an optional math-wrap trailing `$`) starting at
+/// `i`, where `chars[i..i+2] == ['$', '{']`. Returns the substituted text and
+/// the index just past what was consumed, or `None` if the closing `}` is
+/// missing (caller should bail out).
+fn consume_interp(
+    chars: &[char],
+    i: usize,
+    in_math: bool,
+    ev: &mut Evaluator,
+) -> Option<(String, usize)> {
+    let inner_start = i + 2;
+    let close = find_close_brace(chars, inner_start)?;
+    let inner: String = chars[inner_start..close].iter().collect();
+    let mut next = close + 1;
+
+    // Math-wrap when followed by a single `$` (not `$$` or `${...}`) and we
+    // aren't already inside an open math span.
+    let trailing_dollar = chars.get(next) == Some(&'$')
+        && !matches!(chars.get(next + 1), Some('$' | '{'));
+    let math_wrap = !in_math && trailing_dollar;
+
+    let (expr_str, fmt_spec) = split_expr_format(&inner);
+    let value = eval_template_expr(ev, expr_str, fmt_spec);
+    let text = if math_wrap {
+        next += 1; // consume trailing `$`
+        format!("${value}$")
+    } else {
+        value
+    };
+    Some((text, next))
+}
+
+/// Find the matching `}` for a `${` opener, scanning from `start`. Tracks
+/// nested `{` so embedded blocks (e.g. function bodies) don't close early.
+fn find_close_brace(chars: &[char], start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    for (offset, &c) in chars[start..].iter().enumerate() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Split `expr:format` into expression and optional format spec.
@@ -380,6 +429,199 @@ mod tests {
         let mut ev = make_ev("");
         let result = interpolate_markdown("Bad: ${}", &mut ev);
         assert!(result.contains("<ERROR:"));
+    }
+
+    #[test]
+    fn interp_math_wrap_consumes_trailing_dollar() {
+        let mut ev = make_ev("v = 0.839;");
+        let result = interpolate_markdown("gets ${v:%.3f}$ of the mass", &mut ev);
+        assert_eq!(result, "gets $0.839$ of the mass");
+    }
+
+    #[test]
+    fn interp_math_wrap_skipped_for_double_dollar() {
+        let mut ev = make_ev("x = 1;");
+        // `${x}$$` — display-math `$$` follows; do not steal the first `$`.
+        let result = interpolate_markdown("${x}$$y$$", &mut ev);
+        assert_eq!(result, "1$$y$$");
+    }
+
+    #[test]
+    fn interp_math_wrap_skipped_for_adjacent_interpolation() {
+        let mut ev = make_ev("a = 1; b = 2;");
+        // `${a}${b}$` — adjacent interpolation; only the second one math-wraps.
+        let result = interpolate_markdown("${a}${b}$", &mut ev);
+        assert_eq!(result, "1$2$");
+    }
+
+    #[test]
+    fn interp_inside_open_math_does_not_double_wrap() {
+        // `$X = ${v}$` — the value is inside an already-open math span;
+        // emit bare and let the trailing `$` close the span: `$X = 0.500$`.
+        let mut ev = make_ev("v = 0.5;");
+        let result = interpolate_markdown("$X = ${v:%.3f}$ next", &mut ev);
+        assert_eq!(result, "$X = 0.500$ next");
+    }
+
+    #[test]
+    fn interp_after_closed_math_wraps() {
+        // After `$X$` math closes, a later `${v}$` is in plain text and wraps.
+        let mut ev = make_ev("v = 7;");
+        let result = interpolate_markdown("$X$ then ${v}$ done", &mut ev);
+        assert_eq!(result, "$X$ then $7$ done");
+    }
+
+    // Regression cases lifted from rustlab_llm/notebooks/. Each previously
+    // produced a broken `$<value>$` or stray `$` somewhere in the output;
+    // they pin the interpolator's behavior so the bugs can't quietly return.
+
+    #[test]
+    fn interp_regression_geq_value_dash() {
+        // `is now $\geq ${v}$ — no more` (lesson 05). The `\geq` requires the
+        // value to stay inside the math span; trailing `$` closes it.
+        let mut ev = make_ev("v = 0.333;");
+        let result = interpolate_markdown(
+            r"is now $\geq ${v:%.3f}$ — no more",
+            &mut ev,
+        );
+        assert_eq!(result, r"is now $\geq 0.333$ — no more");
+    }
+
+    #[test]
+    fn interp_regression_alternating_math_spans() {
+        // `$H(a) = ${a}$ bits, $H(b) = ${b}$ bits` (lesson 05). Each
+        // `$...${expr}$` is its own balanced math span.
+        let mut ev = make_ev("a = 0.0; b = 1.0;");
+        let result = interpolate_markdown(
+            "$H(a) = ${a:%.3f}$ bits, $H(b) = ${b:%.3f}$ bits",
+            &mut ev,
+        );
+        assert_eq!(result, "$H(a) = 0.000$ bits, $H(b) = 1.000$ bits");
+    }
+
+    #[test]
+    fn interp_regression_multiple_values_one_math_span() {
+        // `$3 \cdot ${a} \cdot ${b} = ${c}$` (lesson 08, post-fix). All
+        // substitutions stay inside one math span — no extra `$` per value.
+        let mut ev = make_ev("a = 6; b = 4; c = 72;");
+        let result = interpolate_markdown(
+            r"$3 \cdot ${a} \cdot ${b} = ${c}$",
+            &mut ev,
+        );
+        assert_eq!(result, r"$3 \cdot 6 \cdot 4 = 72$");
+    }
+
+    #[test]
+    fn interp_regression_two_wraps_in_one_sentence() {
+        // `gets ${a}$ ... only ${b}$ —` (lesson 02). Two independent
+        // plain-text math-wraps in one sentence, both must produce `$v$`.
+        let mut ev = make_ev("a = 0.839; b = 0.423;");
+        let result = interpolate_markdown(
+            "gets ${a:%.3f}$ of the mass; only ${b:%.3f}$ — flat",
+            &mut ev,
+        );
+        assert_eq!(result, "gets $0.839$ of the mass; only $0.423$ — flat");
+    }
+
+    // ─── Currency / `\$` escape ─────────────────────────────────────────
+
+    #[test]
+    fn interp_escaped_dollar_passthrough() {
+        // `\$5` is the markdown-standard escape for a literal `$`. It must
+        // pass through verbatim so the downstream renderer (and GitHub /
+        // Obsidian) see the escape and emit a literal `$`.
+        let mut ev = make_ev("");
+        let result = interpolate_markdown(r"costs \$5 today", &mut ev);
+        assert_eq!(result, r"costs \$5 today");
+    }
+
+    #[test]
+    fn interp_escaped_dollar_does_not_toggle_math() {
+        // `\$5 plus ${tax}$ tip` — the `\$5` must NOT flip `in_math`,
+        // otherwise the later `${tax}$` would think it's inside an open
+        // math span and skip the wrap.
+        let mut ev = make_ev("tax = 1;");
+        let result = interpolate_markdown(r"costs \$5 plus ${tax}$ tip", &mut ev);
+        assert_eq!(result, r"costs \$5 plus $1$ tip");
+    }
+
+    #[test]
+    fn interp_currency_without_escape_passthrough() {
+        // Bare `$5` (no escape) in plain text — the fast path returns
+        // unchanged when there's no `${`. We rely on GitHub / Obsidian's
+        // own currency heuristics to render it as literal.
+        let mut ev = make_ev("");
+        let result = interpolate_markdown("paid $5 yesterday", &mut ev);
+        assert_eq!(result, "paid $5 yesterday");
+    }
+
+    #[test]
+    fn interp_escaped_dollar_brace_still_escapes_interpolation() {
+        // The pre-existing escape `\${...}` → literal `${...}` keeps working.
+        let mut ev = make_ev("x = 99;");
+        let result = interpolate_markdown(r"price tag \${100} not ${x}", &mut ev);
+        assert_eq!(result, "price tag ${100} not 99");
+    }
+
+    #[test]
+    fn interp_balanced_dollars_invariant() {
+        // For every regression pattern, the count of `$` in the output must
+        // be even — i.e. all math spans paired. This catches the whole class
+        // of "stray `$`" bugs even if a new bad pattern appears.
+        let mut ev = make_ev("a = 1; b = 2; c = 3; v = 0.5;");
+        let inputs = [
+            "gets ${v:%.3f}$ of mass",
+            r"$\geq ${v:%.3f}$ — text",
+            "$H(a) = ${a}$ bits, $H(b) = ${b}$ bits",
+            r"$3 \cdot ${a} \cdot ${b} = ${c}$",
+            "${a}, ${b}, ${c}.",        // plain-text list, no `$`
+            "no templates here",
+            r"$X = ${v}$. Next $Y = ${b}$.",
+            "${a}$ and ${b}$",
+            // Currency cases — `\$` escapes for literal `$`, mixed with interp.
+            r"costs \$5 plus ${a}$ tax",
+            r"\$${a} bill",                   // \$ then interp at start
+            r"prices range \$10–\$20 always", // pure currency, no interp
+        ];
+        for input in inputs {
+            let out = interpolate_markdown(input, &mut ev);
+            // Count only un-escaped `$` — those are math delimiters. `\$`
+            // is a literal currency symbol and shouldn't affect balance.
+            let dollars = count_unescaped_dollars(&out);
+            assert!(
+                dollars % 2 == 0,
+                "unbalanced `$` in output of {input:?}: {out:?} ({dollars} dollars)"
+            );
+        }
+    }
+
+    fn count_unescaped_dollars(s: &str) -> usize {
+        let bytes = s.as_bytes();
+        let mut n = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+                i += 2;
+            } else {
+                if bytes[i] == b'$' {
+                    n += 1;
+                }
+                i += 1;
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn interp_regression_value_inside_math_followed_by_period() {
+        // `: $\max| ... | = ${v:%.2e}$. Next sentence.` — value lives inside
+        // an open math span and the trailing `$` closes it before a period.
+        let mut ev = make_ev("v = 0.01;");
+        let result = interpolate_markdown(
+            r"diff: $\max|x| = ${v:%.2e}$. Next.",
+            &mut ev,
+        );
+        assert_eq!(result, r"diff: $\max|x| = 1.00e-02$. Next.");
     }
 
     // ─── Notebook figure capture ──────────────────────────────────────────

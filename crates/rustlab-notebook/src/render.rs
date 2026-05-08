@@ -130,7 +130,10 @@ pub fn render_html(
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
-                            body.push_str("<div class=\"plot-container\">\n");
+                            let height = plot_container_height(fig.subplot_rows);
+                            body.push_str(&format!(
+                                "<div class=\"plot-container\" style=\"height: {height}px\">\n"
+                            ));
                             body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
                             body.push_str("\n</div>\n");
                         }
@@ -704,9 +707,14 @@ pub fn render_html(
     )
 }
 
-/// Build the `<nav class="page-nav">` footer shown at the bottom of a
-/// notebook when it's part of a directory render. Returns an empty string
-/// when nav has no prev/index/next — keeps single-file output unchanged.
+/// Pixel height for the `.plot-container` so that stacked subplots are not
+/// crushed into the default 450px slot. Single row keeps the historical
+/// 450px; each extra row adds another full slot.
+fn plot_container_height(rows: usize) -> usize {
+    let rows = rows.max(1);
+    450 + (rows - 1) * 350
+}
+
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
 /// verbatim source in a `<pre>` on failure or when the `mermaid` feature
 /// is disabled at build time.
@@ -2131,5 +2139,14 @@ mod tests {
         assert!(html.contains("class=\"mermaid-source\""));
         assert!(html.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plot_container_height_scales_with_rows() {
+        assert_eq!(plot_container_height(0), 450);
+        assert_eq!(plot_container_height(1), 450);
+        assert_eq!(plot_container_height(2), 800);
+        assert_eq!(plot_container_height(3), 1150);
+        assert_eq!(plot_container_height(4), 1500);
     }
 }
