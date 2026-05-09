@@ -8754,6 +8754,140 @@ mod sparse_tests {
         assert_eq!(v.type_name(), "sparse_factor");
     }
 
+    // ── Phase 2 (em_performance): identity-ordering hint for grids ──────────
+
+    #[test]
+    fn laplacian_2d_carries_identity_hint() {
+        // Builder-attached hint should survive intact through the script
+        // value layer.
+        let ev = eval_str("L = laplacian_2d(5, 5);");
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "L").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => {
+                assert_eq!(
+                    sm.ordering_hint,
+                    Some(rustlab_core::OrderingHint::Identity)
+                );
+            }
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn user_built_sparse_has_no_hint() {
+        // sparse(I, J, V, m, n) doesn't know whether the user is building
+        // a grid Laplacian or something irregular — leave the hint unset.
+        let ev = eval_str("S = sparse([1, 2], [1, 2], [1, 1], 2, 2);");
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "S").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => assert_eq!(sm.ordering_hint, None),
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn negation_preserves_hint() {
+        // -1 * L should keep the hint — negation doesn't touch the
+        // nonzero pattern.
+        let ev = eval_str("L = laplacian_2d(4, 4); M = -1 * L;");
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "M").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => {
+                assert_eq!(
+                    sm.ordering_hint,
+                    Some(rustlab_core::OrderingHint::Identity)
+                );
+            }
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn add_drops_hint() {
+        // Two matrices added together don't necessarily preserve the
+        // grid pattern. Drop the hint to be safe.
+        let ev = eval_str(
+            "L = laplacian_2d(4, 4); \
+             P = sparse([1; 2], [1; 1], [1; 1], 16, 16); \
+             M = L + P;",
+        );
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "M").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => assert_eq!(sm.ordering_hint, None),
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn spsolve_with_identity_hint_correctness() {
+        // Solving the same system with auto (which routes to identity
+        // via the hint) and explicit "amd" must agree to bit precision.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(20, 20); \
+             rhs = ones(400, 1); \
+             x_auto = spsolve(L, rhs); \
+             x_amd  = spsolve(L, rhs, \"auto\", \"amd\"); \
+             diff = norm(x_auto - x_amd);",
+        );
+        let diff = get_scalar(&ev, "diff");
+        assert!(
+            diff < 1e-10,
+            "auto (identity hint) vs amd disagreement: {diff}"
+        );
+    }
+
+    #[test]
+    fn spsolve_explicit_identity_works() {
+        // Force identity ordering on a 1-D Laplacian (also banded).
+        let ev = eval_str(
+            "L = -1 * laplacian_1d(50); \
+             rhs = ones(50, 1); \
+             x = spsolve(L, rhs, \"cholesky\", \"identity\"); \
+             y = spsolve(L, rhs, \"cholesky\", \"amd\"); \
+             diff = norm(x - y);",
+        );
+        assert!(get_scalar(&ev, "diff") < 1e-10);
+    }
+
+    #[test]
+    fn spsolve_unknown_ordering_errors() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str("x = spsolve(speye(3), [1; 2; 3], \"auto\", \"banana\")")
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn chol_with_explicit_amd_overrides_hint() {
+        // A laplacian carries the identity hint; passing "amd" should
+        // override and still produce a correct factor.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(10, 10); \
+             rhs = ones(100, 1); \
+             F_amd = chol(L, \"amd\"); \
+             x_amd = solve(F_amd, rhs); \
+             F_id  = chol(L, \"identity\"); \
+             x_id  = solve(F_id, rhs); \
+             diff = norm(x_amd - x_id);",
+        );
+        assert!(get_scalar(&ev, "diff") < 1e-10);
+    }
+
+    #[test]
+    fn lu_with_natural_alias_works() {
+        // "natural" is an accepted alias for "identity" — common term
+        // in the numerics literature.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(8, 8); \
+             rhs = ones(64, 1); \
+             F = lu(L, \"natural\"); \
+             x = solve(F, rhs); \
+             y = spsolve(L, rhs); \
+             diff = norm(x - y);",
+        );
+        assert!(get_scalar(&ev, "diff") < 1e-10);
+    }
+
     #[test]
     fn spdiags_multi_diagonal() {
         // Build tridiagonal: [-1, 2, -1] on diags [-1, 0, 1]

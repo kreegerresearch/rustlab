@@ -178,10 +178,13 @@ impl Value {
             }
             Value::SparseMatrix(sm) => {
                 let entries = sm.entries.iter().map(|&(r, c, v)| (r, c, -v)).collect();
+                // Negation preserves the nonzero pattern, so the hint
+                // (if any) is still meaningful on the result.
                 Ok(Value::SparseMatrix(SparseMat {
                     rows: sm.rows,
                     cols: sm.cols,
                     entries,
+                    ordering_hint: sm.ordering_hint,
                 }))
             }
             Value::LiveFigure(_) => Err("cannot negate live_figure".to_string()),

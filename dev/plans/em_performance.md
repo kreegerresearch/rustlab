@@ -12,7 +12,7 @@
 | # | Phase | Status | Risk | Win | Commit |
 |---|---|---|---|---|---|
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
-| 2 | Identity-ordering fast path for grid Laplacians | pending | low | ~5× on grid solves | — |
+| 2 | Identity-ordering fast path for grid Laplacians | **awaiting commit** | low | ~5× on grid solves | — |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | pending | low–med | 3–8× on postprocess | — |
 | 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
@@ -28,6 +28,7 @@ When you advance a phase, update its row **and** the per-phase section's Status 
 3. **AMD is the current default ordering** in both `try_sparse_cholesky` and `try_sparse_lu`. Phase 2 keeps AMD as the safe default and adds an explicit Identity opt-in plus a builder-side hint that auto-selects Identity for grid Laplacians.
 4. **Pure-Rust hand-roll, no FFI, no large libraries** (`AGENTS.md` Rule 9). `rayon` is acceptable infrastructure (already a workspace dep — verify before assuming). `wide` / `std::simd` SIMD acceptable but only if it survives a portability check on macOS aarch64 + Linux x86_64.
 5. **No new public crate.** All work lands in existing crates: `rustlab-core`, `rustlab-dsp`, `rustlab-script`, `rustlab-cli`.
+6. **`docs/sparse_solve.md`** is the canonical end-to-end design doc for the sparse-solve pipeline (dispatch chain, ordering hint, factor reuse, Davis algorithms). Update it when phases land that change pipeline behavior.
 
 ## Six mandatory workflow rules (apply to every phase)
 
@@ -107,7 +108,18 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 2 — Identity-ordering fast path for grid Laplacians
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-09)
+
+**Implementation log (2026-05-09):**
+- Added `OrderingHint` enum (single variant `Identity` for now) in `crates/rustlab-core/src/types.rs` and re-exported from the crate root.
+- Added `SparseMat::ordering_hint: Option<OrderingHint>` field. `SparseMat::new` and `from_dense` default it to `None`. `scale`, `transpose`, and the script-layer negation preserve the hint (structure-preserving). `add` / `sub` go through `SparseMat::new`, dropping the hint (correctly — the union of patterns may not be grid-banded). New builder method `with_ordering_hint(self, h) -> Self`.
+- All four `laplacian_*` builtins now attach `OrderingHint::Identity` to their results (in `builtins.rs` next to each builder call).
+- New internal `OrderingChoice` enum (`Auto` / `Identity` / `Amd`) in `builtins.rs`. `parse_ordering_arg` parses the script string. `resolve_ordering` collapses `Auto` against the matrix hint (`Identity` if set, else `Amd`).
+- `factor_sparse_cholesky` and `factor_sparse_lu` now take an `OrderingChoice` and dispatch to `IdentityOrdering` or `AmdOrdering` as resolved.
+- `spsolve(A, b, mode, ordering)` — added optional 4th arg.
+- `chol(A, ordering)` and `lu(A, ordering)` — added optional 2nd arg.
+- Tests in `crates/rustlab-script/src/tests.rs` (sparse_tests submodule): `laplacian_2d_carries_identity_hint`, `user_built_sparse_has_no_hint`, `negation_preserves_hint`, `add_drops_hint`, `spsolve_with_identity_hint_correctness`, `spsolve_explicit_identity_works`, `spsolve_unknown_ordering_errors`, `chol_with_explicit_amd_overrides_hint`, `lu_with_natural_alias_works` — all 9 pass; existing 19 sparse tests still pass.
+- Docs: REPL HelpEntry for spsolve/chol/lu updated. AGENTS.md and docs/quickref.md function tables updated. docs/functions.md ordering section added.
 **Goal:** make `spsolve(laplacian_2d(...), b)` use natural ordering by default. `gallery/laplacian_bc.md:140` already documents that natural identity is ~5× faster than AMD on grids — so the default penalizes the documented common case.
 
 **Scope (two parts):**

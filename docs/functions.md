@@ -1396,15 +1396,20 @@ Random sparse matrix with approximately `density × m × n` non-zero entries. Va
 S = sprand(100, 100, 0.01)   # ~100 non-zeros in a 100×100 sparse matrix
 ```
 
-### `spsolve(A, b)` / `spsolve(A, b, mode)`
+### `spsolve(A, b)` / `spsolve(A, b, mode)` / `spsolve(A, b, mode, ordering)`
 
-Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`.
+Solve the linear system `A·x = b` where `A` is sparse. The optional `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. The optional `ordering` is `"auto"` (default), `"identity"` (alias `"natural"`), or `"amd"`.
 
 - **`"auto"`** — detect Hermitian-positive-definite structure (`SparseMat::is_spd_estimate`). If SPD, factor with the hand-rolled sparse Cholesky. Otherwise factor with the hand-rolled sparse LU with partial pivoting. Either path stays sparse end-to-end.
 - **`"cholesky"`** — force the sparse Cholesky path. Returns an error if `A` is not Hermitian positive definite.
 - **`"lu"`** — force the sparse LU path. Useful when you know `A` is not Hermitian and want to skip the SPD pre-check.
 
-Both paths use a fill-reducing column permutation (`AmdOrdering`) by default. Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
+**Ordering.** The optional fourth argument selects the fill-reducing column permutation:
+- **`"auto"`** (default) — reads the matrix's `ordering_hint`. The `laplacian_1d`, `laplacian_2d`, `laplacian_3d`, and `laplacian_eps_2d` builders set the hint to `Identity` because natural ordering matches the banded fill pattern of those stencils. Auto falls back to AMD when no hint is set.
+- **`"identity"`** (alias `"natural"`) — natural / identity ordering. Roughly 5× faster than AMD on grid-natural Laplacians. Wrong choice for matrices with irregular sparsity — the lack of fill-reducing reordering will blow up the factor's nnz.
+- **`"amd"`** — basic approximate minimum degree on the symmetric pattern of `A + A^T`. Safe default for unknown patterns.
+
+Dense `Value::Matrix` input dispatches through the legacy dense-Gaussian-elimination fallback; users who want the sparse paths on a dense matrix should call `sparse(A)` first.
 
 The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesson-05 grid produces a $10^4 \times 10^4$ sparse matrix; the old dense fallback densified it (~800 MB) and ran Gaussian elimination at $O(N^3)$. The Cholesky and LU paths stay sparse, factor in roughly $O(N^{1.5})$ on banded patterns, and scale to grids an order of magnitude larger.
 
@@ -1431,13 +1436,15 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
 - LU: Davis Gilbert-Peierls algorithm with partial pivoting (ch. 6), default tolerance 0.1.
 - Ordering: `AmdOrdering` is a basic minimum-degree heuristic on the symmetric pattern of $A + A^T$. Davis-style external-degree refinement (ch. 7) is deferred.
 
-The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust.
+The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust. For a full design walkthrough — dispatch chain, ordering hints, factor reuse, the underlying Davis algorithms — see `docs/sparse_solve.md`.
 
-### `chol(A)`, `lu(A)`, `solve(F, b)`
+### `chol(A)` / `chol(A, ordering)`, `lu(A)` / `lu(A, ordering)`, `solve(F, b)`
 
 Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` factors a general sparse matrix as `P·L·U` with partial pivoting (threshold 0.1). `solve(F, b)` runs the cached triangular solves on a right-hand side.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
+
+The optional `ordering` argument matches `spsolve`'s: `"auto"` (default; consult the matrix's hint, fall back to AMD), `"identity"` / `"natural"` (force natural ordering — best for grid Laplacians, where it's ~5× faster than AMD), `"amd"` (force AMD).
 
 ```
 % Animation / sweep: factor once, solve per frame

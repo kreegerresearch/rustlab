@@ -10095,6 +10095,7 @@ fn builtin_speye(args: Vec<Value>) -> Result<Value, ScriptError> {
         rows: n,
         cols: n,
         entries,
+        ordering_hint: None,
     }))
 }
 
@@ -10107,6 +10108,7 @@ fn builtin_spzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
         rows: m,
         cols: n,
         entries: Vec::new(),
+        ordering_hint: None,
     }))
 }
 
@@ -10343,8 +10345,8 @@ fn builtin_find(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// sparse input. (Sparse-from-dense conversion is cheap; users who want
 /// the sparse paths on a dense matrix can call `sparse(A)` first.)
 fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("spsolve", &args, 2, 3)?;
-    let mode = if args.len() == 3 {
+    check_args_range("spsolve", &args, 2, 4)?;
+    let mode = if args.len() >= 3 {
         match &args[2] {
             Value::Str(s) => s.as_str(),
             other => {
@@ -10362,6 +10364,19 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             "spsolve: unknown mode \"{mode}\"; expected \"auto\", \"cholesky\", or \"lu\""
         )));
     }
+    let ordering = if args.len() == 4 {
+        match &args[3] {
+            Value::Str(s) => parse_ordering_arg("spsolve", s.as_str())?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "spsolve: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        OrderingChoice::Auto
+    };
 
     let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
 
@@ -10401,7 +10416,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         };
 
         if try_cholesky {
-            match try_sparse_cholesky(sm, &b) {
+            match try_sparse_cholesky(sm, &b, ordering) {
                 Ok(x) => return Ok(spsolve_pack(x)),
                 Err(e) => {
                     if mode == "cholesky" {
@@ -10413,7 +10428,7 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
 
         // Sparse LU path: explicit "lu", or "auto" fallback when Cholesky is unavailable.
-        match try_sparse_lu(sm, &b) {
+        match try_sparse_lu(sm, &b, ordering) {
             Ok(x) => return Ok(spsolve_pack(x)),
             Err(e) => {
                 return Err(ScriptError::type_err(format!("spsolve: {e}")));
@@ -10431,6 +10446,43 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(spsolve_pack(x))
 }
 
+/// Concrete ordering decision used by the factor helpers. `Auto` means
+/// "consult the matrix's `ordering_hint`, falling back to AMD when it
+/// has none." `Identity`/`Amd` are explicit user overrides that ignore
+/// the hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderingChoice {
+    Auto,
+    Identity,
+    Amd,
+}
+
+/// Parse the script-facing ordering string. Returns a clear error
+/// listing the accepted values.
+fn parse_ordering_arg(fn_name: &str, s: &str) -> Result<OrderingChoice, ScriptError> {
+    match s {
+        "auto" => Ok(OrderingChoice::Auto),
+        "identity" | "natural" => Ok(OrderingChoice::Identity),
+        "amd" => Ok(OrderingChoice::Amd),
+        other => Err(ScriptError::type_err(format!(
+            "{fn_name}: unknown ordering \"{other}\"; expected \"auto\", \"identity\", or \"amd\""
+        ))),
+    }
+}
+
+/// Resolve `OrderingChoice::Auto` against the matrix's hint to a
+/// concrete ordering. `Auto` + `Some(Identity)` → `Identity`; `Auto` +
+/// `None` → `Amd`. Explicit user overrides pass through unchanged.
+fn resolve_ordering(sm: &SparseMat, choice: OrderingChoice) -> OrderingChoice {
+    match choice {
+        OrderingChoice::Auto => match sm.ordering_hint {
+            Some(rustlab_core::OrderingHint::Identity) => OrderingChoice::Identity,
+            None => OrderingChoice::Amd,
+        },
+        explicit => explicit,
+    }
+}
+
 /// True when every nonzero of `sm` and every entry of `b` has imaginary
 /// part below `1e-12`. Used to route both spsolve and the standalone
 /// `chol`/`lu` factor builders into the cheaper `f64` path.
@@ -10441,45 +10493,84 @@ fn sparse_all_real(sm: &SparseMat, b: Option<&CVector>) -> bool {
 }
 
 /// Build a `SparseFactor::Chol*` from a sparse matrix. Routes to the
-/// `f64` path when all entries are essentially real. Returns the factor;
-/// the caller decides what to do with it (immediate solve, cache as
-/// `Value::SparseFactor`, etc.).
-fn factor_sparse_cholesky(sm: &SparseMat) -> Result<SparseFactor, String> {
-    use rustlab_core::sparse_solve::{AmdOrdering, SparseChol, SparseCsc, SparseSolveError};
+/// `f64` path when all entries are essentially real. The `ordering`
+/// argument selects the fill-reducing column permutation: `Auto`
+/// consults `sm.ordering_hint` and falls back to AMD; `Identity` and
+/// `Amd` are explicit overrides.
+fn factor_sparse_cholesky(
+    sm: &SparseMat,
+    ordering: OrderingChoice,
+) -> Result<SparseFactor, String> {
+    use rustlab_core::sparse_solve::{
+        AmdOrdering, IdentityOrdering, SparseChol, SparseCsc, SparseSolveError,
+    };
     use std::sync::Arc;
 
+    let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
+        let chol = match resolved {
+            OrderingChoice::Identity => {
+                SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
+            }
+            OrderingChoice::Amd | OrderingChoice::Auto => {
+                SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?
+            }
+        };
         Ok(SparseFactor::CholReal(Arc::new(chol)))
     } else {
         let csc: SparseCsc<C64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
+        let chol = match resolved {
+            OrderingChoice::Identity => {
+                SparseChol::factor(&csc, &IdentityOrdering).map_err(|e| e.to_string())?
+            }
+            OrderingChoice::Amd | OrderingChoice::Auto => {
+                SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?
+            }
+        };
         Ok(SparseFactor::CholComplex(Arc::new(chol)))
     }
 }
 
 /// Build a `SparseFactor::Lu*` from a sparse matrix. Pivoting threshold
-/// is the standard 0.1 (Trefethen).
-fn factor_sparse_lu(sm: &SparseMat) -> Result<SparseFactor, String> {
-    use rustlab_core::sparse_solve::{AmdOrdering, SparseCsc, SparseLU, SparseSolveError};
+/// is the standard 0.1 (Trefethen). Same ordering plumbing as
+/// `factor_sparse_cholesky`.
+fn factor_sparse_lu(sm: &SparseMat, ordering: OrderingChoice) -> Result<SparseFactor, String> {
+    use rustlab_core::sparse_solve::{
+        AmdOrdering, IdentityOrdering, SparseCsc, SparseLU, SparseSolveError,
+    };
     use std::sync::Arc;
 
+    let resolved = resolve_ordering(sm, ordering);
     if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        let lu = match resolved {
+            OrderingChoice::Identity => {
+                SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
+            }
+            OrderingChoice::Amd | OrderingChoice::Auto => {
+                SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?
+            }
+        };
         Ok(SparseFactor::LuReal(Arc::new(lu)))
     } else {
         let csc: SparseCsc<C64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        let lu = match resolved {
+            OrderingChoice::Identity => {
+                SparseLU::factor(&csc, &IdentityOrdering, 0.1).map_err(|e| e.to_string())?
+            }
+            OrderingChoice::Amd | OrderingChoice::Auto => {
+                SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?
+            }
+        };
         Ok(SparseFactor::LuComplex(Arc::new(lu)))
     }
 }
@@ -10527,24 +10618,35 @@ fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, Stri
 
 /// Try the sparse Cholesky path. Detects "essentially real" inputs and
 /// routes to the `f64` solver to skip the 4× cost of complex factorization.
-fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
-    let factor = factor_sparse_cholesky(sm)?;
+fn try_sparse_cholesky(
+    sm: &SparseMat,
+    b: &CVector,
+    ordering: OrderingChoice,
+) -> Result<CVector, String> {
+    let factor = factor_sparse_cholesky(sm, ordering)?;
     solve_with_factor(&factor, b)
 }
 
 /// Sparse LU with partial pivoting. Same real-vs-complex auto-routing
 /// as the Cholesky path. Pivoting threshold is the standard 0.1 (Trefethen).
-fn try_sparse_lu(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
-    let factor = factor_sparse_lu(sm)?;
+fn try_sparse_lu(
+    sm: &SparseMat,
+    b: &CVector,
+    ordering: OrderingChoice,
+) -> Result<CVector, String> {
+    let factor = factor_sparse_lu(sm, ordering)?;
     solve_with_factor(&factor, b)
 }
 
-/// `chol(A)` — sparse Cholesky factorization. Returns an opaque factor
-/// handle suitable for `solve(F, b)`. Errors when `A` is not Hermitian
-/// positive definite (no auto fallback to LU; users who want that should
-/// call `lu(A)` or `spsolve(A, b)`).
+/// `chol(A [, ordering])` — sparse Cholesky factorization. Returns an
+/// opaque factor handle suitable for `solve(F, b)`. Errors when `A` is
+/// not Hermitian positive definite (no auto fallback to LU; users who
+/// want that should call `lu(A)` or `spsolve(A, b)`). Optional
+/// `ordering` argument is `"auto"` (default; consult the matrix's hint),
+/// `"identity"` (natural ordering — best for grid Laplacians), or
+/// `"amd"` (approximate minimum degree).
 fn builtin_chol(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("chol", &args, 1)?;
+    check_args_range("chol", &args, 1, 2)?;
     let sm = match &args[0] {
         Value::SparseMatrix(sm) => sm,
         other => {
@@ -10560,15 +10662,29 @@ fn builtin_chol(args: Vec<Value>) -> Result<Value, ScriptError> {
             sm.rows, sm.cols
         )));
     }
-    let factor = factor_sparse_cholesky(sm)
+    let ordering = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) => parse_ordering_arg("chol", s.as_str())?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "chol: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    } else {
+        OrderingChoice::Auto
+    };
+    let factor = factor_sparse_cholesky(sm, ordering)
         .map_err(|e| ScriptError::type_err(format!("chol: {e}")))?;
     Ok(Value::SparseFactor(factor))
 }
 
-/// `lu(A)` — sparse LU factorization with partial pivoting. Returns an
-/// opaque factor handle suitable for `solve(F, b)`.
+/// `lu(A [, ordering])` — sparse LU factorization with partial pivoting.
+/// Returns an opaque factor handle suitable for `solve(F, b)`. Optional
+/// `ordering` argument matches `chol()`'s semantics.
 fn builtin_lu(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("lu", &args, 1)?;
+    check_args_range("lu", &args, 1, 2)?;
     let sm = match &args[0] {
         Value::SparseMatrix(sm) => sm,
         other => {
@@ -10584,7 +10700,20 @@ fn builtin_lu(args: Vec<Value>) -> Result<Value, ScriptError> {
             sm.rows, sm.cols
         )));
     }
-    let factor = factor_sparse_lu(sm)
+    let ordering = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) => parse_ordering_arg("lu", s.as_str())?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "lu: ordering must be a string (\"auto\"|\"identity\"|\"amd\"), got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    } else {
+        OrderingChoice::Auto
+    };
+    let factor = factor_sparse_lu(sm, ordering)
         .map_err(|e| ScriptError::type_err(format!("lu: {e}")))?;
     Ok(Value::SparseFactor(factor))
 }
@@ -10863,7 +10992,8 @@ fn builtin_laplacian_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
 
     let l = rustlab_dsp::laplacian::laplacian_2d_bc(nx, ny, dx, dy, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        .map_err(|e| ScriptError::type_err(e.to_string()))?
+        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
     Ok(Value::SparseMatrix(l))
 }
 
@@ -10894,7 +11024,8 @@ fn builtin_laplacian_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
         _ => unreachable!(),
     };
     let l = rustlab_dsp::laplacian::laplacian_1d(n, dx, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        .map_err(|e| ScriptError::type_err(e.to_string()))?
+        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
     Ok(Value::SparseMatrix(l))
 }
 
@@ -10951,7 +11082,8 @@ fn builtin_laplacian_3d(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     let l = rustlab_dsp::laplacian::laplacian_3d(nx, ny, nz, dx, dy, dz, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        .map_err(|e| ScriptError::type_err(e.to_string()))?
+        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
     Ok(Value::SparseMatrix(l))
 }
 
@@ -10997,7 +11129,8 @@ fn builtin_laplacian_eps_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
         _ => unreachable!(),
     };
     let l = rustlab_dsp::laplacian::laplacian_eps_2d(eps_map, dx, dy, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?;
+        .map_err(|e| ScriptError::type_err(e.to_string()))?
+        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
     Ok(Value::SparseMatrix(l))
 }
 

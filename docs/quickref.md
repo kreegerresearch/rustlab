@@ -338,9 +338,9 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `spzeros(m, n)` | m×n all-zero sparse matrix |
 | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals (D=0 main, >0 super, <0 sub) |
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
-| `spsolve(A, b [, mode])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. Auto routes SPD inputs through hand-rolled sparse Cholesky and others through hand-rolled sparse LU with partial pivoting. AMD-ordered. |
-| `chol(A)` | Sparse Cholesky factor handle for SPD `A`; pair with `solve(F, b)` to back-solve many RHS without re-factoring. Real-only `A` auto-routes to the f64 path. Errors on indefinite `A`. |
-| `lu(A)` | Sparse LU factor handle (partial pivoting). Same factor-once-solve-many pattern as `chol`, but works on indefinite, non-Hermitian, and complex matrices. |
+| `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
+| `chol(A [, ordering])` | Sparse Cholesky factor handle for SPD `A`; pair with `solve(F, b)` to back-solve many RHS without re-factoring. Real-only `A` auto-routes to the f64 path. Errors on indefinite `A`. |
+| `lu(A [, ordering])` | Sparse LU factor handle (partial pivoting). Same factor-once-solve-many pattern as `chol`, but works on indefinite, non-Hermitian, and complex matrices. |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |
