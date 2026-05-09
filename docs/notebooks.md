@@ -498,12 +498,37 @@ This analysis uses **${n}** samples at ${fs} Hz,
 giving a duration of ${n / fs:%.3f} seconds.
 ```
 
-- `${expr}` — evaluates expression and inserts its value
-- `${expr:format}` — applies `sprintf`-style formatting (e.g. `%,.2f`)
-- `\${...}` — escape for literal output
-
 Expressions are evaluated against the shared notebook environment, so
 any variable defined in a prior code block is available.
+
+### Syntax reference
+
+| Pattern | Meaning |
+|---|---|
+| `${expr}` | Evaluate `expr`, insert value as plain text. |
+| `${expr:format}` | Same, then apply `sprintf` (e.g. `%,.2f`, `%.3e`). |
+| `${expr}$` | **Math-wrap shorthand** when in plain text — emits `$<value>$` so the value renders as inline math. |
+| `$X = ${expr}$` | Inside an open `$...$` math span, `${expr}` is emitted bare and the trailing `$` closes the span — output: `$X = <value>$`. |
+| `\${...}` | Literal `${...}` (escapes interpolation). |
+| `\$` | Literal `$` for currency. Does *not* toggle the inline-math tracker, so `\$5 plus ${tax}$ tax` correctly renders the second `$...$` as math. |
+| `$$display$$` | Display math passes through verbatim and does not affect the inline-math tracker. |
+
+### Authoring guidance for math-heavy notebooks
+
+The renderer aims to produce markdown that displays correctly on **both**
+GitHub (KaTeX) and Obsidian (MathJax). A few conventions help:
+
+- **Inside markdown tables, replace raw `|` in math with `\lvert ... \rvert`.**
+  Raw `|` in a table cell — even inside `$...$` — terminates the cell on
+  GitHub. `\lvert x \rvert` renders identically (proper absolute-value
+  bars) and survives table parsing. Same for `\lVert x \rVert` for norms.
+- **Use `\$` for currency** (`\$5`, `\$1,200`). Both GitHub and Obsidian
+  honor the markdown escape; the rustlab interpolator passes it through
+  without toggling math state.
+- **Don't mix interpolation with currency in the same input** unless you
+  use `\$` — bare `$` toggles the math tracker.
+- **Display math `$$...$$` should be on its own paragraph line** so all
+  three renderers (GitHub, Obsidian, KaTeX) recognise it as a block.
 
 ## String Arrays
 
