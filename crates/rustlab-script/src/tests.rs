@@ -2720,6 +2720,173 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
             );
         }
     }
+
+    // ── max / min multi-return + comparison-key spec ────────────────────────
+
+    #[test]
+    fn max_vector_multi_return_first_occurrence() {
+        let ev = eval_str("[m, i] = max([3, 1, 4, 1, 5, 9, 2, 6])");
+        assert_eq!(get_scalar(&ev, "m"), 9.0);
+        assert_eq!(get_scalar(&ev, "i"), 6.0);
+    }
+
+    #[test]
+    fn min_vector_multi_return_first_occurrence() {
+        let ev = eval_str("[m, i] = min([3, 1, 4, 1, 5])");
+        assert_eq!(get_scalar(&ev, "m"), 1.0);
+        assert_eq!(get_scalar(&ev, "i"), 2.0);
+    }
+
+    #[test]
+    fn max_single_return_unchanged() {
+        let ev = eval_str("m = max([3, 1, 4, 1, 5, 9])");
+        assert_eq!(get_scalar(&ev, "m"), 9.0);
+    }
+
+    #[test]
+    fn max_matrix_multi_return_default_axis() {
+        let ev = eval_str("[M, I] = max([1, 5, 3; 4, 2, 6])");
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 4.0);
+                assert_eq!(m[[0, 1]].re, 5.0);
+                assert_eq!(m[[0, 2]].re, 6.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+        match ev.get("I").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (1, 3));
+                assert_eq!(m[[0, 0]].re, 2.0); // col 1 max at row 2
+                assert_eq!(m[[0, 1]].re, 1.0); // col 2 max at row 1
+                assert_eq!(m[[0, 2]].re, 2.0); // col 3 max at row 2
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_matrix_multi_return_dim_2() {
+        let ev = eval_str("[M, I] = max([1, 5, 3; 4, 2, 6], [], 2)");
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 5.0);
+                assert_eq!(m[[1, 0]].re, 6.0);
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+        match ev.get("I").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!((m.nrows(), m.ncols()), (2, 1));
+                assert_eq!(m[[0, 0]].re, 2.0); // row 1: max at col 2
+                assert_eq!(m[[1, 0]].re, 3.0); // row 2: max at col 3
+            }
+            other => panic!("expected Matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_argmax_cross_consistency_real_vector() {
+        // For every input shape, the index from [_m, i] = max(v) and argmax(v) must agree.
+        let ev = eval_str(
+            "v = [3, 1, 4, 1, 5, 9, 2, 6]\n\
+             [m_max, i_max] = max(v)\n\
+             a_max = argmax(v)\n\
+             [m_min, i_min] = min(v)\n\
+             a_min = argmin(v)",
+        );
+        assert_eq!(get_scalar(&ev, "i_max"), get_scalar(&ev, "a_max"));
+        assert_eq!(get_scalar(&ev, "i_min"), get_scalar(&ev, "a_min"));
+    }
+
+    #[test]
+    fn max_complex_input_uses_magnitude() {
+        // [1, j*2, 1.5]: magnitudes are 1, 2, 1.5 → max is j*2 at idx 2.
+        // (Diverges from MATLAB only on equal magnitudes; first-occurrence here.)
+        let ev = eval_str("[m, idx] = max([1 + 0*j, 0 + 2*j, 1.5 + 0*j])");
+        assert_eq!(get_scalar(&ev, "idx"), 2.0);
+        match ev.get("m").unwrap() {
+            Value::Complex(c) => {
+                assert_eq!(c.re, 0.0);
+                assert_eq!(c.im, 2.0);
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_complex_equal_magnitude_first_occurrence() {
+        // Equal-magnitude case: rustlab uses first-occurrence (diverges from
+        // MATLAB which uses phase-angle as tie-break).
+        // All three have magnitude 5 → first occurrence wins → idx 1, m = 3 + j*4.
+        let ev = eval_str("[m, idx] = max([3 + 4*j, 4 + 3*j, 0 + 5*j])");
+        assert_eq!(get_scalar(&ev, "idx"), 1.0);
+        match ev.get("m").unwrap() {
+            Value::Complex(c) => {
+                assert_eq!(c.re, 3.0);
+                assert_eq!(c.im, 4.0);
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_real_negative_uses_real_value_not_magnitude() {
+        // Purely-real input compares by real value, not magnitude — so
+        // max([-3, 1, -5]) is 1, not -5.
+        let ev = eval_str("[m, i] = max([-3, 1, -5])");
+        assert_eq!(get_scalar(&ev, "m"), 1.0);
+        assert_eq!(get_scalar(&ev, "i"), 2.0);
+    }
+
+    #[test]
+    fn max_skips_nan_entries() {
+        let ev = eval_str("[m, i] = max([NaN, 1, 2, NaN])");
+        assert_eq!(get_scalar(&ev, "m"), 2.0);
+        assert_eq!(get_scalar(&ev, "i"), 3.0);
+    }
+
+    #[test]
+    fn min_skips_nan_entries() {
+        let ev = eval_str("[m, i] = min([NaN, 5, 1, NaN, 3])");
+        assert_eq!(get_scalar(&ev, "m"), 1.0);
+        assert_eq!(get_scalar(&ev, "i"), 3.0);
+    }
+
+    #[test]
+    fn max_all_nan_errors() {
+        let _err = eval_err("max([NaN, NaN, NaN])");
+    }
+
+    #[test]
+    fn max_empty_vector_errors() {
+        // Empty vector literal can't be parsed in a single expression here;
+        // build via slicing an empty range.
+        let _err = eval_err("max(zeros(1, 0))");
+    }
+
+    #[test]
+    fn max_two_arg_multi_return_errors() {
+        // [m, i] = max(a, b) is undefined — index has no meaning for the
+        // elementwise two-argument form.
+        let _err = eval_err("[m, i] = max(3, 5)");
+    }
+
+    #[test]
+    fn max_matrix_with_nan_column_errors() {
+        // If any column is entirely NaN, the matrix axis form errors.
+        let _err = eval_err("max([NaN, 1; NaN, 2])");
+    }
+
+    #[test]
+    fn argmax_complex_uses_magnitude() {
+        // argmax must use the same comparison key as max — magnitude for complex.
+        // [1, j*2, 1.5] → magnitudes 1, 2, 1.5 → argmax = 2.
+        let ev = eval_str("idx = argmax([1 + 0*j, 0 + 2*j, 1.5 + 0*j])");
+        assert_eq!(get_scalar(&ev, "idx"), 2.0);
+    }
 }
 
 // ── Phase 1: Language Foundations ────────────────────────────────────────────

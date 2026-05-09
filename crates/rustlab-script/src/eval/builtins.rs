@@ -134,8 +134,8 @@ impl BuiltinRegistry {
         r.register("mean", builtin_mean);
         r.register("median", builtin_median);
         r.register("std", builtin_std);
-        r.register("min", builtin_min);
-        r.register("max", builtin_max);
+        r.register_nargout("min", builtin_min_nargout);
+        r.register_nargout("max", builtin_max_nargout);
         r.register("sum", builtin_sum);
         r.register("prod", builtin_prod);
         r.register("cumsum", builtin_cumsum);
@@ -1345,160 +1345,313 @@ fn is_empty_matrix_placeholder(v: &Value) -> bool {
     }
 }
 
-/// Reduce an `M×N` matrix's columns or rows by `cmp` (returning the running
-/// extremum), used by both `min` and `max` axis forms.
+/// Comparison-key rule for `max` / `min` / `argmax` / `argmin`:
+/// purely-real input → compare by real value; any complex element → compare
+/// by magnitude `|z|`. Diverges from MATLAB on equal magnitudes (we use
+/// first-occurrence; MATLAB falls back to phase angle).
+fn extremum_key(c: C64, all_real: bool) -> f64 {
+    if all_real {
+        c.re
+    } else {
+        c.norm()
+    }
+}
+
+/// Vector / 1-D-matrix fold for `max` / `min` returning `(value, 1-based idx)`.
+/// Skips NaN keys (treated as missing, MATLAB-compatible). Returns the
+/// first-occurrence on ties. Errors if every key is NaN.
+fn vec_extremum_with_index(
+    elems: &[C64],
+    is_max: bool,
+    fn_name: &str,
+) -> Result<(C64, usize), ScriptError> {
+    let all_real = elems.iter().all(|c| c.im == 0.0);
+    let mut best: Option<(C64, f64, usize)> = None;
+    for (i, &c) in elems.iter().enumerate() {
+        let k = extremum_key(c, all_real);
+        if k.is_nan() {
+            continue;
+        }
+        match best {
+            None => best = Some((c, k, i)),
+            Some((_, bk, _)) => {
+                let take = if is_max { k > bk } else { k < bk };
+                if take {
+                    best = Some((c, k, i));
+                }
+            }
+        }
+    }
+    match best {
+        Some((c, _, i)) => Ok((c, i + 1)),
+        None => Err(ScriptError::runtime(format!(
+            "{}: input is all NaN",
+            fn_name
+        ))),
+    }
+}
+
+/// Per-axis fold for `max` / `min` on an M×N matrix. Returns a tuple of
+/// (values, indices) with shapes:
+///   dim == 1 → 1×N row of column extrema, 1×N row of row indices.
+///   dim == 2 → M×1 column of row extrema, M×1 column of column indices.
+fn matrix_axis_extremum_with_index(
+    m: &CMatrix,
+    dim: usize,
+    is_max: bool,
+    fn_name: &str,
+) -> Result<(Value, Value), ScriptError> {
+    let nrows = m.nrows();
+    let ncols = m.ncols();
+    let all_real = m.iter().all(|c| c.im == 0.0);
+    let len = if dim == 1 { ncols } else { nrows };
+    let mut best_val: Vec<Option<C64>> = vec![None; len];
+    let mut best_key = vec![f64::NAN; len];
+    let mut best_idx = vec![0usize; len];
+
+    for ((i, j), &c) in m.indexed_iter() {
+        let bucket = if dim == 1 { j } else { i };
+        let this_idx = if dim == 1 { i } else { j };
+        let k = extremum_key(c, all_real);
+        if k.is_nan() {
+            continue;
+        }
+        match best_val[bucket] {
+            None => {
+                best_val[bucket] = Some(c);
+                best_key[bucket] = k;
+                best_idx[bucket] = this_idx;
+            }
+            Some(_) => {
+                let take = if is_max {
+                    k > best_key[bucket]
+                } else {
+                    k < best_key[bucket]
+                };
+                if take {
+                    best_val[bucket] = Some(c);
+                    best_key[bucket] = k;
+                    best_idx[bucket] = this_idx;
+                }
+            }
+        }
+    }
+
+    if best_val.iter().any(|x| x.is_none()) {
+        return Err(ScriptError::runtime(format!(
+            "{}: a {} contains only NaN values",
+            fn_name,
+            if dim == 1 { "column" } else { "row" }
+        )));
+    }
+
+    let val_data: Vec<C64> = best_val.into_iter().map(|x| x.unwrap()).collect();
+    let idx_data: Vec<C64> = best_idx
+        .into_iter()
+        .map(|k| Complex::new((k + 1) as f64, 0.0))
+        .collect();
+    let (sr, sc) = if dim == 1 { (1, ncols) } else { (nrows, 1) };
+    Ok((
+        Value::Matrix(
+            Array2::from_shape_vec((sr, sc), val_data)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?,
+        ),
+        Value::Matrix(
+            Array2::from_shape_vec((sr, sc), idx_data)
+                .map_err(|e| ScriptError::runtime(e.to_string()))?,
+        ),
+    ))
+}
+
+/// Reduce an `M×N` matrix's columns or rows for the value-only path
+/// (`m = max(M)`, `m = min(M)`). Skips NaN entries; errors if any
+/// column/row is entirely NaN.
 fn matrix_axis_extremum(
     m: &CMatrix,
     dim: usize,
-    init: f64,
-    pick: fn(f64, f64) -> f64,
+    is_max: bool,
+    fn_name: &str,
 ) -> Result<Value, ScriptError> {
-    let nrows = m.nrows();
-    let ncols = m.ncols();
-    match dim {
-        1 => {
-            let mut data = vec![init; ncols];
-            for ((_, j), x) in m.indexed_iter() {
-                data[j] = pick(data[j], x.re);
-            }
-            let cdata: Vec<C64> = data.into_iter().map(|r| Complex::new(r, 0.0)).collect();
-            Ok(Value::Matrix(
-                Array2::from_shape_vec((1, ncols), cdata)
-                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
-            ))
-        }
-        2 => {
-            let mut data = vec![init; nrows];
-            for ((i, _), x) in m.indexed_iter() {
-                data[i] = pick(data[i], x.re);
-            }
-            let cdata: Vec<C64> = data.into_iter().map(|r| Complex::new(r, 0.0)).collect();
-            Ok(Value::Matrix(
-                Array2::from_shape_vec((nrows, 1), cdata)
-                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
-            ))
-        }
-        _ => unreachable!(),
-    }
+    let (val, _) = matrix_axis_extremum_with_index(m, dim, is_max, fn_name)?;
+    Ok(val)
 }
 
-fn builtin_min(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("min", &args, 1, 3)?;
-    // 3-arg axis form: min(M, [], dim) — matlab convention. The empty
-    // placeholder disambiguates from the 2-scalar elementwise form.
+fn builtin_min_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    builtin_extremum_nargout(args, nargout, false, "min")
+}
+
+fn builtin_max_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    builtin_extremum_nargout(args, nargout, true, "max")
+}
+
+/// Shared body for `max` / `min`. `is_max == true` selects max, false → min.
+///
+/// Comparison key (see `extremum_key`):
+///   - purely real input → real value.
+///   - any complex element → magnitude `|z|` (diverges from MATLAB on equal
+///     magnitudes; rustlab uses first-occurrence, MATLAB uses phase angle).
+/// NaN entries are skipped during the fold (MATLAB-compatible). All-NaN
+/// inputs error explicitly.
+///
+/// Multi-return (`nargout >= 2`) is only valid for the single-vector / matrix
+/// forms and the 3-arg axis form. The two-argument elementwise form
+/// (`max(a, b)`) errors on multi-return; index has no defined meaning there.
+fn builtin_extremum_nargout(
+    args: Vec<Value>,
+    nargout: usize,
+    is_max: bool,
+    fn_name: &str,
+) -> Result<Value, ScriptError> {
+    check_args_range(fn_name, &args, 1, 3)?;
+
+    // 3-arg axis form: max(M, [], dim) — matlab convention.
     if args.len() == 3 {
         if !is_empty_matrix_placeholder(&args[1]) {
-            return Err(ScriptError::type_err(
-                "min: 3-arg form is min(M, [], dim); 2nd argument must be the empty matrix []".to_string(),
-            ));
+            return Err(ScriptError::type_err(format!(
+                "{}: 3-arg form is {}(M, [], dim); 2nd argument must be the empty matrix []",
+                fn_name, fn_name
+            )));
         }
         let dim = args[2]
             .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("min: dim: {}", e)))? as i64;
+            .map_err(|e| ScriptError::type_err(format!("{}: dim: {}", fn_name, e)))?
+            as i64;
         if dim != 1 && dim != 2 {
             return Err(ScriptError::type_err(format!(
-                "min: dim must be 1 or 2, got {}",
-                dim
+                "{}: dim must be 1 or 2, got {}",
+                fn_name, dim
             )));
         }
         return match &args[0] {
             Value::Matrix(m) if !m.is_empty() => {
-                matrix_axis_extremum(m, dim as usize, f64::INFINITY, f64::min)
+                if nargout >= 2 {
+                    let (vals, idx) =
+                        matrix_axis_extremum_with_index(m, dim as usize, is_max, fn_name)?;
+                    Ok(Value::Tuple(vec![vals, idx]))
+                } else {
+                    matrix_axis_extremum(m, dim as usize, is_max, fn_name)
+                }
             }
-            Value::Vector(_) | Value::Scalar(_) => Ok(args[0].clone()),
+            Value::Vector(v) if !v.is_empty() => {
+                // Treat a vector as 1×N row: dim=1 reduces each column (length 1 each)
+                // → identity; dim=2 reduces along the row → scalar.
+                if dim == 1 {
+                    if nargout >= 2 {
+                        let n = v.len();
+                        let ones: Vec<C64> =
+                            (0..n).map(|_| Complex::new(1.0, 0.0)).collect();
+                        Ok(Value::Tuple(vec![
+                            args[0].clone(),
+                            Value::Vector(Array1::from_vec(ones)),
+                        ]))
+                    } else {
+                        Ok(args[0].clone())
+                    }
+                } else {
+                    let elems: Vec<C64> = v.iter().copied().collect();
+                    let (val, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+                    if nargout >= 2 {
+                        Ok(Value::Tuple(vec![
+                            value_from_c64(val),
+                            Value::Scalar(idx as f64),
+                        ]))
+                    } else {
+                        Ok(value_from_c64(val))
+                    }
+                }
+            }
+            Value::Scalar(_) => {
+                if nargout >= 2 {
+                    Ok(Value::Tuple(vec![args[0].clone(), Value::Scalar(1.0)]))
+                } else {
+                    Ok(args[0].clone())
+                }
+            }
             other => Err(ScriptError::type_err(format!(
-                "min: argument must be a non-empty matrix, got {}",
+                "{}: argument must be a non-empty matrix or vector, got {}",
+                fn_name,
                 other.type_name()
             ))),
         };
     }
-    // Two-scalar form `min(a, b)` retained — only fires when both args are
-    // genuinely scalar. Matrix-input axis reductions take precedence below.
-    if args.len() == 2
-        && matches!(args[0], Value::Scalar(_))
-        && matches!(args[1], Value::Scalar(_))
-    {
-        let a = args[0].to_scalar().unwrap();
-        let b = args[1].to_scalar().unwrap();
-        return Ok(Value::Scalar(a.min(b)));
+
+    // Two-argument elementwise form: only the two-scalar case is supported;
+    // multi-return is undefined for elementwise comparison and errors below.
+    if args.len() == 2 {
+        if nargout >= 2 {
+            return Err(ScriptError::type_err(format!(
+                "{0}: multi-return form is not defined for the elementwise two-argument form; use [m, i] = {0}(v) on a single vector",
+                fn_name
+            )));
+        }
+        if matches!(args[0], Value::Scalar(_)) && matches!(args[1], Value::Scalar(_)) {
+            let a = args[0].to_scalar().unwrap();
+            let b = args[1].to_scalar().unwrap();
+            let r = if is_max { a.max(b) } else { a.min(b) };
+            return Ok(Value::Scalar(r));
+        }
+        return Err(ScriptError::type_err(format!(
+            "{}: two-argument form is only defined for two scalars; for an axis reduction use {}(M, [], dim)",
+            fn_name, fn_name
+        )));
     }
+
+    // Single-argument form: vector, matrix, or scalar.
     match &args[0] {
         Value::Vector(v) if !v.is_empty() => {
-            let m = v.iter().map(|c| c.re).fold(f64::INFINITY, f64::min);
-            Ok(Value::Scalar(m))
+            let elems: Vec<C64> = v.iter().copied().collect();
+            let (val, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+            if nargout >= 2 {
+                Ok(Value::Tuple(vec![
+                    value_from_c64(val),
+                    Value::Scalar(idx as f64),
+                ]))
+            } else {
+                Ok(value_from_c64(val))
+            }
         }
         Value::Matrix(m) if !m.is_empty() => {
             let nrows = m.nrows();
             let ncols = m.ncols();
-            // 1-D-shaped matrix → flat reduction → scalar.
+            // 1-D-shaped matrix → flat reduction → scalar value (and scalar index).
             if nrows == 1 || ncols == 1 {
-                let v = m.iter().map(|c| c.re).fold(f64::INFINITY, f64::min);
-                return Ok(Value::Scalar(v));
+                let elems: Vec<C64> = m.iter().copied().collect();
+                let (val, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+                if nargout >= 2 {
+                    Ok(Value::Tuple(vec![
+                        value_from_c64(val),
+                        Value::Scalar(idx as f64),
+                    ]))
+                } else {
+                    Ok(value_from_c64(val))
+                }
+            } else if nargout >= 2 {
+                let (vals, idx) = matrix_axis_extremum_with_index(m, 1, is_max, fn_name)?;
+                Ok(Value::Tuple(vec![vals, idx]))
+            } else {
+                matrix_axis_extremum(m, 1, is_max, fn_name)
             }
-            // 2-D matrix → row vector of column mins (default dim 1).
-            matrix_axis_extremum(m, 1, f64::INFINITY, f64::min)
         }
-        Value::Scalar(s) => Ok(Value::Scalar(*s)),
-        _ => Err(ScriptError::type_err(
-            "min: argument must be a non-empty vector, matrix, or scalar".to_string(),
-        )),
+        Value::Scalar(s) => {
+            if nargout >= 2 {
+                Ok(Value::Tuple(vec![Value::Scalar(*s), Value::Scalar(1.0)]))
+            } else {
+                Ok(Value::Scalar(*s))
+            }
+        }
+        _ => Err(ScriptError::type_err(format!(
+            "{}: argument must be a non-empty vector, matrix, or scalar",
+            fn_name
+        ))),
     }
 }
 
-fn builtin_max(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("max", &args, 1, 3)?;
-    if args.len() == 3 {
-        if !is_empty_matrix_placeholder(&args[1]) {
-            return Err(ScriptError::type_err(
-                "max: 3-arg form is max(M, [], dim); 2nd argument must be the empty matrix []".to_string(),
-            ));
-        }
-        let dim = args[2]
-            .to_scalar()
-            .map_err(|e| ScriptError::type_err(format!("max: dim: {}", e)))? as i64;
-        if dim != 1 && dim != 2 {
-            return Err(ScriptError::type_err(format!(
-                "max: dim must be 1 or 2, got {}",
-                dim
-            )));
-        }
-        return match &args[0] {
-            Value::Matrix(m) if !m.is_empty() => {
-                matrix_axis_extremum(m, dim as usize, f64::NEG_INFINITY, f64::max)
-            }
-            Value::Vector(_) | Value::Scalar(_) => Ok(args[0].clone()),
-            other => Err(ScriptError::type_err(format!(
-                "max: argument must be a non-empty matrix, got {}",
-                other.type_name()
-            ))),
-        };
-    }
-    if args.len() == 2
-        && matches!(args[0], Value::Scalar(_))
-        && matches!(args[1], Value::Scalar(_))
-    {
-        let a = args[0].to_scalar().unwrap();
-        let b = args[1].to_scalar().unwrap();
-        return Ok(Value::Scalar(a.max(b)));
-    }
-    match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            let m = v.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
-            Ok(Value::Scalar(m))
-        }
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            if nrows == 1 || ncols == 1 {
-                let v = m.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
-                return Ok(Value::Scalar(v));
-            }
-            matrix_axis_extremum(m, 1, f64::NEG_INFINITY, f64::max)
-        }
-        Value::Scalar(s) => Ok(Value::Scalar(*s)),
-        _ => Err(ScriptError::type_err(
-            "max: argument must be a non-empty vector, matrix, or scalar".to_string(),
-        )),
+/// Pack a `C64` back into a `Value` — `Scalar` if purely real, `Complex` otherwise.
+fn value_from_c64(c: C64) -> Value {
+    if c.im == 0.0 {
+        Value::Scalar(c.re)
+    } else {
+        Value::Complex(c)
     }
 }
 
@@ -1859,146 +2012,56 @@ fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// argmin(v) — 1-based index of the minimum element (by real part).
-/// Per-column or per-row 1-based argmin/argmax for a 2-D matrix.
-fn matrix_axis_argmin_argmax(
-    m: &CMatrix,
-    dim: usize,
-    pick_better: fn(f64, f64) -> bool,
-) -> Result<Value, ScriptError> {
-    let nrows = m.nrows();
-    let ncols = m.ncols();
-    match dim {
-        1 => {
-            // Per-column index → row vector of length ncols.
-            let mut best_val = vec![f64::NAN; ncols];
-            let mut best_idx = vec![0usize; ncols];
-            for ((i, j), x) in m.indexed_iter() {
-                if best_val[j].is_nan() || pick_better(x.re, best_val[j]) {
-                    best_val[j] = x.re;
-                    best_idx[j] = i;
-                }
-            }
-            let cdata: Vec<C64> = best_idx
-                .into_iter()
-                .map(|k| Complex::new((k + 1) as f64, 0.0))
-                .collect();
-            Ok(Value::Matrix(
-                Array2::from_shape_vec((1, ncols), cdata)
-                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
-            ))
-        }
-        2 => {
-            // Per-row index → column vector of length nrows.
-            let mut best_val = vec![f64::NAN; nrows];
-            let mut best_idx = vec![0usize; nrows];
-            for ((i, j), x) in m.indexed_iter() {
-                if best_val[i].is_nan() || pick_better(x.re, best_val[i]) {
-                    best_val[i] = x.re;
-                    best_idx[i] = j;
-                }
-            }
-            let cdata: Vec<C64> = best_idx
-                .into_iter()
-                .map(|k| Complex::new((k + 1) as f64, 0.0))
-                .collect();
-            Ok(Value::Matrix(
-                Array2::from_shape_vec((nrows, 1), cdata)
-                    .map_err(|e| ScriptError::runtime(e.to_string()))?,
-            ))
-        }
-        _ => unreachable!(),
-    }
+/// argmin / argmax share their comparison-key rules with `min` / `max`:
+/// purely-real input → real value; any complex element → magnitude `|z|`.
+/// Diverges from MATLAB on equal magnitudes (first-occurrence vs MATLAB's
+/// phase-angle tie-break). NaN entries are skipped; an all-NaN slice errors.
+fn builtin_argmin(args: Vec<Value>) -> Result<Value, ScriptError> {
+    builtin_argextremum(args, false, "argmin")
 }
 
-fn builtin_argmin(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("argmin", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("argmin", &args)?;
+fn builtin_argmax(args: Vec<Value>) -> Result<Value, ScriptError> {
+    builtin_argextremum(args, true, "argmax")
+}
+
+fn builtin_argextremum(
+    args: Vec<Value>,
+    is_max: bool,
+    fn_name: &str,
+) -> Result<Value, ScriptError> {
+    check_args_range(fn_name, &args, 1, 2)?;
+    let dim_arg = parse_reduction_dim(fn_name, &args)?;
     match &args[0] {
         Value::Vector(v) if !v.is_empty() => {
-            // Vector behaves like a 1×N row matrix. dim=1 is a no-op (each
-            // column has length 1, so the argmin is always row 1).
-            match dim_arg {
-                Some(1) => {
-                    let n = v.len();
-                    let cdata: Vec<C64> =
-                        (0..n).map(|_| Complex::new(1.0, 0.0)).collect();
-                    Ok(Value::Vector(Array1::from_vec(cdata)))
-                }
-                _ => {
-                    let idx = v
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
-                        .map(|(i, _)| i)
-                        .unwrap();
-                    Ok(Value::Scalar((idx + 1) as f64))
-                }
-            }
-        }
-        Value::Matrix(m) if !m.is_empty() => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
-            // 1-D-shaped: treat as a vector, return a scalar index.
-            if nrows == 1 || ncols == 1 {
-                let idx = m
-                    .iter()
-                    .enumerate()
-                    .min_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap();
-                return Ok(Value::Scalar((idx + 1) as f64));
-            }
-            let dim = dim_arg.unwrap_or(1);
-            matrix_axis_argmin_argmax(m, dim, |new, cur| new < cur)
-        }
-        Value::Scalar(_) => Ok(Value::Scalar(1.0)),
-        _ => Err(ScriptError::type_err(
-            "argmin: argument must be a non-empty vector, scalar, or matrix".to_string(),
-        )),
-    }
-}
-
-/// argmax(v) — 1-based index of the maximum element (by real part).
-fn builtin_argmax(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("argmax", &args, 1, 2)?;
-    let dim_arg = parse_reduction_dim("argmax", &args)?;
-    match &args[0] {
-        Value::Vector(v) if !v.is_empty() => match dim_arg {
-            Some(1) => {
+            // A vector behaves like a 1×N row matrix. dim=1 reduces each
+            // column (length 1, so the index is always 1).
+            if dim_arg == Some(1) {
                 let n = v.len();
                 let cdata: Vec<C64> = (0..n).map(|_| Complex::new(1.0, 0.0)).collect();
                 Ok(Value::Vector(Array1::from_vec(cdata)))
+            } else {
+                let elems: Vec<C64> = v.iter().copied().collect();
+                let (_, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+                Ok(Value::Scalar(idx as f64))
             }
-            _ => {
-                let idx = v
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap();
-                Ok(Value::Scalar((idx + 1) as f64))
-            }
-        },
+        }
         Value::Matrix(m) if !m.is_empty() => {
             let nrows = m.nrows();
             let ncols = m.ncols();
             if nrows == 1 || ncols == 1 {
-                let idx = m
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.re.partial_cmp(&b.re).unwrap())
-                    .map(|(i, _)| i)
-                    .unwrap();
-                return Ok(Value::Scalar((idx + 1) as f64));
+                let elems: Vec<C64> = m.iter().copied().collect();
+                let (_, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+                return Ok(Value::Scalar(idx as f64));
             }
             let dim = dim_arg.unwrap_or(1);
-            matrix_axis_argmin_argmax(m, dim, |new, cur| new > cur)
+            let (_, idx) = matrix_axis_extremum_with_index(m, dim, is_max, fn_name)?;
+            Ok(idx)
         }
         Value::Scalar(_) => Ok(Value::Scalar(1.0)),
-        _ => Err(ScriptError::type_err(
-            "argmax: argument must be a non-empty vector, scalar, or matrix".to_string(),
-        )),
+        _ => Err(ScriptError::type_err(format!(
+            "{}: argument must be a non-empty vector, scalar, or matrix",
+            fn_name
+        ))),
     }
 }
 

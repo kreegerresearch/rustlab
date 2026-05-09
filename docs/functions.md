@@ -283,18 +283,27 @@ D = divergence3(Fx, Fy, Fz, 0.1, 0.1, 0.1);
 
 ## Statistics
 
-### `min(v)` / `min(a, b)`
-Smallest value in a vector, or the smaller of two scalars.
+### `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)`
+Smallest value, with an optional second output for the 1-based index of the first occurrence.
 ```
-min([3.0, 1.0, 4.0, 1.5])   # → 1.0
-min(5, 3)                    # → 3.0
+min([3.0, 1.0, 4.0, 1.5])         # → 1.0
+[m, i] = min([3.0, 1.0, 4.0, 1.5])    # m = 1.0, i = 2 (first occurrence)
+min(5, 3)                          # → 3.0  (elementwise two-scalar form)
+min([1, 5, 3; 4, 2, 6])           # → [1, 2, 3]   (column mins, 1×N row)
+[M, I] = min(A, [], 2)             # row mins; M and I are nrows×1
 ```
+- **Multi-return** is valid for the 1-arg vector/matrix form and the 3-arg axis form. Calling `[m, i] = min(a, b)` on the elementwise two-argument form errors — the index has no defined meaning there.
+- **Comparison key.** Purely-real input compares by real value (so `max([-3, 1, -5])` is `1`, not `-5`). If any element has a nonzero imaginary part the comparison switches to magnitude `|z|`. **This diverges from MATLAB on equal magnitudes**: rustlab returns the first occurrence, MATLAB falls back to phase angle.
+- **NaN handling.** `NaN` entries are skipped during the fold (MATLAB-compatible). All-NaN input errors explicitly rather than silently returning `NaN` at index 1.
+- **Tie-breaking.** First occurrence wins, both real and complex paths.
 
-### `max(v)` / `max(a, b)`
-Largest value in a vector, or the larger of two scalars.
+### `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` / `[m, i] = max(...)`
+Largest value, with an optional second output for the 1-based index of the first occurrence. Same rules as `min` (comparison key, NaN handling, tie-breaking, multi-return restrictions).
 ```
-max([3.0, 1.0, 4.0, 1.5])   # → 4.0
-max(0, -5)                   # → 0.0
+max([3.0, 1.0, 4.0, 1.5])             # → 4.0
+[m, i] = max([3, 1, 4, 1, 5, 9, 2])  # m = 9, i = 6
+max(0, -5)                             # → 0.0
+[M, I] = max([1, 5, 3; 4, 2, 6])     # M = [4, 5, 6], I = [2, 1, 2]
 ```
 
 ### `mean(v)`
@@ -334,17 +343,24 @@ running total up to that index.
 cumsum([1.0, 2.0, 3.0, 4.0])   # → [1, 3, 6, 10]
 ```
 
-### `argmin(v)`
-1-based index of the minimum element (by real part).
+### `argmin(v)` / `argmin(M)` / `argmin(M, dim)`
+1-based index of the minimum element. Comparison key matches `min`: real value for purely-real input, magnitude `|z|` for complex input. NaN entries are skipped; all-NaN input errors. First-occurrence tie-break.
 ```
 argmin([3.0, 1.0, 4.0, 1.5])   # → 2
+argmin([1, 5, 3; 4, 2, 6])    # → [1, 2, 1]   (per-column, 1×N row)
+argmin(A, 2)                    # column index of each row's min, nrows×1
 ```
+- For complex inputs, **diverges from MATLAB on equal magnitudes** (rustlab uses first-occurrence; MATLAB uses phase-angle tie-break).
+- Always agrees with the index returned by `[m, i] = min(...)` on the same input.
 
-### `argmax(v)`
-1-based index of the maximum element (by real part).
+### `argmax(v)` / `argmax(M)` / `argmax(M, dim)`
+1-based index of the maximum element. Same rules as `argmin`.
 ```
 argmax([3.0, 1.0, 4.0, 1.5])   # → 3
+argmax([1, 5, 3; 4, 2, 6])    # → [2, 1, 2]   (per-column, 1×N row)
+argmax(A, 2)                    # column index of each row's max, nrows×1
 ```
+- Always agrees with the index returned by `[m, i] = max(...)` on the same input.
 
 ### `sort(v)`
 Sort a vector ascending by real part. Imaginary components are preserved.
@@ -2476,6 +2492,36 @@ end
 ```
 - Use `while true` for event loops or streaming pipelines. The loop exits when `audio_read` encounters EOF, which is propagated as a clean exit (exit code 0) by `rustlab run`.
 - `true` and `false` are pre-defined Boolean constants.
+
+#### No `break` or `continue` — by design
+
+Rustlab deliberately omits `break` and `continue`. Both keywords are rejected as unstructured control flow; the structured form is to lift the exit condition into the `while` header.
+
+For "find the first index where some condition holds":
+```
+i = 2;
+N = length(w);
+i_cross = 0;
+while i <= N && i_cross == 0
+    if real(mag(i-1)) >= 0 && real(mag(i)) < 0
+        i_cross = i;
+    end
+    i = i + 1;
+end
+```
+This stops at the crossing (same early-exit benefit `break` would give) and keeps the exit condition in the loop header where loop invariants belong, instead of buried mid-body.
+
+For "skip iterations matching some predicate," invert the condition:
+```
+for i = 1:N
+    if mod(i,2) ~= 0
+        do_thing(i);
+    end
+end
+```
+`continue` would save one indent level and nothing else.
+
+See `dev/requests/break-continue.md` for the full rejection rationale.
 
 ### `if` / `elseif` / `else`
 Conditional branching with optional chained conditions.

@@ -180,8 +180,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `sum(v)` / `sum(M)` / `sum(M, dim)` | Sum elements: vector → scalar; matrix → row of column sums (default dim 1) or column of row sums (dim 2). `sum(sum(M))` is the matlab idiom for total. |
 | `prod(v)` | Product of all elements |
 | `cumsum(v)` / `cumsum(M)` / `cumsum(M, dim)` | Running totals; matrix → same shape, per-column by default. |
-| `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-scalar form is elementwise; 3-arg `[]`-placeholder form selects axis (matlab convention). |
-| `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. |
+| `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` / `[m, i] = max(v)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-scalar form is elementwise. **Multi-return** `[m, i]` returns the 1-based first-occurrence index alongside the value (vector / matrix / 3-arg axis forms only — not the two-argument elementwise form). Comparison key: real value for purely-real input, magnitude `|z|` for complex (diverges from MATLAB on equal magnitudes — first-occurrence wins). NaN skipped; all-NaN input errors. |
+| `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so `[~, i] = max(v)` always equals `argmax(v)`. |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
 | `median(v)` / `median(M)` / `median(M, dim)` | Median by real part; same axis rules. |
 | `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. |

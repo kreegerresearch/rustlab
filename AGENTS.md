@@ -884,6 +884,7 @@ primary     = NUMBER | STRING | IDENT
 | Switch / case | `switch expr case v1 ... otherwise ... end` | Match value against cases; first match wins |
 | For loop | `for i = 1:n ... end` | Iterates over range or vector; loop var stays in scope |
 | While loop | `while cond ... end` | Repeats body while cond is truthy; cond may be Bool, Scalar (nonzero), or Complex |
+| ~~`break` / `continue`~~ | **Not supported — by design.** | Find-first patterns: lift the exit condition into the `while` header (`while i <= N && !found`). Skip patterns: invert the `if` predicate. See `dev/requests/break-continue.md`. Do not generate `break` or `continue`. |
 | Run (include) | `run file.rlab` | Execute a .rlab script; merges variables and functions into current scope |
 | Line continuation | `x = a + ...` (newline) `  b` | `...` skips rest of line; statement continues on next line |
 | Single-quote strings | `'hello'` | Alternative string delimiters; context-dependent (transpose after `)`, `]`, ident, number) |
@@ -1013,10 +1014,10 @@ primary     = NUMBER | STRING | IDENT
 | `commas` | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns Str |
 | `error` | `error(msg)` | Halt script execution with a runtime error message |
 | `sleep` | `sleep(seconds)` | Pause execution for a non-negative scalar duration; fractional seconds OK |
-| `min` | `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` | Vector or 1-D matrix → scalar. Matrix → row vector of column mins (default dim 1). Two-scalar form is elementwise min. Three-arg form with empty placeholder selects axis (matlab convention). |
-| `max` | `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` | Same shape rules as `min`. |
-| `argmin` | `argmin(v)` / `argmin(M)` / `argmin(M, dim)` | Vector → scalar 1-based index. Matrix → row vector of per-column argmins (default dim 1); `dim=2` returns column vector of per-row argmins. |
-| `argmax` | `argmax(v)` / `argmax(M)` / `argmax(M, dim)` | Same shape rules as `argmin`. |
+| `min` | `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)` | Vector or 1-D matrix → scalar. Matrix → row of column mins (default dim 1). Two-scalar form is elementwise. 3-arg empty-placeholder form selects axis. **Multi-return** `[m, i]` available for the 1-arg vector/matrix and 3-arg axis forms; index is the 1-based first-occurrence position. Multi-return on the two-argument elementwise form errors. **Comparison key:** real value for purely-real input; magnitude `|z|` for complex input (diverges from MATLAB on equal magnitudes — rustlab uses first-occurrence, MATLAB uses phase-angle tie-break). NaN entries are skipped; all-NaN input errors. |
+| `max` | `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` / `[m, i] = max(...)` | Same shape and semantic rules as `min`. |
+| `argmin` | `argmin(v)` / `argmin(M)` / `argmin(M, dim)` | Vector → scalar 1-based index. Matrix → row of per-column argmins (default dim 1); `dim=2` → column of per-row argmins. Comparison key and NaN/tie-break rules match `min` exactly, so `[~, i] = min(v)` and `argmin(v)` always agree. |
+| `argmax` | `argmax(v)` / `argmax(M)` / `argmax(M, dim)` | Same shape and semantic rules as `argmin`. |
 | `surf` | `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, cmap)` | 3D surface plot; viewer renders interactive rotate/zoom, HTML emits Plotly 3D, SVG/PNG draws a static isometric wireframe, terminal falls back to a heatmap |
 | `heatmap` | `heatmap(M)` / `heatmap(M, "title")` / `heatmap(xlabels, ylabels, M [, "title" [, "colormap"]])` | Continuous-value heatmap with optional categorical axis labels. Row 0 at top. HTML emits Plotly `type:"heatmap"` with `x:`/`y:` text arrays for labels and `autorange:"reversed"` on yaxis. SVG/PNG renders cells (same path as `imagesc`) plus categorical tick formatters when both label vectors are provided. |
 | `image` | `image(M)` / `image(M, "colormap")` / `image(R, G, B)` | Raw pixel display, no normalisation, values clamped to `[0, 255]`. RGB form requires three real matrices of identical shape. Stores pre-rendered RGBA on `HeatmapData` (`HeatmapKind::ImageRgba`). HTML emits Plotly `type:"image"`; SVG/PNG draws RGBA rectangles directly with no colorbar gutter. Row 0 at top. |
