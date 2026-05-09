@@ -177,7 +177,7 @@ Systems*:
   ordering on regular grids and gives sensible permutations on
   irregular patterns.
 
-See `dev/plans/sparse_solve_handroll.md` for the full implementation
+See `dev/plans/closed/sparse_solve_handroll.md` for the full implementation
 plan and the queue of remaining enhancements.
 
 ## Cheat sheet

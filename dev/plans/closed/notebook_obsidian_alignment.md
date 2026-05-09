@@ -1,5 +1,8 @@
 # Notebook ↔ Obsidian / GitHub Markdown Alignment
 
+**Status:** Complete — all five phases (A native callouts, B pulldown
+flag flips, C wikilinks/embeds, D docs, E migration) shipped.
+
 **Goal:** Make rustlab-notebook source `.md` files render correctly and
 identically across our three primary viewing surfaces — **GitHub** (the
 committed `book/<lesson>.md` view), **Obsidian** (vault paste-in), and

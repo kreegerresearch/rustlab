@@ -1,5 +1,7 @@
 # Feature Request: `nyquist(G)` builtin
 
+**Status:** **Landed** in rustlab 0.3.1 (commit `d81644d`). `nyquist(G)`, `[re, im, w] = nyquist(G)`, `nyquist(G, w)`, and `nyquist(G, "pos-only")` all implemented with equal-aspect across backends. Verified in `rustlab_controls/lessons/21-nyquist/*.rlab`.
+
 ## Problem
 
 The classical-control toolbox in rustlab 0.3.1 has `bode`, `step`, `margin`, `rlocus`, `pole`, `zero`, `tf`, `ss`, `tf(sys)`, `freqresp` — but **no `nyquist` plot**. Nyquist is the standard visual for closed-loop stability analysis: encirclements of $-1$, gain and phase margins read off geometrically, the closest-approach distance to $-1$ as the sensitivity peak $1/M_S$, and the visual statement of the Kalman frequency-domain inequality $|1 + L(j\omega)| \geq 1$ ("locus stays outside the unit disk around $-1$").

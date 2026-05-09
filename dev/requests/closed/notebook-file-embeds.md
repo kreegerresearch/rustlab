@@ -1,5 +1,14 @@
 # Feature Request: File embeds (Obsidian-style transclusion)
 
+> **STATUS: RESOLVED.** Implemented via `dev/plans/notebook_file_embeds.md`.
+> All three forms (`![[Doc]]`, `![[Doc#Heading]]`, `![[Doc#^block-id]]`)
+> ship; embedded `rustlab` blocks share the host evaluator (Option A);
+> errors render as inline `[!CAUTION]` callouts; recursion capped at
+> depth 4 with cycle detection. See `crates/rustlab-notebook/src/embed.rs`,
+> docs in `docs/notebooks.md` § "File embeds (transclusion)", working
+> example in `examples/notebooks/_setup.md` + `embeds_demo.md`.
+
+
 ## Problem
 
 Notebooks frequently want to pull content from a sibling file:

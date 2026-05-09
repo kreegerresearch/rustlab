@@ -106,7 +106,9 @@ written into the report file so it is preserved across sessions.
 ## Development Plans
 
 Multi-phase feature plans live in `dev/plans/`.  Each plan tracks current phase
-and per-item status.  **Follow this protocol at the start and end of every
+and per-item status.  Completed plans are moved to `dev/plans/closed/` so the
+top-level directory only shows what is still in flight; same convention for
+`dev/requests/closed/`.  **Follow this protocol at the start and end of every
 session that touches a plan:**
 
 ### Reading plans at session start
@@ -146,19 +148,21 @@ together whenever a phase finishes.
 
 | Plan | File | Status |
 |------|------|--------|
-| Control Systems Toolbox | `dev/plans/controls.md` | Complete — all 6 phases |
-| Controls Bootcamp Functions | `dev/plans/controls_bootcamp.md` | Complete — logspace, rk4, lyap, gram, care, dare, place, freqresp, svd |
-| Lambda / Anonymous Functions | `dev/plans/lambda.md` | Complete — both phases (lambdas, arrayfun, feval) |
-| Function Call Profiling | `dev/plans/profiling.md` | Complete — both phases (profile(), --profile flag) |
-| Real-Time Audio Streaming | `dev/plans/audio_streaming.md` | Complete — all 3 phases (while loop, FirState, audio I/O) |
-| Live Plot & Spectrum Monitor | `dev/plans/live_plot.md` | Complete — all 3 phases (LiveFigure, builtins, mag2db) |
-| Sparse Vectors and Matrices | `dev/plans/sparse.md` | Complete — all 4 phases (types, conversion, arithmetic, solver/utilities) |
-| Notebook System | `dev/plans/notebook_report.md` | Complete through Phase 6 (parse, execute, KaTeX, LaTeX/PDF, polish, multi-notebook) + light/dark theme support |
+| Control Systems Toolbox | `dev/plans/closed/controls.md` | Complete — all 6 phases |
+| Controls Bootcamp Functions | `dev/plans/closed/controls_bootcamp.md` | Complete — logspace, rk4, lyap, gram, care, dare, place, freqresp, svd |
+| Lambda / Anonymous Functions | `dev/plans/closed/lambda.md` | Complete — both phases (lambdas, arrayfun, feval) |
+| Function Call Profiling | `dev/plans/closed/profiling.md` | Complete — both phases (profile(), --profile flag) |
+| Real-Time Audio Streaming | `dev/plans/closed/audio_streaming.md` | Complete — all 3 phases (while loop, FirState, audio I/O) |
+| Live Plot & Spectrum Monitor | `dev/plans/closed/live_plot.md` | Complete — all 3 phases (LiveFigure, builtins, mag2db) |
+| Sparse Vectors and Matrices | `dev/plans/closed/sparse.md` | Complete — all 4 phases (types, conversion, arithmetic, solver/utilities) |
+| Notebook System | `dev/plans/closed/notebook_report.md` | Complete through Phase 6 (parse, execute, KaTeX, LaTeX/PDF, polish, multi-notebook) + light/dark theme support |
 | Notebook Future Features | `dev/plans/notebook_future.md` | Complete — template interpolation, string arrays, categorical bar charts |
-| Notebook Mermaid Diagrams | `dev/plans/notebook_mermaid.md` | Phase 1 complete — pure-Rust SVG via `mermaid-rs-renderer` behind the `mermaid` Cargo feature on `rustlab-notebook`. Off by default to keep the main `rustlab` binary minimal; the standalone `rustlab-notebook` bin opts in via the Makefile. Inline `<svg>` in HTML, `\includesvg` figure in LaTeX/PDF, ` ```mermaid ` fence in Markdown. Hashed cache, `<!-- caption: -->`/`<!-- hide -->`/`<!-- details: -->` directives. |
-| Hand-Rolled Sparse Solver | `dev/plans/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
+| Notebook Mermaid Diagrams | `dev/plans/closed/notebook_mermaid.md` | Phase 1 complete — pure-Rust SVG via `mermaid-rs-renderer` behind the `mermaid` Cargo feature on `rustlab-notebook`. Off by default to keep the main `rustlab` binary minimal; the standalone `rustlab-notebook` bin opts in via the Makefile. Inline `<svg>` in HTML, `\includesvg` figure in LaTeX/PDF, ` ```mermaid ` fence in Markdown. Hashed cache, `<!-- caption: -->`/`<!-- hide -->`/`<!-- details: -->` directives. |
+| Notebook File Embeds (transclusion) | `dev/plans/closed/notebook_file_embeds.md` | Complete — Obsidian-style `![[Document]]`, `![[Document#Heading]]`, `![[Document#^block-id]]` transclusion. Pre-process pass before `parse_notebook`; embedded ` ```rustlab ` blocks share the host evaluator. Heading demotion per nesting level (cap h6), recursion cap = 4, cycle detection. Errors render as inline `[!CAUTION]` callouts. Block-id `^id` markers stripped from rendered output of every notebook. See `examples/notebooks/_setup.md` + `embeds_demo.md` and `docs/notebooks.md` § "File embeds (transclusion)". |
+| Notebook Obsidian Vault Integration | `dev/plans/closed/notebook_obsidian_vault.md` | Complete — both phases shipped. Phase A: `--obsidian` (markdown format) does five vault-native rewrites: cross-notebook links → `[[wikilinks]]`, plots → `_attachments/<stem>/`, frontmatter merge (`tags:[rustlab]` / `cssclasses:[rustlab-notebook]`), trailing iframe (suppress with `--no-iframe`), auto-generated `index.md` in directory mode. CLI flags `--attachments-dir <DIR>`, `--no-iframe`. Phase B: `rustlab notebook watch <dir>` long-running re-renderer using `notify` with debounced events (default 250 ms), embed dependency graph for precise re-renders, plot-dir gc, failure isolation. Markdown-only currently. See `docs/notebooks.md` § "Obsidian integration" and "Live preview with `notebook watch`". |
+| Hand-Rolled Sparse Solver | `dev/plans/closed/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
 | `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
-| Original `rustlab_em` Requests (5 originals) | `dev/plans/rustlab_em_requests.md` | Complete through Phase 4 — original five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d Phase 1). |
+| Original `rustlab_em` Requests (5 originals) | `dev/plans/closed/rustlab_em_requests.md` | Complete — all five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d, animation export). |
 | `rustlab_llm` Gap Closure (v0.3) | `~/.claude/plans/lively-roaming-abelson.md` | Complete — all four open gaps shipped: short-circuit `&&`/`\|\|`, `M(I)` linear-index gather (with `M(scalar)` flip), `layernorm(M)` matrix overload, multi-output user functions `function [a, b] = name(x)`. Tour example/notebook in `examples/language_v0_3.{rlab,md}`. |
 
 ---
@@ -500,7 +504,7 @@ lives in `docs/notebooks.md`. Highlights:
   ordinary markdown links/images so the committed `book/*.md` is
   GitHub-safe and Obsidian-native.
 
-See `dev/plans/notebook_obsidian_alignment.md` for the design
+See `dev/plans/closed/notebook_obsidian_alignment.md` for the design
 rationale (which Obsidian features were adopted and which were skipped).
 
 **PDF dependencies** (`--format pdf` only): `pdflatex` (or `tectonic`) plus
@@ -630,7 +634,7 @@ rustlab run examples/lowpass.rlab   # must exit 0 with a plot
 - `src/traits/transform.rs` — `Transform` trait: `forward`, `inverse`
 - `src/traits/decompose.rs` — `Decomposable` trait + marker traits `LuDecomposable`, `SvdDecomposable`, `CholeskyDecomposable`, `EigenDecomposable` (stubs — no implementors yet)
 - `src/error.rs` — `CoreError` enum
-- `src/sparse_solve/` — hand-rolled sparse direct solvers (per `dev/plans/sparse_solve_handroll.md`, Davis-2006). `csc.rs` defines `SparseCsc<T>` and the `SparseScalar` trait (`f64` + `Complex<f64>` impls); `ordering.rs` has `OrderingMethod` trait + `ColCountOrdering`, `IdentityOrdering`, `AmdOrdering` (basic minimum-degree; full external-degree variant is deferred); `elimination_tree.rs` builds the column elimination tree; `cholesky.rs` is the up-looking sparse Cholesky for SPD matrices; `lu.rs` is the Gilbert-Peierls sparse LU with partial pivoting. `SparseMat::is_hermitian` and `SparseMat::is_spd_estimate` are pre-filter helpers used by the dispatch in `builtin_spsolve`.
+- `src/sparse_solve/` — hand-rolled sparse direct solvers (per `dev/plans/closed/sparse_solve_handroll.md`, Davis-2006). `csc.rs` defines `SparseCsc<T>` and the `SparseScalar` trait (`f64` + `Complex<f64>` impls); `ordering.rs` has `OrderingMethod` trait + `ColCountOrdering`, `IdentityOrdering`, `AmdOrdering` (basic minimum-degree; full external-degree variant is deferred); `elimination_tree.rs` builds the column elimination tree; `cholesky.rs` is the up-looking sparse Cholesky for SPD matrices; `lu.rs` is the Gilbert-Peierls sparse LU with partial pivoting. `SparseMat::is_hermitian` and `SparseMat::is_spd_estimate` are pre-filter helpers used by the dispatch in `builtin_spsolve`.
 - `src/sparse_eig/` — hand-rolled sparse eigensolvers (Saad, *Numerical Methods for Large Eigenvalue Problems*, 2011). `lanczos.rs` builds a symmetric tridiagonal `T_m` via Lanczos with full reorthogonalization for Hermitian inputs; `arnoldi.rs` builds an upper-Hessenberg `H_m` via Arnoldi for general inputs; `sym_eig.rs` extracts eigenpairs from the small dense symmetric subproblem via cyclic Jacobi rotations; `hessenberg_eig.rs` does the same for non-symmetric subproblems via shifted QR + inverse iteration. Public `eigs(A, n, which, ...)` and `eigs_gen(A, B, n, which, ...)` entry points dispatch to the appropriate path.
 
 **Feature flags:**
@@ -903,7 +907,7 @@ primary     = NUMBER | STRING | IDENT
 | Element-wise | `.*` `./` `.^` | Always element-wise on vectors/matrices |
 | Matrix literal | `[1,2; 3,4]` | `;` separates rows |
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
-| Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/tensor3.md` for the full design. |
+| Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
 | String array | `{"a", "b", "c"}` | `Value::StringArray`; all elements must be strings; 1-based indexing |
 | Underscore literals | `1_000_000`, `3.141_592` | Digit separators stripped at lex time; like Rust/Python/C++ |
 | Format mode | `format commas` / `format default` | Bare command; toggles thousands separators in auto-print output |

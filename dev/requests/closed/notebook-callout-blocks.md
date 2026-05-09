@@ -1,5 +1,10 @@
 # Feature Request: Callout/admonition blocks
 
+> **STATUS: RESOLVED.** Implemented via `dev/plans/notebook_obsidian_alignment.md`
+> Phase A. The renderer accepts both the legacy `<!-- note -->` form and
+> the GitHub/Obsidian-native `> [!NOTE]` (and TIP, IMPORTANT, WARNING,
+> CAUTION) syntax. See `docs/notebooks.md` § "Callouts: `> [!NOTE]`".
+
 ## Problem
 
 Tutorial notebooks need a way to visually distinguish pedagogical annotations — definitions, tips, warnings, and cross-references — from the main narrative. Currently all prose renders identically, making it easy for readers to miss important caveats or key insights buried in a paragraph.

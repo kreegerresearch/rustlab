@@ -1,5 +1,12 @@
 # Feature Request: Mermaid diagrams in notebooks (HTML + LaTeX/PDF)
 
+> **STATUS: RESOLVED.** Implemented via `dev/plans/notebook_mermaid.md`.
+> Pure-Rust SVG rendering via `mermaid-rs-renderer` behind the
+> `mermaid` Cargo feature; HTML embeds inline `<svg>`, LaTeX/PDF use
+> `\includesvg`, Markdown emits the verbatim ` ```mermaid ` fence.
+> Hashed cache + `<!-- caption: -->` / `<!-- hide -->` /
+> `<!-- details: -->` directives. Demo: `examples/notebooks/mermaid_demo.md`.
+
 ## Problem
 
 Tutorial and report notebooks frequently need block diagrams, flowcharts,

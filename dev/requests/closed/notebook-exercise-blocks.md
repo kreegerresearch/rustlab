@@ -1,5 +1,11 @@
 # Feature Request: Exercise blocks with hidden solutions
 
+> **STATUS: RESOLVED.** `<!-- exercise -->` and `<!-- solution -->`
+> directives ship; exercises are auto-numbered, solutions render as
+> collapsed `<details>` widgets. See `docs/notebooks.md` § "Exercises
+> and solutions" and `crates/rustlab-notebook/src/parse.rs` for the
+> parser branches.
+
 ## Problem
 
 The quantum_lab lessons have exercises in their `lesson.md` files but these aren't integrated into the notebooks. A tutorial notebook should let students attempt a problem before revealing the answer. Currently there is no way to present a question with a hidden solution inline.

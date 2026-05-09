@@ -1,6 +1,6 @@
 # Migration: `.r` → `.rlab` (rustlab script extension)
 
-**Status:** Plan, awaiting user review. Implementation work was started and is stashed (`git stash` entry: "rename-r-to-rlab WIP: 70 git mv + source edits + run_compare.sh + perf/run_perf.sh + partial README"). Do NOT pop the stash until this plan is approved.
+**Status:** Complete — `.rlab` is the script extension throughout the codebase; no `.r` files remain. The migration shipped (script files, build scripts, runner, docs all updated).
 **Branch:** `rename-r-to-rlab`
 **Date opened:** 2026-05-02
 

@@ -94,7 +94,7 @@ Detailed implementation plans have been removed (work is in main; per-item file 
 | §2.4 | sparse partial eigensolver `eigs(A, n)` / `eigs(A, B, n)` (Lanczos + Arnoldi + Jacobi + Hessenberg-QR) | `7eb5672` | `gallery/eigs.md` |
 | §4 + §2.7 | real-typed elem-ops (Option A) and log/polar plot shims (`loglog`, `semilogx`, `semilogy`, `polar`) | (pending) | `gallery/log_polar.md` (pending) |
 
-Per-phase plan for §2.3 lives at `dev/plans/sparse_solve_handroll.md` (now closed). Performance writeup at `perf/sparse_solve_phase1to4.md`.
+Per-phase plan for §2.3 lives at `dev/plans/closed/sparse_solve_handroll.md` (now closed). Performance writeup at `perf/sparse_solve_phase1to4.md`.
 
 ---
 

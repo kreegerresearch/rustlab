@@ -19,6 +19,18 @@ enum CliTheme {
 
 #[derive(Subcommand)]
 pub enum NotebookCommands {
+    /// Watch a directory of notebooks and re-render on save (markdown only)
+    #[command(
+        long_about = "Watch a directory of notebooks and re-render whenever a source file changes.\n\n\
+            Pairs naturally with --obsidian: edit notes in Obsidian's Editing view,\n\
+            switch to Reading view, see updated plots and text within ~500 ms.\n\n\
+            Examples:\n  \
+            rustlab notebook watch notebooks/                              # → re-render to notebooks/<name>.md on save\n  \
+            rustlab notebook watch notebooks/ -o vault/ --obsidian         # vault-native output to a separate dir\n  \
+            rustlab notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
+            Currently --format markdown only."
+    )]
+    Watch(WatchArgs),
     /// Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF
     #[command(
         long_about = "Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF.\n\n\
@@ -54,6 +66,30 @@ pub enum NotebookCommands {
 }
 
 #[derive(Args)]
+pub struct WatchArgs {
+    /// Directory of .md files to watch
+    input: PathBuf,
+    /// Output directory (default: same as input)
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Color theme: dark (default), light
+    #[arg(short, long, value_enum, default_value = "dark")]
+    theme: CliTheme,
+    /// Obsidian-friendly markdown output (see `render --obsidian` for details)
+    #[arg(long)]
+    obsidian: bool,
+    /// Override the attachments directory (with --obsidian)
+    #[arg(long, value_name = "DIR")]
+    attachments_dir: Option<String>,
+    /// Suppress the trailing iframe (with --obsidian)
+    #[arg(long)]
+    no_iframe: bool,
+    /// Debounce window for filesystem events (default 250 ms)
+    #[arg(long, value_name = "MS", default_value = "250")]
+    debounce_ms: u64,
+}
+
+#[derive(Args)]
 pub struct RenderArgs {
     /// Input .md file or directory of .md files
     input: PathBuf,
@@ -70,14 +106,58 @@ pub struct RenderArgs {
     /// index.md H1 > parent directory name.
     #[arg(long)]
     title: Option<String>,
-    /// Obsidian-friendly markdown: append an iframe to the sibling .html.
-    /// Only meaningful with --format markdown; ignored otherwise.
+    /// Obsidian-friendly markdown: cross-notebook links emit as
+    /// `[[wikilinks]]`, plots route to `_attachments/<stem>/`, frontmatter
+    /// gains `tags: [rustlab]` and `cssclasses: [rustlab-notebook]`, and a
+    /// trailing iframe to the sibling .html is appended (suppress with
+    /// `--no-iframe`). Only meaningful with --format markdown; ignored
+    /// otherwise.
     #[arg(long)]
     obsidian: bool,
+    /// Override the attachments directory used by `--obsidian` for plot
+    /// SVGs. Default: `_attachments`. Path is relative to the notebook
+    /// output directory.
+    #[arg(long, value_name = "DIR")]
+    attachments_dir: Option<String>,
+    /// Suppress the trailing iframe under `--obsidian`. Useful when you
+    /// want the wikilink + attachments rewrites without embedding the
+    /// interactive HTML view.
+    #[arg(long)]
+    no_iframe: bool,
 }
 
 pub fn execute(cmd: NotebookCommands) -> Result<()> {
     match cmd {
+        NotebookCommands::Watch(args) => {
+            let theme = match args.theme {
+                CliTheme::Dark => Theme::Dark,
+                CliTheme::Light => Theme::Light,
+            };
+            let colors = theme.colors();
+            let obsidian_opts = if args.obsidian {
+                let mut opts = rustlab_notebook::ObsidianOpts::default();
+                if let Some(dir) = args.attachments_dir {
+                    opts.attachments_dir = dir;
+                }
+                if args.no_iframe {
+                    opts.iframe = false;
+                }
+                Some(opts)
+            } else {
+                None
+            };
+            let format = rustlab_notebook::Format::Markdown {
+                obsidian: obsidian_opts,
+            };
+            rustlab_notebook::watch::cmd_watch(
+                args.input,
+                args.output,
+                format,
+                colors,
+                args.debounce_ms,
+            );
+            Ok(())
+        }
         NotebookCommands::Render(args) => {
             let theme = match args.theme {
                 CliTheme::Dark => Theme::Dark,
@@ -87,12 +167,29 @@ pub fn execute(cmd: NotebookCommands) -> Result<()> {
             if args.obsidian && !matches!(args.format, CliFormat::Markdown) {
                 eprintln!("warning: --obsidian only applies to --format markdown; ignored");
             }
+            if (args.attachments_dir.is_some() || args.no_iframe) && !args.obsidian {
+                eprintln!(
+                    "warning: --attachments-dir / --no-iframe only apply with --obsidian; ignored"
+                );
+            }
+            let obsidian_opts = if args.obsidian {
+                let mut opts = rustlab_notebook::ObsidianOpts::default();
+                if let Some(dir) = args.attachments_dir.clone() {
+                    opts.attachments_dir = dir;
+                }
+                if args.no_iframe {
+                    opts.iframe = false;
+                }
+                Some(opts)
+            } else {
+                None
+            };
             let format = match args.format {
                 CliFormat::Html => rustlab_notebook::Format::Html,
                 CliFormat::Latex => rustlab_notebook::Format::Latex,
                 CliFormat::Pdf => rustlab_notebook::Format::Pdf,
                 CliFormat::Markdown => rustlab_notebook::Format::Markdown {
-                    obsidian: args.obsidian,
+                    obsidian: obsidian_opts,
                 },
             };
             if args.input.is_dir() {

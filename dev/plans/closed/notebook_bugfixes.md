@@ -1,5 +1,9 @@
 # Notebook Bugfixes — Implementation Plan
 
+**Status:** Complete — both underlying bugs fixed on `main` (math
+backslash: feb2fb0/6a4f618; TUI suppression: 597b95d). The verification
++ regression-test phases described below ran during the closeout.
+
 References:
 - `dev/issues/notebook-math-backslash-escape.md`
 - `dev/issues/notebook-tui-suppression.md`

@@ -1,5 +1,10 @@
 # Plan: Mermaid diagrams in notebooks (pure Rust)
 
+**Status:** Complete — Phase 1 shipped (parser, executor passthrough,
+unified SVG renderer with hashed cache, directives). Behind the
+`mermaid` Cargo feature on `rustlab-notebook`. Demo:
+`examples/notebooks/mermaid_demo.md`.
+
 Implementation contract: see `dev/requests/notebook-mermaid-diagrams.md`.
 This plan covers phasing, file-by-file changes, tests, and integration
 points. Decisions already made in the request are not re-litigated.

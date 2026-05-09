@@ -1,6 +1,6 @@
 # Development Plan: `rustlab_em` Feature Requests
 
-**Status:** Phases 1, 1.5, 2, 3, 4 landed — Phase 5 (animation export) remaining.
+**Status:** Complete — all five phases (1, 1.5, 2, 3, 4, and animation export) landed. See `dev/plans/animation_export.md` for the closeout of the final phase.
 **Date opened:** 2026-04-22
 **Source:** `../rustlab_em/dev/rustlab/requests/*.md` (5 originals)
 **Current rustlab version at plan creation:** `0.1.9`

@@ -1,6 +1,6 @@
 # Feature Request: `[m, idx] = max(v)` / `[m, idx] = min(v)` multi-return forms
 
-**Status:** Accepted with clarifications below (2026-05-09).
+**Status:** Landed in commit `1dbc15c` ("Add multi-return [m,i] form for max/min; magnitude-key for complex"). `max` / `min` now register via `register_nargout` in `crates/rustlab-script/src/eval/builtins.rs:137-138`; `[m, i] = max(v)` / `[m, i] = min(v)` return value + 1-based index.
 
 ## Problem
 

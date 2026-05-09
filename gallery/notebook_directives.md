@@ -110,16 +110,19 @@ or an explicit closing tag (`<!-- /note -->`, `<!-- /tip -->`,
 `<!-- /warning -->`). Markdown inside the body — including inline math —
 renders normally.
 
-> **Note:** The DFT of a length-$N$ signal produces $N$ complex bins covering
+> [!NOTE]
+> The DFT of a length-$N$ signal produces $N$ complex bins covering
 > frequencies $[0, f_s)$. Bins above $f_s/2$ correspond to negative
 > frequencies for real input — fold the spectrum at $f_s/2$ for the
 > one-sided view.
 
-> **Tip:** For peak frequency resolution at fixed $N$, choose a window with a
+> [!TIP]
+> For peak frequency resolution at fixed $N$, choose a window with a
 > narrow main lobe (rectangular is narrowest; Hann is a common
 > compromise). Increase $N$ — not the window — when you need finer bins.
 
-> **Warning:** `fft(x)` does **not** apply any normalization. To match time-domain
+> [!WARNING]
+> `fft(x)` does **not** apply any normalization. To match time-domain
 > amplitude, divide the magnitude spectrum by $N$ for a one-sided view,
 > or by $N/2$ for two-sided.
 

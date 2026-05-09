@@ -1,5 +1,12 @@
 # Matrix/Vector Coercion
 
+**Status:** Shipped — implicit broadcasting between 1×N matrices and
+N-element vectors works for arithmetic and element-wise operators
+(verified via Octave-compat divergence #7, see
+`dev/plans/octave_compat_divergences.md`). The plot-side rendering
+(treating a 1×N or N×1 matrix as a single line series) is not yet
+wired up; track separately if a user hits it.
+
 `randn(1, 500)` returns a 1×500 `Matrix`, while `randn(500)` returns a 500-element `Vector`. These are semantically the same (a 1-D sequence of values), but downstream functions like `plot` treat them differently — `plot` on a matrix plots columns, so a 1×N matrix shows only the last column (1 data point).
 
 ## Problem

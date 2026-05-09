@@ -1,6 +1,6 @@
 # Plan: Add `heatmap()` and `image()` Builtins
 
-**Status**: Approved, not started  
+**Status**: Landed — `heatmap()` and `image()` are registered builtins in `crates/rustlab-script/src/eval/builtins.rs`; demo in `examples/notebooks/heatmap_image.md`.  
 **Date**: 2026-04-18 (revised 2026-05-01)
 
 ## Revision notes (2026-05-01)

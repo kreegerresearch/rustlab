@@ -1,6 +1,6 @@
 # Octave/MATLAB Compatibility Divergences
 
-**Status:** Open. 11 confirmed behavioral divergences from octave/matlab; none yet addressed.
+**Status:** Mostly shipped — 10 of 11 divergences addressed (see snapshot below). Only #5 (`zeros(n)` returns 1×n instead of n×n) remains open.
 **Date opened:** 2026-05-02
 **Source:** Audit run at HEAD `6fba40b`. Numeric baseline: `bash tests/octave/run_compare.sh` — all 150 cases (compare.m + compare_full.m) pass at machine precision (max err ≤ 4.4e-16). Behavioral divergences below were found by spot-checking matlab/octave idioms that the numeric suite doesn't exercise.
 

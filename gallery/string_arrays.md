@@ -55,7 +55,7 @@ figure()
 subplot(1,2,1)
 bar(regions, q1, "Q1 Revenue")
 subplot(1,2,2)
-bar(regions, q2, "Q2 Revenue")
+bar(regions, q2, "Q2 Revenue");
 ```
 
 ```text

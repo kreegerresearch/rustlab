@@ -11,51 +11,139 @@ rustlab notebook render analysis.md              # → analysis.html (default, d
 rustlab notebook render analysis.md -t light     # → analysis.html (light theme)
 rustlab notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
-rustlab notebook render analysis.md -f markdown  # → analysis.md + analysis_plots/*.svg
-rustlab notebook render analysis.md -f markdown --obsidian  # markdown + iframe to sibling .html (Obsidian)
+rustlab notebook render analysis.md -f markdown  # → analysis.md + plots/analysis/*.svg
+rustlab notebook render analysis.md -f markdown --obsidian  # vault-native md (wikilinks, _attachments/, frontmatter, iframe)
 rustlab notebook render analysis.md -o out.html  # explicit output path
+rustlab notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
 
 The `markdown` output format is purpose-built for committing rendered
 notebooks to a repo so they display with inline plots on GitHub — each
-captured figure is written as SVG to `<stem>_plots/plot-N.svg` and
-referenced inline. See
+captured figure is written as SVG to `plots/<stem>/plot-N.svg` and
+referenced inline. Add `--obsidian` to switch the emitter into
+vault-native mode (see [Obsidian integration](#obsidian-integration--obsidian)
+below). See
 [`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
 source/rendered split design pattern.
 
 ### Obsidian integration (`--obsidian`)
 
-Adding `--obsidian` to a `--format markdown` render appends a single HTML
-`<iframe>` at the end of the `.md`, pointing at the sibling
-`<stem>.html`. The intent is that you render both formats into the same
-directory (as `make notebooks` already does), then point an Obsidian
-vault at it: Obsidian renders the markdown + inline SVGs as usual, and
-the trailing iframe gives you the interactive Plotly view inline.
+`--obsidian` (with `--format markdown`) switches the markdown emitter
+into vault-native mode. The output reads like a hand-authored Obsidian
+vault: cross-notebook links use `[[wikilinks]]`, plots route to
+`_attachments/<stem>/`, frontmatter gets the standard vault metadata
+keys, and a trailing iframe to the sibling `.html` is appended for
+the interactive Plotly view.
 
 ```
-rustlab notebook render notebooks/ -f html        # → <name>.html for each
-rustlab notebook render notebooks/ -f markdown --obsidian  # → <name>.md with trailing iframe
+rustlab notebook render notebooks/ -f html                 # → <name>.html for each
+rustlab notebook render notebooks/ -f markdown --obsidian  # → vault-native .md
 ```
 
-The iframe is plain raw HTML embedded in markdown:
+Five things change vs. the default `--format markdown`:
 
-```html
-<iframe src="<stem>.html" width="100%" height="600" style="border: 0;"></iframe>
-```
+1. **Cross-notebook links emit as wikilinks.**
+   - `[Foo](other.md)` in source → `[[other|Foo]]` in output.
+   - `[Sec](other.md#section)` → `[[other#section|Sec]]`.
+   - `[Foo](Foo.md)` → `[[Foo]]` (alias dropped when text matches the
+     basename).
+   - External URLs (`http://`, `https://`, `mailto:`, `#anchor` only)
+     are left untouched.
 
-GitHub strips iframes during sanitization, so the *same* `--obsidian`
-output is also safe to commit and view on GitHub — the iframe simply
-disappears, leaving the static SVG plots inline. There is no separate
-"obsidian" output format; the flag is a small augmentation of the
-existing `markdown` format, kept under a single name so future
-Obsidian-targeted features (callout dialect, wikilinks, frontmatter)
-can flow through the same flag.
+2. **Plots emit to an attachments folder.** Default
+   `_attachments/<stem>/plot-N.svg`. The leading `_` keeps the folder
+   grouped at the top of Obsidian's file pane, away from authored
+   notes. Override with `--attachments-dir <DIR>`.
+
+3. **Frontmatter is merged.** If the source has none, a minimal block
+   is emitted:
+   ```yaml
+   ---
+   tags: [rustlab]
+   cssclasses: [rustlab-notebook]
+   ---
+   ```
+   If the source already has frontmatter, the two obsidian keys are
+   appended *only* when absent — existing keys (including custom
+   `tags:` / `cssclasses:`) are preserved verbatim. The
+   `cssclasses: [rustlab-notebook]` value is a hook for vault-side CSS
+   snippets that style rustlab-rendered notes.
+
+4. **Trailing iframe.** A single
+   `<iframe src="<stem>.html" width="100%" height="600">` is appended
+   so Obsidian's Reading view can show the interactive Plotly version
+   inline. Suppress with `--no-iframe` if you want the wikilink and
+   attachment rewrites without embedding the HTML view.
+
+5. **Vault home page.** When rendering a directory, an `index.md` is
+   written at the output root with an H1 title and a `[[wikilink]]`
+   list of every notebook in `order:` sequence. If the source
+   directory provides its own `index.md`, that one is rendered
+   through the normal pipeline instead (frontmatter merging, embed
+   expansion) — the autogenerated index never overwrites authored
+   content.
+
+GitHub strips iframes during sanitization, but it does **not** render
+wikilinks — committing a `--obsidian` output to a repo will show
+`[[Foo]]` as literal text on github.com. Use `--obsidian` for vaults;
+omit it for committed `gallery/`-style output.
+
+#### Flags summary
+
+| Flag | Effect |
+|---|---|
+| `--obsidian` | Enable all five behaviours above. Markdown format only. |
+| `--attachments-dir <DIR>` | Override the default `_attachments` location for plot SVGs. |
+| `--no-iframe` | Suppress the trailing iframe. |
 
 The standalone `rustlab-notebook` binary accepts the same arguments:
 
 ```
-rustlab-notebook render analysis.md -t light -f pdf
+rustlab-notebook render notebooks/ -f markdown --obsidian
+rustlab-notebook render notebooks/ -f markdown --obsidian --attachments-dir media
+rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 ```
+
+### Live preview with `notebook watch`
+
+`rustlab notebook watch <dir>` is the long-running counterpart of
+`render`: it re-renders any notebook whose source changes, debouncing
+filesystem events so a single editor save produces one render pass.
+Pair it with `--obsidian` for a "edit in Editing view, see updates in
+Reading view" loop with no manual rerun.
+
+```
+rustlab notebook watch notebooks/                                  # → re-render to notebooks/<name>.md on save
+rustlab notebook watch notebooks/ -o vault/ --obsidian             # vault-native output to a separate dir
+rustlab notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
+```
+
+Behaviour:
+
+- **Initial pass.** Every notebook in the watched directory is
+  rendered once at startup so the output directory is in sync. After
+  that, only notebooks whose sources change re-render.
+- **Embed dependency tracking.** When a notebook embeds
+  `_setup.md` (via `![[_setup]]`), editing `_setup.md` re-renders
+  every notebook that depends on it — not the whole directory.
+  Dependencies are discovered as notebooks render; the first edit
+  after startup may catch up on a stale graph but subsequent edits
+  are precise.
+- **Debounce.** Filesystem events are coalesced with a configurable
+  window (default 250 ms). Tune with `--debounce-ms <MS>` if your
+  editor or filesystem is slow.
+- **Plot dir GC.** Each per-notebook plot subdirectory is cleared
+  before re-render, so deleted code blocks don't leave orphan SVGs
+  behind in `_attachments/<stem>/`.
+- **Failure isolation.** Parse or execution errors render inline (per
+  the standard renderer behaviour); the watcher logs to stderr and
+  keeps running.
+
+Currently `--format markdown` only. HTML and PDF watch modes are not
+yet wired (they'd produce stale-iframe behaviour that the watcher
+can't yet reconcile).
+
+Stop the watcher with Ctrl-C.
 
 ## Notebook Format
 
@@ -191,6 +279,96 @@ how GitHub and pulldown-cmark generate heading IDs, so
 Wikilink syntax inside fenced code blocks (` ``` `) and inline code
 spans (`` ` ``) is preserved verbatim — only narrative prose is
 transformed.
+
+### File embeds (transclusion)
+
+Beyond linking, the `![[...]]` form **transcludes** another markdown
+file at the embed point. Three variants:
+
+| Form                          | Inlines                                                                              |
+|-------------------------------|--------------------------------------------------------------------------------------|
+| `![[Document]]`               | The entire body of `Document.md`.                                                    |
+| `![[Document#Heading]]`       | Only the section under `## Heading` (and any nested subheadings) until the next sibling. |
+| `![[Document#^block-id]]`     | Only the paragraph or list item tagged `^block-id` end-of-line.                      |
+
+Embed expansion runs as a pre-process pass before the rest of the
+pipeline: the inlined source becomes part of the host notebook, so
+embedded code, math, callouts, mermaid diagrams, and directives all
+render normally. Embedded ` ```rustlab ` blocks **execute** in the
+host's evaluator — define `Fs = 48000` in `_setup.md`, embed it from
+six lessons, and every lesson reads `Fs` afterward.
+
+#### Block IDs (`^id` markers)
+
+To make a paragraph or list item embeddable by id, mark it at end of
+line:
+
+```markdown
+The Nyquist rate is twice the highest frequency component. ^nyquist-def
+```
+
+Then any notebook can pull just that paragraph with
+`![[glossary#^nyquist-def]]`. The `^nyquist-def` marker is invisible
+in the rendered output of *every* notebook (including the file that
+defines it) — the source stays Obsidian-portable, the rendered HTML
+/ Markdown / PDF stay clean.
+
+#### Resolution rules
+
+1. The embed target is resolved relative to the **directory of the
+   embedding notebook** first.
+2. If not found, the renderer falls back to the **notebook root**
+   (the directory passed to `rustlab notebook render <dir>`).
+3. Case-insensitive basename match in each directory as a final
+   fallback (Obsidian compatibility on Linux file systems).
+4. If still not found, an inline error callout is emitted (see below).
+
+The `.md` extension is implied — `![[setup]]` and `![[setup.md]]`
+both resolve `setup.md`. Targets with non-markdown extensions
+(`![[diagram.svg]]`, `![[paper.pdf]]`) pass through unchanged so the
+existing image-embed transform handles them.
+
+#### Recursion and cycles
+
+Embeds can nest: `A → B → C → ...`. Each level demotes the embedded
+content's headings by one (an embedded `# H1` becomes `<h2>` after
+one level of nesting, `<h3>` after two, etc.). Headings already at
+level 6 stay at 6.
+
+Recursion is capped at depth 4. Self-references (`A.md` embedding
+`A.md`) and indirect cycles (`A → B → A`) are detected and rendered
+as inline error callouts rather than aborting the render.
+
+#### Errors
+
+Anything that goes wrong with an embed — missing target, missing
+heading, missing block id, cycle, depth limit — emits a `[!CAUTION]`
+callout at the embed site so the problem is visible in the rendered
+output:
+
+```
+> [!CAUTION] Embed error
+> target not found: setup
+```
+
+A matching one-line warning prints to stderr so CI logs flag broken
+embeds. The render continues for the rest of the notebook regardless.
+
+#### Authoring tips
+
+- **Put embed links on their own line** for full-document or section
+  embeds — the inlined content is multi-line and won't read well
+  spliced inside a sentence.
+- **Block-id embeds** (`![[gloss#^def]]`) are typically a single
+  paragraph and *do* read fine inline (`See ![[gloss#^def]] for
+  details.`).
+- **Shared setup files** are conventionally named `_setup.md` or
+  prefixed with `_` so they sort to the top of file panes and are
+  visually distinct from authored lessons.
+
+See `examples/notebooks/_setup.md` and `examples/notebooks/embeds_demo.md`
+for a working example: a setup file defines constants and a helper
+function, and the demo lesson embeds it, then uses the variables.
 
 ## Directives
 
@@ -459,12 +637,18 @@ failure is debuggable.
 ### Plot output layout
 
 Markdown and LaTeX share one rule: plots are written under
-`<output-dir>/plots/<stem>/` and referenced from the rendered document
-as `plots/<stem>/plot-N.{svg}`. A directory of rendered notebooks
-therefore contributes one document file plus one subdirectory under a
-single `plots/` umbrella, instead of N siblings of the form
-`<stem>_plots/`. HTML embeds plots inline (no on-disk dir), and PDF is
-self-contained for the same reason.
+`<output-dir>/<umbrella>/<stem>/` and referenced from the rendered
+document as `<umbrella>/<stem>/plot-N.{svg}`. The umbrella is:
+
+- **`plots/`** — default, used by `--format markdown` and `--format latex`.
+- **`_attachments/`** — used by `--format markdown --obsidian`, so the
+  vault's file pane groups plots out of the way of authored notes.
+  Override with `--attachments-dir <DIR>`.
+
+A directory of rendered notebooks therefore contributes one document
+file plus one subdirectory under a single umbrella, instead of N
+siblings of the form `<stem>_plots/`. HTML embeds plots inline (no
+on-disk dir), and PDF is self-contained for the same reason.
 
 Internally, both renderers take two arguments to support this:
 

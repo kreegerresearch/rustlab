@@ -17,7 +17,8 @@ specific job:
 
 All three render row 0 at the top (image / data orientation) in SVG output.
 
-> **Note:** `heatmap` HTML output flips the y-axis with `autorange: "reversed"` so
+> [!NOTE]
+> `heatmap` HTML output flips the y-axis with `autorange: "reversed"` so
 > notebook plots match SVG. `imagesc` HTML output keeps Plotly's default
 > upward y-axis; this is a pre-existing inconsistency tracked separately.
 
@@ -167,7 +168,8 @@ image(R, Gc, B)
 You should see a familiar RGB-corner gradient: red brightens to the right,
 blue brightens downward, green brightens along the diagonal.
 
-> **Tip:** The R, G, B matrices must be **real** and share the same shape. Passing
+> [!TIP]
+> The R, G, B matrices must be **real** and share the same shape. Passing
 > a complex matrix raises an error rather than silently dropping the imag
 > part — a common foot-gun when channels were computed via FFT or filtering.
 

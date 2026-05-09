@@ -1,5 +1,7 @@
 # Feature Request: `tf(sys)` — convert state-space to transfer function
 
+**Status:** **Landed** in rustlab 0.3.1 (commit `f6e736e`). `tf(sys)`, `tf(A, B, C, D)`, `tfdata(G)`, and `ss(A, B, C, D)` are all implemented; verified end-to-end against the cart-pole hand-derivation in `rustlab_controls/lessons/16-transfer-functions/cartpole_tf.rlab`.
+
 ## Problem
 
 Rustlab has `ss(G)` to convert a transfer function to state space (observable canonical form), but no inverse: given a state-space $(A, B, C, D)$ — typically built from physics — there is no way back to a polynomial transfer function. Concretely:
