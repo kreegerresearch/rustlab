@@ -228,6 +228,10 @@ pub struct SubplotState {
     pub series: Vec<Series>,
     pub xlim: (Option<f64>, Option<f64>),
     pub ylim: (Option<f64>, Option<f64>),
+    /// Lock the visual aspect ratio so one data unit on x equals one data unit on y.
+    /// Set by `axis("equal")`; cleared by `axis("auto")`. Honored by all four
+    /// rendering backends (SVG, Plotly HTML, ratatui, viewer).
+    pub axis_equal: bool,
     /// Categorical x-axis tick labels (e.g. from string array bar charts).
     pub x_labels: Option<Vec<String>>,
     /// Optional 2D heatmap data (takes precedence over series when present).
@@ -251,6 +255,7 @@ impl SubplotState {
             series: Vec::new(),
             xlim: (None, None),
             ylim: (None, None),
+            axis_equal: false,
             x_labels: None,
             heatmap: None,
             surface: None,

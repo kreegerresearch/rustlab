@@ -338,7 +338,28 @@ where
         ("sans-serif", 14u32, &palette.text).into_text_style(panel);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
-    let mut chart = ChartBuilder::on(panel)
+    // axis("equal"): shrink the chart area so one data unit on x equals one
+    // data unit on y. Without this, plotters maps `[x_lo, x_hi]` and
+    // `[y_lo, y_hi]` independently to the panel dimensions, so a unit circle
+    // renders as an ellipse on a non-square canvas.
+    let chart_area = if sp.axis_equal {
+        let caption_h = if title_str.is_empty() { 0u32 } else { CAPTION_H_EST };
+        let (panel_w, panel_h) = panel.dim_in_pixel();
+        let data_w_avail = panel_w.saturating_sub(2 * MARGIN + Y_LABEL_AREA);
+        let data_h_avail = panel_h.saturating_sub(2 * MARGIN + X_LABEL_AREA + caption_h);
+        let dx = (x_hi - x_lo).abs().max(f64::EPSILON);
+        let dy = (y_hi - y_lo).abs().max(f64::EPSILON);
+        let scale = (data_w_avail as f64 / dx).min(data_h_avail as f64 / dy);
+        let data_w = (scale * dx).round().max(1.0) as u32;
+        let data_h = (scale * dy).round().max(1.0) as u32;
+        let req_cw = panel_w.saturating_sub(data_w + 2 * MARGIN + Y_LABEL_AREA);
+        let req_ch = panel_h.saturating_sub(data_h + 2 * MARGIN + X_LABEL_AREA + caption_h);
+        panel.clone().shrink((0, 0), (req_cw, req_ch))
+    } else {
+        panel.clone()
+    };
+
+    let mut chart = ChartBuilder::on(&chart_area)
         .caption(title_str, caption_style)
         .margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
@@ -909,6 +930,22 @@ where
         let side = data_w_avail.min(data_h_avail).max(1);
         let req_cw = side + 2 * MARGIN + Y_LABEL_AREA;
         let req_ch = side + 2 * MARGIN + X_LABEL_AREA + caption_h;
+        (root.clone().shrink((0, 0), (req_cw, req_ch)), None)
+    } else if sp.axis_equal {
+        // axis("equal") on a non-heatmap panel: shrink to a square data area.
+        // The data extents may not be 1:1 (e.g. a Nyquist locus could be
+        // [-2, 1] × [-1.5, 1.5]); pick the smaller scale so one data unit
+        // maps to the same number of pixels on both axes.
+        let (panel_w, panel_h) = root.dim_in_pixel();
+        let data_w_avail = panel_w.saturating_sub(2 * MARGIN + Y_LABEL_AREA);
+        let data_h_avail = panel_h.saturating_sub(2 * MARGIN + X_LABEL_AREA + caption_h);
+        let dx = (x_hi - x_lo).abs().max(f64::EPSILON);
+        let dy = (y_hi - y_lo).abs().max(f64::EPSILON);
+        let scale = (data_w_avail as f64 / dx).min(data_h_avail as f64 / dy);
+        let data_w = (scale * dx).round().max(1.0) as u32;
+        let data_h = (scale * dy).round().max(1.0) as u32;
+        let req_cw = panel_w.saturating_sub(data_w + 2 * MARGIN + Y_LABEL_AREA);
+        let req_ch = panel_h.saturating_sub(data_h + 2 * MARGIN + X_LABEL_AREA + caption_h);
         (root.clone().shrink((0, 0), (req_cw, req_ch)), None)
     } else {
         (root.clone(), None)
@@ -1821,6 +1858,76 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn axis_equal_svg_panel_is_square() {
+        // Render a unit-circle parametric (cos θ, sin θ) at axis_equal = true
+        // into a 900×500 canvas. The chart-area shrink should compress horiz
+        // until width ≈ height. Verify by rendering twice (with and without
+        // the flag) and checking that the path data x-extent shrinks under
+        // the flag.
+        let path_eq = tmp_path("_axis_equal_on.svg");
+        let path_auto = tmp_path("_axis_equal_off.svg");
+        let n = 64;
+        let xs: Vec<f64> = (0..n)
+            .map(|i| (i as f64 / n as f64 * std::f64::consts::TAU).cos())
+            .collect();
+        let ys: Vec<f64> = (0..n)
+            .map(|i| (i as f64 / n as f64 * std::f64::consts::TAU).sin())
+            .collect();
+
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(xs.clone(), ys.clone(), "", "", None, LineStyle::Solid);
+        FIGURE.with(|fig| fig.borrow_mut().current_mut().axis_equal = true);
+        render_figure_file(&path_eq).expect("render axis_equal=on");
+        let svg_eq = std::fs::read_to_string(&path_eq).expect("read eq SVG");
+
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(xs, ys, "", "", None, LineStyle::Solid);
+        render_figure_file(&path_auto).expect("render axis_equal=off");
+        let svg_auto = std::fs::read_to_string(&path_auto).expect("read auto SVG");
+
+        assert_ne!(
+            svg_eq, svg_auto,
+            "SVG output should differ when axis_equal is toggled"
+        );
+
+        // Extract polyline x-coordinates from the rendered locus. The chart
+        // background frame is a <rect>; the data is in <polyline points="x,y x,y ...">.
+        let extract_x_extent = |svg: &str| -> (f64, f64) {
+            let mut xs = Vec::new();
+            let mut i = 0;
+            while let Some(p) = svg[i..].find("points=\"") {
+                let start = i + p + 8;
+                let end = svg[start..].find('"').map(|e| start + e).unwrap_or(svg.len());
+                for tok in svg[start..end].split_whitespace() {
+                    if let Some((x, _)) = tok.split_once(',') {
+                        if let Ok(v) = x.parse::<f64>() {
+                            xs.push(v);
+                        }
+                    }
+                }
+                i = end + 1;
+            }
+            let mn = xs.iter().copied().fold(f64::INFINITY, f64::min);
+            let mx = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            (mn, mx)
+        };
+        let (eq_xmin, eq_xmax) = extract_x_extent(&svg_eq);
+        let (auto_xmin, auto_xmax) = extract_x_extent(&svg_auto);
+        let eq_w = eq_xmax - eq_xmin;
+        let auto_w = auto_xmax - auto_xmin;
+        // Without axis_equal, the locus should span more horizontally (the
+        // chart fills the wider canvas). With axis_equal in a 900×500 canvas,
+        // it gets cropped to ~500-wide.
+        assert!(
+            eq_w < auto_w * 0.85,
+            "axis_equal should compress x-extent: eq={eq_w:.0}, auto={auto_w:.0}"
+        );
+
+        let _ = std::fs::remove_file(&path_eq);
+        let _ = std::fs::remove_file(&path_auto);
     }
 
     #[test]

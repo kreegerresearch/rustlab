@@ -39,6 +39,12 @@ pub enum ViewerMsg {
         xlim: (Option<f64>, Option<f64>),
         ylim: (Option<f64>, Option<f64>),
     },
+    /// Lock or release the visual aspect ratio (1:1 when `equal`).
+    PanelAxisEqual {
+        fig_id: u32,
+        panel: u16,
+        equal: bool,
+    },
     /// Replace heatmap data in one panel (0-based).
     PanelHeatmap {
         fig_id: u32,
@@ -441,6 +447,31 @@ mod tests {
                 assert_eq!(panel, 0);
                 assert_eq!(xlim, (Some(0.0), Some(100.0)));
                 assert_eq!(ylim, (None, Some(50.0)));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn round_trip_panel_axis_equal() {
+        let msg = ViewerMsg::PanelAxisEqual {
+            fig_id: 7,
+            panel: 1,
+            equal: true,
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &msg).unwrap();
+        let mut cursor = std::io::Cursor::new(&buf);
+        let decoded: ViewerMsg = read_msg(&mut cursor).unwrap().unwrap();
+        match decoded {
+            ViewerMsg::PanelAxisEqual {
+                fig_id,
+                panel,
+                equal,
+            } => {
+                assert_eq!(fig_id, 7);
+                assert_eq!(panel, 1);
+                assert!(equal);
             }
             _ => panic!("wrong variant"),
         }

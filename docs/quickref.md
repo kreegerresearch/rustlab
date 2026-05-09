@@ -278,6 +278,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `ctrb(A, B)` | Controllability matrix |
 | `obsv(A, C)` | Observability matrix |
 | `bode(sys)` | Bode plot in terminal |
+| `nyquist(sys)` / `nyquist(sys, w)` / `nyquist(sys, "pos-only")` / `[re, im, w] = nyquist(sys)` | Nyquist plot of L(jω) (closed contour, -1 marker, equal aspect, auto densification near -1). Accepts tf or ss. |
 | `step(sys)` | Step response plot in terminal |
 | `margin(sys)` | Gain and phase margins |
 | `lqr(A, B, Q, R)` | LQR optimal gain matrix K |
@@ -488,6 +489,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `ylabel("text")` | Set y-axis label |
 | `xlim([lo, hi])` | Fix x-axis range |
 | `ylim([lo, hi])` | Fix y-axis range |
+| `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])` | Lock 1:1 aspect (string) or set both limits (numeric). Required for nyquist plots and any chart where shape matters. |
 | `subplot(rows, cols, idx)` | Switch to panel idx (1-based, left-to-right then top-to-bottom) |
 | `legend("s1", "s2", ...)` | Label series in order added |
 

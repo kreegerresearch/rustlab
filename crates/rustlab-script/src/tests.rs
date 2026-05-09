@@ -3737,6 +3737,207 @@ mod phase4_tests {
         assert!(close(mag[0], 0.0, 0.1), "DC mag = {} dB", mag[0]);
     }
 
+    // ── 4a': nyquist() ────────────────────────────────────────────────────────
+
+    #[test]
+    fn nyquist_first_order_traces_known_circle() {
+        // G(s) = 1/(s+1) → locus is a circle of radius 0.5 centered at (0.5, 0).
+        // Verify: every captured (re, im) sits on |z - 0.5| = 0.5 within 1e-6.
+        let ev = eval_str("[re, im, w] = nyquist(tf([1],[1,1]));");
+        let re = get_vector(&ev, "re");
+        let im = get_vector(&ev, "im");
+        assert!(
+            !re.is_empty() && re.len() == im.len(),
+            "re/im must be non-empty and equal length"
+        );
+        for (r, i) in re.iter().zip(im.iter()) {
+            let d = ((r - 0.5).powi(2) + i * i).sqrt();
+            assert!(
+                close(d, 0.5, 1e-6),
+                "point ({r}, {i}) lies at distance {d} from (0.5, 0); expected 0.5"
+            );
+        }
+        // Closest approach to -1 → 1.0 as ω → ∞ (the locus tends to the origin).
+        let min_dist_to_minus_one = re
+            .iter()
+            .zip(im.iter())
+            .map(|(r, i)| ((r + 1.0).powi(2) + i * i).sqrt())
+            .fold(f64::INFINITY, f64::min);
+        // The auto grid runs out before ω → ∞, but min should approach 1 from above.
+        assert!(
+            min_dist_to_minus_one >= 0.99 && min_dist_to_minus_one <= 1.5,
+            "min |1+G| = {min_dist_to_minus_one}, expected close to 1.0"
+        );
+    }
+
+    #[test]
+    fn nyquist_first_order_sets_axis_equal_on_panel() {
+        eval_str("nyquist(tf([1],[1,1]));");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            assert!(
+                f.borrow().current().axis_equal,
+                "nyquist must set axis_equal on its panel"
+            );
+        });
+    }
+
+    #[test]
+    fn nyquist_lightly_damped_resonance_peak() {
+        // G(s) = 1/(s² + 0.3s + 1) — lightly-damped second-order. The sensitivity
+        // peak Ms = 1/min|1+G(jω)| sits well above 1 (poor robustness margin),
+        // and densification near s = -1 should be enough to resolve it.
+        // Numerical min|1+G| ≈ 0.39 at ω ≈ 1.5 → Ms ≈ 2.6 for this plant.
+        let ev = eval_str("[re, im, w] = nyquist(tf([1],[1, 0.3, 1]));");
+        let re = get_vector(&ev, "re");
+        let im = get_vector(&ev, "im");
+        let min_d = re
+            .iter()
+            .zip(im.iter())
+            .map(|(r, i)| ((r + 1.0).powi(2) + i * i).sqrt())
+            .fold(f64::INFINITY, f64::min);
+        let ms = 1.0 / min_d;
+        assert!(
+            ms > 2.4 && ms < 2.9,
+            "Ms = {ms}, expected ~2.6 for ζ=0.15 (densified grid)"
+        );
+    }
+
+    #[test]
+    fn nyquist_captured_arrays_consistent() {
+        let ev = eval_str("[re, im, w] = nyquist(tf([1],[1, 0.1, 1]));");
+        let re = get_vector(&ev, "re");
+        let im = get_vector(&ev, "im");
+        let w = get_vector(&ev, "w");
+        assert_eq!(re.len(), im.len());
+        assert_eq!(re.len(), w.len());
+        assert!(re.len() > 50, "expected >50 samples, got {}", re.len());
+        // First sample: re[0] + i*im[0] should match freqresp's evaluation.
+        let ev2 = eval_str("h = freqresp([[0, 1]; [-1, -0.1]], [[0]; [1]], [1, 0], 0, [0.01]);");
+        let h = match ev2.get("h").unwrap() {
+            Value::Vector(v) => v[0],
+            other => panic!("expected vector, got {other:?}"),
+        };
+        // Find the sample at w ≈ 0.01 in our locus and check it matches.
+        // (Auto grid uses ω from 0.01 to 100; first point should be ~0.01.)
+        assert!(
+            (w[0] - 0.01).abs() < 0.05,
+            "first sample at w[0] = {} (expected ~0.01)",
+            w[0]
+        );
+        let model_re = h.re;
+        let model_im = h.im;
+        assert!(
+            close(re[0], model_re, 1e-3),
+            "re[0]={} vs freqresp re={}",
+            re[0],
+            model_re
+        );
+        assert!(
+            close(im[0], model_im, 1e-3),
+            "im[0]={} vs freqresp im={}",
+            im[0],
+            model_im
+        );
+    }
+
+    #[test]
+    fn nyquist_ss_and_tf_inputs_match() {
+        // Build the same plant via tf and via ss(A,B,C,D), check the locus
+        // matches sample-for-sample at a fixed w grid.
+        let ev = eval_str(
+            "G = tf([1],[1, 0.5, 1]);\n\
+             A = [[0, 1]; [-1, -0.5]];\n\
+             B = [[0]; [1]];\n\
+             C = [1, 0];\n\
+             D = 0;\n\
+             S = ss(A, B, C, D);\n\
+             w = [0.1, 0.5, 1.0, 2.0, 5.0];\n\
+             [re_t, im_t, _] = nyquist(G, w);\n\
+             [re_s, im_s, _] = nyquist(S, w);\n",
+        );
+        let re_t = get_vector(&ev, "re_t");
+        let re_s = get_vector(&ev, "re_s");
+        let im_t = get_vector(&ev, "im_t");
+        let im_s = get_vector(&ev, "im_s");
+        assert_eq!(re_t.len(), 5);
+        for k in 0..5 {
+            assert!(
+                close(re_t[k], re_s[k], 1e-9),
+                "re mismatch at k={k}: tf={} ss={}",
+                re_t[k],
+                re_s[k]
+            );
+            assert!(
+                close(im_t[k], im_s[k], 1e-9),
+                "im mismatch at k={k}: tf={} ss={}",
+                im_t[k],
+                im_s[k]
+            );
+        }
+    }
+
+    #[test]
+    fn nyquist_pos_only_omits_mirror() {
+        // With "pos-only", the figure should have one fewer line series than
+        // the default mirrored form (1 line + 1 scatter vs 2 lines + 1 scatter).
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str("nyquist(tf([1],[1,1]), \"pos-only\");");
+        let n_pos = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.len());
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str("nyquist(tf([1],[1,1]));");
+        let n_default = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.len());
+        assert_eq!(n_default, n_pos + 1, "default form should have +1 series");
+    }
+
+    #[test]
+    fn nyquist_integrator_does_not_panic() {
+        // G(s) = 1/s — DC singularity. Must succeed (filter clips |G|>1e6) and
+        // return a non-empty locus.
+        let ev = eval_str("[re, im, w] = nyquist(tf([1],[1, 0]));");
+        let re = get_vector(&ev, "re");
+        let im = get_vector(&ev, "im");
+        assert!(!re.is_empty());
+        for (r, i) in re.iter().zip(im.iter()) {
+            assert!(r.is_finite() && i.is_finite(), "non-finite sample left in");
+            assert!(
+                (r * r + i * i).sqrt() <= 1e6,
+                "magnitude not filtered: ({r}, {i})"
+            );
+        }
+    }
+
+    #[test]
+    fn nyquist_rejects_non_system_input() {
+        let src = "nyquist(3.14);\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut err = None;
+        for s in &stmts {
+            if let Err(e) = ev.exec_stmt(s) {
+                err = Some(e);
+                break;
+            }
+        }
+        assert!(err.is_some(), "nyquist(3.14) must error");
+    }
+
+    #[test]
+    fn nyquist_rejects_unknown_string_option() {
+        let src = "nyquist(tf([1],[1,1]), \"nonsense\");\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut err = None;
+        for s in &stmts {
+            if let Err(e) = ev.exec_stmt(s) {
+                err = Some(e);
+                break;
+            }
+        }
+        assert!(err.is_some(), "nyquist with unknown option must error");
+    }
+
     // ── 4b: step() ────────────────────────────────────────────────────────────
 
     #[test]
@@ -6942,6 +7143,48 @@ mod figure_state_tests {
         FIGURE.with(|f| assert!(!f.borrow().current().grid));
         run("grid(\"on\");");
         FIGURE.with(|f| assert!(f.borrow().current().grid));
+    }
+
+    #[test]
+    fn axis_equal_sets_flag() {
+        run("axis(\"equal\");");
+        FIGURE.with(|f| assert!(f.borrow().current().axis_equal));
+        run("axis(\"auto\");");
+        FIGURE.with(|f| assert!(!f.borrow().current().axis_equal));
+    }
+
+    #[test]
+    fn axis_numeric_sets_both_limits() {
+        run("axis([-2, 3, -1.5, 1.5]);");
+        FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            assert_eq!(sp.xlim, (Some(-2.0), Some(3.0)));
+            assert_eq!(sp.ylim, (Some(-1.5), Some(1.5)));
+        });
+    }
+
+    #[test]
+    fn axis_rejects_unknown_string() {
+        // axis("nonsense") must error, not silently no-op.
+        reset_figure();
+        let src = "axis(\"nonsense\");\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = crate::Evaluator::new();
+        let res = ev.run(&stmts);
+        assert!(res.is_err(), "axis(\"nonsense\") should be rejected");
+    }
+
+    #[test]
+    fn axis_rejects_wrong_vector_length() {
+        reset_figure();
+        let src = "axis([0, 1, 2]);\n"; // 3 elements, not 4
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = crate::Evaluator::new();
+        let res = ev.run(&stmts);
+        assert!(res.is_err(), "axis([0,1,2]) should require 4 elements");
     }
 
     #[test]

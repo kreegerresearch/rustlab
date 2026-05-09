@@ -166,6 +166,15 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             } else {
                 format!(r#", scaleanchor: "{anchor}""#)
             }
+        } else if panel.axis_equal && panel.surface.is_none() {
+            // axis("equal") for line/scatter panels — same scaleanchor pattern
+            // as heatmaps, no autorange override.
+            let anchor = if axis_suffix.is_empty() {
+                "x".to_string()
+            } else {
+                format!("x{axis_suffix}")
+            };
+            format!(r#", scaleanchor: "{anchor}""#)
         } else {
             String::new()
         };
@@ -777,6 +786,52 @@ mod tests {
             div.contains(r#"x: ["|00>","|01>","|10>","|11>"]"#),
             "bar trace x should be the label strings; got:\n{}",
             div
+        );
+    }
+
+    #[test]
+    fn axis_equal_html_emits_scaleanchor() {
+        // axis("equal") on a line/scatter panel must emit Plotly's
+        // `scaleanchor: "x"` on the y-axis layout — same mechanism heatmaps
+        // already use, just generalised to non-heatmap panels.
+        let mut fig = FigureState::new();
+        let sp = fig.current_mut();
+        sp.axis_equal = true;
+        sp.series.push(Series {
+            label: "circle".to_string(),
+            x_data: (0..32)
+                .map(|i| (i as f64 / 32.0 * std::f64::consts::TAU).cos())
+                .collect(),
+            y_data: (0..32)
+                .map(|i| (i as f64 / 32.0 * std::f64::consts::TAU).sin())
+                .collect(),
+            color: SeriesColor::Cyan,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert!(
+            div.contains(r#"scaleanchor: "x""#),
+            "axis_equal panel should emit scaleanchor on y-axis; got:\n{}",
+            div
+        );
+
+        // Sanity: with axis_equal off, no scaleanchor on a non-heatmap panel.
+        let mut fig2 = FigureState::new();
+        let sp2 = fig2.current_mut();
+        sp2.series.push(Series {
+            label: "circle".to_string(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Cyan,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let div2 = render_figure_plotly_div(&fig2, "plot", Theme::default().colors());
+        assert!(
+            !div2.contains("scaleanchor"),
+            "non-heatmap panel without axis_equal must not emit scaleanchor"
         );
     }
 

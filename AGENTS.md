@@ -966,6 +966,7 @@ primary     = NUMBER | STRING | IDENT
 | `dare` | `dare(A, B, Q, R)` | Discrete Algebraic Riccati Equation → P |
 | `place` | `place(A, B, poles)` | Ackermann pole placement (SISO only) → gain vector K |
 | `freqresp` | `freqresp(A, B, C, D, w)` | H(jω) at each ω; SISO → complex vector, MIMO → complex matrix |
+| `nyquist` | `nyquist(G)` / `nyquist(G, w)` / `nyquist(G, "pos-only")` / `[re, im, w] = nyquist(G)` | Nyquist plot of L(jω) for a `tf` or `ss`. Auto frequency grid + two-pass densification near s = -1, conjugate mirror, -1 marker, equal aspect. Setting `axis_equal` on its panel is automatic — required for the unit circle around -1 to read as round across all four backends. |
 | `svd` | `svd(A)` | SVD via symmetric eigendecomposition of A'A (real); returns Tuple [U, sigma_vector, V] where sigma is sorted descending |
 | `state_init` | `state_init(n)` | Allocate FirState history buffer of length n; returns `Value::FirState` |
 | `filter_stream` | `filter_stream(frame, h, state)` | Overlap-save FIR frame filter; returns Tuple `[y, state]`; history updated in-place |
@@ -978,6 +979,7 @@ primary     = NUMBER | STRING | IDENT
 | `plot_update` | `plot_update(fig, panel, y)` / `plot_update(fig, panel, x, y)` | Replace panel data (1-based panel); no immediate redraw |
 | `plot_labels` | `plot_labels(fig, panel, title, xlabel, ylabel)` | Set title and axis labels on a live panel |
 | `plot_limits` | `plot_limits(fig, panel, xlim, ylim)` | Set fixed axis limits on a live panel (`[lo, hi]` vectors) |
+| `axis` | `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])` | Lock visual aspect to 1:1 (string form) or set both axis limits at once (numeric form). String `"equal"` is honored across all four rendering backends (SVG, Plotly HTML, ratatui, viewer) — used by `nyquist` and any plot where geometric shape matters (parametric circles, complex-plane scatters). |
 | `figure_draw` | `figure_draw(fig)` | Flush all panels to terminal in one atomic refresh |
 | `figure_close` | `figure_close(fig)` | Drop `LiveFigure`, restoring terminal; also fires via `Drop` on script exit |
 | `mag2db` | `mag2db(X)` | 20·log10(|X|) element-wise, floored at −200 dB (1e-10 floor) |

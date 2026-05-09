@@ -95,6 +95,19 @@ impl ViewerApp {
                         }
                     }
                 }
+                ViewerMsg::PanelAxisEqual {
+                    fig_id,
+                    panel,
+                    equal,
+                } => {
+                    if let Some(fig) = self.figures.get_mut(&fig_id) {
+                        let idx = panel as usize;
+                        if idx < fig.panels.len() {
+                            fig.panels[idx].axis_equal = equal;
+                            fig.dirty = true;
+                        }
+                    }
+                }
                 ViewerMsg::PanelHeatmap {
                     fig_id,
                     panel,

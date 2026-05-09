@@ -293,6 +293,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "xlim([lo, hi])  — fixes the x-axis range on the current subplot" },
     HelpEntry { name: "ylim",     brief: "Set y-axis limits",
         detail: "ylim([lo, hi])  — fixes the y-axis range on the current subplot" },
+    HelpEntry { name: "axis",     brief: "Lock visual aspect or set both axis limits",
+        detail: "axis(\"equal\")                       — lock visual aspect to 1:1 (one data unit on x = one data unit on y)\naxis(\"auto\")                        — release the aspect lock (default)\naxis([xmin, xmax, ymin, ymax])      — set both axis limits at once\n\n  axis(\"equal\") is honored across all four rendering backends (SVG, Plotly\n  HTML, ratatui terminal, viewer). Use it when geometric shape matters —\n  e.g. nyquist plots, parametric circles, complex-plane scatters." },
     HelpEntry { name: "subplot",  brief: "Switch to a subplot panel",
         detail: "subplot(rows, cols, idx)  — divides the figure into rows×cols panels\n  idx is 1-based, counts left-to-right then top-to-bottom\n  Example: subplot(2, 1, 1)  — top panel of a 2-row layout" },
     HelpEntry { name: "legend",   brief: "Label series in the current subplot",
@@ -377,6 +379,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "obsv(A, C)  — [C; CA; CA²; …]  (n·q × n matrix)\n\nFull row rank ↔ system is observable.\n\nExample:\n  sys = ss(G)\n  Wo  = obsv(sys.A, sys.C)\n  rank(Wo)" },
     HelpEntry { name: "bode", brief: "Bode magnitude and phase plot",
         detail: "bode(G)         — plot magnitude (dB) and phase (deg) vs log10(ω)\nbode(G, w)      — use supplied frequency vector w (rad/s)\n[mag, ph, w] = bode(G)  — return data without plotting\n\nExample:\n  G = tf([10], [1, 2, 10])\n  bode(G)\n  [m, p, w] = bode(G)" },
+    HelpEntry { name: "nyquist", brief: "Nyquist plot of L(jω) in the complex plane",
+        detail: "nyquist(G)                — plot L(jω) vs L(-jω) (closed contour)\nnyquist(G, w)             — supply the frequency grid (rad/s)\nnyquist(G, \"pos-only\")    — omit the negative-frequency mirror\n[re, im, w] = nyquist(G)  — return positive-frequency locus\n\nThe -1 marker, equal aspect, and densification near s = -1 are all\nautomatic. Use it for stability margins (encirclements, sensitivity\npeak 1/|1+L|), Kalman frequency-domain inequality verification, and\nloop shaping. Accepts tf or ss inputs.\n\nExample:\n  L = tf([1], [1, 0.3, 1])\n  nyquist(L)\n  [re, im, w] = nyquist(L)" },
     HelpEntry { name: "step", brief: "Step response plot",
         detail: "step(G)              — plot unit step response\n[y, t] = step(G)     — return output and time vectors\n[y, t] = step(G, tf) — specify final time\n\nExample:\n  G = tf([10], [1, 2, 10])\n  step(G)\n  [y, t] = step(G, 5)" },
     HelpEntry { name: "margin", brief: "Gain and phase margins",
@@ -971,15 +975,16 @@ pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Figure Controls",
             &[
-                "figure", "clf", "close", "hold", "grid", "viewer", "xlabel", "ylabel", "title",
-                "xlim", "ylim", "subplot", "legend",
+                "figure", "clf", "close", "hold", "grid", "axis", "viewer", "xlabel", "ylabel",
+                "title", "xlim", "ylim", "subplot", "legend",
             ],
         ),
         (
             "Controls",
             &[
-                "tf", "tfdata", "pole", "zero", "ss", "ctrb", "obsv", "bode", "step", "margin",
-                "lqr", "rlocus", "rk4", "lyap", "gram", "care", "dare", "place", "freqresp",
+                "tf", "tfdata", "pole", "zero", "ss", "ctrb", "obsv", "bode", "nyquist", "step",
+                "margin", "lqr", "rlocus", "rk4", "lyap", "gram", "care", "dare", "place",
+                "freqresp",
             ],
         ),
         (

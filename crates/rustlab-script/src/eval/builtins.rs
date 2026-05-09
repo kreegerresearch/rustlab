@@ -160,6 +160,7 @@ impl BuiltinRegistry {
         r.register("figure", builtin_figure);
         r.register("hold", builtin_hold);
         r.register("grid", builtin_grid);
+        r.register("axis", builtin_axis);
         r.register("xlabel", builtin_xlabel);
         r.register("ylabel", builtin_ylabel);
         r.register("title", builtin_title);
@@ -238,6 +239,7 @@ impl BuiltinRegistry {
         r.register("obsv", builtin_obsv);
         // Frequency & time-domain analysis (Phase 4)
         r.register("bode", builtin_bode);
+        r.register("nyquist", builtin_nyquist);
         r.register("step", builtin_step);
         r.register("margin", builtin_margin);
         // Optimal control (Phase 5)
@@ -3214,6 +3216,71 @@ fn builtin_grid(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     FIGURE.with(|fig| fig.borrow_mut().current_mut().grid = on);
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+/// axis(...) — control current subplot's aspect ratio or limits.
+///
+/// Forms:
+/// - `axis("equal")` — lock visual aspect to 1:1 (one data unit on x equals one
+///   data unit on y). Honored across all four rendering backends.
+/// - `axis("auto")`  — release the lock (default).
+/// - `axis([xmin, xmax, ymin, ymax])` — set both axis limits at once.
+fn builtin_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("axis", &args, 1)?;
+    match &args[0] {
+        Value::Vector(v) => {
+            if v.len() != 4 {
+                return Err(ScriptError::type_err(format!(
+                    "axis: numeric form expects [xmin, xmax, ymin, ymax] (4 elements), got {}",
+                    v.len()
+                )));
+            }
+            let mut nums = [0.0f64; 4];
+            for (i, c) in v.iter().enumerate() {
+                if c.im.abs() > 1e-12 {
+                    return Err(ScriptError::type_err(
+                        "axis: limit values must be real".to_string(),
+                    ));
+                }
+                nums[i] = c.re;
+            }
+            let [xmin, xmax, ymin, ymax] = nums;
+            if !(xmin < xmax) {
+                return Err(ScriptError::runtime(format!(
+                    "axis: xmin ({xmin}) must be less than xmax ({xmax})"
+                )));
+            }
+            if !(ymin < ymax) {
+                return Err(ScriptError::runtime(format!(
+                    "axis: ymin ({ymin}) must be less than ymax ({ymax})"
+                )));
+            }
+            FIGURE.with(|fig| {
+                let mut f = fig.borrow_mut();
+                let sp = f.current_mut();
+                sp.xlim = (Some(xmin), Some(xmax));
+                sp.ylim = (Some(ymin), Some(ymax));
+            });
+        }
+        _ => {
+            let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            match s.to_lowercase().as_str() {
+                "equal" => {
+                    FIGURE.with(|fig| fig.borrow_mut().current_mut().axis_equal = true);
+                }
+                "auto" => {
+                    FIGURE.with(|fig| fig.borrow_mut().current_mut().axis_equal = false);
+                }
+                other => {
+                    return Err(ScriptError::type_err(format!(
+                        "axis: expected \"equal\", \"auto\", or [xmin, xmax, ymin, ymax]; got \"{other}\""
+                    )));
+                }
+            }
+        }
+    }
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -7758,6 +7825,216 @@ fn builtin_bode(args: Vec<Value>) -> Result<Value, ScriptError> {
         phase_deg.iter().map(|&x| Complex::new(x, 0.0)),
     ));
     Ok(Value::Tuple(vec![mag_val, ph_val, w_val]))
+}
+
+/// Evaluate `G(jω)` for a SISO transfer function over a frequency vector.
+/// Returns parallel `(re, im)` vectors. Mirrors `bode_compute` but keeps the
+/// complex parts directly (no magnitude/phase conversion).
+fn nyquist_compute(num: &[f64], den: &[f64], w: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let mut re = Vec::with_capacity(w.len());
+    let mut im = Vec::with_capacity(w.len());
+    for &wi in w {
+        let jw = Complex::new(0.0, wi);
+        let n = poly_eval_c(num, jw);
+        let d = poly_eval_c(den, jw);
+        let h = if d.norm() < 1e-300 {
+            Complex::new(f64::INFINITY, 0.0)
+        } else {
+            n / d
+        };
+        re.push(h.re);
+        im.push(h.im);
+    }
+    (re, im)
+}
+
+/// Two-pass densification near `s = -1` for nyquist plots. After evaluating
+/// `G(jω)` on a coarse grid `w_init`, locates intervals where either endpoint
+/// has `|1 + G(jω)| < threshold` and inserts `subdivide` log-spaced points
+/// inside each such interval. The merged grid is sorted and de-duplicated.
+fn densify_near_minus_one(num: &[f64], den: &[f64], w_init: &[f64]) -> Vec<f64> {
+    const THRESHOLD: f64 = 2.0;
+    const SUBDIVIDE: usize = 10;
+    if w_init.len() < 2 {
+        return w_init.to_vec();
+    }
+    let (re, im) = nyquist_compute(num, den, w_init);
+    let dist: Vec<f64> = re
+        .iter()
+        .zip(im.iter())
+        .map(|(r, i)| ((r + 1.0).powi(2) + i.powi(2)).sqrt())
+        .collect();
+
+    let mut extra: Vec<f64> = Vec::new();
+    for k in 0..(w_init.len() - 1) {
+        if dist[k].is_finite()
+            && dist[k + 1].is_finite()
+            && (dist[k] < THRESHOLD || dist[k + 1] < THRESHOLD)
+        {
+            let lo = w_init[k].max(1e-300);
+            let hi = w_init[k + 1].max(1e-300);
+            let log_lo = lo.log10();
+            let log_hi = hi.log10();
+            for j in 1..SUBDIVIDE {
+                let t = j as f64 / SUBDIVIDE as f64;
+                extra.push(10f64.powf(log_lo + t * (log_hi - log_lo)));
+            }
+        }
+    }
+    if extra.is_empty() {
+        return w_init.to_vec();
+    }
+
+    let mut merged: Vec<f64> = w_init.iter().copied().chain(extra.into_iter()).collect();
+    merged.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    merged.dedup_by(|a, b| (*a - *b).abs() < 1e-15 * a.abs().max(1e-12));
+    merged
+}
+
+/// Drop samples where `|G(jω)|` overflows the plot range (e.g. an integrator's
+/// DC singularity). Keeps `(re, im)` and `w` aligned. Threshold chosen large
+/// enough to preserve resonance peaks but small enough to clip 1/s at ω → 0.
+fn filter_finite_locus(re: &mut Vec<f64>, im: &mut Vec<f64>, w: &mut Vec<f64>) {
+    const MAX_MAG: f64 = 1e6;
+    let mut keep = Vec::with_capacity(re.len());
+    for k in 0..re.len() {
+        let r = re[k];
+        let i = im[k];
+        if r.is_finite() && i.is_finite() && (r * r + i * i).sqrt() <= MAX_MAG {
+            keep.push(k);
+        }
+    }
+    if keep.len() == re.len() {
+        return;
+    }
+    *re = keep.iter().map(|&k| re[k]).collect();
+    *im = keep.iter().map(|&k| im[k]).collect();
+    *w = keep.iter().map(|&k| w[k]).collect();
+}
+
+/// `nyquist(G)` — Nyquist plot of `G(jω)`.
+///
+/// Forms:
+/// - `nyquist(G)`                    — plot only
+/// - `[re, im, w] = nyquist(G)`      — capture positive-frequency locus
+/// - `[re, im, w] = nyquist(G, w)`   — user-supplied frequency grid (rad/s)
+/// - `nyquist(G, "pos-only")`        — omit the negative-frequency mirror
+///
+/// `G` is `Value::TransferFn` (from `tf(...)`) or `Value::StateSpace` (from
+/// `ss(...)` / `ss(A, B, C, D)`). State-space inputs are converted to TF and
+/// evaluated via Horner — equivalent to `freqresp(A, B, C, D, w)`.
+fn builtin_nyquist(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("nyquist", &args, 1, 2)?;
+
+    // Resolve input → (num, den) polynomial coefficients.
+    let (num, den) = match &args[0] {
+        Value::TransferFn { num, den } => (num.clone(), den.clone()),
+        Value::StateSpace { a, b, c, d } => match ss_to_tf(a, b, c, d)? {
+            Value::TransferFn { num, den } => (num, den),
+            _ => unreachable!(),
+        },
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "nyquist: expected tf or ss, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    // Resolve second argument: optional w-vector OR optional "pos-only" flag.
+    let mut mirror = true;
+    let user_w: Option<Vec<f64>> = if args.len() == 2 {
+        match &args[1] {
+            Value::Vector(v) => Some(v.iter().map(|c| c.re).collect()),
+            Value::Scalar(_) => {
+                return Err(ScriptError::type_err(
+                    "nyquist: second arg must be a frequency vector or \"pos-only\"".to_string(),
+                ));
+            }
+            _ => {
+                let s = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+                if s == "pos-only" {
+                    mirror = false;
+                    None
+                } else {
+                    return Err(ScriptError::type_err(format!(
+                        "nyquist: unknown option \"{s}\" (expected \"pos-only\" or a frequency vector)"
+                    )));
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    // Build the frequency grid.
+    let w_vec: Vec<f64> = match user_w {
+        Some(w) => w,
+        None => {
+            let coarse = auto_freq_range(&den)?;
+            densify_near_minus_one(&num, &den, &coarse)
+        }
+    };
+
+    // Evaluate the locus and drop overflowing samples (e.g. 1/s DC).
+    let (mut re_pos, mut im_pos) = nyquist_compute(&num, &den, &w_vec);
+    let mut w_pos = w_vec.clone();
+    filter_finite_locus(&mut re_pos, &mut im_pos, &mut w_pos);
+
+    if re_pos.is_empty() {
+        return Err(ScriptError::runtime(
+            "nyquist: locus is empty (all samples filtered as non-finite)".to_string(),
+        ));
+    }
+
+    // Plot: positive-frequency line, optional conjugate mirror, -1 marker.
+    push_xy_line(
+        re_pos.clone(),
+        im_pos.clone(),
+        "L(jω), ω > 0",
+        "Nyquist Plot",
+        None,
+        LineStyle::Solid,
+    );
+    if mirror {
+        let im_neg: Vec<f64> = im_pos.iter().map(|y| -y).collect();
+        // Re-enter through push_xy_line with hold semantics — set hold so this
+        // overlays instead of replacing the positive-frequency series.
+        FIGURE.with(|fig| fig.borrow_mut().hold = true);
+        push_xy_line(
+            re_pos.clone(),
+            im_neg,
+            "ω < 0 (mirror)",
+            "",
+            None,
+            LineStyle::Dashed,
+        );
+    } else {
+        FIGURE.with(|fig| fig.borrow_mut().hold = true);
+    }
+    push_xy_scatter(vec![-1.0], vec![0.0], "−1", "", None);
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        f.hold = false;
+        let sp = f.current_mut();
+        sp.xlabel = "Re(L)".to_string();
+        sp.ylabel = "Im(L)".to_string();
+        sp.axis_equal = true;
+    });
+
+    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+
+    let re_val = Value::Vector(Array1::from_iter(
+        re_pos.iter().map(|&x| Complex::new(x, 0.0)),
+    ));
+    let im_val = Value::Vector(Array1::from_iter(
+        im_pos.iter().map(|&x| Complex::new(x, 0.0)),
+    ));
+    let w_val = Value::Vector(Array1::from_iter(
+        w_pos.iter().map(|&x| Complex::new(x, 0.0)),
+    ));
+    Ok(Value::Tuple(vec![re_val, im_val, w_val]))
 }
 
 fn builtin_step(args: Vec<Value>) -> Result<Value, ScriptError> {

@@ -520,6 +520,12 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
             xlim: panel.xlim,
             ylim: panel.ylim,
         })?;
+
+        conn.client.send_nowait(&ViewerMsg::PanelAxisEqual {
+            fig_id,
+            panel: idx as u16,
+            equal: panel.axis_equal,
+        })?;
     }
 
     conn.client.send(&ViewerMsg::Redraw { fig_id })?;

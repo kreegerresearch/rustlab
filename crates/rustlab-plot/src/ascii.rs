@@ -50,6 +50,48 @@ fn restore_terminal() {
     let _ = execute!(stdout(), LeaveAlternateScreen);
 }
 
+/// For `axis("equal")` panels: pad the visually-shorter axis so one data unit
+/// on x equals one data unit on y, given the panel's terminal-cell dimensions.
+///
+/// Cell-pixel aspect: cells render roughly 2× taller than wide, so a cell's
+/// height equals 2 width-units visually. Equating visual pixels per data unit:
+///   `cell_w / dx == 2 * cell_h / dy`  ⇒  target `dy/dx = 2 * cell_h / cell_w`.
+///
+/// If `user_x_set` (or `user_y_set`) is true, that axis is left untouched —
+/// the user explicitly pinned it.
+pub(crate) fn apply_axis_equal_pad(
+    mut x_lo: f64,
+    mut x_hi: f64,
+    mut y_lo: f64,
+    mut y_hi: f64,
+    cell_w: u16,
+    cell_h: u16,
+    user_x_set: bool,
+    user_y_set: bool,
+) -> (f64, f64, f64, f64) {
+    if user_x_set && user_y_set {
+        return (x_lo, x_hi, y_lo, y_hi);
+    }
+    let cw = cell_w.max(1) as f64;
+    let ch = cell_h.max(1) as f64;
+    let target = (2.0 * ch / cw).max(f64::EPSILON);
+    let dx = (x_hi - x_lo).abs().max(f64::EPSILON);
+    let dy = (y_hi - y_lo).abs().max(f64::EPSILON);
+    let cur = dy / dx;
+    if cur < target && !user_y_set {
+        let need_dy = dx * target;
+        let pad = (need_dy - dy) * 0.5;
+        y_lo -= pad;
+        y_hi += pad;
+    } else if cur > target && !user_x_set {
+        let need_dx = dy / target;
+        let pad = (need_dx - dx) * 0.5;
+        x_lo -= pad;
+        x_hi += pad;
+    }
+    (x_lo, x_hi, y_lo, y_hi)
+}
+
 /// Render a slice of subplot panels into an existing ratatui frame.
 /// Called by both `render_figure_terminal()` and `LiveFigure::redraw()`.
 pub(crate) fn draw_subplots(
@@ -99,19 +141,44 @@ pub(crate) fn draw_subplots(
                 continue;
             }
 
-            let x_min = sp
+            let mut x_min = sp
                 .xlim
                 .0
                 .unwrap_or_else(|| all_x.iter().copied().fold(f64::INFINITY, f64::min));
-            let x_max = sp
+            let mut x_max = sp
                 .xlim
                 .1
                 .unwrap_or_else(|| all_x.iter().copied().fold(f64::NEG_INFINITY, f64::max));
             let y_min_raw = all_y.iter().copied().fold(f64::INFINITY, f64::min);
             let y_max_raw = all_y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let y_margin = ((y_max_raw - y_min_raw).abs() * 0.1).max(1e-6);
-            let y_min = sp.ylim.0.unwrap_or(y_min_raw - y_margin);
-            let y_max = sp.ylim.1.unwrap_or(y_max_raw + y_margin);
+            let mut y_min = sp.ylim.0.unwrap_or(y_min_raw - y_margin);
+            let mut y_max = sp.ylim.1.unwrap_or(y_max_raw + y_margin);
+
+            // axis("equal"): pad the visually-shorter axis so one data unit on
+            // x equals one data unit on y. Skip when both limits were user-set.
+            if sp.axis_equal && sp.heatmap.is_none() {
+                let user_set_x = sp.xlim.0.is_some() && sp.xlim.1.is_some();
+                let user_set_y = sp.ylim.0.is_some() && sp.ylim.1.is_some();
+                let (nx_min, nx_max, ny_min, ny_max) = apply_axis_equal_pad(
+                    x_min,
+                    x_max,
+                    y_min,
+                    y_max,
+                    cell.width,
+                    cell.height,
+                    user_set_x,
+                    user_set_y,
+                );
+                x_min = nx_min;
+                x_max = nx_max;
+                y_min = ny_min;
+                y_max = ny_max;
+            }
+            let x_min = x_min;
+            let x_max = x_max;
+            let y_min = y_min;
+            let y_max = y_max;
 
             let series_points: Vec<Vec<(f64, f64)>> = sp
                 .series
@@ -1059,6 +1126,49 @@ mod tests {
     #[test]
     fn pi() {
         assert_eq!(fmt_g(std::f64::consts::PI), "3.14");
+    }
+
+    #[test]
+    fn axis_equal_pad_pads_y_when_panel_is_taller_than_data() {
+        // 80×24-cell panel, target dy/dx = 2 * 24 / 80 = 0.6. Unit data
+        // (dx=dy=2) has cur ratio 1.0 > target → pad x to dy/target = 2/0.6.
+        let (xl, xh, yl, yh) =
+            super::apply_axis_equal_pad(-1.0, 1.0, -1.0, 1.0, 80, 24, false, false);
+        let dx = xh - xl;
+        let dy = yh - yl;
+        let target = 2.0 * 24.0 / 80.0;
+        assert!(
+            (dy / dx - target).abs() < 1e-9,
+            "post-pad dy/dx ({}) should equal target {} within 1e-9",
+            dy / dx,
+            target
+        );
+        // y untouched, x widened symmetrically around 0.
+        assert!((yl + 1.0).abs() < 1e-12);
+        assert!((yh - 1.0).abs() < 1e-12);
+        assert!(xl < -1.0 && xh > 1.0);
+        assert!((xl + xh).abs() < 1e-9, "x pad should be symmetric");
+    }
+
+    #[test]
+    fn axis_equal_pad_pads_x_when_data_is_tall_for_panel() {
+        // 80×24 panel, data dx=2 dy=10 → cur = 5 > target 0.6 → pad x.
+        let (xl, xh, yl, yh) =
+            super::apply_axis_equal_pad(-1.0, 1.0, -5.0, 5.0, 80, 24, false, false);
+        let dx = xh - xl;
+        let dy = yh - yl;
+        let target = 2.0 * 24.0 / 80.0;
+        assert!((dy / dx - target).abs() < 1e-9);
+        assert!(yl == -5.0 && yh == 5.0, "y must be untouched");
+        assert!(xl < -1.0 && xh > 1.0);
+    }
+
+    #[test]
+    fn axis_equal_pad_respects_user_set_limits() {
+        // Both axes user-set: no change.
+        let (xl, xh, yl, yh) =
+            super::apply_axis_equal_pad(-1.0, 1.0, -1.0, 1.0, 80, 24, true, true);
+        assert_eq!((xl, xh, yl, yh), (-1.0, 1.0, -1.0, 1.0));
     }
 
     // ── FIGURE state tests ──────────────────────────────────────────────

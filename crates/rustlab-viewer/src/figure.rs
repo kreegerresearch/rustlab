@@ -28,6 +28,7 @@ pub struct PanelState {
     pub series: Vec<WireSeries>,
     pub xlim: (Option<f64>, Option<f64>),
     pub ylim: (Option<f64>, Option<f64>),
+    pub axis_equal: bool,
     pub heatmap: Option<HeatmapImage>,
     /// 3D surface data + camera. When present, the panel renders a rotatable
     /// surface instead of the 2D egui_plot chart.
@@ -43,6 +44,7 @@ impl PanelState {
             series: Vec::new(),
             xlim: (None, None),
             ylim: (None, None),
+            axis_equal: false,
             heatmap: None,
             surface: None,
         }
@@ -124,6 +126,9 @@ impl FigureWindow {
                                     format!("{}\nx: {:.4}\ny: {:.4}", name, value.x, value.y)
                                 }
                             });
+                        if panel.axis_equal {
+                            plot = plot.data_aspect(1.0);
+                        }
 
                         // Apply categorical x-axis labels if present
                         let cat_labels: Option<Arc<Vec<(f64, String)>>> = panel

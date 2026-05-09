@@ -1,0 +1,13 @@
+# nyquist() — Nyquist plot of L(jω) in the complex plane
+
+s = tf("s")
+L = 1 / (s^2 + 0.3*s + 1)            % lightly-damped second-order
+
+% Plot the closed Nyquist contour with the -1 marker and equal aspect.
+nyquist(L)
+
+% Capture the positive-frequency locus and read off the sensitivity peak.
+[re, im, w] = nyquist(L)
+d = sqrt((re + 1).^2 + im.^2)
+Ms = 1 / min(d)
+fprintf("Sensitivity peak Ms = %.3f at omega = %.3f rad/s\n", Ms, w(argmin(d)))

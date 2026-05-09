@@ -2090,6 +2090,19 @@ xlim(0, 1000)
 ylim(-60, 5)
 ```
 
+### `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])`
+Control aspect ratio or set both axis limits at once.
+
+- `axis("equal")` — lock the visual aspect so one data unit on x equals one data unit on y. Honored across all four rendering backends (terminal, viewer, SVG, Plotly HTML). Use it for parametric plots and any chart where geometric shape matters (Nyquist plots, complex-plane scatters, unit circles).
+- `axis("auto")` — release the aspect lock; the chart fills the available area independently on each axis (default).
+- `axis([xmin, xmax, ymin, ymax])` — set both axis limits at once. Equivalent to `xlim([xmin, xmax]); ylim([ymin, ymax])`.
+
+```
+theta = linspace(0, 2*pi, 200);
+plot(cos(theta), sin(theta));
+axis("equal")            % a circle should look like a circle
+```
+
 ### `legend("loc1", "loc2", ...)` / `legend("off")`
 Set legend labels for the series in the current figure (in plot order). `legend("off")` hides the legend.
 
@@ -2300,6 +2313,30 @@ G = tf([10], [1, 2, 10])
 bode(G)                      % interactive plot
 [m, p, w] = bode(G)          % capture data
 [m, p, w] = bode(G, w_vec)  % user-supplied frequencies
+```
+
+### `nyquist(G)` / `nyquist(G, w)` / `nyquist(G, "pos-only")` / `[re, im, w] = nyquist(G)`
+
+Nyquist plot of $L(j\omega)$ in the complex plane — the canonical visual for closed-loop stability analysis. `G` is a `tf` (from `tf(...)`) or a `ss` (from `ss(...)` / `ss(A, B, C, D)`). Always plots; returns data as a tuple.
+
+The plot shows:
+- The positive-frequency locus and its conjugate mirror (closed contour by default; `"pos-only"` omits the mirror).
+- A scatter marker at $-1 + 0j$ — encirclements of $-1$ count to the Nyquist criterion; the closest-approach distance is the sensitivity peak $1/M_S$.
+- Equal aspect ratio so a unit circle around $-1$ reads as round (Kalman frequency-domain inequality $|1 + L(j\omega)| \geq 1$).
+
+The default frequency grid uses the same auto-range heuristic as `bode(G)` (decades around the dominant pole), then refines near $-1$ in a two-pass densification so the closest-approach reading is clean. Pass an explicit `w` to override.
+
+Returned arrays are the **positive-frequency** branch only.
+
+```
+G = tf([1], [1, 0.3, 1])     % lightly-damped second order
+nyquist(G)                    % plot
+[re, im, w] = nyquist(G)      % capture positive-frequency locus
+
+% Loop transfer for an LQR design — verify the Kalman FDI graphically:
+sys = ss(tf([10], [1, 2, 10]))
+L   = tf(sys.A, sys.B, K, 0)
+nyquist(L)                    % locus skirts the unit circle around -1
 ```
 
 ### `step(G)` / `step(G, t_end)` / `[y, t] = step(G)`
