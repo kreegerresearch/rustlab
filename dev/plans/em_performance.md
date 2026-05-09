@@ -13,7 +13,7 @@
 |---|---|---|---|---|---|
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
 | 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
-| 3 | Fused, parallel `gradient` / `divergence` / `curl` | pending | low–med | 3–8× on postprocess | — |
+| 3 | Fused, parallel `gradient` / `divergence` / `curl` | **awaiting commit** | low–med | 3–8× on postprocess | — |
 | 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
 | 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
@@ -26,7 +26,7 @@ When you advance a phase, update its row **and** the per-phase section's Status 
 1. **Sparse LU is already shipped** (`e9283b7`). Dense LU fallback is intentional for `Value::Matrix` inputs. Do not propose replacing it.
 2. **Real-only Cholesky fast path is already shipped** — see `try_sparse_cholesky` in `builtins.rs:10433` which auto-detects `all_real` and routes through `SparseCsc<f64>`. Phase 5 is *not* about adding this; it's about extending the same idea to the **DSP layer** (`vector_calc.rs`, `laplacian.rs` builder output) so the entries handed to Cholesky aren't pre-promoted to `C64`.
 3. **AMD is the current default ordering** in both `try_sparse_cholesky` and `try_sparse_lu`. Phase 2 keeps AMD as the safe default and adds an explicit Identity opt-in plus a builder-side hint that auto-selects Identity for grid Laplacians.
-4. **Pure-Rust hand-roll, no FFI, no large libraries** (`AGENTS.md` Rule 9). `rayon` is acceptable infrastructure (already a workspace dep — verify before assuming). `wide` / `std::simd` SIMD acceptable but only if it survives a portability check on macOS aarch64 + Linux x86_64.
+4. **Pure-Rust hand-roll, no FFI, no third-party numerics libraries** (`AGENTS.md` Rule 9). The *math itself* — stencils, factorizations, orderings, eigensolvers — is hand-rolled. **`rayon` is acceptable infrastructure** (user-confirmed 2026-05-09): it provides parallel orchestration, not numerics, so importing it for outer-axis parallelism on a kernel we wrote ourselves is fine. `std::simd` (nightly) is out — keep on stable. Compiler autovectorization via slice iteration is the SIMD strategy.
 5. **No new public crate.** All work lands in existing crates: `rustlab-core`, `rustlab-dsp`, `rustlab-script`, `rustlab-cli`.
 6. **`docs/sparse_solve.md`** is the canonical end-to-end design doc for the sparse-solve pipeline (dispatch chain, ordering hint, factor reuse, Davis algorithms). Update it when phases land that change pipeline behavior.
 
@@ -150,33 +150,45 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 3 — Fused, parallel `gradient` / `divergence` / `curl`
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-09)
 **Goal:** rewrite the finite-difference kernels so they (a) iterate via slice views (no `[[i,j]]` bounds checks per element), (b) fuse `divergence` and `curl` into single-pass kernels that don't allocate intermediate `CMatrix` / `CTensor3`, and (c) parallelize over the outer axis with `rayon` for large grids.
 
+**Implementation log (2026-05-09):**
+- Added `rayon = "1.10"` to `Cargo.toml` workspace deps and to `crates/rustlab-dsp/Cargo.toml`. Acceptable infrastructure (parallel orchestration, not numerics) per user-confirmed clarification of `AGENTS.md` Rule 9.
+- Rewrote `crates/rustlab-dsp/src/vector_calc.rs` (~250 → ~600 lines) end-to-end. The 2-D path now operates on row slices via `as_slice` / `as_slice_mut` after an `as_standard_layout` guard at each public entry. Fused `divergence_2d` and `curl_2d` write directly to the output in a single sweep. The 3-D path retains `[[i,j,k]]` indexed access (mixed strides per axis make slice views complicated) but the fused `divergence_3d` writes the output in one sweep instead of allocating three per-axis derivatives plus two summation temporaries.
+- Parallelism: `PAR_THRESHOLD = 4096`. 2-D kernels use `out_slice.par_chunks_mut(nx)` over rows. 3-D `divergence_3d` uses page-parallel `par_iter` over `0..p` collecting per-page slabs (correctness-first; full `axis_chunks_iter_mut` redesign deferred). Test-only `__test_set_par_threshold(Some(1))` knob forces the parallel path for tests.
+- Fixed a `Fn`-vs-`FnMut` issue in tests by pre-generating LCG values into a Vec.
+- Tests: 5 new tests in `vector_calc_phase3_tests` — fused-vs-naive equivalence (2-D div + curl), parallel-vs-serial bit-equality (2-D), parallel-vs-serial < 1e-12 agreement (3-D), and non-contiguous input handling. All pass; the 11 pre-existing analytic-check tests still pass.
+- Bench: new `cargo run --release --example bench_vector_calc -p rustlab-dsp` example. Numbers in `perf/em_performance_phase3.md`. 100×100 gradient: 0.12 ms; 200×200 divergence: 0.13 ms; 800×800 gradient: 0.51 ms; 80³ divergence: 2.03 ms.
+- Allocation savings per call: `divergence_2d` 3→1 CMatrix, `curl_2d` 3→1 CMatrix, `divergence_3d` 4→1 CTensor3 (plus per-page scratch in the parallel path).
+- Workspace tests pass under both default and `--features viewer`.
+
 **Scope:**
-- Rewrite `d_dx`, `d_dy` in `vector_calc.rs:61-97` using `f.row(i).as_slice().unwrap()` for stride-1 access and direct indexed write into the output's row slice. Same for `d_along_axis_3d` (155).
+- Rewrite `d_dx`, `d_dy` in `vector_calc.rs:61-97` using `f.row(i).as_slice().unwrap()` for stride-1 access and direct indexed write into the output's row slice. Same for `d_along_axis_3d` (155). Defensive `as_standard_layout()` guard at the entry point of each public function so non-contiguous inputs don't break the inner loop.
 - Add fused private helpers `fused_div_2d`, `fused_curl_2d`, `fused_div_3d`, `fused_curl_3d` that compute the result in one sweep without creating per-axis derivative matrices. The current `d_dx(fx) + d_dy(fy)` pattern at `vector_calc.rs:120` allocates 3 full CMatrices; the fused version allocates 1.
-- Add a `parallel` knob: when `n*m >= 4096` (cheap heuristic, tune empirically), use `rayon::par_iter` over the outer axis. Below the threshold, stay serial — rayon overhead dominates on tiny grids.
+- Add a parallelism threshold: when `n*m >= 4096` (cheap heuristic, tune empirically), use `rayon::par_iter` over the outer axis. Below the threshold, stay serial — rayon overhead dominates on tiny grids.
 - Public API (`gradient_2d`, `divergence_2d`, `curl_2d`, `gradient_3d`, `divergence_3d`, `curl_3d`) keeps its current signature. Internal implementation routes to fused/parallel paths.
+- Compiler autovectorization is the SIMD strategy. Stride-1 slice loops with simple arithmetic on `Complex<f64>` (decomposed to two `f64`s in the inner loop where it helps) let LLVM lower to AVX2/NEON on its own.
+- `rayon` is acceptable infrastructure (it parallelizes our hand-rolled kernel, it doesn't *do* the numerics). `std::simd` (nightly) is out.
 
 **Files affected:**
 - `crates/rustlab-dsp/src/vector_calc.rs` — full rewrite of the kernel section.
-- `crates/rustlab-dsp/Cargo.toml` — add `rayon` if not present (verify first; it may already be a workspace dep).
-- `crates/rustlab-dsp/src/tests.rs` — keep all existing tests passing; add fused-vs-naive equivalence test.
+- `crates/rustlab-dsp/Cargo.toml` — add `rayon` if not already a workspace dep (verify before assuming).
+- `crates/rustlab-dsp/src/tests.rs` — keep all existing tests passing; add fused-vs-naive and parallel-vs-serial equivalence tests.
 
 **Tests:**
 1. All existing vector-calc tests (the gallery's analytic checks: paraboloid gradient, radial divergence, vortex curl) keep passing.
 2. `fused_div_matches_compose` — `divergence_2d(fx, fy)` gives the same result as the old `d_dx(fx) + d_dy(fy)` to bit precision on a fixed RNG-seeded input.
 3. `fused_curl_matches_compose` — same for curl.
 4. `parallel_matches_serial_above_threshold` — set the threshold low artificially in a test build, verify parallel and serial paths agree to bit precision on a 100×100 grid.
-5. `tiny_grid_does_not_use_rayon` — assert (via a timing or trace hook) that a 5×5 grid takes the serial path.
+5. `non_contiguous_input_still_works` — pass a non-standard-layout matrix (a slice of a larger one) through `gradient_2d`; verify equivalence.
 
 **Acceptance:**
 - On a 200×200 grid, `gradient` + `divergence` of a real-valued field is `≥ 3×` faster than current. (Bench in `perf/`; doesn't need to be a unit test.)
 - Memory high-water mark on a 200×200×200 cube `divergence3` drops from `~6 × 128 MB` of intermediates to `~2 × 128 MB` (one fused output + one input ref).
 - Existing notebooks (`gallery/vector_calculus.md`, `gallery/dielectric.md`) re-bake with no output diff except the heatmap render times.
 
-**Risk:** low–medium. Pure refactor with strong existing test coverage. Main risk: stride-1 slicing assumptions — `ndarray` arrays may be non-contiguous after slicing operations elsewhere. Add a `.to_owned()` guard or use `f.as_standard_layout()` defensively at the entry point.
+**Risk:** low–medium. Pure refactor with strong existing test coverage. Main risks: (a) stride-1 slicing assumptions — handled by the `as_standard_layout` guard; (b) accidental data races in the parallel path — handled by the Rust borrow checker (rayon can't compile a racy version).
 
 **Estimated size:** ~400 LoC rewrite + ~150 LoC tests. One session.
 

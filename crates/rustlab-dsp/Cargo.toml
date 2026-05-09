@@ -11,4 +11,5 @@ description = "DSP algorithms — FIR/IIR filters, FFT, windowing, and resamplin
 rustlab-core.workspace = true
 num-complex.workspace  = true
 ndarray.workspace      = true
+rayon.workspace        = true
 thiserror.workspace    = true

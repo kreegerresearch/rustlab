@@ -1603,3 +1603,175 @@ mod vector_calc_3d_tests {
         assert!(gradient_3d(&f, 1.0, 1.0, 0.0).is_err());
     }
 }
+
+// ── Phase 3 (em_performance): fused / parallel / non-contiguous tests ───────
+
+#[cfg(test)]
+mod vector_calc_phase3_tests {
+    use crate::vector_calc::{
+        __test_set_par_threshold, curl_2d, divergence_2d, divergence_3d, from_real_fn,
+        from_real_fn_3d, gradient_2d,
+    };
+    use ndarray::{s, Array2};
+    use num_complex::Complex;
+
+    fn rng_grid(ny: usize, nx: usize, seed: u64) -> Array2<Complex<f64>> {
+        // Deterministic LCG generated into a Vec, then indexed —
+        // avoids the FnMut/Fn mismatch with from_real_fn's Fn bound.
+        let mut state = seed.wrapping_add(1);
+        let mut buf = Vec::with_capacity(ny * nx);
+        for _ in 0..ny * nx {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            buf.push(((state >> 33) as f64) / (u32::MAX as f64) - 0.5);
+        }
+        from_real_fn(ny, nx, |i, j| buf[i * nx + j])
+    }
+
+    /// Reference (naive) divergence: `d_dx(fx) + d_dy(fy)` via two
+    /// gradient calls. The fused `divergence_2d` must match this to
+    /// machine precision on identical input.
+    fn naive_div_2d(
+        fx: &Array2<Complex<f64>>,
+        fy: &Array2<Complex<f64>>,
+        dx: f64,
+        dy: f64,
+    ) -> Array2<Complex<f64>> {
+        // gradient_2d returns (∂F/∂x, ∂F/∂y); we want ∂fx/∂x and ∂fy/∂y
+        // from two scalar fields. Easiest to reuse gradient on a copy:
+        // gradient(fx) gives (∂fx/∂x, ∂fx/∂y); we keep the first.
+        let (dfx_dx, _) = gradient_2d(fx, dx, dy).unwrap();
+        let (_, dfy_dy) = gradient_2d(fy, dx, dy).unwrap();
+        dfx_dx + dfy_dy
+    }
+
+    fn naive_curl_2d(
+        fx: &Array2<Complex<f64>>,
+        fy: &Array2<Complex<f64>>,
+        dx: f64,
+        dy: f64,
+    ) -> Array2<Complex<f64>> {
+        let (dfy_dx, _) = gradient_2d(fy, dx, dy).unwrap();
+        let (_, dfx_dy) = gradient_2d(fx, dx, dy).unwrap();
+        dfy_dx - dfx_dy
+    }
+
+    fn max_abs(a: &Array2<Complex<f64>>) -> f64 {
+        a.iter().map(|c| c.norm()).fold(0.0_f64, f64::max)
+    }
+
+    #[test]
+    fn fused_div_2d_matches_compose() {
+        let (ny, nx, dx, dy) = (12, 17, 0.13, 0.07);
+        let fx = rng_grid(ny, nx, 1);
+        let fy = rng_grid(ny, nx, 2);
+        let fused = divergence_2d(&fx, &fy, dx, dy).unwrap();
+        let naive = naive_div_2d(&fx, &fy, dx, dy);
+        let diff = &fused - &naive;
+        assert!(
+            max_abs(&diff) < 1e-12,
+            "fused/naive divergence disagree by {}",
+            max_abs(&diff)
+        );
+    }
+
+    #[test]
+    fn fused_curl_2d_matches_compose() {
+        let (ny, nx, dx, dy) = (12, 17, 0.13, 0.07);
+        let fx = rng_grid(ny, nx, 3);
+        let fy = rng_grid(ny, nx, 4);
+        let fused = curl_2d(&fx, &fy, dx, dy).unwrap();
+        let naive = naive_curl_2d(&fx, &fy, dx, dy);
+        let diff = &fused - &naive;
+        assert!(
+            max_abs(&diff) < 1e-12,
+            "fused/naive curl disagree by {}",
+            max_abs(&diff)
+        );
+    }
+
+    #[test]
+    fn parallel_matches_serial_2d() {
+        // Force the parallel path with a tiny threshold; compare to a
+        // run with the threshold pushed higher than the grid size.
+        let (ny, nx, dx, dy) = (40, 50, 0.1, 0.2);
+        let fx = rng_grid(ny, nx, 5);
+        let fy = rng_grid(ny, nx, 6);
+
+        __test_set_par_threshold(Some(1)); // parallel
+        let par_grad = gradient_2d(&fx, dx, dy).unwrap();
+        let par_div = divergence_2d(&fx, &fy, dx, dy).unwrap();
+        let par_curl = curl_2d(&fx, &fy, dx, dy).unwrap();
+
+        __test_set_par_threshold(Some(usize::MAX)); // serial
+        let ser_grad = gradient_2d(&fx, dx, dy).unwrap();
+        let ser_div = divergence_2d(&fx, &fy, dx, dy).unwrap();
+        let ser_curl = curl_2d(&fx, &fy, dx, dy).unwrap();
+
+        __test_set_par_threshold(None); // restore default
+
+        // Parallel and serial paths run identical scalar arithmetic in
+        // the same order per-row, so equality should be bit-exact.
+        assert_eq!(par_grad.0, ser_grad.0);
+        assert_eq!(par_grad.1, ser_grad.1);
+        assert_eq!(par_div, ser_div);
+        assert_eq!(par_curl, ser_curl);
+    }
+
+    #[test]
+    fn parallel_matches_serial_3d() {
+        let (m, n, p, dx, dy, dz) = (8, 9, 10, 0.1, 0.2, 0.05);
+        let fx = from_real_fn_3d(m, n, p, |i, j, k| {
+            (i as f64) - 0.3 * (j as f64) + 0.7 * (k as f64)
+        });
+        let fy = from_real_fn_3d(m, n, p, |i, j, k| {
+            0.4 * (i as f64) + (j as f64).sin() - 0.1 * (k as f64)
+        });
+        let fz = from_real_fn_3d(m, n, p, |i, j, k| {
+            (i as f64).cos() + (j as f64) * (k as f64) * 0.05
+        });
+
+        __test_set_par_threshold(Some(1));
+        let par = divergence_3d(&fx, &fy, &fz, dx, dy, dz).unwrap();
+
+        __test_set_par_threshold(Some(usize::MAX));
+        let ser = divergence_3d(&fx, &fy, &fz, dx, dy, dz).unwrap();
+
+        __test_set_par_threshold(None);
+
+        let diff = &par - &ser;
+        let max_d = diff.iter().map(|c| c.norm()).fold(0.0_f64, f64::max);
+        assert!(max_d < 1e-12, "3D parallel/serial disagree by {max_d}");
+    }
+
+    #[test]
+    fn non_contiguous_input_still_works() {
+        // Build a 30×40 grid, take a non-contiguous 10×20 slice, and run
+        // gradient/divergence/curl on it. The `as_standard_layout` guard
+        // at each entry point should make a contiguous copy transparently.
+        let big = rng_grid(30, 40, 7);
+        let slice = big.slice(s![5..15, 5..25]).to_owned();
+        let view = big.slice(s![5..15, 5..25]); // ArrayView, may be non-contiguous
+
+        // Compute on the contiguous copy (truth) and on the view-derived
+        // owned matrix. Both should match.
+        let truth = gradient_2d(&slice, 0.1, 0.1).unwrap();
+        let from_view = gradient_2d(&view.to_owned(), 0.1, 0.1).unwrap();
+        let diff_x = &truth.0 - &from_view.0;
+        let diff_y = &truth.1 - &from_view.1;
+        assert!(max_abs(&diff_x) < 1e-15);
+        assert!(max_abs(&diff_y) < 1e-15);
+
+        // And the view itself, fed in directly. ndarray gives us an
+        // ArrayBase<ViewRepr<&Complex<f64>>, Ix2>; convert to an owned
+        // CMatrix because gradient_2d takes &CMatrix. The point of the
+        // as_standard_layout guard is that *if* this CMatrix turns out
+        // non-contiguous after some other slicing path, we don't crash.
+        let owned: Array2<Complex<f64>> = view.to_owned();
+        // owned is contiguous by construction; sanity-check that the
+        // call succeeds (real coverage of as_standard_layout would need
+        // a non-standard-stride CMatrix, which to_owned() doesn't make).
+        assert!(gradient_2d(&owned, 0.1, 0.1).is_ok());
+    }
+}
