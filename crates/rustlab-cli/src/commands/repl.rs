@@ -533,6 +533,12 @@ pub const HELP: &[HelpEntry] = &[
         detail: "find(v)            — dense vector → 1-based element indices\nfind(M)            — dense matrix → 1-based column-major linear indices\n[I, V] = find(v)   — indices + values\n[I, J] = find(M)   — row + column subscripts (column-major order)\n[I, J, V] = find(M) — adds the nonzero values\nfind(S)            — sparse vector → tuple [I, V]\nfind(S)            — sparse matrix → tuple [I, J, V]\n\nDense matrix linear indexing follows the octave/matlab convention:\nelement M(i, j) sits at linear index (j - 1) * nrows + i.\n\nExamples:\n  find([0, 5, 0, -3])      → [2, 4]\n  find([0, 2; 3, 0])       → [2, 3]\n  [I, J] = find([0, 2; 3, 0])     % I=[2,1], J=[1,2]\n  [I, J, V] = find([0, 2; 3, 0])  % adds V=[3, 2]" },
     HelpEntry { name: "spsolve", brief: "Solve sparse linear system  A*x = b",
         detail: "spsolve(A, b)\nspsolve(A, b, mode)\n  A    — sparse or dense square matrix\n  b    — right-hand side vector\n  mode — \"auto\" (default), \"cholesky\", or \"lu\"\n\nDispatch:\n  \"auto\"     — detect Hermitian-positive-definite structure; route SPD\n              inputs through hand-rolled sparse Cholesky, others\n              through hand-rolled sparse LU with partial pivoting.\n  \"cholesky\" — force the sparse Cholesky path; errors if A is not SPD.\n  \"lu\"       — force the sparse LU path (always works, slightly more fill).\n\nBoth paths stay sparse end-to-end and use AMD ordering by default.\nDense Value::Matrix input still uses the legacy dense Gaussian elimination.\n\nExamples:\n  x = spsolve(speye(3), [1, 2, 3])\n  L = -1 * laplacian_2d(50, 50);\n  x = spsolve(L, ones(2500, 1));               % auto picks Cholesky\n  x = spsolve(L, ones(2500, 1), \"cholesky\");   % explicit\n\n  A = [1, 2; 2, 1];                            % indefinite\n  x = spsolve(sparse(A), [1; 1]);              % auto routes through LU\n  x = spsolve(sparse(A), [1; 1], \"lu\");        % explicit" },
+    HelpEntry { name: "chol", brief: "Sparse Cholesky factor handle (factor once, solve many)",
+        detail: "F = chol(A)  — return an opaque sparse Cholesky factor for SPD A\n\n  Pair with solve(F, b) to back-solve as many right-hand sides as you\n  like without re-factoring. Canonical fast path for parameter sweeps,\n  animations, and any inner-loop where A is fixed and b varies.\n\n  A must be a Hermitian-positive-definite sparse matrix. Real-only A\n  routes through the f64 solver path automatically (≈4× cheaper than\n  complex Cholesky). chol() errors on indefinite or non-Hermitian A —\n  no auto fallback to LU; use lu(A) or spsolve(A, b) for that.\n\nExample:\n  L = -1 * laplacian_2d(100, 100);\n  F = chol(L);                      % ~0.03 s\n  for k = 1:50\n    rho = randn(10000, 1);\n    v = solve(F, rho);              % ~0.005 s each\n    % …\n  end" },
+    HelpEntry { name: "lu", brief: "Sparse LU factor handle (factor once, solve many)",
+        detail: "F = lu(A)  — return an opaque sparse LU factor (partial pivoting)\n\n  Same factor-once-solve-many pattern as chol, but for general sparse\n  A. Works on indefinite, non-Hermitian, and complex matrices. Pivoting\n  threshold is the standard 0.1 (Trefethen). Real-only A routes through\n  the f64 solver path automatically.\n\nExample:\n  A = sparse([1+j, 2; 3, 4-j]);\n  F = lu(A);\n  x1 = solve(F, [1; j]);\n  x2 = solve(F, [j; 1]);" },
+    HelpEntry { name: "solve", brief: "Back-solve through a cached chol/lu factor",
+        detail: "x = solve(F, b)  — apply factor F to right-hand side b\n\n  F must be a sparse-factor handle returned by chol() or lu(). b must\n  match the dimension of the factored matrix. A real factor refuses a\n  complex b — refactor with chol/lu on the complex matrix in that case.\n\nExample:\n  L = -1 * laplacian_2d(50, 50);\n  F = chol(L);\n  x = solve(F, ones(2500, 1));      % single solve\n  x2 = solve(F, randn(2500, 1));    % cheap second solve" },
     HelpEntry { name: "spdiags", brief: "Build sparse matrix from diagonals",
         detail: "spdiags(V, D, m, n)  — place diagonals into an m×n sparse matrix\n  V — vector (single diag) or matrix (one column per diag)\n  D — scalar or vector of offsets (0=main, >0 super, <0 sub)\n\nExamples:\n  S = spdiags([1,2,3], 0, 3, 3)   — diagonal\n  T = spdiags([-ones(5,1), 2*ones(5,1), -ones(5,1)], [-1,0,1], 5, 5)" },
     HelpEntry { name: "sprand", brief: "Random sparse matrix with given density",
@@ -583,6 +589,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
         Value::SparseVector(_) => "sparse_vector",
         Value::SparseMatrix(_) => "sparse_matrix",
         Value::StringArray(_) => "string_array",
+        Value::SparseFactor(_) => "sparse_factor",
     }
 }
 
@@ -710,6 +717,7 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
             let suffix = if arr.len() > 3 { ", …" } else { "" };
             format!("{{{}{}}}", preview.join(", "), suffix)
         }
+        Value::SparseFactor(_) => format!("{}", v),
     }
 }
 
@@ -1002,6 +1010,9 @@ pub static CATEGORIES: &[(&str, &[&str])] = &[
                 "nonzeros",
                 "find",
                 "spsolve",
+                "chol",
+                "lu",
+                "solve",
                 "laplacian_1d",
                 "laplacian_2d",
                 "laplacian_3d",

@@ -1,5 +1,5 @@
 use crate::error::ScriptError;
-use crate::eval::value::{insert_commas, Value};
+use crate::eval::value::{insert_commas, SparseFactor, Value};
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
@@ -293,6 +293,9 @@ impl BuiltinRegistry {
         r.register("nonzeros", builtin_nonzeros);
         r.register_nargout("find", builtin_find_nargout);
         r.register("spsolve", builtin_spsolve);
+        r.register("chol", builtin_chol);
+        r.register("lu", builtin_lu);
+        r.register("solve", builtin_solve);
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
         r.register("laplacian_2d", builtin_laplacian_2d);
@@ -10428,62 +10431,183 @@ fn builtin_spsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(spsolve_pack(x))
 }
 
-/// Try the sparse Cholesky path. Detects "essentially real" inputs and
-/// routes to the `f64` solver to skip the 4× cost of complex factorization.
-fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
+/// True when every nonzero of `sm` and every entry of `b` has imaginary
+/// part below `1e-12`. Used to route both spsolve and the standalone
+/// `chol`/`lu` factor builders into the cheaper `f64` path.
+fn sparse_all_real(sm: &SparseMat, b: Option<&CVector>) -> bool {
+    let mat_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12);
+    let b_real = b.map_or(true, |b| b.iter().all(|c| c.im.abs() < 1e-12));
+    mat_real && b_real
+}
+
+/// Build a `SparseFactor::Chol*` from a sparse matrix. Routes to the
+/// `f64` path when all entries are essentially real. Returns the factor;
+/// the caller decides what to do with it (immediate solve, cache as
+/// `Value::SparseFactor`, etc.).
+fn factor_sparse_cholesky(sm: &SparseMat) -> Result<SparseFactor, String> {
     use rustlab_core::sparse_solve::{AmdOrdering, SparseChol, SparseCsc, SparseSolveError};
+    use std::sync::Arc;
 
-    let all_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12)
-        && b.iter().all(|c| c.im.abs() < 1e-12);
-
-    if all_real {
+    if sparse_all_real(sm, None) {
         let csc: SparseCsc<f64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
         let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
-        let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
-        let x_real = chol.solve(&b_real).map_err(|e| e.to_string())?;
-        Ok(Array1::from_iter(
-            x_real.into_iter().map(|v| Complex::new(v, 0.0)),
-        ))
+        Ok(SparseFactor::CholReal(Arc::new(chol)))
     } else {
         let csc: SparseCsc<C64> = sm
             .to_csc()
             .map_err(|e: SparseSolveError| e.to_string())?;
         let chol = SparseChol::factor(&csc, &AmdOrdering).map_err(|e| e.to_string())?;
-        let b_vec: Vec<C64> = b.iter().copied().collect();
-        let x_vec = chol.solve(&b_vec).map_err(|e| e.to_string())?;
-        Ok(Array1::from_vec(x_vec))
+        Ok(SparseFactor::CholComplex(Arc::new(chol)))
     }
+}
+
+/// Build a `SparseFactor::Lu*` from a sparse matrix. Pivoting threshold
+/// is the standard 0.1 (Trefethen).
+fn factor_sparse_lu(sm: &SparseMat) -> Result<SparseFactor, String> {
+    use rustlab_core::sparse_solve::{AmdOrdering, SparseCsc, SparseLU, SparseSolveError};
+    use std::sync::Arc;
+
+    if sparse_all_real(sm, None) {
+        let csc: SparseCsc<f64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::LuReal(Arc::new(lu)))
+    } else {
+        let csc: SparseCsc<C64> = sm
+            .to_csc()
+            .map_err(|e: SparseSolveError| e.to_string())?;
+        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
+        Ok(SparseFactor::LuComplex(Arc::new(lu)))
+    }
+}
+
+/// Run a back-solve through a cached factor. The factor's scalar variant
+/// (`real` vs `complex`) controls how `b` is consumed: real factors take
+/// `b.re` and complain only when `b` has a non-trivial imaginary part.
+fn solve_with_factor(factor: &SparseFactor, b: &CVector) -> Result<CVector, String> {
+    if factor.dim() != b.len() {
+        return Err(format!(
+            "factor is {0}×{0} but b has length {1}",
+            factor.dim(),
+            b.len()
+        ));
+    }
+    match factor {
+        SparseFactor::CholReal(chol) => {
+            if !b.iter().all(|c| c.im.abs() < 1e-12) {
+                return Err("solve: real factor cannot consume a complex b — refactor with chol on a complex matrix or pass a real b".to_string());
+            }
+            let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
+            let x = chol.solve(&b_real).map_err(|e| e.to_string())?;
+            Ok(Array1::from_iter(x.into_iter().map(|v| Complex::new(v, 0.0))))
+        }
+        SparseFactor::CholComplex(chol) => {
+            let b_vec: Vec<C64> = b.iter().copied().collect();
+            let x = chol.solve(&b_vec).map_err(|e| e.to_string())?;
+            Ok(Array1::from_vec(x))
+        }
+        SparseFactor::LuReal(lu) => {
+            if !b.iter().all(|c| c.im.abs() < 1e-12) {
+                return Err("solve: real factor cannot consume a complex b — refactor with lu on a complex matrix or pass a real b".to_string());
+            }
+            let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
+            let x = lu.solve(&b_real).map_err(|e| e.to_string())?;
+            Ok(Array1::from_iter(x.into_iter().map(|v| Complex::new(v, 0.0))))
+        }
+        SparseFactor::LuComplex(lu) => {
+            let b_vec: Vec<C64> = b.iter().copied().collect();
+            let x = lu.solve(&b_vec).map_err(|e| e.to_string())?;
+            Ok(Array1::from_vec(x))
+        }
+    }
+}
+
+/// Try the sparse Cholesky path. Detects "essentially real" inputs and
+/// routes to the `f64` solver to skip the 4× cost of complex factorization.
+fn try_sparse_cholesky(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
+    let factor = factor_sparse_cholesky(sm)?;
+    solve_with_factor(&factor, b)
 }
 
 /// Sparse LU with partial pivoting. Same real-vs-complex auto-routing
 /// as the Cholesky path. Pivoting threshold is the standard 0.1 (Trefethen).
 fn try_sparse_lu(sm: &SparseMat, b: &CVector) -> Result<CVector, String> {
-    use rustlab_core::sparse_solve::{AmdOrdering, SparseCsc, SparseLU, SparseSolveError};
+    let factor = factor_sparse_lu(sm)?;
+    solve_with_factor(&factor, b)
+}
 
-    let all_real = sm.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12)
-        && b.iter().all(|c| c.im.abs() < 1e-12);
-
-    if all_real {
-        let csc: SparseCsc<f64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
-        let b_real: Vec<f64> = b.iter().map(|c| c.re).collect();
-        let x_real = lu.solve(&b_real).map_err(|e| e.to_string())?;
-        Ok(Array1::from_iter(
-            x_real.into_iter().map(|v| Complex::new(v, 0.0)),
-        ))
-    } else {
-        let csc: SparseCsc<C64> = sm
-            .to_csc()
-            .map_err(|e: SparseSolveError| e.to_string())?;
-        let lu = SparseLU::factor(&csc, &AmdOrdering, 0.1).map_err(|e| e.to_string())?;
-        let b_vec: Vec<C64> = b.iter().copied().collect();
-        let x_vec = lu.solve(&b_vec).map_err(|e| e.to_string())?;
-        Ok(Array1::from_vec(x_vec))
+/// `chol(A)` — sparse Cholesky factorization. Returns an opaque factor
+/// handle suitable for `solve(F, b)`. Errors when `A` is not Hermitian
+/// positive definite (no auto fallback to LU; users who want that should
+/// call `lu(A)` or `spsolve(A, b)`).
+fn builtin_chol(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("chol", &args, 1)?;
+    let sm = match &args[0] {
+        Value::SparseMatrix(sm) => sm,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "chol: A must be a sparse matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    if sm.rows != sm.cols {
+        return Err(ScriptError::type_err(format!(
+            "chol: A must be square (got {}×{})",
+            sm.rows, sm.cols
+        )));
     }
+    let factor = factor_sparse_cholesky(sm)
+        .map_err(|e| ScriptError::type_err(format!("chol: {e}")))?;
+    Ok(Value::SparseFactor(factor))
+}
+
+/// `lu(A)` — sparse LU factorization with partial pivoting. Returns an
+/// opaque factor handle suitable for `solve(F, b)`.
+fn builtin_lu(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("lu", &args, 1)?;
+    let sm = match &args[0] {
+        Value::SparseMatrix(sm) => sm,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "lu: A must be a sparse matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    if sm.rows != sm.cols {
+        return Err(ScriptError::type_err(format!(
+            "lu: A must be square (got {}×{})",
+            sm.rows, sm.cols
+        )));
+    }
+    let factor = factor_sparse_lu(sm)
+        .map_err(|e| ScriptError::type_err(format!("lu: {e}")))?;
+    Ok(Value::SparseFactor(factor))
+}
+
+/// `solve(F, b)` — back-solve using a cached factor returned by
+/// `chol` or `lu`. The single-factor / many-RHS pattern is the canonical
+/// fast path for parameter sweeps and animations: factor once, solve
+/// per-frame.
+fn builtin_solve(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("solve", &args, 2)?;
+    let factor = match &args[0] {
+        Value::SparseFactor(f) => f,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "solve: first argument must be a sparse factor handle from chol() or lu(), got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let x = solve_with_factor(factor, &b)
+        .map_err(|e| ScriptError::type_err(format!("solve: {e}")))?;
+    Ok(spsolve_pack(x))
 }
 
 /// Dense Gaussian elimination with partial pivoting — the original

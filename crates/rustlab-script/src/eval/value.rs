@@ -1,11 +1,63 @@
 use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
+use rustlab_core::sparse_solve::{SparseChol, SparseLU};
 use rustlab_core::{CMatrix, CTensor3, CVector, SparseMat, SparseVec, C64};
 use rustlab_dsp::fixed::QFmtSpec;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+
+/// Cached sparse factorization handle returned by `chol(A)` / `lu(A)` and
+/// consumed by `solve(F, b)`. Wraps the underlying `SparseChol`/`SparseLU`
+/// in an `Arc` so cloning the `Value` is cheap. Real (`f64`) and complex
+/// (`C64`) factor variants are kept separate so the back-solve can route
+/// without re-detecting realness on every solve.
+#[derive(Debug, Clone)]
+pub enum SparseFactor {
+    CholReal(Arc<SparseChol<f64>>),
+    CholComplex(Arc<SparseChol<C64>>),
+    LuReal(Arc<SparseLU<f64>>),
+    LuComplex(Arc<SparseLU<C64>>),
+}
+
+impl SparseFactor {
+    /// "chol" or "lu", for diagnostics and the `Display` impl.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            SparseFactor::CholReal(_) | SparseFactor::CholComplex(_) => "chol",
+            SparseFactor::LuReal(_) | SparseFactor::LuComplex(_) => "lu",
+        }
+    }
+
+    /// "real" or "complex".
+    pub fn scalar(&self) -> &'static str {
+        match self {
+            SparseFactor::CholReal(_) | SparseFactor::LuReal(_) => "real",
+            SparseFactor::CholComplex(_) | SparseFactor::LuComplex(_) => "complex",
+        }
+    }
+
+    /// Dimension `n` of the factored `n×n` matrix.
+    pub fn dim(&self) -> usize {
+        match self {
+            SparseFactor::CholReal(c) => c.factor_csc().nrows(),
+            SparseFactor::CholComplex(c) => c.factor_csc().nrows(),
+            SparseFactor::LuReal(lu) => lu.l_factor().nrows(),
+            SparseFactor::LuComplex(lu) => lu.l_factor().nrows(),
+        }
+    }
+
+    /// nnz of the factor (sum of L and U for LU; just L for Cholesky).
+    pub fn nnz(&self) -> usize {
+        match self {
+            SparseFactor::CholReal(c) => c.nnz(),
+            SparseFactor::CholComplex(c) => c.nnz(),
+            SparseFactor::LuReal(lu) => lu.nnz(),
+            SparseFactor::LuComplex(lu) => lu.nnz(),
+        }
+    }
+}
 
 /// Numeric display format, set by the `format` command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,6 +151,10 @@ pub enum Value {
     SparseMatrix(SparseMat),
     /// String array: `{"a", "b", "c"}`.
     StringArray(Vec<String>),
+    /// Cached sparse factorization handle from `chol(A)` / `lu(A)`,
+    /// consumed by `solve(F, b)`. Reusing a factor across many RHS is
+    /// the canonical fast path for parameter sweeps and animations.
+    SparseFactor(SparseFactor),
 }
 
 impl Value {
@@ -130,6 +186,7 @@ impl Value {
             }
             Value::LiveFigure(_) => Err("cannot negate live_figure".to_string()),
             Value::StringArray(_) => Err("cannot negate string_array".to_string()),
+            Value::SparseFactor(_) => Err("cannot negate sparse_factor".to_string()),
             other => Err(format!("cannot negate {}", other.type_name())),
         }
     }
@@ -159,6 +216,7 @@ impl Value {
             Value::SparseVector(_) => "sparse_vector",
             Value::SparseMatrix(_) => "sparse_matrix",
             Value::StringArray(_) => "string_array",
+            Value::SparseFactor(_) => "sparse_factor",
         }
     }
 
@@ -1949,6 +2007,15 @@ impl fmt::Display for Value {
                     write!(f, "{} / ({})", ns_display, ds)
                 }
             }
+            Value::SparseFactor(sf) => write!(
+                f,
+                "<{} factor {}×{}, {}, nnz={}>",
+                sf.kind(),
+                sf.dim(),
+                sf.dim(),
+                sf.scalar(),
+                sf.nnz()
+            ),
         }
     }
 }

@@ -1433,6 +1433,33 @@ x = spsolve(sparse(A), [1; 1]);         # → [1/3, 1/3]
 
 The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for the curriculum's typical inputs; users who need different defaults can build the factorizations directly via `rustlab_core::sparse_solve` from Rust.
 
+### `chol(A)`, `lu(A)`, `solve(F, b)`
+
+Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` factors a general sparse matrix as `P·L·U` with partial pivoting (threshold 0.1). `solve(F, b)` runs the cached triangular solves on a right-hand side.
+
+This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
+
+```
+% Animation / sweep: factor once, solve per frame
+L = -1 * laplacian_2d(100, 100);          % SPD
+F = chol(L);                              % factor cost (~0.03 s)
+for k = 1:50
+  rho = randn(10000, 1);
+  v = solve(F, rho);                      % per-frame solve (~0.005 s)
+  imagesc(reshape(v, 100, 100));
+  frame
+end
+saveanim("sweep.html");
+
+% LU for non-Hermitian / complex
+A = sparse([1+j, 2; 3, 4-j]);
+F = lu(A);
+x1 = solve(F, [1; j]);
+x2 = solve(F, [j; 1]);
+```
+
+`chol()` errors when `A` is not SPD — there is no auto fallback to LU, on the assumption that the user explicitly chose Cholesky. If you want auto-dispatch with a single call, use `spsolve(A, b)`. A real factor refuses a complex `b`; refactor with `chol`/`lu` on the complex matrix in that case.
+
 ### `laplacian_2d(nx, ny [, dx, dy] [, bc])`
 
 Sparse 5-point Laplacian stencil on a uniform `nx × ny` grid. Returns an `(nx·ny) × (nx·ny)` sparse matrix `L` approximating $+\nabla^2$. Sign convention: Poisson $\nabla^2 V = -\rho/\varepsilon_0$ solves as `V = spsolve(L, -rho/eps0)`.

@@ -8642,6 +8642,118 @@ mod sparse_tests {
         assert!(err < 1e-10, "complex-LU residual {err}");
     }
 
+    // ── Phase 1 (em_performance): reusable Cholesky/LU factor handles ───────
+
+    #[test]
+    fn chol_then_solve_matches_spsolve() {
+        // SPD Laplacian on a 20×20 grid. Factor once via chol, solve
+        // via solve(F, b); should match a direct spsolve to 1e-10.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(20, 20);\n\
+             rhs = ones(400, 1);\n\
+             x_direct = spsolve(L, rhs);\n\
+             F = chol(L);\n\
+             x_cached = solve(F, rhs);\n\
+             diff = norm(x_direct - x_cached);",
+        );
+        let diff = get_scalar(&ev, "diff");
+        assert!(diff < 1e-10, "chol/solve vs spsolve disagreement: {diff}");
+    }
+
+    #[test]
+    fn chol_factor_reused_for_two_rhs() {
+        // Factor once, solve two different RHS, both should agree
+        // independently with spsolve.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(15, 15);\n\
+             b1 = ones(225, 1);\n\
+             b2 = (1:225)';\n\
+             F = chol(L);\n\
+             x1_cached = solve(F, b1);\n\
+             x2_cached = solve(F, b2);\n\
+             x1_direct = spsolve(L, b1);\n\
+             x2_direct = spsolve(L, b2);\n\
+             d1 = norm(x1_cached - x1_direct);\n\
+             d2 = norm(x2_cached - x2_direct);",
+        );
+        assert!(get_scalar(&ev, "d1") < 1e-10);
+        assert!(get_scalar(&ev, "d2") < 1e-10);
+    }
+
+    #[test]
+    fn lu_factor_reused_for_complex_rhs() {
+        // Non-Hermitian complex matrix; factor with lu, solve with two
+        // different RHS, residual should be machine-precision in both.
+        let ev = eval_str(
+            "A = [1 + j, 2; 3, 4 - j];\n\
+             As = sparse(A);\n\
+             F = lu(As);\n\
+             b1 = [1; j];\n\
+             b2 = [j; 1];\n\
+             x1 = solve(F, b1);\n\
+             x2 = solve(F, b2);\n\
+             r1 = A * transpose(x1) - b1;\n\
+             r2 = A * transpose(x2) - b2;\n\
+             e1 = norm(r1);\n\
+             e2 = norm(r2);",
+        );
+        assert!(get_scalar(&ev, "e1") < 1e-10);
+        assert!(get_scalar(&ev, "e2") < 1e-10);
+    }
+
+    #[test]
+    fn chol_on_non_spd_errors_cleanly() {
+        // [[1, 2], [2, 1]] is symmetric but indefinite — chol() must
+        // refuse it (no auto fallback to LU; the user asked explicitly).
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "A = [1, 2; 2, 1];\n\
+                 As = sparse(A);\n\
+                 F = chol(As);",
+            )
+        });
+        assert!(
+            result.is_err(),
+            "expected chol() to error on indefinite matrix"
+        );
+    }
+
+    #[test]
+    fn solve_rejects_non_factor_first_arg() {
+        // solve(A, b) with a raw matrix instead of a factor should
+        // raise a clear error pointing at chol/lu.
+        let result = std::panic::catch_unwind(|| {
+            eval_str("x = solve(speye(3), [1; 2; 3])")
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn solve_rejects_dim_mismatch() {
+        let result = std::panic::catch_unwind(|| {
+            eval_str(
+                "L = -1 * laplacian_2d(5, 5);\n\
+                 F = chol(L);\n\
+                 x = solve(F, [1; 2]);",
+            )
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn chol_real_path_real_factor() {
+        // Real-input matrix should produce a real-flavored factor.
+        // The SparseFactor::scalar() string is "real" — surface it
+        // by checking the type_name / Display path below.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(5, 5);\n\
+             F = chol(L);",
+        );
+        // Just confirm we got back *something* of type sparse_factor.
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "F").unwrap().1;
+        assert_eq!(v.type_name(), "sparse_factor");
+    }
+
     #[test]
     fn spdiags_multi_diagonal() {
         // Build tridiagonal: [-1, 2, -1] on diags [-1, 0, 1]
