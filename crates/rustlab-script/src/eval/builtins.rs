@@ -229,6 +229,7 @@ impl BuiltinRegistry {
         r.register("roots", builtin_roots);
         // Transfer function (Phase 2)
         r.register("tf", builtin_tf);
+        r.register("tfdata", builtin_tfdata);
         r.register("pole", builtin_pole);
         r.register("zero", builtin_zero);
         // State-space (Phase 3)
@@ -4402,6 +4403,16 @@ fn to_cmatrix_arg(val: &Value, fn_name: &str, arg_name: &str) -> Result<CMatrix,
     }
 }
 
+/// Like `to_cmatrix_arg`, but a `Value::Vector` is treated as a 1×n *row* matrix
+/// rather than the default n×1 column. Use for arguments that semantically want
+/// a row (e.g. the C matrix in a SISO state-space).
+fn to_cmatrix_arg_row(val: &Value, fn_name: &str, arg_name: &str) -> Result<CMatrix, ScriptError> {
+    if let Value::Vector(v) = val {
+        return Ok(Array2::from_shape_fn((1, v.len()), |(_, j)| v[j]));
+    }
+    to_cmatrix_arg(val, fn_name, arg_name)
+}
+
 fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
     match val {
         Value::Vector(v) => Ok(ndarray::Array1::from_iter(v.iter().map(|c| c.re))),
@@ -7025,13 +7036,18 @@ fn builtin_rmfield(args: Vec<Value>) -> Result<Value, ScriptError> {
 // ── Phase 2: Transfer Function builtins ──────────────────────────────────────
 
 fn builtin_tf(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("tf", &args, 1, 2)?;
     if args.len() == 1 {
+        // Three 1-arg forms: tf("s"), tf(sys), tf(G) (pass-through).
+        match &args[0] {
+            Value::StateSpace { a, b, c, d } => return ss_to_tf(a, b, c, d),
+            Value::TransferFn { .. } => return Ok(args[0].clone()),
+            _ => {}
+        }
         // tf("s") → Laplace variable s, representing the polynomial s/1
         let s = args[0].to_str().map_err(|e| ScriptError::runtime(e))?;
         if s != "s" {
             return Err(ScriptError::runtime(format!(
-                "tf: single-argument form expects \"s\", got \"{}\"",
+                "tf: single-argument form expects \"s\", a tf, or a state-space; got string \"{}\"",
                 s
             )));
         }
@@ -7039,7 +7055,15 @@ fn builtin_tf(args: Vec<Value>) -> Result<Value, ScriptError> {
             num: vec![1.0, 0.0],
             den: vec![1.0],
         })
-    } else {
+    } else if args.len() == 4 {
+        // tf(A, B, C, D) — sugar for tf(ss(A, B, C, D)).
+        let a = to_cmatrix_arg(&args[0], "tf", "A")?;
+        let b = to_cmatrix_arg(&args[1], "tf", "B")?;
+        let c = to_cmatrix_arg_row(&args[2], "tf", "C")?;
+        let d = to_cmatrix_arg(&args[3], "tf", "D")?;
+        let (a, b, c, d) = validate_abcd_shapes("tf", a, b, c, d)?;
+        ss_to_tf(&a, &b, &c, &d)
+    } else if args.len() == 2 {
         // tf(num_vec, den_vec) → explicit transfer function
         let num_cv = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
         let den_cv = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
@@ -7076,7 +7100,136 @@ fn builtin_tf(args: Vec<Value>) -> Result<Value, ScriptError> {
             num: num?,
             den: den?,
         })
+    } else {
+        Err(ScriptError::runtime(format!(
+            "tf: expected 1, 2, or 4 arguments, got {}",
+            args.len()
+        )))
     }
+}
+
+/// Convert a SISO state-space (A, B, C, D) to a TransferFn via Faddeev–LeVerrier.
+fn ss_to_tf(a: &CMatrix, b: &CMatrix, c: &CMatrix, d: &CMatrix) -> Result<Value, ScriptError> {
+    let n = a.nrows();
+    if a.ncols() != n {
+        return Err(ScriptError::runtime(format!(
+            "tf: A must be square, got {}×{}",
+            a.nrows(),
+            a.ncols()
+        )));
+    }
+    if b.nrows() != n || b.ncols() != 1 {
+        return Err(ScriptError::runtime(format!(
+            "tf: B must be {}×1 for SISO, got {}×{}",
+            n,
+            b.nrows(),
+            b.ncols()
+        )));
+    }
+    if c.nrows() != 1 || c.ncols() != n {
+        return Err(ScriptError::runtime(format!(
+            "tf: C must be 1×{} for SISO, got {}×{}",
+            n,
+            c.nrows(),
+            c.ncols()
+        )));
+    }
+    if d.nrows() != 1 || d.ncols() != 1 {
+        return Err(ScriptError::runtime(format!(
+            "tf: D must be 1×1 (scalar) for SISO, got {}×{}",
+            d.nrows(),
+            d.ncols()
+        )));
+    }
+
+    // Unwrap complex matrices to real f64; reject non-negligible imaginary parts.
+    let to_real_mat = |m: &CMatrix, name: &str| -> Result<Array2<f64>, ScriptError> {
+        let mut out = Array2::<f64>::zeros(m.dim());
+        for ((i, j), v) in m.indexed_iter() {
+            if v.im.abs() > 1e-12 {
+                return Err(ScriptError::type_err(format!(
+                    "tf: {} must have real coefficients (got im={} at [{},{}])",
+                    name, v.im, i, j
+                )));
+            }
+            out[[i, j]] = v.re;
+        }
+        Ok(out)
+    };
+    let a_r = to_real_mat(a, "A")?;
+    let b_r = to_real_mat(b, "B")?;
+    let c_r = to_real_mat(c, "C")?;
+    let d_val = {
+        let v = d[[0, 0]];
+        if v.im.abs() > 1e-12 {
+            return Err(ScriptError::type_err(format!(
+                "tf: D must be real, got im={}",
+                v.im
+            )));
+        }
+        v.re
+    };
+    let (num, den) = faddeev_leverrier_siso(&a_r, &b_r, &c_r, d_val);
+    Ok(Value::TransferFn { num, den })
+}
+
+/// Faddeev–LeVerrier recursion for SISO G(s) = C(sI − A)⁻¹B + D.
+/// Returns (num, den) with coefficients in descending-power order.
+/// O(n⁴): n iterations, each doing two n×n matmuls.
+fn faddeev_leverrier_siso(
+    a: &Array2<f64>,
+    b: &Array2<f64>,
+    c: &Array2<f64>,
+    d: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let n = a.nrows();
+    if n == 0 {
+        // Pure feedthrough G(s) = D / 1.
+        return (vec![d], vec![1.0]);
+    }
+
+    // den[k] = coefficient of s^(n-k); den[0] = c_n = 1.
+    let mut den = vec![0.0f64; n + 1];
+    den[0] = 1.0;
+
+    // num_strict[k-1] = coefficient of s^(n-k) in C·adj(sI−A)·B (length n total).
+    let mut num_strict = vec![0.0f64; n];
+
+    // M_0 = I_n.
+    let mut m: Array2<f64> = Array2::eye(n);
+
+    for k in 1..=n {
+        // Numerator at step k uses M_{k-1}: C·M_{k-1}·B → 1×1.
+        let cmb = c.dot(&m).dot(b);
+        num_strict[k - 1] = cmb[[0, 0]];
+
+        // c_{n-k} = -tr(A·M_{k-1}) / k.
+        let am = a.dot(&m);
+        let trace: f64 = am.diag().sum();
+        // Use 0.0 - x rather than -x to avoid IEEE-754 negative-zero in output.
+        let coeff = (0.0 - trace) / (k as f64);
+        den[k] = coeff;
+
+        // M_k = A·M_{k-1} + c_{n-k}·I.
+        m = am;
+        for i in 0..n {
+            m[[i, i]] += coeff;
+        }
+    }
+
+    // num = num_strict (degrees s^(n-1)..s^0) + d · den (degrees s^n..s^0).
+    let mut num = vec![0.0f64; n + 1];
+    num[0] = d * den[0];
+    for i in 0..n {
+        num[i + 1] = num_strict[i] + d * den[i + 1];
+    }
+
+    // Trim leading near-zeros (e.g. D=0 → drop the s^n term).
+    while num.len() > 1 && num[0].abs() < 1e-15 {
+        num.remove(0);
+    }
+
+    (num, den)
 }
 
 /// Convert a real polynomial coefficient slice to a complex Value::Vector for roots().
@@ -7092,6 +7245,25 @@ fn builtin_pole(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::TransferFn { den, .. } => builtin_roots(vec![real_poly_to_value(den)]),
         other => Err(ScriptError::type_err(format!(
             "pole: expected tf, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn builtin_tfdata(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("tfdata", &args, 1)?;
+    match &args[0] {
+        Value::TransferFn { num, den } => {
+            let num_v = Value::Vector(Array1::from_iter(
+                num.iter().map(|&x| Complex::new(x, 0.0)),
+            ));
+            let den_v = Value::Vector(Array1::from_iter(
+                den.iter().map(|&x| Complex::new(x, 0.0)),
+            ));
+            Ok(Value::Tuple(vec![num_v, den_v]))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "tfdata: expected tf, got {}",
             other.type_name()
         ))),
     }
@@ -7186,14 +7358,85 @@ fn tf_to_ss(num: &[f64], den: &[f64]) -> Result<Value, String> {
 }
 
 fn builtin_ss(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("ss", &args, 1)?;
-    match &args[0] {
-        Value::TransferFn { num, den } => tf_to_ss(num, den).map_err(|e| ScriptError::runtime(e)),
-        other => Err(ScriptError::type_err(format!(
-            "ss: expected tf, got {} (direct ss(A,B,C,D) construction not yet supported)",
-            other.type_name()
+    match args.len() {
+        1 => match &args[0] {
+            Value::TransferFn { num, den } => {
+                tf_to_ss(num, den).map_err(|e| ScriptError::runtime(e))
+            }
+            Value::StateSpace { .. } => Ok(args[0].clone()),
+            other => Err(ScriptError::type_err(format!(
+                "ss: expected tf or 4 matrices (A,B,C,D), got {}",
+                other.type_name()
+            ))),
+        },
+        4 => {
+            let a = to_cmatrix_arg(&args[0], "ss", "A")?;
+            let b = to_cmatrix_arg(&args[1], "ss", "B")?;
+            let c = to_cmatrix_arg_row(&args[2], "ss", "C")?;
+            let d = to_cmatrix_arg(&args[3], "ss", "D")?;
+            let (a, b, c, d) = validate_abcd_shapes("ss", a, b, c, d)?;
+            Ok(Value::StateSpace { a, b, c, d })
+        }
+        n => Err(ScriptError::runtime(format!(
+            "ss: expected 1 (tf) or 4 (A,B,C,D) arguments, got {}",
+            n
         ))),
     }
+}
+
+/// Validate state-space shapes and broadcast a 1×1 D to p×m if needed.
+/// Returns the (possibly reshaped) matrices ready to store in Value::StateSpace.
+fn validate_abcd_shapes(
+    fn_name: &str,
+    a: CMatrix,
+    b: CMatrix,
+    c: CMatrix,
+    d: CMatrix,
+) -> Result<(CMatrix, CMatrix, CMatrix, CMatrix), ScriptError> {
+    let n = a.nrows();
+    if a.ncols() != n {
+        return Err(ScriptError::runtime(format!(
+            "{}: A must be square, got {}×{}",
+            fn_name,
+            a.nrows(),
+            a.ncols()
+        )));
+    }
+    if b.nrows() != n {
+        return Err(ScriptError::runtime(format!(
+            "{}: B has {} rows but A is {}×{}",
+            fn_name,
+            b.nrows(),
+            n,
+            n
+        )));
+    }
+    let m = b.ncols();
+    if c.ncols() != n {
+        return Err(ScriptError::runtime(format!(
+            "{}: C has {} cols but A is {}×{}",
+            fn_name,
+            c.ncols(),
+            n,
+            n
+        )));
+    }
+    let p = c.nrows();
+    let d_final = if d.nrows() == p && d.ncols() == m {
+        d
+    } else if d.nrows() == 1 && d.ncols() == 1 {
+        Array2::from_elem((p, m), d[[0, 0]])
+    } else {
+        return Err(ScriptError::runtime(format!(
+            "{}: D has shape {}×{} but expected {}×{} (or 1×1 scalar)",
+            fn_name,
+            d.nrows(),
+            d.ncols(),
+            p,
+            m
+        )));
+    };
+    Ok((a, b, c, d_final))
 }
 
 fn builtin_ctrb(args: Vec<Value>) -> Result<Value, ScriptError> {

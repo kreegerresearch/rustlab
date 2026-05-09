@@ -2182,7 +2182,7 @@ Example output:
 
 Classical control systems — transfer functions, state-space, frequency analysis, and optimal control.
 
-### `tf(arg)` / `tf(num, den)`
+### `tf(arg)` / `tf(num, den)` / `tf(sys)` / `tf(A, B, C, D)`
 
 Create a transfer function.
 
@@ -2202,6 +2202,30 @@ T   = G * C / (1 + G * C)   % closed-loop
 
 Supported arithmetic: `+`, `-`, `*`, `/`, `^` (integer exponent), and scalar operands.
 
+**Convert from state-space (SISO).** Either pass a `sys` value built by `ss(...)` or pass the four matrices directly:
+
+```
+% From a state-space value:
+sys = ss([0,1; -4,-0.5], [0;1], [1,0], 0)
+G   = tf(sys)                  % G(s) = 1 / (s² + 0.5s + 4)
+
+% Equivalent — four-matrix sugar:
+G = tf([0,1; -4,-0.5], [0;1], [1,0], 0)
+```
+
+Uses the Faddeev–LeVerrier recursion to compute `det(sI − A)` and `C·adj(sI − A)·B + D·det(sI − A)` directly, in O(n⁴), without eigenvalue solves or root-finding. SISO only — `B` is n×1, `C` is 1×n, `D` is 1×1. No automatic pole-zero cancellation: redundant factors stay in both numerator and denominator (a future `minreal(G)` would handle that).
+
+### `tfdata(G)`
+
+Extract numerator and denominator coefficient vectors from a transfer function. Always multi-return.
+
+```
+G = tf([1, 2], [1, 3, 5])
+[num, den] = tfdata(G)   % num = [1, 2], den = [1, 3, 5]
+```
+
+Coefficients are in descending-power order (index 0 = highest power), matching the convention used everywhere else.
+
 ### `pole(G)`
 
 Roots of the denominator (open-loop poles).
@@ -2220,16 +2244,25 @@ G = tf([1, 1], [1, 2, 10])
 z = zero(G)   % ≈ -1
 ```
 
-### `ss(G)`
+### `ss(G)` / `ss(A, B, C, D)`
 
-Convert a transfer function to state-space (observable canonical form).
+Two forms:
+
+- `ss(G)` — convert a transfer function to state-space in observable canonical form.
+- `ss(A, B, C, D)` — build a state-space directly from matrices (any input/output dimensions).
 
 ```
+% TF → SS (observable canonical form):
 sys = ss(G)
 A = sys.A   B = sys.B   C = sys.C   D = sys.D
+
+% Build SS from physics-derived matrices:
+sys = ss([0,1; -4,-0.5], [0;1], [1,0], 0)
 ```
 
-Each field is a `CMatrix`. Eigenvalues of `A` match `pole(G)`.
+Each field is a `CMatrix`. Eigenvalues of `A` match `pole(G)` for the converted form.
+
+**Shape rules for `ss(A, B, C, D)`:** `A` is n×n, `B` is n×m, `C` is p×n, `D` is p×m. A scalar `0` for `D` is accepted and broadcast to p×m.
 
 ### `ctrb(A, B)`
 

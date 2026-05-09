@@ -362,13 +362,15 @@ pub const HELP: &[HelpEntry] = &[
         detail: "roots(p)  — roots of polynomial with coefficients p (descending power)\n  roots([1, -3, 2])  →  [2, 1]  (roots of x²-3x+2)\n  roots([1, 2, 10])  →  [-1+3j, -1-3j]" },
     // Control Systems
     HelpEntry { name: "tf", brief: "Create a transfer function",
-        detail: "tf(\"s\")           — Laplace variable s\ntf(num, den)      — TF from numerator/denominator coefficient vectors (descending power)\n\nExample:\n  s = tf(\"s\")\n  G = 10 / (s^2 + 2*s + 10)\n  G = tf([10], [1, 2, 10])   % equivalent" },
+        detail: "tf(\"s\")              — Laplace variable s\ntf(num, den)         — TF from numerator/denominator coefficient vectors (descending power)\ntf(sys)              — convert state-space (from ss(...)) to TF (SISO; Faddeev–LeVerrier)\ntf(A, B, C, D)       — convert raw matrices to TF (SISO; sugar for tf(ss(A,B,C,D)))\n\nExample:\n  s = tf(\"s\")\n  G = 10 / (s^2 + 2*s + 10)\n  G = tf([10], [1, 2, 10])      % equivalent\n  G = tf([0,1; -4,-0.5], [0;1], [1,0], 0)   % from physics-derived (A,B,C,D)" },
+    HelpEntry { name: "tfdata", brief: "Extract numerator and denominator from a TF",
+        detail: "[num, den] = tfdata(G)  — numerator and denominator coefficient vectors\n  Coefficients are in descending-power order (index 0 = highest power).\n\nExample:\n  G = tf([1,2], [1,3,5])\n  [n, d] = tfdata(G)   % n = [1,2], d = [1,3,5]" },
     HelpEntry { name: "pole", brief: "Poles of a transfer function",
         detail: "pole(G)  — complex vector of closed-loop poles (roots of denominator)\n\nExample:\n  G = tf([10], [1, 2, 10])\n  p = pole(G)  % ≈ [-1+3j, -1-3j]" },
     HelpEntry { name: "zero", brief: "Zeros of a transfer function",
         detail: "zero(G)  — complex vector of transmission zeros (roots of numerator)\n\nExample:\n  G = tf([1, 1], [1, 2, 10])\n  z = zero(G)  % ≈ -1" },
-    HelpEntry { name: "ss", brief: "Convert transfer function to state-space",
-        detail: "ss(G)  — observable canonical form state-space {A, B, C, D}\n\nAccess fields: sys.A, sys.B, sys.C, sys.D\n\nExample:\n  G   = tf([10], [1, 2, 10])\n  sys = ss(G)" },
+    HelpEntry { name: "ss", brief: "Construct or convert to state-space",
+        detail: "ss(G)            — convert transfer function to observable canonical form\nss(A, B, C, D)   — build state-space directly from matrices (SISO or MIMO shapes)\n\nValidation: A is n×n; B is n×m; C is p×n; D is p×m (scalar 0 broadcast to p×m).\nAccess fields: sys.A, sys.B, sys.C, sys.D\n\nExample:\n  G   = tf([10], [1, 2, 10])\n  sys = ss(G)\n  sys = ss([0,1; -4,-0.5], [0;1], [1,0], 0)" },
     HelpEntry { name: "ctrb", brief: "Controllability matrix",
         detail: "ctrb(A, B)  — [B, AB, A²B, …]  (n × n·p matrix)\n\nFull column rank ↔ system is controllable.\n\nExample:\n  sys = ss(G)\n  Wc  = ctrb(sys.A, sys.B)\n  rank(Wc)   % should equal n for controllable system" },
     HelpEntry { name: "obsv", brief: "Observability matrix",
@@ -976,8 +978,8 @@ pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Controls",
             &[
-                "tf", "pole", "zero", "ss", "ctrb", "obsv", "bode", "step", "margin", "lqr",
-                "rlocus", "rk4", "lyap", "gram", "care", "dare", "place", "freqresp",
+                "tf", "tfdata", "pole", "zero", "ss", "ctrb", "obsv", "bode", "step", "margin",
+                "lqr", "rlocus", "rk4", "lyap", "gram", "care", "dare", "place", "freqresp",
             ],
         ),
         (

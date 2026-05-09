@@ -269,10 +269,12 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
-| `tf(num, den)` | Create transfer function from numerator/denominator coefficient vectors |
-| `pole(sys)` | Poles of a transfer function |
-| `zero(sys)` | Zeros of a transfer function |
-| `ss(A, B, C, D)` | Create state-space system |
+| `tf("s")` / `tf(num, den)` | Create transfer function: Laplace variable, or from coefficient vectors (descending power) |
+| `tf(sys)` / `tf(A, B, C, D)` | Convert state-space to transfer function (SISO; Faddeev–LeVerrier) |
+| `tfdata(G)` | `[num, den] = tfdata(G)` — extract coefficient vectors from a transfer function |
+| `pole(G)` | Poles of a transfer function |
+| `zero(G)` | Zeros of a transfer function |
+| `ss(G)` / `ss(A, B, C, D)` | Convert TF to state-space (observable canonical form), or build SS directly from matrices |
 | `ctrb(A, B)` | Controllability matrix |
 | `obsv(A, C)` | Observability matrix |
 | `bode(sys)` | Bode plot in terminal |

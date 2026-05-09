@@ -1,0 +1,44 @@
+# Physics → state-space → transfer function → frequency response
+# Workflow enabled by tf(A, B, C, D) and tf(sys): build a plant from
+# first principles, then drop straight into the TF-domain tools (pole,
+# zero, bode, step) without any hand-derived polynomial coefficients.
+
+# ── Plant: DC servo motor (voltage in, shaft angle out) ─────────────────────
+# After collapsing the fast electrical dynamics:
+#   J*θ'' + b_eff*θ' = K_eff * u
+# where
+#   J     = rotor inertia
+#   b_eff = mechanical damping + back-EMF / R term
+#   K_eff = torque constant / armature resistance
+
+J     = 0.01
+b_eff = 0.10
+K_eff = 0.50
+
+# ── State-space: x = [θ; θ'] ────────────────────────────────────────────────
+A = [0, 1; 0, -b_eff/J]
+B = [0; K_eff/J]
+C = [1, 0]
+D = 0
+
+sys = ss(A, B, C, D)
+print(sys)
+
+# ── Convert to a transfer function ──────────────────────────────────────────
+# Old way: derive (J*s^2 + b_eff*s) on paper and write tf([K_eff], [J, b_eff, 0]).
+# New way: one call.
+G = tf(sys)
+print(G)
+
+# ── Sanity-check: poles should be 0 (free integrator) and -b_eff/J ─────────
+poles = pole(G)
+print(poles)
+
+# ── Inspect num/den directly ────────────────────────────────────────────────
+[num, den] = tfdata(G)
+fprintf("G(s) = %.3f / (%.3f*s^2 + %.3f*s + %.3f)\n", num(1), den(1), den(2), den(3))
+
+# ── Frequency response: bode plot of the open-loop plant ────────────────────
+# Free-integrator pole at the origin → magnitude rolls off at -20 dB/decade
+# from low frequency, then breaks to -40 dB/decade past the mechanical pole.
+bode(G);

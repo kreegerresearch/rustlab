@@ -3525,6 +3525,144 @@ mod phase3_tests {
             det
         );
     }
+
+    // ── ss(A,B,C,D) constructor + tf(sys) / tf(A,B,C,D) round-trip ───────────
+
+    fn get_tf(ev: &Evaluator, name: &str) -> (Vec<f64>, Vec<f64>) {
+        match ev.get(name).unwrap() {
+            Value::TransferFn { num, den } => (num.clone(), den.clone()),
+            other => panic!("expected tf for '{name}', got {other:?}"),
+        }
+    }
+
+    fn vec_close(actual: &[f64], expected: &[f64], tol: f64) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "length mismatch: actual={:?} expected={:?}",
+            actual,
+            expected
+        );
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < tol,
+                "index {} differs: actual={} expected={} (tol={})",
+                i,
+                a,
+                e,
+                tol
+            );
+        }
+    }
+
+    #[test]
+    fn ss_four_arg_constructor() {
+        // Plain SISO; A=[-2], B=[1], C=[1], D=0 → SS stored verbatim.
+        let ev = eval_str("sys = ss([-2], [1], [1], 0)");
+        let (a, b, c, d) = get_ss(&ev, "sys");
+        assert_eq!(a.dim(), (1, 1));
+        assert!(close(a[[0, 0]].re, -2.0));
+        assert_eq!(b.dim(), (1, 1));
+        assert!(close(b[[0, 0]].re, 1.0));
+        assert_eq!(c.dim(), (1, 1));
+        assert!(close(c[[0, 0]].re, 1.0));
+        assert_eq!(d.dim(), (1, 1));
+        assert!(close(d[[0, 0]].re, 0.0));
+    }
+
+    #[test]
+    fn tf_ss_first_order() {
+        // A=[-2], B=[1], C=[1], D=0 → G(s) = 1/(s+2)
+        let ev = eval_str("G = tf([-2], [1], [1], 0)");
+        let (num, den) = get_tf(&ev, "G");
+        vec_close(&num, &[1.0], 1e-10);
+        vec_close(&den, &[1.0, 2.0], 1e-10);
+    }
+
+    #[test]
+    fn tf_ss_double_integrator() {
+        // A=[[0,1],[0,0]], B=[[0],[1]], C=[[1,0]], D=0 → G(s) = 1/s²
+        let ev = eval_str("G = tf([0,1; 0,0], [0;1], [1,0], 0)");
+        let (num, den) = get_tf(&ev, "G");
+        vec_close(&num, &[1.0], 1e-10);
+        vec_close(&den, &[1.0, 0.0, 0.0], 1e-10);
+    }
+
+    #[test]
+    fn tf_ss_mass_spring_damper() {
+        // m=1, b=0.5, k=4 → G(s) = 1/(s² + 0.5s + 4)
+        let ev = eval_str(
+            "A = [0,1; -4,-0.5]\nB = [0;1]\nC = [1,0]\nD = 0\nG = tf(A, B, C, D)",
+        );
+        let (num, den) = get_tf(&ev, "G");
+        vec_close(&num, &[1.0], 1e-10);
+        vec_close(&den, &[1.0, 0.5, 4.0], 1e-10);
+    }
+
+    #[test]
+    fn tf_ss_d_passthrough() {
+        // A=[-1], B=[1], C=[1], D=2 → G(s) = (2s + 3)/(s + 1)
+        let ev = eval_str("G = tf([-1], [1], [1], 2)");
+        let (num, den) = get_tf(&ev, "G");
+        vec_close(&num, &[2.0, 3.0], 1e-10);
+        vec_close(&den, &[1.0, 1.0], 1e-10);
+    }
+
+    #[test]
+    fn tf_ss_round_trip_via_sys() {
+        // tf(ss(G)) should reproduce G's coefficients.
+        let ev = eval_str("G = tf([1,2],[1,3,5])\nsys = ss(G)\nH = tf(sys)");
+        let (gn, gd) = get_tf(&ev, "G");
+        let (hn, hd) = get_tf(&ev, "H");
+        vec_close(&gn, &hn, 1e-9);
+        vec_close(&gd, &hd, 1e-9);
+    }
+
+    #[test]
+    fn ss_shape_error_non_square_a() {
+        let src = "sys = ss([1,2;3,4;5,6], [1;1;1], [1,0,0], 0)";
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let result: Result<(), _> = stmts.iter().try_for_each(|s| ev.exec_stmt(s).map(|_| ()));
+        let err = result.expect_err("expected error for non-square A");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("ss") && msg.contains("A must be square"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn ss_shape_error_b_rows_mismatch() {
+        let src = "sys = ss([0,1; -1,-2], [1;1;1], [1,0], 0)";
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let result: Result<(), _> = stmts.iter().try_for_each(|s| ev.exec_stmt(s).map(|_| ()));
+        let err = result.expect_err("expected error for mismatched B rows");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("B has 3 rows"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn tfdata_extracts_num_and_den() {
+        // [n, d] = tfdata(G) returns numerator and denominator vectors.
+        let ev = eval_str("G = tf([1,2],[1,3,5])\n[n, d] = tfdata(G)");
+        let n = get_complex_vector(&ev, "n");
+        let d = get_complex_vector(&ev, "d");
+        let n_re: Vec<f64> = n.iter().map(|c| c.re).collect();
+        let d_re: Vec<f64> = d.iter().map(|c| c.re).collect();
+        vec_close(&n_re, &[1.0, 2.0], 1e-12);
+        vec_close(&d_re, &[1.0, 3.0, 5.0], 1e-12);
+    }
 }
 
 // ── Phase 4: Frequency & Time-Domain Analysis ─────────────────────────────────
