@@ -58,10 +58,7 @@ pub fn render_html(
                 // Stash math spans before CommonMark eats LaTeX backslashes
                 let (md, math) = protect_math(&md);
                 // Convert markdown to HTML
-                let mut opts = Options::empty();
-                opts.insert(Options::ENABLE_TABLES);
-                opts.insert(Options::ENABLE_STRIKETHROUGH);
-                let parser = Parser::new_ext(&md, opts);
+                let parser = Parser::new_ext(&md, notebook_md_options());
                 let mut html = String::new();
                 push_html(&mut html, parser);
                 let html = restore_math(&html, &math);
@@ -221,10 +218,7 @@ pub fn render_html(
                 body.push_str(&format!("<div class=\"callout-title\">{label}</div>\n"));
                 let md = rewrite_md_links(content);
                 let (md, math) = protect_math(&md);
-                let mut opts = Options::empty();
-                opts.insert(Options::ENABLE_TABLES);
-                opts.insert(Options::ENABLE_STRIKETHROUGH);
-                let parser = Parser::new_ext(&md, opts);
+                let parser = Parser::new_ext(&md, notebook_md_options());
                 let mut html = String::new();
                 push_html(&mut html, parser);
                 let html = restore_math(&html, &math);
@@ -713,6 +707,19 @@ pub fn render_html(
 fn plot_container_height(rows: usize) -> usize {
     let rows = rows.max(1);
     450 + (rows - 1) * 350
+}
+
+/// Pulldown-cmark feature set used by every notebook markdown parse —
+/// the GFM superset that GitHub and Obsidian both render natively.
+/// Format-specific renderers (e.g. LaTeX) can layer extra flags on top.
+pub(crate) fn notebook_md_options() -> Options {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
+    opts
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -2148,5 +2155,82 @@ mod tests {
         assert_eq!(plot_container_height(2), 800);
         assert_eq!(plot_container_height(3), 1150);
         assert_eq!(plot_container_height(4), 1500);
+    }
+
+    // ── GFM-superset markdown features (Phase B) ──
+    //
+    // These pin the parser flag set in `notebook_md_options()` so anyone
+    // who turns one off accidentally fails the test. They exercise the
+    // canonical GFM features GitHub and Obsidian both render natively.
+
+    fn render_md(src: &str) -> String {
+        let blocks = vec![Rendered::Markdown(src.to_string())];
+        render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+        )
+    }
+
+    #[test]
+    fn render_html_footnote_reference_and_definition() {
+        let html = render_md("Cite[^src].\n\n[^src]: Smith 2024.");
+        assert!(
+            html.contains(r##"href="#src""##) || html.contains(r##"href="#fn-src""##),
+            "footnote reference link missing: {html}"
+        );
+        assert!(
+            html.contains("Smith 2024"),
+            "footnote definition body missing: {html}"
+        );
+    }
+
+    #[test]
+    fn render_html_task_list_unchecked() {
+        let html = render_md("- [ ] todo");
+        assert!(
+            html.contains("type=\"checkbox\""),
+            "task-list checkbox missing: {html}"
+        );
+        assert!(
+            !html.contains("checked=\"\""),
+            "unchecked box should not be checked: {html}"
+        );
+    }
+
+    #[test]
+    fn render_html_task_list_checked() {
+        let html = render_md("- [x] done");
+        assert!(html.contains("type=\"checkbox\""), "checkbox missing: {html}");
+        assert!(html.contains("checked"), "checked attr missing: {html}");
+    }
+
+    #[test]
+    fn render_html_heading_explicit_id() {
+        // `{#custom}` after a heading produces `id="custom"` rather than
+        // the auto-slug. Note: `inject_heading_ids` rewrites the id, so
+        // we just assert the explicit slug shows up somewhere usable.
+        let html = render_md("# Filter Analysis {#filters}");
+        assert!(
+            html.contains("Filter Analysis"),
+            "heading text missing: {html}"
+        );
+        assert!(
+            html.contains(r#"id="filters""#),
+            "explicit heading id missing: {html}"
+        );
+    }
+
+    #[test]
+    fn notebook_md_options_includes_gfm_superset() {
+        let opts = notebook_md_options();
+        assert!(opts.contains(Options::ENABLE_TABLES));
+        assert!(opts.contains(Options::ENABLE_STRIKETHROUGH));
+        assert!(opts.contains(Options::ENABLE_FOOTNOTES));
+        assert!(opts.contains(Options::ENABLE_TASKLISTS));
+        assert!(opts.contains(Options::ENABLE_HEADING_ATTRIBUTES));
     }
 }

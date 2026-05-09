@@ -131,6 +131,41 @@ booktabs:
 | Hann        | $4/N$           | $-31$ dB       |
 ```
 
+### GFM-superset features
+
+The renderer enables the GFM features that GitHub and Obsidian both
+render natively, so the same source `.md` looks the same in all three
+viewing surfaces.
+
+**Footnotes:**
+
+```markdown
+Citation needed[^smith].
+
+[^smith]: Smith et al., 2024.
+```
+
+**Task lists:**
+
+```markdown
+- [x] Filter design
+- [ ] Spectral analysis
+```
+
+**Explicit heading IDs** — pin a stable anchor for cross-notebook links:
+
+```markdown
+# Filter Analysis {#filters}
+
+See [the filters section](#filters).
+```
+
+**Strikethrough:**
+
+```markdown
+~~deprecated text~~
+```
+
 ## Directives
 
 Directives are a `rustlab-notebook` feature, not standard Markdown. They
