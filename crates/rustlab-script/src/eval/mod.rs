@@ -692,6 +692,70 @@ impl Evaluator {
                             }
                             _ => unreachable!(),
                         }
+                    } else if matches!(self.env.get(name.as_str()), Some(Value::Matrix(_))) {
+                        // Single-index scalar/complex assignment into an existing
+                        // Matrix. A row vector (1×N) or column vector (N×1) keeps
+                        // its shape and grows along its non-singleton axis if
+                        // idx exceeds the current length. A general 2D matrix
+                        // takes column-major linear-index semantics with no
+                        // growth (out-of-bounds is an error).
+                        let assign_val = match &val {
+                            Value::Scalar(n) => Complex::new(*n, 0.0),
+                            Value::Complex(c) => *c,
+                            other => {
+                                return Err(ScriptError::runtime(format!(
+                            "index assignment: right-hand side must be scalar or complex, got {}",
+                            other.type_name()
+                        )))
+                            }
+                        };
+                        match self.env.get_mut(name.as_str()) {
+                            Some(Value::Matrix(m)) => {
+                                let nr = m.nrows();
+                                let nc = m.ncols();
+                                if nr == 1 {
+                                    if idx > nc {
+                                        let mut new_m = Array2::zeros((1, idx));
+                                        for c in 0..nc {
+                                            new_m[[0, c]] = m[[0, c]];
+                                        }
+                                        *m = new_m;
+                                    }
+                                    m[[0, idx - 1]] = assign_val;
+                                } else if nc == 1 {
+                                    if idx > nr {
+                                        let mut new_m = Array2::zeros((idx, 1));
+                                        for r in 0..nr {
+                                            new_m[[r, 0]] = m[[r, 0]];
+                                        }
+                                        *m = new_m;
+                                    }
+                                    m[[idx - 1, 0]] = assign_val;
+                                } else {
+                                    let total = nr * nc;
+                                    if idx > total {
+                                        return Err(ScriptError::runtime(format!(
+                                            "index assignment: linear index {} out of bounds for {}×{} matrix ({} elements)",
+                                            idx, nr, nc, total
+                                        )));
+                                    }
+                                    // column-major: k0 = col * nrows + row
+                                    let k0 = idx - 1;
+                                    let col = k0 / nr;
+                                    let row = k0 % nr;
+                                    m[[row, col]] = assign_val;
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                        if !suppress && self.echo_enabled() {
+                            output::script_println(&format!(
+                                "{}({}) = {}",
+                                name,
+                                idx,
+                                Value::Complex(assign_val)
+                            ));
+                        }
                     } else {
                         // Single-index: vector assignment (auto-create/grow)
                         let assign_val = match &val {

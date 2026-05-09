@@ -6991,6 +6991,87 @@ mod index_assign_tests {
     fn matrix_col_out_of_bounds_errors() {
         assert!(try_run("M = eye(2);\nM(1,3) = 1;").is_err());
     }
+
+    // Row-vector single-index assign must preserve the 1×N matrix shape.
+    // Previously v(i) = scalar on a row vector replaced v with a fresh
+    // length-i Vector, destructively truncating it.
+    #[test]
+    fn row_vector_single_index_preserves_shape() {
+        let ev = run("v = zeros(1, 5);\nv(3) = 7;");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 1);
+                assert_eq!(m.ncols(), 5);
+                assert!(close(m[[0, 0]].re, 0.0));
+                assert!(close(m[[0, 2]].re, 7.0));
+                assert!(close(m[[0, 4]].re, 0.0));
+            }
+            other => panic!("expected 1×5 matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn row_vector_single_index_grows_along_columns() {
+        let ev = run("v = zeros(1, 5);\nv(8) = 7;");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 1);
+                assert_eq!(m.ncols(), 8);
+                assert!(close(m[[0, 4]].re, 0.0));
+                assert!(close(m[[0, 7]].re, 7.0));
+            }
+            other => panic!("expected 1×8 matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn col_vector_single_index_preserves_shape() {
+        let ev = run("v = zeros(5, 1);\nv(3) = 7;");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 5);
+                assert_eq!(m.ncols(), 1);
+                assert!(close(m[[2, 0]].re, 7.0));
+                assert!(close(m[[4, 0]].re, 0.0));
+            }
+            other => panic!("expected 5×1 matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn col_vector_single_index_grows_along_rows() {
+        let ev = run("v = zeros(5, 1);\nv(8) = 7;");
+        match ev.get("v").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 8);
+                assert_eq!(m.ncols(), 1);
+                assert!(close(m[[7, 0]].re, 7.0));
+            }
+            other => panic!("expected 8×1 matrix, got {other:?}"),
+        }
+    }
+
+    // 2D matrix single-index linear assignment uses column-major order
+    // and must not destroy the matrix.
+    #[test]
+    fn matrix_single_index_linear_assign() {
+        let ev = run("M = zeros(2, 3);\nM(4) = 9;");
+        match ev.get("M").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 2);
+                assert_eq!(m.ncols(), 3);
+                // column-major: linear index 4 = row 1, col 1 (0-based)
+                assert!(close(m[[1, 1]].re, 9.0));
+                assert!(close(m[[0, 0]].re, 0.0));
+            }
+            other => panic!("expected 2×3 matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matrix_single_index_out_of_bounds_errors() {
+        assert!(try_run("M = zeros(2, 3);\nM(7) = 1;").is_err());
+    }
 }
 
 // ─── Tier 2c: Parser error messages ─────────────────────────────────────────
