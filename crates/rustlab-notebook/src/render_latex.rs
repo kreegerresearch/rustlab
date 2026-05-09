@@ -131,12 +131,19 @@ pub fn render_latex(
                     caption.as_deref(),
                 );
             }
-            Rendered::Callout { kind, content } => {
-                let label = match kind {
+            Rendered::Callout {
+                kind,
+                title,
+                content,
+            } => {
+                let default_label = match kind {
                     CalloutKind::Note => "Note",
                     CalloutKind::Tip => "Tip",
+                    CalloutKind::Important => "Important",
                     CalloutKind::Warning => "Warning",
+                    CalloutKind::Caution => "Caution",
                 };
+                let label = title.as_deref().unwrap_or(default_label);
                 body.push_str(&format!("\\begin{{quote}}\n\\textbf{{{label}:}} "));
                 body.push_str(&markdown_to_latex(content));
                 body.push_str("\\end{quote}\n\n");

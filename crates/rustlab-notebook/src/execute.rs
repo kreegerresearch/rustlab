@@ -38,8 +38,12 @@ pub enum Rendered {
         details: Option<String>,
         caption: Option<String>,
     },
-    /// A callout box (note, tip, warning).
-    Callout { kind: CalloutKind, content: String },
+    /// A callout box. `title` overrides the default kind label when set.
+    Callout {
+        kind: CalloutKind,
+        title: Option<String>,
+        content: String,
+    },
     /// Start of a numbered exercise.
     ExerciseStart { number: usize },
     /// Start of a solution (collapsed by default).
@@ -126,10 +130,15 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
                     caption,
                 });
             }
-            Block::Callout { kind, content } => {
+            Block::Callout {
+                kind,
+                title,
+                content,
+            } => {
                 let interpolated = interpolate_markdown(content, &mut ev);
                 rendered.push(Rendered::Callout {
                     kind: *kind,
+                    title: title.clone(),
                     content: interpolated,
                 });
             }

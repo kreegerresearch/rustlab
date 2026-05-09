@@ -22,12 +22,30 @@ pub struct MermaidDirectives {
     pub caption: Option<String>,
 }
 
-/// The kind of callout box.
+/// The kind of callout box. Aligned with the GitHub / Obsidian shared
+/// set so `> [!NOTE]` source renders identically across all surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalloutKind {
     Note,
     Tip,
+    Important,
     Warning,
+    Caution,
+}
+
+impl CalloutKind {
+    /// Map a `> [!TYPE]` tag to a `CalloutKind`. Aliases:
+    /// `INFO` → Note, `HINT` → Tip, `DANGER` → Caution. Case-insensitive.
+    pub fn from_gfm_tag(tag: &str) -> Option<Self> {
+        match tag.to_ascii_uppercase().as_str() {
+            "NOTE" | "INFO" => Some(CalloutKind::Note),
+            "TIP" | "HINT" => Some(CalloutKind::Tip),
+            "IMPORTANT" => Some(CalloutKind::Important),
+            "WARNING" => Some(CalloutKind::Warning),
+            "CAUTION" | "DANGER" => Some(CalloutKind::Caution),
+            _ => None,
+        }
+    }
 }
 
 /// A block in a parsed notebook.
@@ -45,8 +63,13 @@ pub enum Block {
         source: String,
         directives: MermaidDirectives,
     },
-    /// A callout box (note, tip, warning).
-    Callout { kind: CalloutKind, content: String },
+    /// A callout box. `title` is the optional override on `> [!TIP] My title`;
+    /// when `None`, the renderer uses the default kind label.
+    Callout {
+        kind: CalloutKind,
+        title: Option<String>,
+        content: String,
+    },
     /// Start of a numbered exercise.
     ExerciseStart,
     /// Start of a solution (collapsed by default).
@@ -130,6 +153,42 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
             }
             in_mermaid = true;
             i += 1;
+        } else if let Some((kind, title)) = parse_gfm_callout_header(trimmed) {
+            // GitHub / Obsidian native callout: `> [!NOTE]` opens a
+            // contiguous blockquote whose body is the callout content.
+            if !markdown_buf.is_empty() {
+                blocks.push(Block::Markdown(markdown_buf.clone()));
+                markdown_buf.clear();
+            }
+            i += 1;
+            let mut content = String::new();
+            while i < lines.len() {
+                let cl = lines[i];
+                let ct = cl.trim();
+                // Strip one level of `> ` prefix; bare `>` becomes blank line.
+                let stripped = if let Some(rest) = ct.strip_prefix("> ") {
+                    Some(rest)
+                } else if ct == ">" {
+                    Some("")
+                } else {
+                    None
+                };
+                match stripped {
+                    Some(body) => {
+                        if !content.is_empty() {
+                            content.push('\n');
+                        }
+                        content.push_str(body);
+                        i += 1;
+                    }
+                    None => break,
+                }
+            }
+            blocks.push(Block::Callout {
+                kind,
+                title,
+                content,
+            });
         } else if let Some(directive) = parse_markdown_directive(trimmed) {
             match directive {
                 MarkdownDirective::Callout(kind) => {
@@ -138,11 +197,16 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
                         blocks.push(Block::Markdown(markdown_buf.clone()));
                         markdown_buf.clear();
                     }
-                    // Collect callout content until blank line, heading, or closing tag
+                    // Collect callout content until blank line, heading, or closing tag.
+                    // Only the three legacy kinds can reach this branch — `Important`
+                    // and `Caution` exist solely for the GFM `> [!IMPORTANT]` form.
                     let closing_tag = match kind {
                         CalloutKind::Note => "<!-- /note -->",
                         CalloutKind::Tip => "<!-- /tip -->",
                         CalloutKind::Warning => "<!-- /warning -->",
+                        CalloutKind::Important | CalloutKind::Caution => unreachable!(
+                            "legacy `<!-- ... -->` callouts only produce Note/Tip/Warning"
+                        ),
                     };
                     let mut content = String::new();
                     i += 1;
@@ -163,7 +227,11 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
                         i += 1;
                     }
                     if !content.is_empty() {
-                        blocks.push(Block::Callout { kind, content });
+                        blocks.push(Block::Callout {
+                            kind,
+                            title: None,
+                            content,
+                        });
                     }
                 }
                 MarkdownDirective::ExerciseStart => {
@@ -229,6 +297,33 @@ enum MarkdownDirective {
     Callout(CalloutKind),
     ExerciseStart,
     SolutionStart,
+}
+
+/// Detect a GitHub / Obsidian-native callout opener: `> [!TYPE]`,
+/// optionally followed by a `+` (open by default — Obsidian) or `-`
+/// (collapsed by default) foldable suffix and an optional title:
+///
+/// ```text
+/// > [!NOTE]
+/// > [!TIP] Heads up
+/// > [!WARNING]+
+/// > [!IMPORTANT]- Custom title
+/// ```
+///
+/// Returns `(kind, optional_title)`. The foldable `+` / `-` suffix is
+/// silently consumed — we don't currently expose that to renderers.
+fn parse_gfm_callout_header(trimmed: &str) -> Option<(CalloutKind, Option<String>)> {
+    let rest = trimmed.strip_prefix("> [!")?;
+    let close = rest.find(']')?;
+    let tag = &rest[..close];
+    let kind = CalloutKind::from_gfm_tag(tag)?;
+    let after = rest[close + 1..].trim_start_matches(['+', '-']).trim();
+    let title = if after.is_empty() {
+        None
+    } else {
+        Some(after.to_string())
+    };
+    Some((kind, title))
 }
 
 /// Try to parse a trimmed line as a markdown-flow directive.
@@ -757,7 +852,7 @@ mod tests {
         assert_eq!(blocks.len(), 3);
         assert!(matches!(&blocks[0], Block::Markdown(s) if s.contains("Intro")));
         assert!(
-            matches!(&blocks[1], Block::Callout { kind: CalloutKind::Note, content }
+            matches!(&blocks[1], Block::Callout { kind: CalloutKind::Note, content, .. }
             if content == "This is a note.")
         );
         assert!(matches!(&blocks[2], Block::Markdown(s) if s.contains("More text")));
@@ -769,7 +864,7 @@ mod tests {
         let blocks = parse_notebook(src);
         assert_eq!(blocks.len(), 2);
         assert!(
-            matches!(&blocks[0], Block::Callout { kind: CalloutKind::Tip, content }
+            matches!(&blocks[0], Block::Callout { kind: CalloutKind::Tip, content, .. }
             if content.contains("First line.") && content.contains("Second line."))
         );
         assert!(matches!(&blocks[1], Block::Markdown(s) if s.contains("After")));
@@ -781,7 +876,7 @@ mod tests {
         let blocks = parse_notebook(src);
         assert_eq!(blocks.len(), 2);
         assert!(
-            matches!(&blocks[0], Block::Callout { kind: CalloutKind::Warning, content }
+            matches!(&blocks[0], Block::Callout { kind: CalloutKind::Warning, content, .. }
             if content == "Danger!")
         );
         assert!(matches!(&blocks[1], Block::Markdown(s) if s.contains("Next Section")));
@@ -888,5 +983,121 @@ mod tests {
             Block::Mermaid { source, .. } => assert_eq!(source, "A & <B> --> C"),
             _ => panic!("expected Mermaid"),
         }
+    }
+
+    // ── GitHub / Obsidian-native callouts (Phase A) ──
+
+    #[test]
+    fn parse_callout_github_note_basic() {
+        let src = "Intro.\n\n> [!NOTE]\n> Pay attention here.\n\nAfter.";
+        let blocks = parse_notebook(src);
+        assert!(matches!(
+            &blocks[1],
+            Block::Callout {
+                kind: CalloutKind::Note,
+                title: None,
+                content,
+            } if content == "Pay attention here."
+        ));
+    }
+
+    #[test]
+    fn parse_callout_github_with_inline_title() {
+        let src = "> [!TIP] Heads up\n> Increase nfft.";
+        let blocks = parse_notebook(src);
+        match &blocks[0] {
+            Block::Callout {
+                kind: CalloutKind::Tip,
+                title,
+                content,
+            } => {
+                assert_eq!(title.as_deref(), Some("Heads up"));
+                assert_eq!(content, "Increase nfft.");
+            }
+            _ => panic!("expected Tip callout"),
+        }
+    }
+
+    #[test]
+    fn parse_callout_github_foldable_suffix() {
+        // `+` (open by default) and `-` (collapsed) are silently consumed.
+        let src = "> [!WARNING]+\n> Body.";
+        let blocks = parse_notebook(src);
+        assert!(matches!(
+            &blocks[0],
+            Block::Callout { kind: CalloutKind::Warning, .. }
+        ));
+
+        let src2 = "> [!IMPORTANT]- Title\n> Body.";
+        let blocks2 = parse_notebook(src2);
+        match &blocks2[0] {
+            Block::Callout {
+                kind: CalloutKind::Important,
+                title,
+                ..
+            } => assert_eq!(title.as_deref(), Some("Title")),
+            _ => panic!("expected Important callout with title"),
+        }
+    }
+
+    #[test]
+    fn parse_callout_github_multiline_body() {
+        let src = "> [!CAUTION]\n> First line.\n> Second line.\n>\n> Third line.";
+        let blocks = parse_notebook(src);
+        match &blocks[0] {
+            Block::Callout {
+                kind: CalloutKind::Caution,
+                content,
+                ..
+            } => {
+                assert!(content.contains("First line."));
+                assert!(content.contains("Second line."));
+                assert!(content.contains("Third line."));
+            }
+            _ => panic!("expected Caution callout"),
+        }
+    }
+
+    #[test]
+    fn parse_callout_github_aliases() {
+        // `INFO` → Note, `HINT` → Tip, `DANGER` → Caution. Case-insensitive.
+        let src = "> [!info]\n> a\n\n> [!Hint]\n> b\n\n> [!danger]\n> c";
+        let blocks = parse_notebook(src);
+        let kinds: Vec<_> = blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::Callout { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![CalloutKind::Note, CalloutKind::Tip, CalloutKind::Caution]
+        );
+    }
+
+    #[test]
+    fn parse_callout_unknown_type_left_as_blockquote() {
+        // `> [!FOO]` doesn't match a known kind — falls through as plain
+        // markdown (the renderer emits it as a blockquote).
+        let src = "> [!FOO]\n> body.";
+        let blocks = parse_notebook(src);
+        assert!(blocks.iter().all(|b| !matches!(b, Block::Callout { .. })));
+        assert!(matches!(&blocks[0], Block::Markdown(s) if s.contains("[!FOO]")));
+    }
+
+    #[test]
+    fn parse_callout_legacy_html_comment_still_works() {
+        // `<!-- note -->` continues to parse — soft-deprecated, not removed.
+        let src = "<!-- note -->\nLegacy still works.";
+        let blocks = parse_notebook(src);
+        assert!(matches!(
+            &blocks[0],
+            Block::Callout {
+                kind: CalloutKind::Note,
+                title: None,
+                content,
+            } if content == "Legacy still works."
+        ));
     }
 }

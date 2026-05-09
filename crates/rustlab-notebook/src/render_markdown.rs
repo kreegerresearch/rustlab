@@ -173,15 +173,28 @@ pub fn render_markdown(
                     body.push_str("</details>\n\n");
                 }
             }
-            Rendered::Callout { kind, content } => {
-                let label = match kind {
-                    CalloutKind::Note => "Note",
-                    CalloutKind::Tip => "Tip",
-                    CalloutKind::Warning => "Warning",
+            Rendered::Callout {
+                kind,
+                title,
+                content,
+            } => {
+                // Emit the GitHub / Obsidian-native blockquote syntax so the
+                // committed `book/*.md` renders as a styled callout on both
+                // surfaces without any per-target translation.
+                let tag = match kind {
+                    CalloutKind::Note => "NOTE",
+                    CalloutKind::Tip => "TIP",
+                    CalloutKind::Important => "IMPORTANT",
+                    CalloutKind::Warning => "WARNING",
+                    CalloutKind::Caution => "CAUTION",
                 };
-                body.push_str(&format!("> **{label}:** "));
-                // Blockquote the content; preserve internal newlines with "> ".
+                if let Some(t) = title {
+                    body.push_str(&format!("> [!{tag}] {t}\n"));
+                } else {
+                    body.push_str(&format!("> [!{tag}]\n"));
+                }
                 let indented = content.trim().replace('\n', "\n> ");
+                body.push_str("> ");
                 body.push_str(&indented);
                 body.push_str("\n\n");
             }
@@ -291,13 +304,52 @@ mod tests {
     }
 
     #[test]
-    fn callout_becomes_blockquote() {
+    fn callout_becomes_gfm_blockquote() {
         let blocks = vec![Rendered::Callout {
             kind: CalloutKind::Note,
+            title: None,
             content: "Pay attention here.".to_string(),
         }];
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
-        assert!(md.contains("> **Note:** Pay attention here."));
+        assert!(
+            md.contains("> [!NOTE]\n> Pay attention here."),
+            "expected GFM-native callout syntax: {md}"
+        );
+    }
+
+    #[test]
+    fn callout_emits_inline_title_when_set() {
+        let blocks = vec![Rendered::Callout {
+            kind: CalloutKind::Important,
+            title: Some("Heads up".to_string()),
+            content: "key fact".to_string(),
+        }];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(
+            md.contains("> [!IMPORTANT] Heads up\n> key fact"),
+            "expected inline title in callout header: {md}"
+        );
+    }
+
+    #[test]
+    fn callout_kinds_round_trip_to_gfm_tags() {
+        // Each new kind emits the matching GitHub tag.
+        let cases = [
+            (CalloutKind::Note, "[!NOTE]"),
+            (CalloutKind::Tip, "[!TIP]"),
+            (CalloutKind::Important, "[!IMPORTANT]"),
+            (CalloutKind::Warning, "[!WARNING]"),
+            (CalloutKind::Caution, "[!CAUTION]"),
+        ];
+        for (kind, tag) in cases {
+            let blocks = vec![Rendered::Callout {
+                kind,
+                title: None,
+                content: "body".to_string(),
+            }];
+            let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+            assert!(md.contains(tag), "missing {tag} for {kind:?}: {md}");
+        }
     }
 
     #[test]

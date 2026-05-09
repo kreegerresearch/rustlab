@@ -301,29 +301,57 @@ has changed. Delete `.cache/` to force a full rebuild.
 drop the renderer (and its `resvg`/`usvg`/`fontdb` dep tree). Mermaid
 blocks then emit verbatim source plus a one-time warning.
 
-### Callouts: `<!-- note -->`, `<!-- tip -->`, `<!-- warning -->`
+### Callouts: `> [!NOTE]` (preferred), `<!-- note -->` (legacy)
 
-Place one of the three tags on its own line, then the callout body on
-the lines that follow. The callout ends at the first blank line, the
-next heading, or an explicit closing tag (`<!-- /note -->`, `<!-- /tip -->`,
-`<!-- /warning -->`). Markdown inside the body (including inline math)
-is rendered normally.
+The renderer accepts the GitHub / Obsidian-native blockquote callout
+syntax — both targets render it as a styled box natively, so the same
+source displays correctly on GitHub, in Obsidian, and through rustlab.
+
+```markdown
+> [!NOTE]
+> The window length must be a power of two for the radix-2 FFT path.
+
+> [!TIP] Heads up
+> Optional title after the type tag.
+
+> [!IMPORTANT]
+> Critical fact the reader must not miss.
+
+> [!WARNING]
+> `freqz` returns frequencies in Hz only when `fs` is supplied.
+
+> [!CAUTION]
+> Lossy operation — verify on a copy first.
+```
+
+Recognised types (case-insensitive): `NOTE`, `TIP`, `IMPORTANT`,
+`WARNING`, `CAUTION`. Aliases: `INFO` → Note, `HINT` → Tip,
+`DANGER` → Caution. The Obsidian-only `+` / `-` foldable suffix
+(`> [!WARNING]+`) is parsed and silently consumed — every output
+format renders the static box.
+
+The body continues for as many contiguous `>` lines as follow; a blank
+line ends the callout. Markdown inside the body (links, inline math,
+emphasis) is rendered normally.
+
+**Legacy syntax (still supported).** The original HTML-comment form
+keeps working for backward compatibility:
 
 ```markdown
 <!-- note -->
-The window length must be a power of two for the radix-2 FFT path.
+Single-paragraph callout, ends at blank line or heading.
 
 <!-- tip -->
-Increase `nfft` to improve frequency resolution.
+Or use an explicit closing tag for multi-paragraph bodies.
 <!-- /tip -->
-
-<!-- warning -->
-`freqz` returns frequencies in Hz only when `fs` is supplied.
 ```
 
-In HTML output, each callout renders as a titled box coloured by kind
-(info / success / danger). In LaTeX/PDF output, callouts render as
-labelled paragraphs.
+When the markdown emitter (`-f markdown`) re-renders a notebook, it
+emits the GFM-native syntax regardless of which form the source used,
+so legacy notebooks auto-migrate on the next render.
+
+In HTML output, each callout renders as a titled box coloured by kind.
+In LaTeX/PDF output, callouts render as labelled paragraphs.
 
 ### Exercises and solutions: `<!-- exercise -->`, `<!-- solution -->`
 

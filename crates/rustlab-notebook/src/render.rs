@@ -208,14 +208,18 @@ pub fn render_html(
                     body.push_str("</details>\n");
                 }
             }
-            Rendered::Callout { kind, content } => {
-                let (class, label) = match kind {
-                    CalloutKind::Note => ("note", "Note"),
-                    CalloutKind::Tip => ("tip", "Tip"),
-                    CalloutKind::Warning => ("warning", "Warning"),
-                };
+            Rendered::Callout {
+                kind,
+                title,
+                content,
+            } => {
+                let (class, default_label) = callout_style(*kind);
+                let label = title.as_deref().unwrap_or(default_label);
                 body.push_str(&format!("<div class=\"callout callout-{class}\">\n"));
-                body.push_str(&format!("<div class=\"callout-title\">{label}</div>\n"));
+                body.push_str(&format!(
+                    "<div class=\"callout-title\">{}</div>\n",
+                    escape_html(label)
+                ));
                 let md = rewrite_md_links(content);
                 let (md, math) = protect_math(&md);
                 let parser = Parser::new_ext(&md, notebook_md_options());
@@ -605,11 +609,21 @@ pub fn render_html(
     background: {bg_secondary};
   }}
   .callout-tip .callout-title {{ color: {accent_tertiary}; }}
+  .callout-important {{
+    border-color: {accent_primary};
+    background: {bg_secondary};
+  }}
+  .callout-important .callout-title {{ color: {accent_primary}; }}
   .callout-warning {{
     border-color: {error_text};
     background: {bg_secondary};
   }}
   .callout-warning .callout-title {{ color: {error_text}; }}
+  .callout-caution {{
+    border-color: {error_text};
+    background: {bg_secondary};
+  }}
+  .callout-caution .callout-title {{ color: {error_text}; }}
   /* ── Exercise / solution blocks ── */
   .exercise {{
     border: 1px solid {border};
@@ -707,6 +721,17 @@ pub fn render_html(
 fn plot_container_height(rows: usize) -> usize {
     let rows = rows.max(1);
     450 + (rows - 1) * 350
+}
+
+/// CSS class suffix and default-title label for each callout kind.
+pub(crate) fn callout_style(kind: CalloutKind) -> (&'static str, &'static str) {
+    match kind {
+        CalloutKind::Note => ("note", "Note"),
+        CalloutKind::Tip => ("tip", "Tip"),
+        CalloutKind::Important => ("important", "Important"),
+        CalloutKind::Warning => ("warning", "Warning"),
+        CalloutKind::Caution => ("caution", "Caution"),
+    }
 }
 
 /// Pulldown-cmark feature set used by every notebook markdown parse —
@@ -1852,6 +1877,7 @@ mod tests {
     fn render_html_callout_preserves_math_backslashes() {
         let blocks = vec![Rendered::Callout {
             kind: CalloutKind::Note,
+            title: None,
             content: r"see $$a \\ b$$".to_string(),
         }];
         let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
@@ -2222,6 +2248,45 @@ mod tests {
             html.contains(r#"id="filters""#),
             "explicit heading id missing: {html}"
         );
+    }
+
+    // ── Callout rendering for GFM-native kinds + custom title ──
+
+    fn render_callout(kind: CalloutKind, title: Option<&str>, content: &str) -> String {
+        let blocks = vec![Rendered::Callout {
+            kind,
+            title: title.map(String::from),
+            content: content.to_string(),
+        }];
+        render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+        )
+    }
+
+    #[test]
+    fn render_html_callout_important_kind() {
+        let html = render_callout(CalloutKind::Important, None, "key fact");
+        assert!(html.contains("callout-important"));
+        assert!(html.contains(">Important<"));
+    }
+
+    #[test]
+    fn render_html_callout_caution_kind() {
+        let html = render_callout(CalloutKind::Caution, None, "danger");
+        assert!(html.contains("callout-caution"));
+        assert!(html.contains(">Caution<"));
+    }
+
+    #[test]
+    fn render_html_callout_custom_title_overrides_label() {
+        let html = render_callout(CalloutKind::Tip, Some("Heads up"), "body");
+        assert!(html.contains(">Heads up<"));
+        assert!(!html.contains(">Tip<"));
     }
 
     #[test]

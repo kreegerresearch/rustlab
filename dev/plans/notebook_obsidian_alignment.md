@@ -75,7 +75,7 @@ primary surface (GitHub-hosted `book/`).
 
 ---
 
-## Phase A — GitHub / Obsidian-native callouts
+## Phase A — GitHub / Obsidian-native callouts ✓ DONE
 
 **The biggest user-visible win.** Both GitHub and Obsidian render the
 same `> [!NOTE]` blockquote callout syntax natively. Adopting it means
