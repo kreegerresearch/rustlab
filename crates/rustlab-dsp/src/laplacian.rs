@@ -77,6 +77,23 @@ fn c(v: f64) -> C64 {
     Complex::new(v, 0.0)
 }
 
+/// Helper for the row-by-row Laplacian builders: collect up to `MAX`
+/// `(col, value)` pairs into a stack-allocated buffer, sort by column,
+/// emit into the output entries vec at the given row. The per-row sort
+/// is constant-time since the stencil width is bounded.
+fn flush_row<const MAX: usize>(
+    out: &mut Vec<(usize, usize, C64)>,
+    row: usize,
+    buf: &mut [(usize, C64); MAX],
+    len: usize,
+) {
+    let row_buf = &mut buf[..len];
+    row_buf.sort_by_key(|&(c, _)| c);
+    for &(col, val) in row_buf.iter() {
+        out.push((row, col, val));
+    }
+}
+
 /// 1-D tridiagonal Laplacian on a uniform grid with `n` cells, spacing
 /// `dx`, and the given boundary condition. Returns an `n × n` sparse
 /// matrix approximating `+d²V/dx²`.
@@ -85,31 +102,47 @@ pub fn laplacian_1d(n: usize, dx: f64, bc: BoundaryCondition) -> Result<SparseMa
     check_pos("laplacian_1d", "dx", dx)?;
     let inv_dx2 = 1.0 / (dx * dx);
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(3 * n);
+    let mut buf: [(usize, C64); 3] = [(0, c(0.0)); 3];
+
     for i in 0..n {
         let mut diag = -2.0 * inv_dx2;
-        // Left neighbour
+        let mut len = 0usize;
+
+        // Left neighbour.
         if i > 0 {
-            entries.push((i, i - 1, c(inv_dx2)));
+            buf[len] = (i - 1, c(inv_dx2));
+            len += 1;
         } else {
             match bc {
                 BoundaryCondition::Dirichlet => {}
                 BoundaryCondition::Neumann => diag += inv_dx2,
-                BoundaryCondition::Periodic => entries.push((i, n - 1, c(inv_dx2))),
+                BoundaryCondition::Periodic => {
+                    buf[len] = (n - 1, c(inv_dx2));
+                    len += 1;
+                }
             }
         }
-        // Right neighbour
+        // Right neighbour.
         if i + 1 < n {
-            entries.push((i, i + 1, c(inv_dx2)));
+            buf[len] = (i + 1, c(inv_dx2));
+            len += 1;
         } else {
             match bc {
                 BoundaryCondition::Dirichlet => {}
                 BoundaryCondition::Neumann => diag += inv_dx2,
-                BoundaryCondition::Periodic => entries.push((i, 0, c(inv_dx2))),
+                BoundaryCondition::Periodic => {
+                    buf[len] = (0, c(inv_dx2));
+                    len += 1;
+                }
             }
         }
-        entries.push((i, i, c(diag)));
+        // Diagonal.
+        buf[len] = (i, c(diag));
+        len += 1;
+
+        flush_row::<3>(&mut entries, i, &mut buf, len);
     }
-    Ok(SparseMat::new(n, n, entries))
+    Ok(SparseMat::from_sorted_entries(n, n, entries))
 }
 
 /// 2-D 5-point Laplacian on an `nx × ny` uniform grid with the given
@@ -130,61 +163,82 @@ pub fn laplacian_2d_bc(
     let inv_dy2 = 1.0 / (dy * dy);
     let n = nx * ny;
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
+    let mut buf: [(usize, C64); 5] = [(0, c(0.0)); 5];
 
+    // Outer loop walks rows in ascending k = j*ny + i order. Within
+    // each row, `buf` collects all stencil contributions; flush_row
+    // sorts by column and emits in row-major-then-column-major order.
     for j in 0..nx {
         for i in 0..ny {
             let k = j * ny + i;
             let mut diag = -2.0 * (inv_dx2 + inv_dy2);
+            let mut len = 0usize;
 
-            // y-direction (i): up/down
+            // y-direction (i): down/up
             if i > 0 {
-                entries.push((k, k - 1, c(inv_dy2)));
+                buf[len] = (k - 1, c(inv_dy2));
+                len += 1;
             } else {
                 match bc {
                     BoundaryCondition::Dirichlet => {}
                     BoundaryCondition::Neumann => diag += inv_dy2,
-                    BoundaryCondition::Periodic => entries.push((k, k + (ny - 1), c(inv_dy2))),
+                    BoundaryCondition::Periodic => {
+                        buf[len] = (k + (ny - 1), c(inv_dy2));
+                        len += 1;
+                    }
                 }
             }
             if i + 1 < ny {
-                entries.push((k, k + 1, c(inv_dy2)));
+                buf[len] = (k + 1, c(inv_dy2));
+                len += 1;
             } else {
                 match bc {
                     BoundaryCondition::Dirichlet => {}
                     BoundaryCondition::Neumann => diag += inv_dy2,
-                    BoundaryCondition::Periodic => entries.push((k, k - (ny - 1), c(inv_dy2))),
+                    BoundaryCondition::Periodic => {
+                        buf[len] = (k - (ny - 1), c(inv_dy2));
+                        len += 1;
+                    }
                 }
             }
 
             // x-direction (j): left/right (stride ny)
             if j > 0 {
-                entries.push((k, k - ny, c(inv_dx2)));
+                buf[len] = (k - ny, c(inv_dx2));
+                len += 1;
             } else {
                 match bc {
                     BoundaryCondition::Dirichlet => {}
                     BoundaryCondition::Neumann => diag += inv_dx2,
                     BoundaryCondition::Periodic => {
-                        entries.push((k, k + (nx - 1) * ny, c(inv_dx2)))
+                        buf[len] = (k + (nx - 1) * ny, c(inv_dx2));
+                        len += 1;
                     }
                 }
             }
             if j + 1 < nx {
-                entries.push((k, k + ny, c(inv_dx2)));
+                buf[len] = (k + ny, c(inv_dx2));
+                len += 1;
             } else {
                 match bc {
                     BoundaryCondition::Dirichlet => {}
                     BoundaryCondition::Neumann => diag += inv_dx2,
                     BoundaryCondition::Periodic => {
-                        entries.push((k, k - (nx - 1) * ny, c(inv_dx2)))
+                        buf[len] = (k - (nx - 1) * ny, c(inv_dx2));
+                        len += 1;
                     }
                 }
             }
 
-            entries.push((k, k, c(diag)));
+            // Diagonal.
+            buf[len] = (k, c(diag));
+            len += 1;
+
+            flush_row::<5>(&mut entries, k, &mut buf, len);
         }
     }
 
-    Ok(SparseMat::new(n, n, entries))
+    Ok(SparseMat::from_sorted_entries(n, n, entries))
 }
 
 /// 3-D 7-point Laplacian on an `nx × ny × nz` uniform grid with the
@@ -212,95 +266,114 @@ pub fn laplacian_3d(
     let inv_dz2 = 1.0 / (dz * dz);
     let n = nx * ny * nz;
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(7 * n);
+    let mut buf: [(usize, C64); 7] = [(0, c(0.0)); 7];
 
     let stride_y = 1;
     let stride_x = ny;
     let stride_z = nx * ny;
 
+    // Outer loop walks rows in ascending flat-index order.
     for kk in 0..nz {
         for j in 0..nx {
             for i in 0..ny {
                 let k = (kk * nx + j) * ny + i;
                 let mut diag = -2.0 * (inv_dx2 + inv_dy2 + inv_dz2);
+                let mut len = 0usize;
 
-                // y-direction (i): up/down
+                // y-direction (i)
                 if i > 0 {
-                    entries.push((k, k - stride_y, c(inv_dy2)));
+                    buf[len] = (k - stride_y, c(inv_dy2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dy2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k + (ny - 1) * stride_y, c(inv_dy2)))
+                            buf[len] = (k + (ny - 1) * stride_y, c(inv_dy2));
+                            len += 1;
                         }
                     }
                 }
                 if i + 1 < ny {
-                    entries.push((k, k + stride_y, c(inv_dy2)));
+                    buf[len] = (k + stride_y, c(inv_dy2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dy2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k - (ny - 1) * stride_y, c(inv_dy2)))
+                            buf[len] = (k - (ny - 1) * stride_y, c(inv_dy2));
+                            len += 1;
                         }
                     }
                 }
 
-                // x-direction (j): left/right (stride ny)
+                // x-direction (j)
                 if j > 0 {
-                    entries.push((k, k - stride_x, c(inv_dx2)));
+                    buf[len] = (k - stride_x, c(inv_dx2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dx2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k + (nx - 1) * stride_x, c(inv_dx2)))
+                            buf[len] = (k + (nx - 1) * stride_x, c(inv_dx2));
+                            len += 1;
                         }
                     }
                 }
                 if j + 1 < nx {
-                    entries.push((k, k + stride_x, c(inv_dx2)));
+                    buf[len] = (k + stride_x, c(inv_dx2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dx2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k - (nx - 1) * stride_x, c(inv_dx2)))
+                            buf[len] = (k - (nx - 1) * stride_x, c(inv_dx2));
+                            len += 1;
                         }
                     }
                 }
 
-                // z-direction (kk): in/out (stride nx*ny)
+                // z-direction (kk)
                 if kk > 0 {
-                    entries.push((k, k - stride_z, c(inv_dz2)));
+                    buf[len] = (k - stride_z, c(inv_dz2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dz2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k + (nz - 1) * stride_z, c(inv_dz2)))
+                            buf[len] = (k + (nz - 1) * stride_z, c(inv_dz2));
+                            len += 1;
                         }
                     }
                 }
                 if kk + 1 < nz {
-                    entries.push((k, k + stride_z, c(inv_dz2)));
+                    buf[len] = (k + stride_z, c(inv_dz2));
+                    len += 1;
                 } else {
                     match bc {
                         BoundaryCondition::Dirichlet => {}
                         BoundaryCondition::Neumann => diag += inv_dz2,
                         BoundaryCondition::Periodic => {
-                            entries.push((k, k - (nz - 1) * stride_z, c(inv_dz2)))
+                            buf[len] = (k - (nz - 1) * stride_z, c(inv_dz2));
+                            len += 1;
                         }
                     }
                 }
 
-                entries.push((k, k, c(diag)));
+                // Diagonal.
+                buf[len] = (k, c(diag));
+                len += 1;
+
+                flush_row::<7>(&mut entries, k, &mut buf, len);
             }
         }
     }
 
-    Ok(SparseMat::new(n, n, entries))
+    Ok(SparseMat::from_sorted_entries(n, n, entries))
 }
 
 /// Variable-coefficient Laplacian `∇·(ε∇V)` on a 2-D uniform grid.
@@ -349,6 +422,7 @@ pub fn laplacian_eps_2d(
     let inv_dy2 = 1.0 / (dy * dy);
     let n = nx * ny;
     let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
+    let mut buf: [(usize, C64); 5] = [(0, c(0.0)); 5];
 
     // Harmonic mean of two complex values, treating the harmonic mean of
     // an arithmetic sum as the complex equivalent. Returns 0 if either
@@ -369,24 +443,27 @@ pub fn laplacian_eps_2d(
             let k = j * ny + i;
             let me = eps_at(i, j);
             let mut diag = Complex::new(0.0, 0.0);
+            let mut len = 0usize;
 
-            // y-direction (i): up/down
+            // y-direction (i): down/up
             if i > 0 {
                 let eps_face = hmean(me, eps_at(i - 1, j));
                 let coeff = eps_face * c(inv_dy2);
-                entries.push((k, k - 1, coeff));
+                buf[len] = (k - 1, coeff);
+                len += 1;
                 diag -= coeff;
             } else {
                 match bc {
                     BoundaryCondition::Dirichlet => {
-                        let eps_face = hmean(me, me); // ghost = me with V=0; but factor uses just me
+                        let eps_face = hmean(me, me);
                         diag -= eps_face * c(inv_dy2);
                     }
                     BoundaryCondition::Neumann => {}
                     BoundaryCondition::Periodic => {
                         let eps_face = hmean(me, eps_at(ny - 1, j));
                         let coeff = eps_face * c(inv_dy2);
-                        entries.push((k, k + (ny - 1), coeff));
+                        buf[len] = (k + (ny - 1), coeff);
+                        len += 1;
                         diag -= coeff;
                     }
                 }
@@ -394,7 +471,8 @@ pub fn laplacian_eps_2d(
             if i + 1 < ny {
                 let eps_face = hmean(me, eps_at(i + 1, j));
                 let coeff = eps_face * c(inv_dy2);
-                entries.push((k, k + 1, coeff));
+                buf[len] = (k + 1, coeff);
+                len += 1;
                 diag -= coeff;
             } else {
                 match bc {
@@ -406,7 +484,8 @@ pub fn laplacian_eps_2d(
                     BoundaryCondition::Periodic => {
                         let eps_face = hmean(me, eps_at(0, j));
                         let coeff = eps_face * c(inv_dy2);
-                        entries.push((k, k - (ny - 1), coeff));
+                        buf[len] = (k - (ny - 1), coeff);
+                        len += 1;
                         diag -= coeff;
                     }
                 }
@@ -416,7 +495,8 @@ pub fn laplacian_eps_2d(
             if j > 0 {
                 let eps_face = hmean(me, eps_at(i, j - 1));
                 let coeff = eps_face * c(inv_dx2);
-                entries.push((k, k - ny, coeff));
+                buf[len] = (k - ny, coeff);
+                len += 1;
                 diag -= coeff;
             } else {
                 match bc {
@@ -428,7 +508,8 @@ pub fn laplacian_eps_2d(
                     BoundaryCondition::Periodic => {
                         let eps_face = hmean(me, eps_at(i, nx - 1));
                         let coeff = eps_face * c(inv_dx2);
-                        entries.push((k, k + (nx - 1) * ny, coeff));
+                        buf[len] = (k + (nx - 1) * ny, coeff);
+                        len += 1;
                         diag -= coeff;
                     }
                 }
@@ -436,7 +517,8 @@ pub fn laplacian_eps_2d(
             if j + 1 < nx {
                 let eps_face = hmean(me, eps_at(i, j + 1));
                 let coeff = eps_face * c(inv_dx2);
-                entries.push((k, k + ny, coeff));
+                buf[len] = (k + ny, coeff);
+                len += 1;
                 diag -= coeff;
             } else {
                 match bc {
@@ -448,17 +530,22 @@ pub fn laplacian_eps_2d(
                     BoundaryCondition::Periodic => {
                         let eps_face = hmean(me, eps_at(i, 0));
                         let coeff = eps_face * c(inv_dx2);
-                        entries.push((k, k - (nx - 1) * ny, coeff));
+                        buf[len] = (k - (nx - 1) * ny, coeff);
+                        len += 1;
                         diag -= coeff;
                     }
                 }
             }
 
-            entries.push((k, k, diag));
+            // Diagonal.
+            buf[len] = (k, diag);
+            len += 1;
+
+            flush_row::<5>(&mut entries, k, &mut buf, len);
         }
     }
 
-    Ok(SparseMat::new(n, n, entries))
+    Ok(SparseMat::from_sorted_entries(n, n, entries))
 }
 
 #[cfg(test)]
@@ -680,5 +767,145 @@ mod tests {
         assert_eq!(l.rows, ny * nx);
         assert_eq!(l.cols, ny * nx);
         assert!(l.nnz() > 0);
+    }
+
+    // ─── Phase 4 (em_performance): direct-sorted vs legacy COO ────
+
+    /// Reference COO emitter using the legacy `SparseMat::new` path.
+    /// Drops the row-buf / sort logic and emits triples in stencil
+    /// order, letting `SparseMat::new` HashMap-dedupe-then-sort. This
+    /// is what the builders did before Phase 4. The Phase 4 `from_
+    /// sorted_entries` path must produce a structurally equal result.
+    fn legacy_lap_2d(
+        nx: usize,
+        ny: usize,
+        dx: f64,
+        dy: f64,
+        bc: BoundaryCondition,
+    ) -> SparseMat {
+        let inv_dx2 = 1.0 / (dx * dx);
+        let inv_dy2 = 1.0 / (dy * dy);
+        let n = nx * ny;
+        let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(5 * n);
+        for j in 0..nx {
+            for i in 0..ny {
+                let k = j * ny + i;
+                let mut diag = -2.0 * (inv_dx2 + inv_dy2);
+                if i > 0 {
+                    entries.push((k, k - 1, c(inv_dy2)));
+                } else {
+                    match bc {
+                        BoundaryCondition::Dirichlet => {}
+                        BoundaryCondition::Neumann => diag += inv_dy2,
+                        BoundaryCondition::Periodic => {
+                            entries.push((k, k + (ny - 1), c(inv_dy2)))
+                        }
+                    }
+                }
+                if i + 1 < ny {
+                    entries.push((k, k + 1, c(inv_dy2)));
+                } else {
+                    match bc {
+                        BoundaryCondition::Dirichlet => {}
+                        BoundaryCondition::Neumann => diag += inv_dy2,
+                        BoundaryCondition::Periodic => {
+                            entries.push((k, k - (ny - 1), c(inv_dy2)))
+                        }
+                    }
+                }
+                if j > 0 {
+                    entries.push((k, k - ny, c(inv_dx2)));
+                } else {
+                    match bc {
+                        BoundaryCondition::Dirichlet => {}
+                        BoundaryCondition::Neumann => diag += inv_dx2,
+                        BoundaryCondition::Periodic => {
+                            entries.push((k, k + (nx - 1) * ny, c(inv_dx2)))
+                        }
+                    }
+                }
+                if j + 1 < nx {
+                    entries.push((k, k + ny, c(inv_dx2)));
+                } else {
+                    match bc {
+                        BoundaryCondition::Dirichlet => {}
+                        BoundaryCondition::Neumann => diag += inv_dx2,
+                        BoundaryCondition::Periodic => {
+                            entries.push((k, k - (nx - 1) * ny, c(inv_dx2)))
+                        }
+                    }
+                }
+                entries.push((k, k, c(diag)));
+            }
+        }
+        SparseMat::new(n, n, entries)
+    }
+
+    fn assert_sparse_eq(a: &SparseMat, b: &SparseMat, tol: f64) {
+        assert_eq!(a.rows, b.rows, "row dim");
+        assert_eq!(a.cols, b.cols, "col dim");
+        assert_eq!(a.nnz(), b.nnz(), "nnz mismatch: {} vs {}", a.nnz(), b.nnz());
+        for ((ar, ac, av), (br, bc_, bv)) in a.entries.iter().zip(b.entries.iter()) {
+            assert_eq!(ar, br, "row idx mismatch");
+            assert_eq!(ac, bc_, "col idx mismatch at row {ar}");
+            assert!(
+                (av - bv).norm() < tol,
+                "value mismatch at ({ar}, {ac}): {av:?} vs {bv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lap_2d_direct_sorted_matches_legacy_coo_dirichlet() {
+        for &(nx, ny) in &[(3, 3), (5, 4), (10, 7), (12, 12)] {
+            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Dirichlet)
+                .unwrap();
+            let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Dirichlet);
+            assert_sparse_eq(&new, &legacy, 1e-15);
+        }
+    }
+
+    #[test]
+    fn lap_2d_direct_sorted_matches_legacy_coo_neumann() {
+        for &(nx, ny) in &[(3, 3), (5, 4), (10, 7)] {
+            let new =
+                laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Neumann).unwrap();
+            let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Neumann);
+            assert_sparse_eq(&new, &legacy, 1e-15);
+        }
+    }
+
+    #[test]
+    fn lap_2d_direct_sorted_matches_legacy_coo_periodic() {
+        // Periodic at minimum sizes (ny=2, nx=2) is the duplicate-column
+        // edge case where the wrap col coincides with an interior col.
+        // The new path must still match legacy via from_sorted_entries'
+        // consecutive-duplicate merge.
+        for &(nx, ny) in &[(2, 2), (3, 3), (5, 4), (10, 7)] {
+            let new = laplacian_2d_bc(nx, ny, 0.1, 0.2, BoundaryCondition::Periodic)
+                .unwrap();
+            let legacy = legacy_lap_2d(nx, ny, 0.1, 0.2, BoundaryCondition::Periodic);
+            assert_sparse_eq(&new, &legacy, 1e-15);
+        }
+    }
+
+    #[test]
+    fn lap_1d_periodic_minimum_size_dedupes() {
+        // n=2 periodic: at i=0 the right neighbour col is 1, the
+        // periodic-left wrap col is also 1. Two emissions at the same
+        // (row, col); from_sorted_entries' merge sums them.
+        let l = laplacian_1d(2, 1.0, BoundaryCondition::Periodic).unwrap();
+        // The ground truth: sums of two 1.0 contributions on each
+        // off-diagonal. Diagonal is -2.0 (no Neumann absorption).
+        // Resulting matrix:
+        //   -2  2
+        //    2 -2
+        let m = dense(&l);
+        assert!(close(m[[0, 0]], -2.0, 1e-15));
+        assert!(close(m[[1, 1]], -2.0, 1e-15));
+        assert!(close(m[[0, 1]], 2.0, 1e-15));
+        assert!(close(m[[1, 0]], 2.0, 1e-15));
+        // No spurious entries.
+        assert_eq!(l.nnz(), 4);
     }
 }

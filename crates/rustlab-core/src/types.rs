@@ -212,6 +212,64 @@ impl SparseMat {
         self
     }
 
+    /// Fast path constructor for callers that already produce entries
+    /// in row-major-then-column-major sorted order. Skips the HashMap
+    /// dedupe + full sort that `SparseMat::new` does — runs in O(nnz)
+    /// vs O(nnz log nnz). Consecutive duplicate `(row, col)` entries
+    /// are summed (handles periodic-BC corner cases at minimum grid
+    /// sizes where the wrap column coincides with an interior column).
+    /// Near-zero entries are dropped.
+    ///
+    /// **Caller's contract:** `entries` is sorted ascending by
+    /// `(row, col)` lexicographically. Violating the contract produces
+    /// an incorrect matrix (entries land in the wrong rows/cols and
+    /// downstream `to_csc` quietly mis-files them). Use `SparseMat::new`
+    /// when ordering is uncertain.
+    ///
+    /// `ordering_hint` defaults to `None`. Use `with_ordering_hint` if
+    /// the caller knows a fill-friendly ordering applies.
+    pub fn from_sorted_entries(
+        rows: usize,
+        cols: usize,
+        entries: Vec<(usize, usize, C64)>,
+    ) -> Self {
+        if entries.is_empty() {
+            return Self {
+                rows,
+                cols,
+                entries,
+                ordering_hint: None,
+            };
+        }
+        // Single pass: merge consecutive duplicates by summing values,
+        // drop near-zeros. Walks the input sequentially — no allocation
+        // beyond the output buffer.
+        let mut out: Vec<(usize, usize, C64)> = Vec::with_capacity(entries.len());
+        let mut iter = entries.into_iter();
+        let (mut cur_r, mut cur_c, mut cur_v) = iter.next().unwrap();
+        for (r, c, v) in iter {
+            if r == cur_r && c == cur_c {
+                cur_v += v;
+            } else {
+                if cur_v.norm() >= SPARSE_ZERO_TOL {
+                    out.push((cur_r, cur_c, cur_v));
+                }
+                cur_r = r;
+                cur_c = c;
+                cur_v = v;
+            }
+        }
+        if cur_v.norm() >= SPARSE_ZERO_TOL {
+            out.push((cur_r, cur_c, cur_v));
+        }
+        Self {
+            rows,
+            cols,
+            entries: out,
+            ordering_hint: None,
+        }
+    }
+
     pub fn nnz(&self) -> usize {
         self.entries.len()
     }

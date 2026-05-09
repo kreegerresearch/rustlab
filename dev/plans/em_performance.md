@@ -14,7 +14,7 @@
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
 | 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
-| 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
+| 4 | Direct CSC build in `laplacian_*` builders | **awaiting commit** | low | 13–22× builder speedup | — |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
 | 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
 
@@ -196,8 +196,17 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 4 — Direct-CSC build in Laplacian builders
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-09)
 **Goal:** skip the COO sort. The builders in `laplacian.rs` (lines 132, 214, 351) all `Vec::push` triplets in column-major order with predictable per-column counts, then hand the list to `SparseMat::new` which sorts/dedupes. For a 3-D 100³ build that's 7M entries through `O(nnz log nnz)` sort.
+
+**Implementation log (2026-05-09):**
+- Did *not* push CSC all the way upstream — kept `SparseMat` as COO with row-major sorted entries, since downstream `to_csc` consumers depend on that storage layout. Instead added `SparseMat::from_sorted_entries(rows, cols, entries)` in `crates/rustlab-core/src/types.rs`: a fast-path constructor for callers that already produce row-major-then-column-major sorted entries. Single linear pass to merge consecutive duplicates and drop near-zeros — no HashMap, no full sort.
+- Added a tiny shared helper `flush_row::<MAX>(out, row, buf, len)` in `crates/rustlab-dsp/src/laplacian.rs` that takes a stack-allocated `(col, val)` buffer of bounded size, sorts by column, and emits row-prefixed triples.
+- Rewrote `laplacian_1d`, `laplacian_2d_bc`, `laplacian_3d`, `laplacian_eps_2d`: each now collects its at-most-3/5/7 stencil entries into `buf`, calls `flush_row`, and at the end calls `from_sorted_entries`. The per-row sort is constant-time (5 elements at most for 2-D, 7 for 3-D).
+- The `from_sorted_entries` consecutive-duplicate merge handles the periodic-BC corner case where wrap col coincides with interior col at minimum sizes (`n=2` 1-D periodic, `ny=2` or `nx=2` 2-D periodic, etc.). Verified with `lap_1d_periodic_minimum_size_dedupes`.
+- Tests: 4 new equivalence tests in `laplacian.rs::tests` cross-check the new direct-sorted output against the legacy `SparseMat::new` HashMap-then-sort path, entry-by-entry, for Dirichlet/Neumann/Periodic at several grid shapes. All 14 pre-existing `laplacian_*` tests still pass.
+- Bench: new `cargo run --release --example bench_laplacian_build -p rustlab-dsp`. **Pre-vs-post via git-stash A/B:** 1-D n=1M: 255 ms → 13 ms (20×). 2-D 800×800: 273 ms → 14 ms (19×). 3-D 100³: 634 ms → 29 ms (22×). Numbers in `perf/em_performance_phase4.md`.
+- Workspace `cargo test --workspace` and `cargo test --workspace --features viewer` both green; dsp test count went 172 → 176.
 
 **Scope:**
 - Add `SparseMat::from_csc_parts(rows, cols, col_ptr, row_idx, vals)` constructor in `rustlab-core/src/types.rs` (or `sparse.rs` if it has been split out) — assumes inputs are already in CSC and skips the sort.
