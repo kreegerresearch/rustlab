@@ -264,7 +264,7 @@ ordinary markdown links/images.
 
 ---
 
-## Phase D — Documentation pass
+## Phase D — Documentation pass ✓ DONE
 
 After A–C land, update:
 
@@ -280,22 +280,18 @@ After A–C land, update:
 
 ---
 
-## Phase E — Migration of existing notebooks (optional)
+## Phase E — Migration of existing notebooks ✓ DONE (no work needed)
 
-The old `<!-- note -->` syntax keeps working forever. But for the
-committed `book/` to display callouts on GitHub, sources need to migrate
-to `> [!NOTE]`. Migration is mechanical:
+Audit of `rustlab_llm/notebooks/` and `rustlab_em/notebooks/` (2026-05-09)
+found **zero** uses of the legacy `<!-- note -->` syntax — neither
+project ever adopted it. The migration is therefore a no-op for the
+existing lesson sites.
 
-```
-<!-- note -->                            > [!NOTE]
-The window length must be a power of 2. > The window length must be a power of 2.
-
-<!-- /note -->                           (delete — blank line ends the blockquote)
-```
-
-A small `dev/scripts/migrate_callouts.py` (one-shot) can do this across
-`rustlab_llm/notebooks/`, `rustlab_em/notebooks/`, and any other lesson
-sites. Run it once, eyeball the diff, commit per-project.
+For any future project that does have legacy callouts, the markdown
+emitter handles migration automatically: re-rendering with the current
+`rustlab` produces GFM-native `> [!NOTE]` output regardless of which
+form the source uses. So the migration path is "run `make notebooks`,
+copy the rendered form back to the source" — no separate script needed.
 
 ---
 

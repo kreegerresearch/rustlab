@@ -482,14 +482,26 @@ See `examples/notebooks/README.md` for the directory layout and
 `docs/notebooks.md` for the renderer design (incl. the
 `plot_dir` / `plot_href_prefix` split shared by markdown and LaTeX).
 
-**Template interpolation & math escaping** (for AI agents authoring
-notebooks): the syntax reference plus authoring conventions for
-GitHub-and-Obsidian-compatible math live in `docs/notebooks.md` →
-"Template Interpolation". Highlights: `${expr}$` is math-wrap shorthand
-in plain text; bare `${expr}` inside an open `$...$` span emits the value
-without re-wrapping; `\$` is the literal-`$` escape for currency; in
-markdown tables, replace `|...|` cardinality with `\lvert ... \rvert` or
-the raw `|` will split the table cell on GitHub.
+**Notebook authoring rules for AI agents** — the canonical reference
+lives in `docs/notebooks.md`. Highlights:
+
+- **Math escaping**: `${expr}$` is math-wrap shorthand in plain text;
+  bare `${expr}` inside an open `$...$` span emits the value without
+  re-wrapping; `\$` is the literal-`$` escape for currency; in markdown
+  tables, replace `|...|` cardinality with `\lvert ... \rvert` or the
+  raw `|` will split the table cell on GitHub.
+- **Callouts**: prefer GFM-native `> [!NOTE]` / `[!TIP]` /
+  `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` blockquote syntax.
+  Legacy `<!-- note -->` still parses and auto-migrates on render.
+- **GFM superset**: footnotes (`[^id]`), task lists (`- [ ]` / `[x]`),
+  explicit heading IDs (`{#anchor}`), and strikethrough are all on.
+- **Wikilinks**: `[[Foo]]`, `[[Foo|alias]]`, `[[Foo#Section]]`,
+  `![[image.png]]` parse in source; the renderer rewrites them to
+  ordinary markdown links/images so the committed `book/*.md` is
+  GitHub-safe and Obsidian-native.
+
+See `dev/plans/notebook_obsidian_alignment.md` for the design
+rationale (which Obsidian features were adopted and which were skipped).
 
 **PDF dependencies** (`--format pdf` only): `pdflatex` (or `tectonic`) plus
 the LaTeX packages `svg`, `transparent`, `trimspaces`, `pagecolor`, and
