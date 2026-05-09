@@ -13,7 +13,7 @@
 |---|---|---|---|---|---|
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
 | 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
-| 3 | Fused, parallel `gradient` / `divergence` / `curl` | **awaiting commit** | low–med | 3–8× on postprocess | — |
+| 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
 | 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
 | 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
@@ -150,7 +150,7 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 3 — Fused, parallel `gradient` / `divergence` / `curl`
 
-**Status:** awaiting commit (2026-05-09)
+**Status:** shipped — commit `0e70b1a` (2026-05-09)
 **Goal:** rewrite the finite-difference kernels so they (a) iterate via slice views (no `[[i,j]]` bounds checks per element), (b) fuse `divergence` and `curl` into single-pass kernels that don't allocate intermediate `CMatrix` / `CTensor3`, and (c) parallelize over the outer axis with `rayon` for large grids.
 
 **Implementation log (2026-05-09):**
