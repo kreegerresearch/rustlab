@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors     = ["Michael Kreeger"]
 license     = "MIT OR Apache-2.0"
@@ -35,11 +35,11 @@ gif          = { version = "0.14", default-features = false, features = ["std", 
 toml         = "0.8"
 thiserror    = "2"
 anyhow       = "1"
-rustlab-core   = { path = "crates/rustlab-core",   version = "0.3.0" }
-rustlab-dsp    = { path = "crates/rustlab-dsp",    version = "0.3.0" }
-rustlab-plot   = { path = "crates/rustlab-plot",    version = "0.3.0" }
-rustlab-script = { path = "crates/rustlab-script",  version = "0.3.0" }
-rustlab-notebook = { path = "crates/rustlab-notebook", version = "0.3.0", default-features = false }
-rustlab-proto  = { path = "crates/rustlab-proto",   version = "0.3.0" }
+rustlab-core   = { path = "crates/rustlab-core",   version = "0.3.1" }
+rustlab-dsp    = { path = "crates/rustlab-dsp",    version = "0.3.1" }
+rustlab-plot   = { path = "crates/rustlab-plot",    version = "0.3.1" }
+rustlab-script = { path = "crates/rustlab-script",  version = "0.3.1" }
+rustlab-notebook = { path = "crates/rustlab-notebook", version = "0.3.1", default-features = false }
+rustlab-proto  = { path = "crates/rustlab-proto",   version = "0.3.1" }
 serde          = { version = "1", features = ["derive"] }
 rmp-serde      = "1"
