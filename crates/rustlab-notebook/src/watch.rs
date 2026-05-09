@@ -238,20 +238,45 @@ fn render_one_with_tracking(
     graph.record(src.to_path_buf(), embedded);
 }
 
-/// Cheap top-level scan for `![[target]]` references. Resolves each
-/// target against the source's directory and the watched root, returns
-/// the set of canonical paths actually found on disk. Misses
-/// transitive embeds (an embed that itself embeds) — acceptable for
-/// the watcher because the next render of the affected file will
-/// refresh the graph and pick up the chain.
+/// Walk every `![[target]]` reference reachable from `source` and
+/// return the **transitive** set of canonical file paths that
+/// contribute to the rendered output. Mirrors what
+/// [`crate::embed::expand_embeds`] inlines, so a change to any node in
+/// the chain correctly invalidates every notebook that ultimately
+/// embeds it.
+///
+/// Recursion is restricted to markdown targets — non-markdown
+/// references (`![[diagram.svg]]`) are passed through by the renderer
+/// as wikilinks and are not file-content dependencies of the rendered
+/// markdown. Cycles and missing targets are tolerated: the visited
+/// set bounds the walk, and unresolved refs are skipped.
 fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<PathBuf> {
-    let host_dir = src.parent().unwrap_or(root_dir);
     let mut found: HashSet<PathBuf> = HashSet::new();
-    for line in source.lines() {
-        for (_, _, eref) in crate::embed::find_embed_refs_in_line(line) {
-            if let Ok(p) = crate::embed::resolve_target(&eref.target, host_dir, root_dir) {
-                if let Some(canon) = canonicalize_lossy(&p) {
-                    found.insert(canon);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    // Each entry is (source text, host directory for ref resolution).
+    let mut stack: Vec<(String, PathBuf)> =
+        vec![(source.to_string(), src.parent().unwrap_or(root_dir).to_path_buf())];
+
+    while let Some((text, host_dir)) = stack.pop() {
+        for line in text.lines() {
+            for (_, _, eref) in crate::embed::find_embed_refs_in_line(line) {
+                if !crate::embed::is_markdown_target(&eref.target) {
+                    continue;
+                }
+                let Ok(p) = crate::embed::resolve_target(&eref.target, &host_dir, root_dir)
+                else {
+                    continue;
+                };
+                let Some(canon) = canonicalize_lossy(&p) else {
+                    continue;
+                };
+                if !visited.insert(canon.clone()) {
+                    continue;
+                }
+                found.insert(canon.clone());
+                if let Ok(child_src) = std::fs::read_to_string(&canon) {
+                    let child_host = canon.parent().unwrap_or(root_dir).to_path_buf();
+                    stack.push((child_src, child_host));
                 }
             }
         }
@@ -366,6 +391,115 @@ mod tests {
         );
         let canon_setup = fs::canonicalize(&setup).unwrap();
         assert!(found.contains(&canon_setup), "missing setup in {:?}", found);
+    }
+
+    // A → B → C: the transitive walker must record both B and C as
+    // dependencies of A, so editing C invalidates A.
+    #[test]
+    fn collect_embed_targets_walks_transitively() {
+        let dir = TempDir::new().unwrap();
+        let leaf = dir.path().join("leaf.md");
+        fs::write(&leaf, "leaf body\n").unwrap();
+        let mid = dir.path().join("mid.md");
+        fs::write(&mid, "before\n\n![[leaf]]\n\nafter\n").unwrap();
+        let host = dir.path().join("host.md");
+        fs::write(&host, "intro\n\n![[mid]]\n").unwrap();
+        let found = collect_embed_targets(
+            &fs::read_to_string(&host).unwrap(),
+            &host,
+            dir.path(),
+        );
+        let canon_mid = fs::canonicalize(&mid).unwrap();
+        let canon_leaf = fs::canonicalize(&leaf).unwrap();
+        assert!(found.contains(&canon_mid), "missing mid in {:?}", found);
+        assert!(found.contains(&canon_leaf), "missing leaf in {:?}", found);
+    }
+
+    // Cycle A → B → A must not loop. Both A and B end up in the visited
+    // set; the walker terminates and returns the discovered files.
+    #[test]
+    fn collect_embed_targets_handles_cycle() {
+        let dir = TempDir::new().unwrap();
+        let a = dir.path().join("a.md");
+        let b = dir.path().join("b.md");
+        fs::write(&a, "a body\n\n![[b]]\n").unwrap();
+        fs::write(&b, "b body\n\n![[a]]\n").unwrap();
+        let found = collect_embed_targets(
+            &fs::read_to_string(&a).unwrap(),
+            &a,
+            dir.path(),
+        );
+        let canon_b = fs::canonicalize(&b).unwrap();
+        assert!(found.contains(&canon_b), "missing b in {:?}", found);
+        // a re-references itself; either including or excluding the host
+        // is fine — the contract is "transitive deps", which excludes
+        // the host. Termination is what we're really asserting here.
+    }
+
+    // Section/block-id refs collapse to a file-level dependency.
+    #[test]
+    fn collect_embed_targets_section_ref_yields_file() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("doc.md");
+        fs::write(&target, "# Foo\n\nx\n\n# Bar\n\ny\n").unwrap();
+        let host = dir.path().join("host.md");
+        fs::write(&host, "see ![[doc#Bar]]\n").unwrap();
+        let found = collect_embed_targets(
+            &fs::read_to_string(&host).unwrap(),
+            &host,
+            dir.path(),
+        );
+        let canon_target = fs::canonicalize(&target).unwrap();
+        assert!(
+            found.contains(&canon_target),
+            "section ref should record the file: {:?}",
+            found
+        );
+    }
+
+    // Non-markdown targets (image embeds) are not file-content
+    // dependencies of the rendered markdown — skip them.
+    #[test]
+    fn collect_embed_targets_skips_non_markdown() {
+        let dir = TempDir::new().unwrap();
+        let img = dir.path().join("diagram.svg");
+        fs::write(&img, "<svg/>").unwrap();
+        let host = dir.path().join("host.md");
+        fs::write(&host, "see ![[diagram.svg]]\n").unwrap();
+        let found = collect_embed_targets(
+            &fs::read_to_string(&host).unwrap(),
+            &host,
+            dir.path(),
+        );
+        assert!(
+            found.is_empty(),
+            "image embeds must not appear in the dep graph: {:?}",
+            found
+        );
+    }
+
+    // End-to-end through the dependency graph: a transitive change to
+    // the leaf invalidates the top-level notebook.
+    #[test]
+    fn dependency_graph_invalidates_transitive_chain() {
+        let mut g = DependencyGraph::default();
+        let a = PathBuf::from("/n/a.md");
+        let b = PathBuf::from("/n/b.md");
+        let c = PathBuf::from("/n/c.md");
+        // After the transitive walker runs, A's deps include both B and C.
+        let mut a_deps = HashSet::new();
+        a_deps.insert(b.clone());
+        a_deps.insert(c.clone());
+        g.record(a.clone(), a_deps);
+        let mut b_deps = HashSet::new();
+        b_deps.insert(c.clone());
+        g.record(b.clone(), b_deps);
+        g.record(c.clone(), HashSet::new());
+
+        let dependents = g.dependents_of(&c);
+        assert!(dependents.contains(&a), "a should be invalidated by c");
+        assert!(dependents.contains(&b), "b should be invalidated by c");
+        assert!(dependents.contains(&c), "c itself should be in the set");
     }
 
     #[test]

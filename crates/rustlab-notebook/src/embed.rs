@@ -595,7 +595,7 @@ fn format_chain(chain: &[PathBuf]) -> String {
         .join(" → ")
 }
 
-fn is_markdown_target(target: &str) -> bool {
+pub(crate) fn is_markdown_target(target: &str) -> bool {
     match Path::new(target).extension() {
         None => true,
         Some(ext) => ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"),
