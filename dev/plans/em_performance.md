@@ -14,7 +14,7 @@
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
 | 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
-| 4 | Direct CSC build in `laplacian_*` builders | **awaiting commit** | low | 13–22× builder speedup | — |
+| 4 | Direct CSC build in `laplacian_*` builders | **shipped** | low | 13–22× builder speedup | `810806a` |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
 | 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
 
@@ -196,7 +196,7 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 4 — Direct-CSC build in Laplacian builders
 
-**Status:** awaiting commit (2026-05-09)
+**Status:** shipped — commit `810806a` (2026-05-09)
 **Goal:** skip the COO sort. The builders in `laplacian.rs` (lines 132, 214, 351) all `Vec::push` triplets in column-major order with predictable per-column counts, then hand the list to `SparseMat::new` which sorts/dedupes. For a 3-D 100³ build that's 7M entries through `O(nnz log nnz)` sort.
 
 **Implementation log (2026-05-09):**
