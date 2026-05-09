@@ -1,6 +1,6 @@
 use crate::execute::Rendered;
 use crate::parse::CalloutKind;
-use crate::render::notebook_md_options;
+use crate::render::{notebook_md_options, transform_wikilinks};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rustlab_plot::theme::{Theme, ThemeColors};
 use std::path::Path;
@@ -208,9 +208,10 @@ pub fn render_latex(
 
 /// Convert a markdown string to LaTeX using pulldown-cmark events.
 fn markdown_to_latex(md: &str) -> String {
+    let md = transform_wikilinks(md);
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
-    let parser = Parser::new_ext(md, opts);
+    let parser = Parser::new_ext(&md, opts);
 
     let mut out = String::new();
     let mut in_table = false;

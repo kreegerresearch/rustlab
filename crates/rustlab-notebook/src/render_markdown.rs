@@ -10,6 +10,7 @@
 
 use crate::execute::Rendered;
 use crate::parse::CalloutKind;
+use crate::render::transform_wikilinks;
 use rustlab_plot::theme::ThemeColors;
 use std::path::Path;
 
@@ -53,6 +54,9 @@ pub fn render_markdown(
     for block in blocks {
         match block {
             Rendered::Markdown(md) => {
+                // Transform `[[wiki]]` / `![[embed]]` so the committed `.md`
+                // displays as ordinary links and images on GitHub.
+                let md = transform_wikilinks(md);
                 body.push_str(md.trim_end());
                 if !body.ends_with("\n\n") {
                     body.push_str("\n\n");
@@ -329,6 +333,30 @@ mod tests {
             md.contains("> [!IMPORTANT] Heads up\n> key fact"),
             "expected inline title in callout header: {md}"
         );
+    }
+
+    #[test]
+    fn wikilinks_become_standard_md_links() {
+        // Wikilinks in source render to `[text](Foo.md)` in markdown output
+        // so the committed `.md` displays as ordinary links on GitHub.
+        let blocks = vec![Rendered::Markdown(
+            "see [[Foo]] and [[Bar|alias]]".to_string(),
+        )];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(md.contains("[Foo](Foo.md)"), "missing wikilink: {md}");
+        assert!(md.contains("[alias](Bar.md)"), "missing alias link: {md}");
+        assert!(!md.contains("[[Foo]]"), "raw wikilink leaked: {md}");
+    }
+
+    #[test]
+    fn embeds_become_standard_md_images() {
+        let blocks = vec![Rendered::Markdown(
+            "![[diagram.svg]] then ![[chart.png|chart]]".to_string(),
+        )];
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None);
+        assert!(md.contains("![](diagram.svg)"), "missing embed: {md}");
+        assert!(md.contains("![chart](chart.png)"), "missing embed alt: {md}");
+        assert!(!md.contains("![["), "raw embed leaked: {md}");
     }
 
     #[test]

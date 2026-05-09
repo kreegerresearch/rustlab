@@ -207,7 +207,7 @@ gets the same treatment.
 
 ---
 
-## Phase C — Obsidian wikilink/embed sugar with GitHub-safe transforms
+## Phase C — Obsidian wikilink/embed sugar with GitHub-safe transforms ✓ DONE
 
 Obsidian users heavily rely on `[[Note]]` and `![[image.png]]`. GitHub
 renders those literally, which looks broken. The fix: enable parsing

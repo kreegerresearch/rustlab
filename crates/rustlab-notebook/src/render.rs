@@ -53,8 +53,10 @@ pub fn render_html(
 
         match block {
             Rendered::Markdown(md) => {
+                // Transform `[[wiki]]` / `![[embed]]` to standard markdown
+                let md = transform_wikilinks(md);
                 // Rewrite .md links to .html for cross-notebook references
-                let md = rewrite_md_links(md);
+                let md = rewrite_md_links(&md);
                 // Stash math spans before CommonMark eats LaTeX backslashes
                 let (md, math) = protect_math(&md);
                 // Convert markdown to HTML
@@ -220,7 +222,8 @@ pub fn render_html(
                     "<div class=\"callout-title\">{}</div>\n",
                     escape_html(label)
                 ));
-                let md = rewrite_md_links(content);
+                let md = transform_wikilinks(content);
+                let md = rewrite_md_links(&md);
                 let (md, math) = protect_math(&md);
                 let parser = Parser::new_ext(&md, notebook_md_options());
                 let mut html = String::new();
@@ -1070,6 +1073,173 @@ fn push_escaped_char(out: &mut String, ch: char) {
 /// Converts `](something.md)` to `](something.html)` for cross-notebook links.
 fn rewrite_md_links(md: &str) -> String {
     md.replace(".md)", ".html)").replace(".md#", ".html#")
+}
+
+/// Transform Obsidian-style wikilinks and embeds into standard markdown so
+/// the committed `book/*.md` renders correctly on GitHub (where `[[...]]`
+/// is literal text) and the HTML pipeline can run them through
+/// `rewrite_md_links` like ordinary `.md` references.
+///
+/// Mappings:
+/// - `[[Foo]]`              → `[Foo](Foo.md)`
+/// - `[[Foo|Bar]]`          → `[Bar](Foo.md)`
+/// - `[[Foo#Section]]`      → `[Foo § Section](Foo.md#section)`
+/// - `[[Foo#Section|Bar]]`  → `[Bar](Foo.md#section)`
+/// - `![[image.png]]`       → `![](image.png)`
+/// - `![[image.png|alt]]`   → `![alt](image.png)`
+///
+/// The target gets a `.md` extension when it has none (i.e. ordinary
+/// notebook references); embeds (`![[...]]`) keep the path as written so
+/// they reference image/asset files. Skips fenced code blocks and inline
+/// code spans so wiki-syntax inside ` ```mermaid ` or `` `[[Foo]]` `` is
+/// preserved verbatim.
+pub(crate) fn transform_wikilinks(md: &str) -> String {
+    let s = md.as_bytes();
+    let n = s.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0;
+    let mut copied_to = 0; // byte index of next un-flushed source char
+    let mut in_fence: Option<(u8, usize)> = None; // (fence char, fence len)
+
+    // The triggers (`[`, `!`, `\``, fence opens) are all ASCII, so a byte
+    // scan never lands inside a multi-byte UTF-8 sequence. We copy spans
+    // verbatim from `md` as `&str` slices to keep non-ASCII bytes intact.
+
+    while i < n {
+        // At the start of a line, update fence state. Lines inside a
+        // fenced code block (and the fence delimiters themselves) pass
+        // through verbatim — flush via the trailing copy at end of loop.
+        if i == 0 || s[i - 1] == b'\n' {
+            if let Some((fc, len)) = in_fence {
+                if is_close_fence(&s[i..line_end(s, i)], fc, len) {
+                    in_fence = None;
+                }
+            } else if let Some((_after, fc, len)) = detect_fence_open(s, i) {
+                in_fence = Some((fc, len));
+            }
+        }
+        if in_fence.is_some() {
+            i += 1;
+            continue;
+        }
+
+        // Inline code span: skip forward to the closing backtick (or
+        // end of line). Spans pass through verbatim.
+        if s[i] == b'`' {
+            i += 1;
+            while i < n && s[i] != b'`' && s[i] != b'\n' {
+                i += 1;
+            }
+            if i < n && s[i] == b'`' {
+                i += 1;
+            }
+            continue;
+        }
+
+        // Embed: `![[…]]`
+        if i + 3 < n && s[i] == b'!' && s[i + 1] == b'[' && s[i + 2] == b'[' {
+            if let Some(close) = find_double_close(s, i + 3) {
+                out.push_str(&md[copied_to..i]);
+                out.push_str(&render_embed(&md[i + 3..close]));
+                i = close + 2;
+                copied_to = i;
+                continue;
+            }
+        }
+
+        // Link: `[[…]]`
+        if i + 1 < n && s[i] == b'[' && s[i + 1] == b'[' {
+            if let Some(close) = find_double_close(s, i + 2) {
+                out.push_str(&md[copied_to..i]);
+                out.push_str(&render_wikilink(&md[i + 2..close]));
+                i = close + 2;
+                copied_to = i;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+    out.push_str(&md[copied_to..]);
+    out
+}
+
+/// Find the byte index of the next `]]` starting at `from`, on the same
+/// line as `from` (wikilinks don't span lines).
+fn find_double_close(s: &[u8], from: usize) -> Option<usize> {
+    let mut i = from;
+    while i + 1 < s.len() {
+        match s[i] {
+            b'\n' => return None,
+            b']' if s[i + 1] == b']' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Render the inside of `[[...]]` as standard markdown.
+fn render_wikilink(inner: &str) -> String {
+    let (target, alias) = match inner.split_once('|') {
+        Some((t, a)) => (t.trim(), Some(a.trim())),
+        None => (inner.trim(), None),
+    };
+    let (path, anchor) = match target.split_once('#') {
+        Some((p, a)) => (p.trim(), Some(a.trim())),
+        None => (target, None),
+    };
+    let dest = if path_has_extension(path) {
+        path.to_string()
+    } else {
+        format!("{path}.md")
+    };
+    let anchor_url = anchor.map(|a| format!("#{}", slugify(a))).unwrap_or_default();
+    let text = match (alias, anchor) {
+        (Some(a), _) => a.to_string(),
+        (None, Some(a)) => format!("{path} § {a}"),
+        (None, None) => path.to_string(),
+    };
+    format!("[{text}]({dest}{anchor_url})")
+}
+
+/// Render the inside of `![[...]]` as a standard markdown image.
+fn render_embed(inner: &str) -> String {
+    let (path, alt) = match inner.split_once('|') {
+        Some((p, a)) => (p.trim(), a.trim()),
+        None => (inner.trim(), ""),
+    };
+    format!("![{alt}]({path})")
+}
+
+/// Heuristic: a path "has an extension" if its last `/`-segment contains
+/// a `.`. Good enough for the embed/notebook split — `notes.md`, `img.png`
+/// both true; `My Note`, `Sub/Note` both false.
+fn path_has_extension(path: &str) -> bool {
+    let tail = path.rsplit('/').next().unwrap_or(path);
+    tail.contains('.')
+}
+
+/// Lowercase + replace runs of non-alphanumerics with `-`. Matches how
+/// pulldown-cmark / GitHub generate heading anchors so `[[Foo#My Section]]`
+/// resolves to the same `#my-section` the heading produces.
+fn slugify(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_was_dash = false;
+    for c in s.chars() {
+        if c.is_alphanumeric() {
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            last_was_dash = false;
+        } else if !last_was_dash && !out.is_empty() {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 // ── Math protection ─────────────────────────────────────────────────────────
@@ -2287,6 +2457,122 @@ mod tests {
         let html = render_callout(CalloutKind::Tip, Some("Heads up"), "body");
         assert!(html.contains(">Heads up<"));
         assert!(!html.contains(">Tip<"));
+    }
+
+    // ── Wikilink / embed transform (Phase C) ──
+
+    #[test]
+    fn wikilink_simple() {
+        assert_eq!(transform_wikilinks("see [[Foo]]."), "see [Foo](Foo.md).");
+    }
+
+    #[test]
+    fn wikilink_with_alias() {
+        assert_eq!(
+            transform_wikilinks("see [[Foo|the bar]]."),
+            "see [the bar](Foo.md)."
+        );
+    }
+
+    #[test]
+    fn wikilink_with_anchor() {
+        assert_eq!(
+            transform_wikilinks("see [[Foo#Section Two]]."),
+            "see [Foo § Section Two](Foo.md#section-two)."
+        );
+    }
+
+    #[test]
+    fn wikilink_alias_and_anchor() {
+        assert_eq!(
+            transform_wikilinks("see [[Foo#Section|the bit]]."),
+            "see [the bit](Foo.md#section)."
+        );
+    }
+
+    #[test]
+    fn wikilink_keeps_existing_extension() {
+        // `[[diagram.svg]]` already has an extension — don't append `.md`.
+        assert_eq!(
+            transform_wikilinks("see [[diagram.svg]]"),
+            "see [diagram.svg](diagram.svg)"
+        );
+    }
+
+    #[test]
+    fn embed_simple() {
+        assert_eq!(
+            transform_wikilinks("![[image.png]]"),
+            "![](image.png)"
+        );
+    }
+
+    #[test]
+    fn embed_with_alt() {
+        assert_eq!(
+            transform_wikilinks("![[image.png|alt text]]"),
+            "![alt text](image.png)"
+        );
+    }
+
+    #[test]
+    fn wikilink_inside_inline_code_left_alone() {
+        assert_eq!(
+            transform_wikilinks("write `[[Foo]]` for a wikilink"),
+            "write `[[Foo]]` for a wikilink"
+        );
+    }
+
+    #[test]
+    fn wikilink_inside_fenced_code_left_alone() {
+        let src = "```\n[[Foo]]\n```\nThen [[Bar]].";
+        let out = transform_wikilinks(src);
+        assert!(out.contains("```\n[[Foo]]\n```"));
+        assert!(out.contains("[Bar](Bar.md)"));
+    }
+
+    #[test]
+    fn wikilink_unmatched_close_left_alone() {
+        // No closing `]]` on the line — pass through unchanged.
+        assert_eq!(
+            transform_wikilinks("see [[Foo and stop"),
+            "see [[Foo and stop"
+        );
+    }
+
+    #[test]
+    fn wikilink_html_pipeline_resolves_to_html() {
+        // Source `[[Foo]]` round-trips through the HTML pipeline as a link
+        // to `Foo.html` (the existing `rewrite_md_links` makes the swap).
+        let blocks = vec![Rendered::Markdown("see [[Foo]] for details.".to_string())];
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+        );
+        assert!(html.contains(r#"href="Foo.html""#), "expected .html href: {html}");
+        assert!(html.contains(">Foo</a>"));
+    }
+
+    #[test]
+    fn wikilink_preserves_utf8_around_transform() {
+        // Em-dash, super/subscript digits, and other multi-byte UTF-8 must
+        // survive the byte-level scan untouched. Regression for an early
+        // byte-as-char emit that produced mojibake on em-dashes.
+        let src = "intro — see [[Foo]] for 10⁵ samples ≈ ε.";
+        let out = transform_wikilinks(src);
+        assert_eq!(out, "intro — see [Foo](Foo.md) for 10⁵ samples ≈ ε.");
+    }
+
+    #[test]
+    fn slugify_matches_github_anchor_style() {
+        assert_eq!(slugify("Hello World"), "hello-world");
+        assert_eq!(slugify("Already-dashed"), "already-dashed");
+        assert_eq!(slugify("with punctuation!?"), "with-punctuation");
+        assert_eq!(slugify("multi   spaces"), "multi-spaces");
     }
 
     #[test]

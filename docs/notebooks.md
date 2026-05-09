@@ -166,6 +166,32 @@ See [the filters section](#filters).
 ~~deprecated text~~
 ```
 
+### Wikilinks and embeds
+
+Obsidian-style `[[Note]]` wikilinks and `![[file]]` embeds are accepted
+in source notebooks and transformed to standard markdown links and
+images on the way out, so the committed `book/*.md` displays correctly
+on GitHub (which would otherwise render `[[Note]]` as literal text).
+
+| Source | Becomes (markdown output) | Becomes (HTML output) |
+|---|---|---|
+| `[[Foo]]` | `[Foo](Foo.md)` | `<a href="Foo.html">Foo</a>` |
+| `[[Foo\|alias]]` | `[alias](Foo.md)` | `<a href="Foo.html">alias</a>` |
+| `[[Foo#Section]]` | `[Foo § Section](Foo.md#section)` | `<a href="Foo.html#section">Foo § Section</a>` |
+| `[[Foo#Section\|alias]]` | `[alias](Foo.md#section)` | `<a href="Foo.html#section">alias</a>` |
+| `![[image.png]]` | `![](image.png)` | `<img src="image.png">` |
+| `![[image.png\|alt]]` | `![alt](image.png)` | `<img src="image.png" alt="alt">` |
+
+The target gets a `.md` extension when it has none (notebook reference);
+paths that already include an extension (`[[diagram.svg]]`) pass through
+verbatim. Anchor slugs use lowercase + non-alphanumeric→`-`, matching
+how GitHub and pulldown-cmark generate heading IDs, so
+`[[Foo#My Section]]` round-trips to the `#my-section` of the heading.
+
+Wikilink syntax inside fenced code blocks (` ``` `) and inline code
+spans (`` ` ``) is preserved verbatim — only narrative prose is
+transformed.
+
 ## Directives
 
 Directives are a `rustlab-notebook` feature, not standard Markdown. They
