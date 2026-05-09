@@ -11,7 +11,7 @@
 
 | # | Phase | Status | Risk | Win | Commit |
 |---|---|---|---|---|---|
-| 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **awaiting commit** | low | 10–100× on sweeps/animations | — |
+| 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
 | 2 | Identity-ordering fast path for grid Laplacians | pending | low | ~5× on grid solves | — |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | pending | low–med | 3–8× on postprocess | — |
 | 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
@@ -62,7 +62,7 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 1 — Reusable Cholesky factor
 
-**Status:** awaiting commit (2026-05-09)
+**Status:** shipped — commit `7311bf1` (2026-05-09)
 **Goal:** expose the existing `SparseChol::factor` to the script layer so users can factor once and solve many RHS. This is the highest-impact change for the gallery's stated "parameter sweeps, animations, embedding" use cases (see `gallery/electrostatics.md:155-157`).
 
 **Implementation log (2026-05-09):**
