@@ -12,7 +12,7 @@
 | # | Phase | Status | Risk | Win | Commit |
 |---|---|---|---|---|---|
 | 1 | Reusable Cholesky factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | **shipped** | low | 10–100× on sweeps/animations | `7311bf1` |
-| 2 | Identity-ordering fast path for grid Laplacians | **awaiting commit** | low | ~5× on grid solves | — |
+| 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | pending | low–med | 3–8× on postprocess | — |
 | 4 | Direct CSC build in `laplacian_*` builders | pending | low | minor 2-D, real 3-D | — |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
@@ -108,7 +108,7 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 2 — Identity-ordering fast path for grid Laplacians
 
-**Status:** awaiting commit (2026-05-09)
+**Status:** shipped — commit `ddb78f8` (2026-05-09)
 
 **Implementation log (2026-05-09):**
 - Added `OrderingHint` enum (single variant `Identity` for now) in `crates/rustlab-core/src/types.rs` and re-exported from the crate root.
