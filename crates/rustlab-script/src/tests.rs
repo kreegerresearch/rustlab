@@ -4175,6 +4175,7 @@ mod new_builtins_tests {
 mod ml_tests {
     use crate::eval::value::Value;
     use crate::{lexer, parser, Evaluator};
+    use rustlab_core::CMatrix;
 
     fn eval_str(src: &str) -> Evaluator {
         let src = format!("{}\n", src);
@@ -4272,6 +4273,147 @@ mod ml_tests {
             (s - 1.0).abs() < 1e-12,
             "softmax of scalar should be 1.0, got {s}"
         );
+    }
+
+    // ── softmax matrix overload (per-row by default) ─────────────────────────
+
+    fn get_mat(ev: &Evaluator, name: &str) -> CMatrix {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_default_is_per_row() {
+        // ML convention: each row is a token, columns are categories.
+        let ev = eval_str("P = softmax([1.0, 2.0; 3.0, 4.0])");
+        let m = get_mat(&ev, "P");
+        assert_eq!((m.nrows(), m.ncols()), (2, 2));
+        for i in 0..2 {
+            let s: f64 = (0..2).map(|j| m[[i, j]].re).sum();
+            assert!((s - 1.0).abs() < 1e-12, "row {i} sum = {s}");
+        }
+        // Row 0 must equal softmax([1, 2]) elementwise.
+        let ref_ = eval_str("q = softmax([1.0, 2.0])");
+        let q = get_vec(&ref_, "q");
+        for j in 0..2 {
+            assert!(
+                (m[[0, j]].re - q[j]).abs() < 1e-12,
+                "row 0 col {j}: mat={} vec={}",
+                m[[0, j]].re,
+                q[j]
+            );
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_dim_1_is_per_column() {
+        let ev = eval_str("P = softmax([1.0, 10.0; 2.0, 20.0; 3.0, 30.0], 1)");
+        let m = get_mat(&ev, "P");
+        assert_eq!((m.nrows(), m.ncols()), (3, 2));
+        for j in 0..2 {
+            let s: f64 = (0..3).map(|i| m[[i, j]].re).sum();
+            assert!((s - 1.0).abs() < 1e-12, "col {j} sum = {s}");
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_dim_2_explicit_matches_default() {
+        let a = eval_str("A = softmax([1.0, 2.0, 3.0; 4.0, 5.0, 6.0])");
+        let b = eval_str("B = softmax([1.0, 2.0, 3.0; 4.0, 5.0, 6.0], 2)");
+        let ma = get_mat(&a, "A");
+        let mb = get_mat(&b, "B");
+        for i in 0..ma.nrows() {
+            for j in 0..ma.ncols() {
+                assert!((ma[[i, j]].re - mb[[i, j]].re).abs() < 1e-15);
+            }
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_numerically_stable_large_logits() {
+        // Per-row max subtraction keeps `exp(1001)` from overflowing.
+        let ev = eval_str("P = softmax([1000.0, 1001.0; 1.0, 2.0])");
+        let m = get_mat(&ev, "P");
+        for i in 0..2 {
+            for j in 0..2 {
+                assert!(m[[i, j]].re.is_finite(), "non-finite at ({i},{j})");
+            }
+            let s: f64 = (0..2).map(|j| m[[i, j]].re).sum();
+            assert!((s - 1.0).abs() < 1e-12, "row {i} sum = {s}");
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_agrees_with_per_row_loop() {
+        // The whole point of the overload: drop the manual loop. Verify
+        // parity row-by-row against the explicit `softmax(M(t, :))` form.
+        let src = "
+            S = [0.1, 0.2, 0.3; 0.5, -0.5, 0.0; 1.5, 1.0, 0.5];
+            A = softmax(S);
+            B = zeros(3, 3);
+            for t = 1:3
+              B(t) = softmax(S(t, :));
+            end
+        ";
+        let ev = eval_str(src);
+        let a = get_mat(&ev, "A");
+        let b = get_mat(&ev, "B");
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (a[[i, j]].re - b[[i, j]].re).abs() < 1e-12,
+                    "mismatch at ({i},{j}): overload={} loop={}",
+                    a[[i, j]].re,
+                    b[[i, j]].re
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn softmax_one_dim_matrix_routes_through_vector() {
+        // 3×1 column should softmax as a single vector regardless of dim.
+        let ev = eval_str("P = softmax([1.0; 2.0; 3.0])");
+        let m = get_mat(&ev, "P");
+        assert_eq!((m.nrows(), m.ncols()), (3, 1));
+        let s: f64 = (0..3).map(|i| m[[i, 0]].re).sum();
+        assert!((s - 1.0).abs() < 1e-12, "1-D matrix sum = {s}");
+    }
+
+    #[test]
+    fn softmax_matrix_uniform_rows_are_uniform() {
+        // Each row is constant → after softmax, every cell is 1/ncols.
+        let ev = eval_str("P = softmax([2.0, 2.0, 2.0; 5.0, 5.0, 5.0])");
+        let m = get_mat(&ev, "P");
+        for i in 0..2 {
+            for j in 0..3 {
+                assert!(
+                    (m[[i, j]].re - 1.0 / 3.0).abs() < 1e-12,
+                    "uniform row {i} col {j} should be 1/3, got {}",
+                    m[[i, j]].re
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn softmax_matrix_invalid_dim_errors() {
+        let src = "P = softmax([1, 2; 3, 4], 99)\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        assert!(ev.exec_stmt(&stmts[0]).is_err());
+    }
+
+    #[test]
+    fn softmax_vector_rejects_extra_arg() {
+        let src = "p = softmax([1.0, 2.0, 3.0], 2)\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        assert!(ev.exec_stmt(&stmts[0]).is_err());
     }
 
     // ── relu ─────────────────────────────────────────────────────────────────

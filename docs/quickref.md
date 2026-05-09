@@ -301,7 +301,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
-| `softmax(v)` | Softmax probability distribution (numerically stable) |
+| `softmax(v)` | Softmax probability distribution on a vector (numerically stable) |
+| `softmax(M)` / `softmax(M, dim)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 | `relu(v)` | Rectified linear unit: max(0, x), element-wise |
 | `gelu(v)` | Gaussian error linear unit, element-wise |
 | `layernorm(v)` / `layernorm(v, eps)` | Layer normalization on a vector: (v − mean) / std |

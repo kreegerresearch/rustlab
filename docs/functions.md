@@ -391,12 +391,23 @@ any([0, 0, 0])     # → false
 
 ## ML / Activation Functions
 
-### `softmax(v)`
-Numerically-stable softmax over the real parts of a vector. Returns a probability vector whose elements sum to 1.0. Subtracts the maximum value before exponentiation to prevent overflow.
+### `softmax(v)` / `softmax(M)` / `softmax(M, dim)`
+Numerically-stable softmax over the real parts of the input. Each output slice sums to 1.0. Subtracts the per-slice maximum before exponentiating to prevent overflow.
+
+**Vector form:**
 ```
 p = softmax([1.0, 2.0, 3.0, 4.0])    # → [0.032, 0.087, 0.237, 0.644]
 sum(p)                                 # → 1.0
 ```
+
+**Matrix form** — softmax each row (`dim=2`, default) or each column (`dim=1`) independently. Per-row default matches the ML/transformer convention where rows are tokens and columns are categories — intentionally diverges from `sum`/`mean`/`std` which default to `dim=1`, mirroring `layernorm`.
+```
+P = softmax([1, 2; 3, 4])             # per-row (default), each row sums to 1
+P = softmax(S, 2)                     # explicit per-row
+P = softmax(S, 1)                     # per-column, each column sums to 1
+```
+- Replaces the manual `for t = 1:T; A(t) = softmax(S(t, :)); end` attention idiom.
+- 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of `dim`, matching `sum`/`mean`/`layernorm`.
 - Single scalar input returns `1.0`.
 - Monotone: larger input values produce larger output probabilities.
 

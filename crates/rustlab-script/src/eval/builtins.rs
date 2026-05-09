@@ -7993,24 +7993,122 @@ fn builtin_margin(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── ML / activation functions ──────────────────────────────────────────────
 
-/// softmax(v) — numerically-stable softmax over the real parts of a vector.
-/// Returns a real-valued probability vector summing to 1.0.
+/// Numerically-stable softmax of a slice in place: subtract the per-slice
+/// max before exponentiating, then divide by the sum. Single owner of the
+/// formula, used by both the vector and matrix forms of `softmax`.
+/// Operates on the real parts and clears any imaginary component.
+fn softmax_slice_inplace(slice: &mut [C64]) {
+    let max_re = slice.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
+    let mut sum = 0.0_f64;
+    for x in slice.iter_mut() {
+        let e = (x.re - max_re).exp();
+        *x = Complex::new(e, 0.0);
+        sum += e;
+    }
+    for x in slice.iter_mut() {
+        x.re /= sum;
+    }
+}
+
+/// Numerically-stable softmax over the real parts of the input.
+///
+/// Forms:
+/// - `softmax(v)` — vector input; returns a probability vector summing to 1.
+/// - `softmax(M)` / `softmax(M, dim)` — matrix input; softmax each row
+///   (`dim=2`, default) or each column (`dim=1`) independently. Per-row
+///   default matches the ML/transformer convention where rows are samples
+///   and columns are categories — intentionally diverges from
+///   `sum`/`mean`/`std` which default to dim=1, mirroring `layernorm`.
+/// - 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of
+///   `dim`, matching how `sum`/`mean`/`layernorm` handle the same shapes.
 fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("softmax", &args, 1)?;
+    check_args_range("softmax", &args, 1, 2)?;
     match &args[0] {
-        Value::Vector(v) if !v.is_empty() => {
-            // Subtract max for numerical stability before exp
-            let max_re = v.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
-            let exps: Vec<f64> = v.iter().map(|c| (c.re - max_re).exp()).collect();
-            let sum: f64 = exps.iter().sum();
-            let result: CVector =
-                Array1::from_iter(exps.iter().map(|&e| Complex::new(e / sum, 0.0)));
-            Ok(Value::Vector(result))
+        Value::Scalar(_) => {
+            if args.len() > 1 {
+                return Err(ScriptError::type_err(
+                    "softmax: scalar form takes one argument".to_string(),
+                ));
+            }
+            Ok(Value::Scalar(1.0))
         }
-        Value::Scalar(_) => Ok(Value::Scalar(1.0)),
-        _ => Err(ScriptError::type_err(
-            "softmax: argument must be a non-empty vector or scalar".to_string(),
-        )),
+        Value::Vector(v) if !v.is_empty() => {
+            if args.len() > 1 {
+                return Err(ScriptError::type_err(
+                    "softmax: vector form takes one argument".to_string(),
+                ));
+            }
+            let mut data: Vec<C64> = v.iter().copied().collect();
+            softmax_slice_inplace(&mut data);
+            Ok(Value::Vector(Array1::from_vec(data)))
+        }
+        Value::Matrix(m) => {
+            let nrows = m.nrows();
+            let ncols = m.ncols();
+            if nrows == 0 || ncols == 0 {
+                return Err(ScriptError::type_err(
+                    "softmax: matrix must be non-empty".to_string(),
+                ));
+            }
+            // 1-D-shaped matrix routes through the vector formula so
+            // softmax([1;2;3]) == softmax of the same as a vector.
+            if nrows == 1 || ncols == 1 {
+                if args.len() > 1 {
+                    return Err(ScriptError::type_err(
+                        "softmax: 1-D-shaped matrix takes one argument".to_string(),
+                    ));
+                }
+                let mut data: Vec<C64> = m.iter().copied().collect();
+                softmax_slice_inplace(&mut data);
+                return Ok(Value::Matrix(
+                    Array2::from_shape_vec((nrows, ncols), data)
+                        .expect("preserves 1-D matrix shape"),
+                ));
+            }
+            // 2-D matrix: optional dim (default 2 = per-row, ML convention).
+            let dim = if args.len() == 2 {
+                let d = args[1]
+                    .to_scalar()
+                    .map_err(|e| ScriptError::type_err(format!("softmax: dim: {}", e)))?
+                    as i64;
+                if d != 1 && d != 2 {
+                    return Err(ScriptError::type_err(format!(
+                        "softmax: dim must be 1 or 2, got {}",
+                        d
+                    )));
+                }
+                d as usize
+            } else {
+                2
+            };
+            let mut out: CMatrix = m.clone();
+            match dim {
+                2 => {
+                    for i in 0..nrows {
+                        let mut row: Vec<C64> = (0..ncols).map(|j| out[[i, j]]).collect();
+                        softmax_slice_inplace(&mut row);
+                        for j in 0..ncols {
+                            out[[i, j]] = row[j];
+                        }
+                    }
+                }
+                1 => {
+                    for j in 0..ncols {
+                        let mut col: Vec<C64> = (0..nrows).map(|i| out[[i, j]]).collect();
+                        softmax_slice_inplace(&mut col);
+                        for i in 0..nrows {
+                            out[[i, j]] = col[i];
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+            Ok(Value::Matrix(out))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "softmax: argument must be a non-empty vector, matrix, or scalar (got {})",
+            other.type_name()
+        ))),
     }
 }
 

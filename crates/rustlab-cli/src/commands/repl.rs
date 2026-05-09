@@ -219,7 +219,7 @@ pub const HELP: &[HelpEntry] = &[
     // Plotting
     // ML / activation functions
     HelpEntry { name: "softmax",   brief: "Softmax probability distribution",
-        detail: "softmax(v)  — numerically-stable softmax over the real parts of v\n  Returns a probability vector summing to 1.0.\n  Subtracts max(v) before exp() to prevent overflow.\n  softmax([1,2,3,4])  → [0.032, 0.087, 0.237, 0.644]" },
+        detail: "softmax(v)        — numerically-stable softmax over a vector\n  softmax(M)        — per-row softmax of a matrix (ML default, dim=2)\n  softmax(M, dim)   — per-row (2) or per-column (1) softmax\n  Subtracts the per-slice max before exp() to prevent overflow.\n  Each output slice sums to 1.0.\n  softmax([1,2,3,4])         → [0.032, 0.087, 0.237, 0.644]\n  softmax([1,2; 3,4])        → 2x2 with each row summing to 1\n  softmax([1,2; 3,4], 1)     → 2x2 with each column summing to 1" },
     HelpEntry { name: "relu",      brief: "Rectified linear unit  max(0, x)",
         detail: "relu(x)  — element-wise max(0, x)\n  Accepts scalar, vector, or matrix.\n  relu([-3, 0, 2, 5])  → [0, 0, 2, 5]" },
     HelpEntry { name: "gelu",      brief: "Gaussian error linear unit",
