@@ -8803,6 +8803,79 @@ mod sparse_tests {
     }
 
     #[test]
+    fn speye_carries_identity_hint() {
+        // speye is diagonal — identity ordering is trivially optimal,
+        // and the hint propagates through L + α*speye patterns.
+        let ev = eval_str("S = speye(5);");
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "S").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => assert_eq!(
+                sm.ordering_hint,
+                Some(rustlab_core::OrderingHint::Identity)
+            ),
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn spzeros_carries_identity_hint() {
+        let ev = eval_str("Z = spzeros(4, 4);");
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "Z").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => assert_eq!(
+                sm.ordering_hint,
+                Some(rustlab_core::OrderingHint::Identity)
+            ),
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn shifted_laplacian_keeps_identity_hint() {
+        // The lesson-10 cavity-sweep pattern. L from laplacian_2d carries
+        // Identity; speye(N) also carries Identity (post-fix). Their sum
+        // should still carry Identity — the diagonal shift doesn't change
+        // the nonzero pattern, so natural ordering remains optimal.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(8, 8); \
+             A = L + 0.5 * speye(64);",
+        );
+        let v = ev.vars().into_iter().find(|(n, _)| *n == "A").unwrap().1;
+        match v {
+            crate::Value::SparseMatrix(sm) => assert_eq!(
+                sm.ordering_hint,
+                Some(rustlab_core::OrderingHint::Identity),
+                "L + α*speye should keep Identity"
+            ),
+            _ => panic!("expected sparse matrix"),
+        }
+    }
+
+    #[test]
+    fn shifted_laplacian_dispatches_identity() {
+        // End-to-end: solve the shifted matrix and confirm the auto path
+        // matches the explicit "identity" path bit-for-bit. If the hint
+        // had been dropped, auto would route through AMD and produce a
+        // different FP-roundoff trail.
+        let ev = eval_str(
+            "L = -1 * laplacian_2d(10, 10); \
+             A = L + 0.25 * speye(100); \
+             rhs = ones(100, 1); \
+             x_auto = spsolve(A, rhs); \
+             x_id   = spsolve(A, rhs, \"auto\", \"identity\"); \
+             diff = norm(x_auto - x_id);",
+        );
+        // After the hint-propagation fix, auto should resolve to identity
+        // exactly (FP-bit-equal results). Before the fix, auto resolved
+        // to AMD and `diff` was on the order of 1e-13.
+        let diff = get_scalar(&ev, "diff");
+        assert!(
+            diff == 0.0,
+            "shifted Laplacian auto should pick identity path; diff={diff}"
+        );
+    }
+
+    #[test]
     fn add_drops_hint() {
         // Two matrices added together don't necessarily preserve the
         // grid pattern. Drop the hint to be safe.

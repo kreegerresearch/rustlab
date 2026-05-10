@@ -10087,6 +10087,11 @@ fn builtin_sparsevec(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// `speye(n)` — n×n sparse identity matrix.
+///
+/// Carries `OrderingHint::Identity`: a diagonal matrix has zero fill
+/// under any ordering, and the canonical use case is shifting a
+/// grid Laplacian (`L + α·speye(N)`) where identity ordering remains
+/// optimal across the addition.
 fn builtin_speye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("speye", &args, 1)?;
     let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
@@ -10095,11 +10100,16 @@ fn builtin_speye(args: Vec<Value>) -> Result<Value, ScriptError> {
         rows: n,
         cols: n,
         entries,
-        ordering_hint: None,
+        ordering_hint: Some(rustlab_core::OrderingHint::Identity),
     }))
 }
 
 /// `spzeros(m, n)` — m×n all-zero sparse matrix.
+///
+/// Carries `OrderingHint::Identity`: a zero matrix factors trivially
+/// under any ordering, and propagating Identity through arithmetic
+/// (e.g. `spzeros(N, N) + L`) preserves the natural-ordering choice
+/// the user asked for via the `L` operand.
 fn builtin_spzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("spzeros", &args, 2)?;
     let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
@@ -10108,7 +10118,7 @@ fn builtin_spzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
         rows: m,
         cols: n,
         entries: Vec::new(),
-        ordering_hint: None,
+        ordering_hint: Some(rustlab_core::OrderingHint::Identity),
     }))
 }
 

@@ -166,6 +166,34 @@ pub enum OrderingHint {
     Identity,
 }
 
+/// Combine two optional ordering hints. Used by structure-preserving
+/// arithmetic (`SparseMat::add` / `::sub`) to decide what hint, if any,
+/// the result should carry. Conservative rule:
+///
+/// - **Both `Some` and equal → propagate.** Both operands made the same
+///   structural claim; their union still satisfies it. (The canonical
+///   case: `L + α·speye(N)` where both `L` and `speye` carry
+///   `Identity`. Diagonal additions preserve the nonzero pattern, so
+///   identity ordering remains optimal.)
+/// - **Anything else → `None`.** A user-built `sparse(I, J, V, m, n)`
+///   carries no hint — adding it to a hinted matrix can introduce
+///   nonzeros outside the original pattern, so the structural claim
+///   no longer holds. Drop to be safe.
+///
+/// Users who know the result is still grid-banded can re-attach the
+/// hint via `with_ordering_hint` or pass `"identity"` explicitly to
+/// `spsolve` / `chol` / `lu`.
+#[inline]
+pub(crate) fn merge_hints(
+    a: Option<OrderingHint>,
+    b: Option<OrderingHint>,
+) -> Option<OrderingHint> {
+    match (a, b) {
+        (Some(x), Some(y)) if x == y => Some(x),
+        _ => None,
+    }
+}
+
 /// Sparse matrix in COO format.  Entries are sorted row-major (0-based internally).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SparseMat {
@@ -339,6 +367,13 @@ impl SparseMat {
     }
 
     /// Add two sparse matrices (must have equal dimensions).
+    ///
+    /// Preserves `ordering_hint` when both operands agree on a hint, or
+    /// when one is `Some(h)` and the other is `None` (None means "no
+    /// opinion" and shouldn't override the explicit hint). This lets
+    /// `L + α·speye(N)` keep `Identity` from the grid-Laplacian operand
+    /// — the diagonal shift never changes the nonzero pattern, so the
+    /// hint remains structurally correct.
     pub fn add(&self, other: &SparseMat) -> Result<Self, String> {
         if self.rows != other.rows || self.cols != other.cols {
             return Err(format!(
@@ -348,10 +383,12 @@ impl SparseMat {
         }
         let mut combined = self.entries.clone();
         combined.extend_from_slice(&other.entries);
-        Ok(Self::new(self.rows, self.cols, combined))
+        let mut out = Self::new(self.rows, self.cols, combined);
+        out.ordering_hint = merge_hints(self.ordering_hint, other.ordering_hint);
+        Ok(out)
     }
 
-    /// Subtract another sparse matrix.
+    /// Subtract another sparse matrix. Hint propagation matches `add`.
     pub fn sub(&self, other: &SparseMat) -> Result<Self, String> {
         self.add(&other.scale(Complex::new(-1.0, 0.0)))
     }
