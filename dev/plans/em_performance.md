@@ -16,7 +16,7 @@
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
 | 4 | Direct CSC build in `laplacian_*` builders | **shipped** | low | 13–22× builder speedup | `810806a` |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | **investigated, deferred** | — | regression on this kernel — see notes | — |
-| 6 | Symbolic-then-numeric Cholesky on flat CSC | **awaiting commit** | med | 5–11% factor speedup at n≥150 | — |
+| 6 | Symbolic-then-numeric Cholesky on flat CSC | **shipped** | med | 5–11% factor speedup at n≥150 | `99dd198` |
 
 *Status legend:* `pending` (not started) · `in progress` (branch open) · `awaiting commit` (code/tests/docs landed locally, not yet committed — user approval required) · `blocked` (note why) · `shipped` (commit hash).
 When you advance a phase, update its row **and** the per-phase section's Status field.
@@ -288,7 +288,7 @@ The premise — that real path saves bandwidth — was wrong on this kernel. Two
 
 ## Phase 6 — Symbolic-then-numeric Cholesky on flat CSC
 
-**Status:** awaiting commit (2026-05-09)
+**Status:** shipped — commit `99dd198` (2026-05-09)
 
 **Implementation log (2026-05-09):**
 - Replaced `cols_l: Vec<Vec<(usize, T)>>` in `crates/rustlab-core/src/sparse_solve/cholesky.rs::SparseChol::factor` with a flat-CSC two-pass design.
