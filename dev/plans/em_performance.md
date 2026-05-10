@@ -15,7 +15,7 @@
 | 2 | Identity-ordering fast path for grid Laplacians | **shipped** | low | ~5× on grid solves | `ddb78f8` |
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
 | 4 | Direct CSC build in `laplacian_*` builders | **shipped** | low | 13–22× builder speedup | `810806a` |
-| 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | pending | med | ~2× memory, 2–4× speed | — |
+| 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | **investigated, deferred** | — | regression on this kernel — see notes | — |
 | 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
 
 *Status legend:* `pending` (not started) · `in progress` (branch open) · `awaiting commit` (code/tests/docs landed locally, not yet committed — user approval required) · `blocked` (note why) · `shipped` (commit hash).
@@ -235,7 +235,27 @@ Each phase reuses these. If you make a fixture, put it in `crates/rustlab-dsp/sr
 
 ## Phase 5 — Real `f64` path for `vector_calc.rs` + Laplacian builders
 
-**Status:** pending
+**Status:** investigated 2026-05-09, **deferred** — implementation regressed performance, reverted before commit.
+
+**Investigation log (2026-05-09):**
+Implemented Option C (internal realness fast path: `is_real_matrix` check, `extract_real` to Vec<f64>, f64-typed kernels writing to CMatrix output). Wrote `d_dx_real`, `d_dy_real`, `divergence_2d_real`, `curl_2d_real`, plus 5 correctness tests that all passed. Then benched against the Phase 3 baseline:
+
+| Grid | Phase 3 baseline | Phase 5 attempt | Δ |
+|---|---:|---:|---:|
+| 100×100 div | 0.075 ms | 0.188 ms | **2.5× slower** |
+| 200×200 div | 0.091 ms | 0.272 ms | **3× slower** |
+| 800×800 div | 0.281 ms | 1.39 ms | **5× slower** |
+| 800×800 grad | 0.576 ms | 0.89 ms | 1.5× slower |
+
+The premise — that real path saves bandwidth — was wrong on this kernel. Two issues:
+1. `extract_real` allocates and writes a `Vec<f64>` of size N (5–6 MB at 800×800) per call. That extra memory traffic dominates the savings from f64 vs C64 arithmetic.
+2. CMatrix reads pull 16-byte cachelines regardless of whether we use both halves of each Complex<f64>. We can't actually halve input bandwidth without changing the upstream storage type — which would mean Option A (parallel `_real` Value-layer API), the heavy refactor we explicitly chose to avoid.
+
+**Conclusion:** The realness fast path is a net loss for our finite-difference kernels because (a) the arithmetic is already cheap relative to memory traffic, and (b) the kernel is bandwidth-bound, not compute-bound. The Cholesky path benefits because factorization is compute-bound on its `nnz` × `n` flop count.
+
+**Reverted:** `crates/rustlab-dsp/src/vector_calc.rs` and tests restored to post-Phase-4 state. No commit. Phase 5 status changed from "pending" to "investigated, deferred" in the snapshot.
+
+**If revisited:** the only way to actually win on real input is Option A — separate real-typed `Value::Matrix(Array2<f64>)` and `SparseMat<f64>` types at the script layer, with parallel `gradient_real`/`laplacian_2d_real`/etc. APIs. Larger refactor; defer until profiling shows finite-difference kernels are a bottleneck on real-EM curriculum work (currently they aren't — the gallery's bottlenecks are factor + solve, addressed by Phase 1/2/4/6).
 **Goal:** stop promoting real EM data to C64 in the DSP layer. The Cholesky / LU layer already detects "essentially real" inputs and routes to `SparseCsc<f64>` (`builtins.rs:10433`); the DSP layer above it pre-promotes everything to C64, which means even a real-valued `eps_map` produces complex triplets that then have to be detected and demoted. Cut out the round-trip.
 
 **Scope decision required at start of phase — flag to user:**
