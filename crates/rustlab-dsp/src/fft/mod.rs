@@ -161,3 +161,6 @@ fn reverse_bits(mut x: usize, bits: usize) -> usize {
     }
     r
 }
+
+#[cfg(test)]
+mod proptests;

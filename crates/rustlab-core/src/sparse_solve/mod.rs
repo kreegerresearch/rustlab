@@ -34,6 +34,9 @@ pub use ordering::{
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod proptests;
+
 /// Errors returned by sparse-solver factorization and solve paths.
 #[derive(Debug, Error)]
 pub enum SparseSolveError {

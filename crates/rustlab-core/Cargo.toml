@@ -12,6 +12,9 @@ num-complex.workspace = true
 ndarray.workspace     = true
 thiserror.workspace   = true
 
+[dev-dependencies]
+proptest.workspace = true
+
 [dependencies.ndarray-linalg]
 version  = "0.17"
 optional = true
