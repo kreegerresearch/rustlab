@@ -25,7 +25,7 @@ pub mod cholesky;
 pub mod lu;
 
 pub use csc::{FromComplex, SparseCsc, SparseScalar};
-pub use cholesky::SparseChol;
+pub use cholesky::{symbolic_col_counts, SparseChol};
 pub use lu::SparseLU;
 pub use ordering::{
     AmdOrdering, ColCountOrdering, IdentityOrdering, OrderingMethod, Permutation,

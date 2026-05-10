@@ -1,11 +1,35 @@
 # Implementation Plan — EM Gallery Performance
 
-> **For the next agent:** This is both the *reference* doc (rationale, decisions, file landmarks) and the *action* doc (status table, per-phase steps). Read top to bottom, find the next phase whose Status is `pending`, follow its checklist.
+> **Closed 2026-05-09.** All technical phases shipped or explicitly deferred with rationale. Plan moved to `dev/plans/closed/em_performance.md` from `dev/plans/em_performance.md` once the closing commit lands. Companion plans: `dev/plans/em_requests_plan.md`, `dev/plans/closed/sparse_solve_handroll.md`. Design doc: `docs/sparse_solve.md`. Performance numbers: `perf/em_performance_phase{3,4,6}.md`.
+
+## Closure summary
+
+Six phases planned; five shipped, one deferred with documented rationale:
+
+| # | Phase | Outcome | Commit | Headline |
+|---|---|---|---|---|
+| 1 | Reusable Cholesky/LU factor (`chol(A)` / `lu(A)` / `solve(F, b)`) | shipped | `7311bf1` | factor-once / solve-many for parameter sweeps and animations; real-only auto-routing |
+| 2 | Identity-ordering hint for grid Laplacians | shipped | `ddb78f8` | ~5× factor speedup on grid Laplacians; AMD remains default for unhinted matrices |
+| 3 | Fused, parallel `gradient` / `divergence` / `curl` | shipped | `0e70b1a` | slice-iterating + rayon-parallel kernels; 1 alloc instead of 3 per fused call |
+| 4 | Direct-sorted entry path for Laplacian builders | shipped | `810806a` | 13–22× builder speedup (1-D 1M, 2-D 800², 3-D 100³) |
+| 5 | Real `f64` path through DSP layer | **deferred** | — | bench showed regression; the kernel is bandwidth-bound and we can't actually halve input bandwidth without reshaping the script-layer `Value` enum (Option A from the original sub-plan). See investigation log below. |
+| 6 | Symbolic-then-numeric flat-CSC Cholesky | shipped | `99dd198` | architectural cleanup; 5–11% factor speedup at n≥150; new public `symbolic_col_counts` API for fill prediction |
+
+Net result on the curriculum's bottlenecks:
+
+- **Laplacian builders** are roughly 20× faster end-to-end on the sizes the gallery uses.
+- **Sparse Cholesky** auto-picks identity ordering on grid Laplacians (5× faster than the previous AMD default) and runs through a flat-CSC factor.
+- **Postprocess kernels** (`gradient` / `divergence` / `curl`) avoid intermediate allocations and parallelize for free above 4096 elements.
+- **Reusable factors** turn the 50-RHS animation pattern from "factor 50 times" into "factor once, solve 50 times".
+
+Phase 5 is the only thing left on the table. Future revisits should start by measuring whether finite-difference kernels are an actual bottleneck on real-EM curriculum work; currently they aren't.
+
+> **For the next agent:** This is both the *reference* doc (rationale, decisions, file landmarks) and the *action* doc (status table, per-phase steps). Read top to bottom, find the next phase whose Status is `pending`, follow its checklist. As of 2026-05-09 all phases are resolved — the document is preserved in `dev/plans/closed/` for archeology only.
 > Source analysis: turn-3 of session 2026-05-09; user asked "in the EM examples what are the bottlenecks and what can be improved computationally?" Answer enumerated 7 bottlenecks; user replied "fix them fix them all" → "lets plan this in phases" → this document.
 > Companion plan: `dev/plans/em_requests_plan.md` (closed work that built the foundations this plan optimizes — sparse Cholesky, sparse LU, AMD, real-only Cholesky fast path).
 
 **Date opened:** 2026-05-09
-**Plan status:** Phase order locked; no phase started.
+**Date closed:** 2026-05-09 — see Closure summary above.
 
 ## Status snapshot
 

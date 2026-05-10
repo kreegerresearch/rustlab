@@ -20,6 +20,7 @@ This plan turns `../rustlab_em/dev/rustlab/requests/em_requests.md` §2-§5 into
 | §2.7 | polar / log axes | pending | — |
 | §2.6 Phase 1 | Yee + SC-PML scripted library | pending (curriculum-side) | — |
 | §2.6 Phase 2 | Yee + SC-PML native crate | blocked on graduation trigger | — |
+| (post-`§`) | EM gallery performance follow-up (factor reuse, identity-ordering hint, fused vector calc, fast laplacian build, flat-CSC Cholesky) | **closed** | `dev/plans/closed/em_performance.md` — phases 1–4 + 6 shipped, Phase 5 deferred |
 
 ## Licensing policy (applies to every dep choice in this plan)
 

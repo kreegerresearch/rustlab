@@ -217,6 +217,13 @@ architectural win is bigger than the wall-clock win because the
 factor now lives in flat CSC end-to-end. See
 `perf/em_performance_phase6.md` for the A/B numbers.
 
+The symbolic phase is also exposed as a public free function
+`symbolic_col_counts(a, ordering)` for callers that want to predict
+column nnz without running the numeric pass — useful for fill
+estimation, ordering selection, or pre-allocating downstream buffers
+when factoring repeatedly with the same sparsity pattern but
+different numeric values.
+
 ### `SparseLU::factor` — Gilbert-Peierls with partial pivoting
 
 Davis ch. 6. For general (possibly non-symmetric, indefinite, or

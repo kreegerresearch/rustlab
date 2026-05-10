@@ -59,21 +59,7 @@ impl<T: SparseScalar> SparseChol<T> {
         // per-column write cursor.
 
         // ── Symbolic pass — exact column counts of L ───────────────────
-        // For each k, ereach returns the pattern `s[top..n]` of row k of L
-        // (the columns j < k with L(k, j) != 0). For each such j we get
-        // one below-diagonal entry in column j. Plus 1 diagonal per col.
-        let mut col_count: Vec<usize> = vec![1; n];
-        {
-            let mut mark: Vec<usize> = vec![usize::MAX; n];
-            let mut s: Vec<usize> = vec![0usize; n];
-            for k in 0..n {
-                let top = ereach(&c, k, &parent, &mut s, &mut mark);
-                for p in top..n {
-                    let j = s[p];
-                    col_count[j] += 1;
-                }
-            }
-        }
+        let col_count = compute_col_counts(&c, &parent);
 
         // Prefix-sum to col_ptr. Allocate Li/Lx exactly once.
         let mut col_ptr = vec![0usize; n + 1];
@@ -195,6 +181,59 @@ impl<T: SparseScalar> SparseChol<T> {
     pub fn factor_csc(&self) -> &SparseCsc<T> {
         &self.l
     }
+}
+
+/// Symbolic Cholesky pass: per-column nnz of the lower-triangular
+/// factor `L` for the matrix `c` (already in permuted form) with the
+/// given column elimination tree `parent`. Each column count includes
+/// the diagonal (i.e., `col_counts[j]` is total nnz in column `j`,
+/// not just below-diagonal entries).
+///
+/// Linear in `nnz(c)` for trees of bounded depth, and the standard
+/// O(nnz(c) log n) in pathological cases. Reuses `ereach` — the same
+/// machinery the numeric pass uses to walk the row pattern.
+fn compute_col_counts<T: SparseScalar>(
+    c: &SparseCsc<T>,
+    parent: &[Option<usize>],
+) -> Vec<usize> {
+    let n = c.ncols();
+    let mut col_count: Vec<usize> = vec![1; n]; // 1 per diagonal
+    let mut mark: Vec<usize> = vec![usize::MAX; n];
+    let mut s: Vec<usize> = vec![0usize; n];
+    for k in 0..n {
+        let top = ereach(c, k, parent, &mut s, &mut mark);
+        for p in top..n {
+            let j = s[p];
+            col_count[j] += 1;
+        }
+    }
+    col_count
+}
+
+/// Predict per-column nnz of the Cholesky factor `L` of `a` under the
+/// given fill-reducing ordering, **without** running the numeric pass.
+/// Useful for ordering selection, fill estimation, and pre-allocating
+/// downstream buffers when the factorization will run repeatedly with
+/// different numeric values but the same sparsity pattern.
+///
+/// Returns a `Vec<usize>` of length `n` where index `j` is the total
+/// nnz in column `j` of `L` (diagonal included).
+///
+/// Errors only on shape (`NotSquare`); never reads the values of `a`.
+pub fn symbolic_col_counts<T: SparseScalar, O: OrderingMethod>(
+    a: &SparseCsc<T>,
+    ord: &O,
+) -> Result<Vec<usize>, SparseSolveError> {
+    if !a.is_square() {
+        return Err(SparseSolveError::NotSquare {
+            rows: a.nrows(),
+            cols: a.ncols(),
+        });
+    }
+    let perm = ord.order(a);
+    let c = perm.permute_symmetric(a);
+    let parent = column_elimination_tree(&c);
+    Ok(compute_col_counts(&c, &parent))
 }
 
 /// Pattern of row k of L given the upper-triangular pattern of `c`'s
@@ -483,6 +522,77 @@ mod tests {
                 diff.norm()
             );
         }
+    }
+
+    #[test]
+    fn symbolic_col_counts_match_factor_nnz_4x4() {
+        // Phase 6 invariant: the standalone symbolic pass must produce
+        // the same per-column nnz that the numeric factorization ends
+        // up writing. Tested at release-build (the in-factor
+        // debug_assert covers this only in debug builds).
+        let a = rcsc(
+            4,
+            4,
+            &[
+                (0, 0, 4.0),
+                (0, 1, 1.0),
+                (1, 0, 1.0),
+                (1, 1, 3.0),
+                (1, 2, 1.0),
+                (2, 1, 1.0),
+                (2, 2, 3.0),
+                (2, 3, 1.0),
+                (3, 2, 1.0),
+                (3, 3, 4.0),
+            ],
+        );
+        let pred = symbolic_col_counts(&a, &IdentityOrdering).unwrap();
+        let chol = SparseChol::factor(&a, &IdentityOrdering).unwrap();
+        let l = chol.factor_csc();
+        let actual: Vec<usize> = (0..l.ncols())
+            .map(|j| l.col_ptr[j + 1] - l.col_ptr[j])
+            .collect();
+        assert_eq!(pred, actual, "symbolic vs actual nnz disagree");
+    }
+
+    #[test]
+    fn symbolic_col_counts_match_factor_nnz_grid_laplacian() {
+        // 12x12 grid → 144x144 SPD matrix. Identity ordering keeps the
+        // matrix banded, so we hit a non-trivial column-count profile
+        // (some cols dense-ish, some sparse).
+        let nx = 12;
+        let ny = 12;
+        let n = nx * ny;
+        let l_neg = laplacian_2d_real(nx, ny, 1.0, 1.0);
+        let mut neg_coo = Vec::new();
+        for j in 0..n {
+            for (r, v) in l_neg.col_iter(j) {
+                neg_coo.push((r, j, -v));
+            }
+        }
+        neg_coo.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        let a = SparseCsc::<f64>::from_coo_sorted(n, n, &neg_coo);
+        let pred = symbolic_col_counts(&a, &IdentityOrdering).unwrap();
+        let chol = SparseChol::factor(&a, &IdentityOrdering).unwrap();
+        let l = chol.factor_csc();
+        for j in 0..n {
+            let actual = l.col_ptr[j + 1] - l.col_ptr[j];
+            assert_eq!(
+                pred[j], actual,
+                "col {j}: symbolic predicted {} but factor has {actual}",
+                pred[j]
+            );
+        }
+        // Sanity: total predicted nnz == factor nnz.
+        let pred_total: usize = pred.iter().sum();
+        assert_eq!(pred_total, l.nnz());
+    }
+
+    #[test]
+    fn symbolic_col_counts_non_square_errors() {
+        let a = SparseCsc::<f64>::from_coo_sorted(3, 4, &[(0, 0, 1.0)]);
+        let err = symbolic_col_counts(&a, &IdentityOrdering).unwrap_err();
+        assert!(matches!(err, SparseSolveError::NotSquare { .. }));
     }
 
     #[test]
