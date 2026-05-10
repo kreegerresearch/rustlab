@@ -198,11 +198,24 @@ For `T = f64` the conjugate operation is a no-op and the sqrt is real;
 for `T = C64` the diagonal must be real after the subtraction or the
 matrix isn't actually Hermitian. The same code path covers both.
 
-The current implementation accumulates `L`'s columns into
-`cols_l: Vec<Vec<(usize, T)>>` — one heap allocation per column.
-Phase 6 of `dev/plans/em_performance.md` plans to replace this with
-flat CSC arrays sized from a symbolic counts pass; expected 2–3×
-speedup on the factor stage.
+The implementation uses a two-pass design (Phase 6 of
+`dev/plans/em_performance.md`):
+
+1. **Symbolic pass.** For each `k`, run `ereach` to enumerate the row-`k`
+   pattern of `L`. Count how many entries land in each column to get
+   exact `col_count[j]`. Reuses the elimination tree and the same
+   `mark`-vector machinery as the numeric pass; runs in `O(nnz(L))`.
+2. **Numeric pass.** Same algorithm as classical up-looking Cholesky
+   but writes directly into preallocated flat `Lp / Li / Lx` arrays
+   via per-column write cursors. The diagonal goes in slot `Lp[j]`;
+   below-diagonal entries fill `Lp[j]+1 ..` in increasing-row order.
+
+This replaces an earlier `Vec<Vec<(usize, T)>>` accumulator pattern
+that needed a final flatten step. Performance impact is modest
+(5–11% factor speedup on grid Laplacians at 150–200) — the
+architectural win is bigger than the wall-clock win because the
+factor now lives in flat CSC end-to-end. See
+`perf/em_performance_phase6.md` for the A/B numbers.
 
 ### `SparseLU::factor` — Gilbert-Peierls with partial pivoting
 

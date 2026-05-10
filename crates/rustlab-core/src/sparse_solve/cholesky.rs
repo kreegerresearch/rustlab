@@ -51,29 +51,55 @@ impl<T: SparseScalar> SparseChol<T> {
         let c = perm.permute_symmetric(a);
         let parent = column_elimination_tree(&c);
 
-        // Per-column accumulators for the lower-triangular factor. Each
-        // column starts empty; the diagonal goes in first, then the
-        // below-diagonal entries appear (in ascending row order) as later
-        // iterations of `k` write `L(k, j)` into column `j`.
-        let mut cols_l: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
+        // Phase 6 of `dev/plans/em_performance.md`: replace the per-column
+        // `Vec<Vec<(usize, T)>>` accumulator (one heap allocation per
+        // column, growing dynamically) with a flat CSC layout sized from
+        // an up-front symbolic counts pass. The numeric pass writes
+        // directly into preallocated `Lp / Li / Lx` arrays, with one
+        // per-column write cursor.
 
-        // Sparse-accumulator workspace for the active column.
+        // ── Symbolic pass — exact column counts of L ───────────────────
+        // For each k, ereach returns the pattern `s[top..n]` of row k of L
+        // (the columns j < k with L(k, j) != 0). For each such j we get
+        // one below-diagonal entry in column j. Plus 1 diagonal per col.
+        let mut col_count: Vec<usize> = vec![1; n];
+        {
+            let mut mark: Vec<usize> = vec![usize::MAX; n];
+            let mut s: Vec<usize> = vec![0usize; n];
+            for k in 0..n {
+                let top = ereach(&c, k, &parent, &mut s, &mut mark);
+                for p in top..n {
+                    let j = s[p];
+                    col_count[j] += 1;
+                }
+            }
+        }
+
+        // Prefix-sum to col_ptr. Allocate Li/Lx exactly once.
+        let mut col_ptr = vec![0usize; n + 1];
+        for j in 0..n {
+            col_ptr[j + 1] = col_ptr[j] + col_count[j];
+        }
+        let nnz = col_ptr[n];
+        let mut row_idx: Vec<usize> = vec![0usize; nnz];
+        let mut values: Vec<T> = vec![T::zero(); nnz];
+
+        // Per-column write cursor. Slot `col_ptr[j]` is reserved for the
+        // diagonal (written at the end of iteration j); below-diagonal
+        // entries go into `col_ptr[j] + 1 ..` in increasing-row order.
+        let mut next: Vec<usize> = (0..n).map(|j| col_ptr[j] + 1).collect();
+
+        // ── Numeric pass — same algorithm, flat-array writes ───────────
         let mut x: Vec<T> = vec![T::zero(); n];
-        // Mark vector for ereach. mark[i] == k means node i was visited in column k.
         let mut mark: Vec<usize> = vec![usize::MAX; n];
-        // Pattern stack used by ereach (top-of-stack convention).
         let mut s: Vec<usize> = vec![0usize; n];
 
         for k in 0..n {
-            // ---- Pattern of row k of L (columns j < k where L(k, j) != 0). ----
+            // Pattern of row k of L (columns j < k where L(k, j) != 0).
             let top = ereach(&c, k, &parent, &mut s, &mut mark);
 
-            // ---- Initialize x with row k of A. ----
-            // The CSC stores entries by column; row k of column j (for j < k)
-            // is the upper-triangular entry A(j, k). We need A(k, j), which
-            // by Hermitian symmetry is conj(A(j, k)). For real A, conj is
-            // the identity. The diagonal A(k, k) is real-valued for Hermitian
-            // matrices, so the conjugate also leaves it alone.
+            // Initialize x with row k of A (upper-triangle of CSC, conjed
+            // by Hermitian symmetry to get the row).
             x[k] = T::zero();
             for (i, val) in c.col_iter(k) {
                 if i <= k {
@@ -84,57 +110,53 @@ impl<T: SparseScalar> SparseChol<T> {
             let mut d = x[k];
             x[k] = T::zero();
 
-            // ---- Triangular solve: process pattern in topo order. ----
+            // Triangular solve, processing pattern in topo order.
             for p in top..n {
                 let j = s[p];
-                let l_jj = cols_l[j][0].1; // diagonal entry of column j (real-positive)
+                let l_jj = values[col_ptr[j]]; // diagonal of column j
                 let lkj = x[j] / l_jj;
                 x[j] = T::zero();
 
-                // Propagate the contribution of L(k, j) to remaining
-                // pattern entries that are still ahead in topo order:
-                //   x[r] -= L(k, j) * conj(L(r, j))  for r > j with L(r, j) != 0.
-                // Entries [1..] of column j of L are below-diagonal in
-                // ascending row order. Their row indices are < k (entries
-                // for rows > k haven't been written yet at iteration k).
-                for &(row, l_row_j) in cols_l[j].iter().skip(1) {
+                // Propagate L(k, j) into x[row] for already-written
+                // below-diagonal entries of column j (indices
+                // col_ptr[j]+1 .. next[j]).
+                let lo = col_ptr[j] + 1;
+                let hi = next[j];
+                for off in lo..hi {
+                    let row = row_idx[off];
+                    let l_row_j = values[off];
                     debug_assert!(row > j);
                     debug_assert!(row < k, "column j entry row should be < k at iter k");
                     x[row] -= lkj * l_row_j.conj();
                 }
 
-                // Diagonal update: d -= |L(k, j)|^2 = L(k, j) * conj(L(k, j)).
+                // Diagonal update: d -= |L(k, j)|^2.
                 d -= lkj * lkj.conj();
 
-                // Append L(k, j) to column j of L.
-                cols_l[j].push((k, lkj));
+                // Append L(k, j) at column j's next free slot.
+                let slot = next[j];
+                debug_assert!(slot < col_ptr[j + 1], "column j over-filled at iter k");
+                row_idx[slot] = k;
+                values[slot] = lkj;
+                next[j] = slot + 1;
             }
 
-            // ---- Diagonal pivot: L(k, k) = sqrt(d). ----
+            // Diagonal pivot: L(k, k) = sqrt(d). Goes in the reserved
+            // slot at col_ptr[k].
             let pivot = match d.checked_sqrt_real_pos(1e-12) {
                 Some(p) => p,
                 None => return Err(SparseSolveError::NotSpd { col: k }),
             };
-            // Diagonal goes at the FRONT of column k so it's at offset 0 —
-            // matches the algorithm's expectation that `cols_l[j][0]` is
-            // always L(j, j).
-            cols_l[k].insert(0, (k, pivot));
+            row_idx[col_ptr[k]] = k;
+            values[col_ptr[k]] = pivot;
         }
 
-        // ---- Convert column accumulators into CSC. ----
-        let mut col_ptr = vec![0usize; n + 1];
-        for j in 0..n {
-            col_ptr[j + 1] = col_ptr[j] + cols_l[j].len();
-        }
-        let nnz = col_ptr[n];
-        let mut row_idx: Vec<usize> = Vec::with_capacity(nnz);
-        let mut values: Vec<T> = Vec::with_capacity(nnz);
-        for col in cols_l {
-            for (r, v) in col {
-                row_idx.push(r);
-                values.push(v);
-            }
-        }
+        // Sanity check (debug builds): every column was filled exactly to
+        // its symbolic count.
+        debug_assert!(
+            (0..n).all(|j| next[j] == col_ptr[j + 1]),
+            "symbolic count disagrees with numeric writes"
+        );
 
         Ok(SparseChol {
             l: SparseCsc {

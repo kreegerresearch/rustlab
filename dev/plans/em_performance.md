@@ -16,7 +16,7 @@
 | 3 | Fused, parallel `gradient` / `divergence` / `curl` | **shipped** | low–med | 3–8× on postprocess | `0e70b1a` |
 | 4 | Direct CSC build in `laplacian_*` builders | **shipped** | low | 13–22× builder speedup | `810806a` |
 | 5 | Real `f64` path for `vector_calc.rs` + Laplacian builders | **investigated, deferred** | — | regression on this kernel — see notes | — |
-| 6 | Symbolic-then-numeric Cholesky on flat CSC | pending | med | 2–3× factor + cache | — |
+| 6 | Symbolic-then-numeric Cholesky on flat CSC | **awaiting commit** | med | 5–11% factor speedup at n≥150 | — |
 
 *Status legend:* `pending` (not started) · `in progress` (branch open) · `awaiting commit` (code/tests/docs landed locally, not yet committed — user approval required) · `blocked` (note why) · `shipped` (commit hash).
 When you advance a phase, update its row **and** the per-phase section's Status field.
@@ -288,7 +288,15 @@ The premise — that real path saves bandwidth — was wrong on this kernel. Two
 
 ## Phase 6 — Symbolic-then-numeric Cholesky on flat CSC
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-09)
+
+**Implementation log (2026-05-09):**
+- Replaced `cols_l: Vec<Vec<(usize, T)>>` in `crates/rustlab-core/src/sparse_solve/cholesky.rs::SparseChol::factor` with a flat-CSC two-pass design.
+- Symbolic pass: walks the elimination tree via `ereach`, accumulates `col_count[j]` per column. Adds 1 per column for the diagonal. Prefix-sum into `col_ptr`. Allocate `row_idx` and `values` exactly once.
+- Numeric pass: same algorithm as before, but writes go to `values[next[j]]` / `row_idx[next[j]]` with per-column write cursor. Diagonal goes in the reserved slot at `col_ptr[k]` at iteration end. `debug_assert!` confirms symbolic count matches numeric writes.
+- All 8 existing Cholesky tests pass unchanged. Full workspace and `--features viewer` test suites green.
+- A/B via git stash: chol/AMD at 150×150 went 0.798 → 0.716 s (−10%); 200×200 went 2.355 → 2.204 s (−6%). Smaller grids are essentially flat (within noise). Win is real but more modest than the plan estimated, because the original `Vec<Vec<…>>` layout was already cache-friendly for grid Laplacians where columns have bounded fill.
+- Numbers in `perf/em_performance_phase6.md`. `docs/sparse_solve.md` updated to describe the two-pass design.
 **Goal:** kill the `Vec<Vec<(usize, T)>>` per-column accumulator in `cholesky.rs:58` and replace it with a flat CSC build. The numeric pass already iterates in topological order with the elimination tree (`cholesky.rs:52`) — adding a symbolic-counts pass first lets us preallocate `Lp / Li / Lx`.
 
 **Scope:**
