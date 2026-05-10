@@ -122,9 +122,9 @@ charges where the potential gradient changes sign.
 ## Why this works at scale
 
 The previous `spsolve` densified `A` and ran $O(N^3)$ Gaussian
-elimination. At $N = 10\,000$ that's $10^{12}$ floating-point
+elimination. At $N = 10\\,000$ that's $10^{12}$ floating-point
 operations and an 80 MB matrix — uncomfortable on a laptop and
-prohibitive on a 200×200 grid where $N = 40\,000$.
+prohibitive on a 200×200 grid where $N = 40\\,000$.
 
 The sparse Cholesky path stays in the sparse factor:
 

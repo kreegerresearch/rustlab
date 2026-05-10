@@ -89,7 +89,7 @@ print(rel_err)
 ```
 
 ```text
-0.000000000000003868453582064021
+0.0000000000000014384367113005385
 ```
 
 You should see a residual on the order of `1e-15` — machine precision.

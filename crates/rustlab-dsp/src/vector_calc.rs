@@ -21,6 +21,25 @@
 //! `divergence` and `curl` paths so they don't allocate intermediate
 //! per-axis derivative tensors, and added rayon-parallel outer-axis
 //! sweeps when `n*m >= PAR_THRESHOLD`.
+//!
+//! ## If these kernels become a bottleneck
+//!
+//! Two follow-ups are documented but deferred:
+//!
+//! - **Phase 5** (real `f64` path through the DSP layer): tried and
+//!   regressed because these kernels are bandwidth-bound and the
+//!   `extract_real` copy step adds more memory traffic than the f64
+//!   arithmetic saves. A real win would require Option A from the plan
+//!   — a parallel real-typed `Value::Matrix(Array2<f64>)` /
+//!   `SparseMat<f64>` API at the script layer. See
+//!   `dev/plans/closed/em_performance.md` § "Phase 5" for the
+//!   investigation log and revisit triggers.
+//! - `PAR_THRESHOLD` tuning: the current 4096 cutoff is conservative.
+//!   At 100×100 (= 10 000 elements) rayon's per-task overhead can
+//!   dominate the work-stealing benefit. See
+//!   `perf/em_performance_summary.md` for the small-grid regression
+//!   numbers. A bench-driven sweep to ~30 000 may pay off if anyone
+//!   runs hot here.
 
 use crate::error::DspError;
 use num_complex::Complex;

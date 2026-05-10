@@ -86,7 +86,7 @@ print(norm(v_auto - v_lu))      % → ~1e-12 (different fp accumulation)
 
 ```text
 0
-0.000000000000000010760302430078162
+0.0000000000000000053549056982446685
 ```
 
 ## Sparse LU on indefinite matrices

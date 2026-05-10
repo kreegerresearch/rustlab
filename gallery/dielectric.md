@@ -11,7 +11,7 @@ with arithmetic-mean coefficients — produces artificial sources at
 material interfaces. The physically correct discretization uses
 **harmonic-mean half-cell coefficients**:
 
-$$\varepsilon_{i, j+1/2} = \frac{2 \, \varepsilon(i, j) \, \varepsilon(i, j+1)}{\varepsilon(i, j) + \varepsilon(i, j+1)}$$
+$$\varepsilon_{i, j+1/2} = \frac{2 \\, \varepsilon(i, j) \\, \varepsilon(i, j+1)}{\varepsilon(i, j) + \varepsilon(i, j+1)}$$
 
 This preserves flux continuity at material boundaries — exactly what
 Maxwell's equations demand. `laplacian_eps_2d` builds the resulting
