@@ -1,5 +1,6 @@
 pub mod embed;
 pub mod execute;
+pub mod markdown_safe;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;
@@ -460,10 +461,19 @@ fn render_output(
             );
             let final_md = match obsidian {
                 Some(_) => {
+                    // Obsidian's renderer doesn't have GitHub's CommonMark-
+                    // before-KaTeX problem, so we leave math alone here.
                     let frontmatter = merge_obsidian_frontmatter(source_md.unwrap_or(""));
                     format!("{frontmatter}{body}")
                 }
-                None => body,
+                None => {
+                    // GitHub's markdown renderer runs CommonMark passes
+                    // (emphasis, backslash-escapes) before KaTeX, which
+                    // corrupts math containing `^*`, `\|`, `\,`, etc.
+                    // Rewrite the math spans to KaTeX-equivalent forms
+                    // that survive CommonMark. See markdown_safe.rs.
+                    markdown_safe::github_safe_math(&body)
+                }
             };
             write_output(out_path, final_md.as_bytes());
         }
