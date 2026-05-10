@@ -23,17 +23,37 @@
 //! ## The fix
 //!
 //! Inside every `$...$` and `$$...$$` math span, rewrite GitHub-hostile
-//! tokens to KaTeX equivalents that survive CommonMark:
+//! tokens. Two distinct mechanisms produce the corruption, so two
+//! different rewrite strategies are needed:
 //!
-//! - `^*`  → `^{\ast}`
-//! - `_*`  → `_{\ast}`
-//! - `\|`  → `\Vert`
-//! - `\,`  → `\thinspace`
-//! - `\;`  → `\thickspace`
-//! - `\:`  → `\medspace`
-//! - `\!`  → `\negthinspace`
+//! **Emphasis-pairing fix** — defeat by braced replacement using a
+//! command name with no `*` characters:
 //!
-//! Each replacement renders identically to the original under KaTeX.
+//! - `^*`   → `^{\ast}`
+//! - `_*`   → `_{\ast}`
+//! - `^**`  → `^{\ast\ast}`
+//! - `_**`  → `_{\ast\ast}`
+//!
+//! **Backslash-escape fix** — defeat by doubling the backslash. The
+//! CommonMark spec: `\\` always reduces to a single literal `\`. So
+//! emitting `\\X` means GitHub's CommonMark pass strips one backslash,
+//! KaTeX gets back the original `\X`, and renders it correctly.
+//!
+//! - `\,`   → `\\,`
+//! - `\;`   → `\\;`
+//! - `\:`   → `\\:`
+//! - `\!`   → `\\!`
+//! - `\|`   → `\\|`
+//!
+//! An earlier version of this module used alpha-synonym replacements
+//! (`\thinspace`, `\thickspace`, `\Vert{}`, etc.) on the theory that
+//! they're CommonMark-safe by virtue of having no punctuation in the
+//! command name. They are — but `\thickspace`, `\medspace`, and
+//! `\negthinspace` aren't reliably supported in GitHub's KaTeX
+//! configuration, so emitting them caused parse errors that broke
+//! whole math spans. The double-backslash form sidesteps the question:
+//! it's an exact round-trip to the original LaTeX, which we already
+//! know KaTeX handles.
 //!
 //! Code spans (`` `...` ``) and fenced code blocks (```` ``` ```` /
 //! `~~~`) are left untouched, even if they contain `$` or LaTeX-shaped
@@ -310,33 +330,19 @@ fn rewrite_math_body(body: &str) -> String {
         }
         if c == b'\\' && i + 1 < n {
             // Backslash-followed-by-punctuation forms that CommonMark
-            // would strip the backslash from. Pick the alpha-suffixed
-            // KaTeX equivalent. Insert a separator (` ` or `{}`) when
-            // the following char would otherwise extend the command
-            // name and turn `\Vert x` into `\Vertx`.
+            // would strip the backslash from. Defeat by doubling the
+            // backslash: GitHub's CommonMark pass turns `\\` into `\`,
+            // and KaTeX then sees the original `\X`. This is preferable
+            // to alpha-synonym replacement because it's an exact
+            // round-trip — no dependency on KaTeX recognizing
+            // `\thickspace` etc. (which it doesn't, in some
+            // configurations).
             let next = bytes[i + 1];
-            let replacement: Option<&'static str> = match next {
-                b'|' => Some(r"\Vert"),
-                b',' => Some(r"\thinspace"),
-                b';' => Some(r"\thickspace"),
-                b':' => Some(r"\medspace"),
-                b'!' => Some(r"\negthinspace"),
-                _ => None,
-            };
-            if let Some(repl) = replacement {
-                out.push_str(repl);
-                // Separator: empty group `{}` if the next char would
-                // be merged into the alpha command name, otherwise no
-                // separator needed (the next non-alpha byte already
-                // terminates the command).
-                let after = if i + 2 < n { Some(bytes[i + 2]) } else { None };
-                let needs_sep = match after {
-                    Some(b) => b.is_ascii_alphabetic(),
-                    None => false,
-                };
-                if needs_sep {
-                    out.push_str("{}");
-                }
+            let needs_double = matches!(next, b',' | b';' | b':' | b'!' | b'|');
+            if needs_double {
+                out.push('\\');
+                out.push('\\');
+                out.push(next as char);
                 i += 2;
                 continue;
             }
@@ -383,22 +389,47 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_backslash_pipe_to_vert() {
-        // `\|x` → `\Vert{}x` (the `{}` terminates the command name so
-        // KaTeX doesn't parse `\Vertx` as a single token). The second
-        // `\|` is followed by ` ` (space), no separator needed.
+    fn rewrites_backslash_pipe_to_double_backslash() {
+        // `\|` → `\\|`. CommonMark turns `\\` into a literal `\`, so
+        // KaTeX sees the original `\|` and renders the norm bar.
         let out = github_safe_math(r"$$\|x\| \leq 1$$");
-        assert_eq!(out, r"$$\Vert{}x\Vert \leq 1$$");
+        assert_eq!(out, r"$$\\|x\\| \leq 1$$");
     }
 
     #[test]
     fn rewrites_backslash_thinspace() {
-        // From the bug repro's display equation.
+        // From the bug repro's display equation. `\,` → `\\,`.
         let out = github_safe_math(
             r"$$\frac{\partial \mathbf{f}}{\partial \mathbf{x}}\,\delta\mathbf{x}$$",
         );
-        assert!(out.contains(r"\thinspace\delta"));
+        assert!(out.contains(r"\\,\delta"));
         assert!(!out.contains(r"}\,"));
+        // No leftover alpha synonyms from the previous implementation.
+        assert!(!out.contains(r"\thinspace"));
+    }
+
+    #[test]
+    fn rewrites_backslash_thickspace() {
+        // The lesson-4 controls bug: `\;` was being rewritten to
+        // `\thickspace`, which GitHub's KaTeX rejects, breaking the
+        // whole math span. Now `\;` → `\\;` — exact round-trip.
+        let out = github_safe_math(r"$f(x) = [a,\; b]$");
+        assert_eq!(out, r"$f(x) = [a,\\; b]$");
+        assert!(!out.contains(r"\thickspace"));
+    }
+
+    #[test]
+    fn rewrites_backslash_medspace() {
+        let out = github_safe_math(r"$a\:b$");
+        assert_eq!(out, r"$a\\:b$");
+        assert!(!out.contains(r"\medspace"));
+    }
+
+    #[test]
+    fn rewrites_backslash_negthinspace() {
+        let out = github_safe_math(r"$a\!b$");
+        assert_eq!(out, r"$a\\!b$");
+        assert!(!out.contains(r"\negthinspace"));
     }
 
     #[test]
@@ -406,7 +437,7 @@ mod tests {
         let input = r"$$\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}^*) + \mathcal{O}(\|\delta\mathbf{x}\|^2).$$";
         let out = github_safe_math(input);
         assert!(out.contains(r"\mathbf{x}^{\ast}"));
-        assert!(out.contains(r"\Vert\delta\mathbf{x}\Vert"));
+        assert!(out.contains(r"\\|\delta\mathbf{x}\\|"));
     }
 
     #[test]
@@ -459,33 +490,50 @@ mod tests {
     #[test]
     fn double_backslash_pipe_preserved() {
         // `\\|` is escaped backslash + bar — not the math norm bar.
-        // We should not rewrite it. Our state machine pushes `\\` when
-        // it sees backslash-backslash, so the second `|` is its own
-        // thing.
+        // We should not turn the second backslash into yet more
+        // backslashes; that would inflate `\\|` to `\\\\|`.
         let out = github_safe_math(r"$a \\| b$");
-        // The result should still contain a literal `|` (or whatever
-        // KaTeX expects). The point is `\Vert` should NOT appear.
-        assert!(!out.contains(r"\Vert"), "should not rewrite \\\\|");
+        // After our pass: the original `\\` passes through (we emit
+        // it verbatim when we see backslash-backslash), and the bare
+        // `|` after is not preceded by `\` from our perspective.
+        assert_eq!(out, r"$a \\| b$");
     }
 
     #[test]
     fn full_repro_paragraph_renders_safely() {
-        // The exact paragraph from the bug report.
+        // The exact paragraph from the original bug report.
         let input = r"A **fixed point** $\mathbf{x}^*$ satisfies $\mathbf{f}(\mathbf{x}^*) = \mathbf{0}$ — derivatives are zero. Define the deviation $\delta\mathbf{x} = \mathbf{x} - \mathbf{x}^*$ and Taylor-expand:
 
 $$\dot{\mathbf{x}} = \mathbf{f}(\mathbf{x}^*) + \frac{\partial \mathbf{f}}{\partial \mathbf{x}}\bigg|_{\mathbf{x}^*}\,\delta\mathbf{x} + \mathcal{O}(\|\delta\mathbf{x}\|^2).$$";
         let out = github_safe_math(input);
         // No bare `^*` survives in any math span.
-        // Note: `^*` could in principle appear as text in prose, but
-        // the bug's repro paragraph has them only inside math, so a
-        // global absence check is informative here.
         assert!(!out.contains("^*"), "found bare ^* in:\n{out}");
-        // Bracketed `\,` and `\|` survive as their alpha equivalents.
-        assert!(out.contains(r"\thinspace\delta"));
-        assert!(out.contains(r"\Vert\delta"));
+        // `\,` and `\|` are doubled, not synonym-replaced.
+        assert!(out.contains(r"\\,\delta"));
+        assert!(out.contains(r"\\|\delta"));
+        assert!(out.contains(r"\\|^2"));
         // Prose-level emphasis and dashes are preserved.
         assert!(out.contains("**fixed point**"));
         assert!(out.contains("—"));
+    }
+
+    #[test]
+    fn lesson_4_controls_repro() {
+        // The second bug report — `\;` was being rewritten to
+        // `\thickspace`, which GitHub's KaTeX rejected and broke the
+        // whole math span. Now we emit `\\;` instead.
+        let input = r"Compute the Jacobian of $f(x_1, x_2) = [x_2,\; -\sin(x_1) - 0.5 x_2]^T$ at $(0, 0)$ and at $(\pi, 0)$.";
+        let out = github_safe_math(input);
+        // The fatal `\thickspace` must NOT appear.
+        assert!(
+            !out.contains(r"\thickspace"),
+            "regression: \\thickspace in output:\n{out}"
+        );
+        // The double-backslash form should be present.
+        assert!(out.contains(r"\\;"), "missing \\\\; in output:\n{out}");
+        // The rest of the math passes through.
+        assert!(out.contains(r"\sin(x_1)"));
+        assert!(out.contains(r"\pi"));
     }
 
     #[test]

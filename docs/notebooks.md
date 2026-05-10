@@ -615,21 +615,45 @@ rustlab-notebook render analysis.md -f markdown
 **GitHub-safe math.** GitHub's web renderer runs CommonMark passes
 (emphasis pairing, backslash-escape) *before* its KaTeX math pass, so
 several common LaTeX constructs survive every other tool but break
-when viewed on github.com:
+when viewed on github.com. Two distinct corruptions and two distinct
+fixes:
 
-| Source | What GitHub corrupts it to | Rewrite emitted by `--format markdown` |
+*Emphasis pairing* breaks `$\mathbf{x}^*$ … $\mathbf{x}^*$` — the two
+`*` chars in separate math spans get paired as emphasis delimiters
+across the math boundaries; KaTeX then fails with
+`Missing open brace for superscript`. The fix replaces `^*` with the
+braced LaTeX synonym `^{\ast}`, which has no `*` for emphasis to
+pair on:
+
+| Source | Rewritten to |
+|---|---|
+| `^*`  | `^{\ast}` |
+| `_*`  | `_{\ast}` |
+| `^**` | `^{\ast\ast}` |
+| `_**` | `_{\ast\ast}` |
+
+*Backslash-escape* strips the `\` from `\X` for any ASCII punctuation
+`X` (`\,` → `,`, `\|` → `|`, etc.). The fix doubles the backslash:
+GitHub's CommonMark pass turns `\\` → `\`, and KaTeX then sees the
+original `\X`:
+
+| Source | Rewritten to | What KaTeX receives |
 |---|---|---|
-| `$\mathbf{x}^*$` | first `*` paired with the next `*` in a later `$…$` span; KaTeX fails with `Missing open brace for superscript` | `$\mathbf{x}^{\ast}$` |
-| `$\|x\|$` | backslash-escape strips the `\`, KaTeX gets `\|x\|` → `|x|` | `$\Vert{}x\Vert$` |
-| `$\,\delta$` | `\,` → `,` (CommonMark backslash-punctuation rule) | `$\thinspace\delta$` |
-| `$\;`, `$\:$`, `$\!$` | same | `\thickspace`, `\medspace`, `\negthinspace` |
+| `\,`  | `\\,` | `\,` |
+| `\;`  | `\\;` | `\;` |
+| `\:`  | `\\:` | `\:` |
+| `\!`  | `\\!` | `\!` |
+| `\|`  | `\\|` | `\|` |
 
-Each replacement renders identically to the original under KaTeX
-(`\ast` and `*` are the same glyph in math; `\Vert` is `‖`; the
-`\thinspace` family produce the same horizontal gaps as the
-backslash-punctuation forms). The rewrite is automatic — notebooks
-keep their natural LaTeX (`^*`, `\|`, `\,`) and `--format markdown`
-emits the GitHub-safe form on the way out.
+The double-backslash form is preferable to alpha-synonym replacement
+(e.g. `\thinspace`, `\Vert`) because it's an exact round-trip to the
+original LaTeX — no dependency on KaTeX recognizing alpha-synonyms,
+some of which (`\thickspace`, `\medspace`, `\negthinspace`) are
+unreliable in GitHub's KaTeX configuration.
+
+The rewrite is automatic — notebooks keep their natural LaTeX
+(`^*`, `\|`, `\,`, `\;`) and `--format markdown` emits the
+GitHub-safe form on the way out.
 
 The rewrite is applied **only inside math spans** (`$…$` and `$$…$$`).
 Code spans, fenced code blocks, prose emphasis (`**bold**`, `*italic*`),
