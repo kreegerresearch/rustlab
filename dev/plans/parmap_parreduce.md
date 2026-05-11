@@ -12,7 +12,7 @@
 | # | Phase | Status | Risk | Win |
 |---|---|---|---|---|
 | 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **shipped** | medium-high | `20d4a82` |
-| 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | **awaiting commit (2026-05-11)** | medium | the headline feature |
+| 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | **shipped** | medium | `98d084c` |
 | 3 | Per-task RNG + pure-lambda contract | pending | low | correctness for Monte Carlo |
 | 4 | Tests + docs + REPL help, including `nproc()` builtin | pending | low | shipping |
 | 5 | `parreduce(f, init, xs)` (follow-on) | **deferred** | low | only build if a concrete use case demands it |
@@ -490,7 +490,7 @@ Deferred to Phase 2:
 
 ## Phase 2 — `parmap(f, xs)` builtin behind a backend trait
 
-**Status:** awaiting commit (2026-05-11)
+**Status:** shipped — commit `98d084c` (2026-05-11)
 
 **Implementation log (2026-05-11):**
 - New module `crates/rustlab-script/src/eval/parmap.rs` (~190 LoC). Defines `ParmapBackend` trait, `LocalRayonBackend` impl, `validate_callable` helper, and `pack_results` packer. Each is small on purpose — the trait surface stays minimal so a future cluster backend (Phase 6) is purely additive.
