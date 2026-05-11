@@ -15,11 +15,15 @@ viewer  = ["rustlab-plot/viewer"]
 rustlab-core.workspace  = true
 rustlab-dsp.workspace   = true
 rustlab-plot.workspace  = true
-num-complex.workspace   = true
-ndarray.workspace       = true
+num-complex             = { workspace = true, features = ["serde"] }
+ndarray                 = { workspace = true, features = ["serde"] }
 thiserror.workspace     = true
 anyhow.workspace        = true
 rand.workspace          = true
 rand_distr.workspace    = true
 zip.workspace           = true
 toml.workspace          = true
+serde                   = { workspace = true, features = ["derive", "rc"] }
+
+[dev-dependencies]
+rmp-serde.workspace = true

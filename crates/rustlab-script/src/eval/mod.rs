@@ -26,6 +26,7 @@ struct UserFn {
     body: Vec<Stmt>,
 }
 
+#[derive(Clone)]
 pub struct Evaluator {
     env: HashMap<String, Value>,
     builtins: BuiltinRegistry,
@@ -2048,4 +2049,22 @@ impl Default for Evaluator {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Compile-time assertion that Evaluator and Value are Send. The parallel-
+// map (`parmap`) implementation in `dev/plans/parmap_parreduce.md` Phase 2
+// depends on this: rayon workers carry per-thread `Evaluator` clones, and
+// captured-env / argument / result `Value`s cross thread boundaries.
+//
+// If a future Value variant adds a non-Send type (e.g., `Cell`, `Rc`, a
+// raw pointer), this compile assertion will fail and the parmap plan
+// needs to either fix the offending variant or partition Value into a
+// Send subset. Catching it here is much better than hitting it during
+// Phase 2 wiring.
+#[allow(dead_code)]
+fn _assert_send<T: Send>() {}
+#[allow(dead_code)]
+fn _assert_evaluator_and_value_are_send() {
+    _assert_send::<Evaluator>();
+    _assert_send::<Value>();
 }

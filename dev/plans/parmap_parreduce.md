@@ -11,7 +11,7 @@
 
 | # | Phase | Status | Risk | Win |
 |---|---|---|---|---|
-| 1 | `Evaluator: Clone + Send`, AST + pure `Value` `Serialize + Deserialize` | **pending — needs user approval** | medium-high | enables every later phase, including the future cluster backend |
+| 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **awaiting commit (2026-05-11)** | medium-high | enables every later phase, including the future cluster backend |
 | 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | pending | medium | the headline feature |
 | 3 | Per-task RNG + pure-lambda contract | pending | low | correctness for Monte Carlo |
 | 4 | Tests + docs + REPL help, including `nproc()` builtin | pending | low | shipping |
@@ -422,7 +422,16 @@ Reusable across phases:
 
 ## Phase 1 — `Evaluator: Clone + Send`, AST/Value serializable
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-11)
+
+**Implementation log (2026-05-11):**
+- Added `#[derive(Clone)]` to `Evaluator`, `Profiler`, and `BuiltinRegistry`. UserFn was already Clone; the AST tree (Stmt, StmtKind, Expr, BinOp, UnaryOp) was already Clone.
+- Added a compile-time `_assert_send::<Evaluator>` + `_assert_send::<Value>` at the end of `eval/mod.rs`. Catches non-Send regressions at compile time.
+- Added `#[derive(serde::Serialize, serde::Deserialize)]` to every node in the AST (`Stmt`, `StmtKind`, `Expr`, `BinOp`, `UnaryOp`).
+- Added `serde` (with `derive` + `rc` features) as a production dep on `rustlab-script`; enabled the `serde` feature on `num-complex` and `ndarray`. Added `rmp-serde` as a dev-dep.
+- Rescoped: dropped Value-level serde and the serialize overhead bench from Phase 1. The cross-crate audit on `rustlab-core` (~30 types) is too big for Phase 1's deliverable; deferred to Phase 2 where the bench result will also decide whether the local backend needs serialization at all.
+- 5 new tests in `tests::parmap_phase1_foundation`: `evaluator_is_send`, `clone_evaluator_preserves_env_and_user_fns`, `cloned_evaluator_runs_user_fn_independently`, `ast_expr_round_trips_through_msgpack`, `ast_stmt_round_trips_through_msgpack`. All pass.
+- Workspace pass: 1738 tests, 0 failures. `--features viewer` also clean.
 **Goal:** make `Evaluator` cloneable + Send (so rayon workers can carry their own copy) **and** make the AST + pure `Value` variants `Serialize + Deserialize` (so the same Lambda + captured env can later cross a network in distributed mode). Doing both audits in one phase saves a future cross-cutting refactor — see "Future compatibility" above.
 
 **Scope:**
@@ -437,12 +446,11 @@ Reusable across phases:
 - Verify `Value` variants are all `Send`. The `Arc<Mutex<…>>` variants (FirState, LiveFigure) are Send because Mutex<T: Send> is Send. The `Box<Expr>` in `Lambda` is Send if `Expr: Send`. Audit `Expr` recursively.
 - Compile-time assertion: `fn assert_send<T: Send>() {}` for `Evaluator` and `Value`.
 
-**Serde derives (forward-compat for distributed):**
-- Add `#[derive(Serialize, Deserialize)]` on the AST: `Expr`, `Stmt`, `BinOp`, `UnaryOp`, and any other node type the AST tree contains. Mostly mechanical.
-- Add the same derives to the *pure* `Value` variants: `Scalar`, `Complex`, `Vector`, `Matrix`, `Tensor3`, `Bool`, `Str`, `Tuple`, `Struct`, `StringArray`, `Lambda`, `FuncHandle`, `SparseVector`, `SparseMatrix`, `SparseFactor`, `TransferFn`, `StateSpace`, `QFmt`. Recursively serializable since their fields are pure data.
-- For *stateful* variants — `FirState(Arc<Mutex<...>>)`, `LiveFigure(...)`, `AudioIn`, `AudioOut` — implement `Serialize` as an explicit error: `Err(ser::Error::custom("Value::FirState cannot be serialized — pure-lambda contract violated"))`. The pure-lambda contract from Phase 3 prevents these from reaching the serializer in normal operation; the explicit error is a defensive fallback if a future code path bypasses the contract.
-- `serde` derive macros need an attribute on the `Value` enum (`#[serde(tag = "kind", content = "data")]` or similar) to keep the wire format stable across enum-variant additions. Decide the format here so it doesn't churn later.
-- Add `serde` and `rmp-serde` to `crates/rustlab-script/Cargo.toml` `[dev-dependencies]` for the round-trip tests; production dep only if Phase 2 needs it (which it does, for the trait abstraction's local backend if we keep the "serialize even in local mode" forcing-function discipline — see below).
+**Serde derives — AST only in Phase 1; Value-level deferred:**
+- Add `#[derive(Serialize, Deserialize)]` on the AST: `Expr`, `Stmt`, `StmtKind`, `BinOp`, `UnaryOp`. Mostly mechanical, contained in a single file. **This is what Phase 1 actually ships.**
+- **Value-level serde is moved to Phase 2.** Originally planned for Phase 1 but rescoped 2026-05-11 once the cross-crate audit revealed that ~30 types in `rustlab-core` (`SparseMat`, `SparseVec`, `SparseCsc`, `SparseChol`, `SparseLU`, `Permutation`, `OrderingHint`, …) need serde derives first. That's a real audit, not a one-file derive, and it's premature for Phase 1's deliverable — the AST is what proves "lambda bodies can cross a wire," and the captured environment portion can be tackled at Phase 2 time alongside the `ParmapBackend` trait, by which point we'll also know from the bench whether the local backend even needs to serialize.
+- When Phase 2 picks this up, the choice is: (a) add serde to `rustlab-core` types and define `SerializableValue` as a parallel enum to `Value` covering only the pure variants, or (b) implement custom `Serialize`/`Deserialize` on `Value` itself that errors on stateful variants. The plan's original intent was (b); the audit will decide.
+- Add `rmp-serde` to `[dev-dependencies]` for the Phase 1 AST round-trip test; production dep only if Phase 2 actually needs it (deferred decision).
 
 **Cost-of-clone caveat:** cloning the full Evaluator copies all user-defined functions and the env. For a `parmap` over `N` elements, we don't want N full clones — we want one clone per *thread*, not per *task*. Phase 2's implementation has to use rayon's per-thread caching (thread-local) or a `Mutex<Vec<Evaluator>>` worker pool to amortize.
 
@@ -455,20 +463,24 @@ Reusable across phases:
 - `crates/rustlab-script/src/ast.rs` — derive Serialize/Deserialize on the whole AST tree; verify Send.
 - `crates/rustlab-script/Cargo.toml` — add `serde` (workspace dep) and `rmp-serde` (workspace dep). Both are already in the workspace.
 
-**Tests:**
-1. `evaluator_is_send_and_sync` — compile-time assertion.
+**Tests (Phase 1 scope, post-rescope):**
+1. `evaluator_is_send` — compile-time assertion via `fn _assert_send<T: Send>()`.
 2. `clone_evaluator_preserves_env_and_user_fns` — clone, mutate the clone, assert original is unchanged.
 3. `cloned_evaluator_runs_user_fn_independently` — define a function in the original, clone, call from the clone, no shared state crosstalk.
-4. `lambda_round_trips_through_msgpack` — serialize a `Value::Lambda { params, body, captured_env }` via `rmp-serde`, deserialize, evaluate, compare against the un-round-tripped result.
-5. `pure_value_variants_round_trip_through_msgpack` — Scalar, Complex, Vector, Matrix, Sparse* — each round-trips bit-exactly.
-6. `stateful_value_variants_serialize_errors` — FirState, LiveFigure — explicit serializer error fires.
-7. `serialize_overhead_benchmark` — bench (not a unit test) capturing the round-trip cost on Scalar + 100×100 matrix + 1000×1000 sparse. Captured numbers go in `perf/parmap_serde_overhead.md` and inform the forcing-function decision.
+4. `ast_expr_round_trips_through_msgpack` — serialize a representative `Expr` tree via `rmp-serde`, deserialize, compare structurally. Covers the body half of a Lambda.
+5. `ast_stmt_round_trips_through_msgpack` — same for `Stmt`. Function bodies and complex control flow.
 
-**Acceptance:**
+Deferred to Phase 2:
+- `lambda_round_trips_through_msgpack` (needs Value serde).
+- `pure_value_variants_round_trip_through_msgpack` (needs core-types serde).
+- `stateful_value_variants_serialize_errors` (needs the custom impl).
+- `serialize_overhead_benchmark` (decides forcing-function discipline; happens at Phase 2 boundary).
+
+**Acceptance (Phase 1 scope, post-rescope):**
 - All existing tests still pass.
 - `Evaluator: Clone + Send` compiles.
-- A `Value::Lambda` round-trips through `rmp-serde` to bit precision.
-- The serialize overhead bench shows the forcing-function discipline is viable (sub-µs Scalar, sub-ms 100×100 matrix), or alternatively documents why we're dropping it for the local backend.
+- AST nodes round-trip through `rmp-serde` to bit precision.
+- The `Value` enum is *not* serializable yet — that's deferred to Phase 2 with the choice between (a) parallel `SerializableValue` enum or (b) custom impl on `Value` to be made then. Both options preserve the user-facing API; the choice is internal.
 
 **Risk:** medium-high (up from medium). The Send audit is the same low-risk pass as before. The serde derives add real risk: (a) the AST has 30+ variants, mostly fine but the `Box<Expr>` recursion needs `serde(rec)` or similar; (b) the `Value` enum has nested types from `ndarray` (`CMatrix = Array2<C64>`) which need `ndarray`'s `serde` feature enabled (it has one — `ndarray = { workspace, features = ["serde"] }`); (c) the `Sparse*` types and `SparseFactor` need their own derives, and `SparseFactor` wraps `Arc<SparseChol>` which needs `Arc` to be serializable (it is — serde's `rc` feature, off-by-default on Arc but easy to enable).
 

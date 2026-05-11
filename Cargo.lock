@@ -2543,6 +2543,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rawpointer",
+ "serde",
 ]
 
 [[package]]
@@ -3772,9 +3773,11 @@ dependencies = [
  "num-complex",
  "rand 0.8.5",
  "rand_distr",
+ "rmp-serde",
  "rustlab-core",
  "rustlab-dsp",
  "rustlab-plot",
+ "serde",
  "thiserror 2.0.18",
  "toml",
  "zip",

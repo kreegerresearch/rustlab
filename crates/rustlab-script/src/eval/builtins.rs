@@ -38,6 +38,7 @@ enum BuiltinKind {
     Nargout(BuiltinFnNargout),
 }
 
+#[derive(Clone)]
 pub struct BuiltinRegistry {
     map: HashMap<String, BuiltinKind>,
 }

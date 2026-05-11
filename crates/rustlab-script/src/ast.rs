@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub line: usize,
@@ -10,7 +10,7 @@ impl Stmt {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum StmtKind {
     /// `name = expr` — suppress=true when line ends with `;`
     Assign {
@@ -89,7 +89,7 @@ pub enum StmtKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
     Number(f64),
     Str(String),
@@ -142,7 +142,7 @@ pub enum Expr {
     FuncHandle(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BinOp {
     Add,
     Sub,
@@ -165,7 +165,7 @@ pub enum BinOp {
     Or,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnaryOp {
     Neg,
     Not,

@@ -12011,3 +12011,160 @@ mod mask_tests {
         );
     }
 }
+
+// ─── Phase 1 (parmap_parreduce): Evaluator Clone+Send + AST serde ───────────
+
+#[cfg(test)]
+mod parmap_phase1_foundation {
+    use crate::ast::{BinOp, Expr, Stmt, StmtKind};
+    use crate::Evaluator;
+
+    /// Compile-time assertion: `Evaluator` and the AST types are `Send`.
+    /// The actual check happens at compile time via the function below; this
+    /// test runtime body just asserts the function exists.
+    #[test]
+    fn evaluator_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Evaluator>();
+        assert_send::<Expr>();
+        assert_send::<Stmt>();
+    }
+
+    /// Cloning an Evaluator captures its env and user-defined functions.
+    /// Mutating the clone should leave the original unchanged.
+    #[test]
+    fn clone_evaluator_preserves_env_and_user_fns() {
+        let src = "x = 42\nfunction r = double(z); r = 2 * z; end";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+
+        // Snapshot via clone.
+        let cloned = ev.clone();
+
+        // Mutate the clone: change `x` to something else and confirm the
+        // original is untouched.
+        let mutate_src = "x = 999";
+        let tokens2 = crate::lexer::tokenize(mutate_src).unwrap();
+        let stmts2 = crate::parser::parse(tokens2).unwrap();
+        let mut cloned_mut = cloned;
+        cloned_mut.run(&stmts2).unwrap();
+
+        // Original `x` still 42.
+        let x_orig = ev.get("x").unwrap();
+        match x_orig {
+            crate::Value::Scalar(v) => assert_eq!(*v, 42.0),
+            other => panic!("expected scalar 42, got {other:?}"),
+        }
+        // Cloned-and-mutated `x` is 999.
+        let x_clone = cloned_mut.get("x").unwrap();
+        match x_clone {
+            crate::Value::Scalar(v) => assert_eq!(*v, 999.0),
+            other => panic!("expected scalar 999, got {other:?}"),
+        }
+    }
+
+    /// A cloned Evaluator can invoke user-defined functions defined on the
+    /// original without sharing state. This is the foundation for Phase 2's
+    /// per-worker Evaluator clones: each rayon worker carries its own copy
+    /// and calls into the same user-fn library.
+    #[test]
+    fn cloned_evaluator_runs_user_fn_independently() {
+        let src = "function r = triple(z); r = 3 * z; end";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+
+        let cloned = ev.clone();
+
+        // Call the user-fn from BOTH evaluators and confirm both produce the
+        // expected result. (User-fn results land in `ans`; we capture via a
+        // wrapping assignment.)
+        let call_src = "y = triple(5)";
+        for mut e in [ev, cloned] {
+            let tokens = crate::lexer::tokenize(call_src).unwrap();
+            let stmts = crate::parser::parse(tokens).unwrap();
+            e.run(&stmts).unwrap();
+            match e.get("y").unwrap() {
+                crate::Value::Scalar(v) => assert_eq!(*v, 15.0),
+                other => panic!("expected 15.0, got {other:?}"),
+            }
+        }
+    }
+
+    /// AST `Expr` nodes round-trip through `rmp-serde`. This is the body half
+    /// of a Lambda — Phase 6 (cluster backend) ships lambdas across the wire
+    /// by serializing this. The captured-env half is deferred to Phase 2.
+    #[test]
+    fn ast_expr_round_trips_through_msgpack() {
+        // A representative tree exercising binops, calls, ranges, and lambdas.
+        // `mean(parmap(@(k) k^2, 1:10))`
+        let lambda = Expr::Lambda {
+            params: vec!["k".to_string()],
+            body: Box::new(Expr::BinOp {
+                op: BinOp::Pow,
+                lhs: Box::new(Expr::Var("k".to_string())),
+                rhs: Box::new(Expr::Number(2.0)),
+            }),
+        };
+        let range = Expr::Range {
+            start: Box::new(Expr::Number(1.0)),
+            step: None,
+            stop: Box::new(Expr::Number(10.0)),
+        };
+        let parmap_call = Expr::Call {
+            name: "parmap".to_string(),
+            args: vec![lambda, range],
+        };
+        let mean_call = Expr::Call {
+            name: "mean".to_string(),
+            args: vec![parmap_call],
+        };
+
+        let bytes = rmp_serde::to_vec(&mean_call).expect("serialize");
+        let decoded: Expr = rmp_serde::from_slice(&bytes).expect("deserialize");
+
+        // Structural comparison via Debug; serde derives don't give us
+        // PartialEq for free on the whole tree.
+        let lhs = format!("{:?}", mean_call);
+        let rhs = format!("{:?}", decoded);
+        assert_eq!(lhs, rhs, "Expr round-trip changed the tree");
+    }
+
+    /// AST `Stmt` nodes round-trip through `rmp-serde`. Function bodies and
+    /// control flow live in `Stmt`, so this covers the rest of the wire form.
+    #[test]
+    fn ast_stmt_round_trips_through_msgpack() {
+        // `function r = trial(k); r = k * k; end`
+        let body = vec![Stmt::new(
+            StmtKind::Assign {
+                name: "r".to_string(),
+                expr: Expr::BinOp {
+                    op: BinOp::Mul,
+                    lhs: Box::new(Expr::Var("k".to_string())),
+                    rhs: Box::new(Expr::Var("k".to_string())),
+                },
+                suppress: false,
+            },
+            2,
+        )];
+        let func_def = Stmt::new(
+            StmtKind::FunctionDef {
+                name: "trial".to_string(),
+                params: vec!["k".to_string()],
+                return_vars: vec!["r".to_string()],
+                body,
+            },
+            1,
+        );
+
+        let bytes = rmp_serde::to_vec(&func_def).expect("serialize");
+        let decoded: Stmt = rmp_serde::from_slice(&bytes).expect("deserialize");
+
+        let lhs = format!("{:?}", func_def);
+        let rhs = format!("{:?}", decoded);
+        assert_eq!(lhs, rhs, "Stmt round-trip changed the tree");
+    }
+}

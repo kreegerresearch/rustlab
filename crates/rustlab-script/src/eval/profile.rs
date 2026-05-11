@@ -11,6 +11,7 @@ pub struct FnStats {
 
 /// Runtime profiler embedded in the Evaluator.
 /// Zero overhead when disabled — all hot paths short-circuit on `enabled`.
+#[derive(Clone)]
 pub struct Profiler {
     enabled: bool,
     /// None = track all; Some(set) = track only these names.
