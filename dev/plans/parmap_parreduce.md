@@ -13,8 +13,8 @@
 |---|---|---|---|---|
 | 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **shipped** | medium-high | `20d4a82` |
 | 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | **shipped** | medium | `98d084c` |
-| 3 | Per-task RNG + pure-lambda contract | **awaiting commit (2026-05-11)** | low | correctness for Monte Carlo |
-| 4 | Tests + docs + REPL help, including `nproc()` builtin | **awaiting commit (2026-05-11)** | low | shipping |
+| 3 | Per-task RNG + pure-lambda contract | **shipped** | low | `0d789c4` |
+| 4 | Tests + docs + REPL help, including `nproc()` builtin | **shipped** | low | `0d789c4` |
 | 5 | `parreduce(f, init, xs)` (follow-on) | **deferred** | low | only build if a concrete use case demands it |
 | 6 | Cluster backend via `rustlab-server` (separate plan) | **deferred** | n/a | distributed compute; placeholder so Phase 2's trait shape stays honest |
 
@@ -575,7 +575,7 @@ Deferred to Phase 2:
 
 ## Phase 3 — Per-task RNG + pure-lambda contract
 
-**Status:** awaiting commit (2026-05-11)
+**Status:** shipped — commit `0d789c4` (2026-05-11)
 
 **Implementation log (2026-05-11):**
 
@@ -602,7 +602,7 @@ Pure-lambda contract enforcement:
 
 ## Phase 4 — Tests, docs, REPL help
 
-**Status:** awaiting commit (2026-05-11)
+**Status:** shipped — commit `0d789c4` (2026-05-11)
 
 **Implementation log (2026-05-11):**
 - New `nproc()` builtin in `eval/builtins.rs`. Returns `std::thread::available_parallelism()` (or 1 on fallback). Same number as rayon's pool size.
