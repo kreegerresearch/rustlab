@@ -12,7 +12,7 @@
 | # | Phase | Status | Risk | Win |
 |---|---|---|---|---|
 | 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **shipped** | medium-high | `20d4a82` |
-| 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | pending | medium | the headline feature |
+| 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | **awaiting commit (2026-05-11)** | medium | the headline feature |
 | 3 | Per-task RNG + pure-lambda contract | pending | low | correctness for Monte Carlo |
 | 4 | Tests + docs + REPL help, including `nproc()` builtin | pending | low | shipping |
 | 5 | `parreduce(f, init, xs)` (follow-on) | **deferred** | low | only build if a concrete use case demands it |
@@ -490,7 +490,28 @@ Deferred to Phase 2:
 
 ## Phase 2 — `parmap(f, xs)` builtin behind a backend trait
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-11)
+
+**Implementation log (2026-05-11):**
+- New module `crates/rustlab-script/src/eval/parmap.rs` (~190 LoC). Defines `ParmapBackend` trait, `LocalRayonBackend` impl, `validate_callable` helper, and `pack_results` packer. Each is small on purpose — the trait surface stays minimal so a future cluster backend (Phase 6) is purely additive.
+- Added `rayon.workspace = true` to `crates/rustlab-script/Cargo.toml`.
+- Made the existing `Evaluator::call_callable` (Lambda + FuncHandle dispatch) `pub(crate)` so `eval_parmap` can use it directly instead of inventing a parallel callable enum.
+- Added `Evaluator::clone_for_parallel_lambda` as a thin wrapper around `Clone::clone` — semantic name for the future when per-worker trimming might happen.
+- Added compile-time `_assert_sync::<Evaluator>` + `_assert_sync::<Value>` alongside the existing Send assertions. Both pass.
+- Added `eval_parmap` to `Evaluator` impl, modeled on `eval_arrayfun`: validates callable, extracts iterable elements (1-D vector / scalar / complex scalar), clones the Evaluator as a template, hands off to the backend, packs results. Profiler timing wired in.
+- `Call("parmap", [f, xs])` dispatched in `eval_expr` alongside `arrayfun` / `rk4` / `feval`.
+- 8 new tests in `tests::parmap_phase2_dispatch`: lambda squares (`1..10`), function-handle dispatch, colon-step range, parmap-vs-arrayfun bit-identity on a smooth lambda, errors on non-callable, errors on non-iterable, error propagation from one trial, complex-valued lambda preserves complex output.
+- Workspace: 1750 tests pass (+12 over Phase 1's 1738). `--features viewer` clean.
+- End-to-end smoke test against the REPL: `parmap(@(k) k^2, 1:10)` returns `[1, 4, 9, …, 100]`; `parmap(@trial, 1:5)` for a user-defined `trial` works.
+
+**Deferred to Phase 3 (still pending):**
+- Per-task RNG seeding from a master seed (Monte Carlo determinism).
+- Pure-lambda contract enforcement (hard-error on `clf`, `fprintf`, `savefig`, etc. inside a parallel lambda).
+- Profiler-inside-parmap suppression (currently a lambda call inside parmap will record per-call profiling; should be suppressed via the existing `enter_higher_order` / `exit_higher_order` machinery).
+
+**Per-thread caching:** the v1 implementation clones the Evaluator template once per element (N clones for N elements). For typical Monte Carlo this is sub-millisecond overhead per call. Per-thread caching (one clone per rayon worker, shared across all tasks landing on it) is a follow-on if profiling demands it.
+
+**Value-level serde (deferred from Phase 1):** still deferred. Phase 6 (cluster backend) is the trigger; Phase 2's local backend doesn't need it (Evaluator clones happen in shared memory, no wire boundary).
 **Goal:** introduce the higher-order `parmap` operator behind a backend abstraction so the future cluster backend lands additively. Phase 2 ships the `LocalRayonBackend` impl as the only concrete backend; the trait surface is small but locked in here.
 
 **Scope:**

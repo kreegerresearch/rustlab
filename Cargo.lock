@@ -3773,6 +3773,7 @@ dependencies = [
  "num-complex",
  "rand 0.8.5",
  "rand_distr",
+ "rayon",
  "rmp-serde",
  "rustlab-core",
  "rustlab-dsp",

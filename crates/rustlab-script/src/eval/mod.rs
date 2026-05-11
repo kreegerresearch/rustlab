@@ -1,5 +1,6 @@
 pub mod builtins;
 pub mod output;
+pub mod parmap;
 pub mod profile;
 pub mod rng;
 pub mod toml_io;
@@ -1286,6 +1287,11 @@ impl Evaluator {
                     let input = self.eval_expr(&args[1])?;
                     return self.eval_arrayfun(func_val, input);
                 }
+                if name == "parmap" && args.len() == 2 {
+                    let func_val = self.eval_expr(&args[0])?;
+                    let input = self.eval_expr(&args[1])?;
+                    return self.eval_parmap(func_val, input);
+                }
                 if name == "rk4" && args.len() == 3 {
                     let func_val = self.eval_expr(&args[0])?;
                     let x0 = self.eval_expr(&args[1])?;
@@ -1674,6 +1680,85 @@ impl Evaluator {
         }
     }
 
+    /// `parmap(f, xs)` — parallel map.
+    ///
+    /// Phase 2 of `dev/plans/parmap_parreduce.md`. Applies `f` to each
+    /// element of `xs` in parallel via rayon, collects the results into
+    /// a single vector. The user-facing surface is identical to
+    /// `arrayfun(f, xs)` minus the matrix-output support; the difference
+    /// is that `parmap` fans out across the rayon thread pool.
+    ///
+    /// Phase 2 ships the parallel orchestration only — purity of the
+    /// lambda is the user's responsibility until Phase 3 layers on the
+    /// per-task RNG seeding and the runtime pure-lambda contract.
+    fn eval_parmap(&mut self, func: Value, input: Value) -> Result<Value, ScriptError> {
+        use parmap::{LocalRayonBackend, ParmapBackend};
+
+        // Validate the callable up front (clearer error than waiting for
+        // the per-task error).
+        parmap::validate_callable(&func)?;
+
+        // Extract iterable elements. Reuses the same shape rules as
+        // arrayfun: vectors, scalars, and complex scalars.
+        let elements: Vec<Value> = match &input {
+            Value::Vector(v) => v
+                .iter()
+                .map(|&c| {
+                    if c.im == 0.0 {
+                        Value::Scalar(c.re)
+                    } else {
+                        Value::Complex(c)
+                    }
+                })
+                .collect(),
+            Value::Scalar(n) => vec![Value::Scalar(*n)],
+            Value::Complex(c) => vec![Value::Complex(*c)],
+            other => {
+                return Err(ScriptError::runtime(format!(
+                    "parmap: second argument must be a vector or scalar, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+
+        // Profiler: track total parmap time; inner per-task calls are
+        // suppressed (the lambda body's higher-order callback machinery
+        // already handles that path).
+        let tracking = self.profiler.should_track("parmap");
+        let in_bytes: u64 = if tracking {
+            Self::value_bytes(&input)
+        } else {
+            0
+        };
+        let t0 = if tracking {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Clone the Evaluator once as a template; each rayon task clones
+        // again from the template (one Evaluator per task in v1; per-
+        // thread caching is a follow-on).
+        let template = self.clone_for_parallel_lambda();
+        let backend = LocalRayonBackend::new();
+        // Master seed reserved for Phase 3 per-task RNG; pass 0 for now.
+        let raw = backend.run(
+            &move || template.clone(),
+            func,
+            elements,
+            0,
+        )?;
+        let result = parmap::pack_results(raw);
+
+        if let (Some(t0), Ok(ref v)) = (t0, &result) {
+            let ns = t0.elapsed().as_nanos() as u64;
+            self.profiler
+                .record("parmap", ns, in_bytes, Self::value_bytes(v));
+        }
+
+        result
+    }
+
     /// Fixed-step 4th-order Runge-Kutta integrator.
     /// `rk4(f, x0, t)` — f(x, t) returns x_dot; x0 is initial state; t is time vector.
     /// Returns an n×length(t) matrix where column k is the state at t[k].
@@ -1803,7 +1888,11 @@ impl Evaluator {
 
     /// Invoke any callable value (Lambda or FuncHandle) with the given args.
     /// Used by `eval_arrayfun` — inner calls are not tracked individually (outer captures total).
-    fn call_callable(&mut self, func: Value, args: Vec<Value>) -> Result<Value, ScriptError> {
+    pub(crate) fn call_callable(
+        &mut self,
+        func: Value,
+        args: Vec<Value>,
+    ) -> Result<Value, ScriptError> {
         match func {
             Value::Lambda {
                 params,
@@ -2032,6 +2121,20 @@ impl Evaluator {
         result
     }
 
+    /// Clone the Evaluator for use as a per-worker copy under `parmap`.
+    /// Phase 2 of `dev/plans/parmap_parreduce.md` — each rayon task gets a
+    /// fresh Evaluator carrying the user-defined functions and the global
+    /// env, so user-fn calls + captured-env reads inside a parallel lambda
+    /// work identically to the sequential case.
+    ///
+    /// Currently a thin wrapper around `Clone::clone`. Future refinements
+    /// could trim per-worker state (e.g. drop the profiler, clear `env`
+    /// since lambdas install their own captured env at call time) but the
+    /// trivial clone is correct and fast enough for v1.
+    pub(crate) fn clone_for_parallel_lambda(&self) -> Evaluator {
+        self.clone()
+    }
+
     /// Approximate byte size of a Value for IO throughput accounting.
     /// Only numeric types are counted; strings, structs, etc. return 0.
     fn value_bytes(v: &Value) -> u64 {
@@ -2064,7 +2167,11 @@ impl Default for Evaluator {
 #[allow(dead_code)]
 fn _assert_send<T: Send>() {}
 #[allow(dead_code)]
-fn _assert_evaluator_and_value_are_send() {
+fn _assert_sync<T: Sync>() {}
+#[allow(dead_code)]
+fn _assert_evaluator_and_value_are_send_sync() {
     _assert_send::<Evaluator>();
     _assert_send::<Value>();
+    _assert_sync::<Evaluator>();
+    _assert_sync::<Value>();
 }

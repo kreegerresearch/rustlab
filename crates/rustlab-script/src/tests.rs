@@ -12012,6 +12012,144 @@ mod mask_tests {
     }
 }
 
+// ─── Phase 2 (parmap_parreduce): parmap builtin ─────────────────────────────
+
+#[cfg(test)]
+mod parmap_phase2_dispatch {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval_str(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected Vector for {name}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parmap_lambda_squares() {
+        // Canonical case from the plan's example 1.
+        let ev = eval_str("y = parmap(@(k) k^2, 1:10);");
+        let y = get_vec(&ev, "y");
+        assert_eq!(y, (1..=10).map(|k| (k * k) as f64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn parmap_func_handle() {
+        // FuncHandle case from the plan's example 1.
+        let ev = eval_str(
+            "function r = trial(k); r = k + 100; end\n\
+             y = parmap(@trial, 1:5);",
+        );
+        let y = get_vec(&ev, "y");
+        assert_eq!(y, vec![101.0, 102.0, 103.0, 104.0, 105.0]);
+    }
+
+    #[test]
+    fn parmap_colon_range_step() {
+        // Colon ranges with explicit step — example 2 in the plan.
+        let ev = eval_str("y = parmap(@(x) 2*x, 80:5:100);");
+        let y = get_vec(&ev, "y");
+        assert_eq!(y, vec![160.0, 170.0, 180.0, 190.0, 200.0]);
+    }
+
+    #[test]
+    fn parmap_matches_arrayfun() {
+        // parmap and arrayfun should produce bit-identical results for
+        // the same lambda + iterable (sequential map === parallel map
+        // on a pure function).
+        let ev = eval_str(
+            "f = @(k) sin(k * 0.1) + 0.5 * cos(k * 0.2);\n\
+             a = arrayfun(f, 1:50);\n\
+             p = parmap(f, 1:50);\n\
+             err = norm(a - p);",
+        );
+        let err = match ev.get("err").unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected scalar, got {other:?}"),
+        };
+        assert!(err < 1e-15, "parmap vs arrayfun diff: {err}");
+    }
+
+    #[test]
+    fn parmap_errors_on_non_callable() {
+        let src = "y = parmap(42, 1:5);\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let err = ev.run(&stmts).unwrap_err();
+        assert!(
+            err.to_string().contains("lambda or function handle"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parmap_errors_on_non_iterable() {
+        let src = "y = parmap(@(k) k, [1, 2; 3, 4]);\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let err = ev.run(&stmts).unwrap_err();
+        assert!(
+            err.to_string().contains("vector or scalar"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn parmap_propagates_errors() {
+        // Division by zero inside one trial — parmap should cancel
+        // and propagate the first error.
+        let src = "y = parmap(@(k) 1/(k - 3), 1:5);\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        // The lambda body itself doesn't error on division by zero in
+        // rustlab (1/0 produces Inf), so use a different forcing
+        // function — call an undefined name in one trial.
+        let src2 = "function r = bad(k); if k == 3; r = undefined_fn(k); else; r = k; end; end\n\
+                    y = parmap(@bad, 1:5);";
+        let tokens = crate::lexer::tokenize(src2).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let err = ev.run(&stmts).unwrap_err();
+        assert!(
+            err.to_string().contains("parmap") && err.to_string().contains("trial"),
+            "expected parmap+trial in error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parmap_complex_lambda_returns_complex_vector() {
+        // Verify parmap preserves complex outputs end-to-end.
+        let ev = eval_str("y = parmap(@(k) j * k^2, 1:3);");
+        match ev.get("y").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 3);
+                for (idx, c) in v.iter().enumerate() {
+                    let k = (idx + 1) as f64;
+                    let expected_im = k * k;
+                    assert!(
+                        c.re.abs() < 1e-12 && (c.im - expected_im).abs() < 1e-12,
+                        "trial {idx}: got {c}, expected ~j*{expected_im}"
+                    );
+                }
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+    }
+}
+
 // ─── Phase 1 (parmap_parreduce): Evaluator Clone+Send + AST serde ───────────
 
 #[cfg(test)]
