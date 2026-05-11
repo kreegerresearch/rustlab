@@ -1741,12 +1741,23 @@ impl Evaluator {
         // thread caching is a follow-on).
         let template = self.clone_for_parallel_lambda();
         let backend = LocalRayonBackend::new();
-        // Master seed reserved for Phase 3 per-task RNG; pass 0 for now.
+        // Master seed: read this thread's current `seed(N)` value. If
+        // the user has never called `seed()`, we pull a single u64 from
+        // OS entropy as the base — that gives each task an independent
+        // RNG stream without disturbing the master RNG. Subsequent
+        // parmap calls without an intervening `seed()` will use a
+        // *different* random base — that's the intended behaviour: the
+        // user opted out of determinism by not calling seed().
+        let master_seed = rng::current_master_seed().unwrap_or_else(|| {
+            use rand::RngCore;
+            // Independent OS-entropy draw; does NOT touch the master RNG.
+            rand::rngs::OsRng.next_u64()
+        });
         let raw = backend.run(
             &move || template.clone(),
             func,
             elements,
-            0,
+            master_seed,
         )?;
         let result = parmap::pack_results(raw);
 
@@ -2107,6 +2118,15 @@ impl Evaluator {
         vals: Vec<Value>,
         nargout: usize,
     ) -> Result<Value, ScriptError> {
+        // Pure-lambda contract: when running inside a `parmap` worker
+        // task, impure builtins (plotting, file I/O, audio, FIR
+        // streaming, live figures) hard-error with a clear message.
+        // See `eval/parmap.rs` for the contract and the IMPURE_BUILTINS
+        // list this guards against.
+        if IMPURE_BUILTINS.contains(&name) {
+            parmap::require_pure_context(name)?;
+        }
+
         if !self.profiler.should_track(name) {
             return self.builtins.call_with_nargout(name, vals, nargout);
         }
@@ -2153,6 +2173,60 @@ impl Default for Evaluator {
         Self::new()
     }
 }
+
+/// Builtins that mutate global / process-level state and therefore cannot
+/// run safely inside a `parmap` parallel lambda. The dispatch in
+/// [`Evaluator::call_builtin_tracked_nargout`] checks this list before
+/// invoking any builtin; if `parmap` has installed its parallel-context
+/// flag on the current worker thread, the call hard-errors via
+/// [`parmap::require_pure_context`].
+///
+/// Categories:
+/// - **Plotting / figure state**: every `plot`-family builtin mutates the
+///   per-thread `FIGURE` singleton, so they're banned under parmap.
+/// - **File I/O**: `fprintf`, `savefig`, `saveanim`, `frame` etc. write to
+///   disk in undefined order if invoked from parallel tasks.
+/// - **Live figures / external viewer**: `figure_live` and its update
+///   helpers share state across calls and across threads.
+/// - **RNG control**: `seed` would override per-task seeds installed by
+///   parmap and break the determinism contract; banned.
+///
+/// Keep this list sorted alphabetically for easy maintenance.
+const IMPURE_BUILTINS: &[&str] = &[
+    "clf",
+    "contour",
+    "contourf",
+    "figure",
+    "figure_close",
+    "figure_draw",
+    "figure_live",
+    "fprintf",
+    "frame",
+    "grid",
+    "hold",
+    "imagesc",
+    "legend",
+    "loglog",
+    "plot",
+    "plot_labels",
+    "plot_limits",
+    "plot_update",
+    "plotdb",
+    "polar",
+    "quiver",
+    "saveanim",
+    "savefig",
+    "seed",
+    "semilogx",
+    "semilogy",
+    "stem",
+    "streamplot",
+    "surf",
+    "title",
+    "xlabel",
+    "ylabel",
+    "zlabel",
+];
 
 // Compile-time assertion that Evaluator and Value are Send. The parallel-
 // map (`parmap`) implementation in `dev/plans/parmap_parreduce.md` Phase 2

@@ -900,7 +900,7 @@ primary     = NUMBER | STRING | IDENT
 | Viewer status | `viewer` | Bare `viewer` (no arg) reports connection state + current figure routing (rustlab-viewer / HTML file / TUI) |
 | Lambda | `f = @(x) x^2` | Creates anonymous function; captures env by snapshot at creation |
 | Function handle | `@sin`, `@myFn` | Reference to builtin or user-defined function |
-| Higher-order | `arrayfun(@sin, v)` | Maps callable over vector; scalar outputs → Vector, vector outputs → Matrix |
+| Higher-order | `arrayfun(@sin, v)` / `parmap(@sin, v)` | Maps callable over vector. `arrayfun` is sequential; `parmap` is parallel via rayon (1-D iterables, scalar outputs in v1) — see `dev/plans/parmap_parreduce.md`. |
 | Dynamic call | `feval("name", args...)` | Call function by string name |
 | Profile | `profile(fn1, fn2)` / `profile()` | Track named functions (or all); `profile_report()` prints mid-script |
 | Concatenation | `[v1, v2]` | Vectors inside `[...]` are flattened |
@@ -960,6 +960,8 @@ primary     = NUMBER | STRING | IDENT
 | `prod` | `prod(v)` | Product of all elements (Vector or Matrix); returns Scalar |
 | `firpmq` | `firpmq(n_taps, bands, desired [, weights [, bits [, n_iter]]])` | Integer-coefficient Parks-McClellan; defaults bits=16, n_iter=8. Returns integer-valued taps. For unit-gain passband, `sum(h_int)` equals the scale factor — use `freqz(h_int / sum(h_int), ...)` to verify. |
 | `arrayfun` | `arrayfun(f, v)` | Apply callable `f` to each element of `v`; scalar outputs → Vector, vector outputs → Matrix |
+| `parmap` | `parmap(f, xs)` | Parallel map. Apply `f` (lambda or function handle) to each element of `xs` across the rayon thread pool; returns a Vector of scalar/complex results. Per-task RNG seeded deterministically from the calling thread's master seed — `seed(N); parmap(...)` is bit-reproducible. Pure-lambda contract: the body may NOT call plotting/file-I/O/audio/FirState/seed builtins. Errors cancel-and-propagate. See `dev/plans/parmap_parreduce.md`. |
+| `nproc` | `nproc()` | Number of logical CPUs (via `std::thread::available_parallelism()`). Same number rayon's pool and `parmap` use. Respects cgroup limits on Linux; returns total cores on macOS/Windows. |
 | `feval` | `feval("name", args...)` | Call function by string name |
 | `profile` | `profile(fn1, ...)` / `profile()` | Enable selective (or all-function) call profiling in-script |
 | `profile_report` | `profile_report()` | Print profiling table to stderr immediately |

@@ -22,6 +22,68 @@ use crate::error::ScriptError;
 use crate::eval::value::Value;
 use crate::Evaluator;
 use rayon::prelude::*;
+use std::cell::Cell;
+
+// ─── Pure-lambda contract ───────────────────────────────────────────────────
+//
+// `parmap` guarantees that lambdas it invokes run in parallel across rayon
+// worker threads. For that to be safe, the lambda body must NOT touch
+// global mutable state — no plotting, no file I/O, no audio writes, no
+// FIR streaming state mutation, no live-figure handles.
+//
+// We enforce this at runtime: a thread-local `PARALLEL_CONTEXT` flag is
+// set on each rayon worker thread for the duration of a `parmap` task.
+// Impure builtins call [`require_pure_context`] at their entry point;
+// inside parmap they error with a clear message naming both `parmap` and
+// the offending builtin. Outside parmap the check is a no-op.
+//
+// This is a "hard error, not warning" design (per the plan's decision 6):
+// silent-wrong is much worse than loud-fail for parallel-correctness bugs.
+
+thread_local! {
+    static PARALLEL_CONTEXT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Guard that sets `PARALLEL_CONTEXT = true` for its lifetime and restores
+/// the previous value on drop. Used by the rayon worker tasks to mark the
+/// span where the user's lambda is running.
+struct ParallelContextGuard {
+    previous: bool,
+}
+
+impl ParallelContextGuard {
+    fn enter() -> Self {
+        let previous = PARALLEL_CONTEXT.with(|c| c.replace(true));
+        Self { previous }
+    }
+}
+
+impl Drop for ParallelContextGuard {
+    fn drop(&mut self) {
+        PARALLEL_CONTEXT.with(|c| c.set(self.previous));
+    }
+}
+
+/// Returns `Err(...)` if the current thread is inside a `parmap` worker
+/// task (i.e. running a parallel-lambda body); otherwise returns `Ok(())`.
+///
+/// Impure builtins call this at their entry point. The message names both
+/// `parmap` and the offending builtin so users get an actionable error:
+///
+/// ```text
+/// parmap: cannot clf from a parallel lambda — the lambda must be pure
+/// ```
+pub fn require_pure_context(builtin_name: &str) -> Result<(), ScriptError> {
+    PARALLEL_CONTEXT.with(|c| {
+        if c.get() {
+            Err(ScriptError::runtime(format!(
+                "parmap: cannot {builtin_name} from a parallel lambda — the lambda must be pure"
+            )))
+        } else {
+            Ok(())
+        }
+    })
+}
 
 /// Validate that a `Value` is a callable accepted by `parmap` (lambda or
 /// function handle). Returns the validated value or a `parmap`-specific
@@ -82,17 +144,37 @@ impl ParmapBackend for LocalRayonBackend {
         worker_factory: &(dyn Fn() -> Evaluator + Send + Sync),
         callable: Value,
         xs: Vec<Value>,
-        _master_seed: u64, // Phase 3 will wire this in
+        master_seed: u64,
     ) -> Result<Vec<Value>, ScriptError> {
+        use crate::eval::rng;
+
         // par_iter clones the Evaluator AND the callable per element in
         // this v1 — simple and correct. Per-thread caching (one clone
         // per worker thread, shared across the tasks that land on it) is
         // a follow-on optimization; rayon's `map_with` provides the
         // natural API surface. For the gallery-sized parmap calls (up
         // to ~1000 elements) the clone overhead is well under 1 ms total.
+        //
+        // Per-task RNG: each task seeds the worker thread's thread-local
+        // RNG with a deterministic mix of (master_seed, task_index) before
+        // calling the lambda. That gives Monte Carlo determinism — the
+        // same `seed(N); parmap(...)` produces bit-identical results
+        // across runs — without disturbing the calling thread's master
+        // RNG. After parmap completes, the calling thread's RNG state is
+        // exactly what it was before; worker threads' RNGs are left in
+        // whatever state the last task left them, which is fine because
+        // each task re-seeds at entry.
         let results: Vec<Result<Value, ScriptError>> = xs
             .into_par_iter()
-            .map(|x| {
+            .enumerate()
+            .map(|(idx, x)| {
+                // Install per-task RNG seed.
+                rng::seed_rng(rng::derive_task_seed(master_seed, idx));
+                // Mark this thread as inside a parmap worker — impure
+                // builtins (clf, fprintf, savefig, etc.) will hard-error
+                // if invoked during the lambda body. The guard restores
+                // the flag when it drops at end-of-task scope.
+                let _guard = ParallelContextGuard::enter();
                 let mut worker = worker_factory();
                 worker.call_callable(callable.clone(), vec![x])
             })

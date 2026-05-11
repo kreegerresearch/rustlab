@@ -55,6 +55,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `@(x, y) expr` | Anonymous function (lambda); captures current env by snapshot |
 | `@name` | Function handle — reference to a builtin or user function |
 | `arrayfun(f, v)` | Apply callable to each element; scalar results → Vector, vector results → Matrix |
+| `parmap(f, xs)` | Parallel map across the rayon thread pool. `f` is a lambda or function handle; `xs` is a 1-D iterable; result is a Vector of scalar/complex outputs. Per-task RNG is deterministic given `seed(N)`. Pure-lambda contract: no plotting / file I/O / audio / seed inside the lambda body. See `dev/plans/parmap_parreduce.md`. |
+| `nproc()` | Number of logical CPUs (= rayon pool size = `parmap` thread count). Respects cgroup limits on Linux. |
 | `feval("name", args...)` | Call function by string name |
 | `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all |
 | `profile_report()` | Print profiling table to stderr immediately |

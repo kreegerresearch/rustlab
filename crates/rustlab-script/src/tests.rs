@@ -12150,6 +12150,167 @@ mod parmap_phase2_dispatch {
     }
 }
 
+// ─── Phase 3 (parmap_parreduce): per-task RNG + pure-lambda contract ───────
+
+#[cfg(test)]
+mod parmap_phase3_correctness {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval_str(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected Vector for {name}, got {other:?}"),
+        }
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let err = ev.run(&stmts).unwrap_err();
+        err.to_string()
+    }
+
+    /// Same master seed → bit-identical parmap output across runs. This
+    /// is the determinism contract for Monte Carlo.
+    #[test]
+    fn parmap_deterministic_with_master_seed() {
+        let ev_a = eval_str(
+            "seed(42);\n\
+             a = parmap(@(k) randn(1)(1), 1:20);",
+        );
+        let ev_b = eval_str(
+            "seed(42);\n\
+             b = parmap(@(k) randn(1)(1), 1:20);",
+        );
+        let a = get_vec(&ev_a, "a");
+        let b = get_vec(&ev_b, "b");
+        assert_eq!(a, b, "same seed must produce bit-identical output");
+        // Sanity: the output is non-trivial.
+        assert!(a.iter().any(|&x| x != 0.0));
+    }
+
+    /// The calling thread's master RNG is untouched by parmap. After
+    /// `seed(N); _ = parmap(...); x = randn(1, 1)`, `x` should be the
+    /// same as if no parmap ran in between.
+    #[test]
+    fn parmap_master_seed_unchanged_after() {
+        let ev = eval_str(
+            "seed(99);\n\
+             _ = parmap(@(k) randn(1)(1), 1:10);\n\
+             x = randn(1)(1);",
+        );
+        let ev_ref = eval_str(
+            "seed(99);\n\
+             x = randn(1)(1);",
+        );
+        let x = match ev.get("x").unwrap() {
+            Value::Scalar(v) => *v,
+            Value::Vector(v) => v[0].re,
+            Value::Matrix(m) => m[[0, 0]].re,
+            other => panic!("unexpected: {other:?}"),
+        };
+        let x_ref = match ev_ref.get("x").unwrap() {
+            Value::Scalar(v) => *v,
+            Value::Vector(v) => v[0].re,
+            Value::Matrix(m) => m[[0, 0]].re,
+            other => panic!("unexpected: {other:?}"),
+        };
+        assert_eq!(x, x_ref, "parmap must not perturb the calling thread's RNG");
+    }
+
+    /// Each task gets a different RNG stream. With 50 trials the chance of
+    /// any two trials emitting identical f64 samples is astronomically low
+    /// — uniqueness is a good proxy for "RNG streams are independent."
+    #[test]
+    fn parmap_per_task_rng_is_independent() {
+        let ev = eval_str(
+            "seed(7);\n\
+             y = parmap(@(k) randn(1)(1), 1:50);",
+        );
+        let y = get_vec(&ev, "y");
+        let mut sorted = y.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for w in sorted.windows(2) {
+            assert!(
+                w[0] != w[1],
+                "two parmap tasks produced identical samples — RNGs not independent: {w:?}"
+            );
+        }
+    }
+
+    /// Pure-lambda contract: clf inside a parmap lambda errors.
+    #[test]
+    fn parmap_clf_errors() {
+        let err = run_err("y = parmap(@(k) clf(), 1:3);");
+        assert!(
+            err.contains("parmap") && err.contains("clf"),
+            "expected parmap+clf in error, got: {err}"
+        );
+        assert!(
+            err.contains("pure"),
+            "expected 'pure' keyword in error, got: {err}"
+        );
+    }
+
+    /// Pure-lambda contract: fprintf inside a parmap lambda errors.
+    #[test]
+    fn parmap_fprintf_errors() {
+        let err = run_err("y = parmap(@(k) fprintf('hi'), 1:3);");
+        assert!(
+            err.contains("parmap") && err.contains("fprintf"),
+            "expected parmap+fprintf in error, got: {err}"
+        );
+    }
+
+    /// Pure-lambda contract: savefig inside a parmap lambda errors.
+    /// (Test uses a builtin function form of savefig.)
+    #[test]
+    fn parmap_savefig_errors() {
+        let err = run_err("y = parmap(@(k) savefig('x.svg'), 1:3);");
+        assert!(
+            err.contains("parmap") && err.contains("savefig"),
+            "expected parmap+savefig in error, got: {err}"
+        );
+    }
+
+    /// `seed()` is also banned inside parmap — it would override the
+    /// per-task seed and break the determinism contract.
+    #[test]
+    fn parmap_seed_inside_lambda_errors() {
+        let err = run_err("y = parmap(@(k) seed(k), 1:3);");
+        assert!(
+            err.contains("parmap") && err.contains("seed"),
+            "expected parmap+seed in error, got: {err}"
+        );
+    }
+
+    /// Calling parmap from inside a lambda is currently allowed (recursive
+    /// parmap) — verify it works for a simple case. This is the design's
+    /// "nested parallelism just works" behaviour from the recursive-seed
+    /// derivation.
+    #[test]
+    fn parmap_nested_recursive_works() {
+        let ev = eval_str(
+            "y = parmap(@(i) sum(parmap(@(j) i * j, 1:3)), 1:4);",
+        );
+        let y = get_vec(&ev, "y");
+        // Each outer i: sum over j=1..3 of i*j = i * (1+2+3) = 6*i.
+        assert_eq!(y, vec![6.0, 12.0, 18.0, 24.0]);
+    }
+}
+
 // ─── Phase 1 (parmap_parreduce): Evaluator Clone+Send + AST serde ───────────
 
 #[cfg(test)]

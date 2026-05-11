@@ -1,0 +1,143 @@
+# Parallel Monte Carlo with `parmap`
+
+A canonical Monte Carlo workflow that scales linearly with CPU count, using
+[`parmap`](../docs/quickref.md) — rustlab's parallel-map primitive backed
+by rayon's thread pool.
+
+The script-side surface is small:
+
+- `parmap(f, xs)` — apply `f` to each element of `xs` across the rayon
+  pool; returns a `Vector` of results.
+- `nproc()` — how many threads the pool will use.
+- `seed(N)` — set the master seed; per-task seeds are deterministically
+  derived inside parmap, so the same `seed(N) + parmap(...)` is
+  bit-identical across runs.
+
+## How many cores
+
+```rustlab
+n = nproc();
+print("running parmap on")
+print(n)
+print("logical CPUs")
+```
+
+```text
+running parmap on
+12
+logical CPUs
+```
+
+## π by random sampling — the hello world of Monte Carlo
+
+Each trial draws $N$ uniform-random points in the unit square; the
+fraction landing inside the unit disk is an estimate of $\pi/4$.
+
+```rustlab
+function p = pi_trial(k)
+  N = 200000;
+  X = rand(N);
+  Y = rand(N);
+  d2 = (X - 0.5).^2 + (Y - 0.5).^2;
+  inside = sum(d2 < 0.25);
+  p = 4 * inside / N;
+end
+
+seed(42);                                  % deterministic across runs
+estimates = parmap(@pi_trial, 1:24);       % 24 independent trials, in parallel
+mu = mean(estimates);
+se = std(estimates) / sqrt(length(estimates));
+print("mean estimate of pi:")
+print(mu)
+print("standard error:")
+print(se)
+```
+
+```text
+mean estimate of pi:
+3.141833333333334
+standard error:
+0.0008005412957773572
+```
+
+With 24 trials of 200 000 samples each, the mean lands on
+$\pi \approx 3.1416$ and the standard error is small enough that
+the 1.96 σ confidence interval covers the truth. Re-running the same
+script produces bit-identical numbers because `seed(42)` fixes the
+per-task RNG streams deterministically.
+
+## Black–Scholes call price across spot prices
+
+Each trial prices a European call by simulating the underlying's
+terminal distribution under risk-neutral dynamics. The spot price
+varies; everything else is held constant.
+
+```rustlab
+function price = bs_call(S0)
+  K = 100; r = 0.05; sigma = 0.2; T = 1.0; N = 100000;
+  Z = randn(N);
+  ST = S0 * exp((r - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z);
+  % Element-wise max(x, 0) via mask: (x > 0) is a 0/1 vector,
+  % multiplied with x gives the positive-only payoff.
+  diff = ST - K;
+  payoff = diff .* (diff > 0);
+  price = exp(-r * T) * mean(payoff);
+end
+
+spots = 80:5:120;                          % 9 spot values
+seed(7);
+prices = parmap(@bs_call, spots);
+
+clf;
+plot(spots, prices, "MC call price");
+xlabel("S_0");
+ylabel("call price");
+title("Black–Scholes call price vs. spot")
+```
+
+![plot 1](plots/parallel_montecarlo/plot-1.svg)
+
+The price rises monotonically with spot and approaches the deep-in-the-money
+asymptote `S_0 - K·exp(-rT)` for large `S_0`.
+
+## What `parmap` won't do — the pure-lambda contract
+
+`parmap` requires the lambda to be "pure": no plotting, no file writes,
+no audio, no `seed()` from inside the lambda. The contract is enforced
+at runtime — try one of those operations and you get a clear error:
+
+```rustlab
+% This errors at the first trial: 'parmap: cannot fprintf from a
+% parallel lambda — the lambda must be pure'.
+%
+% parmap(@(k) fprintf("trial %d\n", k), 1:5);
+```
+
+The reason: those builtins mutate global state (the figure, the audio
+sink, the RNG master), and running them concurrently from rayon workers
+would produce undefined output. The right pattern is to do the **compute**
+in parallel and the **I/O** sequentially in the main thread:
+
+```rustlab
+% Compute in parallel:
+results = parmap(@pi_trial, 1:8);
+
+% Plot serially in main thread:
+clf;
+plot(1:length(results), results, "MC π estimates");
+title("Per-trial estimates of π")
+```
+
+![plot 2](plots/parallel_montecarlo/plot-2.svg)
+
+This isn't a limitation so much as an honest separation: parallel = compute,
+serial = I/O. The contract makes that boundary impossible to cross by
+accident.
+
+## See also
+
+- [`dev/plans/parmap_parreduce.md`](../dev/plans/parmap_parreduce.md) —
+  full implementation plan, deferred phases (`parreduce`, cluster backend),
+  open design questions.
+- [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
+- `help parmap` and `help nproc` in the REPL.

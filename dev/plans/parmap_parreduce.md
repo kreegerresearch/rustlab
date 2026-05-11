@@ -13,8 +13,8 @@
 |---|---|---|---|---|
 | 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **shipped** | medium-high | `20d4a82` |
 | 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | **shipped** | medium | `98d084c` |
-| 3 | Per-task RNG + pure-lambda contract | pending | low | correctness for Monte Carlo |
-| 4 | Tests + docs + REPL help, including `nproc()` builtin | pending | low | shipping |
+| 3 | Per-task RNG + pure-lambda contract | **awaiting commit (2026-05-11)** | low | correctness for Monte Carlo |
+| 4 | Tests + docs + REPL help, including `nproc()` builtin | **awaiting commit (2026-05-11)** | low | shipping |
 | 5 | `parreduce(f, init, xs)` (follow-on) | **deferred** | low | only build if a concrete use case demands it |
 | 6 | Cluster backend via `rustlab-server` (separate plan) | **deferred** | n/a | distributed compute; placeholder so Phase 2's trait shape stays honest |
 
@@ -575,7 +575,45 @@ Deferred to Phase 2:
 
 ## Phase 3 — Per-task RNG + pure-lambda contract
 
-**Status:** pending
+**Status:** awaiting commit (2026-05-11)
+
+**Implementation log (2026-05-11):**
+
+Per-task RNG seeding:
+- Added a `MASTER_SEED: Cell<Option<u64>>` thread-local in `eval/rng.rs` next to the existing `RNG`. `seed_rng(N)` now records `N` here; `seed_rng_from_entropy()` clears it.
+- New `current_master_seed() -> Option<u64>` reads the current value for parmap dispatch.
+- New `derive_task_seed(master, idx) -> u64` mixes the two via SplitMix64 finalizer. Deterministic and avalanching.
+- `eval_parmap` reads `current_master_seed()` on the calling thread; if `None`, draws a single u64 from OS entropy *without* touching the master RNG, so the master is undisturbed regardless of whether `seed(N)` was called.
+- `LocalRayonBackend::run` now `seed_rng(derive_task_seed(master, idx))` at the start of each rayon task. Determinism contract: `seed(N); parmap(...)` is bit-reproducible across runs; the calling thread's master RNG state is unchanged after parmap returns.
+
+Pure-lambda contract enforcement:
+- New `PARALLEL_CONTEXT: Cell<bool>` thread-local in `eval/parmap.rs`.
+- `ParallelContextGuard` RAII wrapper sets the flag on enter, restores on drop. Installed once per rayon task in `LocalRayonBackend::run`.
+- New `require_pure_context(builtin_name)` returns `Err(...)` when called from a worker task with the standard error message: `parmap: cannot {name} from a parallel lambda — the lambda must be pure`.
+- New `IMPURE_BUILTINS` const list in `eval/mod.rs` (32 names: plotting, file I/O, audio, FirState, seed). `Evaluator::call_builtin_tracked_nargout` checks this list at entry and calls `require_pure_context` for any match. One choke point catches every call path through the builtin registry.
+
+8 new tests in `tests::parmap_phase3_correctness`:
+- `parmap_deterministic_with_master_seed` — bit-identical output for the same seed.
+- `parmap_master_seed_unchanged_after` — post-parmap master RNG state matches no-parmap baseline.
+- `parmap_per_task_rng_is_independent` — 50-trial uniqueness sanity check.
+- `parmap_clf_errors`, `parmap_fprintf_errors`, `parmap_savefig_errors` — contract enforcement.
+- `parmap_seed_inside_lambda_errors` — seed itself is banned inside parmap.
+- `parmap_nested_recursive_works` — nested parmap is allowed; per-task seeds derive correctly through the recursion.
+
+## Phase 4 — Tests, docs, REPL help
+
+**Status:** awaiting commit (2026-05-11)
+
+**Implementation log (2026-05-11):**
+- New `nproc()` builtin in `eval/builtins.rs`. Returns `std::thread::available_parallelism()` (or 1 on fallback). Same number as rayon's pool size.
+- REPL `HelpEntry` records for `parmap` and `nproc` added next to `arrayfun` in `crates/rustlab-cli/src/commands/repl.rs`.
+- New `"Parallelism"` category in `print_help_list` containing `parmap` + `nproc`.
+- `AGENTS.md` function table updated with a `parmap` row and an `nproc` row; the existing "Higher-order" line now mentions both arrayfun and parmap.
+- `docs/quickref.md` Language section gained two rows (`parmap`, `nproc`) right after `arrayfun`.
+- New gallery notebook `examples/notebooks/parallel_montecarlo.md`: π by random sampling, Black–Scholes parameter sweep, and a worked example of the pure-lambda contract. Renders cleanly (5 code blocks, 2 plots, 0 errors).
+- Fixed a doctest false-positive: the example line in `require_pure_context`'s comment was being interpreted as Rust source by rustdoc; wrapped in a ```text fence.
+
+Workspace: 1758 tests pass (+8 over Phase 2's 1750), 0 failures. Gallery re-baked, all 31 notebooks render.
 **Goal:** make `parmap` correct for Monte Carlo — each task gets its own RNG state — and enforce the pure-lambda contract at runtime.
 
 **Scope:**

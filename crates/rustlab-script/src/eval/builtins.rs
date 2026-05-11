@@ -125,6 +125,7 @@ impl BuiltinRegistry {
         r.register("randn", builtin_randn);
         r.register("randi", builtin_randi);
         r.register("seed", builtin_seed);
+        r.register("nproc", builtin_nproc);
         // Tensor3 (rank-3) constructors
         r.register("zeros3", builtin_zeros3);
         r.register("ones3", builtin_ones3);
@@ -1322,6 +1323,31 @@ fn builtin_seed(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     crate::eval::rng::seed_rng(s as u64);
     Ok(Value::None)
+}
+
+/// `nproc()` — number of logical CPUs available to the process.
+///
+/// Returns the value of `std::thread::available_parallelism()`, which:
+///   * On Linux respects cgroup CPU quotas (Docker containers see their
+///     allocated slice, not the host count).
+///   * On macOS reports total CPUs including efficiency cores.
+///   * On Windows reports active processor count.
+///
+/// This is the same number rayon's global thread pool sizes itself to,
+/// so it's also the pool size `parmap` uses. Falls back to 1 if the
+/// OS lookup somehow fails.
+///
+/// Cheap to call; doesn't spawn any threads itself.
+fn builtin_nproc(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if !args.is_empty() {
+        return Err(ScriptError::type_err(
+            "nproc: takes no arguments".to_string(),
+        ));
+    }
+    let n = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    Ok(Value::Scalar(n as f64))
 }
 
 fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
