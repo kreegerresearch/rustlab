@@ -11,7 +11,7 @@
 
 | # | Phase | Status | Risk | Win |
 |---|---|---|---|---|
-| 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **awaiting commit (2026-05-11)** | medium-high | enables every later phase, including the future cluster backend |
+| 1 | `Evaluator: Clone + Send`, AST `Serialize + Deserialize` (Value-level serde rescoped to Phase 2) | **shipped** | medium-high | `20d4a82` |
 | 2 | `parmap(f, xs)` builtin behind `ParmapBackend` trait (local rayon impl) | pending | medium | the headline feature |
 | 3 | Per-task RNG + pure-lambda contract | pending | low | correctness for Monte Carlo |
 | 4 | Tests + docs + REPL help, including `nproc()` builtin | pending | low | shipping |
@@ -422,7 +422,7 @@ Reusable across phases:
 
 ## Phase 1 — `Evaluator: Clone + Send`, AST/Value serializable
 
-**Status:** awaiting commit (2026-05-11)
+**Status:** shipped — commit `20d4a82` (2026-05-11)
 
 **Implementation log (2026-05-11):**
 - Added `#[derive(Clone)]` to `Evaluator`, `Profiler`, and `BuiltinRegistry`. UserFn was already Clone; the AST tree (Stmt, StmtKind, Expr, BinOp, UnaryOp) was already Clone.
