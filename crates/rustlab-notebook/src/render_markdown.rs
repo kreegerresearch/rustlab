@@ -793,6 +793,30 @@ mod tests {
     }
 
     #[test]
+    fn math_spans_pass_through_verbatim() {
+        // Regression: an earlier version rewrote `\,` `\;` `\:` `\!`
+        // `\|` to the double-backslash form and `^*` / `_*` to
+        // `^{\ast}` / `_{\ast}` under the (wrong) belief that GitHub
+        // strips backslashes inside math. github.com actually feeds
+        // math spans to KaTeX verbatim, so the rewrites rendered
+        // literally. Keep math byte-identical to source.
+        let src = r"Inline $\mathbf{x}^*$ and $a\,b\;c\:d\!e\|f$. Display: $$\min\!\left(1,\; \frac{c}{\lVert g \rVert_2}\right)$$";
+        let blocks = vec![Rendered::Markdown(src.to_string())];
+        let md = render_markdown(
+            "T",
+            &blocks,
+            &tmp_plot_dir(),
+            "img",
+            theme(),
+            None,
+            LinkStyle::Standard,
+        );
+        assert!(md.contains(src), "math mangled in render output:\n{md}");
+        assert!(!md.contains(r"\\,"), "double-backslash leaked: {md}");
+        assert!(!md.contains(r"^{\ast}"), "ast rewrite leaked: {md}");
+    }
+
+    #[test]
     fn standard_mode_keeps_md_links_as_md_links() {
         // Lock down the no-regression contract: in Standard mode,
         // `[Foo](other.md)` passes through as a plain markdown link.

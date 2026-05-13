@@ -612,57 +612,21 @@ rustlab-notebook render analysis.md -f markdown
 # → plots/analysis/plot-1.svg, plot-2.svg, ...
 ```
 
-**GitHub-safe math.** GitHub's web renderer runs CommonMark passes
-(emphasis pairing, backslash-escape) *before* its KaTeX math pass, so
-several common LaTeX constructs survive every other tool but break
-when viewed on github.com. Two distinct corruptions and two distinct
-fixes:
+**Math passes through verbatim.** GitHub's math span handling does not
+apply CommonMark backslash-escape or emphasis-pairing inside `$…$` /
+`$$…$$`, so the natural LaTeX in the notebook source — `\,`, `\;`,
+`\:`, `\!`, `\|`, `^*`, `_*` — reaches GitHub's KaTeX exactly as
+written and renders correctly. `--format markdown` emits math spans
+verbatim; no rewriting on the way out. The HTML and
+`--format markdown --obsidian` paths are likewise verbatim.
 
-*Emphasis pairing* breaks `$\mathbf{x}^*$ … $\mathbf{x}^*$` — the two
-`*` chars in separate math spans get paired as emphasis delimiters
-across the math boundaries; KaTeX then fails with
-`Missing open brace for superscript`. The fix replaces `^*` with the
-braced LaTeX synonym `^{\ast}`, which has no `*` for emphasis to
-pair on:
-
-| Source | Rewritten to |
-|---|---|
-| `^*`  | `^{\ast}` |
-| `_*`  | `_{\ast}` |
-| `^**` | `^{\ast\ast}` |
-| `_**` | `_{\ast\ast}` |
-
-*Backslash-escape* strips the `\` from `\X` for any ASCII punctuation
-`X` (`\,` → `,`, `\|` → `|`, etc.). The fix doubles the backslash:
-GitHub's CommonMark pass turns `\\` → `\`, and KaTeX then sees the
-original `\X`:
-
-| Source | Rewritten to | What KaTeX receives |
-|---|---|---|
-| `\,`  | `\\,` | `\,` |
-| `\;`  | `\\;` | `\;` |
-| `\:`  | `\\:` | `\:` |
-| `\!`  | `\\!` | `\!` |
-| `\|`  | `\\|` | `\|` |
-
-The double-backslash form is preferable to alpha-synonym replacement
-(e.g. `\thinspace`, `\Vert`) because it's an exact round-trip to the
-original LaTeX — no dependency on KaTeX recognizing alpha-synonyms,
-some of which (`\thickspace`, `\medspace`, `\negthinspace`) are
-unreliable in GitHub's KaTeX configuration.
-
-The rewrite is automatic — notebooks keep their natural LaTeX
-(`^*`, `\|`, `\,`, `\;`) and `--format markdown` emits the
-GitHub-safe form on the way out.
-
-The rewrite is applied **only inside math spans** (`$…$` and `$$…$$`).
-Code spans, fenced code blocks, prose emphasis (`**bold**`, `*italic*`),
-and non-math `\,` (e.g. inside `\text{…}`) are untouched.
-
-`--format html` does **not** rewrite — rustlab's bundled KaTeX runs on
-the raw output, so the original LaTeX renders correctly. `--format
-markdown --obsidian` also does not rewrite; Obsidian's native KaTeX
-pipeline handles the source as-is.
+(Earlier rustlab releases rewrote these tokens — first to alpha
+synonyms like `\thinspace`/`\thickspace`, then to the
+`\,` → `\\,` "double-backslash" form — under the assumption that
+GitHub stripped the backslash before KaTeX ran. That assumption was
+wrong: the rewritten form rendered as a literal `\\;` on github.com.
+The rewriter has been removed; if the assumption ever needs to be
+revisited, do it with an actual GitHub round-trip, not a unit test.)
 
 ### LaTeX (`--format latex`)
 
