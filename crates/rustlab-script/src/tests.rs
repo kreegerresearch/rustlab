@@ -937,6 +937,30 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn length_of_scalar_is_one() {
+        // length(scalar) is the matlab convention — required so generic
+        // code that handles "scalar OR vector" doesn't have to box with
+        // [x] just to call length().
+        let ev = eval_str("a = length(42)\nb = length(3.14)\nc = length(true)");
+        assert!(close(get_scalar(&ev, "a"), 1.0));
+        assert!(close(get_scalar(&ev, "b"), 1.0));
+        assert!(close(get_scalar(&ev, "c"), 1.0));
+    }
+
+    #[test]
+    fn length_of_complex_is_one() {
+        let ev = eval_str("a = length(2 + 3 * j)");
+        assert!(close(get_scalar(&ev, "a"), 1.0));
+    }
+
+    #[test]
+    fn length_of_matrix_is_max_dim() {
+        // Sanity that the matlab "max(size(M))" rule still holds.
+        let ev = eval_str("a = length(zeros(3, 7))");
+        assert!(close(get_scalar(&ev, "a"), 7.0));
+    }
+
+    #[test]
     fn vector_indexing_one_based() {
         let ev = eval_str("v = linspace(10, 50, 5)\nx = v(1)");
         assert!(close(get_scalar(&ev, "x"), 10.0));
@@ -4001,6 +4025,64 @@ mod phase4_tests {
             "GM = {}, expected ∞ for 2nd-order",
             gm
         );
+    }
+
+    // ── plot() with 1×N row-Matrix y collapses to a single Vector series.
+    //
+    // Bug from rustlab_llm: zeros(1, N) returns a 1×N Matrix, and the
+    // Matrix arm of plot treated each column as its own series, producing
+    // N degenerate single-point series — visually an empty axis. A 1×N or
+    // N×1 matrix is 1-D data and should plot as one line, the same as a
+    // length-N Vector.
+    #[test]
+    fn plot_row_matrix_y_treated_as_vector() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str(
+            "x = linspace(0, 1, 5);\n\
+             y = zeros(1, 5);\n\
+             y(3) = 1;\n\
+             plot(x, y);",
+        );
+        let series = rustlab_plot::figure::FIGURE
+            .with(|f| f.borrow().current().series.clone());
+        assert_eq!(series.len(), 1, "expected one series, got {}", series.len());
+        assert_eq!(series[0].x_data.len(), 5);
+        assert_eq!(series[0].y_data.len(), 5);
+        // Sanity: the spike is at index 2 (1-based 3).
+        assert!((series[0].y_data[2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn plot_column_matrix_y_treated_as_vector() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str(
+            "x = linspace(0, 1, 4);\n\
+             y = zeros(4, 1);\n\
+             y(2) = 1;\n\
+             plot(x, y);",
+        );
+        let series = rustlab_plot::figure::FIGURE
+            .with(|f| f.borrow().current().series.clone());
+        assert_eq!(series.len(), 1, "expected one series, got {}", series.len());
+        assert_eq!(series[0].x_data.len(), 4);
+        assert_eq!(series[0].y_data.len(), 4);
+    }
+
+    #[test]
+    fn plot_genuine_2d_matrix_not_collapsed_to_single_point() {
+        // Regression: a real 2×3 matrix is multi-row data; the Bug 6 fix
+        // (1×N / N×1 → Vector) must NOT touch shapes outside that case.
+        // The figure may still produce just one final series due to the
+        // separate "each push clears" quirk in push_line_series, but the
+        // x-axis must contain row indices (length 2), not column indices
+        // (length 3) — proving the matrix arm took the multi-column
+        // path and not the flattener-as-vector path (which would have
+        // produced length-6 x-data).
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str("plot(linspace(0, 1, 2), [1, 2, 3; 4, 5, 6]);");
+        let xlen = rustlab_plot::figure::FIGURE
+            .with(|f| f.borrow().current().series[0].x_data.len());
+        assert_eq!(xlen, 2, "matrix arm should use nrows for x; got len {xlen}");
     }
 }
 
@@ -7072,6 +7154,128 @@ mod index_assign_tests {
     fn matrix_single_index_out_of_bounds_errors() {
         assert!(try_run("M = zeros(2, 3);\nM(7) = 1;").is_err());
     }
+
+    // ── Region writes: A(rows, cols) = ... ──────────────────────────────
+
+    #[test]
+    fn matrix_row_write_with_colon() {
+        // A(i, :) = vec — Bug 2 from rustlab_llm. Symmetric with the
+        // existing row-read A(i, :) which returns a Vector.
+        let ev = run("A = zeros(3, 3);\nA(2, :) = [10, 20, 30];");
+        match ev.get("A").unwrap() {
+            Value::Matrix(m) => {
+                assert!(close(m[[1, 0]].re, 10.0));
+                assert!(close(m[[1, 1]].re, 20.0));
+                assert!(close(m[[1, 2]].re, 30.0));
+                // Other rows untouched.
+                assert!(close(m[[0, 0]].re, 0.0));
+                assert!(close(m[[2, 2]].re, 0.0));
+            }
+            other => panic!("expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn matrix_column_write_with_colon() {
+        let ev = run("A = zeros(3, 3);\nA(:, 1) = [7, 8, 9];");
+        match ev.get("A").unwrap() {
+            Value::Matrix(m) => {
+                assert!(close(m[[0, 0]].re, 7.0));
+                assert!(close(m[[1, 0]].re, 8.0));
+                assert!(close(m[[2, 0]].re, 9.0));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn matrix_submatrix_write_with_matrix_rhs() {
+        let ev = run("A = zeros(3, 3);\nA(1:2, 2:3) = [1, 2; 3, 4];");
+        match ev.get("A").unwrap() {
+            Value::Matrix(m) => {
+                assert!(close(m[[0, 1]].re, 1.0));
+                assert!(close(m[[0, 2]].re, 2.0));
+                assert!(close(m[[1, 1]].re, 3.0));
+                assert!(close(m[[1, 2]].re, 4.0));
+                assert!(close(m[[0, 0]].re, 0.0));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn matrix_scalar_broadcast_into_region() {
+        let ev = run("A = zeros(2, 3);\nA(:, :) = 5;");
+        match ev.get("A").unwrap() {
+            Value::Matrix(m) => {
+                for i in 0..2 {
+                    for j in 0..3 {
+                        assert!(close(m[[i, j]].re, 5.0), "({i}, {j})");
+                    }
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn matrix_row_write_shape_mismatch_errors() {
+        // [10, 20] is length 2 but the row has 3 columns.
+        assert!(try_run("A = zeros(3, 3);\nA(2, :) = [10, 20];").is_err());
+    }
+
+    // ── Strided / vector LHS into Vector ────────────────────────────────
+
+    #[test]
+    fn vector_strided_lhs_writes_per_position() {
+        // v(1:2:6) = [10, 20, 30] — Bug 5 from rustlab_llm.
+        let ev = run("v = zeros(6);\nv(1:2:6) = [10, 20, 30];");
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 6);
+                assert!(close(v[0].re, 10.0));
+                assert!(close(v[1].re, 0.0));
+                assert!(close(v[2].re, 20.0));
+                assert!(close(v[3].re, 0.0));
+                assert!(close(v[4].re, 30.0));
+                assert!(close(v[5].re, 0.0));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn vector_explicit_index_list_lhs() {
+        let ev = run("w = zeros(5);\nw([1, 3, 5]) = [100, 300, 500];");
+        match ev.get("w").unwrap() {
+            Value::Vector(v) => {
+                assert!(close(v[0].re, 100.0));
+                assert!(close(v[1].re, 0.0));
+                assert!(close(v[2].re, 300.0));
+                assert!(close(v[4].re, 500.0));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn vector_colon_lhs_scalar_broadcast() {
+        let ev = run("u = zeros(4);\nu(:) = 9;");
+        match ev.get("u").unwrap() {
+            Value::Vector(v) => {
+                for x in v.iter() {
+                    assert!(close(x.re, 9.0));
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn vector_strided_lhs_length_mismatch_errors() {
+        // 3 positions on the LHS, 2 elements on the RHS.
+        assert!(try_run("v = zeros(6);\nv(1:2:6) = [10, 20];").is_err());
+    }
 }
 
 // ─── Tier 2c: Parser error messages ─────────────────────────────────────────
@@ -7876,8 +8080,29 @@ mod optional_arg_tests {
         assert_err("randn(1, 2, 3)");
     }
     #[test]
-    fn rand_zero_args() {
-        assert_err("rand()");
+    fn rand_zero_args_returns_scalar_in_unit_interval() {
+        // matlab: rand() with no args returns a single scalar in [0, 1).
+        // Required so generic helpers can call rand() without the
+        // `rand(1)(1)` boxing hack.
+        let ev = try_run("seed(7)\nx = rand()").expect("rand() should succeed");
+        let x = match ev.get("x").unwrap() {
+            crate::Value::Scalar(v) => *v,
+            other => panic!("expected Scalar, got {other:?}"),
+        };
+        assert!(
+            (0.0..1.0).contains(&x),
+            "rand() out of [0,1): {x}"
+        );
+    }
+
+    #[test]
+    fn randn_zero_args_returns_scalar() {
+        // randn() with no args: single scalar from N(0, 1).
+        let ev = try_run("seed(7)\nx = randn()").expect("randn() should succeed");
+        match ev.get("x").unwrap() {
+            crate::Value::Scalar(_) => {}
+            other => panic!("expected Scalar, got {other:?}"),
+        }
     }
 
     // ── trapz: accept 1-2 args ──────────────────────────────────────────

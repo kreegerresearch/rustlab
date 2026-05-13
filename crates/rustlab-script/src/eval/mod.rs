@@ -610,6 +610,60 @@ impl Evaluator {
                 };
 
                 if idx_vals.len() == 1 {
+                    // Strided / range / vector LHS into a Vector:
+                    // `v(idx_set) = rhs` where idx_set is `:`, a Vector,
+                    // or any colon range that evaluates to a Vector.
+                    // Handled before the scalar path because `to_scalar()`
+                    // would reject the Vector index.
+                    let idx_is_multi = matches!(&idx_vals[0], Value::All | Value::Vector(_));
+                    let env_is_vector =
+                        matches!(self.env.get(name.as_str()), Some(Value::Vector(_)));
+                    if idx_is_multi && env_is_vector {
+                        let vec_len = match self.env.get(name.as_str()) {
+                            Some(Value::Vector(v)) => v.len(),
+                            _ => unreachable!(),
+                        };
+                        let positions = Value::resolve_index_dim_public(&idx_vals[0], vec_len)
+                            .map_err(ScriptError::runtime)?;
+                        let n_target = positions.len();
+                        let src: Vec<Complex<f64>> = match &val {
+                            Value::Scalar(n) => vec![Complex::new(*n, 0.0); n_target],
+                            Value::Complex(c) => vec![*c; n_target],
+                            Value::Vector(v) => {
+                                if v.len() != n_target {
+                                    return Err(ScriptError::runtime(format!(
+                                        "index assignment: RHS vector length {} does not match \
+                                         target index count {}",
+                                        v.len(),
+                                        n_target
+                                    )));
+                                }
+                                v.iter().copied().collect()
+                            }
+                            other => {
+                                return Err(ScriptError::runtime(format!(
+                                    "index assignment: right-hand side must be scalar, complex, \
+                                     or vector; got {}",
+                                    other.type_name()
+                                )))
+                            }
+                        };
+                        match self.env.get_mut(name.as_str()) {
+                            Some(Value::Vector(v)) => {
+                                for (k, &p) in positions.iter().enumerate() {
+                                    v[p] = src[k];
+                                }
+                                if !suppress && self.echo_enabled() {
+                                    output::script_println(&format!(
+                                        "{}(...) = (vector positions {} updated)",
+                                        name, n_target
+                                    ));
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                        return Ok(());
+                    }
                     let idx = idx_vals[0]
                         .to_scalar()
                         .map_err(|e| ScriptError::type_err(e))?
@@ -803,75 +857,169 @@ impl Evaluator {
                         }
                     } // end else scalar assignment
                 } else if idx_vals.len() == 2 {
-                    // Two-index: matrix assignment
-                    let row = idx_vals[0]
-                        .to_scalar()
-                        .map_err(|e| ScriptError::type_err(e))?
-                        as usize;
-                    let col = idx_vals[1]
-                        .to_scalar()
-                        .map_err(|e| ScriptError::type_err(e))?
-                        as usize;
-                    if row < 1 || col < 1 {
-                        return Err(ScriptError::runtime(
-                            "index assignment: indices must be >= 1".to_string(),
-                        ));
-                    }
-                    let assign_val = match &val {
-                        Value::Scalar(n) => Complex::new(*n, 0.0),
-                        Value::Complex(c) => *c,
-                        other => {
-                            return Err(ScriptError::runtime(format!(
-                            "index assignment: right-hand side must be scalar or complex, got {}",
-                            other.type_name()
-                        )))
+                    // Two-index: matrix assignment. Indices may be
+                    // Scalar, `:` (Value::All), or Vector — resolved
+                    // to 0-based row/col lists. The RHS must broadcast
+                    // to the (rows.len(), cols.len()) target region:
+                    // a Scalar/Complex broadcasts everywhere; a Vector
+                    // matches a single row or column; a Matrix matches
+                    // the full sub-shape. Single-element writes go
+                    // through the original Scalar/Complex path so the
+                    // SparseMatrix branch is preserved unchanged.
+                    let single_element = matches!(idx_vals[0], Value::Scalar(_))
+                        && matches!(idx_vals[1], Value::Scalar(_))
+                        && matches!(&val, Value::Scalar(_) | Value::Complex(_));
+                    if single_element {
+                        let row = idx_vals[0]
+                            .to_scalar()
+                            .map_err(|e| ScriptError::type_err(e))?
+                            as usize;
+                        let col = idx_vals[1]
+                            .to_scalar()
+                            .map_err(|e| ScriptError::type_err(e))?
+                            as usize;
+                        if row < 1 || col < 1 {
+                            return Err(ScriptError::runtime(
+                                "index assignment: indices must be >= 1".to_string(),
+                            ));
                         }
-                    };
-                    match self.env.get_mut(name.as_str()) {
-                        Some(Value::Matrix(m)) => {
-                            if row > m.nrows() || col > m.ncols() {
+                        let assign_val = match &val {
+                            Value::Scalar(n) => Complex::new(*n, 0.0),
+                            Value::Complex(c) => *c,
+                            _ => unreachable!(),
+                        };
+                        match self.env.get_mut(name.as_str()) {
+                            Some(Value::Matrix(m)) => {
+                                if row > m.nrows() || col > m.ncols() {
+                                    return Err(ScriptError::runtime(format!(
+                                        "index assignment: ({},{}) out of bounds for {}×{} matrix",
+                                        row,
+                                        col,
+                                        m.nrows(),
+                                        m.ncols()
+                                    )));
+                                }
+                                m[[row - 1, col - 1]] = assign_val;
+                                if !suppress && self.echo_enabled() {
+                                    output::script_println(&format!(
+                                        "{}({},{}) = {}",
+                                        name,
+                                        row,
+                                        col,
+                                        Value::Complex(assign_val)
+                                    ));
+                                }
+                            }
+                            Some(Value::SparseMatrix(sm)) => {
+                                if row > sm.rows || col > sm.cols {
+                                    return Err(ScriptError::runtime(format!(
+                                        "index assignment: ({},{}) out of bounds for {}×{} sparse matrix",
+                                        row, col, sm.rows, sm.cols
+                                    )));
+                                }
+                                sm.set(row - 1, col - 1, assign_val);
+                                if !suppress && self.echo_enabled() {
+                                    output::script_println(&format!(
+                                        "{}({},{}) = {}",
+                                        name,
+                                        row,
+                                        col,
+                                        Value::Complex(assign_val)
+                                    ));
+                                }
+                            }
+                            _ => {
                                 return Err(ScriptError::runtime(format!(
-                                    "index assignment: ({},{}) out of bounds for {}×{} matrix",
-                                    row,
-                                    col,
-                                    m.nrows(),
-                                    m.ncols()
-                                )));
-                            }
-                            m[[row - 1, col - 1]] = assign_val;
-                            if !suppress && self.echo_enabled() {
-                                output::script_println(&format!(
-                                    "{}({},{}) = {}",
-                                    name,
-                                    row,
-                                    col,
-                                    Value::Complex(assign_val)
-                                ));
+                                    "index assignment: '{}' is not a matrix",
+                                    name
+                                )))
                             }
                         }
-                        Some(Value::SparseMatrix(sm)) => {
-                            if row > sm.rows || col > sm.cols {
+                    } else {
+                        // Region write: A(rows, cols) = ...
+                        let (nr, nc) = match self.env.get(name.as_str()) {
+                            Some(Value::Matrix(m)) => (m.nrows(), m.ncols()),
+                            _ => {
                                 return Err(ScriptError::runtime(format!(
-                                    "index assignment: ({},{}) out of bounds for {}×{} sparse matrix",
-                                    row, col, sm.rows, sm.cols
-                                )));
+                                    "index assignment: '{}' is not a matrix \
+                                     (sparse and growing forms not supported for region writes)",
+                                    name
+                                )))
                             }
-                            sm.set(row - 1, col - 1, assign_val);
-                            if !suppress && self.echo_enabled() {
-                                output::script_println(&format!(
-                                    "{}({},{}) = {}",
-                                    name,
-                                    row,
-                                    col,
-                                    Value::Complex(assign_val)
-                                ));
+                        };
+                        let rows = Value::resolve_index_dim_public(&idx_vals[0], nr)
+                            .map_err(ScriptError::runtime)?;
+                        let cols = Value::resolve_index_dim_public(&idx_vals[1], nc)
+                            .map_err(ScriptError::runtime)?;
+                        let n_target = rows.len() * cols.len();
+                        // Build the (rows.len(), cols.len()) source data.
+                        let src: Vec<Complex<f64>> = match &val {
+                            Value::Scalar(n) => vec![Complex::new(*n, 0.0); n_target],
+                            Value::Complex(c) => vec![*c; n_target],
+                            Value::Vector(v) => {
+                                if rows.len() == 1 && v.len() == cols.len() {
+                                    v.iter().copied().collect()
+                                } else if cols.len() == 1 && v.len() == rows.len() {
+                                    v.iter().copied().collect()
+                                } else if v.len() == n_target {
+                                    v.iter().copied().collect()
+                                } else {
+                                    return Err(ScriptError::runtime(format!(
+                                        "index assignment: vector of length {} does not match \
+                                         target region {}×{} ({} elements)",
+                                        v.len(),
+                                        rows.len(),
+                                        cols.len(),
+                                        n_target
+                                    )));
+                                }
                             }
-                        }
-                        _ => {
-                            return Err(ScriptError::runtime(format!(
-                                "index assignment: '{}' is not a matrix",
-                                name
-                            )))
+                            Value::Matrix(rhs) => {
+                                if rhs.nrows() != rows.len() || rhs.ncols() != cols.len() {
+                                    return Err(ScriptError::runtime(format!(
+                                        "index assignment: RHS shape {}×{} does not match \
+                                         target region {}×{}",
+                                        rhs.nrows(),
+                                        rhs.ncols(),
+                                        rows.len(),
+                                        cols.len()
+                                    )));
+                                }
+                                let mut out = Vec::with_capacity(n_target);
+                                for i in 0..rhs.nrows() {
+                                    for j in 0..rhs.ncols() {
+                                        out.push(rhs[[i, j]]);
+                                    }
+                                }
+                                out
+                            }
+                            other => {
+                                return Err(ScriptError::runtime(format!(
+                                    "index assignment: right-hand side must be scalar, complex, \
+                                     vector, or matrix; got {}",
+                                    other.type_name()
+                                )))
+                            }
+                        };
+                        match self.env.get_mut(name.as_str()) {
+                            Some(Value::Matrix(m)) => {
+                                let mut k = 0usize;
+                                for &r in &rows {
+                                    for &c in &cols {
+                                        m[[r, c]] = src[k];
+                                        k += 1;
+                                    }
+                                }
+                                if !suppress && self.echo_enabled() {
+                                    output::script_println(&format!(
+                                        "{}(...) = (region {}×{} updated)",
+                                        name,
+                                        rows.len(),
+                                        cols.len()
+                                    ));
+                                }
+                            }
+                            _ => unreachable!(),
                         }
                     }
                 } else if idx_vals.len() == 3 {

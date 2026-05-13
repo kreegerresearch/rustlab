@@ -1159,8 +1159,12 @@ fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("rand", &args, 1, 2)?;
+    check_args_range("rand", &args, 0, 2)?;
     let dist = Uniform::new(0.0_f64, 1.0);
+    if args.is_empty() {
+        // matlab: rand() returns a single scalar in [0, 1).
+        return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
+    }
     let (m, n) = unpack_size_args(&args, "rand")?;
     crate::eval::rng::with_rng(|rng| {
         if let Some(m) = m {
@@ -1177,9 +1181,13 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("randn", &args, 1, 2)?;
+    check_args_range("randn", &args, 0, 2)?;
     let dist =
         Normal::new(0.0_f64, 1.0).map_err(|e| ScriptError::type_err(format!("randn: {e}")))?;
+    if args.is_empty() {
+        // matlab: randn() returns a single scalar from N(0, 1).
+        return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
+    }
     let (m, n) = unpack_size_args(&args, "randn")?;
     crate::eval::rng::with_rng(|rng| {
         if let Some(m) = m {
@@ -2335,6 +2343,12 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         // it gives the longest dimension. Use numel(M) for total element
         // count and size(M) for full shape information.
         Value::Matrix(m) => Ok(Value::Scalar(m.nrows().max(m.ncols()) as f64)),
+        Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
+        // Scalar / complex / bool are all 1-element values; matlab's
+        // length() on a scalar returns 1, not an error. Removes the
+        // need for `length([x])` boxing in generic code that handles
+        // both scalars and vectors uniformly.
+        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => Ok(Value::Scalar(1.0)),
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
@@ -4523,14 +4537,16 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
     }
 }
 
-// Nx1 column matrices are 1D data in user-facing terms. Rewrite such args to
-// Vector so plot/stem/bar can treat them uniformly with row vectors. Leaves
-// multi-column matrices alone (they remain grouped series).
+// Nx1 column matrices and 1xN row matrices are 1D data in user-facing
+// terms — both are what `zeros(N, 1)` / `zeros(1, N)` return. Rewrite
+// such args to Vector so plot/stem/bar/scatter treat them uniformly
+// with explicit Vectors. Multi-row × multi-col matrices stay as
+// matrices (they remain grouped series).
 fn flatten_column_matrix_args(args: &mut [Value]) {
     for a in args.iter_mut() {
         if let Value::Matrix(m) = a {
-            if m.ncols() == 1 {
-                let v: Vec<Complex<f64>> = m.column(0).iter().copied().collect();
+            if m.ncols() == 1 || m.nrows() == 1 {
+                let v: Vec<Complex<f64>> = m.iter().copied().collect();
                 *a = Value::Vector(ndarray::Array1::from_vec(v));
             }
         }
