@@ -100,6 +100,76 @@ title("Black–Scholes call price vs. spot")
 The price rises monotonically with spot and approaches the deep-in-the-money
 asymptote `S_0 - K·exp(-rT)` for large `S_0`.
 
+## Vector outputs — per-row softmax stacks into a Matrix
+
+If the lambda returns a vector of length `d`, `parmap` stacks the `N`
+results into an `N × d` Matrix — per-call index lives on the row axis,
+matching `arrayfun`. The natural use case is anything "do this row-wise
+operation in parallel": per-row softmax on an attention matrix,
+per-position FFN, batched autoregressive sampling.
+
+```rustlab
+seed(11);
+T = 6;
+S = randn(T, T);                              % logits, T rows × T cols
+
+% Each trial returns a length-T row vector; parmap returns a T×T Matrix.
+P = parmap(@(t) softmax(S(t, :)), 1:T);
+print("output shape:", size(P));
+
+% Sanity check: each row sums to ~1.
+print("row sums:", sum(P, 2)');
+```
+
+```text
+output shape:
+Matrix(1x2)
+  [6.000000, 6.000000]
+row sums:
+Matrix(1x6)
+  [1.000000, 1.000000, 1.000000, 1.000000, 1.000000, 1.000000]
+```
+
+## Matrix outputs — per-head computations stack into a Tensor3
+
+If the lambda returns an `m × n` Matrix, `parmap` stacks the `N`
+results into a Tensor3 of shape `(m, n, N)` where the per-call index
+is the *trailing* (pages) axis. Use `result(:, :, k)` to extract the
+k-th per-call matrix — this matches the existing `cat(3, ...)` page-
+stacking convention.
+
+```rustlab
+T = 4; d_v = 3; n_heads = 3;
+seed(5);
+X = randn(T, d_v);
+
+function H = head_scale(h, X)
+  % Toy "head": scale the input by h. Each call returns a T × d_v Matrix.
+  H = h * X;
+end
+
+% Each trial returns a T × d_v Matrix; result is a T × d_v × n_heads Tensor3.
+heads = parmap(@(h) head_scale(h, X), 1:n_heads);
+print("output shape:", size(heads));
+% Per-page extraction: heads(:, :, k) is the k-th per-call matrix.
+% In this toy, page 2 should equal 2 * page 1.
+err = norm(heads(:, :, 2) - 2 * heads(:, :, 1));
+print("page-2 == 2 * page-1 residual:", err);
+```
+
+```text
+output shape:
+Matrix(1x3)
+  [4.000000, 3.000000, 3.000000]
+page-2 == 2 * page-1 residual:
+0
+```
+
+The shape rule — "all trials must return the same shape" — is hard-
+enforced; mixing shapes (some trials returning a vector, some a
+matrix) errors at the first divergent trial with a message that names
+the index and both shapes.
+
 ## What `parmap` won't do — the pure-lambda contract
 
 `parmap` requires the lambda to be "pure": no plotting, no file writes,
@@ -137,7 +207,10 @@ accident.
 ## See also
 
 - [`dev/plans/parmap_parreduce.md`](../dev/plans/parmap_parreduce.md) —
-  full implementation plan, deferred phases (`parreduce`, cluster backend),
+  v1 implementation plan, deferred phases (`parreduce`, cluster backend),
   open design questions.
+- [`dev/plans/parmap_nonscalar_outputs.md`](../dev/plans/parmap_nonscalar_outputs.md) —
+  vector/matrix output extension (the "stacks into Matrix / Tensor3" rule
+  used above).
 - [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
 - `help parmap` and `help nproc` in the REPL.

@@ -4,17 +4,17 @@ Extend `parmap(f, xs)` so the lambda may return a vector or a matrix, not just a
 
 Triggering request: `rustlab_llm/AGENTS.md:362–383` ("parmap should accept vector/matrix-returning lambdas") and `rustlab_llm/PLAN.md` Phase-8 follow-ups. The four named blocked sites are per-row attention softmax (lessons 08/13/14), per-position FFN (lesson 11), multi-head attention (lesson 09), and batched autoregressive sampling (lesson 21).
 
-**Plan status:** Draft, awaiting approval. No implementation until user signals "go."
+**Plan status:** Complete — all three phases shipped. Defaults locked as proposed (vector → row-stacked Matrix; matrix → pages-trailing Tensor3).
 
 ## Status snapshot
 
 | # | Phase | Status | Risk | Win |
 |---|---|---|---|---|
-| 1 | Vector-output stacking → `N × d` Matrix | pending | low | unblocks softmax/FFN/sampling — 3 of 4 named sites |
-| 2 | Matrix-output stacking → `Tensor3` | pending | low-medium | unblocks multi-head attention — last named site |
-| 3 | Tests, docs, REPL help, AGENTS row, gallery | pending | low | meets the six mandatory workflow rules |
+| 1 | Vector-output stacking → `N × d` Matrix | **shipped** (`fe1cc7c`) | low | unblocked softmax/FFN/sampling — 3 of 4 named sites |
+| 2 | Matrix-output stacking → `Tensor3` | **shipped** (`20905c1`) | low-medium | unblocked multi-head attention — last named site |
+| 3 | Tests, docs, REPL help, AGENTS row, gallery, version bump | **shipped** | low | met the six mandatory workflow rules |
 
-Phases 1 and 2 are independent in code (different match arms in `pack_results`) but should ship together so the user-facing rule "all outputs same shape" reads cleanly. Phase 3 is the close-out.
+Phases 1 and 2 are independent in code (different match arms in `pack_results`) but shipped sequentially with one commit each so the user-facing rule "all outputs same shape" reads cleanly. Phase 3 is the close-out.
 
 ## Decisions to lock before implementing
 
