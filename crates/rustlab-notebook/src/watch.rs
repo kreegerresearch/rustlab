@@ -314,6 +314,12 @@ fn is_relevant(event: &Event) -> bool {
 /// dependency graph, return the set of notebook source paths that
 /// must be re-rendered. A change to a notebook source pulls in only
 /// itself; a change to a file embedded by N notebooks pulls in all N.
+///
+/// Newly-created `.md` files inside the watched tree are always
+/// included even if the dependency graph hasn't seen them yet — the
+/// renderer will record them on the way through. Without this, the
+/// first save of a new notebook would be silently dropped because
+/// `dependents_of()` only knows about files rendered before.
 pub(crate) fn compute_render_set(
     changed: &HashSet<PathBuf>,
     root_dir: &Path,
@@ -321,11 +327,17 @@ pub(crate) fn compute_render_set(
 ) -> Vec<PathBuf> {
     let mut to_render: HashSet<PathBuf> = HashSet::new();
     for c in changed {
-        // Skip files we don't track and that aren't notebook sources.
-        let is_notebook = c.starts_with(root_dir)
+        let is_md_in_root = c.starts_with(root_dir)
             && c.extension().map_or(false, |e| e == "md");
-        if !is_notebook && !graph.deps.values().any(|d| d.contains(c)) {
+        let is_tracked_embed = graph.deps.values().any(|d| d.contains(c));
+        if !is_md_in_root && !is_tracked_embed {
             continue;
+        }
+        if is_md_in_root && c.file_name().map_or(true, |n| n != "README.md") {
+            // Render any `.md` under the watched tree, whether or not the
+            // graph already tracks it. Matches `list_notebooks` filtering
+            // at startup (README.md is excluded the same way).
+            to_render.insert(c.clone());
         }
         for dep in graph.dependents_of(c) {
             to_render.insert(dep);
@@ -552,6 +564,40 @@ mod tests {
         assert!(stale.exists());
         let _ = fs::remove_dir_all(dir.path());
         assert!(!stale.exists(), "gc should have removed stale plot");
+    }
+
+    // Regression: new `.md` files created after the watcher starts must
+    // be rendered on first save, even though the dependency graph has
+    // never seen them. Previously `compute_render_set` only consulted
+    // `dependents_of()`, which returned an empty set for untracked
+    // files, so every "create a new note in Obsidian" event was silently
+    // dropped.
+    #[test]
+    fn compute_render_set_includes_new_md_file_not_yet_in_graph() {
+        let g = DependencyGraph::default();
+        let root = PathBuf::from("/n");
+        let new_note = root.join("brand_new.md");
+
+        let mut changed = HashSet::new();
+        changed.insert(new_note.clone());
+        let render = compute_render_set(&changed, &root, &g);
+        assert_eq!(
+            render,
+            vec![new_note],
+            "newly-created md file inside root must render even when absent from graph",
+        );
+    }
+
+    #[test]
+    fn compute_render_set_skips_readme_md_to_match_startup() {
+        let g = DependencyGraph::default();
+        let root = PathBuf::from("/n");
+        let readme = root.join("README.md");
+
+        let mut changed = HashSet::new();
+        changed.insert(readme);
+        let render = compute_render_set(&changed, &root, &g);
+        assert!(render.is_empty(), "README.md must not be rendered (mirrors list_notebooks)");
     }
 
     #[test]
