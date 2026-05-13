@@ -201,14 +201,33 @@ impl ParmapBackend for LocalRayonBackend {
     }
 }
 
-/// Pack the per-element results into a single `Value`. Phase 2 accepts
-/// scalar / complex / bool outputs (combined into a `Value::Vector` of
-/// complex); vector/matrix/struct outputs error with a clear message.
-/// Cell-array support is deferred.
+/// Pack the per-element results into a single `Value`. Output shape is
+/// decided from the first result and every subsequent result must match:
+/// scalar/complex/bool → `Vector` of complex; vector → `(N, d)` Matrix
+/// (per-call index = row, matching `arrayfun`); other types still error.
+/// Mixed shapes hard-error with the divergent index named.
 pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
     if results.is_empty() {
         return Ok(Value::Vector(ndarray::Array1::zeros(0)));
     }
+    let row_len = match &results[0] {
+        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => None,
+        Value::Vector(v) => Some(v.len()),
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "parmap: lambda return type {} is not supported \
+                 (expected scalar, complex, bool, or vector)",
+                other.type_name()
+            )));
+        }
+    };
+    match row_len {
+        None => pack_scalar_like(results),
+        Some(d) => pack_vectors_as_matrix(results, d),
+    }
+}
+
+fn pack_scalar_like(results: Vec<Value>) -> Result<Value, ScriptError> {
     let mut out: Vec<num_complex::Complex<f64>> = Vec::with_capacity(results.len());
     for (idx, v) in results.into_iter().enumerate() {
         match v {
@@ -217,15 +236,48 @@ pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
             Value::Bool(b) => out.push(num_complex::Complex::new(if b { 1.0 } else { 0.0 }, 0.0)),
             other => {
                 return Err(ScriptError::type_err(format!(
-                    "parmap: lambda must return a scalar (got {} at index {}); \
-                     vector/matrix return values are not yet supported",
-                    other.type_name(),
-                    idx + 1
+                    "parmap: trial {} returned {} but trial 1 returned a scalar; \
+                     all trials must return the same shape",
+                    idx + 1,
+                    other.type_name()
                 )))
             }
         }
     }
     Ok(Value::Vector(ndarray::Array1::from_vec(out)))
+}
+
+fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, ScriptError> {
+    let nrows = results.len();
+    let mut flat: Vec<num_complex::Complex<f64>> = Vec::with_capacity(nrows * row_len);
+    for (idx, v) in results.into_iter().enumerate() {
+        match v {
+            Value::Vector(vec) => {
+                if vec.len() != row_len {
+                    return Err(ScriptError::type_err(format!(
+                        "parmap: trial {} returned vector of length {} but trial 1 \
+                         returned vector of length {}; all trials must return the same shape",
+                        idx + 1,
+                        vec.len(),
+                        row_len
+                    )));
+                }
+                flat.extend(vec.iter().copied());
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "parmap: trial {} returned {} but trial 1 returned a vector \
+                     of length {}; all trials must return the same shape",
+                    idx + 1,
+                    other.type_name(),
+                    row_len
+                )))
+            }
+        }
+    }
+    let m = ndarray::Array2::from_shape_vec((nrows, row_len), flat)
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    Ok(Value::Matrix(m))
 }
 
 #[cfg(test)]
@@ -256,10 +308,60 @@ mod tests {
     }
 
     #[test]
-    fn pack_matrix_result_errors() {
+    fn pack_mixed_scalar_then_matrix_errors() {
         let bad = vec![Value::Scalar(1.0), Value::Matrix(ndarray::Array2::zeros((2, 2)))];
-        let err = pack_results(bad).unwrap_err();
-        assert!(err.to_string().contains("not yet supported"));
+        let err = pack_results(bad).unwrap_err().to_string();
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("same shape"), "msg: {err}");
+    }
+
+    #[test]
+    fn pack_matrix_first_result_errors() {
+        // Phase 2 will lift this — Phase 1 only handles scalar/vector first results.
+        let err = pack_results(vec![Value::Matrix(ndarray::Array2::zeros((2, 2)))])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not supported"), "msg: {err}");
+    }
+
+    fn cvec(xs: &[f64]) -> Value {
+        Value::Vector(ndarray::Array1::from_iter(
+            xs.iter().map(|&x| num_complex::Complex::new(x, 0.0)),
+        ))
+    }
+
+    #[test]
+    fn pack_vector_results_become_matrix() {
+        let v = pack_results(vec![cvec(&[1.0, 2.0, 3.0]), cvec(&[4.0, 5.0, 6.0])]).unwrap();
+        match v {
+            Value::Matrix(m) => {
+                assert_eq!(m.shape(), &[2, 3]);
+                assert_eq!(m[(0, 0)].re, 1.0);
+                assert_eq!(m[(0, 2)].re, 3.0);
+                assert_eq!(m[(1, 0)].re, 4.0);
+                assert_eq!(m[(1, 2)].re, 6.0);
+            }
+            other => panic!("expected matrix, got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn pack_vector_length_mismatch_errors() {
+        let err = pack_results(vec![cvec(&[1.0, 2.0, 3.0]), cvec(&[4.0, 5.0])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("length 2"), "msg: {err}");
+        assert!(err.contains("length 3"), "msg: {err}");
+    }
+
+    #[test]
+    fn pack_vector_then_scalar_errors() {
+        let err = pack_results(vec![cvec(&[1.0, 2.0]), Value::Scalar(7.0)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("scalar") && err.contains("vector"), "msg: {err}");
     }
 
     #[test]

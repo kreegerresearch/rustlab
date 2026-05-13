@@ -12467,3 +12467,106 @@ mod parmap_phase1_foundation {
         assert_eq!(lhs, rhs, "Stmt round-trip changed the tree");
     }
 }
+
+// ─── parmap vector outputs (dev/plans/parmap_nonscalar_outputs.md, Phase 1) ──
+
+#[cfg(test)]
+mod parmap_vector_outputs {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval_str(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap_err().to_string()
+    }
+
+    /// Lambda returning a vector → parmap stacks rows into an N×d matrix.
+    /// Bit-identical to the equivalent sequential row-write reference.
+    /// Mirrors the per-row attention softmax pattern from rustlab_llm
+    /// lessons 08/13/14.
+    #[test]
+    fn parmap_row_softmax_matches_sequential() {
+        let src = "
+            T = 6;
+            seed(7);
+            S = randn(T, T);
+            % parallel: each trial returns a row of length T.
+            P = parmap(@(t) softmax(S(t, :)), 1:T);
+            % sequential reference using the same per-row formula.
+            R = zeros(T, T);
+            for t = 1:T
+                R(t) = softmax(S(t, :));
+            end
+            err = norm(P - R);
+        ";
+        let ev = eval_str(src);
+        let err = match ev.get("err").unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected scalar err, got {other:?}"),
+        };
+        assert!(err < 1e-12, "parmap vs sequential softmax diff: {err}");
+        // Shape sanity: parmap produced a Matrix, not a Vector.
+        match ev.get("P").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.shape(), &[6, 6]);
+                // Each row sums to ~1 (softmax invariant).
+                for r in 0..6 {
+                    let s: f64 = (0..6).map(|c| m[(r, c)].re).sum();
+                    assert!((s - 1.0).abs() < 1e-12, "row {r} sum: {s}");
+                }
+            }
+            other => panic!("expected Matrix, got {}", other.type_name()),
+        }
+    }
+
+    /// Same master seed → bit-identical matrix output across runs.
+    /// Vector-output parmap must preserve the Phase-3 RNG determinism
+    /// contract (seed(N) + parmap is reproducible). Each trial uses
+    /// per-task `randn` then slices the first row to land a `Vector` —
+    /// this is the rustlab idiom for "produce a row vector from a
+    /// per-call random draw" since `randn(1, d)` produces a Matrix.
+    #[test]
+    fn parmap_vector_output_deterministic_with_seed() {
+        let mk = "
+            seed(123);
+            M = parmap(@(k) randn(2, 4)(1, :), 1:5);
+        ";
+        let ev_a = eval_str(mk);
+        let ev_b = eval_str(mk);
+        let (a, b) = match (ev_a.get("M").unwrap(), ev_b.get("M").unwrap()) {
+            (Value::Matrix(a), Value::Matrix(b)) => (a.clone(), b.clone()),
+            _ => panic!("expected Matrix"),
+        };
+        assert_eq!(a.shape(), &[5, 4]);
+        assert_eq!(a.shape(), b.shape());
+        for ((i, j), &av) in a.indexed_iter() {
+            assert_eq!(av, b[(i, j)], "mismatch at ({i}, {j})");
+        }
+        // Sanity: not all zeros.
+        assert!(a.iter().any(|c| c.re != 0.0));
+    }
+
+    /// Length mismatch in the lambda's vector output is a hard error
+    /// naming the divergent trial and both lengths.
+    #[test]
+    fn parmap_vector_length_mismatch_errors() {
+        // `ones(1, k+1)(1, :)` row-slices a Vector of length k+1;
+        // trials 1/2/3 return lengths 2/3/4 → mismatch at trial 2.
+        // (k+1 keeps every length > 1 so we never collapse to a Scalar.)
+        let err = run_err("y = parmap(@(k) ones(1, k + 1)(1, :), 1:3);");
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("length 2") && err.contains("length 3"), "msg: {err}");
+    }
+}
