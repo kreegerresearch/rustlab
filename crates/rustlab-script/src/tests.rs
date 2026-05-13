@@ -12569,4 +12569,50 @@ mod parmap_vector_outputs {
         assert!(err.contains("trial 2"), "msg: {err}");
         assert!(err.contains("length 2") && err.contains("length 3"), "msg: {err}");
     }
+
+    /// Lambda returning a matrix → parmap stacks pages into a Tensor3
+    /// of shape (rows, cols, n_pages). `result(:, :, h)` returns the
+    /// h-th per-call matrix unchanged. Mirrors the multi-head
+    /// attention shape pattern from rustlab_llm lesson 09 (the lambda
+    /// is the identity over h to keep the test verifiable; the wiring
+    /// is what we're proving, not the attention math).
+    #[test]
+    fn parmap_per_head_matrix_returns_tensor3() {
+        let src = "
+            T = 3;
+            d_v = 4;
+            n_heads = 5;
+            % Each 'head' returns a T × d_v matrix whose entries are
+            % all equal to h. Per-page verification is then trivial.
+            stack = parmap(@(h) h * ones(T, d_v), 1:n_heads);
+        ";
+        let ev = eval_str(src);
+        match ev.get("stack").unwrap() {
+            Value::Tensor3(t) => {
+                assert_eq!(t.shape(), &[3, 4, 5]);
+                for k in 0..5 {
+                    let expected = (k + 1) as f64;
+                    for i in 0..3 {
+                        for j in 0..4 {
+                            assert!(
+                                (t[(i, j, k)].re - expected).abs() < 1e-12,
+                                "page {k} ({i},{j}): got {}, expected {expected}",
+                                t[(i, j, k)].re
+                            );
+                        }
+                    }
+                }
+            }
+            other => panic!("expected Tensor3, got {}", other.type_name()),
+        }
+    }
+
+    /// Matrix shape mismatch in the lambda's output is a hard error
+    /// naming the divergent trial and both shapes.
+    #[test]
+    fn parmap_matrix_shape_mismatch_errors() {
+        let err = run_err("y = parmap(@(k) ones(2, k + 1), 1:3);");
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("2×2") && err.contains("2×3"), "msg: {err}");
+    }
 }

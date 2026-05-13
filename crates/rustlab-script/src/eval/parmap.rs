@@ -203,27 +203,37 @@ impl ParmapBackend for LocalRayonBackend {
 
 /// Pack the per-element results into a single `Value`. Output shape is
 /// decided from the first result and every subsequent result must match:
-/// scalar/complex/bool → `Vector` of complex; vector → `(N, d)` Matrix
-/// (per-call index = row, matching `arrayfun`); other types still error.
-/// Mixed shapes hard-error with the divergent index named.
+/// scalar/complex/bool → `Vector` of complex; vector of length `d` →
+/// `(N, d)` Matrix (per-call index = row, matching `arrayfun`); matrix
+/// of shape `m × n` → `Tensor3` of shape `(m, n, N)` (per-call index =
+/// trailing pages axis, so `result(:, :, k)` extracts the k-th
+/// per-call matrix). Mixed shapes hard-error with the divergent index
+/// named.
 pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
     if results.is_empty() {
         return Ok(Value::Vector(ndarray::Array1::zeros(0)));
     }
-    let row_len = match &results[0] {
-        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => None,
-        Value::Vector(v) => Some(v.len()),
+    enum Shape {
+        ScalarLike,
+        Vector(usize),
+        Matrix(usize, usize),
+    }
+    let shape = match &results[0] {
+        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => Shape::ScalarLike,
+        Value::Vector(v) => Shape::Vector(v.len()),
+        Value::Matrix(m) => Shape::Matrix(m.nrows(), m.ncols()),
         other => {
             return Err(ScriptError::type_err(format!(
                 "parmap: lambda return type {} is not supported \
-                 (expected scalar, complex, bool, or vector)",
+                 (expected scalar, complex, bool, vector, or matrix)",
                 other.type_name()
             )));
         }
     };
-    match row_len {
-        None => pack_scalar_like(results),
-        Some(d) => pack_vectors_as_matrix(results, d),
+    match shape {
+        Shape::ScalarLike => pack_scalar_like(results),
+        Shape::Vector(d) => pack_vectors_as_matrix(results, d),
+        Shape::Matrix(rows, cols) => pack_matrices_as_tensor3(results, rows, cols),
     }
 }
 
@@ -280,6 +290,62 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
     Ok(Value::Matrix(m))
 }
 
+fn pack_matrices_as_tensor3(
+    results: Vec<Value>,
+    rows: usize,
+    cols: usize,
+) -> Result<Value, ScriptError> {
+    let n_pages = results.len();
+    let mut matrices: Vec<ndarray::Array2<num_complex::Complex<f64>>> =
+        Vec::with_capacity(n_pages);
+    for (idx, v) in results.into_iter().enumerate() {
+        match v {
+            Value::Matrix(m) => {
+                if m.nrows() != rows || m.ncols() != cols {
+                    return Err(ScriptError::type_err(format!(
+                        "parmap: trial {} returned matrix of shape {}×{} but trial 1 \
+                         returned matrix of shape {}×{}; all trials must return the same shape",
+                        idx + 1,
+                        m.nrows(),
+                        m.ncols(),
+                        rows,
+                        cols
+                    )));
+                }
+                matrices.push(m);
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "parmap: trial {} returned {} but trial 1 returned a matrix \
+                     of shape {}×{}; all trials must return the same shape",
+                    idx + 1,
+                    other.type_name(),
+                    rows,
+                    cols
+                )));
+            }
+        }
+    }
+    // Layout: per-call index lives on the trailing (pages) axis so
+    // `result(:, :, k)` returns the k-th per-call matrix — matches the
+    // Tensor3 docstring in eval/value.rs ("rows × cols × pages") and
+    // the `cat(3, ...)` page-stacking idiom users already know.
+    // Array3::from_shape_vec is row-major, so for shape (rows, cols,
+    // n_pages) the linear index for (i, j, k) is
+    // i*cols*n_pages + j*n_pages + k.
+    let mut flat: Vec<num_complex::Complex<f64>> = Vec::with_capacity(rows * cols * n_pages);
+    for i in 0..rows {
+        for j in 0..cols {
+            for m in &matrices {
+                flat.push(m[(i, j)]);
+            }
+        }
+    }
+    let t = ndarray::Array3::from_shape_vec((rows, cols, n_pages), flat)
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    Ok(Value::Tensor3(t))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,18 +381,16 @@ mod tests {
         assert!(err.contains("same shape"), "msg: {err}");
     }
 
-    #[test]
-    fn pack_matrix_first_result_errors() {
-        // Phase 2 will lift this — Phase 1 only handles scalar/vector first results.
-        let err = pack_results(vec![Value::Matrix(ndarray::Array2::zeros((2, 2)))])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("not supported"), "msg: {err}");
-    }
-
     fn cvec(xs: &[f64]) -> Value {
         Value::Vector(ndarray::Array1::from_iter(
             xs.iter().map(|&x| num_complex::Complex::new(x, 0.0)),
+        ))
+    }
+
+    fn cmat(rows: usize, cols: usize, fill: f64) -> Value {
+        Value::Matrix(ndarray::Array2::from_elem(
+            (rows, cols),
+            num_complex::Complex::new(fill, 0.0),
         ))
     }
 
@@ -362,6 +426,50 @@ mod tests {
             .to_string();
         assert!(err.contains("trial 2"), "msg: {err}");
         assert!(err.contains("scalar") && err.contains("vector"), "msg: {err}");
+    }
+
+    #[test]
+    fn pack_matrix_results_become_tensor3() {
+        // Three 2×3 matrices (filled 1.0, 2.0, 3.0 respectively) →
+        // Tensor3 of shape (2, 3, 3) with page k entirely == k+1.
+        let v = pack_results(vec![cmat(2, 3, 1.0), cmat(2, 3, 2.0), cmat(2, 3, 3.0)]).unwrap();
+        match v {
+            Value::Tensor3(t) => {
+                assert_eq!(t.shape(), &[2, 3, 3]);
+                for i in 0..2 {
+                    for j in 0..3 {
+                        for k in 0..3 {
+                            let expected = (k + 1) as f64;
+                            assert!(
+                                (t[(i, j, k)].re - expected).abs() < 1e-15,
+                                "({i},{j},{k}): got {}, expected {}",
+                                t[(i, j, k)].re,
+                                expected
+                            );
+                        }
+                    }
+                }
+            }
+            other => panic!("expected Tensor3, got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn pack_matrix_shape_mismatch_errors() {
+        let err = pack_results(vec![cmat(2, 3, 0.0), cmat(2, 4, 0.0)])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("2×3") && err.contains("2×4"), "msg: {err}");
+    }
+
+    #[test]
+    fn pack_matrix_then_vector_errors() {
+        let err = pack_results(vec![cmat(2, 3, 0.0), cvec(&[1.0, 2.0, 3.0])])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("trial 2"), "msg: {err}");
+        assert!(err.contains("vector") && err.contains("matrix"), "msg: {err}");
     }
 
     #[test]
