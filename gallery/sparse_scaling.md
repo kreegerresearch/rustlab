@@ -70,7 +70,7 @@ several orders of magnitude below the dense fallback at every size.
 ## What "OOM at 100×100" means in practice
 
 The dense fallback's run time isn't the only issue — it allocates an
-$N \times N$ complex matrix internally. At $N = 10\\,000$ that's
+$N \times N$ complex matrix internally. At $N = 10\,000$ that's
 $10^4 \times 10^4 \times 16$ bytes = **1.6 GB** of working set. On a
 laptop with the OS, browser, and editor running, that's enough to
 swap and stall.

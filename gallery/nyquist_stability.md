@@ -4,8 +4,8 @@
 
 Bode plots tell you the magnitude and phase of a loop transfer
 function $L(j\omega)$ as two separate curves. The Nyquist plot fuses
-them into a single locus in the complex plane: $\text{Re}\\,L(j\omega)$
-on the horizontal axis, $\text{Im}\\,L(j\omega)$ on the vertical. From
+them into a single locus in the complex plane: $\text{Re}\,L(j\omega)$
+on the horizontal axis, $\text{Im}\,L(j\omega)$ on the vertical. From
 that one picture, three robustness facts read off geometrically:
 
 1. **Closed-loop stability** — the number of times the locus encircles

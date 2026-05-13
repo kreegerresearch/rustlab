@@ -22,6 +22,9 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |
+| `M(i, :) = vec`, `M(:, j) = vec` | Row / column write into a Matrix (since 0.3.4). Symmetric with the matching read forms. |
+| `M(rows, cols) = mat`, `M(:, :) = s` | Submatrix region write and scalar broadcast (since 0.3.4). Shape must match. |
+| `v(1:2:6) = vec`, `v([1, 3, 5]) = vec` | Strided / explicit-index write into a Vector (since 0.3.4). RHS length must match the index count. |
 | `f(args)(i)` | Chain call and index without a temporary variable |
 | `[a; b; c]` | Column vector literal |
 | `[a, b; c, d]` | Matrix literal — `,` same row, `;` new row |
@@ -106,11 +109,11 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | Zero vector or matrix; accepts `size()` output |
 | `ones(n)` / `ones(m, n)` / `ones([m, n])` | Ones vector or matrix; accepts `size()` output |
 | `eye(n)` | n×n identity matrix |
-| `rand(n)` | n floats uniform [0, 1) |
-| `randn(n)` / `randn(m, n)` | n floats (or m×n matrix) from N(0,1) |
+| `rand()` / `rand(n)` / `rand(m, n)` | Single scalar / n-vector / m×n matrix uniform on [0, 1). Zero-arg form added in 0.3.4. |
+| `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). Zero-arg form added in 0.3.4. |
 | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Random integers |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
-| `len(v)` / `length(v)` | Number of elements |
+| `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
 | `diag(v)` | Diagonal matrix from vector; or extract diagonal |

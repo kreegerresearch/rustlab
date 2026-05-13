@@ -510,6 +510,8 @@ For `n = 0`, returns an empty vector.
 ### `len(v)` / `length(v)`
 Number of elements in a vector, rows in a matrix, or characters in a string.
 
+For scalars / complex / bool / `Tensor3`, `length` returns `1` / `1` / `1` / the longest axis — matching the MATLAB convention. This means generic helpers that handle "scalar OR vector" can call `length(x)` directly without boxing the input as `length([x])`. Use `numel(x)` for total element count and `size(x)` for full shape.
+
 ### `numel(x)`
 Total number of elements: `rows × cols` for matrices, `1` for scalars.
 
@@ -531,20 +533,27 @@ Useful for frequency vectors in Bode plots and log-scale analysis.
 
 ## Random Numbers
 
-### `rand(n)`
-`n` samples drawn uniformly from `[0, 1)`.
+### `rand()` / `rand(n)` / `rand(m, n)`
+Samples drawn uniformly from `[0, 1)`.
+- `rand()` — single scalar.
+- `rand(n)` — length-n vector.
+- `rand(m, n)` — m×n matrix.
 ```
-noise = rand(512)
+u  = rand()         # one scalar in [0, 1)
+v  = rand(512)      # length-512 noise vector
+M  = rand(8, 8)
 ```
 
-### `randn(n)` / `randn(m, n)`
+### `randn()` / `randn(n)` / `randn(m, n)`
 Samples from the standard normal distribution (μ=0, σ=1).
-- `randn(n)` — returns a length-n vector.
-- `randn(m, n)` — returns an m×n matrix.
+- `randn()` — single scalar.
+- `randn(n)` — length-n vector.
+- `randn(m, n)` — m×n matrix.
 ```
-noise = randn(1024) * 0.1       # length-1024 noise vector
-W = randn(64, 128)              # weight matrix for a linear layer
-W = randn(128, 64) * 0.02       # Xavier-style small-weight init
+z     = randn()                  # one scalar from N(0, 1)
+noise = randn(1024) * 0.1        # length-1024 noise vector
+W     = randn(64, 128)           # weight matrix for a linear layer
+W     = randn(128, 64) * 0.02    # Xavier-style small-weight init
 ```
 All values are real (zero imaginary part).
 
@@ -1236,6 +1245,68 @@ Singular value decomposition via Jacobi eigendecomposition of A'A. Returns a tup
 # A ≈ U * diag(S) * V'
 ```
 - Currently operates on real parts only; a warning is printed if imaginary parts are discarded.
+
+---
+
+## Indexed Assignment
+
+Indexed writes mirror the read forms — anywhere `M(rows, cols)` reads a region, `M(rows, cols) = ...` writes it. Indices may be scalars, `:` (all), or vector index sets (including colon ranges like `1:2:6`).
+
+### Element write: `M(i, j) = scalar`
+Single-element store into a Matrix (or 2-D SparseMatrix). 1-based indexing.
+```
+M = zeros(3, 3)
+M(2, 3) = 7      % only element (2, 3) updated
+```
+
+### Row write: `M(i, :) = vec` (preferred) or `M(i) = vec` (legacy)
+Assign a length-`ncols` Vector into row `i`. The two-argument form is symmetric with the row-read `M(i, :)`. The single-argument form is the legacy row-write that still works for back-compat.
+```
+A = zeros(3, 3)
+A(2, :) = [10, 20, 30]   % row 2 becomes [10, 20, 30]
+```
+
+### Column write: `M(:, j) = vec`
+Assign a length-`nrows` Vector into column `j`.
+```
+B = zeros(3, 3)
+B(:, 1) = [7, 8, 9]
+```
+
+### Submatrix region write: `M(rows, cols) = matrix`
+Assign a Matrix of shape `(len(rows), len(cols))` into the cross-product region.
+```
+C = zeros(3, 3)
+C(1:2, 2:3) = [1, 2; 3, 4]
+```
+
+### Scalar broadcast: `M(rows, cols) = scalar`
+A scalar (or complex) RHS broadcasts to every position in the target region. `M(:, :) = 5` fills the matrix; `M(2, :) = 0` zeroes a row.
+```
+D = zeros(2, 3)
+D(:, :) = 5
+```
+
+### Vector strided / indexed write: `v(idx_set) = vec`
+For a Vector LHS, any non-scalar index set — `:`, an explicit list, or any colon range — selects positions to write to. The RHS Vector length must match the index count. A scalar (or complex) RHS broadcasts.
+```
+v = zeros(6)
+v(1:2:6) = [10, 20, 30]    % strided positions 1, 3, 5
+v([2, 4, 6]) = [-1, -2, -3] % explicit positions
+v(:) = 9                    % scalar broadcast across the whole vector
+```
+
+### Auto-create and grow
+Single-index assignment auto-creates a Vector or grows the existing one to fit the index (filling new positions with zero). This applies only to the scalar-index forms; region writes require the target container to already exist.
+```
+v(3) = 7        % creates v = [0, 0, 7]
+v(6) = 99       % grows v = [0, 0, 7, 0, 0, 99]
+```
+
+### Errors
+- Shape mismatch (`A(2, :) = [10, 20]` when `A` has 3 columns) hard-errors with both shapes named.
+- Index out of bounds errors with the index and container size.
+- Sparse matrices: only the single-element form `S(i, j) = scalar` is supported for region writes.
 
 ---
 

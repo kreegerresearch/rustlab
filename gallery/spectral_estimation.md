@@ -10,7 +10,7 @@ noisy multi-tone signal.
 Two sinusoids at $f_1 = 0.15$ and $f_2 = 0.18$ cycles/sample, plus
 additive white Gaussian noise:
 
-$$x[n] = \sin(2\pi f_1 n) + 0.8\sin(2\pi f_2 n) + 0.3\\,w[n]$$
+$$x[n] = \sin(2\pi f_1 n) + 0.8\sin(2\pi f_2 n) + 0.3\,w[n]$$
 
 These frequencies are intentionally close together to test resolution.
 
@@ -32,7 +32,7 @@ grid on
 The periodogram estimates the PSD as the magnitude-squared DFT, normalized
 by $N$:
 
-$$\hat{P}_{xx}[k] = \frac{1}{N} \left| \sum_{n=0}^{N-1} x[n]\\,e^{-j2\pi kn/N} \right|^2$$
+$$\hat{P}_{xx}[k] = \frac{1}{N} \left| \sum_{n=0}^{N-1} x[n]\,e^{-j2\pi kn/N} \right|^2$$
 
 ```rustlab
 X = fft(x);
@@ -55,7 +55,7 @@ leakage from the implicit rectangular window.
 Applying a Hann window $w[n] = 0.5 - 0.5\cos(2\pi n / N)$ reduces
 sidelobe leakage at the cost of slightly wider main lobes:
 
-$$\hat{P}_{ww}[k] = \frac{1}{\sum w[n]^2} \left| \sum_{n=0}^{N-1} x[n]\\,w[n]\\,e^{-j2\pi kn/N} \right|^2$$
+$$\hat{P}_{ww}[k] = \frac{1}{\sum w[n]^2} \left| \sum_{n=0}^{N-1} x[n]\,w[n]\,e^{-j2\pi kn/N} \right|^2$$
 
 ```rustlab
 w = window("hann", N);

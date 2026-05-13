@@ -38,7 +38,7 @@ shape, so they drop straight into anything that consumes a meshgrid.
 
 Axis-aligned rectangle, **inclusive on all four sides**:
 
-$$M(i,j) = 1 \iff x_0 \le X(i,j) \le x_0+w \\,\text{ and }\\, y_0 \le Y(i,j) \le y_0+h$$
+$$M(i,j) = 1 \iff x_0 \le X(i,j) \le x_0+w \,\text{ and }\, y_0 \le Y(i,j) \le y_0+h$$
 
 `(x0, y0)` is the lower-left corner; `w` and `h` must be finite and
 non-negative. Zero-extent rectangles are allowed and match only the line

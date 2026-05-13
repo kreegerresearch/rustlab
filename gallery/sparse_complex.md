@@ -122,11 +122,11 @@ print(norm(r))      % → ~1e-14
 ```
 
 ```text
-0.000000000000009445684592098582
+0.000000000000009661377855580665
 ```
 
 Convert the row-vector solve result to a column vector (`transpose`,
-not the conjugate-transpose `'`) and check $\\|A v - b\\|$. The residual
+not the conjugate-transpose `'`) and check $\|A v - b\|$. The residual
 sits at machine precision for this size and conditioning.
 
 ## When the matrix is Hermitian but complex
