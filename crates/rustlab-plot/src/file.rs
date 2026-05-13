@@ -1727,6 +1727,50 @@ mod tests {
     }
 
     #[test]
+    fn categorical_plot_svg_renders_each_label_once() {
+        // Regression for Phase 3 of notebook_future.md: plot(labels, y) must
+        // produce categorical x-axis tick labels in the SVG backend the same
+        // way bar(labels, y) does. The plotters formatter is shared, so this
+        // mainly proves that a Line panel with x_labels set goes through the
+        // categorical tick path.
+        let path = tmp_path("_cat_plot.svg");
+        let labels = vec![
+            "Mon".to_string(),
+            "Tue".to_string(),
+            "Wed".to_string(),
+            "Thu".to_string(),
+            "Fri".to_string(),
+        ];
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            let sp = fig.current_mut();
+            sp.series.clear();
+            sp.title.clear();
+            sp.x_labels = Some(labels.clone());
+        });
+        push_xy_line(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            vec![12.0, 19.0, 14.0, 22.0, 18.0],
+            "value",
+            "Daily",
+            None,
+            LineStyle::Solid,
+        );
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("should read SVG");
+        for lbl in ["Mon", "Tue", "Wed", "Thu", "Fri"] {
+            let count = content.matches(lbl).count();
+            assert_eq!(
+                count, 1,
+                "expected {} to appear once in SVG, found {}",
+                lbl, count
+            );
+        }
+        FIGURE.with(|fig| fig.borrow_mut().current_mut().x_labels = None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn heatmap_in_figure_renders_to_svg() {
         let path = tmp_path("_heatmap.svg");
         FIGURE.with(|fig| {

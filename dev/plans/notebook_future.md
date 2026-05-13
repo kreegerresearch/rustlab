@@ -30,7 +30,14 @@ Added `x_labels: Option<Vec<String>>` to `SubplotState`.
 - `cell(n)` constructor for pre-allocated empty cell arrays
 - `cellfun()` builtin
 
-### Phase 3: Cell array of strings as axis tick labels
-- `plot` x-axis category support (bar charts already done in Phase 1b)
+### Phase 3: Cell array of strings as axis tick labels ✓ DONE
 
-**Scope:** Phase 1 and 1b cover ~90% of the practical use cases.
+`plot({"Mon","Tue","Wed","Thu","Fri"}, y)` now produces a categorical
+x-axis in all three backends. The builtin mirrors `bar(labels, y)`:
+substitutes integer indices 1..=n for x_data and stashes the labels on
+`SubplotState.x_labels`. The HTML/Plotly Line trace was updated to emit
+the labels as string-valued x when the panel's `x_labels` matches the
+series length, matching the existing bar behaviour. ASCII and SVG
+backends were already generic on `x_labels` and required no change.
+
+**Scope:** Phase 1, 1b, and 3 cover ~95% of the practical use cases.

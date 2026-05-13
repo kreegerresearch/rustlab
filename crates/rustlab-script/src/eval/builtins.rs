@@ -2869,6 +2869,39 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
     let mut args = args;
     flatten_column_matrix_args(&mut args);
 
+    // Categorical line plot: plot({"A","B","C"}, y[, "title"]) — string-array
+    // labels on the x-axis, mirroring bar(labels, y). Substitute x = 1..=n
+    // and stash the labels on the subplot so all three backends render them.
+    if let Value::StringArray(labels) = &args[0] {
+        if args.len() < 2 {
+            return Err(ScriptError::type_err(
+                "plot: string array labels require a y-data argument".to_string(),
+            ));
+        }
+        let y_data: Vec<f64> = to_real_vector(&args[1])?.to_vec();
+        if labels.len() != y_data.len() {
+            return Err(ScriptError::type_err(format!(
+                "plot: labels length ({}) must match y-data length ({})",
+                labels.len(),
+                y_data.len()
+            )));
+        }
+        let title = if args.len() > 2 {
+            args[2].to_str().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let x_data: Vec<f64> = (1..=labels.len()).map(|i| i as f64).collect();
+        let labels_for_state = labels.clone();
+        push_xy_line(x_data, y_data, "value", &title, None, LineStyle::Solid);
+        FIGURE.with(|fig| {
+            fig.borrow_mut().current_mut().x_labels = Some(labels_for_state);
+        });
+        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        sync_figure_outputs();
+        return Ok(Value::None);
+    }
+
     // Determine if first two args are both data (x, y) or single data + options
     let (x_opt, y_val, opts_start) = match (&args[0], args.get(1)) {
         (Value::Vector(_) | Value::Matrix(_), Some(Value::Vector(_) | Value::Matrix(_))) => {

@@ -501,11 +501,24 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                         LineStyle::Solid => "solid",
                         LineStyle::Dashed => "dash",
                     };
+                    // Categorical line: when the subplot has x_labels that
+                    // match this series 1:1, feed the labels in as x so
+                    // Plotly's type="category" axis renders them correctly.
+                    let x_json = match &panel.x_labels {
+                        Some(labels) if labels.len() == series.x_data.len() => {
+                            let items: Vec<String> = labels
+                                .iter()
+                                .map(|l| format!("\"{}\"", escape_js(l)))
+                                .collect();
+                            format!("[{}]", items.join(","))
+                        }
+                        _ => json_f64_array(&series.x_data),
+                    };
                     traces.push_str(&format!(
                         r#"{{ x: {x}, y: {y}, type: "{stype}", mode: "lines", name: "{name}", line: {{ color: "{color}", dash: "{dash}" }}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
                         stype = scatter_type,
-                        x = json_f64_array(&series.x_data),
+                        x = x_json,
                         y = json_f64_array(&series.y_data),
                         name = escape_js(&series.label),
                         color = color_str,
@@ -785,6 +798,48 @@ mod tests {
         assert!(
             div.contains(r#"x: ["|00>","|01>","|10>","|11>"]"#),
             "bar trace x should be the label strings; got:\n{}",
+            div
+        );
+    }
+
+    #[test]
+    fn categorical_plot_plotly_emits_category_axis_and_label_xs() {
+        // Regression for Phase 3 of notebook_future.md: plot(labels, y) must
+        // emit a Plotly category axis and feed the label strings as the Line
+        // trace's x values, the same way bar(labels, y) does.
+        let mut fig = FigureState::new();
+        let labels = vec![
+            "Mon".to_string(),
+            "Tue".to_string(),
+            "Wed".to_string(),
+            "Thu".to_string(),
+            "Fri".to_string(),
+        ];
+        let sp = fig.current_mut();
+        sp.x_labels = Some(labels.clone());
+        sp.series.push(Series {
+            label: "value".to_string(),
+            x_data: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+            y_data: vec![12.0, 19.0, 14.0, 22.0, 18.0],
+            color: SeriesColor::Cyan,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+
+        assert!(
+            div.contains(r#"type: "category""#),
+            "x-axis should be category type; got:\n{}",
+            div
+        );
+        assert!(
+            div.contains(r#"categoryarray: ["Mon","Tue","Wed","Thu","Fri"]"#),
+            "categoryarray should list labels in order"
+        );
+        assert!(
+            div.contains(r#"x: ["Mon","Tue","Wed","Thu","Fri"]"#),
+            "line trace x should carry the label strings, not numeric indices; got:\n{}",
             div
         );
     }

@@ -229,7 +229,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "print", brief: "Print values to stdout",
         detail: "print(a, b, ...)  — prints space-separated values followed by newline" },
     HelpEntry { name: "plot",  brief: "Plot a vector in the terminal",
-        detail: "plot(v)  or  plot(v, \"title\")  — opens a ratatui terminal chart; press any key to close\n  plot(v, \"title\", \"color\")  — color: r, g, b, c, m, y, k, w\n  plot(v, \"title\", \"color\", \"dashed\")" },
+        detail: "plot(v)  or  plot(v, \"title\")  — opens a ratatui terminal chart; press any key to close\n  plot(v, \"title\", \"color\")  — color: r, g, b, c, m, y, k, w\n  plot(v, \"title\", \"color\", \"dashed\")\n  plot(labels, y)  or  plot(labels, y, \"title\")  — categorical x-axis\n    labels is a string array, e.g. {\"Mon\",\"Tue\",\"Wed\"}; one label per y point.\n\nExample:\n  plot({\"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\"}, [12, 19, 14, 22, 18], \"Daily\")" },
     HelpEntry { name: "stem",  brief: "Stem plot of a vector",
         detail: "stem(v)  or  stem(v, \"title\")  — discrete-sample stem chart" },
     HelpEntry { name: "bar",       brief: "Bar chart in the terminal",

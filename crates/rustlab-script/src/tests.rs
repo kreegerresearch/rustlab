@@ -4052,6 +4052,48 @@ mod phase4_tests {
         assert!((series[0].y_data[2] - 1.0).abs() < 1e-12);
     }
 
+    // Phase 3 of notebook_future.md: plot accepts a string-array first arg
+    // for categorical x-axis labels, mirroring bar(labels, y).
+    #[test]
+    fn plot_with_string_array_labels_sets_x_labels_and_uses_integer_indices() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        eval_str("plot({\"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\"}, [12, 19, 14, 22, 18]);");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            assert_eq!(sp.series.len(), 1, "expected one Line series");
+            assert_eq!(sp.series[0].x_data, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+            assert_eq!(sp.series[0].y_data, vec![12.0, 19.0, 14.0, 22.0, 18.0]);
+            assert_eq!(
+                sp.x_labels.as_deref(),
+                Some(&["Mon".to_string(), "Tue".to_string(), "Wed".to_string(),
+                       "Thu".to_string(), "Fri".to_string()][..]),
+                "categorical labels must be stored on the subplot",
+            );
+        });
+    }
+
+    #[test]
+    fn plot_with_string_array_labels_rejects_length_mismatch() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = "plot({\"A\",\"B\",\"C\"}, [1, 2]);\n";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut err = None;
+        for s in &stmts {
+            if let Err(e) = ev.exec_stmt(s) {
+                err = Some(e);
+                break;
+            }
+        }
+        let msg = format!("{}", err.expect("length mismatch must error"));
+        assert!(
+            msg.contains("labels length") && msg.contains("y-data length"),
+            "expected length-mismatch error, got: {msg}",
+        );
+    }
+
     #[test]
     fn plot_column_matrix_y_treated_as_vector() {
         rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
