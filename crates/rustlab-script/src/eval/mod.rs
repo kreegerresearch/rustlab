@@ -44,6 +44,28 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
+    /// Snapshot-safe deep clone. Identical to `Clone` except every `Value`
+    /// in `env` goes through `Value::deep_clone()` so mutable `Arc<Mutex<_>>`
+    /// interiors (`FirState`) don't alias between the snapshot and the live
+    /// evaluator. Used by the notebook prefix cache to roll back to a
+    /// previously-captured state without later mutations leaking in.
+    pub fn deep_clone(&self) -> Self {
+        Evaluator {
+            env: self
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.deep_clone()))
+                .collect(),
+            builtins: self.builtins.clone(),
+            user_fns: self.user_fns.clone(),
+            in_function: self.in_function,
+            profiler: self.profiler.clone(),
+            color_output: self.color_output,
+            number_format: self.number_format,
+            current_line: self.current_line,
+        }
+    }
+
     pub fn new() -> Self {
         let mut env = HashMap::new();
         // Predefined constants: i and j both equal Complex(0, 1)

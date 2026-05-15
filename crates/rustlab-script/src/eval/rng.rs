@@ -48,6 +48,33 @@ pub fn current_master_seed() -> Option<u64> {
     MASTER_SEED.with(|c| c.get())
 }
 
+/// Snapshot of the thread-local RNG state, captured by the notebook
+/// prefix cache so a re-run of a downstream block sees the same sequence
+/// of `randn`/`rand` draws it would have seen the first time. Without
+/// this, restoring an evaluator snapshot but leaving the RNG advanced
+/// would silently make cached and re-executed runs produce different
+/// numbers.
+#[derive(Clone)]
+pub struct RngSnapshot {
+    rng: StdRng,
+    master_seed: Option<u64>,
+}
+
+/// Capture the current thread's RNG state for later restoration.
+pub fn capture() -> RngSnapshot {
+    RngSnapshot {
+        rng: RNG.with(|cell| cell.borrow().clone()),
+        master_seed: MASTER_SEED.with(|c| c.get()),
+    }
+}
+
+/// Restore a previously captured snapshot, overwriting the thread's
+/// current RNG state.
+pub fn restore(snap: &RngSnapshot) {
+    RNG.with(|cell| *cell.borrow_mut() = snap.rng.clone());
+    MASTER_SEED.with(|c| c.set(snap.master_seed));
+}
+
 /// Mix `master_seed` and `task_index` into a deterministic per-task seed
 /// via SplitMix64. Two different `task_index` values always produce
 /// different output seeds; the same `(master, idx)` pair always produces

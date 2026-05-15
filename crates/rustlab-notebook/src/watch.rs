@@ -25,7 +25,7 @@
 //!   render inline (existing renderer behaviour); the watcher keeps
 //!   running.
 
-use crate::{cmd_render, Format};
+use crate::{cmd_render, paths_equal, Format};
 use notify::{event::EventKind, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use rustlab_plot::theme::ThemeColors;
 use std::collections::{HashMap, HashSet};
@@ -69,11 +69,40 @@ pub fn cmd_watch(
         debounce_ms
     );
 
+    // Two-dir mode: auto-clean the source tree before the initial render.
+    // The source dir is supposed to hold authoring-only content; if any
+    // file has rustlab-generated artifacts (from a prior in-place run, a
+    // mis-placed copy, etc.) strip them now so the source stays pristine
+    // and re-renders are deterministic. Single-dir mode is in-place and
+    // the artifacts there are load-bearing — don't touch.
+    if !paths_equal(&dir, &out_dir) {
+        let cleaned = crate::cmd_clean(dir.clone(), None, false);
+        if cleaned > 0 {
+            println!("[watch] auto-cleaned {cleaned} source file(s) before initial render");
+        }
+    }
+
     // Seed the dependency graph by rendering every notebook once.
     let mut graph = DependencyGraph::default();
+    // Track the bytes of every file we just wrote, by canonicalised
+    // output path. When an fs event arrives for one of these paths and
+    // the file's current bytes still match what we wrote, the event is
+    // our own write echoing back through the notify channel — drop it.
+    // This is what kills runaway loops on *non-deterministic* notebooks
+    // (`randn`, time, network) where the rendered bytes legitimately
+    // differ each pass, so `write_output`'s hash-equal skip can't trip.
+    let mut self_writes: HashMap<PathBuf, Vec<u8>> = HashMap::new();
     let initial = list_notebooks(&dir);
     for src in &initial {
-        render_one_with_tracking(src, &dir, &out_dir, &format, theme, &mut graph);
+        if let Some(out_path) =
+            render_one_with_tracking(src, &dir, &out_dir, &format, theme, &mut graph)
+        {
+            if let (Ok(bytes), Some(canon)) =
+                (std::fs::read(&out_path), canonicalize_lossy(&out_path))
+            {
+                self_writes.insert(canon, bytes);
+            }
+        }
     }
     println!("[watch] initial render complete ({} notebooks)", initial.len());
 
@@ -111,14 +140,26 @@ pub fn cmd_watch(
                 }
                 for path in &event.paths {
                     if let Some(canon) = canonicalize_lossy(path) {
-                        // Only react to .md files inside the watched tree.
-                        if canon.starts_with(&dir)
-                            && canon
-                                .extension()
-                                .map_or(false, |e| e == "md")
+                        // Only react to .md files inside the watched tree,
+                        // and skip editor tempfiles (sed: `.!PID!name.md`,
+                        // vim: `.name.md.swp`, emacs: `.#name.md`, plus
+                        // any `name~` backup). Without this filter the
+                        // watcher tries to render transient files that
+                        // were renamed away before the event delivered.
+                        if !canon.starts_with(&dir)
+                            || !canon.extension().map_or(false, |e| e == "md")
+                            || is_editor_tempfile(&canon)
                         {
-                            pending.insert(canon);
+                            continue;
                         }
+                        // Self-write suppression: if the file's current
+                        // bytes match what we just wrote, this event is
+                        // our own write echoing back. Drop it. A genuine
+                        // user edit changes the bytes and falls through.
+                        if is_self_write_echo(&canon, &self_writes) {
+                            continue;
+                        }
+                        pending.insert(canon);
                     }
                 }
                 last_event = Some(Instant::now());
@@ -148,9 +189,15 @@ pub fn cmd_watch(
                 let n = to_render.len();
                 let started = Instant::now();
                 for src in &to_render {
-                    render_one_with_tracking(
+                    if let Some(out_path) = render_one_with_tracking(
                         src, &dir, &out_dir, &format, theme, &mut graph,
-                    );
+                    ) {
+                        if let (Ok(bytes), Some(canon)) =
+                            (std::fs::read(&out_path), canonicalize_lossy(&out_path))
+                        {
+                            self_writes.insert(canon, bytes);
+                        }
+                    }
                 }
                 println!(
                     "[watch] re-rendered {} notebook{} in {} ms",
@@ -205,7 +252,16 @@ fn render_one_with_tracking(
     format: &Format,
     theme: &'static ThemeColors,
     graph: &mut DependencyGraph,
-) {
+) -> Option<PathBuf> {
+    // Race protection: the file may have vanished between the fs event
+    // and now (atomic rename, deletion, etc). `cmd_render` calls
+    // `process::exit(1)` on read failure, which would kill the long-
+    // running watcher. Just skip — if the file reappears we'll see a
+    // fresh event.
+    if !src.exists() {
+        return None;
+    }
+
     // Compute the output file path mirroring `cmd_render_dir`.
     let stem = src
         .file_stem()
@@ -225,7 +281,7 @@ fn render_one_with_tracking(
     // too. Acceptable trade-off for the watch loop's simplicity.
     cmd_render(
         src.to_path_buf(),
-        Some(out_path),
+        Some(out_path.clone()),
         format.clone(),
         theme,
     );
@@ -236,6 +292,8 @@ fn render_one_with_tracking(
         Err(_) => HashSet::new(),
     };
     graph.record(src.to_path_buf(), embedded);
+
+    Some(out_path)
 }
 
 /// Walk every `![[target]]` reference reachable from `source` and
@@ -300,6 +358,35 @@ fn list_notebooks(dir: &Path) -> Vec<PathBuf> {
 
 fn canonicalize_lossy(p: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(p).ok().or_else(|| Some(p.to_path_buf()))
+}
+
+/// Return true when the file at `path` matches the bytes we last wrote
+/// to it, i.e. an fs event for it is our own write echoing back through
+/// notify. Used by the watch loop to break runaway loops when a
+/// notebook's rendered output is genuinely non-deterministic (`randn`,
+/// timestamps, etc.) — `write_output`'s hash-equal skip can't trip in
+/// that case because the bytes differ each pass, so we suppress at the
+/// event-receive end instead.
+fn is_self_write_echo(path: &Path, self_writes: &HashMap<PathBuf, Vec<u8>>) -> bool {
+    let Some(prev) = self_writes.get(path) else {
+        return false;
+    };
+    match std::fs::read(path) {
+        Ok(current) => current.as_slice() == prev.as_slice(),
+        Err(_) => false,
+    }
+}
+
+/// Editor tempfile heuristic. Catches the common atomic-write patterns:
+/// sed -i (`.!PID!name.md`), vim (`.name.md.swp`/`.swo`), emacs
+/// (`.#name.md`), plus generic `name~` backups. Anything matching is
+/// skipped by the watcher so a `cmd_render` race on the rename target
+/// can't kill the watcher process.
+fn is_editor_tempfile(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.starts_with('.') || name.ends_with('~')
 }
 
 /// Filter notify events. Accept everything except pure access events;
@@ -572,6 +659,58 @@ mod tests {
     // `dependents_of()`, which returned an empty set for untracked
     // files, so every "create a new note in Obsidian" event was silently
     // dropped.
+    #[test]
+    fn is_self_write_echo_true_when_file_matches_recorded_bytes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, b"hello\n").unwrap();
+        let mut writes = HashMap::new();
+        writes.insert(path.clone(), b"hello\n".to_vec());
+
+        assert!(
+            is_self_write_echo(&path, &writes),
+            "matching bytes must register as a self-write echo",
+        );
+    }
+
+    #[test]
+    fn is_self_write_echo_false_when_file_diverges_from_recorded_bytes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, b"hello\n").unwrap();
+        let mut writes = HashMap::new();
+        writes.insert(path.clone(), b"old content\n".to_vec());
+
+        assert!(
+            !is_self_write_echo(&path, &writes),
+            "diverging bytes mean the user (or something else) wrote — must not be suppressed",
+        );
+    }
+
+    #[test]
+    fn is_self_write_echo_false_when_path_never_written_by_us() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        fs::write(&path, b"hello\n").unwrap();
+        let writes: HashMap<PathBuf, Vec<u8>> = HashMap::new();
+
+        assert!(
+            !is_self_write_echo(&path, &writes),
+            "files we never wrote can never be self-write echoes",
+        );
+    }
+
+    #[test]
+    fn is_editor_tempfile_catches_common_patterns() {
+        assert!(is_editor_tempfile(Path::new("/n/.!1234!note.md"))); // sed -i
+        assert!(is_editor_tempfile(Path::new("/n/.note.md.swp")));   // vim
+        assert!(is_editor_tempfile(Path::new("/n/.note.md.swo")));
+        assert!(is_editor_tempfile(Path::new("/n/.#note.md")));      // emacs
+        assert!(is_editor_tempfile(Path::new("/n/note.md~")));       // generic backup
+        assert!(!is_editor_tempfile(Path::new("/n/note.md")));       // real notebook
+        assert!(!is_editor_tempfile(Path::new("/n/sub/note.md")));   // nested
+    }
+
     #[test]
     fn compute_render_set_includes_new_md_file_not_yet_in_graph() {
         let g = DependencyGraph::default();

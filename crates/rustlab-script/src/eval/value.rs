@@ -2058,6 +2058,48 @@ pub fn insert_commas(s: &str) -> String {
 }
 
 impl Value {
+    /// Deep clone for snapshot/restore use. Differs from `Clone` only for
+    /// the `Arc<Mutex<…>>` variants whose interiors are mutated through
+    /// `&self` (e.g. `FirState` accumulating history between blocks). A
+    /// plain `Clone` of those keeps the same `Arc`, so mutating the live
+    /// value also mutates the snapshot and vice versa. `deep_clone` makes
+    /// the snapshot independent by cloning the inner data into a fresh
+    /// `Arc<Mutex<_>>`.
+    ///
+    /// `LiveFigure` is left shared on purpose — it owns an external
+    /// resource (terminal or window) that cannot be meaningfully
+    /// duplicated. Notebooks using `live_figure()` are an explicit
+    /// known limitation of the snapshot cache.
+    ///
+    /// Read-only `Arc` variants (`SparseFactor`'s cached factorizations)
+    /// are safe to share and aren't deep-cloned — sharing is the whole
+    /// point of caching the factor.
+    pub fn deep_clone(&self) -> Value {
+        match self {
+            Value::FirState(arc) => {
+                let inner = arc.lock().unwrap().clone();
+                Value::FirState(Arc::new(Mutex::new(inner)))
+            }
+            Value::Struct(fields) => {
+                Value::Struct(fields.iter().map(|(k, v)| (k.clone(), v.deep_clone())).collect())
+            }
+            Value::Tuple(items) => Value::Tuple(items.iter().map(|v| v.deep_clone()).collect()),
+            Value::Lambda { params, body, captured_env } => Value::Lambda {
+                params: params.clone(),
+                body: body.clone(),
+                captured_env: captured_env
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .collect(),
+            },
+            // Everything else is either plain data (Scalar, Vector, Matrix,
+            // etc.) or an Arc-shared read-only handle (SparseFactor) or an
+            // external-resource handle we intentionally leave shared
+            // (LiveFigure). For those, `Clone` already does the right thing.
+            other => other.clone(),
+        }
+    }
+
     /// Format this value according to the active `NumberFormat`.
     pub fn format_display(&self, nf: NumberFormat) -> String {
         if nf == NumberFormat::Short {

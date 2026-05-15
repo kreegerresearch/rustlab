@@ -117,6 +117,27 @@ enum Command {
         #[arg(long, value_name = "MS", default_value = "250")]
         debounce_ms: u64,
     },
+    /// Strip rustlab-generated artifacts from .md notebook source(s)
+    #[command(
+        long_about = "Strip rustlab-generated artifacts from one or more .md files, leaving only \
+            user-authored source. Useful for migrating between single-dir (in-place) and two-dir \
+            layouts, sanitising files before commit, or recovering pristine source from a rendered \
+            output.\n\n\
+            Examples:\n  \
+            rustlab-notebook clean note.md                 # in-place clean of one file\n  \
+            rustlab-notebook clean notebooks/              # in-place clean of every .md under notebooks/\n  \
+            rustlab-notebook clean note.md --check         # exit 1 if anything would change, no write"
+    )]
+    Clean {
+        /// Input .md file or directory of .md files (recursive).
+        input: PathBuf,
+        /// Optional output path. Default: clean in place.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Report what would change without writing.
+        #[arg(long)]
+        check: bool,
+    },
     Render {
         /// Input .md file or directory of .md files
         input: PathBuf,
@@ -234,6 +255,12 @@ fn main() {
                     eprintln!("warning: --title is only used when rendering a directory; ignored for single-file input");
                 }
                 rustlab_notebook::cmd_render(input, output, format, colors);
+            }
+        }
+        Command::Clean { input, output, check } => {
+            let changed = rustlab_notebook::cmd_clean(input, output, check);
+            if check && changed > 0 {
+                std::process::exit(1);
             }
         }
     }

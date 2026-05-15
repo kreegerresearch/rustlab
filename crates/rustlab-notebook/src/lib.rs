@@ -9,7 +9,113 @@ pub mod render_markdown;
 pub mod watch;
 
 use rustlab_plot::theme::ThemeColors;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Remove every `<iframe src="…" width="100%" height="600" style="border:
+/// 0;"></iframe>` tag from `source`, along with surrounding blank-line
+/// padding. The signature is the exact format `--obsidian` used to emit
+/// in single-dir in-place mode before iframe-auto-suppression landed;
+/// older files had one fresh copy added per render. Hand-authored
+/// iframes that don't match all three style attributes are untouched.
+fn strip_legacy_iframes(source: &str) -> String {
+    const PREFIX: &str = "<iframe src=\"";
+    const TAIL: &str = "\" width=\"100%\" height=\"600\" style=\"border: 0;\"></iframe>";
+    let mut out = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    while let Some(rel_start) = source[cursor..].find(PREFIX) {
+        let start = cursor + rel_start;
+        let after_prefix = start + PREFIX.len();
+        let Some(rel_end) = source[after_prefix..].find(TAIL) else {
+            break;
+        };
+        // Sanity: the bytes between prefix and tail should be the href
+        // value — bail if a newline sneaks in (means we straddled tags).
+        if source[after_prefix..after_prefix + rel_end].contains('\n') {
+            cursor = after_prefix;
+            continue;
+        }
+        let end = after_prefix + rel_end + TAIL.len();
+        let mut after = end;
+        while source[after..].starts_with('\n') {
+            after += 1;
+        }
+        let mut before = start;
+        while before > cursor && source.as_bytes()[before - 1] == b'\n' {
+            before -= 1;
+        }
+        out.push_str(&source[cursor..before]);
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push_str("\n\n");
+        }
+        cursor = after;
+    }
+    out.push_str(&source[cursor..]);
+    out
+}
+
+/// Strip every `` ```text … ``` `` block that immediately follows a
+/// `` ```rustlab … ``` `` fence — the exact shape legacy in-place
+/// renders left behind as captured stdout. We only match the pair so
+/// hand-authored ```text fences elsewhere in the document are
+/// preserved. Operates on UTF-8 byte offsets.
+fn strip_legacy_text_outputs(source: &str) -> String {
+    const RUSTLAB_OPEN: &str = "```rustlab\n";
+    const FENCE_CLOSE: &str = "\n```";
+    const TEXT_OPEN: &str = "```text\n";
+    let bytes = source.as_bytes();
+    let mut out = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    while let Some(rel_open) = source[cursor..].find(RUSTLAB_OPEN) {
+        let rl_open = cursor + rel_open;
+        let after_open = rl_open + RUSTLAB_OPEN.len();
+        // Find this rustlab block's closing fence.
+        let Some(rel_close) = source[after_open..].find(FENCE_CLOSE) else {
+            break;
+        };
+        let close_start = after_open + rel_close;
+        let close_end = close_start + FENCE_CLOSE.len();
+        // The closing fence might be followed by `\n` or end-of-string.
+        let mut scan = close_end;
+        while scan < bytes.len() && bytes[scan] == b'\n' {
+            scan += 1;
+        }
+        // Bare-text-block-follows test: the gap between the closing
+        // fence and the next non-newline byte must contain *only*
+        // newlines — i.e. no sentinel comment in between.
+        if source[scan..].starts_with(TEXT_OPEN) {
+            let text_open_start = scan;
+            let text_body_start = text_open_start + TEXT_OPEN.len();
+            if let Some(rel_text_close) = source[text_body_start..].find(FENCE_CLOSE) {
+                let text_close_end =
+                    text_body_start + rel_text_close + FENCE_CLOSE.len();
+                let mut after_text = text_close_end;
+                while after_text < bytes.len() && bytes[after_text] == b'\n' {
+                    after_text += 1;
+                }
+                // Emit everything up through the rustlab close, normalise
+                // to one blank line, skip the bare ```text``` entirely.
+                out.push_str(&source[cursor..close_end]);
+                out.push_str("\n\n");
+                cursor = after_text;
+                continue;
+            }
+        }
+        // No legacy bare-text block; pass through up to the close + gap.
+        out.push_str(&source[cursor..scan]);
+        cursor = scan;
+    }
+    out.push_str(&source[cursor..]);
+    out
+}
+
+/// Best-effort directory equality: canonicalize both sides when possible
+/// (collapses `./foo`, symlinks, `..` segments) and fall back to literal
+/// equality otherwise. Used to decide whether a render is "in-place" so
+/// we can suppress the trailing iframe in `--obsidian` mode.
+pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canon(a) == canon(b)
+}
 
 /// Cross-notebook navigation context passed to `render::render_html` when a
 /// notebook is rendered as part of a multi-notebook directory build. All
@@ -21,7 +127,182 @@ pub struct NotebookNav {
     pub next: Option<(String, String)>,
 }
 
+/// Comment line `render_markdown` prepends to every rendered .md file.
+/// Stripping it from the source before parsing keeps the markdown output
+/// byte-stable across re-renders, which is what lets `notebook watch`
+/// running in-place (out_dir == src_dir) converge instead of accumulating
+/// one extra header line per pass.
+pub(crate) const GENERATED_HEADER: &str =
+    "<!-- Generated by rustlab-notebook — do not edit directly. -->";
+
+/// Sentinel comments that wrap every rustlab code block's output region
+/// (text, error, plots, animations) in markdown output. Re-rendering
+/// strips these regions on the way in so we don't accumulate one extra
+/// copy of every block's output per pass.
+pub(crate) const OUTPUT_BLOCK_START: &str = "<!-- rustlab:output-start -->";
+pub(crate) const OUTPUT_BLOCK_END: &str = "<!-- rustlab:output-end -->";
+
+/// Strip rustlab's rendered decorations (header + all output-block
+/// regions) from `source` so the parser sees the user's authored
+/// content as if it had never been rendered. This is what makes
+/// re-rendering byte-stable: pass 1's output, fed back as pass 2's
+/// input, decomposes to the same parsed shape as the original source.
+///
+/// Both header iteration and output-block stripping are repeated to
+/// cope with legacy files that prior buggy renders accumulated extras
+/// into.
+pub fn strip_render_artifacts(source: &str) -> String {
+    // Header: drop every occurrence of the canonical `HEADER + "\n\n"`
+    // emit, regardless of position. `--obsidian` prepends a YAML
+    // frontmatter block before the header, so a prefix-only strip would
+    // miss it on every pass. Replacing all occurrences also cleans up
+    // legacy files that prior buggy loops accumulated multiple headers
+    // into.
+    let header_emit = format!("{GENERATED_HEADER}\n\n");
+    let s = source.replace(&header_emit, "");
+    // Cleanup pass for legacy unwrapped iframes: earlier in-place renders
+    // emitted the trailing `<iframe>` without sentinel wrapping, so
+    // already-loop-corrupted files have N copies of it. Match the exact
+    // emission signature (width/height/style triplet) so a user-authored
+    // iframe with different attributes is left alone.
+    let s = strip_legacy_iframes(&s);
+    // Cleanup pass for legacy text-output blocks: when the previous
+    // emitter ran without sentinels, a `\`\`\`text` block followed every
+    // rustlab block as its captured stdout. Re-rendering treats that as
+    // ordinary prose, so a fresh sentinel-wrapped copy ends up duplicated
+    // next to it. Strip the bare-text-after-rustlab pattern so legacy
+    // files clean up on first load.
+    let s = strip_legacy_text_outputs(&s);
+    // Output blocks: strip every `OUTPUT_BLOCK_START … OUTPUT_BLOCK_END`
+    // pair plus the surrounding blank-line padding the emitter inserts.
+    // Unmatched start sentinels (truncated file) are left alone so we
+    // don't quietly destroy user content.
+    let mut out = String::with_capacity(s.len());
+    let mut cursor = 0usize;
+    while let Some(rel_start) = s[cursor..].find(OUTPUT_BLOCK_START) {
+        let start = cursor + rel_start;
+        let after_start = start + OUTPUT_BLOCK_START.len();
+        match s[after_start..].find(OUTPUT_BLOCK_END) {
+            Some(rel_end) => {
+                let end = after_start + rel_end + OUTPUT_BLOCK_END.len();
+                // Pull in trailing newlines so a stripped region collapses
+                // back to a single blank-line separator (matching how the
+                // emitter formats around the sentinels).
+                let mut after = end;
+                while s[after..].starts_with('\n') {
+                    after += 1;
+                }
+                // And pull leading newlines before the start sentinel so
+                // we don't leave a blank-line surplus. Clamp to `cursor`
+                // so two adjacent regions don't eat past the previous
+                // strip's tail (the panic would be `begin > end` on the
+                // slice below).
+                let mut before = start;
+                while before > cursor && s.as_bytes()[before - 1] == b'\n' {
+                    before -= 1;
+                }
+                out.push_str(&s[cursor..before]);
+                out.push_str("\n\n");
+                cursor = after;
+            }
+            None => break,
+        }
+    }
+    out.push_str(&s[cursor..]);
+    out
+}
+
 /// Render a single notebook file to the chosen format.
+/// Strip rendered artifacts (generated-by header, output sentinels and
+/// their wrapped content, legacy unwrapped iframes, legacy bare text
+/// blocks left over from pre-sentinel renders) from one or more `.md`
+/// files. Hand-authored prose, code fences, and unrelated HTML / iframes
+/// are preserved.
+///
+/// `input` may be a single file or a directory; directories are walked
+/// non-recursively for `.md` files (mirrors `cmd_render_dir`).
+///
+/// When `output` is `None`, files are cleaned in place. When `output` is
+/// `Some(out)`:
+///   - single file in → single file out at `out`
+///   - directory in → directory out: cleaned copies written under `out`
+///     using the same filenames.
+///
+/// In `check` mode, no files are written. The function returns the count
+/// of files that would change; callers (e.g. CI) use this for an exit
+/// code without modifying the tree.
+pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize {
+    let mut changed = 0usize;
+    let files = if input.is_dir() {
+        list_md_files_recursive(&input)
+    } else {
+        vec![input.clone()]
+    };
+
+    for src in &files {
+        let original = match std::fs::read_to_string(src) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: cannot read {}: {e}", src.display());
+                continue;
+            }
+        };
+        let cleaned = strip_render_artifacts(&original);
+        if cleaned == original {
+            continue;
+        }
+        changed += 1;
+        if check {
+            println!("would clean: {}", src.display());
+            continue;
+        }
+        let dest = match (&output, input.is_dir()) {
+            (None, _) => src.clone(),
+            (Some(out_path), false) => out_path.clone(),
+            (Some(out_dir), true) => {
+                let rel = src.strip_prefix(&input).unwrap_or(src);
+                out_dir.join(rel)
+            }
+        };
+        write_output(&dest, cleaned.as_bytes());
+        println!("cleaned: {}", dest.display());
+    }
+    if check {
+        println!(
+            "{} of {} file{} would be cleaned",
+            changed,
+            files.len(),
+            if files.len() == 1 { "" } else { "s" }
+        );
+    }
+    changed
+}
+
+/// Recursively walk `dir`, collecting every `.md` file. Skips `README.md`
+/// to match the renderer's "project metadata, not a notebook" rule.
+fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let entries = match std::fs::read_dir(&d) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map_or(false, |e| e == "md")
+                && p.file_name().map_or(true, |n| n != "README.md")
+            {
+                out.push(p);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
@@ -30,6 +311,7 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
             std::process::exit(1);
         }
     };
+    let source = strip_render_artifacts(&source);
 
     // Canonicalize the host directory before any chdir so the embed
     // expander resolves siblings against the correct absolute location.
@@ -57,7 +339,16 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
         PathBuf::from(format!("{}.{ext}", stem.to_string_lossy()))
     });
 
-    render_output(&out_path, &format, &title, &rendered, theme, None, Some(&source));
+    render_output(
+        &out_path,
+        &format,
+        &title,
+        &rendered,
+        theme,
+        None,
+        Some(&source),
+        Some(&input),
+    );
     print_summary(&input, &out_path, &rendered);
 }
 
@@ -128,6 +419,7 @@ pub fn cmd_render_dir(
                 continue;
             }
         };
+        let source = strip_render_artifacts(&source);
         let (fm, _) = parse::extract_frontmatter(&source);
         let title = extract_title(&source, md_path);
         let stem = md_path
@@ -194,6 +486,7 @@ pub fn cmd_render_dir(
             theme,
             nav.as_ref(),
             Some(&p.source),
+            Some(&p.md_path),
         );
         print_summary(&p.md_path, &p.out_file, &rendered);
     }
@@ -256,6 +549,7 @@ pub fn cmd_render_dir(
                     theme,
                     None,
                     Some(&source),
+                    Some(src_index),
                 );
                 print_summary(src_index, &index_path, &rendered);
             }
@@ -421,6 +715,7 @@ fn render_output(
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
     source_md: Option<&str>,
+    input: Option<&Path>,
 ) {
     match format {
         Format::Html => {
@@ -434,9 +729,25 @@ fn render_output(
                 Some(opts) => attachments_layout_for(out_path, &opts.attachments_dir),
                 None => plot_layout_for(out_path),
             };
+            // Auto-suppress the trailing iframe when rendering in place
+            // (out_dir == src_dir). The iframe points at `<stem>.html`
+            // sibling, which only exists in the two-dir flow where the
+            // user also runs an .html render. In single-dir in-place
+            // mode the sibling is missing and Obsidian's editor crashes
+            // trying to resolve the URL ("Cannot read properties of
+            // undefined (reading 'origin')"). Two-dir users still get
+            // the iframe; `--no-iframe` still works as an explicit opt-
+            // out.
+            let in_place = match (input, out_path.parent()) {
+                (Some(inp), Some(out_dir)) => inp
+                    .parent()
+                    .map(|src_dir| paths_equal(src_dir, out_dir))
+                    .unwrap_or(false),
+                _ => false,
+            };
             let iframe_href = obsidian
                 .as_ref()
-                .filter(|o| o.iframe)
+                .filter(|o| o.iframe && !in_place)
                 .map(|_| {
                     let stem = out_path
                         .file_stem()
@@ -449,6 +760,12 @@ fn render_output(
                 Some(_) => render_markdown::LinkStyle::Wiki,
                 None => render_markdown::LinkStyle::Standard,
             };
+            // Suppress the `<!-- Generated -->` header on single-file
+            // in-place renders: when the source IS the rendered output
+            // (Obsidian editing the same .md it views in Reading mode),
+            // a "do not edit directly" warning is misleading — the user
+            // edits this file by design. Two-dir renders still emit it
+            // so committed gallery output keeps the provenance line.
             let body = render_markdown::render_markdown(
                 title,
                 rendered,
@@ -457,6 +774,7 @@ fn render_output(
                 theme,
                 iframe_href.as_deref(),
                 link_style,
+                !in_place,
             );
             let final_md = match obsidian {
                 Some(_) => {
@@ -657,6 +975,18 @@ fn write_output(path: &PathBuf, data: &[u8]) {
                 eprintln!("error: cannot create directory {}: {e}", parent.display());
                 std::process::exit(1);
             }
+        }
+    }
+    // Skip the write when the on-disk bytes already match `data`. Two
+    // benefits: (1) `notebook watch` rendering in-place (out_dir == src_dir)
+    // converges after one pass instead of self-triggering forever — the
+    // second render produces byte-identical output, the write becomes a
+    // no-op, no fs event fires, the loop dies; (2) untouched notebooks
+    // don't churn mtimes, which keeps `git status` quiet and avoids
+    // editors flagging files as externally modified.
+    if let Ok(existing) = std::fs::read(path) {
+        if existing == data {
+            return;
         }
     }
     if let Err(e) = std::fs::write(path, data) {
@@ -895,6 +1225,857 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use rustlab_plot::Theme;
+
+    // write_output is the single sink for rendered .md/.html/.tex output.
+    // Skipping the actual write when content is unchanged is what lets
+    // `notebook watch dir/` work as an in-place Obsidian setup: the second
+    // render in any potential self-trigger loop produces byte-identical
+    // bytes, the write becomes a no-op, no fs event fires, and the loop
+    // dies after one pass.
+    #[test]
+    fn strip_render_artifacts_removes_single_leading_header() {
+        let src = format!("{}\n\n# Title\n\nbody\n", GENERATED_HEADER);
+        let stripped = strip_render_artifacts(&src);
+        assert_eq!(stripped, "# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn strip_render_artifacts_removes_stacked_headers_from_legacy_loops() {
+        // Earlier buggy in-place renders accumulated one extra header per
+        // pass. Strip cleans them all up so the next emit produces the
+        // canonical single-header shape.
+        let src = format!(
+            "{h}\n\n{h}\n\n{h}\n\n# Title\n",
+            h = GENERATED_HEADER
+        );
+        let stripped = strip_render_artifacts(&src);
+        assert_eq!(stripped, "# Title\n");
+    }
+
+    #[test]
+    fn strip_render_artifacts_leaves_user_authored_source_alone() {
+        let src = "# Title\n\nbody with `<!-- something -->` inline.\n";
+        let stripped = strip_render_artifacts(src);
+        assert_eq!(stripped, src, "must not touch user content");
+    }
+
+    #[test]
+    fn strip_render_artifacts_removes_output_block_region() {
+        let src = format!(
+            "# Demo\n\n```rustlab\nprint(1)\n```\n\n{s}\n```text\n1\n```\n\n{e}\n\nMore.\n",
+            s = OUTPUT_BLOCK_START,
+            e = OUTPUT_BLOCK_END,
+        );
+        let stripped = strip_render_artifacts(&src);
+        assert_eq!(
+            stripped,
+            "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
+            "output region between sentinels must be removed",
+        );
+    }
+
+    #[test]
+    fn strip_render_artifacts_handles_multiple_output_regions() {
+        let src = format!(
+            "a\n\n{s}\nx\n{e}\n\nb\n\n{s}\ny\n{e}\n\nc\n",
+            s = OUTPUT_BLOCK_START,
+            e = OUTPUT_BLOCK_END,
+        );
+        let stripped = strip_render_artifacts(&src);
+        assert_eq!(stripped, "a\n\nb\n\nc\n");
+    }
+
+    #[test]
+    fn strip_render_artifacts_removes_legacy_unwrapped_iframes() {
+        // Regression: an Obsidian vault that ran the watcher before
+        // iframe-auto-suppression accumulated one extra unwrapped iframe
+        // per render. Opening the file with the current binary must
+        // clean them up so the next save converges.
+        let src = "# Demo\n\n\
+<iframe src=\"note.html\" width=\"100%\" height=\"600\" style=\"border: 0;\"></iframe>\n\n\
+<iframe src=\"note.html\" width=\"100%\" height=\"600\" style=\"border: 0;\"></iframe>\n\n\
+<iframe src=\"note.html\" width=\"100%\" height=\"600\" style=\"border: 0;\"></iframe>\n\n\
+More.\n";
+        let stripped = strip_render_artifacts(src);
+        assert_eq!(stripped.matches("<iframe").count(), 0, "all legacy iframes removed: {stripped:?}");
+        assert!(stripped.contains("# Demo"));
+        assert!(stripped.contains("More."));
+    }
+
+    #[test]
+    fn strip_render_artifacts_leaves_user_authored_iframe_alone() {
+        // A hand-authored iframe with different attributes (e.g. embedded
+        // YouTube) must not be touched — only rustlab's exact signature
+        // qualifies for removal.
+        let src = "# Demo\n\n\
+<iframe src=\"https://www.youtube.com/embed/abc\" width=\"560\" height=\"315\" frameborder=\"0\"></iframe>\n\n\
+More.\n";
+        let stripped = strip_render_artifacts(src);
+        assert_eq!(stripped, src, "user iframe with non-rustlab attrs preserved");
+    }
+
+    #[test]
+    fn strip_render_artifacts_removes_legacy_bare_text_output_after_rustlab() {
+        let src = "# Demo\n\n\
+```rustlab\nprint(1)\n```\n\n\
+```text\n1\n```\n\n\
+More.\n";
+        let stripped = strip_render_artifacts(src);
+        assert_eq!(
+            stripped,
+            "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
+            "legacy bare text block after rustlab fence must be removed",
+        );
+    }
+
+    #[test]
+    fn strip_render_artifacts_preserves_standalone_text_block() {
+        // A ```text``` block not adjacent to a rustlab fence is user
+        // content (e.g. illustrating expected output prose) — leave it.
+        let src = "# Demo\n\nHere's a sample log:\n\n```text\nINFO foo\n```\n\nMore.\n";
+        let stripped = strip_render_artifacts(src);
+        assert_eq!(stripped, src);
+    }
+
+    #[test]
+    fn strip_render_artifacts_preserves_text_block_after_sentinel_wrapped_output() {
+        // If the output block is already sentinel-wrapped (current emit
+        // shape), a *user-authored* trailing ```text``` block must stay.
+        let src = "# Demo\n\n\
+```rustlab\nprint(1)\n```\n\n\
+<!-- rustlab:output-start -->\n```text\n1\n```\n\n<!-- rustlab:output-end -->\n\n\
+```text\nuser note\n```\n";
+        let stripped = strip_render_artifacts(src);
+        assert!(
+            stripped.contains("user note"),
+            "user-authored ```text``` after sentinel block must be preserved: {stripped:?}",
+        );
+    }
+
+    #[test]
+    fn strip_render_artifacts_preserves_unmatched_start_sentinel() {
+        // A truncated file with a start but no end sentinel should not
+        // silently delete everything past the start — better to leave it
+        // and let the user see it.
+        let src = format!("a\n\n{}\nx\nno end here\n", OUTPUT_BLOCK_START);
+        let stripped = strip_render_artifacts(&src);
+        assert!(stripped.contains("no end here"), "truncated region preserved: {stripped:?}");
+    }
+
+    // ── Obsidian end-to-end pipeline coverage ─────────────────────────────
+    //
+    // These tests drive `cmd_render` through the full Obsidian path
+    // (frontmatter merge, attachments routing, iframe emission, cache-
+    // bust on plots) rather than the lower-level helpers. They catch
+    // regressions in any of the parts wiring together — the kind of
+    // issue that wouldn't surface in unit tests of `merge_obsidian_
+    // frontmatter` or `attachments_layout_for` in isolation.
+
+    /// Build a tiny notebook source that produces one plot, suitable for
+    /// driving obsidian-mode renders through `cmd_render`.
+    #[cfg(test)]
+    fn obsidian_test_source() -> &'static str {
+        "# Demo\n\n```rustlab\nplot(1:10)\n```\n"
+    }
+
+    #[test]
+    fn obsidian_two_dir_routes_plots_to_attachments_directory() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(&src, obsidian_test_source()).unwrap();
+
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+
+        let md = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            md.contains("![plot 1](_attachments/note/plot-1-"),
+            "obsidian render must route plot URLs to _attachments/<stem>/ with hashed filename: {md}",
+        );
+        let attachments = out_dir.path().join("_attachments/note");
+        let entries: Vec<_> = std::fs::read_dir(&attachments)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            entries.iter().any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
+            "plot SVG should be written under _attachments/<stem>/ with hashed name; got {entries:?}",
+        );
+    }
+
+    #[test]
+    fn obsidian_custom_attachments_dir_overrides_default() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(&src, obsidian_test_source()).unwrap();
+
+        let opts = ObsidianOpts {
+            attachments_dir: "media".to_string(),
+            ..ObsidianOpts::default()
+        };
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown { obsidian: Some(opts) },
+            Theme::Dark.colors(),
+        );
+
+        let md = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            md.contains("![plot 1](media/note/plot-1-"),
+            "custom attachments_dir must replace `_attachments` in plot URLs: {md}",
+        );
+        let custom_dir = out_dir.path().join("media/note");
+        let entries: Vec<_> = std::fs::read_dir(&custom_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            entries.iter().any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
+            "hashed plot file must exist under custom attachments dir; got {entries:?}",
+        );
+        assert!(
+            !out_dir.path().join("_attachments/note").exists(),
+            "default _attachments dir must not be created when overridden",
+        );
+    }
+
+    #[test]
+    fn obsidian_no_iframe_option_suppresses_trailing_iframe() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(&src, "# Demo\n\nbody\n").unwrap();
+
+        let opts = ObsidianOpts {
+            iframe: false,
+            ..ObsidianOpts::default()
+        };
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown { obsidian: Some(opts) },
+            Theme::Dark.colors(),
+        );
+
+        let md = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            !md.contains("<iframe "),
+            "ObsidianOpts.iframe = false must suppress the trailing iframe: {md}",
+        );
+    }
+
+    #[test]
+    fn obsidian_plot_url_has_hashed_filename_not_query_string() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(&src, obsidian_test_source()).unwrap();
+
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+
+        let md = std::fs::read_to_string(&out).unwrap();
+        // Regression: an earlier fix used `plot-1.svg?v=hash` which works
+        // in browsers (HTTP server strips query) but Obsidian's local-file
+        // renderer treats the URL as a literal filesystem path → "file
+        // not found" → broken image. Hash must be in the filename itself.
+        assert!(
+            !md.contains("?v="),
+            "obsidian plot URL must not use a `?v=` query string (broken in Obsidian): {md}",
+        );
+        assert!(
+            md.contains("plot-1-"),
+            "obsidian plot URL must put the cache-bust hash in the filename: {md}",
+        );
+        // And the file on disk has the same hashed name (so Obsidian's
+        // literal path lookup actually finds it).
+        let attachments = out_dir.path().join("_attachments/note");
+        let entries: Vec<_> = std::fs::read_dir(&attachments)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            entries.iter().any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
+            "file on disk must have the hashed name the .md points at; got {entries:?}",
+        );
+    }
+
+    #[test]
+    fn obsidian_preserves_existing_frontmatter_through_render() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(
+            &src,
+            "---\ntitle: Custom\ntags: [user, custom]\n---\n\n# Demo\n",
+        )
+        .unwrap();
+
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+
+        let md = std::fs::read_to_string(&out).unwrap();
+        // User-authored title and the user's existing tags entries must be
+        // intact; rustlab only appends `tags:` / `cssclasses:` when missing.
+        assert!(md.contains("title: Custom"), "user title lost: {md}");
+        assert!(md.contains("user"), "existing tag entry lost: {md}");
+        assert!(md.contains("custom"), "existing tag entry lost: {md}");
+        // Output must still have a frontmatter block, not bare body.
+        assert!(md.starts_with("---\n"), "frontmatter delimiter missing: {md}");
+    }
+
+    #[test]
+    fn cmd_clean_strips_obsidian_iframe_through_sentinel_region() {
+        // Obsidian mode wraps the trailing <iframe> in OUTPUT_BLOCK
+        // sentinels. `clean` must remove that whole region — not just
+        // the iframe attribute string, which is what the legacy iframe
+        // strip would catch.
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        std::fs::write(&src, "# Demo\n\nbody\n").unwrap();
+
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+        let rendered = std::fs::read_to_string(&out).unwrap();
+        assert!(rendered.contains("<iframe "), "test pre-condition: render emitted an iframe");
+
+        cmd_clean(out.clone(), None, false);
+        let cleaned = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            !cleaned.contains("<iframe "),
+            "clean must strip the sentinel-wrapped iframe: {cleaned}",
+        );
+        assert!(
+            !cleaned.contains(OUTPUT_BLOCK_START),
+            "clean must remove the output sentinel region itself",
+        );
+    }
+
+    #[test]
+    fn obsidian_render_then_clean_returns_to_pristine_source() {
+        // The round-trip property: render an obsidian copy, then clean
+        // it; the result should be byte-identical to what `clean` would
+        // produce from the original source after frontmatter merge.
+        // (Frontmatter is merged on render and stays on clean — that's
+        // by design, since the merged keys are part of the "source as
+        // a vault note" identity.)
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src = src_dir.path().join("note.md");
+        let out = out_dir.path().join("note.md");
+        let original = "# Demo\n\nProse line.\n\n```rustlab\nprint(7)\n```\n";
+        std::fs::write(&src, original).unwrap();
+
+        cmd_render(
+            src,
+            Some(out.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+        cmd_clean(out.clone(), None, false);
+        let cleaned = std::fs::read_to_string(&out).unwrap();
+
+        // Body content is back to the user-authored shape (after the
+        // injected frontmatter).
+        assert!(cleaned.contains("# Demo"), "heading lost: {cleaned}");
+        assert!(
+            cleaned.contains("```rustlab\nprint(7)\n```"),
+            "rustlab code fence lost: {cleaned}",
+        );
+        assert!(cleaned.contains("Prose line."), "prose lost: {cleaned}");
+        assert!(!cleaned.contains(GENERATED_HEADER));
+        assert!(!cleaned.contains(OUTPUT_BLOCK_START));
+        assert!(!cleaned.contains("<iframe "));
+        assert!(!cleaned.contains("```text"), "captured stdout block leaked: {cleaned}");
+    }
+
+    // Bug regression: `--obsidian` mode prepends a YAML frontmatter
+    // block before the header, which pushed `GENERATED_HEADER` past the
+    // start of the file. A prefix-only strip missed it, so every pass
+    // added a fresh header AND a fresh trailing iframe — the file grew
+    // without bound. Fixed by (a) replacing every `HEADER + "\n\n"`
+    // occurrence position-agnostically and (b) wrapping the iframe in
+    // the same OUTPUT_BLOCK sentinels the per-block output uses.
+    // ── paths_equal coverage (gates watcher auto-clean) ───────────────────
+
+    #[test]
+    fn paths_equal_true_for_literal_match() {
+        let dir = tempfile::TempDir::new().unwrap();
+        assert!(paths_equal(dir.path(), dir.path()));
+    }
+
+    #[test]
+    fn paths_equal_true_through_dot_normalisation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let with_dot = dir.path().join(".").join(".");
+        // Canonicalisation collapses `./.` → dir; literal equality wouldn't.
+        assert!(paths_equal(dir.path(), &with_dot));
+    }
+
+    #[test]
+    fn paths_equal_false_for_distinct_directories() {
+        let a = tempfile::TempDir::new().unwrap();
+        let b = tempfile::TempDir::new().unwrap();
+        assert!(!paths_equal(a.path(), b.path()));
+    }
+
+    // ── End-to-end watcher startup: two-dir auto-clean ────────────────────
+    // `cmd_watch` blocks indefinitely, so we test its startup sequence by
+    // invoking the same logic it does — `paths_equal` decides in-place vs.
+    // two-dir; `cmd_clean` strips artifacts in two-dir mode. This pins the
+    // behaviour that turns a source dir containing rendered artifacts into
+    // a clean source dir before the initial render fires.
+    #[test]
+    fn watch_startup_two_dir_strips_artifacts_from_source() {
+        let src = tempfile::TempDir::new().unwrap();
+        let out = tempfile::TempDir::new().unwrap();
+
+        // Source has a header + sentinel-wrapped output region left over
+        // from a prior single-dir render that someone moved into the
+        // source dir of a new two-dir setup.
+        let dirty = format!(
+            "{h}\n\n# Demo\n\n```rustlab\nprint(1)\n```\n\n{s}\n```text\n1\n```\n{e}\n",
+            h = GENERATED_HEADER,
+            s = OUTPUT_BLOCK_START,
+            e = OUTPUT_BLOCK_END,
+        );
+        std::fs::write(src.path().join("note.md"), &dirty).unwrap();
+
+        // Run the same gate the watcher uses to decide auto-clean.
+        let is_in_place = paths_equal(src.path(), out.path());
+        assert!(!is_in_place, "different dirs must be detected as two-dir");
+
+        let changed = cmd_clean(src.path().to_path_buf(), None, false);
+        assert_eq!(changed, 1, "the single dirty file must be cleaned");
+
+        let cleaned = std::fs::read_to_string(src.path().join("note.md")).unwrap();
+        assert!(!cleaned.contains(GENERATED_HEADER));
+        assert!(!cleaned.contains(OUTPUT_BLOCK_START));
+        assert!(cleaned.contains("```rustlab\nprint(1)\n```"), "code fence preserved: {cleaned}");
+    }
+
+    #[test]
+    fn watch_startup_in_place_does_not_strip_artifacts() {
+        // Single-dir in-place: dir == out_dir. Auto-clean must NOT fire,
+        // because the artifacts in the source ARE the rendered output
+        // we're displaying in Obsidian's Reading view — stripping them
+        // would break the user's display until the next render.
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Pre-rendered file with the sentinel-wrapped output present.
+        let path = dir.path().join("note.md");
+        let body = format!(
+            "# Demo\n\n```rustlab\nprint(1)\n```\n\n{s}\n```text\n1\n```\n{e}\n",
+            s = OUTPUT_BLOCK_START,
+            e = OUTPUT_BLOCK_END,
+        );
+        std::fs::write(&path, &body).unwrap();
+
+        let is_in_place = paths_equal(dir.path(), dir.path());
+        assert!(is_in_place, "same path on both sides must register as in-place");
+
+        // Don't call cmd_clean in this branch (mirrors what cmd_watch does).
+        let preserved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(preserved, body, "in-place mode must leave the source bytes untouched");
+    }
+
+    #[test]
+    fn cmd_render_markdown_obsidian_in_place_is_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(
+            &path,
+            "# Demo\n\n```rustlab\nx = 1 + 2;\nprint(x)\n```\n",
+        )
+        .unwrap();
+
+        let format = Format::Markdown {
+            obsidian: Some(ObsidianOpts::default()),
+        };
+        cmd_render(path.clone(), Some(path.clone()), format.clone(), Theme::Dark.colors());
+        let after_first = std::fs::read_to_string(&path).unwrap();
+
+        cmd_render(path.clone(), Some(path.clone()), format, Theme::Dark.colors());
+        let after_second = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            after_first, after_second,
+            "obsidian-mode in-place render must be byte-stable on pass 2",
+        );
+        // Single-file in-place renders suppress the generated-by
+        // header — the source IS the rendered output, the "do not edit"
+        // warning would just be misleading.
+        assert_eq!(
+            after_second.matches(GENERATED_HEADER).count(),
+            0,
+            "in-place obsidian render must not emit the generated-by header",
+        );
+        // In-place renders auto-suppress the iframe — it would point at a
+        // missing sibling `.html` and Obsidian's editor crashes parsing
+        // the bad URL. `--no-iframe` and `-o <other-dir>` both turn the
+        // iframe back on; this test specifically pins the in-place case.
+        assert_eq!(
+            after_second.matches("<iframe ").count(),
+            0,
+            "single-dir in-place render must not emit an iframe",
+        );
+    }
+
+    // Two-dir flow (out_dir != src_dir): the iframe is still emitted, so
+    // users running `notebook render src/ -o vault/ --obsidian` continue
+    // to get the Plotly view they expect.
+    #[test]
+    fn cmd_render_markdown_obsidian_two_dir_keeps_iframe() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src_path = src_dir.path().join("note.md");
+        let out_path = out_dir.path().join("note.md");
+        std::fs::write(&src_path, "# Demo\n\nhi\n").unwrap();
+
+        cmd_render(
+            src_path.clone(),
+            Some(out_path.clone()),
+            Format::Markdown {
+                obsidian: Some(ObsidianOpts::default()),
+            },
+            Theme::Dark.colors(),
+        );
+
+        let rendered = std::fs::read_to_string(&out_path).unwrap();
+        assert_eq!(
+            rendered.matches("<iframe ").count(),
+            1,
+            "two-dir obsidian render keeps the trailing iframe",
+        );
+    }
+
+    // The single guarantee that makes single-dir in-place `notebook watch`
+    // converge: rendering twice in a row over the same .md must produce
+    // byte-identical output on the second pass. Combined with
+    // `write_output_skips_when_content_unchanged`, the second pass becomes
+    // a no-op write → no fs event → loop dies.
+    #[test]
+    fn cmd_render_markdown_in_place_is_idempotent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(
+            &path,
+            "# Demo\n\nProse.\n\n```rustlab\nx = 1 + 2;\nprint(x)\n```\n\nMore prose.\n",
+        )
+        .unwrap();
+
+        // First pass: input == output (in-place).
+        cmd_render(
+            path.clone(),
+            Some(path.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+        let after_first = std::fs::read_to_string(&path).unwrap();
+
+        // Second pass: re-read the rendered output and render again.
+        cmd_render(
+            path.clone(),
+            Some(path.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+        let after_second = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(
+            after_first, after_second,
+            "second in-place render must produce byte-identical output (otherwise notebook watch will loop forever)",
+        );
+        // Sanity: in-place renders suppress the generated-by header
+        // (the source IS the rendered output, so "do not edit" makes
+        // no sense). Two-dir renders keep the header — verified
+        // elsewhere.
+        assert_eq!(
+            after_second.matches(GENERATED_HEADER).count(),
+            0,
+            "in-place render must not emit the generated-by header",
+        );
+    }
+
+    #[test]
+    fn cmd_render_markdown_two_dir_keeps_generated_header() {
+        let src_dir = tempfile::TempDir::new().unwrap();
+        let out_dir = tempfile::TempDir::new().unwrap();
+        let src_path = src_dir.path().join("note.md");
+        let out_path = out_dir.path().join("note.md");
+        std::fs::write(&src_path, "# Demo\n\nhi\n").unwrap();
+
+        cmd_render(
+            src_path,
+            Some(out_path.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+
+        let rendered = std::fs::read_to_string(&out_path).unwrap();
+        assert_eq!(
+            rendered.matches(GENERATED_HEADER).count(),
+            1,
+            "two-dir render keeps the header so committed gallery output keeps provenance",
+        );
+    }
+
+    #[test]
+    fn write_output_skips_when_content_unchanged() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, b"hello\n").unwrap();
+        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // Sleep just over filesystem mtime granularity (HFS+/APFS = 1 s,
+        // ext4 typically ns but ms-rounded). 1100 ms guarantees a fresh
+        // mtime would be detectable if a write happened.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        write_output(&path.to_path_buf(), b"hello\n");
+
+        let post_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            original_mtime, post_mtime,
+            "identical content must not trigger a write (mtime should be unchanged)",
+        );
+    }
+
+    #[test]
+    fn write_output_writes_when_content_differs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, b"hello\n").unwrap();
+
+        write_output(&path.to_path_buf(), b"hello world\n");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello world\n");
+    }
+
+    #[test]
+    fn write_output_creates_new_file_when_absent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("subdir/new.md");
+        assert!(!path.exists());
+
+        write_output(&path.to_path_buf(), b"fresh\n");
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"fresh\n");
+    }
+
+    // Regression for the "edit plot(1:10) → plot(1:100), plot didn't change"
+    // user report. Root cause: Obsidian (and browser image cache generally)
+    // keys cached images by URL — same `plot-1.svg` URL → cached bytes
+    // shown, even if the file on disk changed. Fix is to put a content
+    // hash in the filename itself: `plot-1-<hash>.svg`. This test pins:
+    //   (a) the filename contains the hash suffix,
+    //   (b) the hash differs when the plot's input changes,
+    //   (c) the hash is stable on a re-render of identical input (so the
+    //       `.md` stays byte-stable for the watcher's no-op skip).
+    #[test]
+    fn plot_filename_hash_changes_when_plot_input_changes() {
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let src_a = dir_a.path().join("note.md");
+        let src_b = dir_b.path().join("note.md");
+
+        std::fs::write(&src_a, "```rustlab\nplot(1:10)\n```\n").unwrap();
+        std::fs::write(&src_b, "```rustlab\nplot(1:100)\n```\n").unwrap();
+
+        cmd_render(
+            src_a.clone(),
+            Some(src_a.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+        cmd_render(
+            src_b.clone(),
+            Some(src_b.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+
+        let md_a = std::fs::read_to_string(&src_a).unwrap();
+        let md_b = std::fs::read_to_string(&src_b).unwrap();
+
+        let hash_a = extract_plot_hash(&md_a);
+        let hash_b = extract_plot_hash(&md_b);
+        assert_ne!(
+            hash_a, hash_b,
+            "plot filename hash must differ between 10-point and 100-point plot \
+             (a: {hash_a}, b: {hash_b})",
+        );
+    }
+
+    #[test]
+    fn plot_filename_hash_stable_across_identical_renders() {
+        let d1 = tempfile::TempDir::new().unwrap();
+        let d2 = tempfile::TempDir::new().unwrap();
+        let s1 = d1.path().join("note.md");
+        let s2 = d2.path().join("note.md");
+        std::fs::write(&s1, "```rustlab\nplot(1:50)\n```\n").unwrap();
+        std::fs::write(&s2, "```rustlab\nplot(1:50)\n```\n").unwrap();
+
+        cmd_render(
+            s1.clone(),
+            Some(s1.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+        cmd_render(
+            s2.clone(),
+            Some(s2.clone()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+        );
+
+        let md1 = std::fs::read_to_string(&s1).unwrap();
+        let md2 = std::fs::read_to_string(&s2).unwrap();
+        assert_eq!(
+            extract_plot_hash(&md1),
+            extract_plot_hash(&md2),
+            "identical plot input must produce identical filename hash (idempotency)",
+        );
+    }
+
+    /// Pull the hex hash suffix out of a `![..](.../plot-N-<hex>.svg)` URL.
+    fn extract_plot_hash(md: &str) -> String {
+        // Find a substring like `plot-1-` … `.svg`; the bit between is the hash.
+        let start = md.find("plot-1-").expect("no plot-1- in markdown");
+        let after_prefix = &md[start + "plot-1-".len()..];
+        let end = after_prefix.find(".svg").expect("no .svg after plot-1-");
+        after_prefix[..end].to_string()
+    }
+
+    #[test]
+    fn cmd_clean_strips_in_place_when_no_output_specified() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        let dirty = format!(
+            "{h}\n\n# Demo\n\n```rustlab\nprint(1)\n```\n\n{s}\n```text\n1\n```\n{e}\n",
+            h = GENERATED_HEADER,
+            s = OUTPUT_BLOCK_START,
+            e = OUTPUT_BLOCK_END,
+        );
+        std::fs::write(&path, &dirty).unwrap();
+
+        let changed = cmd_clean(path.clone(), None, false);
+        assert_eq!(changed, 1, "one file should be reported as cleaned");
+
+        let cleaned = std::fs::read_to_string(&path).unwrap();
+        assert!(!cleaned.contains(GENERATED_HEADER));
+        assert!(!cleaned.contains(OUTPUT_BLOCK_START));
+        assert!(cleaned.contains("```rustlab\nprint(1)\n```"));
+    }
+
+    #[test]
+    fn cmd_clean_no_op_on_already_clean_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        let source = "# Demo\n\n```rustlab\nprint(1)\n```\n";
+        std::fs::write(&path, source).unwrap();
+        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let changed = cmd_clean(path.clone(), None, false);
+        assert_eq!(changed, 0, "already-clean file should not count as changed");
+
+        let post_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            original_mtime, post_mtime,
+            "no-op clean must not touch the file",
+        );
+    }
+
+    #[test]
+    fn cmd_clean_check_mode_does_not_write() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        let dirty = format!("{}\n\n# Demo\n", GENERATED_HEADER);
+        std::fs::write(&path, &dirty).unwrap();
+
+        let changed = cmd_clean(path.clone(), None, true);
+        assert_eq!(changed, 1);
+
+        // File contents must be byte-identical to the dirty input.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), dirty);
+    }
+
+    #[test]
+    fn cmd_clean_directory_walks_recursively() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("sub/deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        let a = dir.path().join("a.md");
+        let b = nested.join("b.md");
+        let header_then_demo = format!("{}\n\n# X\n", GENERATED_HEADER);
+        std::fs::write(&a, &header_then_demo).unwrap();
+        std::fs::write(&b, &header_then_demo).unwrap();
+        // README.md must be excluded (matches list_notebooks behaviour).
+        std::fs::write(dir.path().join("README.md"), &header_then_demo).unwrap();
+
+        let changed = cmd_clean(dir.path().to_path_buf(), None, false);
+        assert_eq!(changed, 2, "two .md under the tree, README excluded");
+
+        assert!(!std::fs::read_to_string(&a).unwrap().contains(GENERATED_HEADER));
+        assert!(!std::fs::read_to_string(&b).unwrap().contains(GENERATED_HEADER));
+        // README untouched.
+        assert!(std::fs::read_to_string(dir.path().join("README.md"))
+            .unwrap()
+            .contains(GENERATED_HEADER));
+    }
+
+    #[test]
+    fn cmd_clean_with_output_writes_copy_leaving_source_untouched() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("note.md");
+        let dst = dir.path().join("cleaned.md");
+        let dirty = format!("{}\n\n# Demo\n", GENERATED_HEADER);
+        std::fs::write(&src, &dirty).unwrap();
+
+        cmd_clean(src.clone(), Some(dst.clone()), false);
+
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), dirty, "source untouched");
+        assert!(!std::fs::read_to_string(&dst).unwrap().contains(GENERATED_HEADER));
+    }
 
     #[test]
     fn extract_title_from_heading() {

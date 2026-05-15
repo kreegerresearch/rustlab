@@ -42,6 +42,7 @@ fn render_to_markdown(host_src: &str, dir: &Path) -> String {
         &theme,
         None,
         render_markdown::LinkStyle::Standard,
+        true,
     )
 }
 
