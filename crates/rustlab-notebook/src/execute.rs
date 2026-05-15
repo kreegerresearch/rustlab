@@ -6,7 +6,7 @@ use rustlab_plot::{
 use rustlab_script::Evaluator;
 
 /// A rendered block ready for HTML output.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Rendered {
     /// Markdown prose (raw markdown text, not yet converted to HTML).
     Markdown(String),
@@ -50,6 +50,111 @@ pub enum Rendered {
     SolutionStart,
 }
 
+/// Outcome of running `execute_notebook_with_cache`. The caller uses
+/// `cache_hit` for telemetry (the watcher prints a "code blocks
+/// unchanged" line when true).
+pub struct ExecutionOutcome {
+    pub rendered: Vec<Rendered>,
+    pub cache_hit: bool,
+}
+
+/// Execute a parsed notebook with an optional cache.
+///
+/// **Cache miss** (or `cache = None`): runs every block through a fresh
+/// evaluator, captures outputs, and — when a cache slot is provided —
+/// stores the executable-block outputs and the final state for next time.
+///
+/// **Cache hit**: skips execution entirely. Restores the prior render's
+/// final state into the live thread-locals, walks the new block list
+/// emitting cached executable-block outputs verbatim and re-interpolating
+/// markdown / callout templates against the restored evaluator. Result:
+/// prose edits are reflected; code blocks are reused.
+///
+/// What counts as "executable" for cache invalidation: `Block::Code`
+/// and `Block::Mermaid`. Markdown, Callout, ExerciseStart and
+/// SolutionStart blocks are NOT part of the cache key — that's the
+/// whole point. Edits to them don't trigger re-execution.
+pub fn execute_notebook_with_cache(
+    blocks: &[Block],
+    mut cache: Option<&mut crate::cache::NotebookCache>,
+) -> ExecutionOutcome {
+    use crate::cache::{CacheLookup, ExecState, NotebookCache};
+
+    // Collect executable block sources up front so we can compute the
+    // cache key without re-walking the block list later.
+    let exec_sources: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Code { source, .. } => Some(source.as_str()),
+            Block::Mermaid { source, .. } => Some(source.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Cache hit fast path: restore state, emit cached executable
+    // outputs interleaved with fresh prose from the new source.
+    if let Some(c) = cache.as_deref_mut() {
+        if let CacheLookup::Hit {
+            exec_outputs,
+            end_state,
+            exercise_counter_start,
+        } = c.lookup(&exec_sources)
+        {
+            let mut ev = end_state.restore();
+            let mut exercise_counter = exercise_counter_start;
+            let mut exec_iter = exec_outputs.iter();
+            let mut rendered = Vec::with_capacity(blocks.len());
+            for block in blocks {
+                match block {
+                    Block::Markdown(text) => {
+                        rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
+                    }
+                    Block::Code { .. } | Block::Mermaid { .. } => {
+                        // exec_iter.next() is guaranteed Some because the
+                        // cache lookup matched on `exec_sources.len()`.
+                        rendered.push(exec_iter.next().expect("cache outputs underrun").clone());
+                    }
+                    Block::Callout { kind, title, content } => {
+                        rendered.push(Rendered::Callout {
+                            kind: *kind,
+                            title: title.clone(),
+                            content: interpolate_markdown(content, &mut ev),
+                        });
+                    }
+                    Block::ExerciseStart => {
+                        exercise_counter += 1;
+                        rendered.push(Rendered::ExerciseStart {
+                            number: exercise_counter,
+                        });
+                    }
+                    Block::SolutionStart => {
+                        rendered.push(Rendered::SolutionStart);
+                    }
+                }
+            }
+            return ExecutionOutcome { rendered, cache_hit: true };
+        }
+    }
+
+    // Cache miss: run the full executor (capturing its final evaluator
+    // so we can snapshot end-state without a wasteful replay) and, if
+    // a cache slot was provided, store outputs + end state for next time.
+    let (rendered, final_ev) = execute_notebook_internal(blocks);
+
+    if let Some(c) = cache {
+        let exec_outputs: Vec<Rendered> = rendered
+            .iter()
+            .filter(|r| matches!(r, Rendered::Code { .. } | Rendered::Mermaid { .. }))
+            .cloned()
+            .collect();
+        let end_state = ExecState::capture(&final_ev);
+        c.store(&exec_sources, exec_outputs, 0, end_state);
+        let _ = NotebookCache::default; // silence unused-import warning
+    }
+
+    ExecutionOutcome { rendered, cache_hit: false }
+}
+
 /// Execute a parsed notebook, returning rendered blocks.
 ///
 /// Code blocks run in sequence through a shared evaluator (variables
@@ -58,6 +163,14 @@ pub enum Rendered {
 /// assignments, `disp()`, `print()`, etc.) is captured via the
 /// evaluator's output buffer.
 pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
+    execute_notebook_internal(blocks).0
+}
+
+/// Same as `execute_notebook` but also returns the final evaluator so
+/// the cache layer can capture end-state without a wasteful replay.
+/// Kept private because most callers don't care about the evaluator
+/// handle.
+fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
     // Suppress TUI plot rendering — notebook captures FigureState directly.
     // PlotContext::Notebook is sticky: figure() calls cannot override it.
     set_plot_context(PlotContext::Notebook);
@@ -154,7 +267,7 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
         }
     }
 
-    rendered
+    (rendered, ev)
 }
 
 /// Run a code block through the evaluator. Returns `Some(error_message)` on failure.

@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod embed;
 pub mod execute;
 #[cfg(feature = "mermaid")]
@@ -301,6 +302,64 @@ fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// Render a single notebook file using a watcher-owned cache. Returns
+/// `true` if the executable blocks matched the cache and execution was
+/// skipped. The watcher uses the return value for telemetry — it prints
+/// a "code blocks unchanged" line on hit so the user can see the cache
+/// working.
+pub fn cmd_render_cached(
+    input: PathBuf,
+    output: Option<PathBuf>,
+    format: Format,
+    theme: &ThemeColors,
+    cache: &mut cache::NotebookCache,
+) -> bool {
+    let source = match std::fs::read_to_string(&input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", input.display());
+            return false;
+        }
+    };
+    let source = strip_render_artifacts(&source);
+
+    let host_dir_owned = input
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    if let Some(dir) = input.parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = std::env::set_current_dir(dir);
+        }
+    }
+
+    let title = extract_title(&source, &input);
+    let expanded = embed::expand_embeds(&source, &host_dir_owned, &host_dir_owned);
+    let blocks = parse::parse_notebook(&expanded);
+    let outcome = execute::execute_notebook_with_cache(&blocks, Some(cache));
+
+    let ext = format.extension();
+    let out_path = output.unwrap_or_else(|| {
+        let stem = input.file_stem().unwrap_or_default();
+        PathBuf::from(format!("{}.{ext}", stem.to_string_lossy()))
+    });
+
+    render_output(
+        &out_path,
+        &format,
+        &title,
+        &outcome.rendered,
+        theme,
+        None,
+        Some(&source),
+        Some(&input),
+    );
+    print_summary(&input, &out_path, &outcome.rendered);
+    outcome.cache_hit
 }
 
 pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {

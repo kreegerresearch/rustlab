@@ -4,7 +4,72 @@ Render Markdown notebooks with executable rustlab code blocks into HTML
 reports, LaTeX documents, PDFs, or GitHub-friendly Markdown with inline
 SVG plots.
 
-## Quick Start
+## Quick Start — Obsidian users
+
+If you want a live notebook experience inside Obsidian — author in
+Editing view, switch to Reading view, see plots and text update on
+save — here's the shortest path:
+
+### Single-file layout (one `.md` per notebook, simplest)
+
+```
+rustlab notebook watch ~/your-obsidian-vault --obsidian
+```
+
+That's it. Then in Obsidian:
+
+1. Open `~/your-obsidian-vault` as a vault (Open another vault → Open folder as vault).
+2. Open or create any `.md` with rustlab code blocks.
+3. **Edit** the code or prose in Editing view (`Cmd/Ctrl-E`).
+4. **View** the rendered output by switching to Reading view (`Cmd/Ctrl-E` again).
+
+The watcher re-renders every save. Plots are written to
+`_attachments/<note>/plot-1-<hash>.svg` and embedded inline; Obsidian's
+Reading view shows them automatically. Code-block output is wrapped in
+`<!-- rustlab:output-start --> … <!-- rustlab:output-end -->` sentinels
+so the renderer can refresh it cleanly on every pass.
+
+### Two-directory layout (pristine source + rendered vault)
+
+```
+rustlab notebook watch ~/notebooks/src -o ~/your-obsidian-vault --obsidian
+```
+
+Edit in `~/notebooks/src` (your authoring tree, keep it in git), view
+in `~/your-obsidian-vault` (the rendered tree Obsidian opens). On
+startup the watcher cleans any stale rustlab artifacts out of the
+source tree automatically. Useful when you want the source bytes to
+stay byte-identical to what you'd commit to a repo.
+
+### What you get out of the box
+
+| Feature | Notes |
+|---|---|
+| Live re-render on save | Debounced 250 ms; tune with `--debounce-ms <MS>`. |
+| Prose-only edits skip code execution | Code-block cache, in-memory per watcher session. Log line `[watch] code blocks unchanged — reusing cached outputs` confirms when it fires. |
+| Stop the runaway-loop family of bugs | Self-write suppression, in-place auto-cleanup of generated header/iframe, hashed plot filenames so Obsidian doesn't show stale images. |
+| Add `.md` notebooks while the watcher is running | They get picked up on first save, no restart needed. |
+| Strip everything rustlab added and recover the source | `rustlab notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Render to standalone HTML / PDF / LaTeX too | `rustlab notebook render` with `-f html`/`-f pdf`/`-f latex`. |
+
+### When to use which layout
+
+- **Single-file in-place** when you want the simplest possible flow and
+  don't care about keeping pristine source. The `.md` file in Obsidian
+  is both source and rendered output.
+- **Two-dir** when you want to commit the source to a repo without
+  rendered output in it, or when the same source feeds multiple
+  output formats. Watcher auto-strips artifacts from the source so it
+  stays pristine. The trailing `<iframe>` to a sibling `.html` is
+  emitted in two-dir only (suppress with `--no-iframe`).
+
+If anything seems wrong — stale plot, weird duplication, runaway
+re-rendering — try `rustlab notebook clean <path>` on the affected
+file to scrub it back to source, then restart the watcher.
+
+---
+
+## Other quick starts (non-Obsidian)
 
 ```
 rustlab notebook render analysis.md              # → analysis.html (default, dark theme)
@@ -19,8 +84,8 @@ rustlab notebook watch notebooks/ --obsidian     # live re-render on save (Obsid
 
 The `markdown` output format is purpose-built for committing rendered
 notebooks to a repo so they display with inline plots on GitHub — each
-captured figure is written as SVG to `plots/<stem>/plot-N.svg` and
-referenced inline. Add `--obsidian` to switch the emitter into
+captured figure is written as SVG to `plots/<stem>/plot-N-<hash>.svg`
+and referenced inline. Add `--obsidian` to switch the emitter into
 vault-native mode (see [Obsidian integration](#obsidian-integration--obsidian)
 below). See
 [`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
@@ -165,6 +230,15 @@ Behaviour:
 - **No-op write skip.** Renders that produce byte-identical output
   don't touch the file — keeps `git status` quiet and prevents
   self-trigger loops in the in-place layout.
+- **Code-block cache.** Every code block's source is hashed each render
+  against the previous render's hash. If nothing executable changed
+  (prose-only edit), the watcher restores the prior evaluator state,
+  reuses the cached code-block outputs, and re-interpolates only the
+  markdown templates — no rustlab execution. A `[watch] code blocks
+  unchanged in <file> — reusing cached outputs (prose-only re-render)`
+  line appears in the log when this fires. Any edit to a rustlab or
+  mermaid block invalidates the cache and triggers a full re-execution.
+  Cache is per-notebook, in-memory, scoped to the watcher session.
 - **Failure isolation.** Parse or execution errors render inline (per
   the standard renderer behaviour); the watcher logs to stderr and
   keeps running.

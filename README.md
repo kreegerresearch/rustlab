@@ -647,7 +647,13 @@ rustlab-notebook render analysis.md -f pdf           # → analysis.pdf (self-co
 rustlab-notebook render analysis.md -f markdown      # → analysis.md + plots/analysis/*.svg
 rustlab-notebook render analysis.md -f latex         # → analysis.tex + plots/analysis/*.svg
 rustlab-notebook render notebooks/ -o build/         # render all → *.html + index.html
+rustlab-notebook watch ~/obsidian-vault --obsidian   # live render in Obsidian (see docs/notebooks.md)
+rustlab-notebook clean note.md                       # strip rendered artifacts back to source
 ```
+
+**Obsidian users:** see [`docs/notebooks.md` § Quick Start — Obsidian
+users](docs/notebooks.md#quick-start--obsidian-users) for the "edit in
+Editing view, see plots in Reading view" workflow.
 
 **Output formats** (all four are first-class):
 

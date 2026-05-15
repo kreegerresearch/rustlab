@@ -375,6 +375,49 @@ pub fn clear_notebook_figures() {
     NOTEBOOK_FIGURES.with(|v| v.borrow_mut().clear());
 }
 
+// ─── Thread-local capture / restore (for notebook output cache) ────────────
+
+/// Captured snapshot of every persistent thread-local in this crate.
+/// Used by the notebook output cache to roll back to a prior render's
+/// final state without re-executing code blocks.
+///
+/// Excludes the per-block-drained buffers (`NOTEBOOK_FIGURES`,
+/// `NOTEBOOK_ANIMATIONS`) and the per-process `PLOT_CONTEXT` (immutable
+/// after startup).
+#[derive(Clone)]
+pub struct PlotSnapshot {
+    figure: FigureState,
+    store: FigureStore,
+    frames: Vec<FigureState>,
+    html_path: Option<String>,
+}
+
+/// Capture every persistent thread-local in this crate into a snapshot.
+pub fn capture_thread_state() -> PlotSnapshot {
+    PlotSnapshot {
+        figure: FIGURE.with(|f| f.borrow().clone()),
+        store: STORE.with(|s| s.borrow().clone()),
+        frames: crate::animation::frames_snapshot(),
+        html_path: crate::html::get_html_figure_path(),
+    }
+}
+
+/// Restore a previously captured snapshot, overwriting every persistent
+/// thread-local. The per-block-drained buffers are also cleared so a
+/// subsequent block executor starts in the same shape it would after a
+/// fresh block boundary.
+pub fn restore_thread_state(snap: &PlotSnapshot) {
+    FIGURE.with(|f| *f.borrow_mut() = snap.figure.clone());
+    STORE.with(|s| *s.borrow_mut() = snap.store.clone());
+    crate::animation::restore_frames(snap.frames.clone());
+    match &snap.html_path {
+        Some(p) => crate::html::set_html_figure_path(p),
+        None => crate::html::clear_html_figure_path(),
+    }
+    clear_notebook_figures();
+    crate::animation::clear_notebook_animations();
+}
+
 // ─── Multi-figure store (figure handles) ──────────────────────────────────
 
 /// Output routing mode for a figure.
@@ -386,11 +429,13 @@ pub enum FigureOutput {
     Viewer(u32),
 }
 
+#[derive(Clone)]
 struct StoredFigure {
     state: FigureState,
     output: FigureOutput,
 }
 
+#[derive(Clone)]
 struct FigureStore {
     figures: HashMap<u32, StoredFigure>,
     /// ID of the active figure. 0 = anonymous (no `figure()` called yet).

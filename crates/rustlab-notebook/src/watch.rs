@@ -25,7 +25,7 @@
 //!   render inline (existing renderer behaviour); the watcher keeps
 //!   running.
 
-use crate::{cmd_render, paths_equal, Format};
+use crate::{paths_equal, Format};
 use notify::{event::EventKind, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use rustlab_plot::theme::ThemeColors;
 use std::collections::{HashMap, HashSet};
@@ -92,11 +92,23 @@ pub fn cmd_watch(
     // (`randn`, time, network) where the rendered bytes legitimately
     // differ each pass, so `write_output`'s hash-equal skip can't trip.
     let mut self_writes: HashMap<PathBuf, Vec<u8>> = HashMap::new();
+    // One output cache per notebook source. Lives for the watcher
+    // session; cleared automatically when the source file is deleted
+    // (next render miss re-populates). On cache hit a `cmd_render_cached`
+    // call skips executing every code block — the user's prose-only
+    // edits no longer pay the cost of re-running slow notebooks.
+    let mut caches: HashMap<PathBuf, crate::cache::NotebookCache> = HashMap::new();
     let initial = list_notebooks(&dir);
     for src in &initial {
-        if let Some(out_path) =
-            render_one_with_tracking(src, &dir, &out_dir, &format, theme, &mut graph)
-        {
+        if let Some(out_path) = render_one_with_tracking(
+            src,
+            &dir,
+            &out_dir,
+            &format,
+            theme,
+            &mut graph,
+            &mut caches,
+        ) {
             if let (Ok(bytes), Some(canon)) =
                 (std::fs::read(&out_path), canonicalize_lossy(&out_path))
             {
@@ -190,7 +202,13 @@ pub fn cmd_watch(
                 let started = Instant::now();
                 for src in &to_render {
                     if let Some(out_path) = render_one_with_tracking(
-                        src, &dir, &out_dir, &format, theme, &mut graph,
+                        src,
+                        &dir,
+                        &out_dir,
+                        &format,
+                        theme,
+                        &mut graph,
+                        &mut caches,
                     ) {
                         if let (Ok(bytes), Some(canon)) =
                             (std::fs::read(&out_path), canonicalize_lossy(&out_path))
@@ -252,6 +270,7 @@ fn render_one_with_tracking(
     format: &Format,
     theme: &'static ThemeColors,
     graph: &mut DependencyGraph,
+    caches: &mut HashMap<PathBuf, crate::cache::NotebookCache>,
 ) -> Option<PathBuf> {
     // Race protection: the file may have vanished between the fs event
     // and now (atomic rename, deletion, etc). `cmd_render` calls
@@ -279,12 +298,20 @@ fn render_one_with_tracking(
     // Skip index.md — handled separately by cmd_render_dir, but in
     // watch mode the simplest behaviour is to render it as a notebook
     // too. Acceptable trade-off for the watch loop's simplicity.
-    cmd_render(
+    let cache = caches.entry(src.to_path_buf()).or_default();
+    let cache_hit = crate::cmd_render_cached(
         src.to_path_buf(),
         Some(out_path.clone()),
         format.clone(),
         theme,
+        cache,
     );
+    if cache_hit {
+        println!(
+            "[watch] code blocks unchanged in {} — reusing cached outputs (prose-only re-render)",
+            src.display(),
+        );
+    }
 
     // Re-scan source for embeds and record dependencies.
     let embedded = match std::fs::read_to_string(src) {

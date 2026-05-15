@@ -71,6 +71,19 @@ pub fn take_frames() -> Vec<FigureState> {
     FRAMES.with(|v| std::mem::take(&mut *v.borrow_mut()))
 }
 
+/// Non-draining clone of the frame buffer. Used by the notebook output
+/// cache to snapshot the buffer without disturbing in-flight animations.
+pub fn frames_snapshot() -> Vec<FigureState> {
+    FRAMES.with(|v| v.borrow().clone())
+}
+
+/// Overwrite the frame buffer with `frames`. Mirror of `take_frames` —
+/// used by the notebook output cache when restoring a prior render's
+/// state.
+pub fn restore_frames(frames: Vec<FigureState>) {
+    FRAMES.with(|v| *v.borrow_mut() = frames);
+}
+
 /// Strip trace data from every subplot of the current `FIGURE` while
 /// preserving subplot layout, axis labels, titles, limits, hold state, and
 /// grid setting. Used by `frame()` so the loop body's next iteration starts
