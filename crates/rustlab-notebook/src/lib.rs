@@ -304,10 +304,26 @@ fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Per-render summary the watcher uses for telemetry: how many
+/// executable blocks were served from cache vs total. Returned by
+/// `cmd_render_cached`.
+pub struct CachedRenderSummary {
+    pub cached_blocks: usize,
+    pub total_blocks: usize,
+}
+
+impl CachedRenderSummary {
+    pub fn cache_hit(&self) -> bool {
+        self.total_blocks > 0 && self.cached_blocks == self.total_blocks
+    }
+    pub fn cache_partial(&self) -> bool {
+        self.cached_blocks > 0 && self.cached_blocks < self.total_blocks
+    }
+}
+
 /// Render a single notebook file using a watcher-owned cache. Returns
-/// `true` if the executable blocks matched the cache and execution was
-/// skipped. The watcher uses the return value for telemetry — it prints
-/// a "code blocks unchanged" line on hit so the user can see the cache
+/// a summary the watcher uses to log "code blocks unchanged" /
+/// "N of M code blocks cached" lines so the user can see the cache
 /// working.
 pub fn cmd_render_cached(
     input: PathBuf,
@@ -315,12 +331,12 @@ pub fn cmd_render_cached(
     format: Format,
     theme: &ThemeColors,
     cache: &mut cache::NotebookCache,
-) -> bool {
+) -> CachedRenderSummary {
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", input.display());
-            return false;
+            return CachedRenderSummary { cached_blocks: 0, total_blocks: 0 };
         }
     };
     let source = strip_render_artifacts(&source);
@@ -359,7 +375,10 @@ pub fn cmd_render_cached(
         Some(&input),
     );
     print_summary(&input, &out_path, &outcome.rendered);
-    outcome.cache_hit
+    CachedRenderSummary {
+        cached_blocks: outcome.cached_blocks,
+        total_blocks: outcome.total_blocks,
+    }
 }
 
 pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {

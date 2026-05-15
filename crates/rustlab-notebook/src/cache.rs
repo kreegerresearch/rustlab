@@ -1,28 +1,41 @@
-//! Whole-notebook output cache for `notebook watch`.
+//! Per-block notebook execution cache for `notebook watch`.
 //!
 //! The watcher re-runs the executor on every `.md` save, but most saves
-//! are *prose* edits — the rustlab code blocks are unchanged. Re-running
-//! every `randn(10000)` or `fir_lowpass(...)` block on each keystroke
-//! wastes seconds and is the user-visible reason the watcher feels slow.
+//! change only *some* of the executable blocks — often none of them, and
+//! often only the last one. Re-running every slow block from the top of
+//! the notebook on each keystroke is the user-visible reason the watcher
+//! feels heavy.
 //!
-//! This module caches the *outputs* of executable blocks (rustlab Code +
-//! Mermaid) plus the final evaluator/plot/RNG state. When the next render
-//! comes in:
+//! This module is a **prefix-array cache**: one entry per executable
+//! block (rustlab Code + Mermaid) in document order, holding the cached
+//! output and a snapshot of the live state *after* that block ran. On a
+//! new render:
 //!
-//! * Hash every executable block's source. If the hash matches the cache,
-//!   it's a **cache hit**: restore the saved state, walk the parsed
-//!   blocks emitting cached executable outputs and *freshly-interpolated*
-//!   prose, no execution.
-//! * On a hash mismatch, fall through to the normal executor and store
-//!   its outputs + final state for next time.
+//! 1. Hash each executable block's source.
+//! 2. Find `valid_k` = the longest common prefix where each cached
+//!    entry's hash still matches the new source.
+//! 3. Truncate cache to `valid_k`. Restore live state from the last
+//!    surviving snapshot (or fresh state if `valid_k == 0`).
+//! 4. Walk the new block list in document order. Blocks `0..valid_k`
+//!    return their cached output (and incrementally restore state to
+//!    "after this block" so subsequent markdown interpolation sees
+//!    the right values). Blocks `valid_k..n` actually execute against
+//!    the live state and append new cache entries.
 //!
-//! Limitations of this layer (deliberate — keeps it simple):
+//! The result: editing block 5 of 10 → blocks 0–4 are skipped (state
+//! restored from `entries[4].snapshot`), blocks 5–10 execute. Editing a
+//! prose paragraph between blocks 3 and 4 → no executable block source
+//! changes, full cache hit, no execution at all. Editing block 0 →
+//! cache invalidates, everything runs from scratch.
 //!
-//! - Whole-notebook only. *Any* executable-block change invalidates the
-//!   whole cache. Per-block partial execution requires snapshots between
-//!   blocks; future work.
-//! - In-memory, watcher-session-scoped. Restart the watcher → first
-//!   render is full. No on-disk persistence.
+//! Limitations (deliberate — keep it simple):
+//!
+//! - In-memory, watcher-session-scoped. Restart the watcher → empty
+//!   cache → first render is full.
+//! - No memory cap (yet). Each entry holds a full evaluator/figure/RNG
+//!   snapshot. A pathological 1 GB-tensor-per-block notebook would
+//!   OOM. Future work.
+//! - No opt-out directive per block. Edit the block to force re-execute.
 
 use crate::execute::Rendered;
 use rustlab_plot::PlotSnapshot;
@@ -31,32 +44,23 @@ use rustlab_script::Evaluator;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Cached state needed to re-emit a notebook's rendered output without
-/// re-executing its code blocks.
-///
-/// Hit/miss is determined by `exec_block_hash`: a stable hash over every
-/// executable block's source, in document order. Prose / markdown content
-/// is intentionally excluded — it gets re-emitted fresh from the new
-/// source on every render so prose edits show up immediately.
-pub struct NotebookCache {
-    /// Hash of all executable (rustlab + mermaid) block sources joined
-    /// with a NUL separator, in document order.
-    exec_block_hash: u64,
-    /// Rendered outputs for the executable blocks only, in document
-    /// order. On cache hit these are spliced into the new block walk in
-    /// place of fresh execution.
-    exec_outputs: Vec<Rendered>,
-    /// Number of exercise blocks seen *before* the cache was built —
-    /// used to keep numbering stable across cache hits/misses.
-    exercise_counter_start: usize,
-    /// Captured state at the END of the previous successful render.
-    /// Restored on cache hit so markdown interpolation (`${expr}`) and
-    /// callouts see the same variables as the original execution.
-    end_state: ExecState,
+/// One cache slot. Indexed by document-order position among executable
+/// blocks (Code + Mermaid), NOT by all-block position.
+pub struct CacheEntry {
+    /// Hash of just this block's source. Used to detect whether the
+    /// user edited *this* block.
+    pub block_hash: u64,
+    /// The block's previously-rendered output. Replays verbatim on a
+    /// cache hit (no execution).
+    pub output: Rendered,
+    /// Live state *after* this block ran the previous time. Restored
+    /// when the cache hits this block, so any subsequent markdown
+    /// interpolation sees the same values it did originally.
+    pub snapshot: ExecState,
 }
 
-/// Bundle of every runtime state we need to roll back to a prior render:
-/// the script evaluator, plot thread-locals, and the RNG.
+/// Bundle of every runtime state we need to roll back to a prior
+/// point: the script evaluator, the plot thread-locals, and the RNG.
 pub struct ExecState {
     pub evaluator: Evaluator,
     pub plot: PlotSnapshot,
@@ -64,9 +68,9 @@ pub struct ExecState {
 }
 
 impl ExecState {
-    /// Snapshot the live thread-local state into an `ExecState`. Uses
-    /// `Evaluator::deep_clone` so mutable `Arc<Mutex<…>>` interiors in
-    /// `Value` (e.g. `FirState`) don't alias between snapshot and live.
+    /// Snapshot the live thread-local state. Uses `Evaluator::deep_clone`
+    /// so mutable `Arc<Mutex<…>>` interiors in `Value` (e.g. `FirState`)
+    /// don't alias between snapshot and live.
     pub fn capture(evaluator: &Evaluator) -> Self {
         ExecState {
             evaluator: evaluator.deep_clone(),
@@ -76,9 +80,7 @@ impl ExecState {
     }
 
     /// Overwrite the live thread-locals from this snapshot. Returns a
-    /// fresh `Evaluator` that the caller installs as its working copy —
-    /// the existing evaluator handle is replaced, the thread-local
-    /// figure/store/rng state is rolled back.
+    /// fresh `Evaluator` that the caller installs as its working copy.
     pub fn restore(&self) -> Evaluator {
         rustlab_plot::restore_thread_state(&self.plot);
         rustlab_script::eval::rng::restore(&self.rng);
@@ -86,90 +88,61 @@ impl ExecState {
     }
 }
 
+/// Per-notebook output cache. One per source path, owned by the watcher
+/// for its session.
+#[derive(Default)]
+pub struct NotebookCache {
+    pub(crate) entries: Vec<CacheEntry>,
+}
+
 impl NotebookCache {
-    /// Outcome of consulting the cache for a new render.
-    pub fn lookup<'a>(
-        &'a mut self,
-        exec_block_sources: &[&str],
-    ) -> CacheLookup<'a> {
-        let new_hash = hash_exec_blocks(exec_block_sources);
-        if new_hash == self.exec_block_hash
-            && exec_block_sources.len() == self.exec_outputs.len()
-        {
-            CacheLookup::Hit {
-                exec_outputs: &self.exec_outputs,
-                end_state: &self.end_state,
-                exercise_counter_start: self.exercise_counter_start,
-            }
-        } else {
-            CacheLookup::Miss
-        }
+    /// Find the longest prefix where the cached entries' hashes still
+    /// match the new source's per-block hashes. Returns the count of
+    /// matching entries; callers truncate `entries` to this length
+    /// before executing the divergent tail.
+    pub fn valid_prefix(&self, new_block_hashes: &[u64]) -> usize {
+        self.entries
+            .iter()
+            .zip(new_block_hashes.iter())
+            .take_while(|(entry, h)| entry.block_hash == **h)
+            .count()
     }
 
-    /// Replace the cache contents with the outcome of a fresh execution.
-    /// Called by the executor after a cache miss.
-    pub fn store(
-        &mut self,
-        exec_block_sources: &[&str],
-        exec_outputs: Vec<Rendered>,
-        exercise_counter_start: usize,
-        end_state: ExecState,
-    ) {
-        debug_assert_eq!(
-            exec_block_sources.len(),
-            exec_outputs.len(),
-            "executable source/output counts must agree",
-        );
-        self.exec_block_hash = hash_exec_blocks(exec_block_sources);
-        self.exec_outputs = exec_outputs;
-        self.exercise_counter_start = exercise_counter_start;
-        self.end_state = end_state;
+    /// Truncate the cache to keep only the first `n` entries. Used to
+    /// discard everything from the first divergent block onward before
+    /// re-executing.
+    pub fn truncate(&mut self, n: usize) {
+        self.entries.truncate(n);
     }
 
-    /// True if anything is stored. Useful for logging on the first call.
-    pub fn is_populated(&self) -> bool {
-        !self.exec_outputs.is_empty() || self.exec_block_hash != 0
+    /// Append a freshly-executed block's result to the cache.
+    pub fn push(&mut self, entry: CacheEntry) {
+        self.entries.push(entry);
+    }
+
+    /// Borrow a cached entry by its executable-block index.
+    pub fn get(&self, idx: usize) -> Option<&CacheEntry> {
+        self.entries.get(idx)
+    }
+
+    /// Number of cached executable blocks. After a render this should
+    /// equal the new source's executable-block count.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// `true` when the cache holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
-impl Default for NotebookCache {
-    fn default() -> Self {
-        NotebookCache {
-            exec_block_hash: 0,
-            exec_outputs: Vec::new(),
-            exercise_counter_start: 0,
-            end_state: ExecState {
-                evaluator: Evaluator::new(),
-                plot: rustlab_plot::capture_thread_state(),
-                rng: rustlab_script::eval::rng::capture(),
-            },
-        }
-    }
-}
-
-/// Outcome of looking up a cache entry against a new source's executable
-/// blocks. Borrows the cache so callers can use the cached outputs
-/// without cloning the whole thing.
-pub enum CacheLookup<'a> {
-    Hit {
-        exec_outputs: &'a [Rendered],
-        end_state: &'a ExecState,
-        exercise_counter_start: usize,
-    },
-    Miss,
-}
-
-/// Stable hash over the executable block sources joined with a NUL
-/// separator. `DefaultHasher` is not stable across Rust versions, but
-/// the cache lives only for a watcher session — no cross-version
-/// concern. NUL separator avoids collisions where adjacent blocks could
-/// merge under concatenation.
-fn hash_exec_blocks(sources: &[&str]) -> u64 {
+/// Stable per-block hash. `DefaultHasher` is not stable across Rust
+/// versions, but the cache lives only for a watcher session — no
+/// cross-version concern.
+pub fn hash_block_source(source: &str) -> u64 {
     let mut h = DefaultHasher::new();
-    for s in sources {
-        s.hash(&mut h);
-        0u8.hash(&mut h);
-    }
+    source.hash(&mut h);
     h.finish()
 }
 
@@ -178,145 +151,177 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hash_changes_when_a_block_changes() {
-        let h1 = hash_exec_blocks(&["a = 1", "b = 2"]);
-        let h2 = hash_exec_blocks(&["a = 1", "b = 3"]);
-        assert_ne!(h1, h2);
+    fn hash_changes_when_source_changes() {
+        assert_ne!(hash_block_source("a = 1"), hash_block_source("a = 2"));
     }
 
     #[test]
-    fn hash_stable_for_identical_input() {
-        let h1 = hash_exec_blocks(&["plot(1:10)"]);
-        let h2 = hash_exec_blocks(&["plot(1:10)"]);
-        assert_eq!(h1, h2);
+    fn hash_stable_for_identical_source() {
+        assert_eq!(hash_block_source("plot(1:10)"), hash_block_source("plot(1:10)"));
     }
 
     #[test]
-    fn hash_differs_on_reorder() {
-        let h1 = hash_exec_blocks(&["a", "b"]);
-        let h2 = hash_exec_blocks(&["b", "a"]);
-        assert_ne!(h1, h2);
+    fn valid_prefix_returns_zero_for_empty_cache() {
+        let cache = NotebookCache::default();
+        assert_eq!(cache.valid_prefix(&[1, 2, 3]), 0);
     }
 
     #[test]
-    fn hash_differs_when_block_added() {
-        let h1 = hash_exec_blocks(&["a"]);
-        let h2 = hash_exec_blocks(&["a", "b"]);
-        assert_ne!(h1, h2);
-    }
-
-    #[test]
-    fn lookup_misses_on_fresh_cache() {
+    fn valid_prefix_finds_longest_match() {
         let mut cache = NotebookCache::default();
-        match cache.lookup(&["x = 1"]) {
-            CacheLookup::Miss => {}
-            CacheLookup::Hit { .. } => panic!("fresh cache must miss"),
+        // Build a fake cache with hashes 10, 20, 30, 40.
+        for h in [10, 20, 30, 40] {
+            cache.push(CacheEntry {
+                block_hash: h,
+                output: Rendered::SolutionStart,
+                snapshot: ExecState {
+                    evaluator: Evaluator::new(),
+                    plot: rustlab_plot::capture_thread_state(),
+                    rng: rustlab_script::eval::rng::capture(),
+                },
+            });
         }
+
+        // Identical hashes → full match.
+        assert_eq!(cache.valid_prefix(&[10, 20, 30, 40]), 4);
+        // Edit at index 2 → prefix 0..=1.
+        assert_eq!(cache.valid_prefix(&[10, 20, 99, 40]), 2);
+        // First block changed → 0.
+        assert_eq!(cache.valid_prefix(&[99, 20, 30, 40]), 0);
+        // Appended block → match the existing prefix in full.
+        assert_eq!(cache.valid_prefix(&[10, 20, 30, 40, 50]), 4);
+        // Shorter than cache → match limited by new length.
+        assert_eq!(cache.valid_prefix(&[10, 20]), 2);
     }
 
-    // ── Integration: execute_notebook_with_cache behaviour ────────────────
-    //
-    // These exercise the cache through the public executor entry point. The
-    // structural property we care about: a second run with unchanged code
-    // blocks returns `cache_hit = true` and reuses the prior outputs;
-    // editing a code block forces a miss.
+    // ── Integration: execute_notebook_with_cache prefix behaviour ─────────
 
-    use crate::execute::{execute_notebook_with_cache, Rendered};
+    use crate::execute::execute_notebook_with_cache;
     use crate::parse::parse_notebook;
 
-    fn drive(source: &str, cache: &mut NotebookCache) -> bool {
+    /// Drive the executor against `source` with `cache`. Returns the
+    /// resulting outcome so tests can assert on cache_hit / cached_count
+    /// without re-parsing.
+    fn drive(source: &str, cache: &mut NotebookCache) -> crate::execute::ExecutionOutcome {
         let blocks = parse_notebook(source);
-        execute_notebook_with_cache(&blocks, Some(cache)).cache_hit
+        execute_notebook_with_cache(&blocks, Some(cache))
     }
 
     #[test]
-    fn second_render_of_identical_source_hits_cache() {
+    fn second_render_of_identical_source_hits_every_block() {
         let mut cache = NotebookCache::default();
-        let src = "# Demo\n\n```rustlab\nx = 1 + 2;\n```\n";
-        assert!(!drive(src, &mut cache), "first render is always a miss");
-        assert!(drive(src, &mut cache), "second identical render must hit");
+        let src = "# Demo\n\n```rustlab\na = 1;\n```\n\nProse.\n\n```rustlab\nb = a + 1;\n```\n";
+        let first = drive(src, &mut cache);
+        assert_eq!(first.cached_blocks, 0, "first render is all-miss");
+        assert_eq!(first.total_blocks, 2);
+
+        let second = drive(src, &mut cache);
+        assert_eq!(second.cached_blocks, 2, "identical re-render must hit every block");
+        assert_eq!(second.total_blocks, 2);
     }
 
     #[test]
-    fn prose_only_edit_still_hits_cache() {
-        // User changes prose between two code blocks. Code block sources
-        // unchanged → cache hit. This is the user's "prose edit should
-        // not re-execute" case.
+    fn prose_only_edit_hits_every_block() {
         let mut cache = NotebookCache::default();
-        let first = "# Demo\n\n```rustlab\nx = 1 + 2;\n```\n\nFirst version of prose.\n";
-        let second = "# Demo\n\n```rustlab\nx = 1 + 2;\n```\n\nEdited prose — totally different.\n";
-        assert!(!drive(first, &mut cache));
+        let first = "```rustlab\nx = 5;\n```\n\nFirst prose.\n";
+        let second = "```rustlab\nx = 5;\n```\n\nEntirely different prose.\n";
+        drive(first, &mut cache);
+        let outcome = drive(second, &mut cache);
+        assert_eq!(outcome.cached_blocks, 1, "prose-only change → block stays cached");
+    }
+
+    #[test]
+    fn editing_last_block_keeps_earlier_blocks_cached() {
+        let mut cache = NotebookCache::default();
+        let first = "```rustlab\na = 1;\n```\n\n```rustlab\nb = a + 10;\n```\n";
+        let second = "```rustlab\na = 1;\n```\n\n```rustlab\nb = a + 999;\n```\n";
+        drive(first, &mut cache);
+        let outcome = drive(second, &mut cache);
+        assert_eq!(
+            outcome.cached_blocks, 1,
+            "block 0 unchanged → cached; block 1 edited → re-executed",
+        );
+        assert_eq!(outcome.total_blocks, 2);
+    }
+
+    #[test]
+    fn editing_first_block_invalidates_everything() {
+        let mut cache = NotebookCache::default();
+        let first = "```rustlab\nx = 1;\n```\n\n```rustlab\ny = x;\n```\n";
+        let second = "```rustlab\nx = 2;\n```\n\n```rustlab\ny = x;\n```\n";
+        drive(first, &mut cache);
+        let outcome = drive(second, &mut cache);
+        assert_eq!(outcome.cached_blocks, 0, "edit at the top cascades through");
+    }
+
+    #[test]
+    fn appending_a_new_block_keeps_existing_cached() {
+        let mut cache = NotebookCache::default();
+        let first = "```rustlab\nx = 1;\n```\n";
+        let second = "```rustlab\nx = 1;\n```\n\n```rustlab\ny = 2;\n```\n";
+        drive(first, &mut cache);
+        let outcome = drive(second, &mut cache);
+        assert_eq!(outcome.cached_blocks, 1, "new block at end runs against cached prefix");
+        assert_eq!(outcome.total_blocks, 2);
+    }
+
+    #[test]
+    fn middle_block_edit_sees_correct_upstream_state() {
+        // Block 0 sets a = 100. Block 1 sets b = a + 1 (= 101). Block 2
+        // uses b. Edit block 1 to b = a * 2 (= 200). Block 2 must see
+        // b = 200 — proves the snapshot restored upstream state correctly.
+        let mut cache = NotebookCache::default();
+        let first = "\
+```rustlab\na = 100;\n```\n\n\
+```rustlab\nb = a + 1;\n```\n\n\
+```rustlab\nprint(b)\n```\n";
+        let second = "\
+```rustlab\na = 100;\n```\n\n\
+```rustlab\nb = a * 2;\n```\n\n\
+```rustlab\nprint(b)\n```\n";
+        drive(first, &mut cache);
+        let outcome = drive(second, &mut cache);
+        assert_eq!(outcome.cached_blocks, 1, "block 0 cached; blocks 1 & 2 re-execute");
+
+        // Third Rendered::Code must report 200 in its text_output.
+        let third = outcome
+            .rendered
+            .iter()
+            .filter_map(|r| match r {
+                Rendered::Code { text_output, .. } => Some(text_output.as_str()),
+                _ => None,
+            })
+            .nth(2)
+            .expect("third code block missing");
         assert!(
-            drive(second, &mut cache),
-            "prose-only edit must hit the cache (code blocks unchanged)",
+            third.contains("200"),
+            "block 2 must see b=200 after restoring state from block 0's snapshot: {third:?}",
         );
     }
 
     #[test]
-    fn code_block_edit_misses_cache() {
-        let mut cache = NotebookCache::default();
-        let v10 = "```rustlab\nplot(1:10)\n```\n";
-        let v100 = "```rustlab\nplot(1:100)\n```\n";
-        assert!(!drive(v10, &mut cache));
-        assert!(
-            !drive(v100, &mut cache),
-            "code block source change must invalidate the cache",
-        );
-    }
-
-    #[test]
-    fn cache_hit_uses_cached_outputs_for_code_blocks() {
-        // Pollute the cache by running once; then on the second
-        // (cache-hit) render, replace the executor's behaviour by
-        // editing the cache's stored outputs directly. The output
-        // emitted on the second pass should match the cache, not what
-        // the source would produce — proof that code wasn't re-executed.
+    fn cache_hit_reuses_cached_output_verbatim() {
+        // Pollute the cache with a sentinel value, render again, prove
+        // the emitted output reflects the sentinel — i.e. the code did
+        // not re-execute.
         let mut cache = NotebookCache::default();
         let src = "```rustlab\nx = 42;\n```\n";
-        let blocks = parse_notebook(src);
-        let _ = execute_notebook_with_cache(&blocks, Some(&mut cache));
+        let first = drive(src, &mut cache);
+        assert_eq!(first.cached_blocks, 0);
 
-        // Tamper: stash a recognisable text_output in the cache.
-        for r in cache.exec_outputs.iter_mut() {
-            if let Rendered::Code { text_output, .. } = r {
-                *text_output = "SENTINEL FROM CACHE".to_string();
+        // Tamper.
+        for entry in cache.entries.iter_mut() {
+            if let Rendered::Code { text_output, .. } = &mut entry.output {
+                *text_output = "SENTINEL_TAMPERED".to_string();
             }
         }
 
-        let outcome = execute_notebook_with_cache(&blocks, Some(&mut cache));
-        assert!(outcome.cache_hit, "second render must hit");
-        let from_cache = outcome.rendered.iter().any(|r| matches!(
+        let second = drive(src, &mut cache);
+        assert_eq!(second.cached_blocks, 1, "second render must hit");
+        let saw_sentinel = second.rendered.iter().any(|r| matches!(
             r,
-            Rendered::Code { text_output, .. } if text_output == "SENTINEL FROM CACHE"
+            Rendered::Code { text_output, .. } if text_output == "SENTINEL_TAMPERED"
         ));
-        assert!(from_cache, "cache-hit render must use cached output, not re-execute");
-    }
-
-    #[test]
-    fn prose_only_edit_re_interpolates_markdown_against_restored_state() {
-        // First render establishes `n = 5` then renders prose that
-        // interpolates ${n}. On a prose-only edit (different prose,
-        // same template), the cache-hit path must restore the
-        // evaluator so ${n} still resolves to 5.
-        let mut cache = NotebookCache::default();
-        let first = "```rustlab\nn = 5;\n```\n\nFirst: ${n}.\n";
-        let second = "```rustlab\nn = 5;\n```\n\nSecond — different prose: ${n}.\n";
-
-        let blocks1 = parse_notebook(first);
-        let outcome1 = execute_notebook_with_cache(&blocks1, Some(&mut cache));
-        assert!(!outcome1.cache_hit);
-
-        let blocks2 = parse_notebook(second);
-        let outcome2 = execute_notebook_with_cache(&blocks2, Some(&mut cache));
-        assert!(outcome2.cache_hit, "code block unchanged ⇒ hit");
-
-        let interpolated_ok = outcome2.rendered.iter().any(|r| matches!(
-            r,
-            Rendered::Markdown(text) if text.contains("Second — different prose: 5")
-        ));
-        assert!(
-            interpolated_ok,
-            "edited prose must re-interpolate against the restored evaluator state",
-        );
+        assert!(saw_sentinel, "cached output must be used verbatim (cache really skipped execution)");
     }
 }

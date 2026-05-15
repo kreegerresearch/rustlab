@@ -299,16 +299,23 @@ fn render_one_with_tracking(
     // watch mode the simplest behaviour is to render it as a notebook
     // too. Acceptable trade-off for the watch loop's simplicity.
     let cache = caches.entry(src.to_path_buf()).or_default();
-    let cache_hit = crate::cmd_render_cached(
+    let summary = crate::cmd_render_cached(
         src.to_path_buf(),
         Some(out_path.clone()),
         format.clone(),
         theme,
         cache,
     );
-    if cache_hit {
+    if summary.cache_hit() {
         println!(
             "[watch] code blocks unchanged in {} — reusing cached outputs (prose-only re-render)",
+            src.display(),
+        );
+    } else if summary.cache_partial() {
+        println!(
+            "[watch] {} of {} code blocks cached for {} — executing only the divergent tail",
+            summary.cached_blocks,
+            summary.total_blocks,
             src.display(),
         );
     }

@@ -50,109 +50,242 @@ pub enum Rendered {
     SolutionStart,
 }
 
-/// Outcome of running `execute_notebook_with_cache`. The caller uses
-/// `cache_hit` for telemetry (the watcher prints a "code blocks
-/// unchanged" line when true).
+/// Outcome of running `execute_notebook_with_cache`. The watcher uses
+/// `cached_blocks` / `total_blocks` for telemetry — prints something
+/// like "3 of 5 code blocks cached" when partial-hit, or
+/// "code blocks unchanged" when fully cached.
 pub struct ExecutionOutcome {
     pub rendered: Vec<Rendered>,
-    pub cache_hit: bool,
+    /// Number of executable blocks (Code + Mermaid) served from cache.
+    pub cached_blocks: usize,
+    /// Total executable blocks in the notebook.
+    pub total_blocks: usize,
 }
 
-/// Execute a parsed notebook with an optional cache.
+impl ExecutionOutcome {
+    /// `true` when every executable block came from cache (no execution).
+    pub fn cache_hit(&self) -> bool {
+        self.total_blocks > 0 && self.cached_blocks == self.total_blocks
+    }
+
+    /// `true` when at least one block came from cache but at least one
+    /// also executed fresh. Useful for the "partial hit" log line.
+    pub fn cache_partial(&self) -> bool {
+        self.cached_blocks > 0 && self.cached_blocks < self.total_blocks
+    }
+}
+
+/// Execute a parsed notebook with an optional per-block cache.
 ///
-/// **Cache miss** (or `cache = None`): runs every block through a fresh
-/// evaluator, captures outputs, and — when a cache slot is provided —
-/// stores the executable-block outputs and the final state for next time.
+/// **Without a cache** (`cache = None`): runs every block from a fresh
+/// evaluator — identical to `execute_notebook`.
 ///
-/// **Cache hit**: skips execution entirely. Restores the prior render's
-/// final state into the live thread-locals, walks the new block list
-/// emitting cached executable-block outputs verbatim and re-interpolating
-/// markdown / callout templates against the restored evaluator. Result:
-/// prose edits are reflected; code blocks are reused.
+/// **With a cache**: walks the new block list in document order. For
+/// each executable block (Code + Mermaid):
 ///
-/// What counts as "executable" for cache invalidation: `Block::Code`
-/// and `Block::Mermaid`. Markdown, Callout, ExerciseStart and
-/// SolutionStart blocks are NOT part of the cache key — that's the
-/// whole point. Edits to them don't trigger re-execution.
+/// - If the cache holds an entry at this position whose hash matches
+///   the block's source, **emit the cached output** and **restore live
+///   state from the entry's snapshot** so any subsequent markdown
+///   interpolation sees the right values. No re-execution.
+/// - Otherwise (first divergence and everything beyond), **execute the
+///   block** against the live state, capture its output and a snapshot
+///   of the post-execution state, and append a new cache entry.
+///
+/// Markdown / Callout blocks are *always* re-interpolated against the
+/// current live state — that's how prose edits show up immediately
+/// while code stays cached.
+///
+/// What counts as "executable" for cache slot accounting: `Block::Code`
+/// and `Block::Mermaid`.
 pub fn execute_notebook_with_cache(
     blocks: &[Block],
     mut cache: Option<&mut crate::cache::NotebookCache>,
 ) -> ExecutionOutcome {
-    use crate::cache::{CacheLookup, ExecState, NotebookCache};
+    use crate::cache::{hash_block_source, CacheEntry, ExecState};
 
-    // Collect executable block sources up front so we can compute the
-    // cache key without re-walking the block list later.
-    let exec_sources: Vec<&str> = blocks
+    set_plot_context(PlotContext::Notebook);
+
+    // Per-executable-block hashes for prefix-match against the cache.
+    let exec_hashes: Vec<u64> = blocks
         .iter()
         .filter_map(|b| match b {
-            Block::Code { source, .. } => Some(source.as_str()),
-            Block::Mermaid { source, .. } => Some(source.as_str()),
+            Block::Code { source, .. } => Some(hash_block_source(source)),
+            Block::Mermaid { source, .. } => Some(hash_block_source(source)),
             _ => None,
         })
         .collect();
+    let total_blocks = exec_hashes.len();
 
-    // Cache hit fast path: restore state, emit cached executable
-    // outputs interleaved with fresh prose from the new source.
+    // Determine how many leading entries we can keep, then truncate the
+    // tail so subsequent `push` calls extend the kept prefix cleanly.
+    let valid_k = cache.as_ref().map_or(0, |c| c.valid_prefix(&exec_hashes));
     if let Some(c) = cache.as_deref_mut() {
-        if let CacheLookup::Hit {
-            exec_outputs,
-            end_state,
-            exercise_counter_start,
-        } = c.lookup(&exec_sources)
-        {
-            let mut ev = end_state.restore();
-            let mut exercise_counter = exercise_counter_start;
-            let mut exec_iter = exec_outputs.iter();
-            let mut rendered = Vec::with_capacity(blocks.len());
-            for block in blocks {
-                match block {
-                    Block::Markdown(text) => {
-                        rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
-                    }
-                    Block::Code { .. } | Block::Mermaid { .. } => {
-                        // exec_iter.next() is guaranteed Some because the
-                        // cache lookup matched on `exec_sources.len()`.
-                        rendered.push(exec_iter.next().expect("cache outputs underrun").clone());
-                    }
-                    Block::Callout { kind, title, content } => {
-                        rendered.push(Rendered::Callout {
-                            kind: *kind,
-                            title: title.clone(),
-                            content: interpolate_markdown(content, &mut ev),
+        c.truncate(valid_k);
+    }
+
+    // Start with a fresh evaluator + fresh thread-locals. As we walk
+    // blocks, the live state is brought to the right point either by
+    // restoring a cached snapshot (cache-hit position) or by actually
+    // executing a block (cache-miss position).
+    let mut ev = Evaluator::new();
+    if valid_k == 0 {
+        // No cached prefix to restore from — make sure thread-locals
+        // start clean so a fresh execution doesn't see stale state
+        // left over from a prior render in this process.
+        FIGURE.with(|f| f.borrow_mut().reset());
+        rustlab_plot::clear_notebook_figures();
+        clear_notebook_animations();
+    }
+
+    let mut rendered: Vec<Rendered> = Vec::with_capacity(blocks.len());
+    let mut exec_idx = 0usize; // counts Code+Mermaid blocks
+    let mut exercise_counter = 0usize;
+    let mut cached_blocks = 0usize;
+
+    for block in blocks {
+        match block {
+            Block::Markdown(text) => {
+                rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
+            }
+            Block::Code { source, directives } => {
+                if exec_idx < valid_k {
+                    // Cache hit at this position. Reuse the recorded
+                    // output and roll live state forward to "after this
+                    // block" so subsequent markdown interpolation sees
+                    // the same values it would have originally.
+                    let entry = cache
+                        .as_ref()
+                        .expect("valid_k > 0 implies cache present")
+                        .get(exec_idx)
+                        .expect("valid_k bounded by cache.len()");
+                    rendered.push(entry.output.clone());
+                    ev = entry.snapshot.restore();
+                    cached_blocks += 1;
+                } else {
+                    // Cache miss. Actually run the block.
+                    let output = run_code_block_capturing(&mut ev, source, directives);
+                    rendered.push(output.clone());
+                    if let Some(c) = cache.as_deref_mut() {
+                        c.push(CacheEntry {
+                            block_hash: exec_hashes[exec_idx],
+                            output,
+                            snapshot: ExecState::capture(&ev),
                         });
-                    }
-                    Block::ExerciseStart => {
-                        exercise_counter += 1;
-                        rendered.push(Rendered::ExerciseStart {
-                            number: exercise_counter,
-                        });
-                    }
-                    Block::SolutionStart => {
-                        rendered.push(Rendered::SolutionStart);
                     }
                 }
+                exec_idx += 1;
             }
-            return ExecutionOutcome { rendered, cache_hit: true };
+            Block::Mermaid { source, directives } => {
+                if exec_idx < valid_k {
+                    let entry = cache
+                        .as_ref()
+                        .expect("valid_k > 0 implies cache present")
+                        .get(exec_idx)
+                        .expect("valid_k bounded by cache.len()");
+                    rendered.push(entry.output.clone());
+                    // Mermaid doesn't mutate evaluator/plot/RNG state,
+                    // so restoring its snapshot is equivalent to leaving
+                    // state alone — but we restore anyway for uniform
+                    // semantics with code-block restoration.
+                    ev = entry.snapshot.restore();
+                    cached_blocks += 1;
+                } else {
+                    let MermaidDirectives { hidden, details, caption } = directives.clone();
+                    let output = Rendered::Mermaid {
+                        source: source.clone(),
+                        hidden,
+                        details,
+                        caption,
+                    };
+                    rendered.push(output.clone());
+                    if let Some(c) = cache.as_deref_mut() {
+                        c.push(CacheEntry {
+                            block_hash: exec_hashes[exec_idx],
+                            output,
+                            snapshot: ExecState::capture(&ev),
+                        });
+                    }
+                }
+                exec_idx += 1;
+            }
+            Block::Callout { kind, title, content } => {
+                rendered.push(Rendered::Callout {
+                    kind: *kind,
+                    title: title.clone(),
+                    content: interpolate_markdown(content, &mut ev),
+                });
+            }
+            Block::ExerciseStart => {
+                exercise_counter += 1;
+                rendered.push(Rendered::ExerciseStart {
+                    number: exercise_counter,
+                });
+            }
+            Block::SolutionStart => {
+                rendered.push(Rendered::SolutionStart);
+            }
         }
     }
 
-    // Cache miss: run the full executor (capturing its final evaluator
-    // so we can snapshot end-state without a wasteful replay) and, if
-    // a cache slot was provided, store outputs + end state for next time.
-    let (rendered, final_ev) = execute_notebook_internal(blocks);
-
-    if let Some(c) = cache {
-        let exec_outputs: Vec<Rendered> = rendered
-            .iter()
-            .filter(|r| matches!(r, Rendered::Code { .. } | Rendered::Mermaid { .. }))
-            .cloned()
-            .collect();
-        let end_state = ExecState::capture(&final_ev);
-        c.store(&exec_sources, exec_outputs, 0, end_state);
-        let _ = NotebookCache::default; // silence unused-import warning
+    ExecutionOutcome {
+        rendered,
+        cached_blocks,
+        total_blocks,
     }
+}
 
-    ExecutionOutcome { rendered, cache_hit: false }
+/// Execute one rustlab code block against an existing evaluator,
+/// capturing its full output (text, error, figures, animations) as a
+/// `Rendered::Code` ready to splice into a rendered document. Used by
+/// both `execute_notebook_internal` (full run) and
+/// `execute_notebook_with_cache` (cache miss at this block).
+fn run_code_block_capturing(
+    ev: &mut Evaluator,
+    source: &str,
+    directives: &crate::parse::CodeDirectives,
+) -> Rendered {
+    // Reset figure before each code block so we only capture what this
+    // block produces — unless hold is on, in which case we preserve
+    // figure state for multi-block overlays.
+    let hold_active = FIGURE.with(|fig| fig.borrow().hold);
+    if !hold_active {
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+    }
+    clear_notebook_figures();
+    clear_notebook_animations();
+
+    rustlab_script::start_capture();
+    let error = run_code_block(ev, source);
+    let text_output = rustlab_script::stop_capture();
+
+    let mut figures = take_notebook_figures();
+    if figures.is_empty() {
+        FIGURE.with(|fig| {
+            let f = fig.borrow();
+            if f.subplots.iter().any(|s| {
+                !s.series.is_empty()
+                    || s.heatmap.is_some()
+                    || s.surface.is_some()
+                    || !s.contours.is_empty()
+                    || !s.quivers.is_empty()
+                    || !s.streamlines.is_empty()
+            }) {
+                figures.push(f.clone());
+            }
+        });
+    }
+    let animations = take_notebook_animations();
+
+    Rendered::Code {
+        source: source.to_string(),
+        text_output,
+        error,
+        figures,
+        animations,
+        hidden: directives.hidden,
+        details: directives.details.clone(),
+        grid_cols: directives.grid_cols,
+    }
 }
 
 /// Execute a parsed notebook, returning rendered blocks.

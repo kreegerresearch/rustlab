@@ -46,7 +46,7 @@ stay byte-identical to what you'd commit to a repo.
 | Feature | Notes |
 |---|---|
 | Live re-render on save | Debounced 250 ms; tune with `--debounce-ms <MS>`. |
-| Prose-only edits skip code execution | Code-block cache, in-memory per watcher session. Log line `[watch] code blocks unchanged — reusing cached outputs` confirms when it fires. |
+| Prose-only edits skip code execution | Per-block cache: prose change → zero execution, mid-notebook code edit → only that block + downstream re-execute (state restored from snapshot). In-memory, per watcher session. |
 | Stop the runaway-loop family of bugs | Self-write suppression, in-place auto-cleanup of generated header/iframe, hashed plot filenames so Obsidian doesn't show stale images. |
 | Add `.md` notebooks while the watcher is running | They get picked up on first save, no restart needed. |
 | Strip everything rustlab added and recover the source | `rustlab notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
@@ -230,15 +230,26 @@ Behaviour:
 - **No-op write skip.** Renders that produce byte-identical output
   don't touch the file — keeps `git status` quiet and prevents
   self-trigger loops in the in-place layout.
-- **Code-block cache.** Every code block's source is hashed each render
-  against the previous render's hash. If nothing executable changed
-  (prose-only edit), the watcher restores the prior evaluator state,
-  reuses the cached code-block outputs, and re-interpolates only the
-  markdown templates — no rustlab execution. A `[watch] code blocks
-  unchanged in <file> — reusing cached outputs (prose-only re-render)`
-  line appears in the log when this fires. Any edit to a rustlab or
-  mermaid block invalidates the cache and triggers a full re-execution.
+- **Per-block code cache.** The watcher maintains one cache entry per
+  executable block (rustlab Code + Mermaid), recording the block's
+  source hash, its rendered output, and a snapshot of the evaluator /
+  plot / RNG state *after* that block ran. On each new render the
+  watcher hashes every executable block's source, finds the longest
+  matching prefix against its cache, restores live state from the last
+  surviving snapshot, emits cached outputs for the matching prefix,
+  and only *executes* the divergent tail. Markdown interpolation
+  walks in-order, so prose between cached blocks sees the same
+  evaluator state it saw originally. Log lines indicate what happened:
+  - `code blocks unchanged in <file> — reusing cached outputs` —
+    prose-only edit, full cache hit, zero execution.
+  - `N of M code blocks cached for <file> — executing only the
+    divergent tail` — edit at block N, blocks 0..N reused, N..M
+    re-executed.
+  - No special line — first block changed or fresh start, full
+    execution.
+
   Cache is per-notebook, in-memory, scoped to the watcher session.
+  Restart the watcher → first render is full again.
 - **Failure isolation.** Parse or execution errors render inline (per
   the standard renderer behaviour); the watcher logs to stderr and
   keeps running.
