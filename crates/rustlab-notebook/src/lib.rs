@@ -114,6 +114,82 @@ fn strip_legacy_text_outputs(source: &str) -> String {
 /// (collapses `./foo`, symlinks, `..` segments) and fall back to literal
 /// equality otherwise. Used to decide whether a render is "in-place" so
 /// we can suppress the trailing iframe in `--obsidian` mode.
+/// Process-wide mutex serialising every `cmd_render*` call so the
+/// cwd-mutation window doesn't race with itself.
+///
+/// `cmd_render` changes the process cwd via `set_current_dir`. Until
+/// we thread the host directory explicitly through embed expansion
+/// and script evaluation (deferred refactor), serialising the render
+/// itself is the cleanest way to prevent concurrent renders from
+/// stomping each other's cwd. Today there's no parallel render path,
+/// so the lock is effectively free. When parallel rendering lands,
+/// the right fix is to remove the cwd mutation entirely; the lock
+/// then becomes either obsolete or trivial to drop.
+///
+/// Held by `CwdGuard` for its lifetime, which is the render's entire
+/// scope. `Mutex::lock()`'s poison on panic is fine — we
+/// `unwrap_or_else(|e| e.into_inner())` so the next caller still
+/// gets to run.
+static RENDER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Inner guard — captures the cwd on construction and restores it on
+/// drop. Does **not** acquire the render lock; the caller is responsible
+/// for that. Production code uses the outer `CwdGuard` which bundles
+/// both; tests that need to bracket a sequence with their own lock use
+/// `CwdRestoreGuard` directly to avoid deadlocking on a re-entrant lock.
+struct CwdRestoreGuard {
+    original: Option<PathBuf>,
+}
+
+impl CwdRestoreGuard {
+    fn new() -> Self {
+        Self {
+            original: std::env::current_dir().ok(),
+        }
+    }
+}
+
+impl Drop for CwdRestoreGuard {
+    fn drop(&mut self) {
+        if let Some(dir) = self.original.take() {
+            let _ = std::env::set_current_dir(dir);
+        }
+    }
+}
+
+/// RAII guard that captures the process's current working directory
+/// on construction and restores it on drop, *and* serialises every
+/// concurrent render via `RENDER_LOCK`.
+///
+/// The notebook renderer changes the process cwd via
+/// `std::env::set_current_dir` so that the embed expander and script
+/// evaluator resolve relative paths against the notebook's parent
+/// directory. `cwd` is **process-global** on Unix (no per-thread
+/// cwd), so without restoring it the change leaks to anything that
+/// runs after the render — including the caller, sibling commands in
+/// the same `rustlab` process, and any future parallel renderer.
+///
+/// Usage: bind the guard at the top of a function that may call
+/// `set_current_dir`. The cwd is restored when the guard drops,
+/// including on early returns and panics — both render success and
+/// failure paths get the same treatment.
+struct CwdGuard {
+    _restore: CwdRestoreGuard,
+    // Holding the lock guard ties its lifetime to ours, so the lock
+    // is released exactly when the cwd is restored.
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl CwdGuard {
+    fn new() -> Self {
+        let lock = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            _lock: lock,
+            _restore: CwdRestoreGuard::new(),
+        }
+    }
+}
+
 pub(crate) fn paths_equal(a: &Path, b: &Path) -> bool {
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     canon(a) == canon(b)
@@ -452,6 +528,7 @@ pub fn cmd_render_cached(
     theme: &ThemeColors,
     cache: &mut cache::NotebookCache,
 ) -> CachedRenderSummary {
+    let _cwd_guard = CwdGuard::new();
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -502,6 +579,7 @@ pub fn cmd_render_cached(
 }
 
 pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {
+    let _cwd_guard = CwdGuard::new();
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -563,6 +641,7 @@ pub fn cmd_render_dir(
     theme: &ThemeColors,
     index_title: Option<String>,
 ) {
+    let _cwd_guard = CwdGuard::new();
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let out_dir = output
         .map(|o| std::path::absolute(&o).unwrap_or(o))
@@ -1166,6 +1245,44 @@ fn print_summary(input: &PathBuf, out_path: &PathBuf, rendered: &[execute::Rende
     println!(")");
 }
 
+/// Process-wide cache of the hash of the last bytes `write_output`
+/// successfully wrote to each path. Lets us skip the disk-read on the
+/// fast path of the watcher loop: the renderer produced identical
+/// bytes to last pass → we already know what's on disk → no need to
+/// `std::fs::read` the file just to confirm.
+///
+/// Memory footprint: O(distinct paths written this process) × (path
+/// length + 8 bytes). Negligible — bounded by the number of notebooks
+/// in the watched vault.
+///
+/// Safety on external writes: if something edits the file between our
+/// writes, the new render's bytes will (almost certainly) differ from
+/// the cached hash anyway — the rendered output reflects the source,
+/// and we re-render whenever the source changes. The narrow window
+/// where this matters is the user hand-editing the rendered output
+/// AND no source change AND no render-time non-determinism — at which
+/// point the user is racing the watcher and is going to lose. We
+/// accept that.
+static WRITE_OUTPUT_HASHES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>,
+> = std::sync::OnceLock::new();
+
+fn write_output_hashes() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, u64>> {
+    WRITE_OUTPUT_HASHES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Stable-within-process hash of a byte slice. `DefaultHasher` is not
+/// portable across Rust versions, but the caches that use it
+/// (`write_output_hashes`, `watch::self_writes`) live only for the
+/// current process — no cross-version concern.
+pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
+}
+
 fn write_output(path: &PathBuf, data: &[u8]) {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -1182,8 +1299,32 @@ fn write_output(path: &PathBuf, data: &[u8]) {
     // no-op, no fs event fires, the loop dies; (2) untouched notebooks
     // don't churn mtimes, which keeps `git status` quiet and avoids
     // editors flagging files as externally modified.
+    //
+    // Fast path: we cache the hash of the bytes we last successfully
+    // wrote to each path. On a repeat render that produces identical
+    // bytes, the cached hash equals `hash_bytes(data)` and we can
+    // return without ever touching disk — no `std::fs::read` of the
+    // (potentially multi-MB) rendered output. The watcher loop is the
+    // hot caller; one-shot `cmd_render` takes the slow path on first
+    // write either way.
+    let new_hash = hash_bytes(data);
+    {
+        let cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+        if cache.get(path) == Some(&new_hash) {
+            return;
+        }
+    }
+    // Slow path: no cache entry, or the cached hash differs. Either we
+    // haven't written this path yet in this process (cmd_render single
+    // shot, or first watch iteration) or the content really changed.
+    // Read the file as a defensive cross-check before deciding to
+    // overwrite — handles the case where the cache is empty but the
+    // on-disk file already matches what we'd write.
     if let Ok(existing) = std::fs::read(path) {
         if existing == data {
+            // Memoise so the *next* repeat is a pure in-memory hit.
+            let mut cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+            cache.insert(path.clone(), new_hash);
             return;
         }
     }
@@ -1191,6 +1332,8 @@ fn write_output(path: &PathBuf, data: &[u8]) {
         eprintln!("error: cannot write {}: {e}", path.display());
         std::process::exit(1);
     }
+    let mut cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+    cache.insert(path.clone(), new_hash);
 }
 
 /// Run pdflatex/tectonic on `tex_path` (expected to live in a temp directory)
@@ -2057,6 +2200,77 @@ More.\n";
         );
     }
 
+    // Regression for B1 (notebook_followups_2026_05_16.md): the
+    // notebook renderer changes the process cwd via `set_current_dir`
+    // so the embed expander and script evaluator can resolve relative
+    // paths against the notebook's parent directory. `cwd` is process-
+    // global on Unix; without a RAII guard restoring it on exit, the
+    // change leaks to anything that runs next — a future parallel
+    // renderer, a parmap inside a notebook, the calling CLI process,
+    // etc.
+    //
+    // Production wraps every `cmd_render*` entry point with `CwdGuard`,
+    // which is `CwdRestoreGuard` (capture + restore on drop) bundled
+    // with a hold on `RENDER_LOCK` so concurrent renders serialise on
+    // cwd. We test the inner `CwdRestoreGuard` directly while holding
+    // `RENDER_LOCK` from the test, which guarantees no concurrent
+    // render mutates cwd during the test window. Testing through the
+    // outer `cmd_render*` calls would deadlock — the outer guard tries
+    // to take `RENDER_LOCK` itself, which the test would already hold.
+
+    /// Returns the canonical absolute path of the cwd, so comparisons
+    /// aren't tripped by symlinks (`/var` vs `/private/var`).
+    fn cwd_canon() -> std::path::PathBuf {
+        let here = std::env::current_dir().unwrap();
+        std::fs::canonicalize(&here).unwrap_or(here)
+    }
+
+    #[test]
+    fn cwd_restore_guard_restores_cwd_on_drop() {
+        let _lock = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_a = tempfile::TempDir::new().unwrap();
+        let temp_b = tempfile::TempDir::new().unwrap();
+        std::env::set_current_dir(temp_a.path()).unwrap();
+        let baseline = cwd_canon();
+        {
+            let _g = CwdRestoreGuard::new();
+            std::env::set_current_dir(temp_b.path()).unwrap();
+            assert_ne!(
+                cwd_canon(),
+                baseline,
+                "test setup: inner cwd should differ from baseline",
+            );
+        } // `_g` drops here → restores cwd
+        assert_eq!(
+            cwd_canon(),
+            baseline,
+            "CwdRestoreGuard must restore the cwd it captured at construction",
+        );
+    }
+
+    #[test]
+    fn cwd_restore_guard_restores_after_panic_unwind() {
+        // Mirrors cmd_render's failure-path behaviour: if execution
+        // bails part-way through, the guard's Drop still runs and the
+        // cwd is restored. catch_unwind simulates the unwind.
+        let _lock = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp_a = tempfile::TempDir::new().unwrap();
+        let temp_b = tempfile::TempDir::new().unwrap();
+        std::env::set_current_dir(temp_a.path()).unwrap();
+        let baseline = cwd_canon();
+        let temp_b_path = temp_b.path().to_path_buf();
+        let _ = std::panic::catch_unwind(|| {
+            let _g = CwdRestoreGuard::new();
+            std::env::set_current_dir(&temp_b_path).unwrap();
+            panic!("simulated render failure mid-flight");
+        });
+        assert_eq!(
+            cwd_canon(),
+            baseline,
+            "CwdRestoreGuard must restore the cwd even when its scope unwinds via panic",
+        );
+    }
+
     #[test]
     fn write_output_skips_when_content_unchanged() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2097,6 +2311,71 @@ More.\n";
         write_output(&path.to_path_buf(), b"fresh\n");
 
         assert_eq!(std::fs::read(&path).unwrap(), b"fresh\n");
+    }
+
+    // B3 (notebook_followups_2026_05_16.md): once we've written a
+    // file, a repeat write of the same bytes must short-circuit on
+    // the in-memory hash cache without reading the file. The
+    // observable proxy is that even if we *truncate the file on
+    // disk*, `write_output` still won't write — because the cache
+    // says "we already wrote this hash" and it skips both the
+    // `std::fs::read` defensive check and the `std::fs::write`.
+    //
+    // That's exactly the behaviour B3 trades for: O(1) memory check
+    // beats O(filesize) disk read on the watcher hot loop, at the
+    // cost of trusting our own in-process record over what's on
+    // disk. (External tampering between renders is out of scope —
+    // see `WRITE_OUTPUT_HASHES`'s safety note.)
+    #[test]
+    fn write_output_in_memory_hash_skips_disk_read_on_repeat() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+
+        // First write: nothing on disk; we should hit the slow path,
+        // write, and populate the in-memory hash.
+        write_output(&path.to_path_buf(), b"first\n");
+        assert_eq!(std::fs::read(&path).unwrap(), b"first\n");
+
+        // Externally truncate the file. A pure disk-read check would
+        // see "current bytes empty != data" and overwrite. With the
+        // in-memory cache, we trust our last-written hash and skip.
+        std::fs::write(&path, b"").unwrap();
+        write_output(&path.to_path_buf(), b"first\n");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"",
+            "in-memory hash cache should have suppressed the rewrite — \
+             confirming the fast path skipped both the read and the write",
+        );
+
+        // Sanity: a *different* hash on the next call must reach the
+        // write branch and overwrite, so we haven't broken the
+        // common case.
+        write_output(&path.to_path_buf(), b"second\n");
+        assert_eq!(std::fs::read(&path).unwrap(), b"second\n");
+    }
+
+    // Defensive cross-check: when the in-memory cache is cold (e.g.
+    // first invocation in a one-shot `cmd_render` process) and the
+    // on-disk bytes already match what we'd write, the slow path
+    // recognises the match and skips the write while populating the
+    // cache for next time.
+    #[test]
+    fn write_output_slow_path_skips_when_disk_already_matches() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("preexisting.md");
+        std::fs::write(&path, b"identical\n").unwrap();
+        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // No cache entry yet → falls through to disk read → equal →
+        // skip write. mtime stays put.
+        write_output(&path.to_path_buf(), b"identical\n");
+        let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "cold-cache slow path must still recognise identical bytes and skip the write",
+        );
     }
 
     // Regression for the "edit plot(1:10) → plot(1:100), plot didn't change"

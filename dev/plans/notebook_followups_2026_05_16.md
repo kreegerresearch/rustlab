@@ -13,17 +13,17 @@ them so the next agent doesn't have to re-discover them.
 
 | # | Item | Severity | Effort |
 |---|---|---|---|
-| B1 | `cmd_render*` mutates process cwd and never restores it | Medium (dormant) | ~30 min |
-| B2 | Plot dir wiped *before* render → brief "missing image" window in Obsidian | Low (cosmetic) | ~20 min |
-| B3 | `write_output` reads file before every write | Trivial (perf) | ~10 min |
+| B1 | `cmd_render*` mutates process cwd and never restores it | **shipped 2026-05-16** | CwdGuard + process-wide RENDER_LOCK |
+| B2 | Plot dir wiped *before* render → brief "missing image" window in Obsidian | **shipped 2026-05-16** | post-render `sweep_orphan_plots` keyed off referenced filenames |
+| B3 | `write_output` reads file before every write | **shipped 2026-05-16** | process-wide hash cache; slow path only on first write / divergence |
 | P1 | `ExecState` snapshot memory grows O(N\_blocks × symbol\_table\_size) | Documented | LRU cap deferred until real pain |
-| P2 | Watcher's `self_writes: HashMap<PathBuf, Vec<u8>>` unbounded | Low (long-session memory leak) | ~20 min |
+| P2 | Watcher's `self_writes: HashMap<PathBuf, Vec<u8>>` unbounded | **shipped 2026-05-16** | per-entry memory dropped from O(filesize) to 8 bytes via hash |
 | P3 | `strip_render_artifacts` does 4 linear scans per render | Trivial (perf) | ~30 min |
 | L1 | New `rustlab notebook check` linter subcommand | **shipped 2026-05-16** | done — 7 lints, `--fix`, `--strict`, CI exit codes |
 
 ---
 
-## B1 — `cmd_render*` mutates process cwd and never restores it
+## B1 — `cmd_render*` mutates process cwd and never restores it ✓ SHIPPED 2026-05-16
 
 ### Symptom
 
@@ -93,7 +93,20 @@ ever lands.
 
 ---
 
-## B2 — Plot dir wiped before render
+## B2 — Plot dir wiped before render ✓ SHIPPED 2026-05-16
+
+Implemented option (2) of the original sketch: the pre-render
+`remove_dir_all(plot_dir)` in `render_one_with_tracking` is gone, and
+in its place we sweep **after** the renderer has emitted its outputs.
+The sweep is reference-driven — `sweep_orphan_plots` reads the
+just-written `.md`, extracts every `.svg` / `.gif` basename from
+`![alt](url)` references via `referenced_plot_basenames`, and deletes
+only renderer-emitted files (`plot-N-<hex>.svg`, `anim-N-<hex>.gif`,
+plus the un-hashed fallback names) that aren't in that set. Files
+outside the renderer's naming scheme (e.g. `.gitkeep`, hand-dropped
+SVGs) are left alone. Tests live in `watch.rs`'s `tests` module:
+`referenced_plot_basenames_*`, `is_render_emitted_plot_name_*`,
+`sweep_orphan_plots_*`.
 
 ### Symptom
 
@@ -138,7 +151,22 @@ hashed names, orphans accumulate unboundedly.
 
 ---
 
-## B3 — `write_output` reads the file before every write
+## B3 — `write_output` reads the file before every write ✓ SHIPPED 2026-05-16
+
+Implemented the in-memory variant from the original sketch.
+`write_output` now consults a process-wide
+`WRITE_OUTPUT_HASHES: HashMap<PathBuf, u64>` (built lazily via
+`OnceLock`) before doing anything else: if the cached hash equals
+`hash_bytes(data)`, we return immediately — no `std::fs::read`, no
+`std::fs::write`. Slow path runs only on first write to a path
+(cache miss) or when the new bytes differ from what we wrote last;
+in that case the existing defensive read-and-compare still applies
+and seeds the cache so the next repeat is a pure in-memory hit. The
+`hash_bytes` helper that was already in `watch.rs` (added for P2)
+was hoisted to `crate::hash_bytes` and shared. Tests:
+`write_output_in_memory_hash_skips_disk_read_on_repeat`,
+`write_output_slow_path_skips_when_disk_already_matches`, plus the
+pre-existing `write_output_*` tests still pass.
 
 ### Symptom
 
@@ -208,7 +236,7 @@ matters.
 
 ---
 
-## P2 — Watcher's `self_writes` unbounded
+## P2 — Watcher's `self_writes` unbounded ✓ SHIPPED 2026-05-16
 
 ### Symptom
 

@@ -18,9 +18,14 @@
 //!   expander's source cache: after rendering each notebook the
 //!   watcher records which files it loaded. Edit `_setup.md` and only
 //!   the lessons that embed it re-render.
-//! - Stale plot SVGs in the per-notebook plot directory are deleted
-//!   after each render so `_attachments/` doesn't accumulate dead
-//!   files when blocks are removed from a notebook.
+//! - Stale plot SVGs / animation GIFs in the per-notebook plot
+//!   directory are swept **after** each render — any file matching
+//!   the renderer's `plot-N-<…>.svg` / `anim-N-<…>.gif` shape that
+//!   the just-published `.md` no longer references is removed. The
+//!   sweep replaced an older pre-render `remove_dir_all`, which
+//!   opened a window where a freshly-published `.md` referenced
+//!   files that hadn't been written yet (broken-image flashes in
+//!   Obsidian).
 //! - Parse / execution errors in one notebook log to stderr and
 //!   render inline (existing renderer behaviour); the watcher keeps
 //!   running.
@@ -84,14 +89,25 @@ pub fn cmd_watch(
 
     // Seed the dependency graph by rendering every notebook once.
     let mut graph = DependencyGraph::default();
-    // Track the bytes of every file we just wrote, by canonicalised
-    // output path. When an fs event arrives for one of these paths and
-    // the file's current bytes still match what we wrote, the event is
-    // our own write echoing back through the notify channel — drop it.
-    // This is what kills runaway loops on *non-deterministic* notebooks
-    // (`randn`, time, network) where the rendered bytes legitimately
-    // differ each pass, so `write_output`'s hash-equal skip can't trip.
-    let mut self_writes: HashMap<PathBuf, Vec<u8>> = HashMap::new();
+    // Track a *hash* of every file we just wrote, by canonicalised
+    // output path. When an fs event arrives for one of these paths
+    // and the file's current bytes still hash to the recorded value,
+    // the event is our own write echoing back through the notify
+    // channel — drop it. This is what kills runaway loops on
+    // *non-deterministic* notebooks (`randn`, time, network) where
+    // the rendered bytes legitimately differ each pass, so
+    // `write_output`'s hash-equal skip can't trip.
+    //
+    // Storing a `u64` digest instead of the full file bytes drops
+    // per-entry memory from O(filesize) to 8 bytes plus the path
+    // key. Without this, a watcher running for days over a vault of
+    // big rendered notebooks would slowly accumulate hundreds of MB
+    // of state that's never reclaimed. Equality on the digest is
+    // sufficient: a collision would have to produce a file the user
+    // didn't actually write that just happens to hash to what we
+    // last wrote — astronomically unlikely and only manifests as a
+    // dropped re-render, not corruption.
+    let mut self_writes: HashMap<PathBuf, u64> = HashMap::new();
     // One output cache per notebook source. Lives for the watcher
     // session; cleared automatically when the source file is deleted
     // (next render miss re-populates). On cache hit a `cmd_render_cached`
@@ -112,7 +128,7 @@ pub fn cmd_watch(
             if let (Ok(bytes), Some(canon)) =
                 (std::fs::read(&out_path), canonicalize_lossy(&out_path))
             {
-                self_writes.insert(canon, bytes);
+                self_writes.insert(canon, hash_bytes(&bytes));
             }
         }
     }
@@ -213,7 +229,7 @@ pub fn cmd_watch(
                         if let (Ok(bytes), Some(canon)) =
                             (std::fs::read(&out_path), canonicalize_lossy(&out_path))
                         {
-                            self_writes.insert(canon, bytes);
+                            self_writes.insert(canon, hash_bytes(&bytes));
                         }
                     }
                 }
@@ -288,13 +304,6 @@ fn render_one_with_tracking(
         .unwrap_or_else(|| "out".to_string());
     let out_path = out_dir.join(format!("{stem}.{}", format.extension()));
 
-    // GC stale plot files: clear the per-notebook plot subdir before
-    // rendering so removed code blocks don't leave orphan SVGs behind.
-    // Safe — the renderer recreates the dir on the way in.
-    if let Some(plot_dir) = crate::plot_dir_for_format(&out_path, format) {
-        let _ = std::fs::remove_dir_all(&plot_dir);
-    }
-
     // Skip index.md — handled separately by cmd_render_dir, but in
     // watch mode the simplest behaviour is to render it as a notebook
     // too. Acceptable trade-off for the watch loop's simplicity.
@@ -306,6 +315,26 @@ fn render_one_with_tracking(
         theme,
         cache,
     );
+
+    // GC stale plot files **after** the render, not before. Wiping
+    // first opened a tens-to-hundreds-of-ms window in which every
+    // plot file referenced by the just-published `.md` was missing
+    // on disk — an Obsidian reload landing in that window showed
+    // broken-image icons. Hashed filenames (`plot-N-<hex>.svg`) mean
+    // a fresh render either overwrites the same name (content
+    // unchanged) or writes a new name (content changed); either way
+    // there's no moment where a referenced file is absent.
+    //
+    // Sweep what the rendered `.md` doesn't reference. We re-read
+    // the file we just wrote so a partial render (renderer failed
+    // mid-pass and emitted nothing) doesn't nuke the previous good
+    // plots; if `read` fails we just skip the sweep and let the
+    // orphans linger until the next successful render.
+    if let Some(plot_dir) = crate::plot_dir_for_format(&out_path, format) {
+        if let Ok(rendered_md) = std::fs::read_to_string(&out_path) {
+            sweep_orphan_plots(&plot_dir, &rendered_md);
+        }
+    }
     if summary.cache_hit() {
         println!(
             "[watch] code blocks unchanged in {} — reusing cached outputs (prose-only re-render)",
@@ -401,14 +430,127 @@ fn canonicalize_lossy(p: &Path) -> Option<PathBuf> {
 /// timestamps, etc.) — `write_output`'s hash-equal skip can't trip in
 /// that case because the bytes differ each pass, so we suppress at the
 /// event-receive end instead.
-fn is_self_write_echo(path: &Path, self_writes: &HashMap<PathBuf, Vec<u8>>) -> bool {
+fn is_self_write_echo(path: &Path, self_writes: &HashMap<PathBuf, u64>) -> bool {
     let Some(prev) = self_writes.get(path) else {
         return false;
     };
     match std::fs::read(path) {
-        Ok(current) => current.as_slice() == prev.as_slice(),
+        Ok(current) => hash_bytes(&current) == *prev,
         Err(_) => false,
     }
+}
+
+// Shared with `write_output`'s in-memory cache; see `crate::hash_bytes`.
+use crate::hash_bytes;
+
+/// Delete every file in `plot_dir` whose basename isn't referenced as
+/// an image URL in `rendered_md`. Runs after a render to garbage-
+/// collect plot SVGs / animation GIFs that the previous render
+/// produced but the just-finished render no longer emits (a code
+/// block was removed, a `plot` call was deleted, the content
+/// changed and got a fresh hashed filename, …).
+///
+/// Replaces the previous "wipe before render" scheme: wiping first
+/// guaranteed a window where Obsidian could load the new `.md`
+/// referencing files that hadn't been written yet, flashing broken-
+/// image icons. Sweeping after the renderer has emitted its outputs
+/// closes that window — at every instant from one render to the
+/// next, every URL in the live `.md` resolves to a file that exists.
+///
+/// Conservative on its inputs: only files whose basename matches
+/// `plot-N-<…>.<ext>` or `anim-N-<…>.<ext>` (the names the renderer
+/// itself produces) are candidates for deletion. A user-dropped
+/// `.gitkeep`, sidecar metadata file, or anything outside the
+/// renderer's naming scheme is left alone. The set of "referenced"
+/// names is extracted with a tiny `![alt](url)` walker — robust
+/// enough since `render_markdown` is the only writer into this dir
+/// and uses a fixed reference shape.
+fn sweep_orphan_plots(plot_dir: &Path, rendered_md: &str) {
+    let referenced = referenced_plot_basenames(rendered_md);
+    let Ok(entries) = std::fs::read_dir(plot_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name_os = entry.file_name();
+        let Some(name) = name_os.to_str() else {
+            continue;
+        };
+        if !is_render_emitted_plot_name(name) {
+            continue;
+        }
+        if !referenced.contains(name) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// True iff `name` matches one of the basenames `render_markdown`
+/// produces (`plot-<idx>-<hash>.svg`, `plot-<idx>.svg` fallback,
+/// `anim-<idx>-<hash>.gif`, `anim-<idx>.gif` fallback). Anything
+/// else is treated as user-owned and left untouched by the sweep.
+fn is_render_emitted_plot_name(name: &str) -> bool {
+    let (prefix, ext): (&str, &str) = if let Some(stem) = name.strip_suffix(".svg") {
+        (stem, "svg")
+    } else if let Some(stem) = name.strip_suffix(".gif") {
+        (stem, "gif")
+    } else {
+        return false;
+    };
+    let stem = match ext {
+        "svg" => prefix.strip_prefix("plot-"),
+        "gif" => prefix.strip_prefix("anim-"),
+        _ => None,
+    };
+    let Some(stem) = stem else {
+        return false;
+    };
+    // After the prefix we expect `<digits>` (un-hashed fallback) or
+    // `<digits>-<hex>` (hashed). Reject anything else so a file
+    // called e.g. `plot-something.svg` isn't claimed by the sweep.
+    let (idx_part, suffix_part) = match stem.find('-') {
+        Some(i) => (&stem[..i], Some(&stem[i + 1..])),
+        None => (stem, None),
+    };
+    if idx_part.is_empty() || !idx_part.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    match suffix_part {
+        None => true,
+        Some(hex) => !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+    }
+}
+
+/// Walk `md` for `![alt](url)` references and return the set of URL
+/// basenames whose extension is `.svg` or `.gif`. Any `?…` query
+/// string is stripped (defensive — `render_markdown` writes the
+/// cache-bust into the filename itself, not as a query, so this
+/// branch is mostly there to fail gracefully against hand-edits).
+fn referenced_plot_basenames(md: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    let bytes = md.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        // Look for the `](` that ends a markdown image/link alt.
+        if bytes[i] == b']' && bytes[i + 1] == b'(' {
+            let url_start = i + 2;
+            // Find the matching `)`. Render output never embeds
+            // literal `)` in plot URLs, so a flat scan is fine.
+            let Some(close_rel) = md[url_start..].find(')') else {
+                break;
+            };
+            let url = &md[url_start..url_start + close_rel];
+            let url = url.split_whitespace().next().unwrap_or(url);
+            let url = url.split('?').next().unwrap_or(url);
+            let basename = url.rsplit('/').next().unwrap_or(url);
+            if basename.ends_with(".svg") || basename.ends_with(".gif") {
+                out.insert(basename.to_string());
+            }
+            i = url_start + close_rel + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Editor tempfile heuristic. Catches the common atomic-write patterns:
@@ -676,17 +818,6 @@ mod tests {
         assert!(crate::plot_dir_for_format(&PathBuf::from("/out/x.html"), &format).is_none());
     }
 
-    #[test]
-    fn plot_gc_removes_orphan_dir_contents() {
-        // Drop a stale plot file into the dir; pre-render gc deletes it.
-        let dir = TempDir::new().unwrap();
-        let stale = dir.path().join("plot-7.svg");
-        fs::write(&stale, "stale").unwrap();
-        assert!(stale.exists());
-        let _ = fs::remove_dir_all(dir.path());
-        assert!(!stale.exists(), "gc should have removed stale plot");
-    }
-
     // Regression: new `.md` files created after the watcher starts must
     // be rendered on first save, even though the dependency graph has
     // never seen them. Previously `compute_render_set` only consulted
@@ -694,30 +825,30 @@ mod tests {
     // files, so every "create a new note in Obsidian" event was silently
     // dropped.
     #[test]
-    fn is_self_write_echo_true_when_file_matches_recorded_bytes() {
+    fn is_self_write_echo_true_when_file_matches_recorded_hash() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("note.md");
         fs::write(&path, b"hello\n").unwrap();
         let mut writes = HashMap::new();
-        writes.insert(path.clone(), b"hello\n".to_vec());
+        writes.insert(path.clone(), hash_bytes(b"hello\n"));
 
         assert!(
             is_self_write_echo(&path, &writes),
-            "matching bytes must register as a self-write echo",
+            "matching hash must register as a self-write echo",
         );
     }
 
     #[test]
-    fn is_self_write_echo_false_when_file_diverges_from_recorded_bytes() {
+    fn is_self_write_echo_false_when_file_diverges_from_recorded_hash() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("note.md");
         fs::write(&path, b"hello\n").unwrap();
         let mut writes = HashMap::new();
-        writes.insert(path.clone(), b"old content\n".to_vec());
+        writes.insert(path.clone(), hash_bytes(b"old content\n"));
 
         assert!(
             !is_self_write_echo(&path, &writes),
-            "diverging bytes mean the user (or something else) wrote — must not be suppressed",
+            "diverging hash means the user (or something else) wrote — must not be suppressed",
         );
     }
 
@@ -726,7 +857,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("note.md");
         fs::write(&path, b"hello\n").unwrap();
-        let writes: HashMap<PathBuf, Vec<u8>> = HashMap::new();
+        let writes: HashMap<PathBuf, u64> = HashMap::new();
 
         assert!(
             !is_self_write_echo(&path, &writes),
@@ -786,5 +917,99 @@ mod tests {
         changed.insert(l1.clone());
         let render = compute_render_set(&changed, &root, &g);
         assert_eq!(render, vec![l1]);
+    }
+
+    // B2 (notebook_followups_2026_05_16.md): the watcher used to wipe
+    // the plot directory **before** rendering; an Obsidian reload
+    // landing in the wipe-then-write window showed broken images.
+    // The fix moved the GC to **after** the render and made it
+    // reference-driven: only files the renderer didn't actually emit
+    // get deleted. These tests pin the parser + the sweep.
+
+    #[test]
+    fn referenced_plot_basenames_picks_up_image_refs() {
+        // Mix of plot/anim, with and without a hash suffix, plus a
+        // wikilink and a non-image link the sweep must not see.
+        let md = "intro\n\n\
+            ![plot 1](plots/foo/plot-1-abcd1234.svg)\n\
+            ![plot 2](plots/foo/plot-2.svg)\n\
+            ![animation 3](plots/foo/anim-3-deadbeef.gif)\n\
+            [docs](https://example.com/page.html)\n\
+            ![[unrelated]]\n\
+            ![side](other/plot-9-cafe.svg)\n";
+        let got = referenced_plot_basenames(md);
+        // Basename only — the sweep matches against `entry.file_name()`.
+        assert!(got.contains("plot-1-abcd1234.svg"));
+        assert!(got.contains("plot-2.svg"));
+        assert!(got.contains("anim-3-deadbeef.gif"));
+        assert!(got.contains("plot-9-cafe.svg"));
+        // The non-image link must not show up.
+        assert!(
+            !got.iter().any(|s| s.contains("page.html")),
+            "unexpected entries in {:?}",
+            got,
+        );
+    }
+
+    #[test]
+    fn referenced_plot_basenames_strips_query_string() {
+        // Defensive: `render_markdown` writes the hash into the name,
+        // not as `?v=…`, but if a hand-edit slips in one we should
+        // still recognise the file behind it.
+        let md = "![plot](plots/x/plot-1-aa.svg?v=stale)\n";
+        let got = referenced_plot_basenames(md);
+        assert!(got.contains("plot-1-aa.svg"), "got {:?}", got);
+    }
+
+    #[test]
+    fn is_render_emitted_plot_name_accepts_renderer_outputs_only() {
+        // Renderer-shaped names — must be eligible for sweep.
+        assert!(is_render_emitted_plot_name("plot-1-abc123.svg"));
+        assert!(is_render_emitted_plot_name("plot-12.svg"));
+        assert!(is_render_emitted_plot_name("anim-3-deadbeef.gif"));
+        assert!(is_render_emitted_plot_name("anim-4.gif"));
+        // Anything else — user-owned, must NOT be a sweep candidate.
+        assert!(!is_render_emitted_plot_name(".gitkeep"));
+        assert!(!is_render_emitted_plot_name("README.md"));
+        assert!(!is_render_emitted_plot_name("plot.svg"));
+        assert!(!is_render_emitted_plot_name("plot-x-1.svg"));
+        assert!(!is_render_emitted_plot_name("plot-1-zz.svg")); // not hex
+        assert!(!is_render_emitted_plot_name("anim-1-aa.svg")); // wrong ext for anim
+        assert!(!is_render_emitted_plot_name("custom-1-ab.svg"));
+    }
+
+    #[test]
+    fn sweep_orphan_plots_removes_unreferenced_and_keeps_referenced() {
+        let dir = TempDir::new().unwrap();
+        let kept = dir.path().join("plot-1-aaaa1111.svg");
+        let stale = dir.path().join("plot-1-bbbb2222.svg");
+        let stale_anim = dir.path().join("anim-2-cccc3333.gif");
+        let user_file = dir.path().join(".gitkeep");
+        let unrelated = dir.path().join("diagram.svg");
+        fs::write(&kept, "<svg/>").unwrap();
+        fs::write(&stale, "<svg/>").unwrap();
+        fs::write(&stale_anim, "GIF89a").unwrap();
+        fs::write(&user_file, "").unwrap();
+        fs::write(&unrelated, "<svg/>").unwrap();
+
+        // Rendered markdown references only the "kept" file.
+        let md = "![plot](plots/x/plot-1-aaaa1111.svg)\n";
+        sweep_orphan_plots(dir.path(), md);
+
+        assert!(kept.exists(), "referenced plot must survive the sweep");
+        assert!(!stale.exists(), "stale plot must be deleted");
+        assert!(!stale_anim.exists(), "stale animation must be deleted");
+        assert!(user_file.exists(), "user-owned file must be left alone");
+        assert!(unrelated.exists(), "non-renderer .svg must be left alone");
+    }
+
+    #[test]
+    fn sweep_orphan_plots_does_nothing_when_dir_missing() {
+        // Render emits no plots; the per-notebook dir was never
+        // created. Sweep must silently no-op rather than error.
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("never-created");
+        sweep_orphan_plots(&missing, "");
+        assert!(!missing.exists());
     }
 }
