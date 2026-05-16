@@ -960,24 +960,34 @@ where
         ("sans-serif", 14u32, &palette.text).into_text_style(&chart_area);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
-    // Heatmap-bearing panels (imagesc / image / heatmap) use image
-    // convention: row 0 sits at the TOP of the chart, y-axis labels
-    // read "small value at top, large value at bottom". We achieve
-    // this by feeding plotters a descending y range (`y_hi..y_lo`);
-    // plotters interprets a descending Cartesian range as a flipped
-    // axis and generates tick labels accordingly. Contour / quiver /
-    // streamline overlays on the same panel inherit the reversal, so
-    // a low physics-y contour curve sits at the top alongside the
-    // low-index matrix rows.
+    // Heatmap-bearing panels in `ij` orientation (the default) use
+    // image convention: row 0 sits at the TOP of the chart, y-axis
+    // labels read "small value at top, large value at bottom". We
+    // achieve this by feeding plotters a descending y range
+    // (`y_hi..y_lo`); plotters interprets a descending Cartesian range
+    // as a flipped axis and generates tick labels accordingly. Contour
+    // / quiver / streamline overlays on the same panel inherit the
+    // reversal, so a low-y contour curve sits at the top alongside
+    // the low-index matrix rows.
     //
-    // Earlier versions faked the reversal with a `y_label_formatter`
+    // The orientation is per-panel (`SubplotState::y_axis_direction`)
+    // and the per-process default is `default_axis_y_direction()`
+    // (defaults to `Ij`, matching MATLAB / Octave `imagesc`). The
+    // script-level `axis("xy")` builtin flips the current panel to
+    // physics convention (row 0 at bottom, standard ascending labels);
+    // `set_default_axis("xy")` flips the default for every panel
+    // created thereafter on this thread — useful as a one-line
+    // curriculum preamble for vaults that prefer physics y everywhere.
+    //
+    // Earlier versions faked the ij reversal with a `y_label_formatter`
     // that computed `nrows - v`. That broke for combined imagesc +
     // contour plots: when the contour overlay drove the chart bounds
     // to physics units (e.g. [0, 0.1]), `nrows - v` rounded every
     // displayed tick to the same value (all "100"s). Reversing the
     // axis directly avoids the formula entirely and works at any
     // scale.
-    let reverse_y_axis = sp.heatmap.is_some();
+    let reverse_y_axis = sp.heatmap.is_some()
+        && sp.y_axis_direction == crate::figure::AxisYDirection::Ij;
     let mut chart = if reverse_y_axis {
         ChartBuilder::on(&chart_area)
             .caption(caption, caption_style)
@@ -2202,6 +2212,85 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn imagesc_svg_axis_xy_puts_row_zero_at_bottom() {
+        // Opt-in `axis("xy")` flips the panel to physics convention:
+        // row 0 sits at the BOTTOM of the chart and y-axis labels go
+        // bottom-up (default plotters orientation). Regression test
+        // pinning Option C: per-panel y_axis_direction = Xy is
+        // honoured by the SVG backend.
+        let path = tmp_path("_imagesc_axis_xy.svg");
+        let n = 8;
+        let mut z = vec![vec![0.0; n]; n];
+        z[0][0] = 1.0; // bright marker at row 0, col 0
+        z[n - 1][n - 1] = 0.5; // mid marker at last row, last col
+
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.y_axis_direction = crate::figure::AxisYDirection::Xy;
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+                kind: crate::figure::HeatmapKind::Imagesc,
+                x_labels: None,
+                y_labels: None,
+                rgba: None,
+                rgba_width: 0,
+                rgba_height: 0,
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+
+        let rects = extract_cell_rects(&svg);
+        assert!(rects.len() >= n * n);
+        let cells = &rects[..n * n];
+        // In axis-xy, M[0][0] should sit at the BOTTOM (large SVG y)
+        // and M[N-1][N-1] at the TOP (small SVG y) — the opposite of
+        // the default ij orientation.
+        let first_y = cells.first().unwrap().0;
+        let last_y = cells.last().unwrap().0;
+        assert!(
+            first_y > last_y,
+            "axis-xy: M[0][0] must sit BELOW M[N-1][N-1] in SVG order; \
+             first_y={first_y}, last_y={last_y}",
+        );
+
+        // Y-axis tick `0` should be near the BOTTOM (large SVG y) under
+        // axis-xy; tick `8` (= nrows) at the top (small SVG y).
+        let y_zero = find_axis_tick_y_matching(&svg, &["0", "0.0"])
+            .expect("y=0 tick label present");
+        let y_n = find_axis_tick_y_matching(&svg, &[&n.to_string(), &format!("{n}.0")])
+            .expect("y=nrows tick label present");
+        assert!(
+            y_zero > y_n,
+            "axis-xy: tick value 0 must sit below tick value {n} (standard physics y); \
+             y_for_0={y_zero}, y_for_{n}={y_n}",
+        );
+
+        // Reset the global setting so sibling tests aren't affected.
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_default_axis_y_direction_affects_new_subplots() {
+        use crate::figure::{default_axis_y_direction, set_default_axis_y_direction, AxisYDirection};
+        // Save + restore the default around the test so we don't leak to
+        // other tests.
+        let prior = default_axis_y_direction();
+        set_default_axis_y_direction(AxisYDirection::Xy);
+        let sp = crate::figure::SubplotState::new();
+        assert_eq!(sp.y_axis_direction, AxisYDirection::Xy);
+        set_default_axis_y_direction(AxisYDirection::Ij);
+        let sp_ij = crate::figure::SubplotState::new();
+        assert_eq!(sp_ij.y_axis_direction, AxisYDirection::Ij);
+        // Restore prior so other tests aren't affected.
+        set_default_axis_y_direction(prior);
     }
 
     #[test]

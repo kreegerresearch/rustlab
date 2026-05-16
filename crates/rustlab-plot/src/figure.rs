@@ -218,6 +218,52 @@ pub struct StreamlineData {
     pub title: Option<String>,
 }
 
+/// Y-axis orientation for a panel that displays a heatmap (`imagesc`,
+/// `image`, `heatmap`).
+///
+/// - `Ij` — image / matrix-pixel convention: row 0 of the matrix sits
+///   at the TOP of the chart, y-axis labels read `0` at the top and
+///   `nrows` at the bottom. Default. Matches MATLAB / Octave `imagesc`.
+/// - `Xy` — physics / meshgrid convention: row 0 at the BOTTOM, y-axis
+///   labels read `0` at the bottom and `nrows` at the top, y grows
+///   upward. Opt-in via `axis("xy")` per panel, or process-wide via
+///   `set_default_axis("xy")`.
+///
+/// Set per-panel by the `axis("xy" | "ij")` script builtin. The default
+/// for newly-created panels comes from the per-process value managed by
+/// `set_default_axis_y_direction`.
+///
+/// The setting is honoured by every backend that draws a heatmap with
+/// axis labels (SVG + PNG via plotters, HTML via Plotly). The terminal
+/// TUI has no axis labels and renders matrix top-down regardless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisYDirection {
+    /// Row 0 at top, labels reversed. Default — matches MATLAB.
+    Ij,
+    /// Row 0 at bottom, labels in physics convention.
+    Xy,
+}
+
+thread_local! {
+    /// Per-thread default `AxisYDirection` applied to every new
+    /// `SubplotState`. Tools that want physics-y semantics across an
+    /// entire notebook / vault set this once at startup (e.g. in a
+    /// curriculum preamble) instead of calling `axis("xy")` after every
+    /// `imagesc`.
+    static DEFAULT_AXIS_Y_DIRECTION: Cell<AxisYDirection> = const { Cell::new(AxisYDirection::Ij) };
+}
+
+/// Overwrite the per-thread default `AxisYDirection`. Subsequently
+/// created `SubplotState`s start in this orientation.
+pub fn set_default_axis_y_direction(dir: AxisYDirection) {
+    DEFAULT_AXIS_Y_DIRECTION.with(|c| c.set(dir));
+}
+
+/// Return the current per-thread default `AxisYDirection`.
+pub fn default_axis_y_direction() -> AxisYDirection {
+    DEFAULT_AXIS_Y_DIRECTION.with(|c| c.get())
+}
+
 /// State for a single subplot panel.
 #[derive(Debug, Clone)]
 pub struct SubplotState {
@@ -232,6 +278,12 @@ pub struct SubplotState {
     /// Set by `axis("equal")`; cleared by `axis("auto")`. Honored by all four
     /// rendering backends (SVG, Plotly HTML, ratatui, viewer).
     pub axis_equal: bool,
+    /// Y-axis orientation for heatmap-bearing panels. Defaults to the
+    /// per-thread `default_axis_y_direction()` at construction time; set
+    /// per-panel by the `axis("xy")` / `axis("ij")` script builtin.
+    /// Ignored when the panel has no heatmap (line/scatter/contour-only
+    /// panels always use the standard ascending axis).
+    pub y_axis_direction: AxisYDirection,
     /// Categorical x-axis tick labels (e.g. from string array bar charts).
     pub x_labels: Option<Vec<String>>,
     /// Optional 2D heatmap data (takes precedence over series when present).
@@ -256,6 +308,7 @@ impl SubplotState {
             xlim: (None, None),
             ylim: (None, None),
             axis_equal: false,
+            y_axis_direction: default_axis_y_direction(),
             x_labels: None,
             heatmap: None,
             surface: None,

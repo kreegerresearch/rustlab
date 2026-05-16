@@ -293,8 +293,10 @@ pub const HELP: &[HelpEntry] = &[
         detail: "xlim([lo, hi])  — fixes the x-axis range on the current subplot" },
     HelpEntry { name: "ylim",     brief: "Set y-axis limits",
         detail: "ylim([lo, hi])  — fixes the y-axis range on the current subplot" },
-    HelpEntry { name: "axis",     brief: "Lock visual aspect or set both axis limits",
-        detail: "axis(\"equal\")                       — lock visual aspect to 1:1 (one data unit on x = one data unit on y)\naxis(\"auto\")                        — release the aspect lock (default)\naxis([xmin, xmax, ymin, ymax])      — set both axis limits at once\n\n  axis(\"equal\") is honored across all four rendering backends (SVG, Plotly\n  HTML, ratatui terminal, viewer). Use it when geometric shape matters —\n  e.g. nyquist plots, parametric circles, complex-plane scatters." },
+    HelpEntry { name: "axis",     brief: "Aspect lock, limits, or y-axis orientation",
+        detail: "axis(\"equal\")                       — lock visual aspect to 1:1 (one data unit on x = one data unit on y)\naxis(\"auto\")                        — release the aspect lock (default)\naxis([xmin, xmax, ymin, ymax])      — set both axis limits at once\naxis(\"xy\")                          — physics y for heatmaps on this panel: row 0 at the bottom\naxis(\"ij\")                          — image-pixel y for heatmaps on this panel: row 0 at the top (default)\n\n  axis(\"equal\") is honored across all four rendering backends.\n  axis(\"xy\")/axis(\"ij\") affects imagesc/image/heatmap panels only. The\n  default is ij (matches MATLAB / Octave imagesc). Use xy for physics /\n  meshgrid / GIS notebooks where y points up.\n\n  For a process-wide y-axis default, see set_default_axis(...)." },
+    HelpEntry { name: "set_default_axis", brief: "Process-wide default y-axis orientation for heatmap panels",
+        detail: "set_default_axis(\"xy\")  — every panel uses physics y (row 0 at bottom)\nset_default_axis(\"ij\")  — every panel uses image y (row 0 at top, default)\n\n  Best used once in a notebook preamble — e.g. an EM / heat-transfer\n  curriculum calls set_default_axis(\"xy\") at the top of every notebook so\n  imagesc renders with y pointing up by default. Per-panel axis(\"xy\")/\n  axis(\"ij\") still overrides this for individual plots.\n\n  Updates the per-thread default AND retro-applies to every panel in the\n  current figure, so the call is effective from a notebook preamble\n  without first creating a new subplot." },
     HelpEntry { name: "subplot",  brief: "Switch to a subplot panel",
         detail: "subplot(rows, cols, idx)  — divides the figure into rows×cols panels\n  idx is 1-based, counts left-to-right then top-to-bottom\n  Example: subplot(2, 1, 1)  — top panel of a 2-row layout" },
     HelpEntry { name: "legend",   brief: "Label series in the current subplot",
@@ -987,8 +989,8 @@ pub static CATEGORIES: &[(&str, &[&str])] = &[
         (
             "Figure Controls",
             &[
-                "figure", "clf", "close", "hold", "grid", "axis", "viewer", "xlabel", "ylabel",
-                "title", "xlim", "ylim", "subplot", "legend",
+                "figure", "clf", "close", "hold", "grid", "axis", "set_default_axis", "viewer",
+                "xlabel", "ylabel", "title", "xlim", "ylim", "subplot", "legend",
             ],
         ),
         (

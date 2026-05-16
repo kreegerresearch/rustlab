@@ -2195,11 +2195,13 @@ xlim(0, 1000)
 ylim(-60, 5)
 ```
 
-### `axis("equal")` / `axis("auto")` / `axis([xmin, xmax, ymin, ymax])`
-Control aspect ratio or set both axis limits at once.
+### `axis("equal")` / `axis("auto")` / `axis("xy")` / `axis("ij")` / `axis([xmin, xmax, ymin, ymax])`
+Control aspect ratio, y-axis orientation, or set both axis limits at once.
 
 - `axis("equal")` — lock the visual aspect so one data unit on x equals one data unit on y. Honored across all four rendering backends (terminal, viewer, SVG, Plotly HTML). Use it for parametric plots and any chart where geometric shape matters (Nyquist plots, complex-plane scatters, unit circles).
 - `axis("auto")` — release the aspect lock; the chart fills the available area independently on each axis (default).
+- `axis("xy")` — physics / meshgrid y-axis on the current panel: matrix row 0 sits at the **bottom**, y-axis labels go bottom-up (0 at bottom, `nrows` at top). Opt-in for `imagesc` / `image` / `heatmap` panels.
+- `axis("ij")` — image-pixel y-axis on the current panel: matrix row 0 sits at the **top**, labels reversed (0 at top, `nrows` at bottom). Default for `imagesc` / `image` / `heatmap`. Matches MATLAB/Octave `imagesc`.
 - `axis([xmin, xmax, ymin, ymax])` — set both axis limits at once. Equivalent to `xlim([xmin, xmax]); ylim([ymin, ymax])`.
 
 ```
@@ -2207,6 +2209,39 @@ theta = linspace(0, 2*pi, 200);
 plot(cos(theta), sin(theta));
 axis("equal")            % a circle should look like a circle
 ```
+
+```
+% Heatmap of a 2-D physics field with y pointing up the page.
+M = some_field();
+imagesc(M, "viridis");
+axis("xy")               % flip this panel: row 1 at bottom, y grows upward
+```
+
+For a process-wide default (e.g. an EM / heat-transfer notebook preamble that wants every heatmap in physics y without typing `axis("xy")` after each `imagesc`), see `set_default_axis(...)` below.
+
+### `set_default_axis("xy" | "ij")`
+Set the per-process **default** y-axis orientation for newly-created subplot panels.
+
+- `set_default_axis("xy")` — every subplot built after this call starts in physics y (row 0 at the bottom, y grows upward).
+- `set_default_axis("ij")` — restore the image-pixel default (row 0 at the top, labels reversed). Matches MATLAB/Octave `imagesc`.
+
+Best used **once in a notebook preamble** — e.g. a curriculum that uses `imagesc` heavily on `meshgrid`-style fields drops one line at the top:
+
+```
+set_default_axis("xy");      % whole-notebook physics convention
+% ... every imagesc/image/heatmap below renders with row 0 at the bottom
+```
+
+Per-panel `axis("xy")` / `axis("ij")` still overrides the default for individual plots. The call also retro-applies to every existing panel in the current figure, so a one-line preamble works even though the default canvas was already created before the call.
+
+| Use case | Right choice |
+|---|---|
+| Physics / EM / heat-transfer fields where y is a real spatial coordinate | `axis("xy")` per panel, or `set_default_axis("xy")` in a preamble |
+| Image pixel data (image row 0 is the top scanline) | default (`ij`) — no action needed |
+| Sparse-matrix sparsity patterns (`spy(A)`-style) | default (`ij`) — row 1 at top matches `spy()` semantics |
+| ML attention heatmaps (query index 0 at top) | default (`ij`) |
+| Confusion matrices (true-label row 0 at top) | default (`ij`) |
+| GIS / map data with latitude growing northward | `axis("xy")` |
 
 ### `legend("loc1", "loc2", ...)` / `legend("off")`
 Set legend labels for the series in the current figure (in plot order). `legend("off")` hides the legend.

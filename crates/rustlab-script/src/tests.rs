@@ -7481,6 +7481,80 @@ mod figure_state_tests {
     }
 
     #[test]
+    fn axis_xy_and_ij_set_panel_y_direction() {
+        // Default panel orientation matches the per-thread default; reset
+        // first so we start from a known state.
+        rustlab_plot::set_default_axis_y_direction(rustlab_plot::AxisYDirection::Ij);
+        FIGURE.with(|f| f.borrow_mut().reset());
+        run("axis(\"xy\");");
+        FIGURE.with(|f| {
+            assert_eq!(
+                f.borrow().current().y_axis_direction,
+                rustlab_plot::AxisYDirection::Xy,
+                "axis(\"xy\") must set Xy on the current panel",
+            );
+        });
+        run("axis(\"ij\");");
+        FIGURE.with(|f| {
+            assert_eq!(
+                f.borrow().current().y_axis_direction,
+                rustlab_plot::AxisYDirection::Ij,
+                "axis(\"ij\") must set Ij on the current panel",
+            );
+        });
+    }
+
+    #[test]
+    fn set_default_axis_flips_default_and_retro_applies_to_existing_panels() {
+        // Save + restore the default to keep this isolated.
+        let prior = rustlab_plot::default_axis_y_direction();
+        rustlab_plot::set_default_axis_y_direction(rustlab_plot::AxisYDirection::Ij);
+        FIGURE.with(|f| f.borrow_mut().reset());
+        // Confirm starting state: current panel is ij.
+        FIGURE.with(|f| {
+            assert_eq!(
+                f.borrow().current().y_axis_direction,
+                rustlab_plot::AxisYDirection::Ij
+            );
+        });
+        // set_default_axis("xy") flips the default AND updates the
+        // already-created default panel — that's what makes a one-line
+        // notebook preamble actually take effect on the first imagesc.
+        run("set_default_axis(\"xy\");");
+        FIGURE.with(|f| {
+            assert_eq!(
+                f.borrow().current().y_axis_direction,
+                rustlab_plot::AxisYDirection::Xy,
+                "set_default_axis(\"xy\") must retro-apply to the existing panel",
+            );
+        });
+        // And new panels built after the call also pick it up.
+        let fresh = rustlab_plot::SubplotState::new();
+        assert_eq!(fresh.y_axis_direction, rustlab_plot::AxisYDirection::Xy);
+        rustlab_plot::set_default_axis_y_direction(prior);
+    }
+
+    #[test]
+    fn axis_unknown_string_errors() {
+        let src = "axis(\"banana\");\n";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = crate::Evaluator::new();
+        let mut err = None;
+        for s in &stmts {
+            if let Err(e) = ev.exec_stmt(s) {
+                err = Some(e);
+                break;
+            }
+        }
+        let msg = format!("{}", err.expect("must error on unknown axis arg"));
+        assert!(
+            msg.contains("axis:") && msg.contains("banana"),
+            "expected axis-mode error, got: {msg}",
+        );
+    }
+
+    #[test]
     fn axis_numeric_sets_both_limits() {
         run("axis([-2, 3, -1.5, 1.5]);");
         FIGURE.with(|f| {

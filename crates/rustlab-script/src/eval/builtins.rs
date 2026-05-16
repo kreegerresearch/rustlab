@@ -163,6 +163,7 @@ impl BuiltinRegistry {
         r.register("hold", builtin_hold);
         r.register("grid", builtin_grid);
         r.register("axis", builtin_axis);
+        r.register("set_default_axis", builtin_set_default_axis);
         r.register("xlabel", builtin_xlabel);
         r.register("ylabel", builtin_ylabel);
         r.register("title", builtin_title);
@@ -3350,15 +3351,74 @@ fn builtin_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
                 "auto" => {
                     FIGURE.with(|fig| fig.borrow_mut().current_mut().axis_equal = false);
                 }
+                // Y-axis orientation for heatmap-bearing panels:
+                //   "xy" — physics / meshgrid convention (row 0 at bottom).
+                //   "ij" — image / matrix-pixel convention (row 0 at top).
+                // Applies to the current panel only; for a process-wide
+                // default see `set_default_axis("xy" | "ij")`.
+                "xy" => {
+                    FIGURE.with(|fig| {
+                        fig.borrow_mut().current_mut().y_axis_direction =
+                            rustlab_plot::AxisYDirection::Xy;
+                    });
+                }
+                "ij" => {
+                    FIGURE.with(|fig| {
+                        fig.borrow_mut().current_mut().y_axis_direction =
+                            rustlab_plot::AxisYDirection::Ij;
+                    });
+                }
                 other => {
                     return Err(ScriptError::type_err(format!(
-                        "axis: expected \"equal\", \"auto\", or [xmin, xmax, ymin, ymax]; got \"{other}\""
+                        "axis: expected \"equal\", \"auto\", \"xy\", \"ij\", or [xmin, xmax, ymin, ymax]; got \"{other}\""
                     )));
                 }
             }
         }
     }
     sync_figure_outputs();
+    Ok(Value::None)
+}
+
+/// set_default_axis("xy" | "ij") — change the per-process default y-axis
+/// orientation for newly-created subplot panels.
+///
+/// `"xy"` switches the default to physics convention: row 0 of a
+/// heatmap matrix sits at the bottom of the chart and y-axis labels
+/// read 0 at the bottom, `nrows` at the top. `"ij"` restores the
+/// matrix-pixel default (row 0 at top, labels reversed) and matches
+/// MATLAB/Octave `imagesc`.
+///
+/// Affects *every panel created after the call* on this thread.
+/// Existing panels keep whatever orientation they were created with.
+/// For one-off overrides, use `axis("xy")` / `axis("ij")` on the
+/// current panel instead.
+fn builtin_set_default_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("set_default_axis", &args, 1)?;
+    let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let dir = match s.to_lowercase().as_str() {
+        "xy" => rustlab_plot::AxisYDirection::Xy,
+        "ij" => rustlab_plot::AxisYDirection::Ij,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "set_default_axis: expected \"xy\" or \"ij\"; got \"{other}\""
+            )));
+        }
+    };
+    rustlab_plot::set_default_axis_y_direction(dir);
+    // Also retro-apply to the panels in the current figure so a
+    // preamble-style call ("set_default_axis at the top of a notebook")
+    // is effective without requiring the user to call subplot() or
+    // figure() first. The default-panel canvas already exists from
+    // `FigureState::new()` at notebook-start time, so without this
+    // update the very first imagesc would render in the previous
+    // orientation regardless of the set_default_axis call.
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        for sp in &mut f.subplots {
+            sp.y_axis_direction = dir;
+        }
+    });
     Ok(Value::None)
 }
 

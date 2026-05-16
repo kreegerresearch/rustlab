@@ -158,18 +158,14 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             } else {
                 format!("x{axis_suffix}")
             };
-            // All three heatmap kinds use image convention (row 0 at the
-            // top of the chart, y-axis label `0` at the top and `N` at
-            // the bottom). Matches the SVG backend after the 2026-05-16
-            // alignment fix. Without reversing for `Imagesc`, Plotly's
-            // default put row 0 at the bottom — disagreeing with both
-            // the SVG render and image-convention expectations.
-            let reversed = matches!(
-                hm.kind,
-                crate::figure::HeatmapKind::Imagesc
-                    | crate::figure::HeatmapKind::Heatmap
-                    | crate::figure::HeatmapKind::ImageRgba
-            );
+            // Y-axis orientation honours the per-panel
+            // `y_axis_direction`. Default `Ij` reverses the axis for
+            // image convention (matches SVG backend and MATLAB `imagesc`);
+            // `Xy` keeps Plotly's standard ascending y-axis so the
+            // physics convention shines through for users who opted in.
+            let _ = hm;
+            let reversed =
+                panel.y_axis_direction == crate::figure::AxisYDirection::Ij;
             if reversed {
                 format!(r#", scaleanchor: "{anchor}", autorange: "reversed""#)
             } else {
@@ -763,6 +759,32 @@ mod tests {
     use super::*;
     use crate::figure::{ContourData, FigureState, HeatmapData, PlotKind, Series};
     use crate::{LineStyle, SeriesColor, Theme};
+
+    #[test]
+    fn imagesc_html_axis_xy_does_not_reverse_y_axis() {
+        // Per-panel `axis("xy")` opts out of image convention; the
+        // Plotly trace's y-axis stays in standard ascending order
+        // (no `autorange: "reversed"`).
+        let mut fig = FigureState::new();
+        let sp = fig.current_mut();
+        sp.y_axis_direction = crate::figure::AxisYDirection::Xy;
+        sp.heatmap = Some(HeatmapData {
+            z: vec![vec![1.0, 0.0], vec![0.0, 0.0]],
+            colorscale: "viridis".to_string(),
+            kind: crate::figure::HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        });
+
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert!(
+            !div.contains(r#"autorange: "reversed""#),
+            "axis-xy must NOT reverse the Plotly y-axis; got:\n{div}",
+        );
+    }
 
     #[test]
     fn imagesc_html_emits_reversed_y_axis_for_image_convention() {
