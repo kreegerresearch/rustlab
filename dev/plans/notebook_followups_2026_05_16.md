@@ -19,7 +19,7 @@ them so the next agent doesn't have to re-discover them.
 | P1 | `ExecState` snapshot memory grows O(N\_blocks × symbol\_table\_size) | Documented | LRU cap deferred until real pain |
 | P2 | Watcher's `self_writes: HashMap<PathBuf, Vec<u8>>` unbounded | Low (long-session memory leak) | ~20 min |
 | P3 | `strip_render_artifacts` does 4 linear scans per render | Trivial (perf) | ~30 min |
-| L1 | New `rustlab notebook check` linter subcommand | Product surface | ~1 session |
+| L1 | New `rustlab notebook check` linter subcommand | **shipped 2026-05-16** | done — 7 lints, `--fix`, `--strict`, CI exit codes |
 
 ---
 
@@ -291,7 +291,7 @@ noise.
 
 ---
 
-## L1 — `rustlab notebook check` linter subcommand
+## L1 — `rustlab notebook check` linter subcommand ✓ SHIPPED 2026-05-16
 
 ### Motivation
 

@@ -117,6 +117,29 @@ enum Command {
         #[arg(long, value_name = "MS", default_value = "250")]
         debounce_ms: u64,
     },
+    /// Lint .md notebook source(s) for rustlab-shaped failures
+    #[command(
+        long_about = "Lint one or more .md notebook files for rustlab-shaped failures.\n\n\
+            Exit codes:\n  \
+            0 = clean (no findings, or info-only)\n  \
+            1 = warnings (also exits 1 on info under --strict)\n  \
+            2 = any error\n\n\
+            Examples:\n  \
+            rustlab-notebook check note.md\n  \
+            rustlab-notebook check notebooks/         # recursive\n  \
+            rustlab-notebook check note.md --fix      # auto-correct safe issues\n  \
+            rustlab-notebook check notebooks/ --strict"
+    )]
+    Check {
+        /// Input .md file or directory of .md files (recursive).
+        input: PathBuf,
+        /// Auto-correct findings the linter can fix (calls `clean`).
+        #[arg(long)]
+        fix: bool,
+        /// Treat warnings (and info) as errors.
+        #[arg(long)]
+        strict: bool,
+    },
     /// Strip rustlab-generated artifacts from .md notebook source(s)
     #[command(
         long_about = "Strip rustlab-generated artifacts from one or more .md files, leaving only \
@@ -261,6 +284,13 @@ fn main() {
             let changed = rustlab_notebook::cmd_clean(input, output, check);
             if check && changed > 0 {
                 std::process::exit(1);
+            }
+        }
+        Command::Check { input, fix, strict } => {
+            let outcome = rustlab_notebook::cmd_check(input, fix, strict);
+            let code = outcome.exit_code(strict);
+            if code != 0 {
+                std::process::exit(code);
             }
         }
     }

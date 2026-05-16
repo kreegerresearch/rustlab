@@ -63,6 +63,26 @@ pub enum NotebookCommands {
             light  Catppuccin Latte — light background, dark text"
     )]
     Render(RenderArgs),
+    /// Lint .md notebook source(s) for rustlab-shaped failures
+    #[command(
+        long_about = "Lint one or more .md notebook files for rustlab-shaped failures: \
+            unmatched output sentinels, unclosed code fences, unresolved `![[Embed]]` \
+            references, frontmatter that opens but never closes, plot URLs whose files \
+            don't exist on disk, duplicate generated-by headers, mismatched `<details>` \
+            tags.\n\n\
+            Not a generic markdown validator — only catches failures that the renderer \
+            either can't surface or shouldn't be expected to. Useful as a pre-commit hook.\n\n\
+            Exit codes:\n  \
+            0 = clean (no findings, or info-only)\n  \
+            1 = warnings (also exits 1 on info under --strict)\n  \
+            2 = any error\n\n\
+            Examples:\n  \
+            rustlab notebook check note.md\n  \
+            rustlab notebook check notebooks/                # recursive over every .md\n  \
+            rustlab notebook check note.md --fix             # auto-correct safe issues (calls clean)\n  \
+            rustlab notebook check notebooks/ --strict       # warnings/info → exit 1"
+    )]
+    Check(CheckArgs),
     /// Strip rustlab-generated artifacts from .md notebook source(s)
     #[command(
         long_about = "Strip rustlab-generated artifacts from one or more .md files, leaving only \
@@ -83,6 +103,22 @@ pub enum NotebookCommands {
             rustlab notebook clean note.md -o cleaned.md   # write cleaned copy to a different path"
     )]
     Clean(CleanArgs),
+}
+
+#[derive(Args)]
+pub struct CheckArgs {
+    /// Input .md file or directory of .md files (recursive).
+    input: PathBuf,
+    /// Auto-correct findings that the linter can fix (currently:
+    /// unmatched output sentinels and duplicate generated headers).
+    /// Equivalent to running `notebook clean` on the affected files,
+    /// then re-checking.
+    #[arg(long)]
+    fix: bool,
+    /// Treat warnings (and info) as errors — exit 1 even when nothing
+    /// would otherwise have been a failure. Useful in CI hooks.
+    #[arg(long)]
+    strict: bool,
 }
 
 #[derive(Args)]
@@ -246,6 +282,14 @@ pub fn execute(cmd: NotebookCommands) -> Result<()> {
             let changed = rustlab_notebook::cmd_clean(args.input, args.output, args.check);
             if args.check && changed > 0 {
                 std::process::exit(1);
+            }
+            Ok(())
+        }
+        NotebookCommands::Check(args) => {
+            let outcome = rustlab_notebook::cmd_check(args.input, args.fix, args.strict);
+            let code = outcome.exit_code(args.strict);
+            if code != 0 {
+                std::process::exit(code);
             }
             Ok(())
         }

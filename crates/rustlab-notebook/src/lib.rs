@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod check;
 pub mod embed;
 pub mod execute;
 #[cfg(feature = "mermaid")]
@@ -232,6 +233,125 @@ pub fn strip_render_artifacts(source: &str) -> String {
 /// In `check` mode, no files are written. The function returns the count
 /// of files that would change; callers (e.g. CI) use this for an exit
 /// code without modifying the tree.
+/// Result of a `notebook check` run: enough for a caller to print and
+/// set a process exit code.
+pub struct CheckOutcome {
+    pub errors: usize,
+    pub warnings: usize,
+    pub infos: usize,
+    pub files_scanned: usize,
+    pub files_fixed: usize,
+}
+
+impl CheckOutcome {
+    /// Process exit code matching the linter contract:
+    ///   - 0 = clean (no findings, or only info)
+    ///   - 1 = warnings (or any info under `--strict`)
+    ///   - 2 = any error
+    pub fn exit_code(&self, strict: bool) -> i32 {
+        if self.errors > 0 {
+            2
+        } else if self.warnings > 0 || (strict && self.infos > 0) {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// Lint one or more notebook `.md` files for rustlab-shaped failures.
+/// See `check.rs` for the catalogue of lints. When `fix` is true,
+/// invokes `cmd_clean` on files whose findings include `auto_fixable`
+/// entries, then re-checks them so the final report reflects what
+/// remained after the fix.
+pub fn cmd_check(input: PathBuf, fix: bool, strict: bool) -> CheckOutcome {
+    use crate::check;
+    let files = if input.is_dir() {
+        list_md_files_recursive(&input)
+    } else {
+        vec![input.clone()]
+    };
+
+    let mut outcome = CheckOutcome {
+        errors: 0,
+        warnings: 0,
+        infos: 0,
+        files_scanned: files.len(),
+        files_fixed: 0,
+    };
+
+    for file in &files {
+        let source = match std::fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: cannot read {}: {e}", file.display());
+                outcome.errors += 1;
+                continue;
+            }
+        };
+        let host_dir = file.parent().unwrap_or_else(|| Path::new("."));
+        // For the embed expander, treat the file's parent as the vault
+        // root when scanning a single file. When scanning a directory,
+        // use the directory itself.
+        let root_dir = if input.is_dir() { input.as_path() } else { host_dir };
+        let mut findings = check::check_source(&source, file, host_dir, root_dir);
+
+        if fix && findings.iter().any(|f| f.auto_fixable) {
+            let _ = cmd_clean(file.clone(), None, false);
+            outcome.files_fixed += 1;
+            // Re-lint to surface anything `cmd_clean` couldn't repair.
+            if let Ok(after) = std::fs::read_to_string(file) {
+                findings = check::check_source(&after, file, host_dir, root_dir);
+            }
+        }
+
+        for finding in &findings {
+            let loc = match finding.line {
+                Some(l) => format!("{}:{}", file.display(), l),
+                None => format!("{}", file.display()),
+            };
+            println!(
+                "{loc} [{}] {}: {}",
+                finding.code,
+                finding.severity.as_str(),
+                finding.message,
+            );
+            match finding.severity {
+                check::Severity::Error => outcome.errors += 1,
+                check::Severity::Warning => outcome.warnings += 1,
+                check::Severity::Info => outcome.infos += 1,
+            }
+        }
+    }
+
+    println!();
+    let total = outcome.errors + outcome.warnings + outcome.infos;
+    if total == 0 {
+        println!("✓ {} file(s) clean", outcome.files_scanned);
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        if outcome.errors > 0 {
+            parts.push(format!("{} error(s)", outcome.errors));
+        }
+        if outcome.warnings > 0 {
+            parts.push(format!("{} warning(s)", outcome.warnings));
+        }
+        if outcome.infos > 0 {
+            parts.push(format!("{} info", outcome.infos));
+        }
+        println!(
+            "{} across {} file(s)",
+            parts.join(", "),
+            outcome.files_scanned,
+        );
+        if outcome.files_fixed > 0 {
+            println!("({} file(s) auto-fixed via --fix)", outcome.files_fixed);
+        }
+        let _ = strict;
+    }
+    outcome
+}
+
 pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize {
     let mut changed = 0usize;
     let files = if input.is_dir() {
