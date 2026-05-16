@@ -1023,23 +1023,29 @@ where
             })
             .draw()
             .map_err(err)?;
-    } else if matches!(
-        sp.heatmap.as_ref().map(|h| &h.kind),
-        Some(crate::figure::HeatmapKind::Imagesc)
-    ) {
-        // `imagesc` follows MATLAB/Octave convention: row 0 (matlab
-        // index 1) sits at the top of the chart, and the y-axis is
-        // labelled top-down so the top tick reads `0` and the bottom
-        // reads `nrows`. Plotters' Cartesian axis can't be range-
-        // reversed without changing the chart's coordinate type, so we
-        // achieve the visual flip with a formatter: at chart-y = nrows
-        // (top of the plot) print "0", and at chart-y = 0 (bottom)
-        // print "nrows".
-        //
-        // This is the labels half of the imagesc bug fix from 2026-05-16.
-        // Without it the rendered matrix had row 0 at top but the y-axis
-        // numbered 0..N bottom-up, so the labels disagreed with the data.
-        let nrows = sp.heatmap.as_ref().map(|h| h.z.len()).unwrap_or(0) as f64;
+    } else if sp.heatmap.is_some() {
+        // Any heatmap-bearing panel that didn't take the categorical
+        // labels branch above. Covers:
+        //   - `imagesc(M)`  (HeatmapKind::Imagesc)
+        //   - `image(M)`    (HeatmapKind::ImageRgba)
+        //   - `heatmap(M)` without label vectors (HeatmapKind::Heatmap
+        //     with x_labels / y_labels = None)
+        // All three use image-convention rendering (row 0 drawn at the
+        // top of the chart) and so all three need the y-axis labels
+        // reversed to read `0` at the top and `nrows` at the bottom.
+        // Without this formatter, default numeric ticks go bottom-up
+        // (`0` at bottom, `nrows` at top) — physics convention labels
+        // disagreeing with the image-convention render. That's the
+        // original 2026-05-16 imagesc bug; the fix is uniform across
+        // the kinds because the underlying mistake was uniform too.
+        let nrows = sp
+            .heatmap
+            .as_ref()
+            .map(|h| match h.kind {
+                crate::figure::HeatmapKind::ImageRgba => h.rgba_height as usize,
+                _ => h.z.len(),
+            })
+            .unwrap_or(0) as f64;
         chart
             .configure_mesh()
             .disable_mesh()

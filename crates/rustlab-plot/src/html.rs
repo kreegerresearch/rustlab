@@ -146,11 +146,12 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         } else {
             String::new()
         };
-        // Square aspect ratio for heatmaps. For `heatmap()` and `image()` also
-        // reverse the y-axis so row 0 lands at the top (standard image/data
-        // orientation). `imagesc` HTML output is left unflipped to preserve
-        // existing behaviour; the SVG/HTML divergence on imagesc is tracked
-        // separately.
+        // Square aspect ratio for all heatmap kinds. The y-axis is
+        // reversed (autorange: "reversed") so row 0 lands at the TOP of
+        // the chart — MATLAB/Octave `imagesc`/`image` / `heatmap`
+        // convention. Fixed across all three kinds 2026-05-16; prior to
+        // that, `Imagesc` was the only kind without the flip and its
+        // HTML output disagreed with its own SVG output.
         let yaxis_extra = if let Some(hm) = &panel.heatmap {
             let anchor = if axis_suffix.is_empty() {
                 "x".to_string()

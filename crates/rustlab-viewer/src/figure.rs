@@ -161,6 +161,32 @@ impl FigureWindow {
                             });
                         }
 
+                        // Heatmap y-axis: match MATLAB/Octave `imagesc` and
+                        // the SVG/HTML backends. The texture's row 0 sits
+                        // at the TOP of the plot (egui draws textures with
+                        // their top pixel at the top of the bounding box,
+                        // and our plot bounds run y ∈ [0, height] so the
+                        // top of the bounding box is at plot-y = height).
+                        // Without this formatter, the default y-axis ticks
+                        // would read 0 at the bottom and N at the top —
+                        // physics convention labels disagreeing with the
+                        // image-convention render, the exact bug fixed in
+                        // SVG/HTML on 2026-05-16. Reverse the labels so
+                        // the top tick reads `0` and the bottom reads N,
+                        // matching MATLAB.
+                        if let Some(ref hm) = panel.heatmap {
+                            let height = hm.height as f64;
+                            plot = plot.y_axis_formatter(move |mark, _range| {
+                                let displayed = height - mark.value;
+                                let rounded = displayed.round();
+                                if (displayed - rounded).abs() < 1e-6 {
+                                    format!("{}", rounded as i64)
+                                } else {
+                                    format!("{:.2}", displayed)
+                                }
+                            });
+                        }
+
                         // Set fixed bounds when limits are specified
                         let has_bounds = panel.xlim.0.is_some()
                             || panel.xlim.1.is_some()

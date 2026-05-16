@@ -256,7 +256,49 @@ Before staging any file, check that it does not contain:
 
 If a file that may contain secrets is found in the working tree, warn the user immediately and do not stage or commit it under any circumstances. Use `.gitignore` to prevent accidental staging. This rule cannot be overridden by any user instruction.
 
-### 9. Core functionality must be written in pure Rust
+### 9. Plotting changes must verify all output backends
+
+Any change to a plot type, axis behaviour, label rendering, or
+coordinate convention **must** be validated across every backend
+that renders that plot type, not just the one you're working in.
+A bug fix in `file.rs` (SVG) that leaves `html.rs` (Plotly),
+`viewer_live.rs` (live viewer), or `ascii.rs` (terminal) in a
+divergent state is a regression, not a fix.
+
+**The backends to consider for any 2-D plot type:**
+
+| Backend | Crate / file | Notes |
+|---|---|---|
+| Terminal (TUI) | `rustlab-plot::ascii` | `ratatui`. Renders to alternate screen on `Terminal` context; silently no-ops under `Notebook` / `Headless`. |
+| SVG (notebook markdown, gallery) | `rustlab-plot::file` (`SVGBackend`) | Reached via `savefig("foo.svg")`, `rustlab notebook render -f markdown`, gallery rebuilds. Shared with the LaTeX path. |
+| PNG | `rustlab-plot::file` (`BitMapBackend`) | Reached via `savefig("foo.png")`. Same `render_to_backend` code as SVG, so SVG fixes usually inherit; verify per change anyway. |
+| LaTeX / PDF | `rustlab-notebook::render_latex` + the SVG path | LaTeX `\includesvg`/`\includegraphics` the SVG plots, so PDF inherits SVG. PDF builds run `pdflatex`/`tectonic`; verify they still compile. |
+| HTML (Plotly) | `rustlab-plot::html` | `savefig("foo.html")`, `rustlab notebook render -f html`, the `--obsidian` iframe. Plotly's defaults frequently disagree with plotters'. |
+| Live viewer | `rustlab-plot::viewer_live` + `rustlab-viewer::figure` | Wire protocol from the notebook process to the egui viewer. Texture/axis conventions are egui-specific and must be reconciled with the static-output backends. |
+| Animation (GIF / HTML) | `rustlab-plot::animation` | GIF goes through `BitMapBackend` (inherits SVG). HTML animations use Plotly frames (inherits HTML). |
+
+**What "validate" means:**
+
+1. Add a unit test in each backend's test module that pins the
+   convention (e.g. an SVG test that grep-parses cell positions, an
+   HTML test that asserts the right Plotly trace attribute is
+   emitted). The notebook `cross_backend` tests are a good template
+   pattern.
+2. Render the user-reproducer notebook through every backend the
+   plot type targets and inspect the artefacts. The `rustlab notebook
+   render` driver handles HTML, LaTeX/PDF, and markdown/SVG in one
+   pass; the viewer needs a separate manual smoke pass.
+3. If a backend genuinely can't replicate the convention (e.g. the
+   TUI has no axis labels and so can't be inconsistent about them),
+   document that explicitly in the code comment.
+
+**Why this is its own rule.** The 2026-05-16 `imagesc` bug was a SVG
+fix shipped without checking HTML or the live viewer — the SVG read
+right while the viewer kept rendering the original mismatch. Cross-
+backend consistency for plotting is so easy to forget that it gets
+its own rule.
+
+### 10. Core functionality must be written in pure Rust
 
 **Core** = functions, algorithms, numerics, DSP, linear algebra, anything a script-level builtin exposes as math. **Infrastructure** = graphics, plotting, terminal UI, file I/O, parsing, serialization, error formatting.
 
