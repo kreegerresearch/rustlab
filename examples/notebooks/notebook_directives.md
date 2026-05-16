@@ -9,7 +9,7 @@ order: 50
 tags that control how a code block or section is rendered. They use
 HTML-comment syntax so the source `.md` file stays portable: any plain
 CommonMark viewer (GitHub, VS Code preview) treats them as invisible
-comments. Only `rustlab notebook render` interprets them.
+comments. Only `rustlab-notebook render` interprets them.
 
 This notebook documents each directive with a working example.
 

@@ -2,7 +2,6 @@ pub mod convolve;
 pub mod docs;
 pub mod filter;
 pub mod info;
-pub mod notebook;
 pub mod plot;
 pub mod repl;
 pub mod run;

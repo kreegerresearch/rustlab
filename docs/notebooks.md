@@ -13,7 +13,7 @@ save — here's the shortest path:
 ### Single-file layout (one `.md` per notebook, simplest)
 
 ```
-rustlab notebook watch ~/your-obsidian-vault --obsidian
+rustlab-notebook watch ~/your-obsidian-vault --obsidian
 ```
 
 That's it. Then in Obsidian:
@@ -32,7 +32,7 @@ so the renderer can refresh it cleanly on every pass.
 ### Two-directory layout (pristine source + rendered vault)
 
 ```
-rustlab notebook watch ~/notebooks/src -o ~/your-obsidian-vault --obsidian
+rustlab-notebook watch ~/notebooks/src -o ~/your-obsidian-vault --obsidian
 ```
 
 Edit in `~/notebooks/src` (your authoring tree, keep it in git), view
@@ -49,8 +49,8 @@ stay byte-identical to what you'd commit to a repo.
 | Prose-only edits skip code execution | Per-block cache: prose change → zero execution, mid-notebook code edit → only that block + downstream re-execute (state restored from snapshot). In-memory, per watcher session. |
 | Stop the runaway-loop family of bugs | Self-write suppression, in-place auto-cleanup of generated header/iframe, hashed plot filenames so Obsidian doesn't show stale images. |
 | Add `.md` notebooks while the watcher is running | They get picked up on first save, no restart needed. |
-| Strip everything rustlab added and recover the source | `rustlab notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
-| Render to standalone HTML / PDF / LaTeX too | `rustlab notebook render` with `-f html`/`-f pdf`/`-f latex`. |
+| Strip everything rustlab added and recover the source | `rustlab-notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Render to standalone HTML / PDF / LaTeX too | `rustlab-notebook render` with `-f html`/`-f pdf`/`-f latex`. |
 
 ### When to use which layout
 
@@ -64,7 +64,7 @@ stay byte-identical to what you'd commit to a repo.
   emitted in two-dir only (suppress with `--no-iframe`).
 
 If anything seems wrong — stale plot, weird duplication, runaway
-re-rendering — try `rustlab notebook clean <path>` on the affected
+re-rendering — try `rustlab-notebook clean <path>` on the affected
 file to scrub it back to source, then restart the watcher.
 
 ---
@@ -72,14 +72,14 @@ file to scrub it back to source, then restart the watcher.
 ## Other quick starts (non-Obsidian)
 
 ```
-rustlab notebook render analysis.md              # → analysis.html (default, dark theme)
-rustlab notebook render analysis.md -t light     # → analysis.html (light theme)
-rustlab notebook render analysis.md -f latex     # → analysis.tex + SVG plots
-rustlab notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
-rustlab notebook render analysis.md -f markdown  # → analysis.md + plots/analysis/*.svg
-rustlab notebook render analysis.md -f markdown --obsidian  # vault-native md (wikilinks, _attachments/, frontmatter, iframe)
-rustlab notebook render analysis.md -o out.html  # explicit output path
-rustlab notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
+rustlab-notebook render analysis.md              # → analysis.html (default, dark theme)
+rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
+rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
+rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
+rustlab-notebook render analysis.md -f markdown  # → analysis.md + plots/analysis/*.svg
+rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native md (wikilinks, _attachments/, frontmatter, iframe)
+rustlab-notebook render analysis.md -o out.html  # explicit output path
+rustlab-notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
 
 The `markdown` output format is purpose-built for committing rendered
@@ -101,8 +101,8 @@ keys, and a trailing iframe to the sibling `.html` is appended for
 the interactive Plotly view.
 
 ```
-rustlab notebook render notebooks/ -f html                 # → <name>.html for each
-rustlab notebook render notebooks/ -f markdown --obsidian  # → vault-native .md
+rustlab-notebook render notebooks/ -f html                 # → <name>.html for each
+rustlab-notebook render notebooks/ -f markdown --obsidian  # → vault-native .md
 ```
 
 Five things change vs. the default `--format markdown`:
@@ -171,16 +171,16 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 
 ### Live preview with `notebook watch`
 
-`rustlab notebook watch <dir>` is the long-running counterpart of
+`rustlab-notebook watch <dir>` is the long-running counterpart of
 `render`: it re-renders any notebook whose source changes, debouncing
 filesystem events so a single editor save produces one render pass.
 Pair it with `--obsidian` for a "edit in Editing view, see updates in
 Reading view" loop with no manual rerun.
 
 ```
-rustlab notebook watch notebooks/                                  # in-place: render back to notebooks/<name>.md
-rustlab notebook watch notebooks/ -o vault/ --obsidian             # two-dir: vault-native output to a separate dir
-rustlab notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
+rustlab-notebook watch notebooks/                                  # in-place: render back to notebooks/<name>.md
+rustlab-notebook watch notebooks/ -o vault/ --obsidian             # two-dir: vault-native output to a separate dir
+rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
 ```
 
 Two layouts work:
@@ -263,10 +263,10 @@ Stop the watcher with Ctrl-C.
 ### `notebook check` — lint for rustlab-shaped failures
 
 ```
-rustlab notebook check note.md           # exit 2 on errors, 1 on warnings, 0 clean
-rustlab notebook check notebooks/        # recursive over every .md
-rustlab notebook check note.md --fix     # auto-correct the safe ones (calls clean)
-rustlab notebook check note.md --strict  # warnings/info also exit 1 (CI-friendly)
+rustlab-notebook check note.md           # exit 2 on errors, 1 on warnings, 0 clean
+rustlab-notebook check notebooks/        # recursive over every .md
+rustlab-notebook check note.md --fix     # auto-correct the safe ones (calls clean)
+rustlab-notebook check note.md --strict  # warnings/info also exit 1 (CI-friendly)
 ```
 
 `check` is a *targeted* linter, not a generic markdown validator —
@@ -298,10 +298,10 @@ spot. The exit code reflects the *post-fix* state.
 ### `notebook clean` — strip rendered artifacts
 
 ```
-rustlab notebook clean note.md           # in-place: strip generated header + output sentinels
-rustlab notebook clean notebooks/        # recursive over every .md (README.md skipped)
-rustlab notebook clean note.md --check   # exit 1 if anything would change; no write
-rustlab notebook clean note.md -o out.md # write cleaned copy elsewhere; source untouched
+rustlab-notebook clean note.md           # in-place: strip generated header + output sentinels
+rustlab-notebook clean notebooks/        # recursive over every .md (README.md skipped)
+rustlab-notebook clean note.md --check   # exit 1 if anything would change; no write
+rustlab-notebook clean note.md -o out.md # write cleaned copy elsewhere; source untouched
 ```
 
 `clean` reverses what the renderer adds — useful for committing pristine
@@ -496,7 +496,7 @@ defines it) — the source stays Obsidian-portable, the rendered HTML
 1. The embed target is resolved relative to the **directory of the
    embedding notebook** first.
 2. If not found, the renderer falls back to the **notebook root**
-   (the directory passed to `rustlab notebook render <dir>`).
+   (the directory passed to `rustlab-notebook render <dir>`).
 3. Case-insensitive basename match in each directory as a final
    fallback (Obsidian compatibility on Linux file systems).
 4. If still not found, an inline error callout is emitted (see below).
@@ -553,7 +553,7 @@ function, and the demo lesson embeds it, then uses the variables.
 Directives are a `rustlab-notebook` feature, not standard Markdown. They
 use HTML-comment syntax (`<!-- ... -->`) so the source `.md` file stays
 portable — any CommonMark viewer (GitHub, VS Code preview, etc.) treats
-them as invisible comments. Only `rustlab notebook render` interprets
+them as invisible comments. Only `rustlab-notebook render` interprets
 them as instructions.
 
 ### `<!-- hide -->`
@@ -914,10 +914,10 @@ my-project/
 Render an entire directory of notebooks at once:
 
 ```
-rustlab notebook render notebooks/                # → *.html + index.html (dark)
-rustlab notebook render notebooks/ -t light       # → *.html + index.html (light)
-rustlab notebook render notebooks/ -f pdf         # → *.pdf
-rustlab notebook render notebooks/ --title "Lab"  # custom index page title
+rustlab-notebook render notebooks/                # → *.html + index.html (dark)
+rustlab-notebook render notebooks/ -t light       # → *.html + index.html (light)
+rustlab-notebook render notebooks/ -f pdf         # → *.pdf
+rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
 
 This produces one output file per `.md` file plus an `index.html` linking
@@ -961,7 +961,7 @@ two lightweight navigation aids instead:
   to the adjacent notebooks in sort order. The first notebook has no
   "Previous" link; the last has no "Next" link.
 
-Single-file renders (`rustlab notebook render file.md`) keep the classic
+Single-file renders (`rustlab-notebook render file.md`) keep the classic
 sidebar layout with an in-page TOC — there's no sibling set to navigate.
 
 ## Template Interpolation

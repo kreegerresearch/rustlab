@@ -1,6 +1,6 @@
 # Notebook sources
 
-This directory holds the rustlab notebook **sources** — markdown files with
+This directory holds the rustlab-notebook **sources** — markdown files with
 ` ```rustlab ` fenced code blocks that the notebook runner executes.
 
 **Looking for the rendered notebooks?** They live at the repo-root
@@ -39,14 +39,14 @@ open gallery/index.html                                 # browse interactively
 ```
 
 `make notebooks` runs `dev/build-notebooks.sh`, which invokes
-`rustlab notebook render examples/notebooks/` twice — once for markdown
+`rustlab-notebook render examples/notebooks/` twice — once for markdown
 and once for HTML — both writing into `gallery/`. The `.gitignore`
 splits visibility: `*.md` and `plots/**/*.svg` are committed; `*.html`
 files are local-only.
 
 ## Output formats
 
-The `rustlab notebook render` command supports four formats:
+The `rustlab-notebook render` command supports four formats:
 
 | Format     | Output                                       | Use case                                  |
 |------------|----------------------------------------------|-------------------------------------------|

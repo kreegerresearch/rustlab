@@ -1,4 +1,4 @@
-//! Notebook linter — `rustlab notebook check`.
+//! Notebook linter — `rustlab-notebook check`.
 //!
 //! Targeted lint passes that catch rustlab-shaped failures in `.md`
 //! notebook sources. Not a generic markdown validator — markdown is

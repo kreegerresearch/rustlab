@@ -157,15 +157,15 @@ together whenever a phase finishes.
 | Sparse Vectors and Matrices | `dev/plans/closed/sparse.md` | Complete — all 4 phases (types, conversion, arithmetic, solver/utilities) |
 | Notebook System | `dev/plans/closed/notebook_report.md` | Complete through Phase 6 (parse, execute, KaTeX, LaTeX/PDF, polish, multi-notebook) + light/dark theme support |
 | Notebook Future Features | `dev/plans/notebook_future.md` | Complete — template interpolation, string arrays, categorical bar charts, categorical line plots (`plot(labels, y)`) |
-| Notebook Mermaid Diagrams | `dev/plans/closed/notebook_mermaid.md` | Phase 1 complete — pure-Rust SVG via `mermaid-rs-renderer` behind the `mermaid` Cargo feature on `rustlab-notebook`. Off by default to keep the main `rustlab` binary minimal; the standalone `rustlab-notebook` bin opts in via the Makefile. Inline `<svg>` in HTML, `\includesvg` figure in LaTeX/PDF, ` ```mermaid ` fence in Markdown. Hashed cache, `<!-- caption: -->`/`<!-- hide -->`/`<!-- details: -->` directives. |
+| Notebook Mermaid Diagrams | `dev/plans/closed/notebook_mermaid.md` | Phase 1 complete — pure-Rust SVG via `mermaid-rs-renderer` behind the `mermaid` Cargo feature on `rustlab-notebook` (default-on for the standalone bin). The main `rustlab` CLI no longer ships a `notebook` subcommand at all, so the historical `notebook-mermaid` feature flag is gone. Inline `<svg>` in HTML, `\includesvg` figure in LaTeX/PDF, ` ```mermaid ` fence in Markdown. Hashed cache, `<!-- caption: -->`/`<!-- hide -->`/`<!-- details: -->` directives. |
 | Notebook File Embeds (transclusion) | `dev/plans/closed/notebook_file_embeds.md` | Complete — Obsidian-style `![[Document]]`, `![[Document#Heading]]`, `![[Document#^block-id]]` transclusion. Pre-process pass before `parse_notebook`; embedded ` ```rustlab ` blocks share the host evaluator. Heading demotion per nesting level (cap h6), recursion cap = 4, cycle detection. Errors render as inline `[!CAUTION]` callouts. Block-id `^id` markers stripped from rendered output of every notebook. See `examples/notebooks/_setup.md` + `embeds_demo.md` and `docs/notebooks.md` § "File embeds (transclusion)". |
-| Notebook Obsidian Vault Integration | `dev/plans/closed/notebook_obsidian_vault.md` | Complete — both phases shipped. Phase A: `--obsidian` (markdown format) does five vault-native rewrites: cross-notebook links → `[[wikilinks]]`, plots → `_attachments/<stem>/`, frontmatter merge (`tags:[rustlab]` / `cssclasses:[rustlab-notebook]`), trailing iframe (suppress with `--no-iframe`), auto-generated `index.md` in directory mode. CLI flags `--attachments-dir <DIR>`, `--no-iframe`. Phase B: `rustlab notebook watch <dir>` long-running re-renderer using `notify` with debounced events (default 250 ms), embed dependency graph for precise re-renders, plot-dir gc, failure isolation. Markdown-only currently. See `docs/notebooks.md` § "Obsidian integration" and "Live preview with `notebook watch`". |
+| Notebook Obsidian Vault Integration | `dev/plans/closed/notebook_obsidian_vault.md` | Complete — both phases shipped. Phase A: `--obsidian` (markdown format) does five vault-native rewrites: cross-notebook links → `[[wikilinks]]`, plots → `_attachments/<stem>/`, frontmatter merge (`tags:[rustlab]` / `cssclasses:[rustlab-notebook]`), trailing iframe (suppress with `--no-iframe`), auto-generated `index.md` in directory mode. CLI flags `--attachments-dir <DIR>`, `--no-iframe`. Phase B: `rustlab-notebook watch <dir>` long-running re-renderer using `notify` with debounced events (default 250 ms), embed dependency graph for precise re-renders, post-render reference-driven plot-dir sweep, failure isolation. Markdown-only currently. See `docs/notebooks.md` § "Obsidian integration" and "Live preview with `notebook watch`". |
 | Notebook math passes through verbatim | `crates/rustlab-notebook/src/lib.rs` (`Format::Markdown` branch) | Complete — `--format markdown` writes math spans (`$…$`, `$$…$$`) byte-identical to the notebook source. GitHub's KaTeX path does not apply CommonMark backslash-escape or emphasis-pairing inside math spans, so the natural LaTeX (`\,`, `\;`, `\:`, `\!`, `\|`, `^*`, `_*`) reaches the renderer unmodified. Earlier alpha-synonym (`\thinspace` …) and double-backslash (`\\,` …) rewrites both rendered as literal text on github.com (see `rustlab_llm/AGENTS.md` § "Renderer regression (rustlab 0.3.1)") and have been removed; the deleted `markdown_safe.rs` is in git history if context is needed. See `docs/notebooks.md` § "Markdown (`--format markdown`)". |
 | Hand-Rolled Sparse Solver | `dev/plans/closed/sparse_solve_handroll.md` | Complete — all 5 phases (CSC, sparse Cholesky for SPD, sparse LU with partial pivoting, basic AMD ordering, builtin dispatch). Full Davis-AMD with external degree deferred. |
 | `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
 | Original `rustlab_em` Requests (5 originals) | `dev/plans/closed/rustlab_em_requests.md` | Complete — all five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d, animation export). |
 | `rustlab_llm` Gap Closure (v0.3) | `~/.claude/plans/lively-roaming-abelson.md` | Complete — all four open gaps shipped: short-circuit `&&`/`\|\|`, `M(I)` linear-index gather (with `M(scalar)` flip), `layernorm(M)` matrix overload, multi-output user functions `function [a, b] = name(x)`. Tour example/notebook in `examples/language_v0_3.{rlab,md}`. |
-| Notebook / Plot Follow-ups (2026-05-16) | `dev/plans/notebook_followups_2026_05_16.md` | Open — 3 bugs (cwd leak from `cmd_render*`, plot-dir wipe race, `write_output` extra IO), 3 perf items (snapshot memory cap, `self_writes` map unbounded, `strip_render_artifacts` multi-pass), and a proposed `rustlab notebook check` linter subcommand (9 checks). Each item is self-contained — file paths, fix sketch, and tests listed. Start with B1 (cwd) and P2 (`self_writes` LRU). |
+| Notebook / Plot Follow-ups (2026-05-16) | `dev/plans/notebook_followups_2026_05_16.md` | Mostly shipped — B1 (cwd guard), B2 (post-render plot sweep), B3 (write_output hash cache), P2 (`self_writes` u64 digest), L1 (`rustlab-notebook check` linter, 7 checks) all done. P1 (snapshot memory cap) and P3 (`strip_render_artifacts` single-pass) deferred until profiling justifies. Each item is self-contained — file paths, fix sketch, and tests listed in the plan doc. |
 
 ---
 
@@ -271,10 +271,10 @@ divergent state is a regression, not a fix.
 | Backend | Crate / file | Notes |
 |---|---|---|
 | Terminal (TUI) | `rustlab-plot::ascii` | `ratatui`. Renders to alternate screen on `Terminal` context; silently no-ops under `Notebook` / `Headless`. |
-| SVG (notebook markdown, gallery) | `rustlab-plot::file` (`SVGBackend`) | Reached via `savefig("foo.svg")`, `rustlab notebook render -f markdown`, gallery rebuilds. Shared with the LaTeX path. |
+| SVG (notebook markdown, gallery) | `rustlab-plot::file` (`SVGBackend`) | Reached via `savefig("foo.svg")`, `rustlab-notebook render -f markdown`, gallery rebuilds. Shared with the LaTeX path. |
 | PNG | `rustlab-plot::file` (`BitMapBackend`) | Reached via `savefig("foo.png")`. Same `render_to_backend` code as SVG, so SVG fixes usually inherit; verify per change anyway. |
 | LaTeX / PDF | `rustlab-notebook::render_latex` + the SVG path | LaTeX `\includesvg`/`\includegraphics` the SVG plots, so PDF inherits SVG. PDF builds run `pdflatex`/`tectonic`; verify they still compile. |
-| HTML (Plotly) | `rustlab-plot::html` | `savefig("foo.html")`, `rustlab notebook render -f html`, the `--obsidian` iframe. Plotly's defaults frequently disagree with plotters'. |
+| HTML (Plotly) | `rustlab-plot::html` | `savefig("foo.html")`, `rustlab-notebook render -f html`, the `--obsidian` iframe. Plotly's defaults frequently disagree with plotters'. |
 | Live viewer | `rustlab-plot::viewer_live` + `rustlab-viewer::figure` | Wire protocol from the notebook process to the egui viewer. Texture/axis conventions are egui-specific and must be reconciled with the static-output backends. |
 | Animation (GIF / HTML) | `rustlab-plot::animation` | GIF goes through `BitMapBackend` (inherits SVG). HTML animations use Plotly frames (inherits HTML). |
 
@@ -286,7 +286,7 @@ divergent state is a regression, not a fix.
    emitted). The notebook `cross_backend` tests are a good template
    pattern.
 2. Render the user-reproducer notebook through every backend the
-   plot type targets and inspect the artefacts. The `rustlab notebook
+   plot type targets and inspect the artefacts. The `rustlab-notebook
    render` driver handles HTML, LaTeX/PDF, and markdown/SVG in one
    pass; the viewer needs a separate manual smoke pass.
 3. If a backend genuinely can't replicate the convention (e.g. the
@@ -809,7 +809,6 @@ rustlab-viewer --socket PATH    # custom socket path
 - `src/commands/convolve.rs` — reads CSV signals, calls `convolve` or `overlap_add`
 - `src/commands/window.rs` — generates window, prints values, optional `--plot`
 - `src/commands/plot.rs` — reads CSV, dispatches to plot functions
-- `src/commands/notebook.rs` — `rustlab notebook render` subcommand, delegates to `rustlab_notebook`
 - `src/commands/docs.rs` — `rustlab docs` subcommand. Surfaces the REPL's `HELP` and `CATEGORIES` tables (which live as `pub` items in `commands/repl.rs`) from the shell. Forms: `docs` (list-all by category), `docs <name>` (detail), `docs <category>` (single-category list), `docs --search <q>` (substring match over names+briefs), `docs --json` (machine-readable dump for editor extensions / AI tooling). Unknown topic exits non-zero with a "No help found" message. Tests in `tests/docs.rs`.
 
 **Default behaviour:** `rustlab` with no arguments starts the REPL.
@@ -842,7 +841,7 @@ rustlab-viewer --socket PATH    # custom socket path
 
 **Cross-notebook page navigation (`NotebookNav`):** In directory-mode HTML renders, each notebook receives a `NotebookNav { index_href, prev, next }` computed from the sorted entry list. `render::render_html` switches the page layout when `nav` is `Some`: the fixed sidebar (with per-page H1/H2/H3 TOC) is dropped, the `<body>` gets a `topbar-layout` class, and a sticky `<header class="topbar">` breadcrumb (`← Index / <title>`) is inserted at the top. A `Previous · Index · Next` footer bar is appended above the page footer. Single-file `cmd_render` passes `None` → standalone pages keep the sidebar + TOC layout unchanged. LaTeX/PDF renders ignore `NotebookNav`.
 
-**Accessible via:** `rustlab-notebook render ...` (standalone binary) or `rustlab notebook render ...` (main CLI subcommand). `--title` is directory-mode only; passing it with a single-file input prints a warning and is ignored.
+**Accessible via:** the standalone `rustlab-notebook` binary (`rustlab-notebook render ...`, `rustlab-notebook watch ...`, etc.). The main `rustlab` CLI deliberately does **not** ship a `notebook` subcommand — keeps the primary binary small (no clap notebook surface, no `rustlab-notebook` link dependency). `--title` is directory-mode only; passing it with a single-file input prints a warning and is ignored.
 
 **Renderer design pattern — split write location from reference path:**
 

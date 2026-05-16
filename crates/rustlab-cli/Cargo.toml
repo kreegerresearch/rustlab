@@ -11,12 +11,6 @@ default-run = "rustlab"
 [features]
 default = []
 viewer  = ["rustlab-script/viewer"]
-# Re-enable server-side Mermaid diagram rendering for `rustlab notebook
-# render`. Off by default to keep the main `rustlab` binary small (saves
-# ~1 MB by dropping mermaid-rs-renderer + fontdb + blake3). The standalone
-# `rustlab-notebook` binary still ships with mermaid enabled; without this
-# feature `rustlab notebook render` falls back to verbatim mermaid source.
-notebook-mermaid = ["rustlab-notebook/mermaid"]
 
 [[bin]]
 name = "rustlab"
@@ -25,7 +19,6 @@ path = "src/main.rs"
 [dependencies]
 rustlab-core.workspace     = true
 rustlab-dsp.workspace      = true
-rustlab-notebook.workspace = true
 rustlab-plot.workspace     = true
 rustlab-script.workspace   = true
 clap                     = { version = "4", features = ["derive"] }

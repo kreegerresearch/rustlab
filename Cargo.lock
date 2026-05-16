@@ -3691,7 +3691,6 @@ dependencies = [
  "num-complex",
  "rustlab-core",
  "rustlab-dsp",
- "rustlab-notebook",
  "rustlab-plot",
  "rustlab-script",
  "rustyline",

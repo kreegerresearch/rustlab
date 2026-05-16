@@ -119,10 +119,10 @@ help: ## Show this help
 all: notebooks html ## Regenerate the rendered site/ and the interactive HTML build
 
 notebooks: ## Render site/<slug>.md from notebooks/<slug>.md
-	rustlab notebook render notebooks --format markdown --output $(abspath $(SITE))
+	rustlab-notebook render notebooks --format markdown --output $(abspath $(SITE))
 
 html: ## Build interactive HTML at site/index.html (auto-generated entry + per-notebook html)
-	rustlab notebook render notebooks --format html --output $(abspath $(SITE)) --title "your-course"
+	rustlab-notebook render notebooks --format html --output $(abspath $(SITE)) --title "your-course"
 
 # Drift guard: re-render, then fail if site/ has uncommitted changes.
 # Wire this into CI to enforce the source-and-site-together rule.
@@ -143,7 +143,7 @@ clean: ## Delete the interactive HTML build and .rlab script artefacts
 
 ### Why this Makefile is so short
 
-`rustlab notebook render` accepts a directory of source notebooks and
+`rustlab-notebook render` accepts a directory of source notebooks and
 renders the whole batch in one call, with two niceties that fall out of
 directory mode and let us avoid per-file pattern rules:
 
