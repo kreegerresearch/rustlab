@@ -1023,6 +1023,45 @@ where
             })
             .draw()
             .map_err(err)?;
+    } else if matches!(
+        sp.heatmap.as_ref().map(|h| &h.kind),
+        Some(crate::figure::HeatmapKind::Imagesc)
+    ) {
+        // `imagesc` follows MATLAB/Octave convention: row 0 (matlab
+        // index 1) sits at the top of the chart, and the y-axis is
+        // labelled top-down so the top tick reads `0` and the bottom
+        // reads `nrows`. Plotters' Cartesian axis can't be range-
+        // reversed without changing the chart's coordinate type, so we
+        // achieve the visual flip with a formatter: at chart-y = nrows
+        // (top of the plot) print "0", and at chart-y = 0 (bottom)
+        // print "nrows".
+        //
+        // This is the labels half of the imagesc bug fix from 2026-05-16.
+        // Without it the rendered matrix had row 0 at top but the y-axis
+        // numbered 0..N bottom-up, so the labels disagreed with the data.
+        let nrows = sp.heatmap.as_ref().map(|h| h.z.len()).unwrap_or(0) as f64;
+        chart
+            .configure_mesh()
+            .disable_mesh()
+            .axis_style(axis_style)
+            .label_style(label_style)
+            .axis_desc_style(desc_style)
+            .x_desc(sp.xlabel.as_str())
+            .y_desc(sp.ylabel.as_str())
+            .y_label_formatter(&|v| {
+                let displayed = nrows - *v;
+                // Round-to-integer only for ticks near integer chart-y
+                // values; on a 21-row heatmap plotters may place ticks
+                // every 5 cells which lands on integers.
+                let rounded = displayed.round();
+                if (displayed - rounded).abs() < 1e-6 {
+                    format!("{}", rounded as i64)
+                } else {
+                    format!("{:.0}", displayed)
+                }
+            })
+            .draw()
+            .map_err(err)?;
     } else {
         chart
             .configure_mesh()
@@ -1092,6 +1131,15 @@ where
                     let range = if degenerate { 1.0 } else { raw_range };
                     let cell_w = (x_hi - x_lo) / ncols as f64;
                     let cell_h = (y_hi - y_lo) / nrows as f64;
+                    // Image convention: row 0 at the top of the chart for
+                    // both `Imagesc` (numerical matrix view, matches
+                    // MATLAB/Octave `imagesc`) and `Heatmap` (tabular data
+                    // with categorical labels). The y-axis label flip that
+                    // keeps the labels visually agreeing with the row
+                    // numbers happens further up — `Heatmap` has its
+                    // categorical-label formatter; `Imagesc` gets a
+                    // numeric reversed-label formatter (see the
+                    // `imagesc_y_formatter` branch above the chart build).
                     for r in 0..nrows {
                         for c in 0..ncols {
                             let v = vals[r * ncols + c];
@@ -1099,7 +1147,6 @@ where
                             let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
                             let color = RGBColor(rr, gg, bb);
                             let x0 = x_lo + c as f64 * cell_w;
-                            // Flip y so row 0 sits at the top of the chart.
                             let y0 = y_hi - (r as f64 + 1.0) * cell_h;
                             chart
                                 .draw_series(std::iter::once(Rectangle::new(
@@ -1972,6 +2019,218 @@ mod tests {
 
         let _ = std::fs::remove_file(&path_eq);
         let _ = std::fs::remove_file(&path_auto);
+    }
+
+    /// Pull every `<rect ... y="…" ... width="…" height="…" ... fill="…" .../>`
+    /// out of an SVG, keeping only **cell-shaped** rectangles. Filters out
+    /// page background, axis frames, and colorbar swatches by size — cells
+    /// are small (~10–60 px) and roughly square; backgrounds are large.
+    fn extract_cell_rects(svg: &str) -> Vec<(u32, String)> {
+        fn parse_str_attr<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+            let pat = format!("{}=\"", key);
+            let p = s.find(&pat)?;
+            let rest = &s[p + pat.len()..];
+            let q = rest.find('"')?;
+            Some(&rest[..q])
+        }
+        let mut out = Vec::new();
+        let mut i = 0;
+        while let Some(p) = svg[i..].find("<rect") {
+            let start = i + p;
+            let end = svg[start..]
+                .find("/>")
+                .map(|e| start + e)
+                .unwrap_or(svg.len());
+            let chunk = &svg[start..end];
+            let y = parse_str_attr(chunk, "y").and_then(|s| s.parse::<u32>().ok());
+            let w = parse_str_attr(chunk, "width").and_then(|s| s.parse::<u32>().ok());
+            let h = parse_str_attr(chunk, "height").and_then(|s| s.parse::<u32>().ok());
+            let fill = parse_str_attr(chunk, "fill").map(|s| s.to_string());
+            if let (Some(y), Some(w), Some(h), Some(fill)) = (y, w, h, fill) {
+                // Heatmap cells are small. The size band excludes the page
+                // background (width 900) and the colorbar axis strokes
+                // (width 1). Plotters' SVG cells aren't pixel-perfectly
+                // square — a 51×48 cell on an 8-row grid in a 900×500
+                // image is typical — so we don't enforce squareness here.
+                if (6..=80).contains(&w) && (6..=80).contains(&h) {
+                    out.push((y, fill));
+                }
+            }
+            i = end + 1;
+        }
+        out
+    }
+
+    /// Find the SVG `y` attribute of the first `<text>` element whose
+    /// trimmed body equals `label` AND whose text-anchor is "end" (the
+    /// y-axis tick anchor). Used to verify which integer tick lands at
+    /// the top versus the bottom of the chart.
+    fn find_axis_tick_y(svg: &str, label: &str) -> Option<u32> {
+        let mut i = 0;
+        while let Some(p) = svg[i..].find("<text") {
+            let start = i + p;
+            let close_open = svg[start..].find('>').map(|e| start + e)?;
+            let close = svg[close_open..].find("</text>").map(|e| close_open + e)?;
+            let opening = &svg[start..close_open + 1];
+            let body = svg[close_open + 1..close].trim();
+            // Y-axis tick labels render with text-anchor="end" (right-
+            // aligned against the axis). The chart title and x-axis ticks
+            // use "middle"; the y-axis description uses "middle" inside a
+            // rotation. Match only the y-axis tick anchor.
+            if body == label && opening.contains(r#"text-anchor="end""#) {
+                if let Some(y_pos) = opening.find(" y=\"") {
+                    let after = &opening[y_pos + 4..];
+                    if let Some(qe) = after.find('"') {
+                        if let Ok(y) = after[..qe].parse::<u32>() {
+                            return Some(y);
+                        }
+                    }
+                }
+            }
+            i = close + "</text>".len();
+        }
+        None
+    }
+
+    /// Sum of R+G+B parsed from a `#RRGGBB` hex color. Used as a
+    /// brightness proxy: viridis-yellow (high value) lands near ~520
+    /// while viridis-purple (low value) lands near ~150.
+    fn fill_brightness(hex: &str) -> Option<u32> {
+        let h = hex.trim_start_matches('#');
+        if h.len() != 6 {
+            return None;
+        }
+        let r = u32::from_str_radix(&h[0..2], 16).ok()?;
+        let g = u32::from_str_radix(&h[2..4], 16).ok()?;
+        let b = u32::from_str_radix(&h[4..6], 16).ok()?;
+        Some(r + g + b)
+    }
+
+    #[test]
+    fn imagesc_svg_matlab_convention_row_zero_at_top_with_reversed_labels() {
+        // Regression for 2026-05-16: imagesc previously drew row 0 at
+        // the TOP of the SVG chart but labeled the y-axis 0..N
+        // bottom-up — image-convention render with physics-convention
+        // labels, which silently disagreed. M(1,1)=1 ended up at the
+        // top of the chart but the y-axis there read "N".
+        //
+        // Fix: align with MATLAB/Octave `imagesc`. Row 0 stays at the
+        // top of the chart (image convention render), AND the y-axis
+        // labels are reversed so "0" reads at the top and "N" at the
+        // bottom. The two conventions now agree.
+        //
+        // Identical behaviour in the HTML/Plotly backend: `Imagesc` is
+        // now in the `autorange: "reversed"` set, matching this SVG
+        // output and MATLAB/Octave's default `imagesc` orientation.
+        //
+        // Side note: `contour(X, Y, F)` continues to use physics
+        // convention (its own X/Y vectors), so overlaying contour on
+        // imagesc requires the user to be aware that imagesc's "row
+        // index" axis is inverted relative to a typical physics y. This
+        // matches MATLAB exactly (`axis ij` vs `axis xy`).
+        let path = tmp_path("_imagesc_matlab_y.svg");
+
+        // Two distinct non-zero markers so we can disambiguate position
+        // by looking at unique cell fills:
+        //   - M[0][0]   = 1.0  → brightest cell, MUST appear at top.
+        //   - M[N-1][N-1] = 0.5  → mid-bright cell, MUST appear at bottom.
+        // Background cells (value 0) are dark purple and fill every row,
+        // so a naive "brightest above darkest" test would pick same-row
+        // cells and prove nothing. Two unique non-zero markers force the
+        // test to compare specific positions.
+        let n = 8;
+        let mut z = vec![vec![0.0; n]; n];
+        z[0][0] = 1.0;
+        z[n - 1][n - 1] = 0.5;
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+                kind: crate::figure::HeatmapKind::Imagesc,
+                x_labels: None,
+                y_labels: None,
+                rgba: None,
+                rgba_width: 0,
+                rgba_height: 0,
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+
+        // Plotters emits rects in the order they're drawn. Our heatmap
+        // loop is `for r in 0..nrows { for c in 0..ncols { … } }`, so
+        // the first n² cell rects in the SVG, in source order, are the
+        // matrix cells row-by-row. Cell 0 = M[0][0], cell n²-1 =
+        // M[N-1][N-1]. Under MATLAB image convention, M[0][0] sits at
+        // the TOP of the chart (small SVG y) and M[N-1][N-1] at the
+        // BOTTOM (large SVG y).
+        let rects = extract_cell_rects(&svg);
+        assert!(
+            rects.len() >= (n * n),
+            "expected at least {} cell rects, found {}",
+            n * n,
+            rects.len()
+        );
+        let cells = &rects[..n * n];
+        let first_y = cells.first().unwrap().0;
+        let last_y = cells.last().unwrap().0;
+        assert!(
+            first_y < last_y,
+            "Cell rect for M[0][0] must sit ABOVE the cell rect for M[N-1][N-1] \
+             in MATLAB image convention. first_y={}, last_y={}",
+            first_y,
+            last_y,
+        );
+        // Sanity: cell 0's fill is the unique bright value (max
+        // brightness), and cell n²-1's fill is the unique mid value
+        // (between bright and dark). This proves the loop order
+        // assumption: we really did draw M[0][0] first.
+        let first_brightness = fill_brightness(&cells.first().unwrap().1).unwrap();
+        let last_brightness = fill_brightness(&cells.last().unwrap().1).unwrap();
+        assert!(
+            first_brightness > last_brightness,
+            "first-drawn cell (M[0][0]=1.0) must be brighter than \
+             last-drawn cell (M[N-1][N-1]=0.5). first={}, last={}",
+            first_brightness,
+            last_brightness,
+        );
+
+        // The y-axis label "0" should be near the TOP of the chart (image
+        // convention). The SVG's left-axis tick labels appear as <text>
+        // elements with low `x` and known `y`. With nrows=8 and reversed
+        // labels, the topmost integer label should read "0" and the
+        // bottommost should read "8" (or close to nrows).
+        //
+        // Plotters' SVG backend wraps tick text content with whitespace,
+        // e.g. `<text x="80" y="44" …>\n0\n</text>`. Match the wrapped
+        // form so we don't false-positive on the colorbar's "0.000" or
+        // the x-axis tick "0.0".
+        assert!(
+            svg.contains(">\n0\n<"),
+            "expected reversed y-axis label '0' (as a bare integer with whitespace padding) in SVG",
+        );
+        let nrows_label = format!(">\n{n}\n<");
+        assert!(
+            svg.contains(&nrows_label),
+            "expected reversed y-axis label '{n}' (nrows) in SVG",
+        );
+        // Stricter: the integer "0" label's y attribute should be near
+        // the TOP of the chart (small SVG y), and the "{n}" label near
+        // the bottom (large SVG y). This is what guarantees row 0 and
+        // the label "0" visually coincide.
+        let label_y_zero = find_axis_tick_y(&svg, "0").expect("y=0 label present");
+        let label_y_max = find_axis_tick_y(&svg, &n.to_string())
+            .expect("y=nrows label present");
+        assert!(
+            label_y_zero < label_y_max,
+            "y-axis tick '0' must sit above tick '{n}' (MATLAB image convention); \
+             y_for_0={label_y_zero}, y_for_{n}={label_y_max}",
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

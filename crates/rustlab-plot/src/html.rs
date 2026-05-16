@@ -157,9 +157,18 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             } else {
                 format!("x{axis_suffix}")
             };
+            // All three heatmap kinds use image convention (row 0 at the
+            // top of the chart, y-axis label `0` at the top and `N` at
+            // the bottom) — matches MATLAB/Octave `imagesc`/`image`, and
+            // matches the SVG backend after the 2026-05-16 alignment fix.
+            // Without reversing for `Imagesc`, Plotly's default put row 0
+            // at the bottom — disagreeing with both the SVG render and
+            // every other plotting library's `imagesc`.
             let reversed = matches!(
                 hm.kind,
-                crate::figure::HeatmapKind::Heatmap | crate::figure::HeatmapKind::ImageRgba
+                crate::figure::HeatmapKind::Imagesc
+                    | crate::figure::HeatmapKind::Heatmap
+                    | crate::figure::HeatmapKind::ImageRgba
             );
             if reversed {
                 format!(r#", scaleanchor: "{anchor}", autorange: "reversed""#)
@@ -754,6 +763,35 @@ mod tests {
     use super::*;
     use crate::figure::{ContourData, FigureState, HeatmapData, PlotKind, Series};
     use crate::{LineStyle, SeriesColor, Theme};
+
+    #[test]
+    fn imagesc_html_emits_reversed_y_axis_for_matlab_convention() {
+        // Regression for 2026-05-16: imagesc HTML output previously did
+        // not reverse the y-axis. With Plotly's default heatmap
+        // orientation (z[0] at the bottom), this rendered row 0 at the
+        // bottom of the chart — opposite of MATLAB/Octave's `imagesc`,
+        // and opposite of the SVG backend's image-convention render.
+        // Fix: include `Imagesc` in the autorange-reversed set so row 0
+        // appears at the top in Plotly too, matching MATLAB.
+        let mut fig = FigureState::new();
+        fig.current_mut().heatmap = Some(HeatmapData {
+            z: vec![vec![1.0, 0.0], vec![0.0, 0.0]],
+            colorscale: "viridis".to_string(),
+            kind: crate::figure::HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        });
+
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+
+        assert!(
+            div.contains(r#"autorange: "reversed""#),
+            "Imagesc must use a reversed y-axis (MATLAB image convention); got:\n{div}",
+        );
+    }
 
     #[test]
     fn categorical_bar_plotly_emits_category_axis_and_label_xs() {
