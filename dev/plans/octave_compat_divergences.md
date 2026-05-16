@@ -35,7 +35,7 @@ Confirmed by audit + numeric suite. Listed here so a future reader doesn't go re
 - `sort(v)` ascending default
 - 1-based `argmin` / `argmax`
 - `j` as imaginary unit
-- `imagesc(M)` y-axis orientation — row 1 at the top, y-axis labels read `0` at the top and `nrows` at the bottom (image convention with reversed y-axis). Matches MATLAB / Octave `imagesc` exactly across both SVG and HTML/Plotly backends. **Fixed 2026-05-16** — earlier versions rendered row 1 at the top but labeled the y-axis bottom-up (`0` at bottom, `nrows` at top), so the conventions silently disagreed. Note: `contour(X, Y, F)` follows physics convention (uses its own X/Y vectors) — overlaying contour on imagesc requires being mindful of the convention difference, same as MATLAB.
+- `imagesc(M)` y-axis orientation — row 1 at the top, y-axis labels read `0` at the top and `nrows` at the bottom (image convention with reversed y-axis). Implemented across SVG, HTML/Plotly, and viewer backends. **Fixed 2026-05-16** — earlier versions rendered row 1 at the top but labeled the y-axis bottom-up (`0` at bottom, `nrows` at top), so the conventions silently disagreed. **Updated 2026-05-16 (second pass)** — the SVG fix initially used a `y_label_formatter` that assumed chart-y was in matrix-row units; combined `imagesc + contour` plots broke because contour overlays drive the chart bounds to physics units and `nrows - v` rounded every tick to the same value. Replaced with proper plotters axis reversal (descending range), which works at any scale and lets contour overlays inherit the reversal automatically.
 - All 150 numeric octave-compare cases pass at ≤4.4e-16
 
 ## Per-item detail

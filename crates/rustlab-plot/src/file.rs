@@ -960,13 +960,41 @@ where
         ("sans-serif", 14u32, &palette.text).into_text_style(&chart_area);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
-    let mut chart = ChartBuilder::on(&chart_area)
-        .caption(caption, caption_style)
-        .margin(MARGIN)
-        .x_label_area_size(X_LABEL_AREA)
-        .y_label_area_size(Y_LABEL_AREA)
-        .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
-        .map_err(err)?;
+    // Heatmap-bearing panels (imagesc / image / heatmap) use image
+    // convention: row 0 sits at the TOP of the chart, y-axis labels
+    // read "small value at top, large value at bottom". We achieve
+    // this by feeding plotters a descending y range (`y_hi..y_lo`);
+    // plotters interprets a descending Cartesian range as a flipped
+    // axis and generates tick labels accordingly. Contour / quiver /
+    // streamline overlays on the same panel inherit the reversal, so
+    // a low physics-y contour curve sits at the top alongside the
+    // low-index matrix rows.
+    //
+    // Earlier versions faked the reversal with a `y_label_formatter`
+    // that computed `nrows - v`. That broke for combined imagesc +
+    // contour plots: when the contour overlay drove the chart bounds
+    // to physics units (e.g. [0, 0.1]), `nrows - v` rounded every
+    // displayed tick to the same value (all "100"s). Reversing the
+    // axis directly avoids the formula entirely and works at any
+    // scale.
+    let reverse_y_axis = sp.heatmap.is_some();
+    let mut chart = if reverse_y_axis {
+        ChartBuilder::on(&chart_area)
+            .caption(caption, caption_style)
+            .margin(MARGIN)
+            .x_label_area_size(X_LABEL_AREA)
+            .y_label_area_size(Y_LABEL_AREA)
+            .build_cartesian_2d(x_lo..x_hi, y_hi..y_lo)
+            .map_err(err)?
+    } else {
+        ChartBuilder::on(&chart_area)
+            .caption(caption, caption_style)
+            .margin(MARGIN)
+            .x_label_area_size(X_LABEL_AREA)
+            .y_label_area_size(Y_LABEL_AREA)
+            .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
+            .map_err(err)?
+    };
 
     // Heatmap kind with both axis label vectors gets categorical tick
     // formatters; otherwise use the default numeric mesh.
@@ -1008,62 +1036,21 @@ where
                 }
             })
             .y_label_formatter(&|v| {
-                // Row 0 sits at the top (chart-y = nrows). Tick at integer v
-                // labels the row whose top edge is at v: row_idx = nrows - v.
+                // Reversed y-axis (see chart builder above): chart-y = 0
+                // sits at the TOP of the plot, chart-y = nrows at the
+                // BOTTOM. Categorical labels are indexed in matrix-row
+                // order — yl_c[0] is the top row's label, yl_c[nrows-1]
+                // is the bottom row's. So row_idx = round(v) directly.
+                let _ = nrows_c; // retained from earlier signature; kept for symmetry.
                 let rounded = v.round();
                 if (*v - rounded).abs() > 1e-6 {
                     return String::new();
                 }
-                let row_idx = (nrows_c as isize) - (rounded as isize);
+                let row_idx = rounded as isize;
                 if row_idx >= 0 && (row_idx as usize) < yl_c.len() {
                     yl_c[row_idx as usize].clone()
                 } else {
                     String::new()
-                }
-            })
-            .draw()
-            .map_err(err)?;
-    } else if sp.heatmap.is_some() {
-        // Any heatmap-bearing panel that didn't take the categorical
-        // labels branch above. Covers:
-        //   - `imagesc(M)`  (HeatmapKind::Imagesc)
-        //   - `image(M)`    (HeatmapKind::ImageRgba)
-        //   - `heatmap(M)` without label vectors (HeatmapKind::Heatmap
-        //     with x_labels / y_labels = None)
-        // All three use image-convention rendering (row 0 drawn at the
-        // top of the chart) and so all three need the y-axis labels
-        // reversed to read `0` at the top and `nrows` at the bottom.
-        // Without this formatter, default numeric ticks go bottom-up
-        // (`0` at bottom, `nrows` at top) — physics convention labels
-        // disagreeing with the image-convention render. That's the
-        // original 2026-05-16 imagesc bug; the fix is uniform across
-        // the kinds because the underlying mistake was uniform too.
-        let nrows = sp
-            .heatmap
-            .as_ref()
-            .map(|h| match h.kind {
-                crate::figure::HeatmapKind::ImageRgba => h.rgba_height as usize,
-                _ => h.z.len(),
-            })
-            .unwrap_or(0) as f64;
-        chart
-            .configure_mesh()
-            .disable_mesh()
-            .axis_style(axis_style)
-            .label_style(label_style)
-            .axis_desc_style(desc_style)
-            .x_desc(sp.xlabel.as_str())
-            .y_desc(sp.ylabel.as_str())
-            .y_label_formatter(&|v| {
-                let displayed = nrows - *v;
-                // Round-to-integer only for ticks near integer chart-y
-                // values; on a 21-row heatmap plotters may place ticks
-                // every 5 cells which lands on integers.
-                let rounded = displayed.round();
-                if (displayed - rounded).abs() < 1e-6 {
-                    format!("{}", rounded as i64)
-                } else {
-                    format!("{:.0}", displayed)
                 }
             })
             .draw()
@@ -1103,8 +1090,10 @@ where
                                 let off = (r * ncols + c) * 4;
                                 let color = RGBColor(rgba[off], rgba[off + 1], rgba[off + 2]);
                                 let x0 = x_lo + c as f64 * cell_w;
-                                // Flip y so row 0 sits at the top.
-                                let y0 = y_hi - (r as f64 + 1.0) * cell_h;
+                                // Chart's y axis is reversed (built with
+                                // a descending range higher up), so row 0
+                                // at data y = y_lo lands at the top.
+                                let y0 = y_lo + r as f64 * cell_h;
                                 chart
                                     .draw_series(std::iter::once(Rectangle::new(
                                         [(x0, y0), (x0 + cell_w, y0 + cell_h)],
@@ -1137,15 +1126,12 @@ where
                     let range = if degenerate { 1.0 } else { raw_range };
                     let cell_w = (x_hi - x_lo) / ncols as f64;
                     let cell_h = (y_hi - y_lo) / nrows as f64;
-                    // Image convention: row 0 at the top of the chart for
-                    // both `Imagesc` (numerical matrix view, matches
-                    // MATLAB/Octave `imagesc`) and `Heatmap` (tabular data
-                    // with categorical labels). The y-axis label flip that
-                    // keeps the labels visually agreeing with the row
-                    // numbers happens further up — `Heatmap` has its
-                    // categorical-label formatter; `Imagesc` gets a
-                    // numeric reversed-label formatter (see the
-                    // `imagesc_y_formatter` branch above the chart build).
+                    // Row 0 → data y in [y_lo, y_lo + cell_h]. With the
+                    // chart's y axis reversed (descending range built
+                    // higher up), data y = y_lo lands at the TOP of the
+                    // chart, so row 0 visually appears at the top —
+                    // image convention. No additional flip is needed
+                    // here; the axis reversal does the work.
                     for r in 0..nrows {
                         for c in 0..ncols {
                             let v = vals[r * ncols + c];
@@ -1153,7 +1139,7 @@ where
                             let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
                             let color = RGBColor(rr, gg, bb);
                             let x0 = x_lo + c as f64 * cell_w;
-                            let y0 = y_hi - (r as f64 + 1.0) * cell_h;
+                            let y0 = y_lo + r as f64 * cell_h;
                             chart
                                 .draw_series(std::iter::once(Rectangle::new(
                                     [(x0, y0), (x0 + cell_w, y0 + cell_h)],
@@ -2071,6 +2057,13 @@ mod tests {
     /// trimmed body equals `label` AND whose text-anchor is "end" (the
     /// y-axis tick anchor). Used to verify which integer tick lands at
     /// the top versus the bottom of the chart.
+    /// Like `find_axis_tick_y` but accepts any of several labels (e.g.
+    /// `"0"` or `"0.0"`). Useful when plotters' default formatter may
+    /// emit either bare-integer or decimal form depending on range.
+    fn find_axis_tick_y_matching(svg: &str, labels: &[&str]) -> Option<u32> {
+        labels.iter().find_map(|l| find_axis_tick_y(svg, l))
+    }
+
     fn find_axis_tick_y(svg: &str, label: &str) -> Option<u32> {
         let mut i = 0;
         while let Some(p) = svg[i..].find("<text") {
@@ -2113,28 +2106,125 @@ mod tests {
     }
 
     #[test]
-    fn imagesc_svg_matlab_convention_row_zero_at_top_with_reversed_labels() {
-        // Regression for 2026-05-16: imagesc previously drew row 0 at
-        // the TOP of the SVG chart but labeled the y-axis 0..N
-        // bottom-up — image-convention render with physics-convention
-        // labels, which silently disagreed. M(1,1)=1 ended up at the
-        // top of the chart but the y-axis there read "N".
+    fn imagesc_with_contour_overlay_emits_readable_y_axis_ticks() {
+        // Regression for the bug reported 2026-05-16 (rustlab_em
+        // curriculum): an imagesc panel with a contour overlay was
+        // emitting collapsed y-axis tick labels — every visible tick
+        // rendered the same string (the SVG contained "100" nine times
+        // where it should have read 0.01, 0.02, ..., 0.09). The cause
+        // was a y_label_formatter that computed `nrows - v` assuming
+        // the chart's y range was `[0, nrows]`; with a contour overlay
+        // driving the chart bounds to physics units (e.g. `[0, 0.1]`),
+        // every tick value rounded to the same number. Fix: reverse the
+        // plotters axis directly (descending y range) so no formatter
+        // math is needed and plotters' default tick labels work at any
+        // scale.
         //
-        // Fix: align with MATLAB/Octave `imagesc`. Row 0 stays at the
-        // top of the chart (image convention render), AND the y-axis
-        // labels are reversed so "0" reads at the top and "N" at the
-        // bottom. The two conventions now agree.
+        // This test exercises the failure scenario directly: small
+        // physics y range driven by a contour, with imagesc rendered
+        // on the same panel. The y-axis ticks must NOT all be the same
+        // string.
+        let path = tmp_path("_imagesc_contour_overlay.svg");
+
+        let n = 50;
+        let z: Vec<Vec<f64>> = (0..n)
+            .map(|r| (0..n).map(|c| (r * c) as f64 / (n * n) as f64).collect())
+            .collect();
+        let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64 * 0.1).collect();
+        let ys: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64 * 0.1).collect();
+
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            let sp = fig.current_mut();
+            sp.heatmap = Some(crate::figure::HeatmapData {
+                z: z.clone(),
+                colorscale: "viridis".to_string(),
+                kind: crate::figure::HeatmapKind::Imagesc,
+                x_labels: None,
+                y_labels: None,
+                rgba: None,
+                rgba_width: 0,
+                rgba_height: 0,
+            });
+            // Eight contour levels evenly spread across the data range
+            // [0, max(z)].
+            let zmax = z.iter().flat_map(|r| r.iter()).cloned().fold(f64::NEG_INFINITY, f64::max);
+            let levels: Vec<f64> = (1..=8).map(|i| zmax * (i as f64) / 8.0).collect();
+            sp.contours.push(crate::figure::ContourData {
+                x: xs,
+                y: ys,
+                z: z.clone(),
+                colorscale: "viridis".to_string(),
+                filled: false,
+                line_color: None,
+                levels,
+            });
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+
+        // Collect the unique label strings on the y-axis (text-anchor
+        // "end" picks left-axis ticks, not the x-axis or colorbar).
+        let unique_labels: std::collections::HashSet<&str> = {
+            use std::collections::HashSet;
+            let mut set = HashSet::new();
+            let mut i = 0;
+            while let Some(p) = svg[i..].find("<text") {
+                let start = i + p;
+                let close_open = match svg[start..].find('>') {
+                    Some(e) => start + e,
+                    None => break,
+                };
+                let close = match svg[close_open..].find("</text>") {
+                    Some(e) => close_open + e,
+                    None => break,
+                };
+                let opening = &svg[start..close_open + 1];
+                let body = svg[close_open + 1..close].trim();
+                if opening.contains(r#"text-anchor="end""#) && !body.is_empty() {
+                    set.insert(body);
+                }
+                i = close + "</text>".len();
+            }
+            set
+        };
+
+        // There must be at least 3 distinct y-axis tick labels — if the
+        // bug were present they'd all collapse to a single repeated
+        // string.
+        assert!(
+            unique_labels.len() >= 3,
+            "expected multiple distinct y-axis tick labels on imagesc+contour panel; \
+             got {} unique: {:?}",
+            unique_labels.len(),
+            unique_labels,
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn imagesc_svg_row_zero_renders_at_top_with_reversed_y_axis() {
+        // Image-convention rendering: row 0 of the matrix sits at the
+        // TOP of the chart, and the y-axis labels are reversed so the
+        // top tick reads the smallest y value and the bottom tick reads
+        // the largest. Achieved by feeding plotters a descending y
+        // range (`y_hi..y_lo`); plotters draws on the reversed axis
+        // and generates tick labels accordingly. Contour overlays on
+        // the same panel inherit the reversal automatically.
         //
-        // Identical behaviour in the HTML/Plotly backend: `Imagesc` is
-        // now in the `autorange: "reversed"` set, matching this SVG
-        // output and MATLAB/Octave's default `imagesc` orientation.
-        //
-        // Side note: `contour(X, Y, F)` continues to use physics
-        // convention (its own X/Y vectors), so overlaying contour on
-        // imagesc requires the user to be aware that imagesc's "row
-        // index" axis is inverted relative to a typical physics y. This
-        // matches MATLAB exactly (`axis ij` vs `axis xy`).
-        let path = tmp_path("_imagesc_matlab_y.svg");
+        // Regression history:
+        //   - 2026-05-15: original bug — image render with bottom-up
+        //     physics labels, the two disagreed.
+        //   - 2026-05-16 first attempt: kept image render, faked the
+        //     reversal with a `y_label_formatter` (`nrows - v`). That
+        //     broke when contour overlays drove the chart bounds to
+        //     physics units — every tick rounded to the same value.
+        //   - 2026-05-16 second attempt (current): reverse the
+        //     plotters axis directly. Works at any scale and contour
+        //     overlays inherit the orientation for free.
+        let path = tmp_path("_imagesc_reversed_y.svg");
 
         // Two distinct non-zero markers so we can disambiguate position
         // by looking at unique cell fills:
@@ -2170,9 +2260,9 @@ mod tests {
         // loop is `for r in 0..nrows { for c in 0..ncols { … } }`, so
         // the first n² cell rects in the SVG, in source order, are the
         // matrix cells row-by-row. Cell 0 = M[0][0], cell n²-1 =
-        // M[N-1][N-1]. Under MATLAB image convention, M[0][0] sits at
-        // the TOP of the chart (small SVG y) and M[N-1][N-1] at the
-        // BOTTOM (large SVG y).
+        // M[N-1][N-1]. Under image convention, M[0][0] sits at the TOP
+        // of the chart (small SVG y) and M[N-1][N-1] at the BOTTOM
+        // (large SVG y).
         let rects = extract_cell_rects(&svg);
         assert!(
             rects.len() >= (n * n),
@@ -2186,7 +2276,7 @@ mod tests {
         assert!(
             first_y < last_y,
             "Cell rect for M[0][0] must sit ABOVE the cell rect for M[N-1][N-1] \
-             in MATLAB image convention. first_y={}, last_y={}",
+             under image convention. first_y={}, last_y={}",
             first_y,
             last_y,
         );
@@ -2204,35 +2294,20 @@ mod tests {
             last_brightness,
         );
 
-        // The y-axis label "0" should be near the TOP of the chart (image
-        // convention). The SVG's left-axis tick labels appear as <text>
-        // elements with low `x` and known `y`. With nrows=8 and reversed
-        // labels, the topmost integer label should read "0" and the
-        // bottommost should read "8" (or close to nrows).
-        //
-        // Plotters' SVG backend wraps tick text content with whitespace,
-        // e.g. `<text x="80" y="44" …>\n0\n</text>`. Match the wrapped
-        // form so we don't false-positive on the colorbar's "0.000" or
-        // the x-axis tick "0.0".
-        assert!(
-            svg.contains(">\n0\n<"),
-            "expected reversed y-axis label '0' (as a bare integer with whitespace padding) in SVG",
-        );
-        let nrows_label = format!(">\n{n}\n<");
-        assert!(
-            svg.contains(&nrows_label),
-            "expected reversed y-axis label '{n}' (nrows) in SVG",
-        );
-        // Stricter: the integer "0" label's y attribute should be near
-        // the TOP of the chart (small SVG y), and the "{n}" label near
-        // the bottom (large SVG y). This is what guarantees row 0 and
-        // the label "0" visually coincide.
-        let label_y_zero = find_axis_tick_y(&svg, "0").expect("y=0 label present");
-        let label_y_max = find_axis_tick_y(&svg, &n.to_string())
-            .expect("y=nrows label present");
+        // The topmost y-axis tick should display value 0, and the
+        // bottommost should display value `n`. Plotters' default
+        // formatter renders f64 ticks as `0.0`, `8.0`, etc.; accept
+        // either bare integer or `.0` form so the test isn't tied to
+        // a specific formatter detail.
+        let label_y_zero = find_axis_tick_y_matching(&svg, &["0", "0.0"])
+            .expect("y=0 tick label present (either '0' or '0.0')");
+        let n_str = n.to_string();
+        let n_dot = format!("{n}.0");
+        let label_y_max = find_axis_tick_y_matching(&svg, &[&n_str, &n_dot])
+            .expect("y=nrows tick label present");
         assert!(
             label_y_zero < label_y_max,
-            "y-axis tick '0' must sit above tick '{n}' (MATLAB image convention); \
+            "tick value 0 must sit above tick value {n} on the reversed y-axis; \
              y_for_0={label_y_zero}, y_for_{n}={label_y_max}",
         );
 

@@ -148,10 +148,10 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         };
         // Square aspect ratio for all heatmap kinds. The y-axis is
         // reversed (autorange: "reversed") so row 0 lands at the TOP of
-        // the chart — MATLAB/Octave `imagesc`/`image` / `heatmap`
-        // convention. Fixed across all three kinds 2026-05-16; prior to
-        // that, `Imagesc` was the only kind without the flip and its
-        // HTML output disagreed with its own SVG output.
+        // the chart — image convention. Fixed across all three kinds
+        // 2026-05-16; prior to that, `Imagesc` was the only kind
+        // without the flip and its HTML output disagreed with its
+        // own SVG output.
         let yaxis_extra = if let Some(hm) = &panel.heatmap {
             let anchor = if axis_suffix.is_empty() {
                 "x".to_string()
@@ -160,11 +160,10 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             };
             // All three heatmap kinds use image convention (row 0 at the
             // top of the chart, y-axis label `0` at the top and `N` at
-            // the bottom) — matches MATLAB/Octave `imagesc`/`image`, and
-            // matches the SVG backend after the 2026-05-16 alignment fix.
-            // Without reversing for `Imagesc`, Plotly's default put row 0
-            // at the bottom — disagreeing with both the SVG render and
-            // every other plotting library's `imagesc`.
+            // the bottom). Matches the SVG backend after the 2026-05-16
+            // alignment fix. Without reversing for `Imagesc`, Plotly's
+            // default put row 0 at the bottom — disagreeing with both
+            // the SVG render and image-convention expectations.
             let reversed = matches!(
                 hm.kind,
                 crate::figure::HeatmapKind::Imagesc
@@ -766,14 +765,14 @@ mod tests {
     use crate::{LineStyle, SeriesColor, Theme};
 
     #[test]
-    fn imagesc_html_emits_reversed_y_axis_for_matlab_convention() {
+    fn imagesc_html_emits_reversed_y_axis_for_image_convention() {
         // Regression for 2026-05-16: imagesc HTML output previously did
         // not reverse the y-axis. With Plotly's default heatmap
         // orientation (z[0] at the bottom), this rendered row 0 at the
-        // bottom of the chart — opposite of MATLAB/Octave's `imagesc`,
-        // and opposite of the SVG backend's image-convention render.
-        // Fix: include `Imagesc` in the autorange-reversed set so row 0
-        // appears at the top in Plotly too, matching MATLAB.
+        // bottom of the chart — opposite of image convention and
+        // opposite of the SVG backend's render. Fix: include `Imagesc`
+        // in the autorange-reversed set so row 0 appears at the top in
+        // Plotly too.
         let mut fig = FigureState::new();
         fig.current_mut().heatmap = Some(HeatmapData {
             z: vec![vec![1.0, 0.0], vec![0.0, 0.0]],
@@ -790,7 +789,7 @@ mod tests {
 
         assert!(
             div.contains(r#"autorange: "reversed""#),
-            "Imagesc must use a reversed y-axis (MATLAB image convention); got:\n{div}",
+            "Imagesc must use a reversed y-axis (image convention); got:\n{div}",
         );
     }
 
