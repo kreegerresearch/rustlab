@@ -165,6 +165,7 @@ together whenever a phase finishes.
 | `rustlab_em` Feature Requests (the §2026-04 sweep) | `dev/plans/em_requests_plan.md` + `dev/plans/em_requests_queue.md` | In progress — Items 1, 2, 3 shipped (masks, sparse solve, Laplacian variants); Item 4 next (`eigs`); Items 5-7 pending. Source request: `../rustlab_em/dev/rustlab/requests/em_requests.md`. |
 | Original `rustlab_em` Requests (5 originals) | `dev/plans/closed/rustlab_em_requests.md` | Complete — all five EM requests landed (vector calc, quiver/streamplot, contour, laplacian_2d, animation export). |
 | `rustlab_llm` Gap Closure (v0.3) | `~/.claude/plans/lively-roaming-abelson.md` | Complete — all four open gaps shipped: short-circuit `&&`/`\|\|`, `M(I)` linear-index gather (with `M(scalar)` flip), `layernorm(M)` matrix overload, multi-output user functions `function [a, b] = name(x)`. Tour example/notebook in `examples/language_v0_3.{rlab,md}`. |
+| Notebook / Plot Follow-ups (2026-05-16) | `dev/plans/notebook_followups_2026_05_16.md` | Open — 3 bugs (cwd leak from `cmd_render*`, plot-dir wipe race, `write_output` extra IO), 3 perf items (snapshot memory cap, `self_writes` map unbounded, `strip_render_artifacts` multi-pass), and a proposed `rustlab notebook check` linter subcommand (9 checks). Each item is self-contained — file paths, fix sketch, and tests listed. Start with B1 (cwd) and P2 (`self_writes` LRU). |
 
 ---
 
