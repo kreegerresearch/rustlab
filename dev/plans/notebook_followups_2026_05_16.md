@@ -364,10 +364,12 @@ Exit code 0 = clean, 1 = warnings, 2 = errors. CI-friendly.
 - `crates/rustlab-notebook/src/check.rs` (new) — the lint passes.
   Each check is a small function over the parsed block list and the
   raw source bytes.
-- `crates/rustlab-cli/src/commands/notebook.rs` — wire the
-  subcommand into the main `rustlab` binary.
-- `crates/rustlab-notebook/src/main.rs` — same for the standalone
-  `rustlab-notebook` binary.
+- `crates/rustlab-notebook/src/main.rs` — wire the subcommand into
+  the standalone `rustlab-notebook` binary. (Originally this plan
+  also listed `crates/rustlab-cli/src/commands/notebook.rs`, but the
+  notebook subcommand was subsequently removed from the main
+  `rustlab` CLI in `aa7bc28` per the "keep rustlab binary small"
+  rule, so `check` lives only in the standalone binary.)
 - `docs/notebooks.md` — new "§ notebook check — lint rustlab
   notebooks" section.
 
