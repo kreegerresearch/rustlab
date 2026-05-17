@@ -3733,6 +3733,8 @@ dependencies = [
  "pulldown-cmark",
  "rustlab-plot",
  "rustlab-script",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

@@ -841,6 +841,68 @@ left behind is the requested `.pdf`. If the build fails, the LaTeX log
 is preserved next to the requested PDF path as `<stem>.log` so the
 failure is debuggable.
 
+### JSON (`--format json`, for tooling)
+
+Emits a single JSON document on stdout describing every block plus
+pre-rendered HTML/SVG. The contract for downstream tools (the Obsidian
+community plugin, web viewers, custom export pipelines) — no markdown
+re-parsing or plot-rendering on the consumer side.
+
+```
+rustlab-notebook render --format json analysis.md > analysis.json
+rustlab-notebook render --format json --stdin --cwd notes/ < buffer.md
+```
+
+Unlike file formats, JSON:
+
+- writes to **stdout only** (no `--output`)
+- accepts source from **stdin** via `--stdin` (essential for editor
+  plugins rendering an unsaved buffer)
+- takes `--cwd <DIR>` to override the directory used for relative-path
+  resolution (`![[embeds]]`, frontmatter). Defaults to the input file's
+  parent, or the current working directory under `--stdin`.
+- `--pretty` indents for readability; default is compact for piping.
+
+**Schema** (version 1; see `crates/rustlab-notebook/src/render_json.rs`):
+
+```json
+{
+  "version": 1,
+  "title": "Filter Analysis",
+  "blocks": [
+    { "kind": "markdown", "source": "...", "html": "<h1>...</h1>" },
+    {
+      "kind": "code",
+      "language": "rustlab",
+      "source": "x = randn(500); plot(x)",
+      "source_hash": "blake3:649cb9a0a241d775",
+      "text_output": "",
+      "error": null,
+      "plots": [{"format": "svg", "data": "<svg>...</svg>"}],
+      "hidden": false,
+      "details": null
+    },
+    { "kind": "mermaid", "source": "flowchart LR\n  A --> B",
+      "svg": "<svg>...</svg>", "caption": null },
+    { "kind": "callout", "callout_type": "NOTE", "title": null,
+      "html": "<div class=\"callout callout-note\">...</div>" },
+    { "kind": "exercise_start", "number": 1 },
+    { "kind": "solution_start" }
+  ],
+  "diagnostics": []
+}
+```
+
+**Stability:** `version: 1` is the contract. New optional fields are
+non-breaking; consumers must tolerate unknown keys. Breaking changes bump
+the version.
+
+**Phase-1 scope:** SVG plots only (no Plotly HTML alternates and no
+animation GIFs yet — both are reserved as additional `format` values
+for `JsonPlot` in a future minor revision). Mermaid SVG requires the
+`mermaid` cargo feature; without it, the `svg` field is `null` and a
+diagnostic is emitted.
+
 ### Plot output layout
 
 Markdown and LaTeX share one rule: plots are written under

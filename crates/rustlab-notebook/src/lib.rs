@@ -6,6 +6,7 @@ pub mod execute;
 pub mod mermaid;
 pub mod parse;
 pub mod render;
+pub mod render_json;
 pub mod render_latex;
 pub mod render_markdown;
 pub mod watch;
@@ -626,6 +627,76 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
         Some(&input),
     );
     print_summary(&input, &out_path, &rendered);
+}
+
+/// Render a single notebook to JSON on stdout — the Phase-1 surface
+/// consumed by the Obsidian community plugin and any other downstream
+/// tool that wants the executed-block tree without HTML/Markdown framing.
+///
+/// `input` is a path (read from disk) or `None` (read from stdin).
+/// `cwd` overrides the directory used to resolve relative paths
+/// (embeds, frontmatter resolution); when `None`, defaults to the input
+/// file's parent, or the current working directory for stdin input.
+/// `pretty` controls JSON formatting — compact for piping, indented
+/// for human inspection / golden tests.
+///
+/// Schema is documented in `render_json::Document`; the top-level
+/// `version: 1` is the stability contract.
+pub fn cmd_render_json(
+    input: Option<PathBuf>,
+    cwd: Option<PathBuf>,
+    theme: &ThemeColors,
+    pretty: bool,
+) {
+    let _cwd_guard = CwdGuard::new();
+
+    let (source, title_path) = match &input {
+        Some(path) => {
+            let s = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: cannot read {}: {e}", path.display());
+                    std::process::exit(1);
+                }
+            };
+            (s, path.clone())
+        }
+        None => {
+            use std::io::Read;
+            let mut s = String::new();
+            if let Err(e) = std::io::stdin().read_to_string(&mut s) {
+                eprintln!("error: cannot read stdin: {e}");
+                std::process::exit(1);
+            }
+            (s, PathBuf::from("stdin.md"))
+        }
+    };
+    let source = strip_render_artifacts(&source);
+
+    let host_dir_owned: PathBuf = match (&cwd, &input) {
+        (Some(d), _) => std::fs::canonicalize(d).unwrap_or_else(|_| d.clone()),
+        (None, Some(path)) => path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        (None, None) => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let _ = std::env::set_current_dir(&host_dir_owned);
+
+    let title = extract_title(&source, &title_path);
+    let expanded = embed::expand_embeds(&source, &host_dir_owned, &host_dir_owned);
+    let blocks = parse::parse_notebook(&expanded);
+    let rendered = execute::execute_notebook(&blocks);
+
+    let doc = render_json::render_json(&title, &rendered, theme);
+    let json = if pretty {
+        serde_json::to_string_pretty(&doc)
+    } else {
+        serde_json::to_string(&doc)
+    }
+    .expect("Document serialises (Serialize derive is infallible for our schema)");
+    println!("{json}");
 }
 
 /// Render all .md files in a directory.

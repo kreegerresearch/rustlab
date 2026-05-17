@@ -44,12 +44,16 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, PartialEq, Eq, ValueEnum)]
 enum CliFormat {
     Html,
     Latex,
     Pdf,
     Markdown,
+    /// Emit a JSON document on stdout describing every block plus
+    /// pre-rendered HTML/SVG. Consumed by the Obsidian community plugin
+    /// and other downstream tooling. Single-file input only.
+    Json,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -191,6 +195,19 @@ enum Command {
         /// Suppress the trailing iframe under `--obsidian`.
         #[arg(long)]
         no_iframe: bool,
+        /// Read notebook source from stdin instead of a file. The `input`
+        /// argument is ignored when set; pass `-` as a placeholder. JSON
+        /// format only — file formats require a real input path.
+        #[arg(long)]
+        stdin: bool,
+        /// Override the directory used to resolve relative paths (embeds,
+        /// frontmatter resolution). Defaults to the input file's parent
+        /// (or current dir for `--stdin`). JSON format only.
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+        /// Indent JSON output for readability. Default: compact (one line).
+        #[arg(long)]
+        pretty: bool,
     },
 }
 
@@ -237,12 +254,40 @@ fn main() {
             obsidian,
             attachments_dir,
             no_iframe,
+            stdin,
+            cwd,
+            pretty,
         } => {
             let theme = match theme {
                 CliTheme::Dark => Theme::Dark,
                 CliTheme::Light => Theme::Light,
             };
             let colors = theme.colors();
+
+            // JSON has stdout-only IO semantics (no output path, optional
+            // stdin) so it diverges from the file-based render pipeline
+            // before any of the markdown-specific option-validation runs.
+            if format == CliFormat::Json {
+                if output.is_some() {
+                    eprintln!("warning: --output is ignored for --format json (writes to stdout)");
+                }
+                if title.is_some() {
+                    eprintln!("warning: --title is ignored for --format json");
+                }
+                if obsidian || attachments_dir.is_some() || no_iframe {
+                    eprintln!(
+                        "warning: --obsidian / --attachments-dir / --no-iframe do not apply to --format json; ignored"
+                    );
+                }
+                let input_arg = if stdin { None } else { Some(input) };
+                rustlab_notebook::cmd_render_json(input_arg, cwd, colors, pretty);
+                return;
+            }
+
+            if stdin || cwd.is_some() || pretty {
+                eprintln!("warning: --stdin / --cwd / --pretty only apply to --format json; ignored");
+            }
+
             if obsidian && !matches!(format, CliFormat::Markdown) {
                 eprintln!("warning: --obsidian only applies to --format markdown; ignored");
             }
@@ -270,6 +315,7 @@ fn main() {
                 CliFormat::Markdown => rustlab_notebook::Format::Markdown {
                     obsidian: obsidian_opts,
                 },
+                CliFormat::Json => unreachable!("--format json branched to cmd_render_json above"),
             };
             if input.is_dir() {
                 rustlab_notebook::cmd_render_dir(input, output, format, colors, title);

@@ -29,6 +29,8 @@ mermaid = ["dep:mermaid-rs-renderer", "dep:blake3"]
 [dependencies]
 rustlab-script.workspace = true
 rustlab-plot.workspace   = true
+serde.workspace          = true
+serde_json.workspace     = true
 clap                     = { version = "4", features = ["derive"] }
 pulldown-cmark           = "0.13"
 tempfile                 = "3"

@@ -90,7 +90,32 @@ must be stateless.
 
 ---
 
-## Phase 1 — `rustlab notebook render --format json`
+## Phase 1 — `rustlab notebook render --format json` ✓ SHIPPED 2026-05-17
+
+Implemented in the standalone `rustlab-notebook` binary (not the main
+`rustlab` CLI, per the "keep `rustlab` binary small" rule — `rustlab-cli`
+does not depend on `rustlab-notebook`). New module
+`crates/rustlab-notebook/src/render_json.rs` plus
+`cmd_render_json` in `lib.rs`. CLI flags `--format json`, `--stdin`,
+`--cwd <DIR>`, `--pretty`. Output goes to stdout only — JSON has no
+`--output` path. Schema version 1 (see `Document` / `JsonBlock` /
+`JsonPlot` in `render_json.rs`). Tests live in `render_json.rs::tests`;
+9 unit tests cover the schema, code/markdown/callout/exercise/solution
+shapes, source hashing, plot SVG inlining, and mermaid (with and
+without the feature). End-to-end smoke-tested against
+`examples/notebooks/quick_look.md` and `embeds_demo.md` (the latter
+with `--stdin --cwd`).
+
+**Deviations from the original sketch below.** No `Format::Json` was
+added to the public `Format` enum — JSON has stdout-only IO semantics
+(no plot-dir, no file path) so the existing file-based `render_output`
+pipeline doesn't fit. The CLI dispatches `--format json` to
+`cmd_render_json` directly. SVG plots only in v1; Plotly-HTML and
+animation-GIF alternates were deferred and remain valid future
+additions to the `JsonPlot` variant set without bumping the schema
+version (the `format` field is open).
+
+### Original spec (preserved below for reference)
 
 A new output format on the existing CLI. The plugin's only contract
 with rustlab.
