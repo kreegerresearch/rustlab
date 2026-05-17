@@ -1,0 +1,43 @@
+# Phase 4 — measurement review: "pulled a .s2p off the VNA, now what?"
+#
+# Loads a Touchstone file and runs the canonical first-look workflow:
+#   1. Inspect: port count, frequency span, reference Z0.
+#   2. Default 2×2 panel: |S11|, |S21|, |S12|, |S22| in dB vs frequency.
+#   3. Phase and group-delay traces for the forward transmission path.
+#   4. Smith chart cross-reference of input and output match.
+
+s = sparameters("data/lna_demo.s2p")
+
+# 1. Inspect the network.
+disp(s)
+fprintf("Ports: %d   |   %d frequency points   |   Z0 = %g ohms\n", ...
+        nports(s), len(freqs(s)), s.impedance)
+
+# 2. Default 2x2 review panel — the standard first-look layout. dB scale,
+#    log-x frequency axis.
+rfplot(s)
+savefig("review_panel.svg")
+savefig("review_panel.html")
+
+# 3a. Forward transmission gain on its own (single dB trace).
+figure()
+rfplot(s, "db", 2, 1)
+savefig("review_s21_db.svg")
+
+# 3b. Wrapped phase of S21. For a flat-amplitude amp this winds — check
+#     for linearity by switching to "unwrap".
+figure()
+rfplot(s, "unwrap", 2, 1)
+savefig("review_s21_unwrap.svg")
+
+# 3c. Group delay τ_g(f) = -dφ/dω. Useful for linearity/dispersion checks.
+figure()
+rfplot(s, "groupdelay", 2, 1)
+savefig("review_s21_groupdelay.svg")
+
+# 4. Input and output match on a Smith chart for the matching-network
+#    audit.
+figure()
+smith(s)
+marker(0, "matched")
+savefig("review_smith.svg")

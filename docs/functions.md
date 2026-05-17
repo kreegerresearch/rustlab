@@ -2542,6 +2542,369 @@ The plot x-axis is the real part of the poles, y-axis is the imaginary part.
 
 ---
 
+## S-Parameters (RF)
+
+Read, build, and inspect RF S-parameter networks captured from VNAs as Touchstone files (`.s1p`, `.s2p`, `.s3p`, `.s4p`). Phase 1 covers the data type, file I/O, and basic accessors. Conversions, Smith-chart plotting, and analysis (VSWR, stability, gain circles) ship in later phases.
+
+### `sparameters(filename)` / `sparameters(S, freqs)` / `sparameters(S, freqs, Z0)`
+
+Construct an N-port S-parameter network.
+
+```
+% Read a 2-port Touchstone file written by a VNA:
+s = sparameters("amp.s2p")
+
+% Build from raw arrays — Tensor3 of shape [n_freqs, n_ports, n_ports]
+% plus a real frequency vector in Hz.
+S = zeros3(101, 2, 2)
+f = linspace(1e9, 6e9, 101)
+s = sparameters(S, f)             % default reference impedance Z0 = 50 Ω
+s = sparameters(S, f, 75)         % explicit Z0 (Ω)
+```
+
+Returns a struct with these fields, indexable through normal `s.field` access:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `parameters` | Tensor3 | Complex S-parameters, shape `[n_freqs, n_ports, n_ports]`. `parameters(k, i, j)` is `S_{ij}` at the k-th frequency. |
+| `frequencies` | real Vector | Length `n_freqs`, Hz, strictly increasing. |
+| `num_ports` | Scalar | Port count. |
+| `impedance` | Scalar | Reference impedance Z0 (Ω). |
+
+Validation: the S array must be square in the port dimensions, the frequency vector must match `n_freqs` and be strictly increasing, and the reference impedance must be positive. The Touchstone v1.1 reader handles `.s1p` through `.s4p` with formats `RI` / `MA` / `DB` and frequency units Hz / kHz / MHz / GHz. The writer (via the standard `save(s, path)` interface in a later phase) emits the lossless `RI` form in Hz.
+
+A printed sparameters value renders as a single-line summary:
+
+```
+sparameters: 2-port, 201 frequencies [1 GHz .. 6 GHz], Z0 = 50 Ω
+```
+
+### `nports(s)`
+
+Port count of an S-parameter network.
+
+```
+s = sparameters("amp.s2p")
+n = nports(s)                     % 2
+```
+
+### `freqs(s)`
+
+The (real) frequency vector in Hz.
+
+```
+s = sparameters("amp.s2p")
+f = freqs(s)
+```
+
+### `sij(s, i, j)`
+
+Generic S-parameter slice — complex Vector of length `n_freqs` containing `S_{ij}(f)` at every frequency. Port indices are 1-based and must satisfy `1 ≤ i, j ≤ nports(s)`.
+
+```
+s   = sparameters("3port.s3p")
+s31 = sij(s, 3, 1)                % port-3 reflection from port-1 drive
+```
+
+### `s11(s)` / `s12(s)` / `s21(s)` / `s22(s)`
+
+Convenience accessors for the four 2-port S-parameter traces. Each returns a complex Vector of length `n_freqs`. `s11` works on any network with at least one port; `s12`, `s21`, `s22` require at least two.
+
+```
+s    = sparameters("amp.s2p")
+db21 = mag2db(abs(s21(s)))        % insertion-loss / gain in dB vs frequency
+```
+
+### Parameter conversions
+
+Convert between the common network-parameter representations. Each `xx2yy` builtin takes an `xx`-tagged sparameters network and returns a `yy`-tagged one with the same frequency vector and reference impedance. Calling a conversion on a wrongly-tagged input is a hard error (no silent guessing).
+
+```
+s   = sparameters("amp.s2p")      % S-tagged
+z   = s2z(s)                      % Z-tagged; per-frequency Z = Z0·(I+S)(I−S)⁻¹
+s2  = z2s(z)                      % round-trips back to S
+y   = s2y(s)
+abcd = s2abcd(s)                  % 2-port only
+t   = s2t(s)                      % 2-port only (cascade-form)
+```
+
+| Function | Direction | Ports | Formula |
+|---|---|---|---|
+| `s2z(s)` / `z2s(z)` | S ↔ Z | N | `Z = Z0·(I+S)·(I−S)⁻¹`; `S = (Z−Z0·I)·(Z+Z0·I)⁻¹` |
+| `s2y(s)` / `y2s(y)` | S ↔ Y | N | `Y = (1/Z0)·(I−S)·(I+S)⁻¹`; `S = (I−Z0·Y)·(I+Z0·Y)⁻¹` |
+| `s2t(s)` / `t2s(t)` | S ↔ T | 2 | Pozar §4.4 (T multiplies under cascade) |
+| `s2abcd(s)` / `abcd2s(a)` | S ↔ ABCD | 2 | Pozar Table 4.2 (voltage/current chain) |
+| `parameter_type(s)` | inspection | any | Returns "S" / "Z" / "Y" / "T" / "ABCD" |
+
+The Display label tracks the parameter type:
+
+```
+> z
+sparameters: 2-port Z, 201 frequencies [10 MHz .. 6 GHz], Z0 = 50 Ω
+```
+
+The accessor names `s11`/`s12`/`s21`/`s22`/`sij` still slice the parameter tensor regardless of type — what they extract is whatever the current parameter set is (`Z11` if Z-tagged, `Y21` if Y-tagged, etc.). The Display tag tells you which.
+
+### `cascade(s1, s2, ...)`
+
+Cascade two or more 2-port S-parameter networks. Computed via T-parameter multiplication: convert each to T, multiply, convert back. All inputs must share the same frequency grid (strict — no auto-interpolation) and reference impedance.
+
+```
+att = sparameters("pad_10dB.s2p")
+pair = cascade(att, att)              % 20 dB total insertion loss
+chain = cascade(input_match, lna, output_filter)
+```
+
+### `deembed(meas, left, right)`
+
+Remove known fixture networks on either side of a device under test. Computed via `T_DUT = T_left⁻¹ · T_meas · T_right⁻¹`. All three networks must be 2-port S-parameters on the same frequency grid and reference impedance.
+
+```
+meas = sparameters("dut_with_fixtures.s2p")
+L    = sparameters("fixture_left.s2p")
+R    = sparameters("fixture_right.s2p")
+dut  = deembed(meas, L, R)
+```
+
+### `newref(s, Z_new)`
+
+Renormalise an S-parameter network to a different reference impedance. The math goes through the Z-domain detour; the network's original Z0 is read from `s.impedance`. The returned network carries `Z_new` in its `impedance` field. Scalar `Z_new` only in Phase 2 — per-port renormalisation lands in Phase 6.
+
+```
+s50 = sparameters("amp.s2p")       % typically 50 Ω
+s75 = newref(s50, 75)              % renormalise for a 75 Ω system
+```
+
+### Saving to Touchstone
+
+`save(s, "out.s2p")` writes the network as Touchstone v1.1 (RI format, Hz frequency unit, 15 sig-fig precision so the round-trip is effectively lossless against f64). The path's `.sNp` extension is inspected to dispatch; the port-count digit doesn't have to match `nports(s)` literally (the writer always emits the actual port count), but the convention is to use it. The input must be S-typed — convert with `z2s`/`y2s`/etc. first if you started in another domain.
+
+```
+s   = sparameters("amp.s2p")
+s75 = newref(s, 75)
+save("amp_75ohm.s2p", s75)
+```
+
+### `smith(...)` and `marker(...)` — Smith chart plotting
+
+Plot reflection coefficients on a Smith chart. The chart grid (constant-resistance circles and constant-reactance arcs, clipped to the unit disk) is generated automatically; data traces overlay it. The panel is locked to `axis("equal")` and to the unit-disk bounds so geometry stays round across every rendering backend.
+
+```
+s = sparameters("amp.s2p")
+smith(s)                              % default: plot S11 and S22 on a Z-grid
+smith(s, 2, 1)                        % a specific Sij port pair
+smith(gamma_vec)                      % raw complex Vector of reflection coefficients
+smith(0.5 + 0.3*j)                    % single-point trace (matching-network endpoint)
+smith("amp.s2p")                      % convenience: smith() + sparameters() in one call
+smith(s, "grid", "Y")                 % admittance grid (constant-G circles + constant-B arcs)
+smith(s, "grid", "ZY")                % immittance overlay (both Z and Y grids)
+```
+
+Grid modes:
+
+| Mode | Layout |
+|---|---|
+| `"Z"` (default) | Impedance grid — constant-R circles + constant-X arcs |
+| `"Y"` | Admittance grid (mirror image of Z) |
+| `"ZY"` | Both overlaid — useful for matching-network design |
+
+`marker(gamma, label)` drops a labelled scatter point on the active Smith axes. The label appears in the legend; chart cardinal points are good things to mark:
+
+```
+marker(0,  "matched")    % chart centre — Γ = 0, perfect match
+marker(-1, "short")      % left edge of real axis
+marker(1,  "open")       % right edge of real axis
+marker(gamma_mid, "λ/8 transmission line")
+```
+
+**Cross-backend behaviour.** The grid arcs are synthesised as ordinary dashed line series with empty labels — every rustlab plot backend (terminal, SVG/PNG via plotters, HTML via Plotly, LaTeX/PDF via the SVG path, animation GIF/HTML, live `rustlab-viewer`) renders them through its existing line-series path. Empty labels are suppressed from the legend (Plotly emits `showlegend: false`; SVG already keys legend inclusion on a non-empty label). There is no per-backend Smith-specific code, by design.
+
+### `rfplot(...)` — magnitude / phase / group-delay vs frequency
+
+Standard RF-engineering plots of S-parameter traces against frequency on a log-x axis. The default form takes a 2-port network and lays out the canonical 2×2 review panel; single-trace forms pull out one transformation of one port pair.
+
+```
+s = sparameters("amp.s2p")
+
+% Standard 2x2 review panel: |S11| dB, |S21| dB, |S12| dB, |S22| dB
+% (top-left, top-right, bottom-left, bottom-right). Log frequency axis.
+rfplot(s)
+
+% Single-trace forms — kind is one of magnitude, db, phase, unwrap, groupdelay.
+rfplot(s, "db",          2, 1)      % S21 in dB
+rfplot(s, "magnitude",   2, 1)      % |S21|, linear
+rfplot(s, "phase",       2, 1)      % wrapped phase, degrees
+rfplot(s, "unwrap",      2, 1)      % unwrapped phase, degrees
+rfplot(s, "groupdelay",  2, 1)      % group delay τ_g = -dφ/dω, seconds
+```
+
+| Kind | Y-axis quantity |
+|---|---|
+| `"magnitude"` | `|Sij|` (linear) |
+| `"db"` | `20·log10|Sij|`, floored at −200 dB |
+| `"phase"` | `arg(Sij)` in degrees, wrapped to (−180, 180] |
+| `"unwrap"` | Unwrapped `arg(Sij)` in degrees |
+| `"groupdelay"` | `−dφ/dω` in seconds via central difference on the unwrapped phase |
+
+Group delay uses a forward/backward difference at the endpoints and central differences in the interior. The unwrap rule is the standard ±2π jump removal applied to the running cumulative correction.
+
+For non-2-port networks the default form falls back to a single `|S11|` dB trace; the single-trace form works for any port pair within range. The frequency axis always goes through `semilogx` so the x-coordinate is `log10(f)` — the canonical RF convention. Each panel gets the appropriate Y-axis label (`|Sij| (dB)`, `arg(Sij) (deg)`, etc.) automatically.
+
+### Analysis: VSWR, return loss, stability, gain
+
+The standard RF-analysis suite. All operate on an `sparameters` network and return per-frequency vectors; the circles helpers return tagged structs consumable by `smith_circle()` for Smith-chart overlay.
+
+**Port-level metrics**
+
+```
+s   = sparameters("amp.s2p")
+v1  = vswr(s, 1)                        % real Vector: VSWR at port 1
+rl1 = return_loss(s, 1)                 % real Vector: -20·log10|S11|, dB
+il  = insertion_loss(s, 2, 1)           % real Vector: -20·log10|S21|, dB
+```
+
+| Function | Returns | Definition |
+|---|---|---|
+| `vswr(s, port)` | real Vector | `(1+|Sii|)/(1−|Sii|)`; capped at 1e6 to keep plots finite |
+| `return_loss(s, port)` | real Vector, dB | `−20·log10|Sii|`; floored at 200 dB |
+| `insertion_loss(s, i, j)` | real Vector, dB | `−20·log10|Sij|`; floored at 200 dB |
+
+**Reflection with termination** (2-port only)
+
+```
+gin  = gammain(s, 0.3 + 0.4*j)          % broadcast scalar across frequencies
+gout = gammaout(s, gamma_source_vec)    % per-frequency vector matching n_freqs
+```
+
+| Function | Returns | Definition |
+|---|---|---|
+| `gammain(s, gamma_load)` | complex Vector | `S11 + S12·S21·ΓL / (1 − S22·ΓL)` |
+| `gammaout(s, gamma_source)` | complex Vector | `S22 + S12·S21·ΓS / (1 − S11·ΓS)` |
+
+**Stability** (2-port only)
+
+```
+K   = stabilityk(s)                     % Rollett K vs frequency
+[m1, m2] = stabilitymu(s)               % single-number tests
+```
+
+Unconditionally stable iff `K > 1` AND `|Δ| < 1`, or equivalently iff `µ1 > 1` (equivalently `µ2 > 1`).
+
+| Function | Returns | Definition |
+|---|---|---|
+| `stabilityk(s)` | real Vector | `(1 − |S11|² − |S22|² + |Δ|²) / (2·|S12·S21|)`; `Δ = S11·S22 − S12·S21` |
+| `stabilitymu(s)` | tuple `(µ1, µ2)` of real Vectors | `µ1 = (1−|S11|²)/(|S22 − Δ·conj(S11)| + |S12·S21|)`; symmetric for µ2 |
+
+**Simultaneous conjugate match** (2-port only — useful where K > 1)
+
+```
+gms = gammams(s)                        % source termination for max gain
+gml = gammaml(s)                        % matched load termination
+mag = gainmax(s)                        % maximum available / stable gain, dB
+```
+
+Defining property: `Γin(s, gml) = conj(Γms)` and `Γout(s, gms) = conj(Γml)`.
+
+| Function | Returns | Definition |
+|---|---|---|
+| `gammams(s)` | complex Vector | Source Γ for simultaneous conjugate match |
+| `gammaml(s)` | complex Vector | Load Γ for simultaneous conjugate match |
+| `gainmax(s)` | real Vector, dB | `MAG = |S21/S12|·(K − √(K²−1))` when K > 1; `MSG = |S21/S12|` otherwise |
+
+**Stability and gain circles** (2-port only — return tagged structs for Smith overlay)
+
+```
+in_circles = stability_circles(s, "input")
+out_circles = stability_circles(s, "output")
+g15_circles = gain_circles(s, 15)       % loci of ΓL giving 15 dB operating gain
+```
+
+Both return a struct with these fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `centres` | complex Vector | Circle centres, length n_freqs |
+| `radii` | real Vector | Circle radii |
+| `frequencies` | real Vector | Hz |
+| `domain` | string | `"source"` (Γs plane) or `"load"` (ΓL plane) |
+
+Overlay the circles on a Smith chart by iterating:
+
+```
+smith(s)
+cs = in_circles.centres
+rs = in_circles.radii
+for k = 1:len(freqs(s))
+  smith_circle(cs(k), real(rs(k)))
+end
+```
+
+Note the Phase-2 parser gotcha: `in_circles.centres(k)` is parsed as a call to a function named `centres`, not as field access + index. Stash `in_circles.centres` into an intermediate variable first.
+
+### `smith_circle(centre, radius [, label])`
+
+Overlay one parametric circle on the active Smith axes. `centre` is a complex scalar; `radius` is a non-negative real. The optional label appears in the legend (empty/missing label keeps it out). Use this to render stability or gain circles, or any other matching-design construct that has a circular locus in the reflection plane.
+
+### Phase 6 — polish
+
+**`interp_freq(s, freqs_new)`** — linearly interpolate an S-parameter network onto a new frequency grid. Required before cascading two networks measured on different VNA sweeps, and before any builtin that needs uniform spacing (notably `s2td`). The new grid must be monotonically increasing and entirely within the source range; extrapolation is rejected because RF measurements are bandlimited and extrapolated values give worse answers than failing.
+
+```
+a = sparameters("amp.s2p")        % e.g. 1, 1.5, 2 GHz
+b = sparameters("filter.s2p")     % e.g. 1, 2 GHz
+b_unified = interp_freq(b, freqs(a))   % onto amp's grid
+chain     = cascade(a, b_unified)
+```
+
+**Touchstone noise-parameter access** — many `.s2p` files include an optional noise block after the S-block. The reader picks it up automatically when present. Access the per-frequency noise data:
+
+| Builtin | Returns | Meaning |
+|---|---|---|
+| `has_noise(s)` | Bool | True iff the network carries a noise block |
+| `noise_freqs(s)` | real Vector, Hz | Noise-block frequency grid (need not match the S grid) |
+| `nfmin(s)` | real Vector, dB | Minimum noise figure NFmin |
+| `gamma_opt(s)` | complex Vector | Optimum source reflection for minimum noise |
+| `rn(s)` | real Vector | Normalised equivalent noise resistance Rn/Z0 |
+
+Guard noise-accessor calls with `has_noise(s)` when working with a mix of files.
+
+**`s2td(s, i, j [, "impulse" | "step"])`** — time-domain conversion via IFFT. The frequency grid must be uniformly spaced (call `interp_freq` onto a uniform grid first if not). Default mode is `"step"` (TDR convention). Returns `[t, y]` where `t` is in seconds (length 2N) and `y` is real.
+
+```
+s = sparameters("cable.s2p")
+[t, step] = s2td(s, 2, 1)              % step response of S21
+[t, imp]  = s2td(s, 2, 1, "impulse")
+```
+
+The result is the **baseband-equivalent response** — no DC extrapolation is performed. For a spectrum starting at f₀ > 0 (the usual VNA case), the time-domain signal carries the band-limited-pulse oscillation that's standard for VNA-derived TDR.
+
+**Mixed-mode 4-port conversion** — for high-speed differential designs where ports 1+3 and 2+4 form differential pairs.
+
+```
+s_se = sparameters("diffpair_4port.s4p")    % single-ended
+s_mm = s2smm(s_se)                          % mixed-mode (d1, d2, c1, c2)
+s_back = smm2s(s_mm)                        % round-trips to single-ended
+```
+
+| Builtin | Direction | Result tag |
+|---|---|---|
+| `s2smm(s)` | single-ended → mixed-mode | `"Smm"` |
+| `smm2s(smm)` | mixed-mode → single-ended | `"S"` |
+
+The mixed-mode network is organised as the block matrix `[Sdd Sdc; Scd Scc]` with ports `[d1, d2, c1, c2]`. Port pairing convention: port 1 (positive) and port 3 (negative) form differential pair 1; ports 2/4 form differential pair 2 — the universal convention every commercial mixed-mode-capable VNA uses.
+
+**Touchstone v2 tolerance** — `.s2p` files with `[Version] 2.0` and v1-compatible layouts now parse cleanly. Recognised keyword lines (consumed and ignored unless they affect the data):
+
+- `[Version] 2.0` — informational, accepted
+- `[Number of Ports]`, `[Number of Frequencies]`, `[Number of Noise Frequencies]` — informational
+- `[Two-Port Data Order]`, `[Matrix Format]` — accepted when their value matches the v1-style default
+- `[Network Data]`, `[Noise Data]`, `[End]`, `[Begin Information]`, `[End Information]` — accepted
+- `[Reference] <z0>` — single-scalar form overrides the `# R <z0>` header default
+
+Still rejected (with a clear error): per-port `[Reference]` lists, `[Mixed-Mode-Order]` tables. For files that use those features, use a single-ended export from the VNA and apply `s2smm` after loading.
+
+---
+
 ## Language
 
 ### `print(a [, b, ...])`

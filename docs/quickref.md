@@ -291,6 +291,98 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 ---
 
+## S-Parameters (RF)
+
+Phases 1–2: data type, Touchstone I/O, accessors, parameter-set conversions, cascade/deembed/renormalise. Smith chart, network plots, and analysis (VSWR, K, gain circles) ship in later phases.
+
+**Construction and inspection**
+
+| Function | Description |
+|---|---|
+| `sparameters("amp.s2p")` | Read a Touchstone v1.1 file (`.s1p` .. `.s4p`); returns a struct |
+| `sparameters(S, freqs)` / `sparameters(S, freqs, Z0)` | Build from a Tensor3 `[n_freqs, n_ports, n_ports]` and real freq vector (Hz). Default `Z0 = 50` Ω |
+| `nports(s)` | Port count (scalar) |
+| `freqs(s)` | Real frequency vector (Hz) |
+| `sij(s, i, j)` | Complex Vector of `S_{ij}(f)` (1-based port indices) |
+| `s11(s)` / `s12(s)` / `s21(s)` / `s22(s)` | Convenience 2-port accessors |
+| `parameter_type(s)` | Tag of the parameter set: `"S"` / `"Z"` / `"Y"` / `"T"` / `"ABCD"` |
+| `s.parameters` / `s.frequencies` / `s.num_ports` / `s.impedance` | Direct field access via the struct |
+| `save("out.s2p", s)` | Write S-parameters as Touchstone v1.1 (RI / Hz / 15 sig-figs) |
+
+**Conversions** (preserve frequency grid and Z0; tag changes)
+
+| Function | Direction | Ports |
+|---|---|---|
+| `s2z(s)` / `z2s(z)` | S ↔ Z | N |
+| `s2y(s)` / `y2s(y)` | S ↔ Y | N |
+| `s2t(s)` / `t2s(t)` | S ↔ T (cascade form) | 2 |
+| `s2abcd(s)` / `abcd2s(a)` | S ↔ ABCD (chain form) | 2 |
+
+**Network composition**
+
+| Function | Description |
+|---|---|
+| `cascade(s1, s2, ...)` | Cascade ≥2 two-port S networks via T multiplication. Frequency grids and Z0 must match. |
+| `deembed(meas, left, right)` | Recover DUT from `cascade(left, dut, right)`: `T_DUT = T_L⁻¹ · T_meas · T_R⁻¹` |
+| `newref(s, Z_new)` | Renormalise to a new reference impedance (scalar Z_new) |
+
+**Smith chart plotting** (renders across every backend — terminal, SVG/PNG, HTML/Plotly, LaTeX/PDF, viewer, animation)
+
+| Function | Description |
+|---|---|
+| `smith(s)` / `smith(s, i, j)` | Plot S11 and S22 (default) or a specific Sij on a Smith chart |
+| `smith(gamma)` / `smith(0.5 + 0.1*j)` | Plot a raw complex reflection-coefficient Vector or single point |
+| `smith("file.s2p")` | Convenience: load Touchstone and plot |
+| `smith(..., "grid", "Z" \| "Y" \| "ZY")` | Grid mode: impedance (default), admittance, or immittance overlay |
+| `marker(gamma)` / `marker(gamma, "label")` | Drop a labelled scatter point on the active Smith axes |
+
+**Network plots vs frequency** (log-x axis; uses semilogx internally)
+
+| Function | Description |
+|---|---|
+| `rfplot(s)` | Default 2×2 review panel for a 2-port: \|S11\|, \|S21\|, \|S12\|, \|S22\| in dB |
+| `rfplot(s, "db", i, j)` | Single dB trace `20·log10|Sij|` |
+| `rfplot(s, "magnitude", i, j)` | Single trace, linear `|Sij|` |
+| `rfplot(s, "phase", i, j)` | Wrapped phase in degrees |
+| `rfplot(s, "unwrap", i, j)` | Unwrapped phase in degrees |
+| `rfplot(s, "groupdelay", i, j)` | Group delay τ_g = −dφ/dω, seconds (central difference on unwrapped phase) |
+
+**Analysis** (per-frequency vectors; 2-port-only where noted)
+
+| Function | Returns | Notes |
+|---|---|---|
+| `vswr(s, port)` | real Vector | `(1+\|Sii\|)/(1−\|Sii\|)`; cap at 1e6 |
+| `return_loss(s, port)` | real Vector, dB | `−20·log10\|Sii\|`; floor at 200 dB |
+| `insertion_loss(s, i, j)` | real Vector, dB | `−20·log10\|Sij\|` |
+| `gammain(s, gamma_load)` | complex Vector | 2-port; load can be scalar (broadcast) or per-frequency vector |
+| `gammaout(s, gamma_source)` | complex Vector | 2-port; mirror of gammain |
+| `stabilityk(s)` | real Vector | 2-port; Rollett K |
+| `[m1, m2] = stabilitymu(s)` | tuple of real Vectors | 2-port; single-number tests, unconditional stable iff µ1 > 1 |
+| `gammams(s)` / `gammaml(s)` | complex Vectors | 2-port; simultaneous-conjugate-match terminations |
+| `gainmax(s)` | real Vector, dB | 2-port; MAG when K > 1, MSG when K ≤ 1 |
+| `stability_circles(s, "input"\|"output")` | tagged struct | 2-port; centres + radii vs freq, source or load plane |
+| `gain_circles(s, gain_db)` | tagged struct | 2-port; loci of load Γ for a given operating-power gain |
+| `smith_circle(centre, radius [, label])` | overlay | Draw one circle on the active Smith axes (use to render the circles structs above) |
+
+**Phase 6 — polish**
+
+| Function | Returns | Notes |
+|---|---|---|
+| `interp_freq(s, freqs_new)` | sparameters struct | Linear interp onto a new freq grid; extrapolation rejected |
+| `s2td(s, i, j)` / `s2td(s, i, j, "impulse"\|"step")` | tuple `[t, y]` | Time-domain (step default) via IFFT; uniform grid required |
+| `s2smm(s)` / `smm2s(smm)` | sparameters struct, tag `"Smm"` / `"S"` | 4-port single-ended ↔ mixed-mode (d1, d2, c1, c2 order) |
+| `has_noise(s)` | Bool | Network carries a Touchstone noise block |
+| `noise_freqs(s)` | real Vector, Hz | Noise-block frequency grid |
+| `nfmin(s)` | real Vector, dB | Minimum noise figure NFmin |
+| `gamma_opt(s)` | complex Vector | Optimum source reflection |
+| `rn(s)` | real Vector | Normalised noise resistance Rn/Z0 |
+
+Touchstone v2 (`[Version] 2.0`) files parse when their layout is v1-compatible; `[Reference] <scalar>` overrides the `# R` header. Per-port `[Reference]` lists and `[Mixed-Mode-Order]` tables still rejected — use single-ended `.s4p` and call `s2smm` after loading instead.
+
+Touchstone formats accepted: `RI` (real/imag), `MA` (mag/angle°), `DB` (dB/angle°). Frequency units: `Hz`, `kHz`, `MHz`, `GHz`. The `.sNp` extension is required so port count can be inferred.
+
+---
+
 ## Fixed-Point Quantization
 
 | Function | Description |

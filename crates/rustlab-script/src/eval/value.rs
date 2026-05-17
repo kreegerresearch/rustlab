@@ -1896,6 +1896,14 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Struct(fields) => {
+                // Tagged structs render as a domain-specific summary when their
+                // __kind__ sentinel matches. Falls back to generic struct dump
+                // for plain user structs.
+                if let Some(Value::Str(kind)) = fields.get("__kind__") {
+                    if kind == "sparameters" {
+                        return format_sparameters_summary(f, fields);
+                    }
+                }
                 write!(f, "struct {{")?;
                 let mut sorted: Vec<_> = fields.iter().collect();
                 sorted.sort_by_key(|(k, _)| k.as_str());
@@ -2021,6 +2029,73 @@ impl fmt::Display for Value {
             ),
         }
     }
+}
+
+// ── Domain-specific struct summary helpers ───────────────────────────────────
+
+/// Render a frequency in Hz with the smallest SI prefix that keeps the
+/// integer part ≤ 999 (Hz, kHz, MHz, GHz, THz).
+fn format_freq_hz(hz: f64) -> String {
+    let abs = hz.abs();
+    let (val, unit) = if abs < 1e3 {
+        (hz, "Hz")
+    } else if abs < 1e6 {
+        (hz / 1e3, "kHz")
+    } else if abs < 1e9 {
+        (hz / 1e6, "MHz")
+    } else if abs < 1e12 {
+        (hz / 1e9, "GHz")
+    } else {
+        (hz / 1e12, "THz")
+    };
+    if val.fract().abs() < 1e-6 {
+        format!("{} {}", val as i64, unit)
+    } else {
+        format!("{:.3} {}", val, unit)
+    }
+}
+
+/// Display a tagged sparameters struct as a one-line summary.
+/// Examples:
+///   `sparameters: 2-port S, 6 frequencies [1 GHz .. 6 GHz], Z0 = 50 Ω`
+///   `sparameters: 2-port Z, 6 frequencies [1 GHz .. 6 GHz], Z0 = 50 Ω`
+fn format_sparameters_summary(
+    f: &mut fmt::Formatter<'_>,
+    fields: &HashMap<String, Value>,
+) -> fmt::Result {
+    let n_ports = match fields.get("num_ports") {
+        Some(Value::Scalar(n)) => *n as usize,
+        _ => 0,
+    };
+    let z0 = match fields.get("impedance") {
+        Some(Value::Scalar(z)) => *z,
+        _ => f64::NAN,
+    };
+    let ptype = match fields.get("parameter_type") {
+        Some(Value::Str(s)) => s.as_str(),
+        _ => "S",
+    };
+    let (n_freqs, lo_hz, hi_hz) = match fields.get("frequencies") {
+        Some(Value::Vector(v)) if !v.is_empty() => (v.len(), v[0].re, v[v.len() - 1].re),
+        _ => (0, 0.0, 0.0),
+    };
+    if n_freqs == 0 {
+        return write!(
+            f,
+            "sparameters: {}-port {}, 0 frequencies, Z0 = {} Ω",
+            n_ports, ptype, z0
+        );
+    }
+    write!(
+        f,
+        "sparameters: {}-port {}, {} frequencies [{} .. {}], Z0 = {} Ω",
+        n_ports,
+        ptype,
+        n_freqs,
+        format_freq_hz(lo_hz),
+        format_freq_hz(hi_hz),
+        z0
+    )
 }
 
 // ── Comma-formatting helpers ─────────────────────────────────────────────────

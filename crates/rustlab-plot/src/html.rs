@@ -519,8 +519,13 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                         }
                         _ => json_f64_array(&series.x_data),
                     };
+                    let legend_attr = if series.label.is_empty() {
+                        ", showlegend: false"
+                    } else {
+                        ""
+                    };
                     traces.push_str(&format!(
-                        r#"{{ x: {x}, y: {y}, type: "{stype}", mode: "lines", name: "{name}", line: {{ color: "{color}", dash: "{dash}" }}, xaxis: "{xa}", yaxis: "{ya}" }},
+                        r#"{{ x: {x}, y: {y}, type: "{stype}", mode: "lines", name: "{name}", line: {{ color: "{color}", dash: "{dash}" }}, xaxis: "{xa}", yaxis: "{ya}"{legend} }},
 "#,
                         stype = scatter_type,
                         x = x_json,
@@ -530,11 +535,17 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                         dash = dash,
                         xa = xaxis_ref,
                         ya = yaxis_ref,
+                        legend = legend_attr,
                     ));
                 }
                 PlotKind::Scatter => {
+                    let legend_attr = if series.label.is_empty() {
+                        ", showlegend: false"
+                    } else {
+                        ""
+                    };
                     traces.push_str(&format!(
-                        r#"{{ x: {x}, y: {y}, type: "{stype}", mode: "markers", name: "{name}", marker: {{ color: "{color}", size: 6 }}, xaxis: "{xa}", yaxis: "{ya}" }},
+                        r#"{{ x: {x}, y: {y}, type: "{stype}", mode: "markers", name: "{name}", marker: {{ color: "{color}", size: 6 }}, xaxis: "{xa}", yaxis: "{ya}"{legend} }},
 "#,
                         stype = scatter_type,
                         x = json_f64_array(&series.x_data),
@@ -543,6 +554,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                         color = color_str,
                         xa = xaxis_ref,
                         ya = yaxis_ref,
+                        legend = legend_attr,
                     ));
                 }
                 PlotKind::Bar => {

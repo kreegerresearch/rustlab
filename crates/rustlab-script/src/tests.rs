@@ -12957,3 +12957,1651 @@ mod parmap_vector_outputs {
         assert!(err.contains("2×2") && err.contains("2×3"), "msg: {err}");
     }
 }
+
+#[cfg(test)]
+mod sparameters_script_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    fn write_tmp_s2p(text: &str, name: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(name);
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    #[test]
+    fn sparameters_from_raw_arrays() {
+        // Build a 2-port S at 3 frequencies using the constructor that takes
+        // a Tensor3 + frequency vector.
+        let src = "\
+S = zeros3(3, 2, 2);
+for k = 1:3
+  S(k, 1, 1) = 0.1 * k;
+  S(k, 2, 1) = 1.0 - 0.05 * k;
+  S(k, 1, 2) = 0.01;
+  S(k, 2, 2) = 0.2 * k;
+end
+f = [1e9, 2e9, 3e9];
+s = sparameters(S, f);
+np = nports(s);
+fr = freqs(s);
+s11_v = s11(s);
+s21_v = s21(s);
+";
+        let ev = run(src);
+        match ev.get("np").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n as usize, 2),
+            other => panic!("nports: got {}", other.type_name()),
+        }
+        match ev.get("fr").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 3);
+                assert!((v[0].re - 1e9).abs() < 1e-3);
+                assert!((v[2].re - 3e9).abs() < 1e-3);
+            }
+            other => panic!("freqs: got {}", other.type_name()),
+        }
+        match ev.get("s11_v").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 3);
+                assert!((v[0].re - 0.1).abs() < 1e-12);
+                assert!((v[1].re - 0.2).abs() < 1e-12);
+                assert!((v[2].re - 0.3).abs() < 1e-12);
+            }
+            other => panic!("s11: got {}", other.type_name()),
+        }
+        match ev.get("s21_v").unwrap() {
+            Value::Vector(v) => {
+                assert!((v[0].re - 0.95).abs() < 1e-12);
+                assert!((v[2].re - 0.85).abs() < 1e-12);
+            }
+            other => panic!("s21: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn sparameters_defaults_z0_to_50() {
+        let src = "\
+S = zeros3(1, 2, 2);
+s = sparameters(S, [1e9]);
+z = s.impedance;
+";
+        let ev = run(src);
+        match ev.get("z").unwrap() {
+            Value::Scalar(z) => assert_eq!(*z, 50.0),
+            other => panic!("z: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn sparameters_z0_override() {
+        let src = "\
+S = zeros3(1, 2, 2);
+s = sparameters(S, [1e9], 75);
+z = s.impedance;
+";
+        let ev = run(src);
+        match ev.get("z").unwrap() {
+            Value::Scalar(z) => assert_eq!(*z, 75.0),
+            other => panic!("z: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn sparameters_rejects_non_square_s() {
+        let err = run_err("s = sparameters(zeros3(2, 3, 2), [1e9, 2e9])");
+        assert!(err.contains("square"), "msg: {err}");
+    }
+
+    #[test]
+    fn sparameters_rejects_freq_length_mismatch() {
+        let err = run_err("s = sparameters(zeros3(2, 2, 2), [1e9])");
+        assert!(err.contains("length"), "msg: {err}");
+    }
+
+    #[test]
+    fn sparameters_rejects_non_monotonic_freqs() {
+        let err = run_err("s = sparameters(zeros3(2, 2, 2), [2e9, 1e9])");
+        assert!(err.contains("increasing"), "msg: {err}");
+    }
+
+    #[test]
+    fn sparameters_rejects_nonpositive_z0() {
+        let err = run_err("s = sparameters(zeros3(1, 2, 2), [1e9], 0)");
+        assert!(err.contains("positive"), "msg: {err}");
+    }
+
+    #[test]
+    fn sij_indexing_one_based() {
+        let src = "\
+S = zeros3(2, 3, 3);
+S(1, 1, 1) = 1.0;  S(1, 2, 3) = 2.0;  S(1, 3, 2) = 3.0;
+S(2, 1, 1) = 4.0;  S(2, 2, 3) = 5.0;
+s = sparameters(S, [1e9, 2e9]);
+a = sij(s, 1, 1);
+b = sij(s, 2, 3);
+c = sij(s, 3, 2);
+";
+        let ev = run(src);
+        let extract = |name: &str| -> Vec<f64> {
+            match ev.get(name).unwrap() {
+                Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+                other => panic!("{name}: got {}", other.type_name()),
+            }
+        };
+        assert_eq!(extract("a"), vec![1.0, 4.0]);
+        assert_eq!(extract("b"), vec![2.0, 5.0]);
+        assert_eq!(extract("c"), vec![3.0, 0.0]);
+    }
+
+    #[test]
+    fn sij_rejects_out_of_range() {
+        let err = run_err("s = sparameters(zeros3(1, 2, 2), [1e9]); x = sij(s, 3, 1)");
+        assert!(err.contains("out of range"), "msg: {err}");
+    }
+
+    #[test]
+    fn s11_s22_require_two_ports() {
+        // A 1-port has s11 but not s22.
+        let ev = run("s = sparameters(zeros3(1, 1, 1), [1e9]); x = s11(s)");
+        match ev.get("x").unwrap() {
+            Value::Vector(v) => assert_eq!(v.len(), 1),
+            other => panic!("x: got {}", other.type_name()),
+        }
+        let err = run_err("s = sparameters(zeros3(1, 1, 1), [1e9]); y = s22(s)");
+        assert!(err.contains("2-port"), "msg: {err}");
+    }
+
+    #[test]
+    fn nports_rejects_non_sparameters() {
+        let err = run_err("x = nports(struct(\"a\", 1, \"b\", 2))");
+        assert!(err.contains("sparameters"), "msg: {err}");
+    }
+
+    #[test]
+    fn struct_field_access_through_dot_works() {
+        // The struct fields (parameters, frequencies, num_ports, impedance)
+        // are reachable via the existing `s.field` access path — no special
+        // sparameters dispatch needed.
+        let src = "\
+s = sparameters(zeros3(2, 2, 2), [1e9, 2e9], 75);
+np = s.num_ports;
+z  = s.impedance;
+";
+        let ev = run(src);
+        match (ev.get("np").unwrap(), ev.get("z").unwrap()) {
+            (Value::Scalar(n), Value::Scalar(z)) => {
+                assert_eq!(*n as usize, 2);
+                assert_eq!(*z, 75.0);
+            }
+            _ => panic!("unexpected types"),
+        }
+    }
+
+    #[test]
+    fn display_shows_summary_line() {
+        let src = "\
+S = zeros3(3, 2, 2);
+s = sparameters(S, [1e9, 2e9, 3e9], 50);
+";
+        let ev = run(src);
+        let formatted = format!("{}", ev.get("s").unwrap());
+        assert!(
+            formatted.starts_with("sparameters: 2-port S, 3 frequencies"),
+            "got: {formatted}"
+        );
+        assert!(formatted.contains("1 GHz"), "got: {formatted}");
+        assert!(formatted.contains("3 GHz"), "got: {formatted}");
+        assert!(formatted.contains("Z0 = 50"), "got: {formatted}");
+    }
+
+    #[test]
+    fn read_touchstone_2port_file_via_sparameters() {
+        // A small but realistic .s2p file written to a temp path, read back
+        // through the script-level sparameters() builtin.
+        let text = "\
+! Synthetic 2-port for round-trip check
+# GHz S MA R 50
+1.0   0.50 30   1.00 -45   0.10 90   0.70 180
+2.0   0.45 20   0.95 -55   0.08 80   0.65 170
+3.0   0.40 10   0.90 -65   0.06 70   0.60 160
+";
+        let path = write_tmp_s2p(text, "rustlab_phase1_read.s2p");
+        let src = format!(
+            "s = sparameters(\"{}\");\nnp = nports(s);\nfr = freqs(s);\nm11 = abs(s11(s));\n",
+            path.display()
+        );
+        let ev = run(&src);
+        match ev.get("np").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n as usize, 2),
+            other => panic!("nports: got {}", other.type_name()),
+        }
+        match ev.get("fr").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 3);
+                assert!((v[0].re - 1e9).abs() < 1e-3);
+                assert!((v[2].re - 3e9).abs() < 1e-3);
+            }
+            other => panic!("freqs: got {}", other.type_name()),
+        }
+        // |S11| at the three frequencies should be 0.5, 0.45, 0.40 (MA mag).
+        match ev.get("m11").unwrap() {
+            Value::Vector(v) => {
+                assert!((v[0].re - 0.5).abs() < 1e-10);
+                assert!((v[1].re - 0.45).abs() < 1e-10);
+                assert!((v[2].re - 0.40).abs() < 1e-10);
+            }
+            other => panic!("m11: got {}", other.type_name()),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_touchstone_file_not_found_errors() {
+        let err = run_err("s = sparameters(\"/tmp/this_path_does_not_exist_xyz.s2p\")");
+        // The error message comes from std::fs::read_to_string and is
+        // wrapped in 'touchstone read:' by our reader.
+        assert!(
+            err.contains("touchstone") || err.contains("No such file"),
+            "msg: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sparameters_phase2_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    /// Common header that builds a matched 10 dB attenuator as a 2-port
+    /// sparameters network at three frequencies. Reused across tests.
+    const ATT_10DB_SETUP: &str = "
+        mag = 10 ^ (-10 / 20);
+        S = zeros3(3, 2, 2);
+        for k = 1:3
+          S(k, 1, 2) = mag;
+          S(k, 2, 1) = mag;
+        end
+        f = [1e9, 2e9, 3e9];
+        s = sparameters(S, f);
+    ";
+
+    #[test]
+    fn s2z_changes_parameter_type_tag() {
+        let src = format!("{ATT_10DB_SETUP}\n z = s2z(s); t = parameter_type(z);");
+        let ev = run(&src);
+        match ev.get("t").unwrap() {
+            Value::Str(s) => assert_eq!(s, "Z"),
+            other => panic!("parameter_type: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2z_then_z2s_round_trips() {
+        let src = format!(
+            "{ATT_10DB_SETUP}\n z = s2z(s); s2 = z2s(z); diff = abs(s12(s2)(1) - s12(s)(1));"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-12, "round-trip diff: {d}"),
+            other => panic!("diff: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn z2s_rejects_non_z_input() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n z2s(s);"));
+        assert!(err.contains("Z-parameter"), "msg: {err}");
+    }
+
+    #[test]
+    fn s2y_then_y2s_round_trips() {
+        let src = format!(
+            "{ATT_10DB_SETUP}\n y = s2y(s); s2 = y2s(y); diff = abs(s21(s2)(1) - s21(s)(1));"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-12, "round-trip diff: {d}"),
+            other => panic!("diff: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2t_then_t2s_round_trips() {
+        let src = format!(
+            "{ATT_10DB_SETUP}\n t = s2t(s); s2 = t2s(t); diff = abs(s21(s2)(1) - s21(s)(1));"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-12, "round-trip diff: {d}"),
+            other => panic!("diff: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2abcd_then_abcd2s_round_trips() {
+        let src = format!(
+            "{ATT_10DB_SETUP}\n a = s2abcd(s); s2 = abcd2s(a); diff = abs(s21(s2)(1) - s21(s)(1));"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-12, "round-trip diff: {d}"),
+            other => panic!("diff: got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn cascade_two_10db_pads_makes_20db() {
+        // |S21| = 0.1 exactly (20 dB); S11 = 0 (still matched after cascade).
+        let src = format!(
+            "{ATT_10DB_SETUP}\n c = cascade(s, s); s21mag = abs(s21(c)(1)); s11mag = abs(s11(c)(1));"
+        );
+        let ev = run(&src);
+        match (ev.get("s21mag").unwrap(), ev.get("s11mag").unwrap()) {
+            (Value::Scalar(s21), Value::Scalar(s11)) => {
+                assert!((*s21 - 0.1).abs() < 1e-10, "S21 mag: {s21}");
+                assert!(*s11 < 1e-12, "S11 mag: {s11}");
+            }
+            _ => panic!("unexpected types"),
+        }
+    }
+
+    #[test]
+    fn cascade_three_argument_form_works() {
+        // 3-stage cascade of 10 dB pads → |S21| = 10^(-30/20) = 0.0316...
+        let src = format!(
+            "{ATT_10DB_SETUP}\n c = cascade(s, s, s); s21mag = abs(s21(c)(1));"
+        );
+        let ev = run(&src);
+        match ev.get("s21mag").unwrap() {
+            Value::Scalar(v) => {
+                let expected = 10f64.powf(-30.0 / 20.0);
+                assert!((*v - expected).abs() < 1e-10, "S21: {v}");
+            }
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn cascade_rejects_frequency_mismatch() {
+        // Two attenuators on different frequency grids must not cascade.
+        let src = "
+            mag = 10 ^ (-10 / 20);
+            S1 = zeros3(2, 2, 2); for k = 1:2; S1(k, 1, 2) = mag; S1(k, 2, 1) = mag; end
+            S2 = zeros3(3, 2, 2); for k = 1:3; S2(k, 1, 2) = mag; S2(k, 2, 1) = mag; end
+            a = sparameters(S1, [1e9, 2e9]);
+            b = sparameters(S2, [1e9, 2e9, 3e9]);
+            c = cascade(a, b);
+        ";
+        let err = run_err(src);
+        assert!(err.contains("frequency"), "msg: {err}");
+    }
+
+    #[test]
+    fn cascade_requires_at_least_two() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n cascade(s);"));
+        assert!(err.contains("at least two"), "msg: {err}");
+    }
+
+    #[test]
+    fn deembed_recovers_synthetic_dut() {
+        // meas = cascade(left, dut, right); deembed(meas, left, right) ≈ dut.
+        let src = "
+            % Three distinct matched attenuators (different losses).
+            S_L = zeros3(2, 2, 2);
+            S_D = zeros3(2, 2, 2);
+            S_R = zeros3(2, 2, 2);
+            for k = 1:2
+              S_L(k, 1, 2) = 10 ^ (-3  / 20); S_L(k, 2, 1) = 10 ^ (-3  / 20);
+              S_D(k, 1, 2) = 10 ^ (-6  / 20); S_D(k, 2, 1) = 10 ^ (-6  / 20);
+              S_R(k, 1, 2) = 10 ^ (-2  / 20); S_R(k, 2, 1) = 10 ^ (-2  / 20);
+            end
+            f = [1e9, 2e9];
+            L = sparameters(S_L, f);
+            D = sparameters(S_D, f);
+            R = sparameters(S_R, f);
+            meas = cascade(L, D, R);
+            recovered = deembed(meas, L, R);
+            diff = abs(s21(recovered)(1) - s21(D)(1));
+        ";
+        let ev = run(src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-10, "diff: {d}"),
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn newref_50_to_75_to_50_is_identity() {
+        let src = format!(
+            "{ATT_10DB_SETUP}\n
+             s75 = newref(s, 75);
+             back = newref(s75, 50);
+             diff = abs(s21(back)(1) - s21(s)(1));
+             z_after = s75.impedance;"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-10, "diff: {d}"),
+            other => panic!("got {}", other.type_name()),
+        }
+        match ev.get("z_after").unwrap() {
+            Value::Scalar(z) => assert_eq!(*z, 75.0),
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn newref_rejects_nonpositive_z() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n newref(s, -50);"));
+        assert!(err.contains("positive"), "msg: {err}");
+    }
+
+    #[test]
+    fn save_touchstone_round_trips_through_disk() {
+        // Build a network in-memory, save to .s2p, re-read, compare key entries.
+        let tmp = std::env::temp_dir().join("rustlab_p2_save.s2p");
+        let tmp_str = tmp.to_string_lossy().to_string();
+        let src = format!(
+            "{ATT_10DB_SETUP}\n
+             save(\"{tmp_str}\", s);
+             s2 = sparameters(\"{tmp_str}\");
+             diff = abs(s21(s2)(1) - s21(s)(1));
+             z = s2.impedance;"
+        );
+        let ev = run(&src);
+        match ev.get("diff").unwrap() {
+            Value::Scalar(d) => assert!(*d < 1e-12, "diff: {d}"),
+            other => panic!("got {}", other.type_name()),
+        }
+        match ev.get("z").unwrap() {
+            Value::Scalar(z) => assert_eq!(*z, 50.0),
+            other => panic!("got {}", other.type_name()),
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn save_touchstone_rejects_non_s_typed_network() {
+        let tmp = std::env::temp_dir()
+            .join("rustlab_p2_save_bad.s2p")
+            .to_string_lossy()
+            .to_string();
+        let src = format!("{ATT_10DB_SETUP}\n z = s2z(s); save(\"{tmp}\", z);");
+        let err = run_err(&src);
+        assert!(err.contains("S-parameters"), "msg: {err}");
+    }
+
+    #[test]
+    fn display_renders_type_letter_on_converted_struct() {
+        let src = format!("{ATT_10DB_SETUP}\n z = s2z(s);");
+        let ev = run(&src);
+        let summary = format!("{}", ev.get("z").unwrap());
+        assert!(summary.contains("2-port Z"), "got: {summary}");
+    }
+}
+
+#[cfg(test)]
+mod sparameters_phase3_tests {
+    //! Phase-3 (Smith chart) script + cross-backend tests.
+    //!
+    //! Strategy: render a Smith chart to each file backend (SVG, PNG, HTML)
+    //! and assert structural properties of the output (number of polyline
+    //! elements, presence of legend-suppression directives, axis-equal
+    //! attributes). The viewer path is exercised indirectly via the figure
+    //! state (axis_equal flag) and the WireSeries forwarding is covered by
+    //! the proto round-trip tests in rustlab-proto.
+
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+    use rustlab_plot::figure::FIGURE;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    fn render_smith_to_svg(setup: &str, path: &std::path::Path) {
+        let src = format!(
+            "{setup}\nsavefig(\"{}\")\n",
+            path.display()
+        );
+        run(&src);
+    }
+
+    /// Snapshot of the FIGURE thread-local right after a smith() call.
+    /// Use to inspect series count, axis_equal, and limits — the same state
+    /// the viewer would receive over the wire.
+    fn smith_figure_state(setup: &str) -> rustlab_plot::figure::FigureState {
+        run(setup);
+        FIGURE.with(|f| f.borrow().clone())
+    }
+
+    #[test]
+    fn smith_of_complex_vector_pushes_grid_and_one_data_trace() {
+        let state =
+            smith_figure_state("g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g);");
+        let sp = state.current();
+        // 17 grid arcs (2 frame + 5 R + 10 X) + 1 data trace = 18
+        assert_eq!(sp.series.len(), 18);
+        // Grid arcs have empty labels; the data trace is labelled "Γ".
+        let labelled: Vec<&str> = sp.series.iter().map(|s| s.label.as_str()).collect();
+        let non_empty: Vec<&&str> = labelled.iter().filter(|s| !s.is_empty()).collect();
+        assert_eq!(non_empty, vec![&"Γ"]);
+        // Axis is locked to the unit disk + equal aspect.
+        assert!(sp.axis_equal);
+        assert_eq!(sp.xlim, (Some(-1.1), Some(1.1)));
+        assert_eq!(sp.ylim, (Some(-1.1), Some(1.1)));
+        assert_eq!(sp.xlabel, "Re(Γ)");
+        assert_eq!(sp.ylabel, "Im(Γ)");
+    }
+
+    #[test]
+    fn smith_of_2port_pushes_s11_and_s22() {
+        let setup = "
+            S = zeros3(2, 2, 2);
+            for k = 1:2; S(k, 1, 1) = 0.2; S(k, 2, 2) = -0.3; end
+            s = sparameters(S, [1e9, 2e9]);
+            smith(s);
+        ";
+        let state = smith_figure_state(setup);
+        let sp = state.current();
+        let labels: Vec<String> = sp
+            .series
+            .iter()
+            .filter(|s| !s.label.is_empty())
+            .map(|s| s.label.clone())
+            .collect();
+        assert_eq!(labels, vec!["S11".to_string(), "S22".to_string()]);
+    }
+
+    #[test]
+    fn smith_with_explicit_ports() {
+        let setup = "
+            S = zeros3(2, 3, 3);
+            for k = 1:2; S(k, 3, 1) = 0.4; end
+            s = sparameters(S, [1e9, 2e9]);
+            smith(s, 3, 1);
+        ";
+        let state = smith_figure_state(setup);
+        let sp = state.current();
+        let labels: Vec<String> = sp
+            .series
+            .iter()
+            .filter(|s| !s.label.is_empty())
+            .map(|s| s.label.clone())
+            .collect();
+        assert_eq!(labels, vec!["S31".to_string()]);
+    }
+
+    #[test]
+    fn smith_grid_y_mode_uses_admittance_family_colors() {
+        let state = smith_figure_state("smith(0.5 + 0.1*j, \"grid\", \"Y\");");
+        let sp = state.current();
+        // Y mode emits the Y family with bluish color (Rgb(120, 180, 200))
+        // distinct from the Z family color (Rgb(170, 170, 170)).
+        let saw_y_color = sp.series.iter().any(|s| {
+            matches!(s.color, rustlab_plot::SeriesColor::Rgb(120, 180, 200))
+        });
+        assert!(saw_y_color, "Y grid should emit at least one bluish arc");
+    }
+
+    #[test]
+    fn smith_grid_zy_mode_includes_both_families() {
+        let state = smith_figure_state("smith(0.5 + 0.1*j, \"grid\", \"ZY\");");
+        let sp = state.current();
+        let saw_z = sp
+            .series
+            .iter()
+            .any(|s| matches!(s.color, rustlab_plot::SeriesColor::Rgb(170, 170, 170)));
+        let saw_y = sp
+            .series
+            .iter()
+            .any(|s| matches!(s.color, rustlab_plot::SeriesColor::Rgb(120, 180, 200)));
+        assert!(saw_z && saw_y);
+    }
+
+    #[test]
+    fn smith_unknown_grid_value_errors() {
+        let err = run_err("smith(0.5 + 0.1*j, \"grid\", \"bogus\");");
+        assert!(err.contains("grid"), "msg: {err}");
+    }
+
+    #[test]
+    fn smith_svg_backend_emits_dashed_grid_lines() {
+        // Render to a temp SVG and check it contains many polyline elements
+        // (each dashed grid arc renders as a sequence of short polyline
+        // segments via plotters' dashed-stroke simulation).
+        let tmp = std::env::temp_dir().join("rustlab_phase3_grid.svg");
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let setup = format!(
+            "g = 0.5 * exp(j * linspace(0, 2*pi, 64)); smith(g); savefig(\"{tmp_str}\");"
+        );
+        render_smith_to_svg(&setup, &tmp);
+        let svg = std::fs::read_to_string(&tmp).unwrap();
+        // 17 grid arcs + 1 data trace -> hundreds of polyline elements from
+        // the dashed-stroke simulation. Hard lower bound: more than 50.
+        let polyline_count = svg.matches("polyline").count();
+        assert!(
+            polyline_count > 50,
+            "expected many polylines for the Smith grid, got {polyline_count}"
+        );
+        // Title text from the chart.
+        assert!(svg.contains("Smith Chart"), "missing title");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn smith_html_backend_suppresses_grid_from_legend() {
+        let tmp = std::env::temp_dir().join("rustlab_phase3_grid.html");
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let setup = format!(
+            "g = 0.5 * exp(j * linspace(0, 2*pi, 32)); smith(g); savefig(\"{tmp_str}\");"
+        );
+        run(&setup);
+        let html = std::fs::read_to_string(&tmp).unwrap();
+        // Each of the 17 grid arcs gets `showlegend: false`.
+        let suppressed = html.matches("showlegend: false").count();
+        assert!(
+            suppressed >= 17,
+            "expected >= 17 showlegend:false directives, got {suppressed}"
+        );
+        // The data series ("Γ") still gets a legend entry.
+        assert!(html.contains("\"Γ\""), "missing data series name");
+        // scaleanchor present because axis_equal=true.
+        assert!(
+            html.contains("scaleanchor"),
+            "axis_equal Smith chart should emit scaleanchor"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn smith_png_backend_renders_without_error() {
+        // PNG goes through the same plotters code path as SVG via
+        // BitMapBackend. Smoke test that the file is non-empty and well-formed.
+        let tmp = std::env::temp_dir().join("rustlab_phase3_grid.png");
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let setup = format!(
+            "smith(0.5 + 0.1*j); savefig(\"{tmp_str}\");"
+        );
+        run(&setup);
+        let bytes = std::fs::read(&tmp).unwrap();
+        assert!(bytes.len() > 1000, "PNG suspiciously small: {} bytes", bytes.len());
+        // PNG magic.
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn smith_marker_adds_scatter_point() {
+        let setup = "
+            smith(0.5 + 0.1*j);
+            marker(0.0, \"matched\");
+            marker(1.0, \"open\");
+        ";
+        let state = smith_figure_state(setup);
+        let sp = state.current();
+        let scatter_count = sp
+            .series
+            .iter()
+            .filter(|s| matches!(s.kind, rustlab_plot::figure::PlotKind::Scatter))
+            .count();
+        assert_eq!(scatter_count, 2);
+        // Labels survive on the markers (legend will show them).
+        let scatter_labels: Vec<String> = sp
+            .series
+            .iter()
+            .filter(|s| matches!(s.kind, rustlab_plot::figure::PlotKind::Scatter))
+            .map(|s| s.label.clone())
+            .collect();
+        assert_eq!(scatter_labels, vec!["matched".to_string(), "open".to_string()]);
+    }
+
+    #[test]
+    fn marker_at_origin_lands_at_chart_center() {
+        // Smoke: marker(0) → scatter point at (0, 0).
+        let state = smith_figure_state("smith(0.5); marker(0.0, \"center\");");
+        let sp = state.current();
+        let pt = sp
+            .series
+            .iter()
+            .find(|s| s.label == "center")
+            .expect("missing marker series");
+        assert_eq!(pt.x_data, vec![0.0]);
+        assert_eq!(pt.y_data, vec![0.0]);
+    }
+
+    #[test]
+    fn smith_rejects_unsupported_arg_count() {
+        let err = run_err("smith(0.5, 1);"); // 2 positional, not a valid form
+        assert!(err.contains("argument") || err.contains("port"), "msg: {err}");
+    }
+
+    #[test]
+    fn smith_from_touchstone_path_dispatches_through_reader() {
+        // smith("path") should read the file and plot S11/S22 of the network.
+        let s2p = "\
+! Synthetic for smith() round-trip
+# GHz S MA R 50
+1.0   0.5 30   1.0 -45   0.05 90   0.4 170
+2.0   0.4 20   0.9 -55   0.06 80   0.3 165
+";
+        let path = std::env::temp_dir().join("rustlab_phase3_smith_input.s2p");
+        std::fs::write(&path, s2p).unwrap();
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let setup = format!("smith(\"{path_str}\");");
+        let state = smith_figure_state(&setup);
+        let sp = state.current();
+        let labels: Vec<String> = sp
+            .series
+            .iter()
+            .filter(|s| !s.label.is_empty())
+            .map(|s| s.label.clone())
+            .collect();
+        assert_eq!(labels, vec!["S11".to_string(), "S22".to_string()]);
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod sparameters_phase4_tests {
+    //! Phase-4 (rfplot — mag/dB/phase/group-delay vs frequency) tests.
+
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+    use rustlab_plot::figure::FIGURE;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    fn rfplot_figure_state(setup: &str) -> rustlab_plot::figure::FigureState {
+        run(setup);
+        FIGURE.with(|f| f.borrow().clone())
+    }
+
+    /// A matched 10 dB attenuator at 5 frequencies, S11 = S22 = 0,
+    /// |S21| = |S12| = 10^(-10/20). Phase of every entry is 0
+    /// (purely real positive S21 → arg = 0).
+    const ATT_10DB_SETUP: &str = "
+        mag = 10 ^ (-10 / 20);
+        S = zeros3(5, 2, 2);
+        for k = 1:5
+          S(k, 1, 2) = mag;
+          S(k, 2, 1) = mag;
+        end
+        f = [1e9, 2e9, 3e9, 4e9, 5e9];
+        s = sparameters(S, f);
+    ";
+
+    #[test]
+    fn rfplot_default_form_makes_2x2_grid_for_2port() {
+        let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s);"));
+        assert_eq!(state.subplot_rows, 2);
+        assert_eq!(state.subplot_cols, 2);
+        assert_eq!(state.subplots.len(), 4);
+        // Each subplot has exactly one labelled series.
+        let labels: Vec<String> = state
+            .subplots
+            .iter()
+            .map(|sp| {
+                sp.series
+                    .iter()
+                    .find(|s| !s.label.is_empty())
+                    .map(|s| s.label.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["S11".to_string(), "S21".to_string(), "S12".to_string(), "S22".to_string()]
+        );
+    }
+
+    #[test]
+    fn rfplot_default_dB_panel_values_match_attenuator() {
+        // |S21| of a 10 dB pad = 0.31623 → 20·log10 = -10 dB.
+        // |S11| = 0 → -200 dB floor (mag2db clamp).
+        let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s);"));
+        // Panel layout per the implementation:
+        // (1,1) S11, (1,2) S21, (2,1) S12, (2,2) S22.
+        let s21_panel = &state.subplots[1];
+        let s21_data = &s21_panel
+            .series
+            .iter()
+            .find(|s| s.label == "S21")
+            .expect("missing S21 series")
+            .y_data;
+        for &v in s21_data {
+            assert!((v - (-10.0)).abs() < 1e-9, "S21 dB: {v}");
+        }
+        let s11_panel = &state.subplots[0];
+        let s11_data = &s11_panel
+            .series
+            .iter()
+            .find(|s| s.label == "S11")
+            .expect("missing S11 series")
+            .y_data;
+        for &v in s11_data {
+            assert!((v - (-200.0)).abs() < 1e-9, "S11 dB: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_single_trace_db_form() {
+        let state =
+            rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 2, 1);"));
+        assert_eq!(state.subplots.len(), 1);
+        let sp = state.current();
+        let y = &sp
+            .series
+            .iter()
+            .find(|s| s.label == "S21")
+            .expect("S21 series missing")
+            .y_data;
+        assert_eq!(y.len(), 5);
+        for &v in y {
+            assert!((v - (-10.0)).abs() < 1e-9, "db: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_magnitude_form_is_linear() {
+        let state = rfplot_figure_state(&format!(
+            "{ATT_10DB_SETUP}\n rfplot(s, \"magnitude\", 2, 1);"
+        ));
+        let sp = state.current();
+        let y = &sp.series.iter().find(|s| s.label == "S21").unwrap().y_data;
+        let mag = 10f64.powf(-10.0 / 20.0);
+        for &v in y {
+            assert!((v - mag).abs() < 1e-12, "mag: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_phase_of_real_positive_S_is_zero() {
+        let state =
+            rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"phase\", 2, 1);"));
+        let sp = state.current();
+        let y = &sp.series.iter().find(|s| s.label == "S21").unwrap().y_data;
+        for &v in y {
+            assert!(v.abs() < 1e-9, "phase deg: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_groupdelay_of_flat_phase_is_zero() {
+        // Matched attenuator has |S21| = const, arg = const → group delay = 0.
+        let state = rfplot_figure_state(&format!(
+            "{ATT_10DB_SETUP}\n rfplot(s, \"groupdelay\", 2, 1);"
+        ));
+        let sp = state.current();
+        let y = &sp.series.iter().find(|s| s.label == "S21").unwrap().y_data;
+        for &v in y {
+            assert!(v.abs() < 1e-15, "group delay: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_unwrap_extends_past_pi() {
+        // Build a 2-port whose S21 rotates more than 2π across the freq
+        // sweep: arg(S21_k) = k * 3π/4 → wraps every 2-3 samples. Wrapped
+        // phase stays in [-180, 180]; unwrapped grows monotonically.
+        let setup = "
+            S = zeros3(8, 2, 2);
+            for k = 1:8
+              phi = (k - 1) * 3 * pi / 4;
+              S(k, 2, 1) = cos(phi) + j * sin(phi);
+            end
+            f = [1e9, 2e9, 3e9, 4e9, 5e9, 6e9, 7e9, 8e9];
+            s = sparameters(S, f);
+            rfplot(s, \"unwrap\", 2, 1);
+        ";
+        let state = rfplot_figure_state(setup);
+        let sp = state.current();
+        let y = &sp.series.iter().find(|s| s.label == "S21").unwrap().y_data;
+        // Unwrapped phase at k=8: (k-1) * 3π/4 = 7 * 3π/4 = 5.25π → 945°.
+        // Allow small numerical noise from sin/cos.
+        let expected_deg = 7.0 * (3.0 * std::f64::consts::PI / 4.0).to_degrees();
+        assert!(
+            (y[7] - expected_deg).abs() < 1e-6,
+            "expected ~{expected_deg}°, got {}",
+            y[7]
+        );
+    }
+
+    #[test]
+    fn rfplot_unknown_kind_errors() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"bogus\", 2, 1);"));
+        assert!(err.contains("unknown trace kind"), "msg: {err}");
+    }
+
+    #[test]
+    fn rfplot_rejects_bad_port_indices() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 3, 1);"));
+        assert!(err.contains("out of range"), "msg: {err}");
+    }
+
+    #[test]
+    fn rfplot_panel_axes_are_log_x() {
+        // Frequency axis goes through semilogx → x values are log10(f),
+        // not f directly.
+        let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 2, 1);"));
+        let sp = state.current();
+        let x = &sp.series.iter().find(|s| s.label == "S21").unwrap().x_data;
+        // First freq = 1e9 → log10 = 9.0; last = 5e9 → log10 ≈ 9.699.
+        assert!((x[0] - 9.0).abs() < 1e-9, "x[0]: {}", x[0]);
+        assert!((x[4] - 5e9_f64.log10()).abs() < 1e-9, "x[4]: {}", x[4]);
+        assert_eq!(sp.xlabel, "log10(freq) (Hz)");
+        assert_eq!(sp.ylabel, "|Sij| (dB)");
+    }
+
+    #[test]
+    fn rfplot_single_port_falls_back_to_s11_db() {
+        let setup = "
+            S = zeros3(3, 1, 1);
+            for k = 1:3; S(k, 1, 1) = 10 ^ (-5 / 20); end
+            f = [1e9, 2e9, 3e9];
+            s = sparameters(S, f);
+            rfplot(s);
+        ";
+        let state = rfplot_figure_state(setup);
+        // Should NOT promote to 2x2 — only 1 subplot.
+        assert_eq!(state.subplots.len(), 1);
+        let y = &state.current().series.iter().find(|s| s.label == "S11").unwrap().y_data;
+        for &v in y {
+            assert!((v - (-5.0)).abs() < 1e-9, "S11 dB: {v}");
+        }
+    }
+
+    #[test]
+    fn rfplot_html_output_contains_four_subplots_for_2port_default() {
+        // Render to HTML and verify the layout has xaxis/yaxis through
+        // xaxis4/yaxis4 — the Plotly convention for a 2x2 subplot grid.
+        let tmp = std::env::temp_dir().join("rustlab_phase4_rfplot.html");
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let setup = format!("{ATT_10DB_SETUP}\n rfplot(s); savefig(\"{tmp_str}\");");
+        run(&setup);
+        let html = std::fs::read_to_string(&tmp).unwrap();
+        for axis in ["xaxis:", "xaxis2:", "xaxis3:", "xaxis4:"] {
+            assert!(html.contains(axis), "missing {axis} in HTML");
+        }
+        // Each panel has its annotation title.
+        for title in ["|S11| (dB)", "|S21| (dB)", "|S12| (dB)", "|S22| (dB)"] {
+            assert!(html.contains(title), "missing panel annotation '{title}'");
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod sparameters_phase5_tests {
+    //! Phase-5 (VSWR / stability / gain / circles) script tests. The pure
+    //! math is anchored in `eval::sparam_analysis::tests`; here we verify
+    //! the script-level dispatch wires through correctly, including the
+    //! multi-return `stabilitymu` and the tagged circles struct.
+
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+    use rustlab_plot::figure::FIGURE;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    /// Standard matched 10 dB pad used as the analytic anchor. K = 5.05,
+    /// µ1 = µ2 = 10, MAG = -10 dB, VSWR = 1, return loss at floor.
+    const ATT_10DB_SETUP: &str = "
+        mag = 10 ^ (-10 / 20);
+        S = zeros3(2, 2, 2);
+        for k = 1:2
+          S(k, 1, 2) = mag;
+          S(k, 2, 1) = mag;
+        end
+        f = [1e9, 2e9];
+        s = sparameters(S, f);
+    ";
+
+    fn extract_real_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{name}: expected vector, got {}", other.type_name()),
+        }
+    }
+
+    fn extract_complex_vec(ev: &Evaluator, name: &str) -> Vec<(f64, f64)> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| (c.re, c.im)).collect(),
+            other => panic!("{name}: expected vector, got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn vswr_matched_port_is_one() {
+        let ev = run(&format!("{ATT_10DB_SETUP}\n v = vswr(s, 1);"));
+        let v = extract_real_vec(&ev, "v");
+        assert_eq!(v.len(), 2);
+        for x in v {
+            assert!((x - 1.0).abs() < 1e-12, "VSWR: {x}");
+        }
+    }
+
+    #[test]
+    fn vswr_rejects_bad_port_index() {
+        let err = run_err(&format!("{ATT_10DB_SETUP}\n vswr(s, 3);"));
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn return_loss_matched_at_floor() {
+        let ev = run(&format!("{ATT_10DB_SETUP}\n rl = return_loss(s, 1);"));
+        for v in extract_real_vec(&ev, "rl") {
+            assert_eq!(v, 200.0);
+        }
+    }
+
+    #[test]
+    fn insertion_loss_10dB_pad_reads_10dB() {
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n il = insertion_loss(s, 2, 1);"
+        ));
+        for v in extract_real_vec(&ev, "il") {
+            assert!((v - 10.0).abs() < 1e-12, "IL: {v}");
+        }
+    }
+
+    #[test]
+    fn gammain_thru_passes_through_load_reflection() {
+        let setup = "
+            S = zeros3(2, 2, 2);
+            for k = 1:2
+              S(k, 1, 2) = 1.0;
+              S(k, 2, 1) = 1.0;
+            end
+            s = sparameters(S, [1e9, 2e9]);
+            g = gammain(s, 0.3 + 0.4 * j);
+        ";
+        let ev = run(setup);
+        let g = extract_complex_vec(&ev, "g");
+        for (re, im) in g {
+            assert!((re - 0.3).abs() < 1e-12, "Re: {re}");
+            assert!((im - 0.4).abs() < 1e-12, "Im: {im}");
+        }
+    }
+
+    #[test]
+    fn gammaout_thru_passes_through_source_reflection() {
+        let setup = "
+            S = zeros3(1, 2, 2);
+            S(1, 1, 2) = 1.0;
+            S(1, 2, 1) = 1.0;
+            s = sparameters(S, [1e9]);
+            g = gammaout(s, -0.2 + 0.5 * j);
+        ";
+        let ev = run(setup);
+        let g = extract_complex_vec(&ev, "g");
+        assert!((g[0].0 - (-0.2)).abs() < 1e-12);
+        assert!((g[0].1 - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gammain_accepts_per_frequency_vector() {
+        let setup = "
+            S = zeros3(3, 2, 2);
+            for k = 1:3
+              S(k, 1, 2) = 1.0;
+              S(k, 2, 1) = 1.0;
+            end
+            s = sparameters(S, [1e9, 2e9, 3e9]);
+            gl = [0.1, 0.2, 0.3];
+            g = gammain(s, gl);
+        ";
+        let ev = run(setup);
+        let g = extract_complex_vec(&ev, "g");
+        assert!((g[0].0 - 0.1).abs() < 1e-12);
+        assert!((g[1].0 - 0.2).abs() < 1e-12);
+        assert!((g[2].0 - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gammain_length_mismatch_errors() {
+        let setup = "
+            S = zeros3(3, 2, 2); for k = 1:3; S(k, 1, 2) = 1; S(k, 2, 1) = 1; end
+            s = sparameters(S, [1e9, 2e9, 3e9]);
+            g = gammain(s, [0.1, 0.2]);
+        ";
+        let err = run_err(setup);
+        assert!(err.contains("length"), "{err}");
+    }
+
+    #[test]
+    fn stabilityk_matched_pad_is_5_05() {
+        let ev = run(&format!("{ATT_10DB_SETUP}\n k = stabilityk(s);"));
+        for v in extract_real_vec(&ev, "k") {
+            assert!((v - 5.05).abs() < 1e-10, "K: {v}");
+        }
+    }
+
+    #[test]
+    fn stabilitymu_returns_tuple_of_two_vectors() {
+        // [mu1, mu2] = stabilitymu(s) — destructuring assignment per the
+        // existing convention used by bode/eig/etc.
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n [m1, m2] = stabilitymu(s);"
+        ));
+        let m1 = extract_real_vec(&ev, "m1");
+        let m2 = extract_real_vec(&ev, "m2");
+        for &v in &m1 {
+            assert!((v - 10.0).abs() < 1e-10, "µ1: {v}");
+        }
+        for &v in &m2 {
+            assert!((v - 10.0).abs() < 1e-10, "µ2: {v}");
+        }
+    }
+
+    #[test]
+    fn gammams_gammaml_matched_pad_is_origin() {
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n gs = gammams(s); gl = gammaml(s);"
+        ));
+        for (re, im) in extract_complex_vec(&ev, "gs") {
+            assert!(re.abs() < 1e-12 && im.abs() < 1e-12);
+        }
+        for (re, im) in extract_complex_vec(&ev, "gl") {
+            assert!(re.abs() < 1e-12 && im.abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn gainmax_matched_pad_is_minus_10dB() {
+        let ev = run(&format!("{ATT_10DB_SETUP}\n g = gainmax(s);"));
+        for v in extract_real_vec(&ev, "g") {
+            assert!((v - (-10.0)).abs() < 1e-6, "MAG: {v}");
+        }
+    }
+
+    #[test]
+    fn stability_circles_returns_tagged_struct() {
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n c = stability_circles(s, \"input\");"
+        ));
+        let cs_struct = match ev.get("c").unwrap() {
+            Value::Struct(f) => f.clone(),
+            other => panic!("expected struct, got {}", other.type_name()),
+        };
+        let kind = match cs_struct.get("__kind__").unwrap() {
+            Value::Str(s) => s.clone(),
+            _ => panic!("missing __kind__"),
+        };
+        let domain = match cs_struct.get("domain").unwrap() {
+            Value::Str(s) => s.clone(),
+            _ => panic!("missing domain"),
+        };
+        assert_eq!(kind, "stability_circles");
+        assert_eq!(domain, "source");
+    }
+
+    #[test]
+    fn stability_circles_rejects_unknown_type() {
+        let err = run_err(&format!(
+            "{ATT_10DB_SETUP}\n stability_circles(s, \"bogus\");"
+        ));
+        assert!(err.contains("unknown type"), "{err}");
+    }
+
+    #[test]
+    fn stability_circles_matched_pad_has_radius_10() {
+        // For the matched pad: Cs = 0, Rs = 10 (computed in the math layer's
+        // test). Verify the script-side struct exposes the same numbers.
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n c = stability_circles(s, \"input\"); r = c.radii;"
+        ));
+        let r = extract_real_vec(&ev, "r");
+        assert!((r[0] - 10.0).abs() < 1e-9, "radius: {}", r[0]);
+    }
+
+    #[test]
+    fn gain_circles_returns_tagged_struct() {
+        let ev = run(&format!(
+            "{ATT_10DB_SETUP}\n c = gain_circles(s, -15);"
+        ));
+        match ev.get("c").unwrap() {
+            Value::Struct(f) => {
+                let kind = match f.get("__kind__").unwrap() {
+                    Value::Str(s) => s.clone(),
+                    _ => panic!(),
+                };
+                assert_eq!(kind, "gain_circles");
+            }
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn smith_circle_adds_one_line_series_to_active_axes() {
+        // Lay down a Smith chart first, then overlay one circle. The figure
+        // should now have the 17 grid arcs + the smith data trace + one new
+        // circle line — total 19 series.
+        let setup = "
+            smith(0.5 + 0.0 * j);
+            smith_circle(0.0, 0.5, \"|Γ|=0.5\");
+        ";
+        run(setup);
+        let state = FIGURE.with(|f| f.borrow().clone());
+        let sp = state.current();
+        // 17 grid arcs + 1 data trace + 1 overlay = 19 series.
+        assert_eq!(sp.series.len(), 19);
+        let circle = sp.series.last().unwrap();
+        assert_eq!(circle.label, "|Γ|=0.5");
+        // The circle's x-data should oscillate between roughly -0.5 and 0.5.
+        let max_x = circle.x_data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_x = circle.x_data.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!((max_x - 0.5).abs() < 1e-9, "max_x: {max_x}");
+        assert!((min_x - (-0.5)).abs() < 1e-9, "min_x: {min_x}");
+    }
+
+    #[test]
+    fn smith_circle_rejects_negative_radius() {
+        let err = run_err("smith(0.5); smith_circle(0.0, -0.1);");
+        assert!(err.contains("non-negative"), "{err}");
+    }
+
+    #[test]
+    fn analysis_builtins_reject_non_2port_networks() {
+        let setup = "
+            S = zeros3(1, 3, 3); for k = 1:1; S(k, 1, 1) = 0.2; end
+            s3 = sparameters(S, [1e9]);
+        ";
+        for call in &[
+            "gammain(s3, 0.1)",
+            "gammaout(s3, 0.1)",
+            "stabilityk(s3)",
+            "stabilitymu(s3)",
+            "gammams(s3)",
+            "gammaml(s3)",
+            "gainmax(s3)",
+            "stability_circles(s3, \"input\")",
+            "gain_circles(s3, -10)",
+        ] {
+            let full = format!("{setup}\n {call};");
+            let err = run_err(&full);
+            assert!(
+                err.contains("2-port") || err.contains("requires"),
+                "expected 2-port rejection for {call}, got: {err}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod sparameters_phase6_tests {
+    //! Phase-6 script tests: interp_freq, noise parameters, s2td, mixed-mode,
+    //! and the v2 keyword tolerance.
+
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected error from: {src}"),
+            Err(e) => format!("{e}"),
+        }
+    }
+
+    fn extract_real_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{name}: expected vector, got {}", other.type_name()),
+        }
+    }
+
+    // ─── interp_freq ────────────────────────────────────────────────────────
+
+    #[test]
+    fn interp_freq_midpoint_is_arithmetic_mean() {
+        let src = "
+            S = zeros3(2, 2, 2);
+            S(1, 2, 1) = 0.5;
+            S(2, 2, 1) = 0.9;
+            s = sparameters(S, [1e9, 2e9]);
+            s_new = interp_freq(s, [1.5e9]);
+            v = s21(s_new)(1);
+        ";
+        let ev = run(src);
+        let re = match ev.get("v").unwrap() {
+            // Real-valued midpoint often gets promoted from Complex to Scalar
+            // by the indexing machinery; accept either.
+            Value::Complex(c) => {
+                assert!(c.im.abs() < 1e-12, "expected real, got {c}");
+                c.re
+            }
+            Value::Scalar(s) => *s,
+            other => panic!("v: got {}", other.type_name()),
+        };
+        assert!((re - 0.7).abs() < 1e-12, "interp midpoint: {re}");
+    }
+
+    #[test]
+    fn interp_freq_extrapolation_errors() {
+        let err = run_err(
+            "
+            S = zeros3(2, 2, 2);
+            s = sparameters(S, [1e9, 2e9]);
+            interp_freq(s, [0.5e9]);
+            ",
+        );
+        assert!(err.contains("outside source range"), "{err}");
+    }
+
+    #[test]
+    fn interp_freq_enables_cross_grid_cascade() {
+        // Two networks measured on different uniform grids can be unified
+        // via interp_freq and then cascaded.
+        let src = "
+            S1 = zeros3(3, 2, 2); for k = 1:3; S1(k, 1, 2) = 0.7; S1(k, 2, 1) = 0.7; end
+            S2 = zeros3(2, 2, 2); for k = 1:2; S2(k, 1, 2) = 0.8; S2(k, 2, 1) = 0.8; end
+            a = sparameters(S1, [1e9, 1.5e9, 2e9]);
+            b = sparameters(S2, [1e9, 2e9]);
+            b_unified = interp_freq(b, freqs(a));
+            c = cascade(a, b_unified);
+            v = abs(s21(c)(2));
+        ";
+        let ev = run(src);
+        match ev.get("v").unwrap() {
+            Value::Scalar(v) => {
+                // |S21|_combined = 0.7 * 0.8 = 0.56 for two matched attenuators
+                // (S11 = 0 case → cascade reduces to multiplication).
+                assert!((v - 0.7 * 0.8).abs() < 1e-9, "v: {v}");
+            }
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    // ─── Touchstone noise parameters + v2 tolerance ────────────────────────
+
+    #[test]
+    fn touchstone_v2_keyword_lines_parse_cleanly() {
+        let s2p = "\
+[Version] 2.0
+[Number of Ports] 2
+[Reference] 75
+# GHz S MA R 50
+1.0   0.5 30   1.0 -45   0.05 90   0.4 170
+[End]
+";
+        let path = std::env::temp_dir().join("rustlab_phase6_v2.s2p");
+        std::fs::write(&path, s2p).unwrap();
+        let p = path.to_string_lossy().replace('\\', "/");
+        let ev = run(&format!("s = sparameters(\"{p}\"); z = s.impedance;"));
+        match ev.get("z").unwrap() {
+            // [Reference] 75 overrides # R 50.
+            Value::Scalar(z) => assert_eq!(*z, 75.0),
+            other => panic!("got {}", other.type_name()),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn noise_block_exposes_nfmin_gamma_opt_rn() {
+        let s2p = "\
+# GHz S MA R 50
+1.0   0.1 0    0.9 -45   0.05 90   0.2 180
+2.0   0.1 0    0.9 -55   0.05 80   0.2 175
+1.0   1.5   0.4  20    0.10
+2.0   2.0   0.3  25    0.12
+";
+        let path = std::env::temp_dir().join("rustlab_phase6_noise.s2p");
+        std::fs::write(&path, s2p).unwrap();
+        let p = path.to_string_lossy().replace('\\', "/");
+        let src = format!(
+            "s = sparameters(\"{p}\");
+             has_n = has_noise(s);
+             nf = nfmin(s);
+             nfreqs = noise_freqs(s);
+             rn_v = rn(s);"
+        );
+        let ev = run(&src);
+        match ev.get("has_n").unwrap() {
+            Value::Bool(b) => assert!(*b),
+            other => panic!("got {}", other.type_name()),
+        }
+        let nf = extract_real_vec(&ev, "nf");
+        assert_eq!(nf, vec![1.5, 2.0]);
+        let nfreqs = extract_real_vec(&ev, "nfreqs");
+        assert!((nfreqs[0] - 1e9).abs() < 1e-3);
+        assert!((nfreqs[1] - 2e9).abs() < 1e-3);
+        let rn_v = extract_real_vec(&ev, "rn_v");
+        assert!((rn_v[0] - 0.10).abs() < 1e-12);
+        assert!((rn_v[1] - 0.12).abs() < 1e-12);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn has_noise_false_for_s_only_file() {
+        // The bundled examples file has no noise block.
+        let s2p = "\
+# GHz S MA R 50
+1.0   0.5 30   1.0 -45   0.05 90   0.4 170
+";
+        let path = std::env::temp_dir().join("rustlab_phase6_no_noise.s2p");
+        std::fs::write(&path, s2p).unwrap();
+        let p = path.to_string_lossy().replace('\\', "/");
+        let ev = run(&format!("s = sparameters(\"{p}\"); b = has_noise(s);"));
+        match ev.get("b").unwrap() {
+            Value::Bool(b) => assert!(!*b),
+            other => panic!("got {}", other.type_name()),
+        }
+        let err = run_err(&format!("s = sparameters(\"{p}\"); nfmin(s);"));
+        assert!(err.contains("no noise"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ─── s2td ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn s2td_returns_real_time_vector_of_length_2N() {
+        let src = "
+            % A flat S21 across 8 freq points → impulse response is a delta.
+            S = zeros3(8, 2, 2);
+            for k = 1:8
+              S(k, 2, 1) = 1.0;
+            end
+            s = sparameters(S, 1e9 * (1:8));
+            [t, y] = s2td(s, 2, 1, \"impulse\");
+        ";
+        let ev = run(src);
+        let t = extract_real_vec(&ev, "t");
+        let y = extract_real_vec(&ev, "y");
+        // 2N = 16 samples.
+        assert_eq!(t.len(), 16);
+        assert_eq!(y.len(), 16);
+        // Time vector starts at 0 and is uniformly spaced.
+        assert!(t[0].abs() < 1e-12);
+        let dt = t[1] - t[0];
+        for k in 1..t.len() {
+            assert!((t[k] - k as f64 * dt).abs() < 1e-9 * dt);
+        }
+    }
+
+    #[test]
+    fn s2td_step_mode_is_cumulative_sum_of_impulse() {
+        let src = "
+            S = zeros3(4, 2, 2);
+            for k = 1:4; S(k, 2, 1) = 0.5; end
+            s = sparameters(S, 1e9 * (1:4));
+            [_, h] = s2td(s, 2, 1, \"impulse\");
+            [_, st] = s2td(s, 2, 1, \"step\");
+            % Step should equal cumulative sum of impulse.
+            diff_last = st(8) - sum(h(1:8));
+        ";
+        let ev = run(src);
+        match ev.get("diff_last").unwrap() {
+            Value::Scalar(v) => assert!(v.abs() < 1e-12, "step-cumsum diff: {v}"),
+            Value::Complex(c) => assert!(c.norm() < 1e-12, "step-cumsum diff: {c}"),
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2td_rejects_non_uniform_grid() {
+        let src = "
+            S = zeros3(3, 2, 2); for k = 1:3; S(k, 2, 1) = 0.5; end
+            s = sparameters(S, [1e9, 1.5e9, 3e9]);  % non-uniform
+            s2td(s, 2, 1);
+        ";
+        let err = run_err(src);
+        assert!(err.contains("uniformly spaced"), "{err}");
+    }
+
+    // ─── Mixed-mode ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn s2smm_round_trip_through_smm2s() {
+        let src = "
+            S = zeros3(2, 4, 4);
+            for k = 1:2
+              for i = 1:4
+                for jj = 1:4
+                  S(k, i, jj) = 0.05 * (i + jj) + 0.01 * k;
+                end
+              end
+            end
+            s   = sparameters(S, [1e9, 2e9]);
+            smm = s2smm(s);
+            back = smm2s(smm);
+            d = abs(s11(back)(1) - s11(s)(1)) + abs(s11(back)(2) - s11(s)(2));
+        ";
+        let ev = run(src);
+        match ev.get("d").unwrap() {
+            Value::Scalar(v) => assert!(v.abs() < 1e-10, "round-trip diff: {v}"),
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2smm_tag_transitions_to_smm() {
+        let src = "
+            S = zeros3(1, 4, 4); for i = 1:4; S(1, i, i) = 0.1; end
+            s = sparameters(S, [1e9]);
+            mm = s2smm(s);
+            t = parameter_type(mm);
+        ";
+        let ev = run(src);
+        match ev.get("t").unwrap() {
+            Value::Str(s) => assert_eq!(s, "Smm"),
+            other => panic!("got {}", other.type_name()),
+        }
+    }
+
+    #[test]
+    fn s2smm_rejects_non_4port() {
+        let err = run_err(
+            "
+            S = zeros3(1, 2, 2); s = sparameters(S, [1e9]);
+            s2smm(s);
+            ",
+        );
+        assert!(err.contains("4-port"), "{err}");
+    }
+}

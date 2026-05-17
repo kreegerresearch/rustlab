@@ -7,6 +7,7 @@ pub mod file;
 pub mod html;
 pub mod live;
 pub mod quiver;
+pub mod smith;
 pub mod streamline;
 pub mod theme;
 #[cfg(feature = "viewer")]

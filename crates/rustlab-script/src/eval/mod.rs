@@ -3,7 +3,10 @@ pub mod output;
 pub mod parmap;
 pub mod profile;
 pub mod rng;
+pub mod sparam_analysis;
+pub mod sparam_conv;
 pub mod toml_io;
+pub mod touchstone;
 pub mod value;
 
 use crate::ast::{BinOp, Expr, Stmt, StmtKind};

@@ -1,0 +1,23 @@
+# Phase 1 — load a Touchstone .s2p file, inspect the network, print
+# |S21| (gain) in dB at each frequency.
+
+s = sparameters("data/lna_demo.s2p")    % path relative to this script's dir
+
+disp(s)                              % one-line summary
+n = nports(s)                        % port count (2)
+f = freqs(s)                         % real frequency vector (Hz)
+
+fprintf("Network has %d ports across %d frequencies\n", n, len(f))
+
+# Per-frequency gain (|S21| in dB) and input return loss (-20·log10(|S11|)).
+gain_db = mag2db(abs(s21(s)))
+rl_db   = -mag2db(abs(s11(s)))
+
+for k = 1:len(f)
+  fprintf("  f = %.2f GHz   |S21| = %+.2f dB   RL = %+.2f dB\n", ...
+          f(k) / 1e9, gain_db(k), rl_db(k))
+end
+
+# Field access works through normal struct syntax — the constructor returns
+# a plain Value::Struct with a __kind__ sentinel for Display tagging.
+fprintf("Reference impedance: Z0 = %g ohms\n", s.impedance)

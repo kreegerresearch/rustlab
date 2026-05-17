@@ -257,6 +257,57 @@ impl BuiltinRegistry {
         r.register("place", builtin_place);
         r.register("freqresp", builtin_freqresp);
         r.register("svd", builtin_svd);
+        // S-parameters (RF Toolbox — Phase 1: type + Touchstone I/O + inspection)
+        r.register("sparameters", builtin_sparameters);
+        r.register("nports", builtin_nports);
+        r.register("freqs", builtin_freqs);
+        r.register("sij", builtin_sij);
+        r.register("s11", builtin_s11);
+        r.register("s12", builtin_s12);
+        r.register("s21", builtin_s21);
+        r.register("s22", builtin_s22);
+        // S-parameters Phase 2: conversions + cascade + de-embed + renormalise
+        r.register("s2z", builtin_s2z);
+        r.register("z2s", builtin_z2s);
+        r.register("s2y", builtin_s2y);
+        r.register("y2s", builtin_y2s);
+        r.register("s2t", builtin_s2t);
+        r.register("t2s", builtin_t2s);
+        r.register("s2abcd", builtin_s2abcd);
+        r.register("abcd2s", builtin_abcd2s);
+        r.register("cascade", builtin_cascade);
+        r.register("deembed", builtin_deembed);
+        r.register("newref", builtin_newref);
+        r.register("parameter_type", builtin_parameter_type);
+        // S-parameters Phase 6: polish
+        r.register("interp_freq", builtin_interp_freq);
+        r.register("noise_freqs", builtin_noise_freqs);
+        r.register("nfmin", builtin_nfmin);
+        r.register("gamma_opt", builtin_gamma_opt);
+        r.register("rn", builtin_rn);
+        r.register("has_noise", builtin_has_noise);
+        r.register("s2td", builtin_s2td);
+        r.register("s2smm", builtin_s2smm);
+        r.register("smm2s", builtin_smm2s);
+        // S-parameters Phase 3: Smith chart plotting
+        r.register("smith", builtin_smith);
+        r.register("marker", builtin_marker);
+        // S-parameters Phase 4: network plots (mag/dB/phase/group-delay vs freq)
+        r.register("rfplot", builtin_rfplot);
+        // S-parameters Phase 5: analysis (VSWR, return loss, stability, gain)
+        r.register("vswr", builtin_vswr);
+        r.register("return_loss", builtin_return_loss);
+        r.register("insertion_loss", builtin_insertion_loss);
+        r.register("gammain", builtin_gammain);
+        r.register("gammaout", builtin_gammaout);
+        r.register("stabilityk", builtin_stabilityk);
+        r.register("stabilitymu", builtin_stabilitymu);
+        r.register("gammams", builtin_gammams);
+        r.register("gammaml", builtin_gammaml);
+        r.register("gainmax", builtin_gainmax);
+        r.register("stability_circles", builtin_stability_circles);
+        r.register("gain_circles", builtin_gain_circles);
+        r.register("smith_circle", builtin_smith_circle);
         // Struct construction
         r.register("struct", builtin_struct);
         // Type inspection
@@ -4939,6 +4990,45 @@ fn load_csv(path: &str) -> Result<Value, String> {
     }
 }
 
+// ── Touchstone (.sNp) save helper ──────────────────────────────────────────
+
+/// True if `path` looks like a Touchstone file extension (case-insensitive
+/// `.sNp` with N a positive integer).
+fn is_touchstone_extension(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let Some(dot) = lower.rfind('.') else {
+        return false;
+    };
+    let ext = &lower[dot + 1..];
+    if !ext.starts_with('s') || !ext.ends_with('p') || ext.len() < 3 {
+        return false;
+    }
+    ext[1..ext.len() - 1].parse::<usize>().is_ok()
+}
+
+/// Save an sparameters value as Touchstone v1.1.
+fn save_touchstone_value(path: &str, value: &Value) -> Result<(), String> {
+    let (ptype, n_ports, params, freqs, z0) = unpack_sparameters_typed("save", value)
+        .map_err(|e| format!("{e}"))?;
+    if ptype != "S" {
+        return Err(format!(
+            "save: Touchstone files only carry S-parameters (got {ptype}); convert with z2s/y2s/etc. first"
+        ));
+    }
+    let data = super::touchstone::TouchstoneData {
+        n_ports,
+        frequencies: freqs.iter().map(|c| c.re).collect(),
+        parameters: params.clone(),
+        z0,
+        // Phase 6: the writer doesn't yet round-trip noise data. Tag a
+        // None here so the file emits S-parameters only; if a caller has
+        // noise data, they get a clean S-only file (lossy for noise) rather
+        // than a parse error.
+        noise: None,
+    };
+    super::touchstone::write_touchstone(std::path::Path::new(path), &data)
+}
+
 // ── NPZ helpers ────────────────────────────────────────────────────────────
 
 fn save_npz(path: &str, pairs: &[Value]) -> Result<(), String> {
@@ -5030,6 +5120,14 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
             ));
         }
         write_csv(&path, &args[1]).map_err(|e| ScriptError::runtime(e))?;
+    } else if is_touchstone_extension(&path) {
+        if args.len() != 2 {
+            return Err(ScriptError::type_err(
+                "save: Touchstone .sNp format takes exactly one value (an sparameters network)"
+                    .to_string(),
+            ));
+        }
+        save_touchstone_value(&path, &args[1]).map_err(|e| ScriptError::runtime(e))?;
     } else {
         // .npy (or any other extension — default to NPY)
         if args.len() != 2 {
@@ -5818,7 +5916,7 @@ fn builtin_det(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// inv(M) — inverse of a square matrix via Gauss-Jordan elimination
-fn matrix_inv(m: &CMatrix) -> Result<CMatrix, String> {
+pub(super) fn matrix_inv(m: &CMatrix) -> Result<CMatrix, String> {
     let n = m.nrows();
     if n != m.ncols() {
         return Err(format!(
@@ -11429,3 +11527,1488 @@ fn builtin_sprand(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     Ok(Value::SparseMatrix(SparseMat::new(m, n, entries)))
 }
+
+// ─── S-parameters (Phases 1–2) ───────────────────────────────────────────────
+//
+// An N-port network is encoded as a `Value::Struct` with these fields:
+//   __kind__        : "sparameters"   (tagged-struct sentinel; Phase 1)
+//   parameter_type  : "S" | "Z" | "Y" | "T" | "ABCD"  (Phase 2 — default "S")
+//   parameters      : Tensor3, shape [n_freqs, n_ports, n_ports]
+//   frequencies     : real Vector, length n_freqs (Hz, strictly increasing)
+//   num_ports       : Scalar
+//   impedance       : Scalar (Phase 1/2 — Touchstone v1.1 carries one Z0)
+//
+// The double-underscore sentinel name mirrors the convention already used by
+// toml_io's Tensor3 round-trip keys. The "sparameters" name covers all
+// representations (S/Z/Y/...) — Display prefixes the appropriate label.
+
+pub(super) const SPARAM_KIND: &str = "sparameters";
+
+pub(super) fn build_sparameters_struct(
+    parameters: Array3<C64>,
+    freqs_real: Vec<f64>,
+    z0: f64,
+) -> Result<Value, ScriptError> {
+    build_sparameters_tagged(parameters, freqs_real, z0, "S")
+}
+
+pub(super) fn build_sparameters_tagged(
+    parameters: Array3<C64>,
+    freqs_real: Vec<f64>,
+    z0: f64,
+    parameter_type: &str,
+) -> Result<Value, ScriptError> {
+    let (n_freqs, n_rows, n_cols) = parameters.dim();
+    if n_rows != n_cols {
+        return Err(ScriptError::type_err(format!(
+            "sparameters: S array must be square in ports, got {}x{}",
+            n_rows, n_cols
+        )));
+    }
+    if freqs_real.len() != n_freqs {
+        return Err(ScriptError::type_err(format!(
+            "sparameters: frequencies length ({}) must equal n_freqs ({})",
+            freqs_real.len(),
+            n_freqs
+        )));
+    }
+    for w in freqs_real.windows(2) {
+        if !(w[1] > w[0]) {
+            return Err(ScriptError::type_err(
+                "sparameters: frequencies must be strictly increasing".to_string(),
+            ));
+        }
+    }
+    if !(z0 > 0.0) {
+        return Err(ScriptError::type_err(format!(
+            "sparameters: reference impedance must be positive, got {z0}"
+        )));
+    }
+    let freqs_c: CVector = Array1::from_iter(freqs_real.iter().map(|&f| Complex::new(f, 0.0)));
+
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    fields.insert("__kind__".to_string(), Value::Str(SPARAM_KIND.to_string()));
+    fields.insert(
+        "parameter_type".to_string(),
+        Value::Str(parameter_type.to_string()),
+    );
+    fields.insert("parameters".to_string(), Value::Tensor3(parameters));
+    fields.insert("frequencies".to_string(), Value::Vector(freqs_c));
+    fields.insert("num_ports".to_string(), Value::Scalar(n_rows as f64));
+    fields.insert("impedance".to_string(), Value::Scalar(z0));
+    Ok(Value::Struct(fields))
+}
+
+/// True iff `v` is a struct carrying the sparameters sentinel.
+pub fn is_sparameters(v: &Value) -> bool {
+    if let Value::Struct(fields) = v {
+        if let Some(Value::Str(s)) = fields.get("__kind__") {
+            return s == SPARAM_KIND;
+        }
+    }
+    false
+}
+
+fn unpack_sparameters<'a>(
+    name: &str,
+    v: &'a Value,
+) -> Result<(usize, &'a Array3<C64>, &'a CVector, f64), ScriptError> {
+    let (_t, n, p, f, z) = unpack_sparameters_typed(name, v)?;
+    Ok((n, p, f, z))
+}
+
+pub(super) fn unpack_sparameters_typed<'a>(
+    name: &str,
+    v: &'a Value,
+) -> Result<(String, usize, &'a Array3<C64>, &'a CVector, f64), ScriptError> {
+    let fields = match v {
+        Value::Struct(f) if is_sparameters(v) => f,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected an sparameters network, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let parameters = match fields.get("parameters") {
+        Some(Value::Tensor3(t)) => t,
+        _ => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: sparameters struct missing tensor3 field 'parameters'"
+            )))
+        }
+    };
+    let frequencies = match fields.get("frequencies") {
+        Some(Value::Vector(v)) => v,
+        _ => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: sparameters struct missing vector field 'frequencies'"
+            )))
+        }
+    };
+    let n_ports = match fields.get("num_ports") {
+        Some(Value::Scalar(n)) => *n as usize,
+        _ => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: sparameters struct missing scalar field 'num_ports'"
+            )))
+        }
+    };
+    let z0 = match fields.get("impedance") {
+        Some(Value::Scalar(z)) => *z,
+        _ => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: sparameters struct missing scalar field 'impedance'"
+            )))
+        }
+    };
+    // Default to "S" if the field is absent (e.g. Phase-1 structs created
+    // before the parameter_type field existed, or hand-built via struct()).
+    let ptype = match fields.get("parameter_type") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => "S".to_string(),
+    };
+    Ok((ptype, n_ports, parameters, frequencies, z0))
+}
+
+fn builtin_sparameters(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("sparameters", &args, 1, 3)?;
+
+    // (1) String → Touchstone file path
+    if args.len() == 1 {
+        if let Value::Str(path) = &args[0] {
+            let data = super::touchstone::read_touchstone(std::path::Path::new(path))
+                .map_err(|e| ScriptError::runtime(e))?;
+            let mut v =
+                build_sparameters_struct(data.parameters, data.frequencies, data.z0)?;
+            // Phase 6: attach noise-parameter fields if the file carried them.
+            if let Some(noise) = data.noise {
+                if let Value::Struct(ref mut fields) = v {
+                    let nfreqs_c: CVector = Array1::from_iter(
+                        noise.frequencies.iter().map(|&f| Complex::new(f, 0.0)),
+                    );
+                    let nfmin_c: CVector = Array1::from_iter(
+                        noise.nf_min_db.iter().map(|&v| Complex::new(v, 0.0)),
+                    );
+                    let gopt_c: CVector = Array1::from(noise.gamma_opt);
+                    let rn_c: CVector = Array1::from_iter(
+                        noise.rn_normalised.iter().map(|&v| Complex::new(v, 0.0)),
+                    );
+                    fields.insert("noise_frequencies".to_string(), Value::Vector(nfreqs_c));
+                    fields.insert("nf_min".to_string(), Value::Vector(nfmin_c));
+                    fields.insert("gamma_opt".to_string(), Value::Vector(gopt_c));
+                    fields.insert("rn".to_string(), Value::Vector(rn_c));
+                }
+            }
+            return Ok(v);
+        }
+        return Err(ScriptError::type_err(
+            "sparameters: 1-arg form expects a filename string".to_string(),
+        ));
+    }
+
+    // (2) sparameters(S, freqs)
+    // (3) sparameters(S, freqs, Z0)
+    let parameters = match &args[0] {
+        Value::Tensor3(t) => t.clone(),
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "sparameters: first argument must be a tensor3 of S parameters, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let freqs_vec = match &args[1] {
+        Value::Vector(v) => v.iter().map(|c| c.re).collect::<Vec<f64>>(),
+        Value::Scalar(s) => vec![*s],
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "sparameters: second argument must be a real frequency vector, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let z0 = if args.len() == 3 {
+        args[2].to_scalar().map_err(|e| {
+            ScriptError::type_err(format!("sparameters: bad reference impedance: {e}"))
+        })?
+    } else {
+        50.0
+    };
+    build_sparameters_struct(parameters, freqs_vec, z0)
+}
+
+fn builtin_nports(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("nports", &args, 1)?;
+    let (n, _, _, _) = unpack_sparameters("nports", &args[0])?;
+    Ok(Value::Scalar(n as f64))
+}
+
+fn builtin_freqs(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("freqs", &args, 1)?;
+    let (_, _, f, _) = unpack_sparameters("freqs", &args[0])?;
+    Ok(Value::Vector(f.clone()))
+}
+
+fn sij_slice(parameters: &Array3<C64>, i: usize, j: usize) -> CVector {
+    let n_freqs = parameters.shape()[0];
+    let mut out: Vec<C64> = Vec::with_capacity(n_freqs);
+    for k in 0..n_freqs {
+        out.push(parameters[[k, i, j]]);
+    }
+    Array1::from(out)
+}
+
+fn builtin_sij(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("sij", &args, 3)?;
+    let (n, parameters, _, _) = unpack_sparameters("sij", &args[0])?;
+    let i_one = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("sij: bad port index i: {e}")))?;
+    let j_one = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("sij: bad port index j: {e}")))?;
+    if !(1..=n).contains(&i_one) || !(1..=n).contains(&j_one) {
+        return Err(ScriptError::runtime(format!(
+            "sij: port indices (i={i_one}, j={j_one}) out of range 1..={n}"
+        )));
+    }
+    Ok(Value::Vector(sij_slice(parameters, i_one - 1, j_one - 1)))
+}
+
+fn sij_sugar(name: &str, args: Vec<Value>, i: usize, j: usize) -> Result<Value, ScriptError> {
+    check_args(name, &args, 1)?;
+    let (n, parameters, _, _) = unpack_sparameters(name, &args[0])?;
+    if n < i.max(j) {
+        return Err(ScriptError::runtime(format!(
+            "{name}: requires at least {}-port network, got {n}-port",
+            i.max(j)
+        )));
+    }
+    Ok(Value::Vector(sij_slice(parameters, i - 1, j - 1)))
+}
+
+fn builtin_s11(args: Vec<Value>) -> Result<Value, ScriptError> {
+    sij_sugar("s11", args, 1, 1)
+}
+fn builtin_s12(args: Vec<Value>) -> Result<Value, ScriptError> {
+    sij_sugar("s12", args, 1, 2)
+}
+fn builtin_s21(args: Vec<Value>) -> Result<Value, ScriptError> {
+    sij_sugar("s21", args, 2, 1)
+}
+fn builtin_s22(args: Vec<Value>) -> Result<Value, ScriptError> {
+    sij_sugar("s22", args, 2, 2)
+}
+
+// ─── S-parameters Phase 2: conversions + cascade + deembed + newref ──────────
+
+/// Generic conversion-builtin shell: unpack typed sparameters, run a
+/// closed-form converter on the parameter Tensor3, repack with a new tag.
+fn convert_builtin<F>(
+    name: &str,
+    new_tag: &str,
+    args: Vec<Value>,
+    expected_input_tag: Option<&str>,
+    op: F,
+) -> Result<Value, ScriptError>
+where
+    F: FnOnce(&Array3<C64>, f64) -> Result<Array3<C64>, String>,
+{
+    check_args(name, &args, 1)?;
+    let (ptype, _n, params, freqs, z0) = unpack_sparameters_typed(name, &args[0])?;
+    if let Some(want) = expected_input_tag {
+        if ptype != want {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected a {want}-parameter network, got {ptype}-parameters"
+            )));
+        }
+    }
+    let new_params = op(params, z0).map_err(|e| ScriptError::runtime(format!("{name}: {e}")))?;
+    let freqs_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    build_sparameters_tagged(new_params, freqs_real, z0, new_tag)
+}
+
+fn builtin_s2z(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("s2z", "Z", args, Some("S"), |p, z0| {
+        super::sparam_conv::s_to_z(p, z0)
+    })
+}
+fn builtin_z2s(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("z2s", "S", args, Some("Z"), |p, z0| {
+        super::sparam_conv::z_to_s(p, z0)
+    })
+}
+fn builtin_s2y(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("s2y", "Y", args, Some("S"), |p, z0| {
+        super::sparam_conv::s_to_y(p, z0)
+    })
+}
+fn builtin_y2s(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("y2s", "S", args, Some("Y"), |p, z0| {
+        super::sparam_conv::y_to_s(p, z0)
+    })
+}
+fn builtin_s2t(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("s2t", "T", args, Some("S"), |p, _z0| {
+        super::sparam_conv::s_to_t(p)
+    })
+}
+fn builtin_t2s(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("t2s", "S", args, Some("T"), |p, _z0| {
+        super::sparam_conv::t_to_s(p)
+    })
+}
+fn builtin_s2abcd(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("s2abcd", "ABCD", args, Some("S"), |p, z0| {
+        super::sparam_conv::s_to_abcd(p, z0)
+    })
+}
+fn builtin_abcd2s(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("abcd2s", "S", args, Some("ABCD"), |p, z0| {
+        super::sparam_conv::abcd_to_s(p, z0)
+    })
+}
+
+/// Single-ended 4-port → mixed-mode 4-port (Sdd / Sdc / Scd / Scc layout).
+/// Tag transitions S → Smm; pairing convention is (port1, port3) = diff pair 1,
+/// (port2, port4) = diff pair 2.
+fn builtin_s2smm(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("s2smm", "Smm", args, Some("S"), |p, _z0| {
+        super::sparam_conv::s_to_smm(p)
+    })
+}
+
+/// Mixed-mode 4-port → single-ended 4-port. Tag transitions Smm → S.
+fn builtin_smm2s(args: Vec<Value>) -> Result<Value, ScriptError> {
+    convert_builtin("smm2s", "S", args, Some("Smm"), |p, _z0| {
+        super::sparam_conv::smm_to_s(p)
+    })
+}
+
+fn builtin_newref(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("newref", &args, 2)?;
+    let (ptype, _n, params, freqs, z_old) = unpack_sparameters_typed("newref", &args[0])?;
+    if ptype != "S" {
+        return Err(ScriptError::type_err(format!(
+            "newref: input must be S-parameters (got {ptype})"
+        )));
+    }
+    let z_new = args[1]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("newref: bad new impedance: {e}")))?;
+    if !(z_new > 0.0) {
+        return Err(ScriptError::runtime(format!(
+            "newref: new reference impedance must be positive (got {z_new})"
+        )));
+    }
+    let new_params = super::sparam_conv::renormalise_s(params, z_old, z_new)
+        .map_err(|e| ScriptError::runtime(format!("newref: {e}")))?;
+    let freqs_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    // Build with the *new* Z0 in the impedance field.
+    build_sparameters_tagged(new_params, freqs_real, z_new, "S")
+}
+
+fn builtin_cascade(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.len() < 2 {
+        return Err(ScriptError::runtime(
+            "cascade: requires at least two sparameters networks".to_string(),
+        ));
+    }
+    // Validate every argument is S-typed sparameters; collect their parameter
+    // arrays and freqs to verify the grid matches.
+    let mut params_vec: Vec<Array3<C64>> = Vec::with_capacity(args.len());
+    let mut freqs_ref: Option<CVector> = None;
+    let mut z0_ref: Option<f64> = None;
+    for (idx, a) in args.iter().enumerate() {
+        let (ptype, _n, params, freqs, z0) =
+            unpack_sparameters_typed(&format!("cascade arg {}", idx + 1), a)?;
+        if ptype != "S" {
+            return Err(ScriptError::type_err(format!(
+                "cascade arg {}: expected S-parameters, got {ptype}",
+                idx + 1
+            )));
+        }
+        if let Some(f0) = &freqs_ref {
+            if f0.len() != freqs.len() {
+                return Err(ScriptError::runtime(format!(
+                    "cascade arg {}: frequency vector length differs from arg 1 ({} vs {})",
+                    idx + 1,
+                    freqs.len(),
+                    f0.len()
+                )));
+            }
+            for (k, (a, b)) in f0.iter().zip(freqs.iter()).enumerate() {
+                if (a.re - b.re).abs() > 1e-9 * a.re.abs().max(1.0) {
+                    return Err(ScriptError::runtime(format!(
+                        "cascade arg {}: frequency point {} differs from arg 1 ({} vs {})",
+                        idx + 1,
+                        k,
+                        b.re,
+                        a.re
+                    )));
+                }
+            }
+        } else {
+            freqs_ref = Some(freqs.clone());
+        }
+        if let Some(z) = z0_ref {
+            if (z - z0).abs() > 1e-12 {
+                return Err(ScriptError::runtime(format!(
+                    "cascade arg {}: reference impedance differs from arg 1 ({} vs {})",
+                    idx + 1,
+                    z0,
+                    z
+                )));
+            }
+        } else {
+            z0_ref = Some(z0);
+        }
+        params_vec.push(params.clone());
+    }
+    let cascaded = super::sparam_conv::cascade_s_chain(&params_vec)
+        .map_err(|e| ScriptError::runtime(format!("cascade: {e}")))?;
+    let freqs_real: Vec<f64> = freqs_ref.unwrap().iter().map(|c| c.re).collect();
+    build_sparameters_tagged(cascaded, freqs_real, z0_ref.unwrap(), "S")
+}
+
+fn builtin_deembed(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("deembed", &args, 3)?;
+    let (pt_m, _, p_m, freqs, z0) = unpack_sparameters_typed("deembed meas", &args[0])?;
+    let (pt_l, _, p_l, freqs_l, z0_l) = unpack_sparameters_typed("deembed left", &args[1])?;
+    let (pt_r, _, p_r, freqs_r, z0_r) = unpack_sparameters_typed("deembed right", &args[2])?;
+    for (label, tag) in [("meas", &pt_m), ("left", &pt_l), ("right", &pt_r)] {
+        if tag.as_str() != "S" {
+            return Err(ScriptError::type_err(format!(
+                "deembed {label}: expected S-parameters, got {tag}"
+            )));
+        }
+    }
+    if freqs.len() != freqs_l.len() || freqs.len() != freqs_r.len() {
+        return Err(ScriptError::runtime(
+            "deembed: meas/left/right frequency-vector lengths must match".to_string(),
+        ));
+    }
+    if (z0 - z0_l).abs() > 1e-12 || (z0 - z0_r).abs() > 1e-12 {
+        return Err(ScriptError::runtime(
+            "deembed: meas/left/right reference impedances must match".to_string(),
+        ));
+    }
+    let dut = super::sparam_conv::deembed_s(p_m, p_l, p_r)
+        .map_err(|e| ScriptError::runtime(format!("deembed: {e}")))?;
+    let freqs_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    build_sparameters_tagged(dut, freqs_real, z0, "S")
+}
+
+fn builtin_parameter_type(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("parameter_type", &args, 1)?;
+    let (ptype, _, _, _, _) = unpack_sparameters_typed("parameter_type", &args[0])?;
+    Ok(Value::Str(ptype))
+}
+
+/// Generic accessor for an optional noise-data field on the sparameters
+/// struct. Returns the bare vector if present, or a clear error if the
+/// network has no noise data (i.e. the file didn't carry a noise block).
+fn noise_field(name: &str, field: &str, v: &Value) -> Result<Value, ScriptError> {
+    let fields = match v {
+        Value::Struct(f) if is_sparameters(v) => f,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected an sparameters network, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    match fields.get(field) {
+        Some(val) => Ok(val.clone()),
+        None => Err(ScriptError::runtime(format!(
+            "{name}: this network has no noise-parameter data (the .s2p file did not include a noise block)"
+        ))),
+    }
+}
+
+fn builtin_noise_freqs(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("noise_freqs", &args, 1)?;
+    noise_field("noise_freqs", "noise_frequencies", &args[0])
+}
+
+fn builtin_nfmin(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("nfmin", &args, 1)?;
+    noise_field("nfmin", "nf_min", &args[0])
+}
+
+fn builtin_gamma_opt(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gamma_opt", &args, 1)?;
+    noise_field("gamma_opt", "gamma_opt", &args[0])
+}
+
+fn builtin_rn(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("rn", &args, 1)?;
+    noise_field("rn", "rn", &args[0])
+}
+
+fn builtin_has_noise(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("has_noise", &args, 1)?;
+    let fields = match &args[0] {
+        Value::Struct(f) if is_sparameters(&args[0]) => f,
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "has_noise: expected an sparameters network, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    Ok(Value::Bool(fields.contains_key("nf_min")))
+}
+
+/// `s2td(s, i, j)` / `s2td(s, i, j, "impulse"|"step")` — convert one Sij(f)
+/// trace to a time-domain impulse or step response via IFFT. The frequency
+/// grid must be uniformly spaced (interp_freq onto a uniform grid first if
+/// not). For a band-limited spectrum starting at f0 > 0 the result is the
+/// baseband-equivalent response (no DC extrapolation is performed).
+///
+/// Returns `[t, y]` where `t` is in seconds (length 2·N) and `y` is real.
+fn builtin_s2td(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("s2td", &args, 3, 4)?;
+    let (_, n_ports, params, freqs, _z0) = unpack_sparameters_typed("s2td", &args[0])?;
+    let i_one = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("s2td: i: {e}")))?;
+    let j_one = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("s2td: j: {e}")))?;
+    if !(1..=n_ports).contains(&i_one) || !(1..=n_ports).contains(&j_one) {
+        return Err(ScriptError::runtime(format!(
+            "s2td: port indices (i={i_one}, j={j_one}) out of range 1..={n_ports}"
+        )));
+    }
+    let mode = if args.len() == 4 {
+        let s = args[3]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(format!("s2td: mode: {e}")))?;
+        match s.to_ascii_lowercase().as_str() {
+            "impulse" => "impulse",
+            "step" => "step",
+            other => {
+                return Err(ScriptError::runtime(format!(
+                    "s2td: unknown mode \"{other}\" (expected \"impulse\" or \"step\")"
+                )))
+            }
+        }
+    } else {
+        "step"
+    };
+
+    // Uniform-grid check.
+    let f_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    let n = f_real.len();
+    if n < 2 {
+        return Err(ScriptError::runtime(
+            "s2td: need at least 2 frequency points".to_string(),
+        ));
+    }
+    let df = f_real[1] - f_real[0];
+    for k in 1..n {
+        let actual = f_real[k] - f_real[k - 1];
+        if (actual - df).abs() > 1e-6 * df.abs().max(1.0) {
+            return Err(ScriptError::runtime(format!(
+                "s2td: frequency grid must be uniformly spaced (df = {df} at start, {actual} between samples {} and {k}); use interp_freq onto a uniform grid first",
+                k - 1
+            )));
+        }
+    }
+
+    let sij = sij_slice(params, i_one - 1, j_one - 1);
+
+    // Build a 2N-point conjugate-symmetric spectrum so the IFFT yields a
+    // real signal. Layout:
+    //   X[0]      = sij[0]   (DC bin)
+    //   X[1..N]   = sij[1..N]
+    //   X[N]      = 0 + 0j   (Nyquist; assume band-limited)
+    //   X[N+1..2N] = conj(sij[1..N]) reversed
+    let big_n = 2 * n;
+    let mut spectrum = vec![Complex::new(0.0, 0.0); big_n];
+    spectrum[0] = sij[0];
+    for k in 1..n {
+        spectrum[k] = sij[k];
+        spectrum[big_n - k] = sij[k].conj();
+    }
+    // spectrum[N] stays 0+0j (Nyquist).
+
+    let spectrum_v: CVector = Array1::from(spectrum);
+    let time_complex =
+        rustlab_dsp::ifft(&spectrum_v).map_err(ScriptError::Dsp)?;
+
+    // Real part — the imaginary part should be near zero by construction.
+    let mut h_real: Vec<f64> = time_complex.iter().map(|c| c.re).collect();
+    // Re-scale: ifft already divides by N (or 2N), so the values are the
+    // impulse response samples directly.
+
+    if mode == "step" {
+        let mut acc = 0.0_f64;
+        for x in h_real.iter_mut() {
+            acc += *x;
+            *x = acc;
+        }
+    }
+
+    // Time vector: dt = 1 / (2N · df), total time T = 1/df.
+    let dt = 1.0 / (big_n as f64 * df);
+    let t: Vec<f64> = (0..big_n).map(|k| k as f64 * dt).collect();
+
+    Ok(Value::Tuple(vec![real_vector_value(t), real_vector_value(h_real)]))
+}
+
+/// `interp_freq(s, freqs_new)` — linearly interpolate an sparameters network
+/// onto a new frequency grid. Required for cascading two networks measured
+/// on different VNA sweeps and for unifying multiple measurements onto a
+/// common grid.
+fn builtin_interp_freq(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("interp_freq", &args, 2)?;
+    let (ptype, _n, params, freqs, z0) = unpack_sparameters_typed("interp_freq", &args[0])?;
+    if ptype != "S" {
+        return Err(ScriptError::type_err(format!(
+            "interp_freq: input must be S-parameters (got {ptype})"
+        )));
+    }
+    let freqs_old: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    let freqs_new: Vec<f64> = match &args[1] {
+        Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+        Value::Scalar(s) => vec![*s],
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "interp_freq: freqs_new must be a real vector, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let new_params = super::sparam_conv::interp_freq(params, &freqs_old, &freqs_new)
+        .map_err(|e| ScriptError::runtime(format!("interp_freq: {e}")))?;
+    build_sparameters_tagged(new_params, freqs_new, z0, "S")
+}
+
+// ─── S-parameters Phase 3: Smith chart plotting ──────────────────────────────
+//
+// Implementation strategy: the Smith grid is synthesized as a stack of
+// regular dashed line series with empty labels (suppressed from the legend
+// in every backend). Data traces are pushed as normal series. axis_equal +
+// xlim/ylim lock the unit-disk framing. Because the chart is just "line
+// series + axis_equal", every plot backend (terminal, SVG, PNG, HTML/Plotly,
+// LaTeX/PDF via SVG, animation GIF/HTML, live viewer) renders it correctly
+// with zero per-backend code.
+
+/// Push the grid arcs for `mode` as dashed line series with empty labels.
+/// Z and Y families render in distinguishable muted colors.
+fn push_smith_grid(mode: rustlab_plot::smith::SmithGrid) {
+    use rustlab_plot::smith::{build_grid, SmithFamily};
+    let grid = build_grid(mode, 96);
+    for arc in grid {
+        let color = match arc.family {
+            SmithFamily::Frame => SeriesColor::Rgb(120, 120, 120),
+            SmithFamily::Impedance => SeriesColor::Rgb(170, 170, 170),
+            SmithFamily::Admittance => SeriesColor::Rgb(120, 180, 200),
+        };
+        let style = match arc.family {
+            SmithFamily::Frame => LineStyle::Solid,
+            _ => LineStyle::Dashed,
+        };
+        let (xs, ys): (Vec<f64>, Vec<f64>) = arc.points.into_iter().unzip();
+        // Force hold=true around every grid push so the series accumulate
+        // rather than clearing. The caller resets hold after the data series
+        // land.
+        FIGURE.with(|fig| fig.borrow_mut().hold = true);
+        push_xy_line(xs, ys, "", "Smith Chart", Some(color), style);
+    }
+}
+
+/// Set the axis framing for a Smith chart panel: equal aspect + unit-disk
+/// bounds. Applied to the *current* subplot.
+fn finalize_smith_axes() {
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        fig.hold = false;
+        let sp = fig.current_mut();
+        sp.axis_equal = true;
+        sp.xlim = (Some(-1.1), Some(1.1));
+        sp.ylim = (Some(-1.1), Some(1.1));
+        if sp.title.is_empty() {
+            sp.title = "Smith Chart".to_string();
+        }
+        sp.xlabel = "Re(Γ)".to_string();
+        sp.ylabel = "Im(Γ)".to_string();
+    });
+}
+
+/// Push a complex reflection-coefficient vector as one data trace on the
+/// current Smith chart. Sets `hold = true` between the call and the next
+/// caller so chained `smith(...)` calls accumulate.
+fn push_smith_trace(gamma: &CVector, label: &str) {
+    let xs: Vec<f64> = gamma.iter().map(|c| c.re).collect();
+    let ys: Vec<f64> = gamma.iter().map(|c| c.im).collect();
+    FIGURE.with(|fig| fig.borrow_mut().hold = true);
+    push_xy_line(xs, ys, label, "Smith Chart", None, LineStyle::Solid);
+}
+
+/// Parse the optional `("grid", "Z" | "Y" | "ZY")` name-value pair from a
+/// trailing arg slice. Default: impedance grid.
+fn parse_smith_options(args: &[Value]) -> Result<rustlab_plot::smith::SmithGrid, ScriptError> {
+    use rustlab_plot::smith::SmithGrid;
+    let mut grid = SmithGrid::Impedance;
+    let mut i = 0;
+    while i < args.len() {
+        let key = args[i]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(format!("smith: option key: {e}")))?;
+        if i + 1 >= args.len() {
+            return Err(ScriptError::type_err(format!(
+                "smith: option '{key}' is missing its value"
+            )));
+        }
+        match key.as_str() {
+            "grid" => {
+                let v = args[i + 1].to_str().map_err(|e| {
+                    ScriptError::type_err(format!("smith: 'grid' value must be a string: {e}"))
+                })?;
+                grid = SmithGrid::parse(&v).ok_or_else(|| {
+                    ScriptError::runtime(format!(
+                        "smith: 'grid' must be one of \"Z\", \"Y\", \"ZY\" (got \"{v}\")"
+                    ))
+                })?;
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "smith: unknown option '{other}' (supported: \"grid\")"
+                )));
+            }
+        }
+        i += 2;
+    }
+    Ok(grid)
+}
+
+/// `smith(...)` — render a Smith chart of one or more reflection-coefficient
+/// traces. Calling forms:
+///   smith(s)                          — plot s11 (and s22 if 2-port)
+///   smith(s, i, j)                    — plot the specific port pair Sij
+///   smith(gamma)                      — plot a raw complex reflection vector
+///   smith(filename)                   — equivalent to smith(sparameters(filename))
+///   smith(..., "grid", "Z"|"Y"|"ZY")  — grid mode (default "Z")
+fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() {
+        return Err(ScriptError::runtime(
+            "smith: requires at least one argument".to_string(),
+        ));
+    }
+
+    // Split positional args from trailing name-value option pairs.
+    // The form `smith(s, "grid", "Z")` and `smith(s, i, j, "grid", "Z")` are
+    // both supported. Heuristic: pairs of (Str, *) at the tail are options.
+    let mut positional_end = args.len();
+    while positional_end >= 2 {
+        let key_idx = positional_end - 2;
+        if matches!(args[key_idx], Value::Str(_))
+            && ["grid"]
+                .iter()
+                .any(|k| args[key_idx].to_str().map(|s| s == *k).unwrap_or(false))
+        {
+            positional_end -= 2;
+        } else {
+            break;
+        }
+    }
+    let positional = &args[..positional_end];
+    let options = &args[positional_end..];
+    let grid_mode = parse_smith_options(options)?;
+
+    // Clear the current panel before laying down the grid (smith() is
+    // canonically a new-chart call, not an overlay-on-existing).
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        fig.hold = false;
+        fig.current_mut().series.clear();
+    });
+    push_smith_grid(grid_mode);
+
+    // Resolve positional args into one or more (label, gamma) traces.
+    let traces: Vec<(String, CVector)> = match positional.len() {
+        1 => match &positional[0] {
+            // String → Touchstone path
+            Value::Str(path) => {
+                let net = builtin_sparameters(vec![Value::Str(path.clone())])?;
+                smith_traces_from_network(&net, None)?
+            }
+            // Raw complex vector → single Γ trace
+            Value::Vector(v) => vec![("Γ".to_string(), v.clone())],
+            // Single complex scalar → 1-point trace (renders as a marker-
+            // like dot; useful for matching-network endpoints).
+            Value::Complex(c) => {
+                vec![("Γ".to_string(), Array1::from(vec![*c]))]
+            }
+            Value::Scalar(s) => {
+                vec![(
+                    "Γ".to_string(),
+                    Array1::from(vec![Complex::new(*s, 0.0)]),
+                )]
+            }
+            // Sparameters struct → s11 (and s22 if 2-port)
+            v if is_sparameters(v) => smith_traces_from_network(v, None)?,
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "smith: unsupported single argument type '{}'",
+                    other.type_name()
+                )))
+            }
+        },
+        3 => {
+            // smith(s, i, j) — specific port pair
+            if !is_sparameters(&positional[0]) {
+                return Err(ScriptError::type_err(format!(
+                    "smith: 3-arg form expects sparameters network, got {}",
+                    positional[0].type_name()
+                )));
+            }
+            let i = positional[1]
+                .to_usize()
+                .map_err(|e| ScriptError::type_err(format!("smith: i index: {e}")))?;
+            let j = positional[2]
+                .to_usize()
+                .map_err(|e| ScriptError::type_err(format!("smith: j index: {e}")))?;
+            smith_traces_from_network(&positional[0], Some(vec![(i, j)]))?
+        }
+        n => {
+            return Err(ScriptError::runtime(format!(
+                "smith: unsupported argument count {n} (expected 1 or 3 positional args + optional name-value pairs)"
+            )))
+        }
+    };
+
+    for (label, gamma) in traces {
+        push_smith_trace(&gamma, &label);
+    }
+    finalize_smith_axes();
+
+    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+/// Extract (label, gamma_vector) pairs from an sparameters struct. When
+/// `ports` is `None`, default to S11 (and S22 if 2-port).
+fn smith_traces_from_network(
+    v: &Value,
+    ports: Option<Vec<(usize, usize)>>,
+) -> Result<Vec<(String, CVector)>, ScriptError> {
+    let (_ptype, n_ports, params, _freqs, _z0) = unpack_sparameters_typed("smith", v)?;
+    let port_list = ports.unwrap_or_else(|| {
+        let mut p = vec![(1, 1)];
+        if n_ports >= 2 {
+            p.push((2, 2));
+        }
+        p
+    });
+    let mut traces = Vec::with_capacity(port_list.len());
+    for (i, j) in port_list {
+        if !(1..=n_ports).contains(&i) || !(1..=n_ports).contains(&j) {
+            return Err(ScriptError::runtime(format!(
+                "smith: port indices (i={i}, j={j}) out of range 1..={n_ports}"
+            )));
+        }
+        let label = format!("S{i}{j}");
+        let vec = sij_slice(params, i - 1, j - 1);
+        traces.push((label, vec));
+    }
+    Ok(traces)
+}
+
+// ─── S-parameters Phase 5: analysis (VSWR, return loss, stability, gain) ────
+
+fn real_vector_value(v: Vec<f64>) -> Value {
+    let cv: CVector = v
+        .into_iter()
+        .map(|x| Complex::new(x, 0.0))
+        .collect::<Vec<_>>()
+        .into();
+    Value::Vector(cv)
+}
+
+fn complex_vector_value(v: Vec<C64>) -> Value {
+    let cv: CVector = v.into();
+    Value::Vector(cv)
+}
+
+/// Extract a port index (1-based) from `args[idx]` and return the 0-based form,
+/// validated against `n_ports`.
+fn port_index(args: &[Value], idx: usize, name: &str, n_ports: usize) -> Result<usize, ScriptError> {
+    let p = args[idx]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("{name}: port index: {e}")))?;
+    if !(1..=n_ports).contains(&p) {
+        return Err(ScriptError::runtime(format!(
+            "{name}: port {p} out of range 1..={n_ports}"
+        )));
+    }
+    Ok(p - 1)
+}
+
+fn require_2port_analysis(name: &str, n_ports: usize) -> Result<(), ScriptError> {
+    if n_ports != 2 {
+        return Err(ScriptError::runtime(format!(
+            "{name}: requires a 2-port network (got {n_ports}-port)"
+        )));
+    }
+    Ok(())
+}
+
+fn builtin_vswr(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("vswr", &args, 2)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("vswr", &args[0])?;
+    let port_zero = port_index(&args, 1, "vswr", n_ports)?;
+    Ok(real_vector_value(super::sparam_analysis::vswr(
+        params, port_zero,
+    )))
+}
+
+fn builtin_return_loss(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("return_loss", &args, 2)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("return_loss", &args[0])?;
+    let port_zero = port_index(&args, 1, "return_loss", n_ports)?;
+    Ok(real_vector_value(
+        super::sparam_analysis::return_loss_db(params, port_zero),
+    ))
+}
+
+fn builtin_insertion_loss(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("insertion_loss", &args, 3)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("insertion_loss", &args[0])?;
+    let i_zero = port_index(&args, 1, "insertion_loss", n_ports)?;
+    let j_zero = port_index(&args, 2, "insertion_loss", n_ports)?;
+    Ok(real_vector_value(
+        super::sparam_analysis::insertion_loss_db(params, i_zero, j_zero),
+    ))
+}
+
+/// Coerce a gamma argument to a Vec<C64>: accepts a complex scalar, a real
+/// scalar, or a complex vector. The math layer handles broadcasting of
+/// length-1 input.
+fn coerce_gamma_arg(name: &str, v: &Value) -> Result<Vec<C64>, ScriptError> {
+    match v {
+        Value::Complex(c) => Ok(vec![*c]),
+        Value::Scalar(s) => Ok(vec![Complex::new(*s, 0.0)]),
+        Value::Vector(vec) => Ok(vec.iter().cloned().collect()),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: gamma must be complex, scalar, or vector (got {})",
+            other.type_name()
+        ))),
+    }
+}
+
+fn builtin_gammain(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gammain", &args, 2)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammain", &args[0])?;
+    require_2port_analysis("gammain", n_ports)?;
+    let gl = coerce_gamma_arg("gammain", &args[1])?;
+    let g = super::sparam_analysis::gamma_in(params, &gl)
+        .map_err(|e| ScriptError::runtime(e))?;
+    Ok(complex_vector_value(g))
+}
+
+fn builtin_gammaout(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gammaout", &args, 2)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammaout", &args[0])?;
+    require_2port_analysis("gammaout", n_ports)?;
+    let gs = coerce_gamma_arg("gammaout", &args[1])?;
+    let g = super::sparam_analysis::gamma_out(params, &gs)
+        .map_err(|e| ScriptError::runtime(e))?;
+    Ok(complex_vector_value(g))
+}
+
+fn builtin_stabilityk(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("stabilityk", &args, 1)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("stabilityk", &args[0])?;
+    require_2port_analysis("stabilityk", n_ports)?;
+    Ok(real_vector_value(super::sparam_analysis::stability_k(
+        params,
+    )))
+}
+
+/// `[mu1, mu2] = stabilitymu(s)` — multi-return tuple per the existing
+/// destructuring-assignment convention used by `bode`, `eig`, etc.
+fn builtin_stabilitymu(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("stabilitymu", &args, 1)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("stabilitymu", &args[0])?;
+    require_2port_analysis("stabilitymu", n_ports)?;
+    let (mu1, mu2) = super::sparam_analysis::stability_mu(params);
+    Ok(Value::Tuple(vec![real_vector_value(mu1), real_vector_value(mu2)]))
+}
+
+fn builtin_gammams(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gammams", &args, 1)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammams", &args[0])?;
+    require_2port_analysis("gammams", n_ports)?;
+    Ok(complex_vector_value(super::sparam_analysis::gamma_ms(
+        params,
+    )))
+}
+
+fn builtin_gammaml(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gammaml", &args, 1)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("gammaml", &args[0])?;
+    require_2port_analysis("gammaml", n_ports)?;
+    Ok(complex_vector_value(super::sparam_analysis::gamma_ml(
+        params,
+    )))
+}
+
+fn builtin_gainmax(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gainmax", &args, 1)?;
+    let (_, n_ports, params, _, _) = unpack_sparameters_typed("gainmax", &args[0])?;
+    require_2port_analysis("gainmax", n_ports)?;
+    Ok(real_vector_value(super::sparam_analysis::gain_max_db(
+        params,
+    )))
+}
+
+/// Tag a circles result so callers know what they got and `smith_circle`
+/// can render the family.
+const STAB_CIRCLES_KIND: &str = "stability_circles";
+const GAIN_CIRCLES_KIND: &str = "gain_circles";
+
+fn build_circles_struct(
+    kind: &str,
+    domain: &str,
+    centres: Vec<C64>,
+    radii: Vec<f64>,
+    freqs_real: Vec<f64>,
+) -> Value {
+    let mut fields: HashMap<String, Value> = HashMap::new();
+    fields.insert("__kind__".to_string(), Value::Str(kind.to_string()));
+    fields.insert("domain".to_string(), Value::Str(domain.to_string()));
+    fields.insert("centres".to_string(), complex_vector_value(centres));
+    let radii_c: CVector = radii
+        .into_iter()
+        .map(|r| Complex::new(r, 0.0))
+        .collect::<Vec<_>>()
+        .into();
+    fields.insert("radii".to_string(), Value::Vector(radii_c));
+    let freqs_c: CVector = freqs_real
+        .into_iter()
+        .map(|f| Complex::new(f, 0.0))
+        .collect::<Vec<_>>()
+        .into();
+    fields.insert("frequencies".to_string(), Value::Vector(freqs_c));
+    Value::Struct(fields)
+}
+
+fn builtin_stability_circles(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("stability_circles", &args, 2)?;
+    let (_, n_ports, params, freqs, _) =
+        unpack_sparameters_typed("stability_circles", &args[0])?;
+    require_2port_analysis("stability_circles", n_ports)?;
+    let kind = args[1]
+        .to_str()
+        .map_err(|e| ScriptError::type_err(format!("stability_circles: kind: {e}")))?;
+    let (circles, domain) = match kind.to_ascii_lowercase().as_str() {
+        "input" | "source" => (
+            super::sparam_analysis::input_stability_circles(params),
+            "source",
+        ),
+        "output" | "load" => (
+            super::sparam_analysis::output_stability_circles(params),
+            "load",
+        ),
+        other => {
+            return Err(ScriptError::runtime(format!(
+                "stability_circles: unknown type \"{other}\" (expected \"input\" or \"output\")"
+            )))
+        }
+    };
+    let freqs_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    Ok(build_circles_struct(
+        STAB_CIRCLES_KIND,
+        domain,
+        circles.centres,
+        circles.radii,
+        freqs_real,
+    ))
+}
+
+fn builtin_gain_circles(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("gain_circles", &args, 2)?;
+    let (_, n_ports, params, freqs, _) = unpack_sparameters_typed("gain_circles", &args[0])?;
+    require_2port_analysis("gain_circles", n_ports)?;
+    let gain_db = args[1]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("gain_circles: gain_db: {e}")))?;
+    let circles = super::sparam_analysis::gain_circles(params, gain_db);
+    let freqs_real: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    Ok(build_circles_struct(
+        GAIN_CIRCLES_KIND,
+        "load",
+        circles.centres,
+        circles.radii,
+        freqs_real,
+    ))
+}
+
+/// `smith_circle(centre, radius)` / `smith_circle(centre, radius, label)` —
+/// overlay a single parametric circle on the active Smith axes. Useful for
+/// drawing stability and gain circles individually, or for overlaying
+/// `stability_circles(...)` / `gain_circles(...)` results by iterating the
+/// struct's centres and radii vectors.
+fn builtin_smith_circle(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("smith_circle", &args, 2, 3)?;
+    // First arg: centre as complex scalar or 1-element vector.
+    let centre = match &args[0] {
+        Value::Complex(c) => *c,
+        Value::Scalar(s) => Complex::new(*s, 0.0),
+        Value::Vector(v) if v.len() == 1 => v[0],
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "smith_circle: centre must be complex scalar, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let radius = args[1]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("smith_circle: radius: {e}")))?;
+    if !radius.is_finite() || radius < 0.0 {
+        return Err(ScriptError::runtime(format!(
+            "smith_circle: radius must be finite and non-negative, got {radius}"
+        )));
+    }
+    let label = if args.len() == 3 {
+        args[2]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(format!("smith_circle: label: {e}")))?
+    } else {
+        String::new()
+    };
+
+    // Parametric circle: (cx + r cos θ, cy + r sin θ), θ ∈ [0, 2π].
+    let n = 96;
+    let mut xs = Vec::with_capacity(n + 1);
+    let mut ys = Vec::with_capacity(n + 1);
+    for k in 0..=n {
+        let t = (k as f64) / (n as f64) * std::f64::consts::TAU;
+        xs.push(centre.re + radius * t.cos());
+        ys.push(centre.im + radius * t.sin());
+    }
+    FIGURE.with(|fig| fig.borrow_mut().hold = true);
+    // Use solid lines so circles read as decoration distinct from the
+    // dashed-arc Smith grid.
+    push_xy_line(xs, ys, &label, "", None, LineStyle::Solid);
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+// ─── S-parameters Phase 4: rfplot — magnitude/phase/group-delay vs frequency ─
+
+/// Trace transform applied to a complex `Sij(f)` vector before plotting.
+#[derive(Debug, Clone, Copy)]
+enum RfTransform {
+    /// |Sij|, linear
+    Magnitude,
+    /// 20·log10(|Sij|), dB. Floored at -200 dB by `mag2db`.
+    Db,
+    /// arg(Sij) in degrees, wrapped to (-180, 180].
+    Phase,
+    /// Unwrapped arg(Sij) in degrees.
+    Unwrap,
+    /// Group delay -dφ/dω in seconds, via central difference on the
+    /// unwrapped phase.
+    GroupDelay,
+}
+
+impl RfTransform {
+    fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "magnitude" | "mag" | "linear" => Some(RfTransform::Magnitude),
+            "db" => Some(RfTransform::Db),
+            "phase" => Some(RfTransform::Phase),
+            "unwrap" => Some(RfTransform::Unwrap),
+            "groupdelay" | "group_delay" | "gd" => Some(RfTransform::GroupDelay),
+            _ => None,
+        }
+    }
+
+    fn y_axis_label(self) -> &'static str {
+        match self {
+            RfTransform::Magnitude => "|Sij|",
+            RfTransform::Db => "|Sij| (dB)",
+            RfTransform::Phase => "arg(Sij) (deg)",
+            RfTransform::Unwrap => "unwrapped arg(Sij) (deg)",
+            RfTransform::GroupDelay => "group delay (s)",
+        }
+    }
+}
+
+/// Unwrap a phase vector (in radians) in-place via the canonical 2π-jump
+/// rule: any sample whose delta from the previous sample exceeds ±π gets
+/// shifted by ∓2π. Operates on the running cumulative correction so the
+/// transform is monotonic.
+fn unwrap_phase_rad(phi: &mut [f64]) {
+    if phi.len() < 2 {
+        return;
+    }
+    let mut correction = 0.0;
+    for k in 1..phi.len() {
+        let d = phi[k] + correction - phi[k - 1];
+        if d > std::f64::consts::PI {
+            correction -= 2.0 * std::f64::consts::PI;
+        } else if d < -std::f64::consts::PI {
+            correction += 2.0 * std::f64::consts::PI;
+        }
+        phi[k] += correction;
+    }
+}
+
+/// Group delay τ_g(f) = -dφ/dω via central difference on the unwrapped
+/// phase. Endpoints use forward/backward differences. `f` is in Hz; output
+/// is in seconds.
+fn group_delay_seconds(f: &[f64], phi_unwrapped_rad: &[f64]) -> Vec<f64> {
+    let n = f.len();
+    let mut out = vec![0.0_f64; n];
+    if n < 2 {
+        return out;
+    }
+    let tau = std::f64::consts::TAU;
+    for k in 0..n {
+        let (df, dphi) = if k == 0 {
+            (f[1] - f[0], phi_unwrapped_rad[1] - phi_unwrapped_rad[0])
+        } else if k == n - 1 {
+            (
+                f[n - 1] - f[n - 2],
+                phi_unwrapped_rad[n - 1] - phi_unwrapped_rad[n - 2],
+            )
+        } else {
+            (
+                f[k + 1] - f[k - 1],
+                phi_unwrapped_rad[k + 1] - phi_unwrapped_rad[k - 1],
+            )
+        };
+        let domega = tau * df;
+        out[k] = if domega.abs() > 0.0 {
+            -dphi / domega
+        } else {
+            0.0
+        };
+    }
+    out
+}
+
+/// Build the y-vector for one (transform, S_ij(f), f) trace.
+fn transform_trace(t: RfTransform, sij: &CVector, freqs_hz: &[f64]) -> Vec<f64> {
+    match t {
+        RfTransform::Magnitude => sij.iter().map(|c| c.norm()).collect(),
+        RfTransform::Db => sij
+            .iter()
+            .map(|c| {
+                let m = c.norm();
+                if m <= 1e-10 {
+                    -200.0
+                } else {
+                    20.0 * m.log10()
+                }
+            })
+            .collect(),
+        RfTransform::Phase => sij
+            .iter()
+            .map(|c| c.arg().to_degrees())
+            .collect(),
+        RfTransform::Unwrap => {
+            let mut phi: Vec<f64> = sij.iter().map(|c| c.arg()).collect();
+            unwrap_phase_rad(&mut phi);
+            phi.into_iter().map(|p| p.to_degrees()).collect()
+        }
+        RfTransform::GroupDelay => {
+            let mut phi: Vec<f64> = sij.iter().map(|c| c.arg()).collect();
+            unwrap_phase_rad(&mut phi);
+            group_delay_seconds(freqs_hz, &phi)
+        }
+    }
+}
+
+/// Push one rfplot trace into the current panel using `semilogx` so the
+/// frequency axis is logarithmic — the canonical RF convention.
+fn push_rf_trace(
+    freqs_hz: &[f64],
+    sij: &CVector,
+    transform: RfTransform,
+    label: &str,
+    panel_title: &str,
+) -> Result<(), ScriptError> {
+    let y: Vec<f64> = transform_trace(transform, sij, freqs_hz);
+    let x_c: CVector = freqs_hz
+        .iter()
+        .map(|&f| Complex::new(f, 0.0))
+        .collect::<Vec<_>>()
+        .into();
+    let y_c: CVector = y
+        .iter()
+        .map(|&v| Complex::new(v, 0.0))
+        .collect::<Vec<_>>()
+        .into();
+    // semilogx clears + plots; mark hold so additional traces in the same
+    // panel stack instead of replacing.
+    builtin_semilogx(vec![
+        Value::Vector(x_c),
+        Value::Vector(y_c),
+        Value::Str("label".to_string()),
+        Value::Str(label.to_string()),
+    ])?;
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        let sp = fig.current_mut();
+        if sp.title.is_empty() {
+            sp.title = panel_title.to_string();
+        }
+        sp.xlabel = "log10(freq) (Hz)".to_string();
+        sp.ylabel = transform.y_axis_label().to_string();
+    });
+    Ok(())
+}
+
+/// `rfplot(...)` — magnitude / dB / phase / unwrap / group-delay traces vs
+/// frequency on a log-x axis. Calling forms:
+///   rfplot(s)                          — 2x2 review panel of a 2-port: |S11| dB,
+///                                         |S21| dB, |S12| dB, |S22| dB (log-x).
+///                                         For non-2-port networks, falls back
+///                                         to a single |S11| dB trace.
+///   rfplot(s, "db", i, j)              — single trace, dB
+///   rfplot(s, "magnitude", i, j)       — single trace, linear |Sij|
+///   rfplot(s, "phase", i, j)           — wrapped phase (deg)
+///   rfplot(s, "unwrap", i, j)          — unwrapped phase (deg)
+///   rfplot(s, "groupdelay", i, j)      — group delay (s)
+fn builtin_rfplot(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() {
+        return Err(ScriptError::runtime(
+            "rfplot: requires at least one argument".to_string(),
+        ));
+    }
+    // Default form: rfplot(s)
+    if args.len() == 1 {
+        let v = &args[0];
+        let (_ptype, n_ports, params, freqs, _z0) = unpack_sparameters_typed("rfplot", v)?;
+        let freqs_hz: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+        });
+        if n_ports >= 2 {
+            // Standard 2x2 review layout, matching the convention every RF
+            // tool uses:
+            //   [ S11   S21 ]   <- input return loss | forward gain
+            //   [ S12   S22 ]   <- reverse isolation | output return loss
+            // Tuple is (i_port, j_port, panel_idx, title). i is the
+            // *output* port, j is the *input* — so S21 = sij(s, 2, 1).
+            let panels = [
+                (1, 1, 1, "|S11| (dB)"),
+                (2, 1, 2, "|S21| (dB)"),
+                (1, 2, 3, "|S12| (dB)"),
+                (2, 2, 4, "|S22| (dB)"),
+            ];
+            for &(i, j, panel_idx, title) in &panels {
+                FIGURE.with(|fig| fig.borrow_mut().set_subplot(2, 2, panel_idx));
+                let trace = sij_slice(params, i - 1, j - 1);
+                push_rf_trace(
+                    &freqs_hz,
+                    &trace,
+                    RfTransform::Db,
+                    &format!("S{}{}", i, j),
+                    title,
+                )?;
+            }
+        } else {
+            // N-port (or 1-port): single S11 dB trace.
+            let trace = sij_slice(params, 0, 0);
+            push_rf_trace(
+                &freqs_hz,
+                &trace,
+                RfTransform::Db,
+                "S11",
+                "|S11| (dB)",
+            )?;
+        }
+        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        sync_figure_outputs();
+        return Ok(Value::None);
+    }
+
+    // Single-trace form: rfplot(s, kind, i, j)
+    if args.len() != 4 {
+        return Err(ScriptError::runtime(format!(
+            "rfplot: expected 1 or 4 arguments, got {}",
+            args.len()
+        )));
+    }
+    let v = &args[0];
+    let (_ptype, n_ports, params, freqs, _z0) = unpack_sparameters_typed("rfplot", v)?;
+    let kind_str = args[1]
+        .to_str()
+        .map_err(|e| ScriptError::type_err(format!("rfplot: kind: {e}")))?;
+    let transform = RfTransform::parse(&kind_str).ok_or_else(|| {
+        ScriptError::runtime(format!(
+            "rfplot: unknown trace kind \"{kind_str}\" (expected magnitude, db, phase, unwrap, or groupdelay)"
+        ))
+    })?;
+    let i = args[2]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("rfplot: i index: {e}")))?;
+    let j = args[3]
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("rfplot: j index: {e}")))?;
+    if !(1..=n_ports).contains(&i) || !(1..=n_ports).contains(&j) {
+        return Err(ScriptError::runtime(format!(
+            "rfplot: port indices (i={i}, j={j}) out of range 1..={n_ports}"
+        )));
+    }
+    let freqs_hz: Vec<f64> = freqs.iter().map(|c| c.re).collect();
+    let trace = sij_slice(params, i - 1, j - 1);
+    let label = format!("S{i}{j}");
+    let panel_title = match transform {
+        RfTransform::Magnitude => format!("|S{i}{j}|"),
+        RfTransform::Db => format!("|S{i}{j}| (dB)"),
+        RfTransform::Phase => format!("arg(S{i}{j}) (deg)"),
+        RfTransform::Unwrap => format!("unwrapped arg(S{i}{j}) (deg)"),
+        RfTransform::GroupDelay => format!("group delay S{i}{j} (s)"),
+    };
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        fig.reset();
+    });
+    push_rf_trace(&freqs_hz, &trace, transform, &label, &panel_title)?;
+    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+    Ok(Value::None)
+}
+
+/// `marker(gamma, label)` — drop a labelled scatter point on the active
+/// Smith axes. Useful for matching-network design markers, intermediate
+/// impedance flags, or load-pull contour vertices.
+fn builtin_marker(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("marker", &args, 1, 2)?;
+    let gamma_c = match &args[0] {
+        Value::Complex(c) => *c,
+        Value::Scalar(s) => Complex::new(*s, 0.0),
+        Value::Vector(v) if v.len() == 1 => v[0],
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "marker: first argument must be a complex reflection coefficient, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let label = if args.len() == 2 {
+        args[1]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(format!("marker: label: {e}")))?
+    } else {
+        String::new()
+    };
+    FIGURE.with(|fig| fig.borrow_mut().hold = true);
+    push_xy_scatter(vec![gamma_c.re], vec![gamma_c.im], &label, "", None);
+    Ok(Value::None)
+}
+
+

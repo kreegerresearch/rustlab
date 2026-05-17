@@ -1,0 +1,58 @@
+# Phase 5 — full amplifier stability + gain report.
+#
+# Loads a 2-port .s2p, computes the standard suite of stability and gain
+# metrics per frequency, prints a tabulated report, then overlays input and
+# output stability circles on a Smith chart.
+
+s = sparameters("data/lna_demo.s2p")
+f = freqs(s)
+
+# Tabulated per-frequency report.
+K   = stabilityk(s)
+[m1, m2] = stabilitymu(s)
+gms = gammams(s)
+gml = gammaml(s)
+mag = gainmax(s)
+v1  = vswr(s, 1)
+v2  = vswr(s, 2)
+rl1 = return_loss(s, 1)
+rl2 = return_loss(s, 2)
+il  = insertion_loss(s, 2, 1)
+
+fprintf("\n%-6s  %6s  %6s  %6s  %6s  %6s  %7s  %7s  %7s\n", ...
+        "f/GHz", "K", "mu1", "mu2", "VSWR1", "VSWR2", "RL1/dB", "RL2/dB", "MAG/dB")
+fprintf("%s\n", "------------------------------------------------------------------------")
+for k = 1:len(f)
+  fprintf("%-6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %6.2f  %7.2f  %7.2f  %7.2f\n", ...
+          f(k) / 1e9, K(k), m1(k), m2(k), v1(k), v2(k), rl1(k), rl2(k), mag(k))
+end
+
+fprintf("\nForward insertion loss |S21| (dB):\n")
+for k = 1:len(f)
+  fprintf("  f = %.2f GHz   |S21| = %+.2f dB\n", f(k) / 1e9, -il(k))
+end
+
+# Simultaneous-conjugate-match terminations (only meaningful where K > 1).
+fprintf("\nSimultaneous conjugate match terminations:\n")
+for k = 1:len(f)
+  fprintf("  f = %.2f GHz   Gamma_s = %.3f+%.3fj   |Gamma_s| = %.3f\n", ...
+          f(k) / 1e9, real(gms(k)), imag(gms(k)), abs(gms(k)))
+  fprintf("                 Gamma_l = %.3f+%.3fj   |Gamma_l| = %.3f\n", ...
+          real(gml(k)), imag(gml(k)), abs(gml(k)))
+end
+
+# Smith chart with input stability circles overlaid (one circle per frequency).
+% Drawing the load-stability circles is symmetric — same pattern.
+in_circles = stability_circles(s, "input")
+% Pull the struct fields into vectors first — `struct.field(k)` is parsed as
+% a call to a function named `field`, not as field-access + index.
+cs = in_circles.centres
+rs = in_circles.radii
+figure()
+smith(s)
+marker(0, "matched")
+for k = 1:len(f)
+  smith_circle(cs(k), real(rs(k)), "")
+end
+savefig("amp_stability.svg")
+savefig("amp_stability.html")

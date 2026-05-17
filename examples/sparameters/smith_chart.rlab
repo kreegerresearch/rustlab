@@ -1,0 +1,26 @@
+# Phase 3 — Smith chart plotting.
+#
+# Loads a Touchstone .s2p, draws S11 and S22 on an impedance Smith chart,
+# saves to SVG / PNG / HTML. The grid is rendered automatically.
+
+s = sparameters("data/lna_demo.s2p")
+
+# Default form: plots S11 (and S22 if 2-port) on a Z-grid Smith chart.
+smith(s)
+
+# A few annotation markers for the matched-load (centre), short (-1+0j),
+# and open (+1+0j) reference points.
+marker(0, "matched")
+marker(-1, "short")
+marker(1, "open")
+
+savefig("smith_lna.svg")
+savefig("smith_lna.png")
+savefig("smith_lna.html")
+
+# Second figure: same network on an immittance (ZY overlay) grid.
+# Useful for matching-network design where you want to read both Z and Y
+# values off the same chart.
+figure()
+smith(s, "grid", "ZY")
+savefig("smith_lna_zy.svg")

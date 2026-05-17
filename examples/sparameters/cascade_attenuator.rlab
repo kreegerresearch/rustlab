@@ -1,0 +1,66 @@
+# Phase 2 — build a 10 dB matched attenuator from scratch, cascade it with
+# itself to verify the math (20 dB total, S11 still matched), then convert
+# to ABCD to confirm the lumped-pi-network interpretation.
+
+# A matched 10 dB attenuator: S11 = S22 = 0, |S21| = |S12| = 10^(-10/20).
+loss_db = 10
+mag     = 10 ^ (-loss_db / 20)
+
+S = zeros3(3, 2, 2)
+for k = 1:3
+  S(k, 1, 2) = mag
+  S(k, 2, 1) = mag
+end
+f   = [1e9, 2e9, 3e9]
+att = sparameters(S, f)
+disp(att)
+
+# Cascade two of them -> 20 dB total. T-parameters multiply under cascade.
+pair = cascade(att, att)
+disp(pair)
+
+fprintf("|S21| of single pad : %.4f  (%.2f dB)\n", abs(s21(att)(1)), mag2db(abs(s21(att)(1))))
+fprintf("|S21| of pad x 2    : %.4f  (%.2f dB)\n", abs(s21(pair)(1)), mag2db(abs(s21(pair)(1))))
+fprintf("|S11| of pad x 2    : %.2e (matched -> ~0)\n", abs(s11(pair)(1)))
+
+# Round-trip through every conversion -> identity within numerical noise.
+z = s2z(att)
+y = s2y(att)
+t = s2t(att)
+a = s2abcd(att)
+
+fprintf("\nParameter-type tags after each conversion:\n")
+fprintf("  s2z(att)    -> %s\n", parameter_type(z))
+fprintf("  s2y(att)    -> %s\n", parameter_type(y))
+fprintf("  s2t(att)    -> %s\n", parameter_type(t))
+fprintf("  s2abcd(att) -> %s\n", parameter_type(a))
+
+% S -> Z -> S round-trip
+back = z2s(z)
+diff = abs(s21(back)(1) - s21(att)(1))
+fprintf("\nS -> Z -> S round-trip |diff| at f1 = %.2e\n", diff)
+
+# De-embedding demo: build a 'measurement' that contains the DUT in the
+# middle of two known fixtures, then recover the DUT.
+L_S = zeros3(3, 2, 2)
+R_S = zeros3(3, 2, 2)
+D_S = zeros3(3, 2, 2)
+for k = 1:3
+  L_S(k, 1, 2) = 10 ^ (-3 / 20); L_S(k, 2, 1) = 10 ^ (-3 / 20)  % 3 dB left
+  D_S(k, 1, 2) = 10 ^ (-6 / 20); D_S(k, 2, 1) = 10 ^ (-6 / 20)  % 6 dB DUT
+  R_S(k, 1, 2) = 10 ^ (-2 / 20); R_S(k, 2, 1) = 10 ^ (-2 / 20)  % 2 dB right
+end
+L    = sparameters(L_S, f)
+D    = sparameters(D_S, f)
+R    = sparameters(R_S, f)
+meas = cascade(L, D, R)
+dut  = deembed(meas, L, R)
+
+fprintf("\nDe-embedding: synthetic DUT |S21| = %.4f, recovered |S21| = %.4f\n", ...
+        abs(s21(D)(1)), abs(s21(dut)(1)))
+
+# Renormalise from 50 Ω to 75 Ω and back -> identity.
+att75 = newref(att, 75)
+fprintf("After newref(att, 75): Z0 = %g ohms (was %g)\n", att75.impedance, att.impedance)
+att_back = newref(att75, 50)
+fprintf("Round-trip 50 -> 75 -> 50  |S21 diff| = %.2e\n", abs(s21(att_back)(1) - s21(att)(1)))
