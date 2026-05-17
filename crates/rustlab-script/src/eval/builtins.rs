@@ -12121,19 +12121,24 @@ fn builtin_s2td(args: Vec<Value>) -> Result<Value, ScriptError> {
     let sij = sij_slice(params, i_one - 1, j_one - 1);
 
     // Build a 2N-point conjugate-symmetric spectrum so the IFFT yields a
-    // real signal. Layout:
+    // real signal. Layout (for spectrum length L):
     //   X[0]      = sij[0]   (DC bin)
     //   X[1..N]   = sij[1..N]
-    //   X[N]      = 0 + 0j   (Nyquist; assume band-limited)
-    //   X[N+1..2N] = conj(sij[1..N]) reversed
-    let big_n = 2 * n;
+    //   X[N..L-N+1] = 0 + 0j (Nyquist + zero-padding for length round-up)
+    //   X[L-N+1..L] = conj(sij[1..N]) reversed
+    // Rustlab's `ifft` requires a power-of-two length, so round 2N up to
+    // the next power of two — the zero-padding doesn't change which
+    // frequencies are represented, it just gives the time signal finer
+    // time resolution.
+    let min_len = 2 * n;
+    let big_n = min_len.next_power_of_two();
     let mut spectrum = vec![Complex::new(0.0, 0.0); big_n];
     spectrum[0] = sij[0];
     for k in 1..n {
         spectrum[k] = sij[k];
         spectrum[big_n - k] = sij[k].conj();
     }
-    // spectrum[N] stays 0+0j (Nyquist).
+    // spectrum[N..big_n-N+1] stays 0+0j (Nyquist + zero padding).
 
     let spectrum_v: CVector = Array1::from(spectrum);
     let time_complex =

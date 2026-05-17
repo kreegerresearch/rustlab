@@ -1,0 +1,65 @@
+# Phase 6 — polish features: interp_freq, noise parameters, s2td (TDR),
+# and mixed-mode 4-port conversion.
+
+s = sparameters("data/lna_demo.s2p")
+disp(s)
+
+# ─── 1. interp_freq — unify two networks measured on different freq grids ──
+# The bundled LNA was swept at 1 GHz intervals. Re-cast it onto a finer 200 MHz
+# grid so we can cascade it with a network measured on that grid.
+f_fine = linspace(1e9, 6e9, 26)         % 26 points × 200 MHz spacing
+s_fine = interp_freq(s, f_fine)
+fprintf("Original sweep: %d points\n", len(freqs(s)))
+fprintf("Interpolated:   %d points\n", len(freqs(s_fine)))
+fprintf("|S21| at 2.5 GHz (interpolated, dB): %.2f\n", ...
+        mag2db(abs(s21(s_fine)(8))))
+
+# ─── 2. Noise parameters — pulled automatically from the Touchstone block ──
+sn = sparameters("data/lna_with_noise.s2p")
+has_n = has_noise(sn)
+if has_n
+  fprintf("\nNoise data present: yes\n")
+  nf_freqs = noise_freqs(sn)
+  nf       = nfmin(sn)
+  go       = gamma_opt(sn)
+  rn_v     = rn(sn)
+  fprintf("\n%-6s  %8s  %16s  %6s\n", "f/GHz", "NFmin/dB", "Γopt", "Rn/Z0")
+  for k = 1:len(nf_freqs)
+    fprintf("%-6.2f  %8.2f  %6.2f∠%5.1f°  %6.3f\n", ...
+            nf_freqs(k)/1e9, nf(k), abs(go(k)), angle(go(k))*180/pi, rn_v(k))
+  end
+else
+  fprintf("\nNoise data present: no\n")
+end
+
+# ─── 3. s2td — TDR-style step response via IFFT ──────────────────────────
+# Frequency grid must be uniform; the interpolated network already is.
+[t, step]    = s2td(s_fine, 2, 1, "step")
+[t_imp, imp] = s2td(s_fine, 2, 1, "impulse")
+fprintf("\nTime-domain S21 response: %d samples at dt = %.2f ps\n", ...
+        len(t), (t(2) - t(1)) * 1e12)
+
+# ─── 4. Mixed-mode — single-ended 4-port → differential / common ──────────
+# Build a simple 4-port "differential pair" inline: ports (1,3) = diff in,
+# ports (2,4) = diff out. Mostly-symmetric transmission with small cross-
+# coupling to make the mixed-mode output non-trivial.
+S = zeros3(2, 4, 4)
+for k = 1:2
+  for i = 1:4; S(k, i, i) = 0.10; end           % small return loss every port
+  S(k, 2, 1) = 0.70; S(k, 1, 2) = 0.70          % within-pair main path
+  S(k, 4, 3) = 0.70; S(k, 3, 4) = 0.70
+  S(k, 4, 1) = -0.05; S(k, 1, 4) = -0.05        % small cross-coupling
+  S(k, 2, 3) = -0.05; S(k, 3, 2) = -0.05
+end
+s4 = sparameters(S, [1e9, 2e9])
+smm = s2smm(s4)
+fprintf("\nSingle-ended type: %s   Mixed-mode type: %s\n", ...
+        parameter_type(s4), parameter_type(smm))
+% Mixed-mode result: port order [d1, d2, c1, c2]; block matrix [Sdd | Sdc; Scd | Scc].
+% A near-ideal differential pair should have Sdc and Scd blocks small (low mode conversion)
+% and Sdd21 (diff → diff transmission) close to 1.
+P = smm.parameters
+fprintf("Sdd21 at 1 GHz: %.3f∠%.1f°   (close to 1 → strong diff transmission)\n", ...
+        abs(P(1, 2, 1)), angle(P(1, 2, 1))*180/pi)
+fprintf("Scd21 at 1 GHz: %.3f         (small → low common→diff conversion)\n", ...
+        abs(P(1, 4, 1)))

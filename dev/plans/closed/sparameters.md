@@ -809,6 +809,44 @@ I/O + `sparameters` constructor + inspection builtins).
   are bandlimited; extrapolating S-parameters past the swept range gives
   worse answers than failing. The error message tells the user the source
   range so they know how far they're off.
+- **`s2td` needs power-of-two IFFT length.** Initial implementation
+  set the IFFT length to exactly 2N. Rustlab's `ifft` requires a power
+  of two; for N = 26 (the natural output of `interp_freq` onto a 200 MHz
+  grid across 1–6 GHz) that failed. Fixed by zero-padding the
+  conjugate-symmetric spectrum to `next_power_of_two(2N)`; the extra
+  bins are at Nyquist and beyond, so the zero-padding doesn't change
+  which frequencies are represented — it just gives the time signal
+  finer time resolution. Existing tests at N=4 and N=8 still pass
+  unchanged (both already powers of two).
+- **Gallery / notebook discoverability gap closed (audit follow-up).**
+  The Phase-5 close-out shipped without notebooks; flagged in the
+  intervening audit and addressed before final commit. Two notebooks
+  cover the full toolbox:
+  - `examples/notebooks/sparameters_intro.md` — Phases 1–3
+    (15 code blocks, 12 plots, self-contained inline data):
+    constructor, accessors, conversions, cascade/deembed/newref,
+    Touchstone save round-trip, Smith chart with markers and ZY grid,
+    raw-Γ locus.
+  - `examples/notebooks/amplifier_analysis.md` — Phases 4–6
+    (17 code blocks, 9 plots): rfplot 2×2 + single-trace forms,
+    VSWR/RL/IL, K and µ stability, Γms/Γml with the defining-identity
+    numerical check, MAG, stability and gain circles via
+    `smith_circle` overlay, interp_freq, s2td TDR step, noise
+    accessors guarded by has_noise, mixed-mode s2smm/smm2s with the
+    orthogonal round-trip identity.
+  Both linked from `gallery/README.md` under a new "RF & S-Parameters"
+  section; rendered output committed at
+  `gallery/{sparameters_intro,amplifier_analysis}.md` plus the inline
+  SVG plot trees under `gallery/plots/`.
+- **Bundled noise data.** Added `examples/sparameters/data/lna_with_noise.s2p`
+  (the existing demo extended with a 4-row noise block) so users running
+  the standalone `polish_features.rlab` script outside the notebook
+  renderer have a real noise-bearing file to test against.
+- **Phase 6 standalone example.** `examples/sparameters/polish_features.rlab`
+  demonstrates all four Phase-6 features in one script: cross-grid
+  cascade via `interp_freq` (1 GHz → 200 MHz grid), TDR step+impulse via
+  `s2td`, noise-parameter accessors against the bundled file, mixed-mode
+  4-port conversion against an inline-built differential pair.
 - **Touchstone reader restructure.** The v1.1 reader assumed `tokens.len()
   % per_record == 0` and read all records in one pass. Adding noise-block
   detection (which is signalled implicitly by a strictly-decreasing
