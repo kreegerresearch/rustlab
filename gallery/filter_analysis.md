@@ -20,7 +20,10 @@ ylabel("Magnitude (dB)")
 grid on
 ```
 
-![plot 1](plots/filter_analysis/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/filter_analysis/plot-1-e19e8915.svg)
+
+<!-- rustlab:output-end -->
 
 The passband is flat and the stopband rejection is strong. The normalized
 cutoff is $\omega_c = 2\pi f_c / f_s = 0.375\pi$ rad/sample.
@@ -37,7 +40,10 @@ ylabel("Amplitude")
 grid on
 ```
 
-![plot 2](plots/filter_analysis/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/filter_analysis/plot-2-05922cf6.svg)
+
+<!-- rustlab:output-end -->
 
 The symmetric shape confirms this is a linear-phase Type I FIR filter,
 guaranteeing constant group delay $\tau = (N-1)/2 = 31.5$ samples.
@@ -60,7 +66,10 @@ subplot(2,1,1); plot(x); title("Input (noisy)"); grid on
 subplot(2,1,2); plot(y(1:256)); title("Filtered Output"); grid on
 ```
 
-![plot 3](plots/filter_analysis/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/filter_analysis/plot-3-32831018.svg)
+
+<!-- rustlab:output-end -->
 
 The filter cleanly recovers the underlying sinusoid.
 

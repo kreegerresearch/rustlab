@@ -45,9 +45,12 @@ end
 print(size(C))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  6.000000  6.000000
 ```
+
+<!-- rustlab:output-end -->
 
 Without labels, `heatmap` indexes axes numerically — useful as a quick
 sanity check before naming things:
@@ -57,7 +60,10 @@ clf
 heatmap(C, "raw confusion matrix")
 ```
 
-![plot 1](plots/heatmap_image/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/heatmap_image/plot-1-f2db6477.svg)
+
+<!-- rustlab:output-end -->
 
 ## Add categorical labels
 
@@ -69,7 +75,10 @@ clf
 heatmap(classes, classes, C, "confusion matrix (viridis)")
 ```
 
-![plot 2](plots/heatmap_image/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/heatmap_image/plot-2-8d33b26b.svg)
+
+<!-- rustlab:output-end -->
 
 The `xlabels` array indexes columns left-to-right; `ylabels` indexes rows
 top-to-bottom. Length mismatches are caught at the call site:
@@ -86,7 +95,10 @@ clf
 heatmap(classes, classes, C, "hot colormap", "hot")
 ```
 
-![plot 3](plots/heatmap_image/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/heatmap_image/plot-3-b398b4ff.svg)
+
+<!-- rustlab:output-end -->
 
 ## Raw-pixel display with `image`
 
@@ -100,9 +112,12 @@ G = (II + JJ) * 4;
 print([min(min(G)), max(max(G))])
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  0.000000  248.000000
 ```
+
+<!-- rustlab:output-end -->
 
 Display it without normalisation:
 
@@ -111,7 +126,10 @@ clf
 image(G)
 ```
 
-![plot 4](plots/heatmap_image/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/heatmap_image/plot-4-ca339888.svg)
+
+<!-- rustlab:output-end -->
 
 The same data through `imagesc` would auto-normalise — useful for
 arbitrary fields, but wrong if your data already encodes brightness.
@@ -125,7 +143,10 @@ subplot(1, 2, 2)
 imagesc(G); title("imagesc — auto-normalised")
 ```
 
-![plot 5](plots/heatmap_image/plot-5.svg)
+<!-- rustlab:output-start -->
+![plot 5](plots/heatmap_image/plot-5-61bc6362.svg)
+
+<!-- rustlab:output-end -->
 
 When the matrix happens to span the full `0..255` range (as ours does),
 the two look almost identical. They diverge as soon as the data range
@@ -143,7 +164,10 @@ clf
 image(G, "viridis")
 ```
 
-![plot 6](plots/heatmap_image/plot-6.svg)
+<!-- rustlab:output-start -->
+![plot 6](plots/heatmap_image/plot-6-e68b2ba8.svg)
+
+<!-- rustlab:output-end -->
 
 This is the right tool when you've already encoded an intensity image
 (e.g. converted a photo to grayscale) and want a false-colour
@@ -163,7 +187,10 @@ Gc = (II + JJ) * 4;   % green rises along the diagonal
 image(R, Gc, B)
 ```
 
-![plot 7](plots/heatmap_image/plot-7.svg)
+<!-- rustlab:output-start -->
+![plot 7](plots/heatmap_image/plot-7-262461b0.svg)
+
+<!-- rustlab:output-end -->
 
 You should see a familiar RGB-corner gradient: red brightens to the right,
 blue brightens downward, green brightens along the diagonal.

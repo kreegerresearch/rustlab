@@ -25,10 +25,13 @@ print(issparse(L))     % → 1
 print(n)               % → 96
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 96
 ```
+
+<!-- rustlab:output-end -->
 
 `L` is the negated 5-point Laplacian on a 12×8 grid. The grid is non-
 square on purpose — square grids have multiplicity-2 eigenvalue
@@ -50,10 +53,13 @@ print(length(D))      % → 4
 print(D)              % four smallest eigenvalues, sorted by |λ|
 ```
 
+<!-- rustlab:output-start -->
 ```text
 4
 [1×4]  71.492449  139.881083  210.411322  249.661367
 ```
+
+<!-- rustlab:output-end -->
 
 `V` is a `n_rows × n` dense matrix; column `k` is the eigenvector for
 `D(k)`. The eigenvectors are stored in the column-major flat-index
@@ -71,7 +77,10 @@ imagesc(M1);
 title("Mode 1 — fundamental drumhead");
 ```
 
-![plot 1](plots/eigs/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/eigs/plot-1-92c08a3b.svg)
+
+<!-- rustlab:output-end -->
 
 The fundamental mode `(1, 1)` is positive everywhere with a single
 maximum near the centre — the lowest-frequency standing wave that
@@ -85,7 +94,10 @@ imagesc(M2);
 title("Mode 2 — first lateral mode");
 ```
 
-![plot 2](plots/eigs/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/eigs/plot-2-65092cba.svg)
+
+<!-- rustlab:output-end -->
 
 The second mode has one nodal line; with the 12×8 grid asymmetry, that
 line is along the longer (x) axis.
@@ -98,7 +110,10 @@ imagesc(M3);
 title("Mode 3");
 ```
 
-![plot 3](plots/eigs/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/eigs/plot-3-1db812d4.svg)
+
+<!-- rustlab:output-end -->
 
 ## Largest-magnitude eigenmodes — `"lm"`
 
@@ -109,9 +124,12 @@ Switching the selector reaches the high end of the spectrum:
 print(Dlm(1))     % largest eigenvalue
 ```
 
+<!-- rustlab:output-start -->
 ```text
 3128.5075505695595
 ```
+
+<!-- rustlab:output-end -->
 
 For grid Laplacians, the largest eigenvalue lives at $(m, n) =
 (n_x, n_y)$ — the highest-frequency standing wave that fits on the
@@ -135,9 +153,12 @@ B = 2 * speye(n);          % B = 2I — eigenvalues should be eigs(A)/2
 print(Dg(1))               % smallest λ ≈ smallest eigs(L) / 2
 ```
 
+<!-- rustlab:output-start -->
 ```text
 69.94033793580886
 ```
+
+<!-- rustlab:output-end -->
 
 In a Lesson-12 cavity-mode problem, `B` would be the mass matrix from
 the FEM assembly and `A` the stiffness matrix. The smallest few

@@ -24,17 +24,14 @@ print(n)
 print("logical CPUs")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 running parmap on
 14
 logical CPUs
 ```
 
-```text
-running parmap on
-12
-logical CPUs
-```
+<!-- rustlab:output-end -->
 
 ## π by random sampling — the hello world of Monte Carlo
 
@@ -61,6 +58,7 @@ print("standard error:")
 print(se)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 mean estimate of pi:
 3.140941666666667
@@ -68,12 +66,7 @@ standard error:
 0.0007083998263760792
 ```
 
-```text
-mean estimate of pi:
-3.141833333333334
-standard error:
-0.0008005412957773572
-```
+<!-- rustlab:output-end -->
 
 With 24 trials of 200 000 samples each, the mean lands on
 $\pi \approx 3.1416$ and the standard error is small enough that
@@ -110,7 +103,10 @@ ylabel("call price");
 title("Black–Scholes call price vs. spot")
 ```
 
-![plot 1](plots/parallel_montecarlo/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/parallel_montecarlo/plot-1-46eeb079.svg)
+
+<!-- rustlab:output-end -->
 
 ![plot 1](plots/parallel_montecarlo/plot-1.svg)
 
@@ -138,20 +134,14 @@ print("output shape:", size(P));
 print("row sums:", sum(P, 2)');
 ```
 
+<!-- rustlab:output-start -->
 ```text
 output shape: [1×2]  6.000000  6.000000
 row sums: Matrix(1x6)
   [1.000000, 1.000000, 1.000000, 1.000000, 1.000000, 1.000000]
 ```
 
-```text
-output shape:
-Matrix(1x2)
-  [6.000000, 6.000000]
-row sums:
-Matrix(1x6)
-  [1.000000, 1.000000, 1.000000, 1.000000, 1.000000, 1.000000]
-```
+<!-- rustlab:output-end -->
 
 ## Matrix outputs — per-head computations stack into a Tensor3
 
@@ -180,18 +170,13 @@ err = norm(heads(:, :, 2) - 2 * heads(:, :, 1));
 print("page-2 == 2 * page-1 residual:", err);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 output shape: [1×3]  4.000000  3.000000  3.000000
 page-2 == 2 * page-1 residual: 0
 ```
 
-```text
-output shape:
-Matrix(1x3)
-  [4.000000, 3.000000, 3.000000]
-page-2 == 2 * page-1 residual:
-0
-```
+<!-- rustlab:output-end -->
 
 The shape rule — "all trials must return the same shape" — is hard-
 enforced; mixing shapes (some trials returning a vector, some a
@@ -226,7 +211,10 @@ plot(1:length(results), results, "MC π estimates");
 title("Per-trial estimates of π")
 ```
 
-![plot 2](plots/parallel_montecarlo/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/parallel_montecarlo/plot-2-2d93ad0f.svg)
+
+<!-- rustlab:output-end -->
 
 ![plot 2](plots/parallel_montecarlo/plot-2.svg)
 

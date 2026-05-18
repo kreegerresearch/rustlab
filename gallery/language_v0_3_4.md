@@ -33,6 +33,7 @@ print("length(zeros(7)):", length(zeros(7))); % → 7
 print("length(zeros(3, 5)):", length(zeros(3, 5))); % → 5 (longest axis)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 length(42): 1
 length(3 + j): 1
@@ -40,6 +41,8 @@ length(true): 1
 length(zeros(7)): 7
 length(zeros(3, 5)): 5
 ```
+
+<!-- rustlab:output-end -->
 
 Use `numel(x)` for total element count and `size(x)` for full shape.
 
@@ -57,10 +60,13 @@ print("rand():", u);
 print("randn():", z);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 rand(): 0.5265574090027738
 randn(): 0.13293812199412544
 ```
+
+<!-- rustlab:output-end -->
 
 The shaped forms still work unchanged:
 
@@ -72,10 +78,13 @@ print("rand(8) shape:", size(v));
 print("randn(3, 4) shape:", size(M));
 ```
 
+<!-- rustlab:output-start -->
 ```text
 rand(8) shape: [1×2]  1.000000  8.000000
 randn(3, 4) shape: [1×2]  3.000000  4.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ## 3. Region writes into a matrix
 
@@ -94,6 +103,7 @@ print("A:");
 print(A);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 A:
 Matrix(3x3)
@@ -101,6 +111,8 @@ Matrix(3x3)
   [10.000000, 20.000000, 30.000000]
   [0.000000, 0.000000, 0.000000]
 ```
+
+<!-- rustlab:output-end -->
 
 ### Column write — `A(:, j) = vec`
 
@@ -111,6 +123,7 @@ print("B:");
 print(B);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 B:
 Matrix(3x3)
@@ -118,6 +131,8 @@ Matrix(3x3)
   [8.000000, 0.000000, 0.000000]
   [9.000000, 0.000000, 0.000000]
 ```
+
+<!-- rustlab:output-end -->
 
 ### Submatrix region write — `A(rows, cols) = matrix`
 
@@ -128,6 +143,7 @@ print("C:");
 print(C);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 C:
 Matrix(3x3)
@@ -135,6 +151,8 @@ Matrix(3x3)
   [0.000000, 3.000000, 4.000000]
   [0.000000, 0.000000, 0.000000]
 ```
+
+<!-- rustlab:output-end -->
 
 ### Scalar broadcast — `A(:, :) = scalar`
 
@@ -149,6 +167,7 @@ print("D:");
 print(D);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 D:
 Matrix(3x3)
@@ -156,6 +175,8 @@ Matrix(3x3)
   [0.000000, 0.000000, 9.000000]
   [1.000000, 1.000000, 9.000000]
 ```
+
+<!-- rustlab:output-end -->
 
 Shape mismatches hard-error with both shapes named, so a typo doesn't
 silently corrupt the matrix:
@@ -184,10 +205,13 @@ print("v:");
 print(v);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 v:
 [1×6]  10.000000  0.000000  20.000000  0.000000  30.000000  0.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ### Explicit index list
 
@@ -198,10 +222,13 @@ print("w:");
 print(w);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 w:
 [1×5]  100.000000  0.000000  300.000000  0.000000  500.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ### Scalar broadcast across the whole vector
 
@@ -212,10 +239,13 @@ print("u:");
 print(u);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 u:
 [1×4]  9.000000  9.000000  9.000000  9.000000
 ```
+
+<!-- rustlab:output-end -->
 
 The RHS Vector length must match the index count. Length mismatches
 hard-error.
@@ -239,7 +269,10 @@ plot(x, y, "spike");
 title("plot(x, 1×N row-Matrix)")
 ```
 
-![plot 1](plots/language_v0_3_4/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/language_v0_3_4/plot-1-d5ed00e3.svg)
+
+<!-- rustlab:output-end -->
 
 ![plot 1](plots/language_v0_3_4/plot-1.svg)
 

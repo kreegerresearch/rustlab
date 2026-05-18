@@ -291,8 +291,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "hold(\"on\")   — subsequent plot() calls overlay on the current subplot\nhold(\"off\")  — each plot() replaces the previous series (default)\nhold(1) / hold(0) also accepted" },
     HelpEntry { name: "grid",     brief: "Show or hide grid lines",
         detail: "grid(\"on\")   — enable grid lines (default)\ngrid(\"off\")  — disable grid lines\ngrid(1) / grid(0) also accepted" },
-    HelpEntry { name: "viewer",   brief: "Connect/disconnect external rustlab-viewer (bare form shows status)",
-        detail: "viewer            — show connection status and where the current figure will render\nviewer on         — connect to the default rustlab-viewer\nviewer on <name>  — connect to a named session (e.g. viewer on work)\nviewer off        — disconnect, return to terminal plotting\n\nWhen connected, all plot commands render in the external\nviewer window (egui) with zoom/pan/crosshairs instead of\nthe terminal. Start rustlab-viewer first, then type 'viewer on'.\n\nNamed sessions allow multiple viewers to run simultaneously:\n  Terminal 1:  rustlab-viewer --name filters\n  Terminal 2:  rustlab-viewer --name analysis\n  REPL 1:     viewer on filters\n  REPL 2:     viewer on analysis\n\nIf the viewer window is closed while connected, the next plot call\ndetects the lost connection, disconnects, warns, and falls back to\nterminal rendering for subsequent plots.\n\nRequires the 'viewer' feature (included in 'make install')." },
+    HelpEntry { name: "viewer",   brief: "Connect/disconnect the external rustlab-viewer GUI",
+        detail: "Route plots from the REPL or a script to a separate egui window\n(zoom, pan, crosshairs, point readout) instead of the terminal.\n\nBasic workflow:\n  1. In a second terminal:   rustlab-viewer\n  2. In the REPL:            viewer on\n  3. Plot as normal:         plot(sin(linspace(0,10,200)))\n                             — the figure opens in the viewer window\n  4. To return to the TUI:   viewer off\n\nForms:\n  viewer            — print current status (terminal / viewer / which session)\n  viewer on         — connect to the default viewer\n  viewer on <name>  — connect to a named session (e.g. `viewer on work`)\n  viewer off        — disconnect; subsequent plots render in the terminal\n\nNamed sessions let multiple viewers coexist:\n  Terminal A:  rustlab-viewer --name filters\n  Terminal B:  rustlab-viewer --name analysis\n  REPL A:      viewer on filters\n  REPL B:      viewer on analysis\n\nFrom a script you can skip the explicit `viewer on` by launching with\n  rustlab run --plot viewer my_script.rlab\n  rustlab run --plot viewer --viewer-name work my_script.rlab\n\nIf the viewer window is closed while connected, the next plot call\ndetects the lost socket, disconnects with a warning, and falls back to\nterminal rendering until the next `viewer on`.\n\nRequires the `viewer` feature (built in by `make install`). See also\nthe `rustlab-viewer` binary's `--help` for `--socket` / `--name` flags." },
     HelpEntry { name: "xlabel",   brief: "Set x-axis label",
         detail: "xlabel(\"text\")  — sets the x-axis label on the current subplot" },
     HelpEntry { name: "ylabel",   brief: "Set y-axis label",
@@ -985,250 +985,250 @@ pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
     }
 }
 
-/// Categorical grouping of `HELP` entries used by `print_help_list` and the
-/// `rustlab docs` subcommand. Each tuple is `(category-name, &[entry-names])`.
-/// Public so that out-of-crate tooling and `commands/docs.rs` can iterate.
-pub static CATEGORIES: &[(&str, &[&str])] = &[
-        (
-            "Math",
-            &[
-                "abs", "angle", "real", "imag", "conj", "cos", "sin", "acos", "asin", "atan",
-                "atan2", "tanh", "sinh", "cosh", "sqrt", "exp", "log", "log10", "log2", "floor",
-                "ceil", "round", "sign", "mod",
-            ],
-        ),
-        (
-            "ML / Activation",
-            &["softmax", "relu", "gelu", "layernorm", "tanh"],
-        ),
-        (
-            "Array / Stats",
-            &[
-                "zeros", "ones", "linspace", "logspace", "rand", "randn", "randi", "seed", "min", "max",
-                "sum", "prod", "cumsum", "argmin", "argmax", "sort", "trapz", "mean", "median",
-                "std", "hist", "len", "length", "numel", "size", "ndims", "meshgrid", "all", "any",
-            ],
-        ),
-        (
-            "Matrix",
-            &[
-                "eye",
-                "transpose",
-                "diag",
-                "trace",
-                "reshape",
-                "repmat",
-                "horzcat",
-                "vertcat",
-                "cat",
-                "rank",
-            ],
-        ),
-        (
-            "Tensor3 (rank-3)",
-            &["zeros3", "ones3", "rand3", "randn3", "permute", "squeeze"],
-        ),
-        (
-            "Linear Algebra",
-            &[
-                "dot", "cross", "outer", "kron", "norm", "det", "inv", "expm", "linsolve",
-                "eig", "eigs",
-                "svd", "laguerre", "legendre", "factor", "roots",
-            ],
-        ),
-        (
-            "Vector Calculus",
-            &[
-                "gradient",
-                "divergence",
-                "curl",
-                "gradient3",
-                "divergence3",
-                "curl3",
-            ],
-        ),
-        (
-            "Geometry / Masks",
-            &["rect_mask", "disk_mask", "polygon_mask"],
-        ),
-        (
-            "DSP",
-            &[
-                "fir_lowpass",
-                "fir_highpass",
-                "fir_bandpass",
-                "fir_lowpass_kaiser",
-                "fir_highpass_kaiser",
-                "fir_bandpass_kaiser",
-                "fir_notch",
-                "firpm",
-                "firpmq",
-                "freqz",
-                "butterworth_lowpass",
-                "butterworth_highpass",
-                "filtfilt",
-                "convolve",
-                "upfirdn",
-                "window",
-                "fft",
-                "ifft",
-                "fftshift",
-                "fftfreq",
-                "spectrum",
-                "pwelch",
-                "stft",
-                "spectrogram",
-                "cwt",
-                "scalogram",
-                "mag2db",
-            ],
-        ),
-        (
-            "Streaming DSP",
-            &[
-                "state_init",
-                "filter_stream",
-                "pwelch_stream_init",
-                "pwelch_stream",
-                "stft_stream_init",
-                "stft_stream",
-                "cwt_stream_init",
-                "cwt_stream",
-            ],
-        ),
-        (
-            "Audio I/O",
-            &["audio_in", "audio_out", "audio_read", "audio_write"],
-        ),
-        (
-            "Live Plotting",
-            &[
-                "figure_live",
-                "plot_update",
-                "plot_update_heatmap",
-                "plot_labels",
-                "plot_limits",
-                "figure_draw",
-                "figure_close",
-            ],
-        ),
-        (
-            "Fixed-point",
-            &["qfmt", "quantize", "qadd", "qmul", "qconv", "snr"],
-        ),
-        (
-            "Plotting",
-            &[
-                "plot", "stem", "bar", "scatter", "hline", "yline", "plotdb", "imagesc",
-                "heatmap", "image", "surf",
-                "loglog", "semilogx", "semilogy", "polar",
-                "contour", "contourf", "quiver", "streamplot", "savefig", "hist",
-                "frame", "saveanim",
-            ],
-        ),
-        (
-            "Figure Controls",
-            &[
-                "figure", "clf", "close", "hold", "grid", "axis", "set_default_axis", "viewer",
-                "xlabel", "ylabel", "title", "xlim", "ylim", "subplot", "legend",
-            ],
-        ),
-        (
-            "Controls",
-            &[
-                "tf", "tfdata", "pole", "zero", "ss", "ctrb", "obsv", "bode", "nyquist", "step",
-                "margin", "lqr", "rlocus", "rk4", "lyap", "gram", "care", "dare", "place",
-                "freqresp",
-            ],
-        ),
-        (
-            "S-Parameters (RF)",
-            &[
-                "sparameters", "nports", "freqs", "sij", "s11", "s12", "s21", "s22",
-                "s2z", "z2s", "s2y", "y2s", "s2t", "t2s", "s2abcd", "abcd2s",
-                "cascade", "deembed", "newref", "parameter_type",
-                "smith", "marker", "rfplot",
-                "vswr", "return_loss", "insertion_loss",
-                "gammain", "gammaout",
-                "stabilityk", "stabilitymu", "gammams", "gammaml", "gainmax",
-                "stability_circles", "gain_circles", "smith_circle",
-                "interp_freq", "noise_freqs", "nfmin", "gamma_opt", "rn", "has_noise",
-                "s2td", "s2smm", "smm2s",
-            ],
-        ),
-        (
-            "Sparse",
-            &[
-                "sparse",
-                "sparsevec",
-                "speye",
-                "spzeros",
-                "spdiags",
-                "sprand",
-                "full",
-                "nnz",
-                "issparse",
-                "nonzeros",
-                "find",
-                "spsolve",
-                "chol",
-                "lu",
-                "solve",
-                "laplacian_1d",
-                "laplacian_2d",
-                "laplacian_3d",
-                "laplacian_eps_2d",
-                "ij2k",
-                "k2ij",
-                "ijk2k",
-                "k2ijk",
-            ],
-        ),
-        (
-            "Structs",
-            &["struct", "isstruct", "fieldnames", "isfield", "rmfield"],
-        ),
-        ("Cell Arrays", &["iscell"]),
-        (
-            "Control Flow",
-            &[
-                "if",
-                "elseif",
-                "switch",
-                "for",
-                "function",
-                "error",
-                "index_assign",
-                "chained_index",
-            ],
-        ),
-        ("Output", &["disp", "fprintf", "sprintf", "commas", "print"]),
-        ("Formatting", &["format", "underscores"]),
-        ("I/O", &["print", "save", "load", "whos", "sleep"]),
-        (
-            "Language / REPL",
-            &[
-                "i / j",
-                "pi",
-                "e",
-                "Inf",
-                "NaN",
-                "range",
-                "index",
-                "index_assign",
-                "chained_index",
-                "compound_assign",
-                "clear",
-                "whos",
-                "arrayfun",
-                "feval",
-                "profile",
-                "profile_report",
-            ],
-        ),
-        ("Parallelism", &["parmap", "nproc"]),
-        ("Filesystem", &["run", "ls", "cd", "pwd"]),
+/// Domain-organised grouping of `HELP` entries used by `print_help_list`,
+/// `print_help_detail`, and the `rustlab docs` subcommand.
+///
+/// Each row is `(toolbox, subcategory, &[entry-names])`. Rows that share the
+/// same `toolbox` value are displayed together under a single toolbox header,
+/// with their `subcategory` value rendered as a subheader. A row with an
+/// empty `subcategory` ("") prints its entries directly under the toolbox
+/// header with no subheader.
+///
+/// Toolbox display order is the order rows first appear in this table. The
+/// 12 top-level toolboxes are:
+///
+/// - language — scripting language, REPL, I/O primitives, filesystem
+/// - math — elementary, trig, special functions, activations
+/// - linalg — dense matrix construction, ops, decompositions, tensor3
+/// - stats — aggregates, sort, histograms, logical reductions
+/// - sparse — sparse construction, solvers, stencils
+/// - dsp — FIR/IIR design, convolution, fixed-point, streaming
+/// - spectral — FFT, periodogram, STFT, CWT, streaming
+/// - controls — transfer functions, state-space, design, simulation
+/// - rf — S-parameters, Smith chart, stability, noise, TDR
+/// - pde — vector calculus operators
+/// - plot — 2D/3D plots, figure controls, animation, masks, live
+/// - audio — real-time audio I/O
+///
+/// Every builtin in `HELP` must appear in exactly one row (enforced by the
+/// `coverage_check` unit test below). Aliases (e.g. `length` ↔ `len`,
+/// `histogram` ↔ `hist`) each get their own row entry.
+pub struct CategoryRow {
+    pub toolbox: &'static str,
+    pub subcategory: &'static str,
+    pub names: &'static [&'static str],
+}
+
+pub static CATEGORIES: &[CategoryRow] = &[
+    // ── language ─────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "language", subcategory: "Constants",
+        names: &["i / j", "pi", "e", "Inf", "NaN"] },
+    CategoryRow { toolbox: "language", subcategory: "Variables",
+        names: &["clear", "whos"] },
+    CategoryRow { toolbox: "language", subcategory: "Control flow",
+        names: &["if", "elseif", "switch", "for", "function", "error"] },
+    CategoryRow { toolbox: "language", subcategory: "Indexing",
+        names: &["range", "index", "index_assign", "chained_index", "compound_assign", "str_index"] },
+    CategoryRow { toolbox: "language", subcategory: "Output",
+        names: &["disp", "fprintf", "sprintf", "print", "commas", "format", "underscores"] },
+    CategoryRow { toolbox: "language", subcategory: "Data I/O",
+        names: &["save", "load", "sleep"] },
+    CategoryRow { toolbox: "language", subcategory: "Filesystem",
+        names: &["run", "ls", "cd", "pwd"] },
+    CategoryRow { toolbox: "language", subcategory: "Higher-order",
+        names: &["arrayfun", "feval"] },
+    CategoryRow { toolbox: "language", subcategory: "Profiling",
+        names: &["profile", "profile_report"] },
+    CategoryRow { toolbox: "language", subcategory: "Parallelism",
+        names: &["parmap", "nproc"] },
+    CategoryRow { toolbox: "language", subcategory: "Structs",
+        names: &["struct", "isstruct", "fieldnames", "isfield", "rmfield"] },
+    CategoryRow { toolbox: "language", subcategory: "Cell arrays",
+        names: &["iscell"] },
+
+    // ── math ─────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "math", subcategory: "Elementary",
+        names: &["abs", "angle", "real", "imag", "conj", "sqrt", "exp",
+                 "log", "log10", "log2", "floor", "ceil", "round", "sign", "mod"] },
+    CategoryRow { toolbox: "math", subcategory: "Trigonometry",
+        names: &["cos", "sin", "acos", "asin", "atan", "atan2", "tanh", "sinh", "cosh"] },
+    CategoryRow { toolbox: "math", subcategory: "Special functions",
+        names: &["laguerre", "legendre", "factor"] },
+    CategoryRow { toolbox: "math", subcategory: "Activations",
+        names: &["softmax", "relu", "gelu", "layernorm"] },
+
+    // ── linalg ───────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "linalg", subcategory: "Construction",
+        names: &["zeros", "ones", "eye", "linspace", "logspace",
+                 "rand", "randn", "randi", "seed", "meshgrid"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Inspection",
+        names: &["size", "ndims", "numel", "len", "length"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Reshape & assembly",
+        names: &["transpose", "diag", "trace", "reshape", "repmat",
+                 "horzcat", "vertcat", "cat", "rank"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Vector operations",
+        names: &["dot", "cross", "outer", "kron", "norm"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Solvers",
+        names: &["det", "inv", "expm", "linsolve", "roots"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Decompositions",
+        names: &["eig", "eigs", "svd"] },
+    CategoryRow { toolbox: "linalg", subcategory: "Tensor3 (rank-3)",
+        names: &["zeros3", "ones3", "rand3", "randn3", "permute", "squeeze"] },
+
+    // ── stats ────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "stats", subcategory: "Aggregates",
+        names: &["min", "max", "sum", "prod", "cumsum", "mean", "median", "std", "trapz"] },
+    CategoryRow { toolbox: "stats", subcategory: "Ordering & search",
+        names: &["argmin", "argmax", "sort"] },
+    CategoryRow { toolbox: "stats", subcategory: "Logical reductions",
+        names: &["all", "any"] },
+    CategoryRow { toolbox: "stats", subcategory: "Histograms",
+        names: &["hist", "histogram"] },
+
+    // ── sparse ───────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "sparse", subcategory: "Construction",
+        names: &["sparse", "sparsevec", "speye", "spzeros", "spdiags", "sprand"] },
+    CategoryRow { toolbox: "sparse", subcategory: "Inspection",
+        names: &["full", "nnz", "issparse", "nonzeros", "find"] },
+    CategoryRow { toolbox: "sparse", subcategory: "Solvers",
+        names: &["spsolve", "chol", "lu", "solve"] },
+    CategoryRow { toolbox: "sparse", subcategory: "Discrete Laplacians",
+        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d"] },
+    CategoryRow { toolbox: "sparse", subcategory: "Index helpers",
+        names: &["ij2k", "k2ij", "ijk2k", "k2ijk"] },
+
+    // ── dsp ──────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "dsp", subcategory: "FIR design",
+        names: &["fir_lowpass", "fir_highpass", "fir_bandpass", "fir_notch",
+                 "fir_lowpass_kaiser", "fir_highpass_kaiser", "fir_bandpass_kaiser",
+                 "firpm", "firpmq", "window"] },
+    CategoryRow { toolbox: "dsp", subcategory: "IIR design",
+        names: &["butterworth_lowpass", "butterworth_highpass"] },
+    CategoryRow { toolbox: "dsp", subcategory: "Filtering",
+        names: &["freqz", "filtfilt", "convolve", "upfirdn"] },
+    CategoryRow { toolbox: "dsp", subcategory: "Streaming",
+        names: &["state_init", "filter_stream"] },
+    CategoryRow { toolbox: "dsp", subcategory: "Fixed-point",
+        names: &["qfmt", "quantize", "qadd", "qmul", "qconv", "snr"] },
+    CategoryRow { toolbox: "dsp", subcategory: "Utility",
+        names: &["mag2db"] },
+
+    // ── spectral ─────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "spectral", subcategory: "FFT",
+        names: &["fft", "ifft", "fftshift", "fftfreq", "spectrum"] },
+    CategoryRow { toolbox: "spectral", subcategory: "Power spectral density",
+        names: &["pwelch", "pwelch_stream_init", "pwelch_stream"] },
+    CategoryRow { toolbox: "spectral", subcategory: "Short-time Fourier",
+        names: &["stft", "spectrogram", "stft_stream_init", "stft_stream"] },
+    CategoryRow { toolbox: "spectral", subcategory: "Continuous wavelet",
+        names: &["cwt", "scalogram", "cwt_stream_init", "cwt_stream"] },
+
+    // ── controls ─────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "controls", subcategory: "Models",
+        names: &["tf", "tfdata", "ss", "pole", "zero"] },
+    CategoryRow { toolbox: "controls", subcategory: "Analysis",
+        names: &["ctrb", "obsv", "bode", "nyquist", "step", "freqresp", "rlocus", "margin"] },
+    CategoryRow { toolbox: "controls", subcategory: "Design",
+        names: &["lqr", "place", "care", "dare", "lyap", "gram"] },
+    CategoryRow { toolbox: "controls", subcategory: "Simulation",
+        names: &["rk4"] },
+
+    // ── rf ───────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "rf", subcategory: "Networks",
+        names: &["sparameters", "nports", "freqs", "parameter_type", "interp_freq"] },
+    CategoryRow { toolbox: "rf", subcategory: "Indexing",
+        names: &["sij", "s11", "s12", "s21", "s22"] },
+    CategoryRow { toolbox: "rf", subcategory: "Conversions",
+        names: &["s2z", "z2s", "s2y", "y2s", "s2t", "t2s", "s2abcd", "abcd2s"] },
+    CategoryRow { toolbox: "rf", subcategory: "Network operations",
+        names: &["cascade", "deembed", "newref"] },
+    CategoryRow { toolbox: "rf", subcategory: "Smith chart",
+        names: &["smith", "marker", "smith_circle"] },
+    CategoryRow { toolbox: "rf", subcategory: "Network plots",
+        names: &["rfplot"] },
+    CategoryRow { toolbox: "rf", subcategory: "Analysis",
+        names: &["vswr", "return_loss", "insertion_loss", "gammain", "gammaout"] },
+    CategoryRow { toolbox: "rf", subcategory: "Stability & gain",
+        names: &["stabilityk", "stabilitymu", "gammams", "gammaml",
+                 "gainmax", "stability_circles", "gain_circles"] },
+    CategoryRow { toolbox: "rf", subcategory: "Noise",
+        names: &["noise_freqs", "nfmin", "gamma_opt", "rn", "has_noise"] },
+    CategoryRow { toolbox: "rf", subcategory: "Time domain & mixed-mode",
+        names: &["s2td", "s2smm", "smm2s"] },
+
+    // ── pde ──────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "pde", subcategory: "Vector calculus (2-D)",
+        names: &["gradient", "divergence", "curl"] },
+    CategoryRow { toolbox: "pde", subcategory: "Vector calculus (3-D)",
+        names: &["gradient3", "divergence3", "curl3"] },
+
+    // ── plot ─────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "plot", subcategory: "Line & scatter",
+        names: &["plot", "stem", "bar", "scatter", "hline", "yline", "plotdb"] },
+    CategoryRow { toolbox: "plot", subcategory: "Heatmaps & images",
+        names: &["heatmap", "image", "imagesc"] },
+    CategoryRow { toolbox: "plot", subcategory: "Surface (3-D)",
+        names: &["surf"] },
+    CategoryRow { toolbox: "plot", subcategory: "Logarithmic & polar",
+        names: &["loglog", "semilogx", "semilogy", "polar"] },
+    CategoryRow { toolbox: "plot", subcategory: "Contours & vector fields",
+        names: &["contour", "contourf", "quiver", "streamplot"] },
+    CategoryRow { toolbox: "plot", subcategory: "Geometry masks",
+        names: &["rect_mask", "disk_mask", "polygon_mask"] },
+    CategoryRow { toolbox: "plot", subcategory: "Animation",
+        names: &["frame", "saveanim"] },
+    CategoryRow { toolbox: "plot", subcategory: "Export",
+        names: &["savefig"] },
+    CategoryRow { toolbox: "plot", subcategory: "Figure controls",
+        names: &["figure", "clf", "close", "hold", "grid", "axis", "set_default_axis",
+                 "xlabel", "ylabel", "title", "xlim", "ylim", "subplot", "legend"] },
+    CategoryRow { toolbox: "plot", subcategory: "Live plotting",
+        names: &["figure_live", "plot_update", "plot_update_heatmap",
+                 "plot_labels", "plot_limits", "figure_draw", "figure_close"] },
+    // The `rustlab-viewer` binary (separate crate) is the external interactive
+    // backend. The `viewer` builtin is the in-REPL command that routes plots to
+    // it. `rustlab run --plot viewer` does the same from a script. See `help
+    // viewer` for the full workflow and `rustlab-viewer --help` for socket and
+    // named-session flags.
+    CategoryRow { toolbox: "plot", subcategory: "External viewer (rustlab-viewer)",
+        names: &["viewer"] },
+
+    // ── audio ────────────────────────────────────────────────────────────
+    CategoryRow { toolbox: "audio", subcategory: "I/O",
+        names: &["audio_in", "audio_out", "audio_read", "audio_write"] },
 ];
+
+/// Toolbox display order. Drives the order of section headers in
+/// `print_help_list` and the `rustlab docs` listing, and the order of
+/// toolboxes in `print_help_detail` when the topic matches a toolbox name.
+pub static TOOLBOXES: &[&str] = &[
+    "language", "math", "linalg", "stats", "sparse", "dsp",
+    "spectral", "controls", "rf", "pde", "plot", "audio",
+];
+
+/// Return the toolbox name that owns `entry_name`, or `"uncategorized"` if
+/// the name does not appear in any `CategoryRow`. Used by `docs --json` and
+/// by external tooling that wants per-entry category metadata without
+/// re-implementing the CATEGORIES table.
+pub fn category_of(entry_name: &str) -> &'static str {
+    for row in CATEGORIES {
+        if row.names.iter().any(|n| *n == entry_name) {
+            return row.toolbox;
+        }
+    }
+    "uncategorized"
+}
+
+/// Return the subcategory string for `entry_name`, or `""` if the name does
+/// not appear in any `CategoryRow`.
+pub fn subcategory_of(entry_name: &str) -> &'static str {
+    for row in CATEGORIES {
+        if row.names.iter().any(|n| *n == entry_name) {
+            return row.subcategory;
+        }
+    }
+    ""
+}
 
 pub fn print_help_list() {
     println!();
@@ -1239,31 +1239,47 @@ pub fn print_help_list() {
     );
     println!("  {}", color::dim(&"-".repeat(60)));
 
-    for (cat, names) in CATEGORIES {
-        println!("\n  {}:", color::bold_yellow(cat));
-        for &n in *names {
-            if let Some(e) = HELP.iter().find(|e| e.name == n) {
-                println!("    {:<24}  {}", color::cyan(e.name), e.brief);
+    for tb in TOOLBOXES {
+        let rows: Vec<&CategoryRow> = CATEGORIES.iter().filter(|r| r.toolbox == *tb).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        println!("\n  {}", color::bold_yellow(tb));
+        for row in rows {
+            if !row.subcategory.is_empty() {
+                println!("    {}", color::dim(row.subcategory));
+            }
+            for &n in row.names {
+                if let Some(e) = HELP.iter().find(|e| e.name == n) {
+                    println!("      {:<22}  {}", color::cyan(e.name), e.brief);
+                }
             }
         }
     }
     println!();
     println!(
-        "  Type  {}  or  {}  for details.",
+        "  Type  {}  or  {}  for details, or pass a toolbox name (e.g. {}).",
         color::bold("help <command>"),
-        color::bold("? <command>")
+        color::bold("? <command>"),
+        color::bold("help dsp"),
     );
     println!();
 }
 
-/// Print the detail block for one builtin. If `topic` doesn't match an entry
-/// name, fall back to checking the categories list (case-insensitive) and list
-/// that category's entries instead. Returns `true` on a hit, `false` when
-/// neither name nor category matched.
+/// Print the detail block for one builtin. If `topic` matches a toolbox name
+/// (case-insensitive) instead, list all entries in that toolbox grouped by
+/// subcategory. If it matches only a subcategory string, list that
+/// subcategory. Returns `true` on a hit, `false` when nothing matched.
 pub fn print_help_detail(topic: &str) -> bool {
     if let Some(e) = HELP.iter().find(|e| e.name == topic) {
         println!();
         println!("  {}  —  {}", color::bold_cyan(e.name), e.brief);
+        let cat = category_of(e.name);
+        let sub = subcategory_of(e.name);
+        if cat != "uncategorized" {
+            let crumb = if sub.is_empty() { cat.to_string() } else { format!("{} / {}", cat, sub) };
+            println!("  {}", color::dim(&crumb));
+        }
         println!();
         for line in e.detail.lines() {
             println!("  {}", line);
@@ -1272,16 +1288,40 @@ pub fn print_help_detail(topic: &str) -> bool {
         return true;
     }
 
-    // Try as a category name (case-insensitive).
-    if let Some((cat, names)) = CATEGORIES
+    // Toolbox name (case-insensitive).
+    if let Some(&tb) = TOOLBOXES.iter().find(|t| t.eq_ignore_ascii_case(topic)) {
+        let rows: Vec<&CategoryRow> = CATEGORIES.iter().filter(|r| r.toolbox == tb).collect();
+        if !rows.is_empty() {
+            println!();
+            println!("  {}", color::bold_yellow(tb));
+            for row in rows {
+                if !row.subcategory.is_empty() {
+                    println!("    {}", color::dim(row.subcategory));
+                }
+                for &n in row.names {
+                    if let Some(e) = HELP.iter().find(|e| e.name == n) {
+                        println!("      {:<22}  {}", color::cyan(e.name), e.brief);
+                    }
+                }
+            }
+            println!();
+            return true;
+        }
+    }
+
+    // Subcategory name (case-insensitive) — any row whose subcategory matches.
+    let sub_rows: Vec<&CategoryRow> = CATEGORIES
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(topic))
-    {
+        .filter(|r| !r.subcategory.is_empty() && r.subcategory.eq_ignore_ascii_case(topic))
+        .collect();
+    if !sub_rows.is_empty() {
         println!();
-        println!("  {}:", color::bold_yellow(cat));
-        for &n in *names {
-            if let Some(e) = HELP.iter().find(|e| e.name == n) {
-                println!("    {:<24}  {}", color::cyan(e.name), e.brief);
+        for row in sub_rows {
+            println!("  {} / {}", color::bold_yellow(row.toolbox), color::dim(row.subcategory));
+            for &n in row.names {
+                if let Some(e) = HELP.iter().find(|e| e.name == n) {
+                    println!("      {:<22}  {}", color::cyan(e.name), e.brief);
+                }
             }
         }
         println!();
@@ -1294,6 +1334,81 @@ pub fn print_help_detail(topic: &str) -> bool {
         color::bold("'help'")
     );
     false
+}
+
+#[cfg(test)]
+mod help_coverage_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    /// Every entry in `HELP` must appear in exactly one `CategoryRow`. Catches
+    /// drift when new builtins are added without a category, and detects
+    /// accidental duplicate listings.
+    #[test]
+    fn every_help_entry_has_exactly_one_category() {
+        let mut seen: std::collections::HashMap<&str, Vec<&str>> = Default::default();
+        for row in CATEGORIES {
+            for &n in row.names {
+                seen.entry(n).or_default().push(row.toolbox);
+            }
+        }
+        let mut missing: Vec<&str> = Vec::new();
+        let mut duplicates: Vec<String> = Vec::new();
+        for entry in HELP {
+            match seen.get(entry.name) {
+                None => missing.push(entry.name),
+                Some(boxes) if boxes.len() > 1 => {
+                    duplicates.push(format!("{} → {:?}", entry.name, boxes));
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "help entries with no toolbox assignment: {:?}",
+            missing
+        );
+        assert!(
+            duplicates.is_empty(),
+            "help entries listed in multiple toolboxes: {:?}",
+            duplicates
+        );
+    }
+
+    /// Every `CategoryRow.names` entry must refer to a real `HELP` entry.
+    #[test]
+    fn every_category_name_resolves_to_a_help_entry() {
+        let known: HashSet<&str> = HELP.iter().map(|e| e.name).collect();
+        let mut unknown: Vec<&str> = Vec::new();
+        for row in CATEGORIES {
+            for &n in row.names {
+                if !known.contains(n) {
+                    unknown.push(n);
+                }
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "categories reference names that do not exist in HELP: {:?}",
+            unknown
+        );
+    }
+
+    /// Every toolbox listed in `TOOLBOXES` must own at least one row, and
+    /// every row's toolbox must be in `TOOLBOXES`.
+    #[test]
+    fn toolboxes_and_rows_agree() {
+        let row_boxes: HashSet<&str> = CATEGORIES.iter().map(|r| r.toolbox).collect();
+        let listed: HashSet<&str> = TOOLBOXES.iter().copied().collect();
+        let unused: Vec<&&str> = TOOLBOXES.iter().filter(|t| !row_boxes.contains(*t)).collect();
+        let undeclared: Vec<&&str> = row_boxes.iter().filter(|t| !listed.contains(*t)).collect();
+        assert!(unused.is_empty(), "toolboxes with no rows: {:?}", unused);
+        assert!(
+            undeclared.is_empty(),
+            "rows reference toolboxes missing from TOOLBOXES: {:?}",
+            undeclared
+        );
+    }
 }
 
 // ─── Tab completion helper ────────────────────────────────────────────────────

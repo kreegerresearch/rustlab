@@ -43,11 +43,14 @@ end
 saveanim("wave.html", 30)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 2
 ```
 
 > ▶ **Animation: 40 frames at 30 fps** — open the HTML version of this notebook to view.
+
+<!-- rustlab:output-end -->
 
 ### Same loop, animated GIF
 
@@ -63,17 +66,20 @@ end
 saveanim("wave.gif", 30)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 3
 ```
 
-![animation 2](plots/animation/anim-2.gif)
+![animation 2](plots/animation/anim-2-25179a24.gif)
+
+<!-- rustlab:output-end -->
 
 The path argument to `saveanim` is **ignored when the script is rendered
 inside a notebook** — the notebook renderer captures the frame buffer and
 writes the artefact under the gallery's plot directory using the path
 extension to pick the format. When you run the same script standalone
-(`rustlab run examples/animation_wave.rlab`), the path is honoured.
+(`rustlab run examples/plot/animation_wave.rlab`), the path is honoured.
 
 ## Title placement
 
@@ -94,11 +100,14 @@ end
 saveanim("standing_wave.html", 24)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 4
 ```
 
 > ▶ **Animation: 24 frames at 24 fps** — open the HTML version of this notebook to view.
+
+<!-- rustlab:output-end -->
 
 ## Why `frame()` clears traces
 
@@ -149,10 +158,10 @@ emission is a documented follow-up that would help.
 ## Standalone script
 
 A standalone version of the wave demo (no notebook prose, just the
-script) lives at `examples/animation_wave.rlab`. Run with:
+script) lives at `examples/plot/animation_wave.rlab`. Run with:
 
 ```sh
-cargo run --release -p rustlab-cli -- run examples/animation_wave.rlab
+cargo run --release -p rustlab-cli -- run examples/plot/animation_wave.rlab
 ```
 
 It writes both `gallery/animation_wave.html` (gitignored — open locally)

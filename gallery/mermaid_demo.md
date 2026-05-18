@@ -64,9 +64,12 @@ M = N / 4;
 print("Decimation: ${N} samples → ${M} samples")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 Decimation: ${N} samples → ${M} samples
 ```
+
+<!-- rustlab:output-end -->
 
 ```mermaid
 flowchart LR

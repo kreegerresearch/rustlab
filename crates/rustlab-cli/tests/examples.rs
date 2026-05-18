@@ -23,10 +23,14 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Run one example script in a fresh temp directory.
+/// `toolbox` is the subdir under `examples/` (e.g. "dsp", "math").
 /// Returns the process exit status.
-fn run_example(name: &str) -> std::process::ExitStatus {
+fn run_example(toolbox: &str, name: &str) -> std::process::ExitStatus {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join(format!("{name}.rlab"));
+    let script = workspace_root()
+        .join("examples")
+        .join(toolbox)
+        .join(format!("{name}.rlab"));
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     Command::new(bin)
@@ -37,16 +41,16 @@ fn run_example(name: &str) -> std::process::ExitStatus {
     // dir is dropped here → temp directory deleted automatically
 }
 
-fn run_example_ok(name: &str) {
-    let status = run_example(name);
-    assert!(status.success(), "example '{name}' exited with {status}");
+fn run_example_ok(toolbox: &str, name: &str) {
+    let status = run_example(toolbox, name);
+    assert!(status.success(), "example '{toolbox}/{name}' exited with {status}");
 }
 
 // ── Non-interactive examples ───────────────────────────────────────────────
 
 #[test]
 fn example_complex_basics() {
-    let status = run_example("complex_basics");
+    let status = run_example("math", "complex_basics");
     assert!(
         status.success(),
         "example 'complex_basics' exited with {status}"
@@ -55,39 +59,39 @@ fn example_complex_basics() {
 
 #[test]
 fn example_save_load() {
-    let status = run_example("save_load");
+    let status = run_example("language", "save_load");
     assert!(status.success(), "example 'save_load' exited with {status}");
 }
 
 #[test]
 fn example_firpm() {
-    run_example_ok("firpm");
+    run_example_ok("dsp", "firpm");
 }
 
 #[test]
 fn example_ml_activations() {
-    run_example_ok("ml_activations");
+    run_example_ok("math", "ml_activations");
 }
 
 #[test]
 fn example_matrix_ops() {
-    run_example_ok("matrix_ops");
+    run_example_ok("linalg", "matrix_ops");
 }
 
 #[test]
 fn example_stats() {
-    run_example_ok("stats");
+    run_example_ok("stats", "stats");
 }
 
 #[test]
 fn example_trig_special() {
-    run_example_ok("trig_special");
+    run_example_ok("math", "trig_special");
 }
 
 #[test]
 fn example_fixed_point() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("fixed_point.rlab");
+    let script = workspace_root().join("examples").join("dsp").join("fixed_point.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)
@@ -151,27 +155,27 @@ fn example_fixed_point() {
 
 #[test]
 fn example_functions() {
-    run_example_ok("functions");
+    run_example_ok("language", "functions");
 }
 #[test]
 fn example_lambda() {
-    run_example_ok("lambda");
+    run_example_ok("language", "lambda");
 }
 #[test]
 fn example_lambda_pipeline() {
-    run_example_ok("lambda_pipeline");
+    run_example_ok("language", "lambda_pipeline");
 }
 #[test]
 fn example_profiling() {
-    run_example_ok("profiling");
+    run_example_ok("language", "profiling");
 }
 #[test]
 fn example_upfirdn() {
-    run_example_ok("upfirdn");
+    run_example_ok("dsp", "upfirdn");
 }
 #[test]
 fn example_vectors() {
-    run_example_ok("vectors");
+    run_example_ok("language", "vectors");
 }
 
 // ── Plot-producing examples (render_figure_terminal is a no-op under `cargo
@@ -179,35 +183,35 @@ fn example_vectors() {
 //    is cleaned up automatically when the TempDir drops) ────────────────────
 #[test]
 fn example_bandpass() {
-    run_example_ok("bandpass");
+    run_example_ok("dsp", "bandpass");
 }
 #[test]
 fn example_fft() {
-    run_example_ok("fft");
+    run_example_ok("spectral", "fft");
 }
 #[test]
 fn example_kaiser_fir() {
-    run_example_ok("kaiser_fir");
+    run_example_ok("dsp", "kaiser_fir");
 }
 #[test]
 fn example_lowpass() {
-    run_example_ok("lowpass");
+    run_example_ok("dsp", "lowpass");
 }
 #[test]
 fn example_multi_figure() {
-    run_example_ok("multi_figure");
+    run_example_ok("plot", "multi_figure");
 }
 #[test]
 fn example_random() {
-    run_example_ok("random");
+    run_example_ok("math", "random");
 }
 #[test]
 fn example_toml_filter_chain() {
-    run_example_ok("toml_filter_chain");
+    run_example_ok("language", "toml_filter_chain");
 }
 #[test]
 fn example_toml_io() {
-    run_example_ok("toml_io");
+    run_example_ok("language", "toml_io");
 }
 
 // ── Interpreter banner ─────────────────────────────────────────────────────
@@ -219,7 +223,7 @@ fn example_toml_io() {
 #[test]
 fn run_banner_emits_rustlab_identifier_to_stderr() {
     let dir = TempDir::new().expect("failed to create temp dir");
-    let script = workspace_root().join("examples").join("eig.rlab");
+    let script = workspace_root().join("examples").join("linalg").join("eig.rlab");
     let bin = env!("CARGO_BIN_EXE_rustlab");
 
     let output = Command::new(bin)

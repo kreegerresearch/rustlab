@@ -19,7 +19,10 @@ hist(x, 40);
 title("randn(2000) — different every render")
 ```
 
-![plot 1](plots/seed/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/seed/plot-1-a22d29ad.svg)
+
+<!-- rustlab:output-end -->
 
 Without a `seed()` call this notebook produces a slightly different
 histogram every time `make notebooks` runs.
@@ -33,7 +36,10 @@ hist(x, 40);
 title("randn(2000) — seed(42), reproducible")
 ```
 
-![plot 2](plots/seed/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/seed/plot-2-56008511.svg)
+
+<!-- rustlab:output-end -->
 
 Re-running this block produces the *same* histogram every time. Combined
 with the inline-SVG markdown renderer, `git diff` after a re-render is

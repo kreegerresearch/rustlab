@@ -66,7 +66,10 @@ ylabel("dB")
 grid on
 ```
 
-![plot 1](plots/template_interpolation/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/template_interpolation/plot-1-5035065e.svg)
+
+<!-- rustlab:output-end -->
 
 Designed a **64-tap** FIR lowpass filter with cutoff at
 3000 Hz. The filter has 64 coefficients and its DC gain

@@ -4,7 +4,7 @@ This document walks through the scripts in `examples/` step by step.
 
 ---
 
-## `examples/complex_basics.rlab`
+## `examples/math/complex_basics.rlab`
 
 **Full script:**
 
@@ -57,12 +57,12 @@ savefig("complex_magnitude.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/complex_basics.rlab
+rustlab run examples/math/complex_basics.rlab
 ```
 
 ---
 
-## `examples/vectors.rlab`
+## `examples/language/vectors.rlab`
 
 **Full script:**
 
@@ -137,12 +137,12 @@ savefig("sinusoid_magnitude.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/vectors.rlab
+rustlab run examples/language/vectors.rlab
 ```
 
 ---
 
-## `examples/lowpass.rlab`
+## `examples/dsp/lowpass.rlab`
 
 **Full script:**
 
@@ -205,12 +205,12 @@ rustlab filter fir --taps 32 --cutoff 1000 --sr 44100 --window hann
 **Run it:**
 
 ```sh
-rustlab run examples/lowpass.rlab
+rustlab run examples/dsp/lowpass.rlab
 ```
 
 ---
 
-## `examples/bandpass.rlab`
+## `examples/dsp/bandpass.rlab`
 
 **Full script:**
 
@@ -274,12 +274,12 @@ savefig("bandpass_output.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/bandpass.rlab
+rustlab run examples/dsp/bandpass.rlab
 ```
 
 ---
 
-## `examples/fft.rlab`
+## `examples/spectral/fft.rlab`
 
 **Full script:**
 
@@ -353,12 +353,12 @@ savefig("fft_reconstructed.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/fft.rlab
+rustlab run examples/spectral/fft.rlab
 ```
 
 ---
 
-## `examples/save_load.rlab`
+## `examples/language/save_load.rlab`
 
 **Full script:**
 
@@ -447,12 +447,12 @@ print("Saved session_response.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/save_load.rlab
+rustlab run examples/language/save_load.rlab
 ```
 
 ---
 
-## `examples/kaiser_fir.rlab`
+## `examples/dsp/kaiser_fir.rlab`
 
 **Full script:**
 
@@ -565,12 +565,12 @@ Narrowing `tbw` (sharper transition) or increasing `attn` both increase the tap 
 **Run it:**
 
 ```sh
-rustlab run examples/kaiser_fir.rlab
+rustlab run examples/dsp/kaiser_fir.rlab
 ```
 
 ---
 
-## `examples/upfirdn.rlab`
+## `examples/dsp/upfirdn.rlab`
 
 Demonstrates the three fundamental use cases of `upfirdn`: interpolation,
 decimation, and rational sample-rate conversion. All three share the same
@@ -647,7 +647,7 @@ savefig("upfirdn_src32.svg")
 **Run it:**
 
 ```sh
-rustlab run examples/upfirdn.rlab
+rustlab run examples/dsp/upfirdn.rlab
 ```
 
 ---
@@ -753,7 +753,7 @@ end
 
 ---
 
-## `examples/vector_calc.rlab`
+## `examples/pde/vector_calc.rlab`
 
 **Full script:**
 
@@ -817,12 +817,12 @@ print(Fxc(11, 11))     # ≈ 0 + j
 **Run it:**
 
 ```sh
-rustlab run examples/vector_calc.rlab
+rustlab run examples/pde/vector_calc.rlab
 ```
 
 ---
 
-## `examples/tensor3/tensor3.rlab`
+## `examples/linalg/tensor3.rlab`
 
 **Full script:**
 
@@ -899,12 +899,12 @@ print(ndims(T_loaded))           # → 3
 **Run it:**
 
 ```sh
-rustlab run examples/tensor3/tensor3.rlab
+rustlab run examples/linalg/tensor3.rlab
 ```
 
 ---
 
-## `examples/contour.rlab`
+## `examples/plot/contour.rlab`
 
 **Full script:**
 
@@ -963,12 +963,12 @@ savefig("/tmp/rustlab_contour_overlay.html");
 **Run it:**
 
 ```sh
-rustlab run examples/contour.rlab
+rustlab run examples/plot/contour.rlab
 # Then open the generated files in /tmp/, e.g.:
 open /tmp/rustlab_contour_overlay.html
 ```
 
-## `examples/quiver.rlab`
+## `examples/plot/quiver.rlab`
 
 Arrow plots (`quiver`) and streamlines (`streamplot`) for 2-D vector fields, including uniform flow, vortex, saddle, custom seeds, and the canonical overlay patterns (|E|² heatmap with E arrows; equipotentials with field lines).
 
@@ -1027,13 +1027,13 @@ savefig("/tmp/rustlab_heatmap_quiver.html");
 ### Running
 
 ```sh
-rustlab run examples/quiver.rlab
+rustlab run examples/plot/quiver.rlab
 # Then open the generated files in /tmp/, e.g.:
 open /tmp/rustlab_heatmap_quiver.html
 open /tmp/rustlab_contour_stream.html
 ```
 
-## `examples/laplacian.rlab`
+## `examples/pde/laplacian.rlab`
 
 The canonical Poisson demo: build the 5-point sparse Laplacian on a uniform grid, solve `∇²V = ρ` with a known analytic source, verify the residual against the exact solution, and visualise the result.
 
@@ -1084,13 +1084,13 @@ print(err)       # → very small (< 1e-10)
 ### Running
 
 ```sh
-rustlab run examples/laplacian.rlab
+rustlab run examples/pde/laplacian.rlab
 open /tmp/rustlab_laplacian_solution.html
 ```
 
 ---
 
-## `examples/masks.rlab`
+## `examples/plot/masks.rlab`
 
 Shape rasterization on a meshgrid: `rect_mask`, `disk_mask`, `polygon_mask`, plus boolean composition for building material-map-style geometry.
 
@@ -1145,6 +1145,6 @@ print(sum(sum(unit_disk)) * step * step)    # → 3.135 (0.2% off π)
 ### Running
 
 ```sh
-rustlab run examples/masks.rlab
+rustlab run examples/plot/masks.rlab
 open /tmp/rustlab_mask_device.html
 ```

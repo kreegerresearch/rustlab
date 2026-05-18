@@ -31,10 +31,13 @@ print(issparse(A))       % → 1
 print(nnz(A))            % → ~12k (5-point stencil, modulo boundary trims)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 12300
 ```
+
+<!-- rustlab:output-end -->
 
 The matrix has $n = 2500$ unknowns and roughly 12 000 non-zeros — a
 0.2 % density. Densified, it's a 2500 × 2500 complex matrix taking
@@ -62,9 +65,12 @@ v_auto = spsolve(A, b);
 print(length(v_auto))    % → 2500
 ```
 
+<!-- rustlab:output-start -->
 ```text
 2500
 ```
+
+<!-- rustlab:output-end -->
 
 ## Forcing a path
 
@@ -84,10 +90,13 @@ print(norm(v_auto - v_chol))    % → ~0  (auto and forced agree exactly)
 print(norm(v_auto - v_lu))      % → ~1e-12 (different fp accumulation)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0
 0.0000000000000000053549056982446685
 ```
+
+<!-- rustlab:output-end -->
 
 ## Sparse LU on indefinite matrices
 
@@ -105,9 +114,12 @@ x = spsolve(S, [1; 1]);
 print(x)        % → [0.333, 0.333]   (LU path)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  0.333333  0.333333
 ```
+
+<!-- rustlab:output-end -->
 
 A larger indefinite assembly — say a shifted Helmholtz-like operator
 $-\nabla^2 + \alpha I$ with $\alpha$ large enough that the eigenvalues
@@ -143,7 +155,10 @@ imagesc(V);
 title("Poisson solution: -∇² V = δ at grid centre")
 ```
 
-![plot 1](plots/sparse_solve/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/sparse_solve/plot-1-dfa686a6.svg)
+
+<!-- rustlab:output-end -->
 
 The result is the canonical "potential of a point charge inside a
 grounded box" pattern: the potential peaks at the source cell and

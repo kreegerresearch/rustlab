@@ -34,10 +34,13 @@ print(issparse(A))    % → 1
 print(nnz(A))         % → ~17k for a 5-point stencil + diagonal shift
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 17760
 ```
+
+<!-- rustlab:output-end -->
 
 ## Driving a point source
 
@@ -58,9 +61,12 @@ V = reshape(v, ny, nx);
 print(size(V))         % → [60, 60]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  60.000000  60.000000
 ```
+
+<!-- rustlab:output-end -->
 
 The dispatch sequence is `auto → SPD pre-check fails (Hermitian violated
 by imaginary diagonal) → sparse LU with partial pivoting and AMD
@@ -84,7 +90,10 @@ imagesc(real(V));
 title("Re(V) — standing-wave pattern with loss")
 ```
 
-![plot 1](plots/sparse_complex/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/sparse_complex/plot-1-9d79cf67.svg)
+
+<!-- rustlab:output-end -->
 
 The real part shows a damped standing-wave centred on the source —
 concentric rings whose amplitude decays radially due to $\alpha$.
@@ -95,7 +104,10 @@ imagesc(imag(V));
 title("Im(V) — out-of-phase response")
 ```
 
-![plot 2](plots/sparse_complex/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/sparse_complex/plot-2-0fb1266d.svg)
+
+<!-- rustlab:output-end -->
 
 The imaginary part is the phase-quadrature companion: zero where the
 real part peaks, and vice versa. Without the loss term it would be
@@ -108,7 +120,10 @@ imagesc(abs(V));
 title("|V| — phasor magnitude")
 ```
 
-![plot 3](plots/sparse_complex/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/sparse_complex/plot-3-8415fb20.svg)
+
+<!-- rustlab:output-end -->
 
 The magnitude $|V|$ is the smoothest of the three plots — radial
 falloff from the source, with the standing-wave structure averaged
@@ -121,9 +136,12 @@ r = A * transpose(v) - b;
 print(norm(r))      % → ~1e-14
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.000000000000009661377855580665
 ```
+
+<!-- rustlab:output-end -->
 
 Convert the row-vector solve result to a column vector (`transpose`,
 not the conjugate-transpose `'`) and check $\|A v - b\|$. The residual
@@ -150,10 +168,13 @@ print(x);
 print(norm(H * x' - b))                   % residual
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×3]  0.042857-0.128571j  0.628571-0.242857j  -0.200000-0.028571j
 3.0145226717965663
 ```
+
+<!-- rustlab:output-end -->
 
 ## Cheat sheet
 

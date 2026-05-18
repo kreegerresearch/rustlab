@@ -22,9 +22,12 @@ V = X;
 print(size(U))     % → [16, 16]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  16.000000  16.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ## Arrows with `quiver`
 
@@ -39,7 +42,10 @@ title("Vortex: (-y, x)")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 1](plots/vector_fields/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/vector_fields/plot-1-a6ae9d76.svg)
+
+<!-- rustlab:output-end -->
 
 Pass a scalar to scale the auto-sized arrows — useful when you want
 longer or shorter glyphs on top of the auto-scale:
@@ -51,7 +57,10 @@ title("Half-length arrows")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 2](plots/vector_fields/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/vector_fields/plot-2-2b4f0d2c.svg)
+
+<!-- rustlab:output-end -->
 
 ## The 2-argument shortcut
 
@@ -64,7 +73,10 @@ quiver(U, V)
 title("quiver(U, V) — indexed axes")
 ```
 
-![plot 3](plots/vector_fields/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/vector_fields/plot-3-6a9d8009.svg)
+
+<!-- rustlab:output-end -->
 
 ## Streamlines with `streamplot`
 
@@ -80,7 +92,10 @@ title("Vortex streamlines")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 4](plots/vector_fields/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/vector_fields/plot-4-e37dd03b.svg)
+
+<!-- rustlab:output-end -->
 
 Saddle fields $\mathbf{F} = (x, -y)$ produce hyperbolic streamlines
 emanating from and flowing into the saddle point:
@@ -95,7 +110,10 @@ title("Saddle: (x, -y)")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 5](plots/vector_fields/plot-5.svg)
+<!-- rustlab:output-start -->
+![plot 5](plots/vector_fields/plot-5-fe1439b5.svg)
+
+<!-- rustlab:output-end -->
 
 ## Controlling seed density
 
@@ -108,7 +126,10 @@ streamplot(X, Y, Us, Vs, 0.4)
 title("Sparse streamlines (density = 0.4)")
 ```
 
-![plot 6](plots/vector_fields/plot-6.svg)
+<!-- rustlab:output-start -->
+![plot 6](plots/vector_fields/plot-6-76b17b65.svg)
+
+<!-- rustlab:output-end -->
 
 ## Custom seeds
 
@@ -123,7 +144,10 @@ streamplot(X, Y, Us, Vs, seeds)
 title("Three seeded streamlines")
 ```
 
-![plot 7](plots/vector_fields/plot-7.svg)
+<!-- rustlab:output-start -->
+![plot 7](plots/vector_fields/plot-7-f5964283.svg)
+
+<!-- rustlab:output-end -->
 
 ## The canonical EM diagram: $|\mathbf{E}|^2$ + arrows
 
@@ -148,7 +172,10 @@ title("|E|² with E arrows")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 8](plots/vector_fields/plot-8.svg)
+<!-- rustlab:output-start -->
+![plot 8](plots/vector_fields/plot-8-1335ae18.svg)
+
+<!-- rustlab:output-end -->
 
 Under `hold on`, the chart bounds come from the first quiver or contour,
 and the heatmap cells rescale to fit. Switching to `hold off` for the next
@@ -169,7 +196,10 @@ title("Equipotentials of V + field lines of E")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 9](plots/vector_fields/plot-9.svg)
+<!-- rustlab:output-start -->
+![plot 9](plots/vector_fields/plot-9-bf147cdc.svg)
+
+<!-- rustlab:output-end -->
 
 ## NaN handling
 

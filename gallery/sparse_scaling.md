@@ -61,7 +61,10 @@ xlabel("log10(unknowns)");
 ylabel("log10(time s)")
 ```
 
-![plot 1](plots/sparse_scaling/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/sparse_scaling/plot-1-16438998.svg)
+
+<!-- rustlab:output-end -->
 
 The dense curve goes vertical at the right; the sparse curves stay
 straight all the way out, with sparse Cholesky / Identity sitting
@@ -88,11 +91,14 @@ mem_mb = factor_nnz .* 20 / (1024 * 1024);
 print(mem_mb)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×6]  0.506153  4.386425  15.216579  36.572933  125.169277  298.785686
 ```
 
-![plot 2](plots/sparse_scaling/plot-2.svg)
+![plot 2](plots/sparse_scaling/plot-2-16438998.svg)
+
+<!-- rustlab:output-end -->
 
 For 200×200 (40 000 unknowns), the Cholesky factor takes about 300 MB
 — the dense matrix would be 25 GB. Three orders of magnitude.
@@ -105,13 +111,16 @@ print(t_dense(3) / t_chol_amd(3))    % → ~750x   (chol/amd vs dense)
 print(t_dense(3) / t_lu_amd(3))      % → ~240x   (lu/amd vs dense)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 3892.666666666667
 745.4042553191489
 239.95890410958904
 ```
 
-![plot 3](plots/sparse_scaling/plot-3.svg)
+![plot 3](plots/sparse_scaling/plot-3-16438998.svg)
+
+<!-- rustlab:output-end -->
 
 A 75×75 Lesson-05 Poisson on a laptop took 35 seconds before; now it
 finishes in 9 milliseconds.
@@ -132,7 +141,10 @@ xlabel("Unknowns (N)");
 ylabel("AMD time / Identity time")
 ```
 
-![plot 4](plots/sparse_scaling/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/sparse_scaling/plot-4-e84e06d7.svg)
+
+<!-- rustlab:output-end -->
 
 The ratio settles around 5–6× across grid sizes. The reason: identity
 ordering on a column-major-flattened grid is already nearly optimal

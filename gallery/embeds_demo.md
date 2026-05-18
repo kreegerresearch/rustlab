@@ -46,11 +46,14 @@ disp(sprintf("N  = %d",    N))
 disp(sprintf("x is %d samples", length(x)))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 Fs = 48000 Hz
 N  = 1024
 x is 1024 samples
 ```
+
+<!-- rustlab:output-end -->
 
 ## 2. Use the embedded variables
 
@@ -67,7 +70,10 @@ title("Spectrum of test signal from _setup.md")
 grid on
 ```
 
-![plot 1](plots/embeds_demo/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/embeds_demo/plot-1-70d30018.svg)
+
+<!-- rustlab:output-end -->
 
 The single tone defined in `_setup.md` shows up as a peak at 3 kHz.
 

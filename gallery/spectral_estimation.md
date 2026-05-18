@@ -25,7 +25,10 @@ xlabel("Sample")
 grid on
 ```
 
-![plot 1](plots/spectral_estimation/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/spectral_estimation/plot-1-96477506.svg)
+
+<!-- rustlab:output-end -->
 
 ## Direct FFT (Periodogram)
 
@@ -45,7 +48,10 @@ ylabel("Power (dB)")
 grid on
 ```
 
-![plot 2](plots/spectral_estimation/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/spectral_estimation/plot-2-160a0c9b.svg)
+
+<!-- rustlab:output-end -->
 
 Both tones are visible, but the periodogram is noisy due to spectral
 leakage from the implicit rectangular window.
@@ -69,26 +75,89 @@ ylabel("Power (dB)")
 grid on
 ```
 
-![plot 3](plots/spectral_estimation/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/spectral_estimation/plot-3-6be10880.svg)
+
+<!-- rustlab:output-end -->
 
 The noise floor drops and the two tones at $f_1$ and $f_2$ are clearly
 resolved.
 
+## Welch's Method
+
+A windowed periodogram is still based on one segment, so its variance
+is fixed. **Welch's method** splits the signal into overlapping
+segments, windows each, computes a periodogram per segment, and
+averages them:
+
+$$\hat{P}_{\text{welch}}[k] = \frac{1}{K} \sum_{i=0}^{K-1} \hat{P}_{ww}^{(i)}[k]$$
+
+Averaging $K$ independent (or near-independent) periodograms cuts the
+variance by roughly $1/K$ at the cost of widening each effective
+frequency bin. The `pwelch` builtin handles the segmentation,
+windowing, and averaging in one call.
+
+```rustlab
+[Pw, fw] = pwelch(x, 1.0)
+plot(fw, 10*log10(Pw))
+title("Welch's PSD")
+xlabel("Frequency (cycles/sample)")
+ylabel("dB/Hz")
+grid on
+```
+
+<!-- rustlab:output-start -->
+![plot 4](plots/spectral_estimation/plot-4-e9686d4e.svg)
+
+<!-- rustlab:output-end -->
+
+Defaults match MATLAB's `pwelch`: a **Hamming** window of length
+$\lfloor 2N/9 \rfloor$ (so the signal divides into eight segments at
+50 % overlap), `nfft` equal to the segment length, no detrending, and
+one-sided output for real input. Calling `pwelch(x, fs)` without
+capture would auto-plot the dB PSD on the current subplot; the
+multi-return form `[Pw, fw] = ...` captures the data without plotting.
+
 ## Comparison
 
 ```rustlab
-subplot(2,1,1)
+subplot(3,1,1)
 plot(f, 10*log10(Pxx))
-title("Rectangular Window"); ylabel("dB"); grid on
-subplot(2,1,2)
+title("Periodogram (no window)"); ylabel("dB"); grid on
+subplot(3,1,2)
 plot(f, 10*log10(Pww))
-title("Hann Window"); ylabel("dB"); xlabel("Frequency"); grid on
+title("Hann-Windowed Periodogram"); ylabel("dB"); grid on
+subplot(3,1,3)
+plot(fw, 10*log10(Pw))
+title("Welch's PSD (Hamming, 8 segments)"); ylabel("dB"); xlabel("Frequency"); grid on
 ```
 
-![plot 4](plots/spectral_estimation/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 5](plots/spectral_estimation/plot-5-0914c71a.svg)
+
+<!-- rustlab:output-end -->
+
+The two tones become progressively easier to read as we move from raw
+periodogram to windowed periodogram to Welch averaging — at the cost
+of frequency resolution (fewer bins on the x-axis under pwelch).
+
+| Method                 | Variance Reduction | Frequency Resolution |
+|------------------------|--------------------|----------------------|
+| Periodogram            | None               | Highest              |
+| Hann-Windowed          | None               | Slightly reduced     |
+| Welch's PSD (`pwelch`) | ~ $1/K$ for $K$ segments | Reduced by ~$1/K$ |
 
 | Window      | Main Lobe Width | First Sidelobe |
 |-------------|-----------------|----------------|
 | Rectangular | $2/N$           | $-13$ dB       |
 | Hann        | $4/N$           | $-31$ dB       |
+| Hamming     | $4/N$           | $-41$ dB       |
+
+## See also
+
+`pwelch` assumes the signal is stationary — its spectrum doesn't change
+with time. When that assumption breaks (chirps, transients, speech,
+modulated RF) reach for the **Short-Time Fourier Transform** and its
+heatmap visualisation, the spectrogram. See the companion notebook
+[Time-Frequency Analysis](time_frequency.md).
 

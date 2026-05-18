@@ -20,9 +20,12 @@ y = linspace(-3, 3, 60);
 print(size(X))     % → [60, 60]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  60.000000  60.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ## A Gaussian bump
 
@@ -38,7 +41,10 @@ title("Gaussian: exp(-(x^2 + y^2) / 2)")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 1](plots/surface_plots/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/surface_plots/plot-1-f7f99760.svg)
+
+<!-- rustlab:output-end -->
 
 In the terminal this falls back to a heatmap of $Z$; in HTML (and in the
 rendered notebook) you get an interactive 3D surface.
@@ -57,7 +63,10 @@ title("Saddle: x^2 - y^2")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 2](plots/surface_plots/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/surface_plots/plot-2-f700546d.svg)
+
+<!-- rustlab:output-end -->
 
 `surf(X, Y, Z, "jet")` overrides the default `"viridis"` colormap. The full
 set is `"viridis"`, `"jet"`, `"hot"`, `"gray"`.
@@ -75,7 +84,10 @@ title("sin(r^2) / r^2 ripples")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 3](plots/surface_plots/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/surface_plots/plot-3-c7a45992.svg)
+
+<!-- rustlab:output-end -->
 
 ## surf(Z) — matrices as surfaces
 
@@ -89,7 +101,10 @@ surf(W)                      % 1-arg form: axes default to 1..ncols, 1..nrows
 title("Separable 2-D Hann window")
 ```
 
-![plot 4](plots/surface_plots/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/surface_plots/plot-4-63c53770.svg)
+
+<!-- rustlab:output-end -->
 
 The 1-arg `surf(Z)` form is the right call here: `outer(hann, hann)` starts
 its first row and column with zeros (because `hann[0] = 0`), so passing

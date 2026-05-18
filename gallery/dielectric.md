@@ -40,7 +40,10 @@ imagesc(real(eps_map));
 title("Relative permittivity ε_r")
 ```
 
-![plot 1](plots/dielectric/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/dielectric/plot-1-bb488bfa.svg)
+
+<!-- rustlab:output-end -->
 
 The interface at $j = 50$ is sharp — a step from 1 to 4.
 
@@ -52,10 +55,13 @@ print(issparse(A))    % → 1
 print(nnz(A))         % → ~50k
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 49600
 ```
+
+<!-- rustlab:output-end -->
 
 `laplacian_eps_2d` returns $+\nabla \cdot (\varepsilon \nabla)$, so we
 negate to get an SPD operator that auto-routes to sparse Cholesky.
@@ -74,7 +80,10 @@ imagesc(real(V));
 title("Potential V — point charge in vacuum next to dielectric slab")
 ```
 
-![plot 2](plots/dielectric/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/dielectric/plot-2-563c24e7.svg)
+
+<!-- rustlab:output-end -->
 
 Two things to notice:
 
@@ -108,7 +117,10 @@ quiver(Xc, Yc, Exc, Eyc);
 title("|E| with field arrows — interface jump at j = 50")
 ```
 
-![plot 3](plots/dielectric/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/dielectric/plot-3-38631b0c.svg)
+
+<!-- rustlab:output-end -->
 
 Inside the dielectric, the field magnitude is reduced by a factor of
 $\varepsilon_r = 4$ relative to what it would be in pure vacuum. The
@@ -124,11 +136,14 @@ A_lap     = laplacian_2d(nx, ny, dx, dy);
 print(norm(full(A_eps_unit) - full(A_lap)))    % → 0
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0
 ```
 
-![plot 4](plots/dielectric/plot-4.svg)
+![plot 4](plots/dielectric/plot-4-38631b0c.svg)
+
+<!-- rustlab:output-end -->
 
 When the material is uniform, the harmonic mean of two equal values is
 just the value itself, and the variable-coefficient form collapses

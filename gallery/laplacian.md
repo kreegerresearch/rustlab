@@ -18,10 +18,13 @@ print(issparse(L))
 print(nnz(L))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 82
 ```
+
+<!-- rustlab:output-end -->
 
 The returned $L$ is `(nx·ny) × (nx·ny)` sparse. For the 5×4 grid above,
 that's 20×20 with 5 non-zeros per interior row (self + 4 neighbours) and
@@ -88,9 +91,12 @@ rel_err = norm(v_solved' - v_exact) / norm(v_exact);
 print(rel_err)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.0000000000000014384367113005385
 ```
+
+<!-- rustlab:output-end -->
 
 You should see a residual on the order of `1e-15` — machine precision.
 
@@ -115,7 +121,10 @@ title("Point-source potential")
 xlabel("j"); ylabel("i")
 ```
 
-![plot 1](plots/laplacian/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/laplacian/plot-1-aed483ff.svg)
+
+<!-- rustlab:output-end -->
 
 The monotone decay away from the central cell is the discrete Green's
 function — the same shape you'd see from a point charge in 2-D.

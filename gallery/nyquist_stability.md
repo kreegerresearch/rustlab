@@ -33,11 +33,14 @@ nyquist(G1)
 title("First-order: G(s) = 1/(s+1)")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 ([1×1991]  0.999900  0.999899  0.999898  0.999897  0.999896  0.999895  0.999894  0.999893  ... (1991 total), [1×1991]  -0.009999  -0.010045  -0.010092  -0.010139  -0.010186  -0.010233  -0.010281  -0.010328  ... (1991 total), [1×1991]  0.010000  0.010046  0.010093  0.010140  0.010187  0.010234  0.010282  0.010329  ... (1991 total))
 ```
 
-![plot 1](plots/nyquist_stability/plot-1.svg)
+![plot 1](plots/nyquist_stability/plot-1-f559a5dc.svg)
+
+<!-- rustlab:output-end -->
 
 The locus is a circle of radius $0.5$ centered at $(0.5, 0)$. Algebraically,
 $G(j\omega) = 1/(1 + j\omega) = (1 - j\omega) / (1 + \omega^2)$ has
@@ -63,11 +66,14 @@ nyquist(G2)
 title("Lightly damped: G(s) = 1/(s² + 0.3s + 1)")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 ([1×1082]  1.000091  1.000100  1.000110  1.000120  1.000132  1.000145  1.000159  1.000174  ... (1082 total), [1×1082]  -0.003001  -0.003143  -0.003292  -0.003448  -0.003611  -0.003782  -0.003962  -0.004149  ... (1082 total), [1×1082]  0.010000  0.010474  0.010970  0.011490  0.012034  0.012604  0.013201  0.013826  ... (1082 total))
 ```
 
-![plot 2](plots/nyquist_stability/plot-2.svg)
+![plot 2](plots/nyquist_stability/plot-2-fb51ed54.svg)
+
+<!-- rustlab:output-end -->
 
 This locus dips much closer to $-1$. Damping ratio $\zeta = 0.15$ is
 the textbook "sharp resonance" regime; the closest approach happens
@@ -83,12 +89,15 @@ fprintf("min |1+G| = %.4f at omega = %.4f rad/s\n", d_min, w(k_min));
 fprintf("Sensitivity peak Ms = %.3f\n", Ms);
 ```
 
+<!-- rustlab:output-start -->
 ```text
 min |1+G| = 0.3768 at omega = 1.4548 rad/s
 Sensitivity peak Ms = 2.654
 ```
 
-![plot 3](plots/nyquist_stability/plot-3.svg)
+![plot 3](plots/nyquist_stability/plot-3-dcc245fc.svg)
+
+<!-- rustlab:output-end -->
 
 $M_S \approx 2.65$ — a sensitivity peak of more than 8 dB above unity,
 which means disturbances near the resonance frequency are amplified
@@ -119,11 +128,14 @@ nyquist(L)
 title("LQR loop: locus stays outside the unit disk around -1")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 ([1×1856]  0.414292  0.414292  0.414293  0.414294  0.414295  0.414295  0.414296  0.414297  ... (1856 total), [1×1856]  0.007346  0.007380  0.007414  0.007449  0.007483  0.007518  0.007553  0.007588  ... (1856 total), [1×1856]  0.010000  0.010046  0.010093  0.010140  0.010187  0.010234  0.010282  0.010329  ... (1856 total))
 ```
 
-![plot 4](plots/nyquist_stability/plot-4.svg)
+![plot 4](plots/nyquist_stability/plot-4-64900f65.svg)
+
+<!-- rustlab:output-end -->
 
 Then quantify it:
 
@@ -133,11 +145,14 @@ d = sqrt((re + 1).^2 + im.^2);
 fprintf("min |1+L(jw)| over the grid = %.4f\n", min(d));
 ```
 
+<!-- rustlab:output-start -->
 ```text
 min |1+L(jw)| over the grid = 1.0001
 ```
 
-![plot 5](plots/nyquist_stability/plot-5.svg)
+![plot 5](plots/nyquist_stability/plot-5-56a7a0ab.svg)
+
+<!-- rustlab:output-end -->
 
 The loop transfer satisfies $|1 + L(j\omega)| \geq 1$ on the entire
 sampled grid. For an LQR design this isn't a numerical coincidence —
@@ -161,11 +176,14 @@ nyquist(1 / tf("s"))
 title("Pure integrator: G(s) = 1/s")
 ```
 
+<!-- rustlab:output-start -->
 ```text
 ([1×1208]  0.000000  0.000000  0.000000  0.000000  0.000000  0.000000  0.000000  0.000000  ... (1208 total), [1×1208]  -100.000000  -95.477161  -91.158883  -87.035914  -83.099419  -79.340967  -75.752503  -72.326339  ... (1208 total), [1×1208]  0.010000  0.010474  0.010970  0.011490  0.012034  0.012604  0.013201  0.013826  ... (1208 total))
 ```
 
-![plot 6](plots/nyquist_stability/plot-6.svg)
+![plot 6](plots/nyquist_stability/plot-6-9d55a725.svg)
+
+<!-- rustlab:output-end -->
 
 The textbook Nyquist contour for an integrator includes a small
 indentation around $s = 0$ to keep the contour well-defined. The
@@ -193,12 +211,15 @@ fprintf("max |re_s - re_t| = %.2e\n", max(abs(re_s - re_t)));
 fprintf("max |im_s - im_t| = %.2e\n", max(abs(im_s - im_t)));
 ```
 
+<!-- rustlab:output-start -->
 ```text
 max |re_s - re_t| = 0.00e+00
 max |im_s - im_t| = 0.00e+00
 ```
 
-![plot 7](plots/nyquist_stability/plot-7.svg)
+![plot 7](plots/nyquist_stability/plot-7-8bae1de0.svg)
+
+<!-- rustlab:output-end -->
 
 The two paths agree to machine precision.
 

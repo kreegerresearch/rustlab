@@ -20,9 +20,12 @@ clf
 print(size(X))     % → [41, 41]    rows = y, cols = x
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  41.000000  41.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ## 2-D gradient — `[Fx, Fy] = gradient(F, dx, dy)`
 
@@ -45,12 +48,15 @@ print(Fx(41, 41))         % ≈ 2
 print(Fy(41, 41))         % ≈ 2
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.0000000000000002255140518769849
 0.0000000000000002255140518769849
 3.9999999999999813
 3.9999999999999813
 ```
+
+<!-- rustlab:output-end -->
 
 `gradient(F)` without `dx`, `dy` defaults both to 1. The result is a tuple
 `[Fx, Fy]` you destructure with `[a, b] = ...`.
@@ -66,10 +72,13 @@ print(D(21, 21))          % ≈ 2 (interior)
 print(D(1, 1))            % ≈ 2 (boundary one-sided is exact for linears)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1.9999999999999996
 2.000000000000004
 ```
+
+<!-- rustlab:output-end -->
 
 ## 2-D scalar curl — `Cz = curl(Fx, Fy, dx, dy)`
 
@@ -85,10 +94,13 @@ Cz_rad = curl(X, Y, 0.1, 0.1);
 print(Cz_rad(21, 21))     % ≈ 0
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1.9999999999999996
 0
 ```
+
+<!-- rustlab:output-end -->
 
 ## Composition: $\nabla \cdot (\nabla V) = \nabla^2 V$
 
@@ -101,9 +113,12 @@ laplV = divergence(Vx, Vy, 0.1, 0.1);
 print(laplV(21, 21))      % ≈ 4
 ```
 
+<!-- rustlab:output-start -->
 ```text
 4.0000000000000036
 ```
+
+<!-- rustlab:output-end -->
 
 ## Visualising a gradient field
 
@@ -118,7 +133,10 @@ title("Equipotentials of x² + y²")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 1](plots/vector_calculus/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/vector_calculus/plot-1-c24e872e.svg)
+
+<!-- rustlab:output-end -->
 
 In notebook output the figure renders as an interactive Plotly contour
 chart; the same call from `rustlab run` would also accept `savefig` to
@@ -136,10 +154,13 @@ print(Fxc(21, 21))                        % ≈ j·exp(0) = 0 + j
 print(Fyc(21, 21))                        % ≈ 0
 ```
 
+<!-- rustlab:output-start -->
 ```text
 -0.0000000000000005551115123125783+0.9983341664682812j
 0
 ```
+
+<!-- rustlab:output-end -->
 
 ## 3-D gradient / divergence / curl
 
@@ -171,9 +192,12 @@ end
 print(size(X3))                            % → [5, 5, 5]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×3]  5.000000  5.000000  5.000000
 ```
+
+<!-- rustlab:output-end -->
 
 For $F = x^2 + y^2 + z^2$ the analytic gradient is $(2x, 2y, 2z)$, the
 divergence of $(x, y, z)$ is $3$, and the curl of solid rotation
@@ -196,6 +220,7 @@ Zero3 = zeros3(ny3, nx3, nz3);
 print(Cz3(3, 3, 3))                        % ≈ 2
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 1
@@ -203,6 +228,8 @@ print(Cz3(3, 3, 3))                        % ≈ 2
 3
 2
 ```
+
+<!-- rustlab:output-end -->
 
 ## Cheat sheet
 

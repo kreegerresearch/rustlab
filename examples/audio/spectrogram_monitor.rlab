@@ -55,8 +55,8 @@ while true
 
     n_new = size(S_new, 2);
     if n_new > 0
-        # New columns in dB; clamp magnitude floor so log10 stays finite
-        S_new_db = 20 * log10(max(abs(S_new), 1e-12));
+        # New columns in dB; additive epsilon keeps log10 finite at silence
+        S_new_db = 20 * log10(abs(S_new) + 1e-12);
 
         # Scroll the display left by n_new columns, append the new ones
         if n_new >= n_cols_visible

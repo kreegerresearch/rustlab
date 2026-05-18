@@ -6,24 +6,25 @@
 //! have to launch the REPL just to look up `eig` or `firpm`.
 //!
 //! Surface:
-//! - `rustlab docs`                — list every builtin grouped by category
+//! - `rustlab docs`                — list every builtin grouped by toolbox
 //! - `rustlab docs <name>`         — show the detail block for one builtin
-//! - `rustlab docs <category>`     — list a single category
+//! - `rustlab docs <toolbox>`      — list a single toolbox (e.g. `dsp`, `rf`)
 //! - `rustlab docs --search <q>`   — substring search over names + briefs
 //! - `rustlab docs --json`         — machine-readable dump (for tooling/LLMs)
 //!
-//! All four flow through the same `HELP` and `CATEGORIES` data that
-//! `commands/repl.rs` already owns.
+//! All four flow through the `HELP` array and `CATEGORIES` toolbox table
+//! that `commands/repl.rs` owns.
 
 use anyhow::Result;
 use clap::Args;
 
-use crate::commands::repl::{HelpEntry, CATEGORIES, HELP};
+use crate::commands::repl::{category_of, subcategory_of, HelpEntry, HELP};
 
 #[derive(Args)]
 pub struct DocsArgs {
-    /// Builtin function name (e.g. `eig`, `firpm`) or category (e.g. `Plotting`).
-    /// When omitted, prints the full categorised list.
+    /// Builtin function name (e.g. `eig`, `firpm`), toolbox (e.g. `dsp`,
+    /// `rf`, `plot`), or subcategory string. When omitted, prints the full
+    /// toolbox-grouped list.
     pub topic: Option<String>,
 
     /// Substring search over function names and briefs. Lists every entry
@@ -32,8 +33,8 @@ pub struct DocsArgs {
     pub search: Option<String>,
 
     /// Emit the full help index as JSON (one object per builtin, with
-    /// `name`, `brief`, `detail`, and `category` fields). Useful for
-    /// editor extensions, autocomplete plugins, and AI tooling.
+    /// `name`, `toolbox`, `subcategory`, `brief`, `detail` fields).
+    /// Useful for editor extensions, autocomplete plugins, and AI tooling.
     #[arg(long, conflicts_with_all = ["topic", "search"])]
     pub json: bool,
 }
@@ -93,24 +94,12 @@ fn search(query: &str) -> Result<()> {
     Ok(())
 }
 
-/// Map a builtin name to its category (the first category that lists it),
-/// or `"Uncategorized"` if it doesn't appear in any list. Used by the JSON
-/// export so consumers can group without re-implementing the categories
-/// table on their side.
-fn category_of(name: &str) -> &'static str {
-    for (cat, entries) in CATEGORIES {
-        if entries.iter().any(|n| *n == name) {
-            return cat;
-        }
-    }
-    "Uncategorized"
-}
-
 fn emit_json() -> Result<()> {
     #[derive(serde::Serialize)]
     struct JsonEntry<'a> {
         name: &'a str,
-        category: &'a str,
+        toolbox: &'a str,
+        subcategory: &'a str,
         brief: &'a str,
         detail: &'a str,
     }
@@ -118,7 +107,8 @@ fn emit_json() -> Result<()> {
         .iter()
         .map(|e| JsonEntry {
             name: e.name,
-            category: category_of(e.name),
+            toolbox: category_of(e.name),
+            subcategory: subcategory_of(e.name),
             brief: e.brief,
             detail: e.detail,
         })

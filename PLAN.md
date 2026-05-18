@@ -125,7 +125,7 @@ c = a * b             # complex multiply
 4. **`rustlab-plot`** — ratatui charts (real, complex, stem)
 5. **`rustlab-script`** — lexer → parser → `Value` enum → `BuiltinRegistry` → evaluator
 6. **`rustlab-cli`** — wire all subcommands; `run` delegates to script engine
-7. **Example scripts** — `examples/lowpass.rlab`, `examples/bandpass.rlab`, `examples/complex_basics.rlab`
+7. **Example scripts** — `examples/dsp/lowpass.rlab`, `examples/dsp/bandpass.rlab`, `examples/math/complex_basics.rlab`
 8. **Documentation** — `README.md` (quickstart + syntax reference) + `docs/examples.md`
 
 ---
@@ -135,7 +135,7 @@ c = a * b             # complex multiply
 ```sh
 cargo build --workspace
 cargo test --workspace
-rustlab run examples/lowpass.rlab
+rustlab run examples/dsp/lowpass.rlab
 rustlab filter fir --taps 32 --cutoff 1000 --sr 44100 --type low --window hann
 rustlab window --type hann --length 64
 ```

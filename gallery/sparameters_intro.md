@@ -28,7 +28,7 @@ constructor takes a Tensor3 + frequency vector:
 clf
 f = [1e9, 2e9, 3e9, 4e9, 5e9, 6e9];
 % Hand-picked magnitude / angle table (matches the bundled
-% examples/sparameters/data/lna_demo.s2p):
+% examples/rf/data/lna_demo.s2p):
 mag = [0.50  2.50  0.05  0.40;
        0.45  3.00  0.06  0.38;
        0.40  3.20  0.07  0.36;
@@ -300,7 +300,7 @@ smith(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 8](plots/sparameters_intro/plot-8-6e854f64.svg)
+![plot 8](plots/sparameters_intro/plot-8-6627fc86.svg)
 
 <!-- rustlab:output-end -->
 
@@ -330,7 +330,7 @@ marker(1,  "open")        % right edge
 ```
 
 <!-- rustlab:output-start -->
-![plot 9](plots/sparameters_intro/plot-9-63203e63.svg)
+![plot 9](plots/sparameters_intro/plot-9-44966f2b.svg)
 
 <!-- rustlab:output-end -->
 
@@ -346,7 +346,7 @@ title("S21 locus")
 ```
 
 <!-- rustlab:output-start -->
-![plot 10](plots/sparameters_intro/plot-10-36cdf1ef.svg)
+![plot 10](plots/sparameters_intro/plot-10-48b491ad.svg)
 
 <!-- rustlab:output-end -->
 
@@ -367,7 +367,7 @@ smith(s, "grid", "ZY")
 ```
 
 <!-- rustlab:output-start -->
-![plot 11](plots/sparameters_intro/plot-11-33de60e1.svg)
+![plot 11](plots/sparameters_intro/plot-11-ddb390d5.svg)
 
 <!-- rustlab:output-end -->
 
@@ -389,7 +389,7 @@ title("|Γ| = 0.5 circle")
 ```
 
 <!-- rustlab:output-start -->
-![plot 12](plots/sparameters_intro/plot-12-e845af4c.svg)
+![plot 12](plots/sparameters_intro/plot-12-fa2f3052.svg)
 
 <!-- rustlab:output-end -->
 
@@ -407,7 +407,7 @@ suffix is the convention.
 
 ```rustlab
 % Save and re-read from a scratch path. (The repo ships a bundled
-% example at examples/sparameters/data/lna_demo.s2p that you can load
+% example at examples/rf/data/lna_demo.s2p that you can load
 % with `sparameters("path/to/file.s2p")` directly when running outside
 % the notebook renderer.)
 tmp = "/tmp/lna_copy.s2p";
@@ -445,6 +445,6 @@ toolbox. The companion notebook `amplifier_analysis.md` continues with:
   `smm2s`).
 
 Together the two notebooks cover the full toolbox surface; the standalone
-runnable scripts in `examples/sparameters/` are organised by phase if
+runnable scripts in `examples/rf/` are organised by phase if
 you want a smaller starting point per topic.
 

@@ -26,7 +26,7 @@ constructor takes a Tensor3 + frequency vector:
 clf
 f = [1e9, 2e9, 3e9, 4e9, 5e9, 6e9];
 % Hand-picked magnitude / angle table (matches the bundled
-% examples/sparameters/data/lna_demo.s2p):
+% examples/rf/data/lna_demo.s2p):
 mag = [0.50  2.50  0.05  0.40;
        0.45  3.00  0.06  0.38;
        0.40  3.20  0.07  0.36;
@@ -302,7 +302,7 @@ suffix is the convention.
 
 ```rustlab
 % Save and re-read from a scratch path. (The repo ships a bundled
-% example at examples/sparameters/data/lna_demo.s2p that you can load
+% example at examples/rf/data/lna_demo.s2p that you can load
 % with `sparameters("path/to/file.s2p")` directly when running outside
 % the notebook renderer.)
 tmp = "/tmp/lna_copy.s2p";
@@ -333,5 +333,5 @@ toolbox. The companion notebook `amplifier_analysis.md` continues with:
   `smm2s`).
 
 Together the two notebooks cover the full toolbox surface; the standalone
-runnable scripts in `examples/sparameters/` are organised by phase if
+runnable scripts in `examples/rf/` are organised by phase if
 you want a smaller starting point per topic.

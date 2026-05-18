@@ -14,12 +14,12 @@ fn docs_lists_categories_and_entries() {
     let out = rustlab().arg("docs").output().expect("docs runs");
     assert!(out.status.success(), "docs exited with {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // Spot-check that several known category headers are present in the output.
-    for cat in ["Math", "Plotting", "Linear Algebra", "DSP"] {
+    // Spot-check that several known toolbox headers are present in the output.
+    for tb in ["math", "plot", "linalg", "dsp", "spectral", "rf"] {
         assert!(
-            stdout.contains(cat),
-            "expected category '{}' in docs output:\n{}",
-            cat,
+            stdout.contains(tb),
+            "expected toolbox '{}' in docs output:\n{}",
+            tb,
             stdout
         );
     }
@@ -41,17 +41,19 @@ fn docs_name_prints_detail() {
 }
 
 #[test]
-fn docs_category_lists_just_that_category() {
+fn docs_toolbox_lists_just_that_toolbox() {
+    // Use a toolbox name that's not also a builtin (`plot`, `sparse` would
+    // resolve to the builtin first by design — builtin-name lookup wins).
     let out = rustlab()
-        .args(["docs", "Plotting"])
+        .args(["docs", "dsp"])
         .output()
-        .expect("docs Plotting runs");
+        .expect("docs dsp runs");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("plot"), "Plotting list should include plot");
-    assert!(stdout.contains("imagesc"), "Plotting list should include imagesc");
-    // Should NOT include entries from unrelated categories.
-    assert!(!stdout.contains("fir_lowpass"), "Plotting list should not contain DSP entries");
+    assert!(stdout.contains("fir_lowpass"), "dsp toolbox should include fir_lowpass");
+    assert!(stdout.contains("butterworth_lowpass"), "dsp toolbox should include butterworth_lowpass");
+    // Should NOT include entries from unrelated toolboxes.
+    assert!(!stdout.contains("imagesc"), "dsp toolbox should not contain plot entries");
 }
 
 #[test]
@@ -106,7 +108,7 @@ fn docs_json_is_valid_and_includes_known_entries() {
     // Verify required fields on every entry.
     for entry in arr {
         let obj = entry.as_object().expect("each entry is an object");
-        for field in ["name", "brief", "detail", "category"] {
+        for field in ["name", "brief", "detail", "toolbox", "subcategory"] {
             assert!(
                 obj.contains_key(field),
                 "every entry must have '{}' field",

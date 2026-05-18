@@ -29,10 +29,13 @@ dev/issues/
 *.npz
 *.npy
 
-# Generated example outputs
-examples/*.csv
-examples/*.html
-examples/*.toml
+# Generated example outputs (scripts now live under examples/<toolbox>/,
+# so the patterns need ** to match. The tracked TOML fixtures
+# examples/language/toml_config.toml and examples/language/toml_filter_chain.toml
+# stay because they don't match `toml_results.toml`.)
+examples/**/*.csv
+examples/**/*.html
+**/toml_results.toml
 *.html
 
 # Notebook rendered output — sources live at examples/notebooks/*.md.
@@ -50,3 +53,11 @@ gallery/*.gif
 !gallery/
 !gallery/**/*.svg
 !gallery/plots/**/*.gif
+
+# Time-frequency notebook's CWT scalogram outputs render as ~1.28M SVG
+# <rect> elements each (64 scales × 20000 samples), producing ~105MB
+# files that exceed GitHub's 100MB push limit. Pending a renderer fix
+# (PNG fallback or downsampling for dense heatmaps), exclude them so
+# the rest of the notebook's plots can still be committed.
+gallery/plots/time_frequency/plot-6-*.svg
+gallery/plots/time_frequency/plot-7-*.svg

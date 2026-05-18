@@ -68,7 +68,7 @@ rustlab --version
 ### Run a script
 
 ```sh
-rustlab run examples/lowpass.rlab
+rustlab run examples/dsp/lowpass.rlab
 ```
 
 ### Interactive REPL
@@ -502,7 +502,7 @@ savefig("heatmap.svg")
 Execute a `.rlab` script file.
 
 ```sh
-rustlab run examples/bandpass.rlab
+rustlab run examples/dsp/bandpass.rlab
 ```
 
 ### `rustlab docs [TOPIC]`
@@ -703,31 +703,31 @@ The `examples/` directory contains annotated scripts demonstrating common workfl
 
 | File | Description |
 |------|-------------|
-| `examples/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
-| `examples/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
-| `examples/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
-| `examples/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
-| `examples/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |
-| `examples/random.rlab` | Random number generation: rand, randn, randi |
-| `examples/functions.rlab` | User-defined functions, structs, multi-output `[a, b] = ...` form |
-| `examples/language_v0_3.rlab` | Tour of v0.3 language additions: multi-output user fns, `&&`/`\|\|`, linear `M(I)`, matrix `layernorm` |
-| `examples/lambda.rlab` | Anonymous functions, function handles, arrayfun |
-| `examples/lambda_pipeline.rlab` | Functional pipeline patterns with lambdas |
-| `examples/save_load.rlab` | NPY, NPZ, and CSV round-trip save/load |
-| `examples/profiling.rlab` | Call profiling with profile() and profile_report() |
+| `examples/math/complex_basics.rlab` | Complex number arithmetic, magnitude, phase, complex vectors |
+| `examples/language/vectors.rlab` | Range operator, indexing, concatenation, element-wise ops, transpose |
+| `examples/math/trig_special.rlab` | Trig, hyperbolic, Laguerre, and Legendre functions |
+| `examples/stats/stats.rlab` | Statistics: mean, median, std, histogram, trapz |
+| `examples/linalg/matrix_ops.rlab` | Linear algebra: inv, det, eig, svd, linsolve, kron, expm |
+| `examples/math/random.rlab` | Random number generation: rand, randn, randi |
+| `examples/language/functions.rlab` | User-defined functions, structs, multi-output `[a, b] = ...` form |
+| `examples/language/language_v0_3.rlab` | Tour of v0.3 language additions: multi-output user fns, `&&`/`\|\|`, linear `M(I)`, matrix `layernorm` |
+| `examples/language/lambda.rlab` | Anonymous functions, function handles, arrayfun |
+| `examples/language/lambda_pipeline.rlab` | Functional pipeline patterns with lambdas |
+| `examples/language/save_load.rlab` | NPY, NPZ, and CSV round-trip save/load |
+| `examples/language/profiling.rlab` | Call profiling with profile() and profile_report() |
 
 ### DSP and filter design
 
 | File | Description |
 |------|-------------|
-| `examples/lowpass.rlab` | Design and inspect a 32-tap Hann-windowed FIR lowpass filter |
-| `examples/bandpass.rlab` | Bandpass filter design and application to a synthetic dual-tone signal |
-| `examples/fft.rlab` | Compute and plot the spectrum of a two-tone signal; round-trip FFT/IFFT |
-| `examples/kaiser_fir.rlab` | Auto-designed Kaiser FIR lowpass, highpass, bandpass, and notch filters |
-| `examples/firpm.rlab` | Parks-McClellan optimal equiripple FIR design |
-| `examples/upfirdn.rlab` | Polyphase interpolation, decimation, and rational rate conversion |
-| `examples/fixed_point.rlab` | Fixed-point quantization and SNR bitwidth study |
-| `examples/ml_activations.rlab` | ML activation functions: softmax, relu, gelu, layernorm |
+| `examples/dsp/lowpass.rlab` | Design and inspect a 32-tap Hann-windowed FIR lowpass filter |
+| `examples/dsp/bandpass.rlab` | Bandpass filter design and application to a synthetic dual-tone signal |
+| `examples/spectral/fft.rlab` | Compute and plot the spectrum of a two-tone signal; round-trip FFT/IFFT |
+| `examples/dsp/kaiser_fir.rlab` | Auto-designed Kaiser FIR lowpass, highpass, bandpass, and notch filters |
+| `examples/dsp/firpm.rlab` | Parks-McClellan optimal equiripple FIR design |
+| `examples/dsp/upfirdn.rlab` | Polyphase interpolation, decimation, and rational rate conversion |
+| `examples/dsp/fixed_point.rlab` | Fixed-point quantization and SNR bitwidth study |
+| `examples/math/ml_activations.rlab` | ML activation functions: softmax, relu, gelu, layernorm |
 
 ### Control systems (`examples/controls/`)
 

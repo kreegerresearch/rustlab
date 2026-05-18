@@ -36,7 +36,10 @@ xlabel("t")
 grid on
 ```
 
-![plot 1](plots/multi_notebook/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/multi_notebook/plot-1-7f37e86d.svg)
+
+<!-- rustlab:output-end -->
 
 The signal decays with time constant $\tau = 10$.
 

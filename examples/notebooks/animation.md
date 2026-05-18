@@ -64,7 +64,7 @@ The path argument to `saveanim` is **ignored when the script is rendered
 inside a notebook** — the notebook renderer captures the frame buffer and
 writes the artefact under the gallery's plot directory using the path
 extension to pick the format. When you run the same script standalone
-(`rustlab run examples/animation_wave.rlab`), the path is honoured.
+(`rustlab run examples/plot/animation_wave.rlab`), the path is honoured.
 
 ## Title placement
 
@@ -134,10 +134,10 @@ emission is a documented follow-up that would help.
 ## Standalone script
 
 A standalone version of the wave demo (no notebook prose, just the
-script) lives at `examples/animation_wave.rlab`. Run with:
+script) lives at `examples/plot/animation_wave.rlab`. Run with:
 
 ```sh
-cargo run --release -p rustlab-cli -- run examples/animation_wave.rlab
+cargo run --release -p rustlab-cli -- run examples/plot/animation_wave.rlab
 ```
 
 It writes both `gallery/animation_wave.html` (gitignored — open locally)

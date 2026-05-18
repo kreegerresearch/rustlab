@@ -13,7 +13,10 @@ title("White Gaussian Noise")
 grid on
 ```
 
-![plot 1](plots/quick_look/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/quick_look/plot-1-4f67a7e6.svg)
+
+<!-- rustlab:output-end -->
 
 Looks like noise to me.
 

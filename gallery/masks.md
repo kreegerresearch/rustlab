@@ -26,9 +26,12 @@ N = 200;
 print(size(X))     % → [200, 200]   rows = y, cols = x
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  200.000000  200.000000
 ```
+
+<!-- rustlab:output-end -->
 
 The shape convention is the same as `gradient`, `imagesc`, and `contour`:
 rows index `y`, columns index `x`. Masks return matrices of the same
@@ -51,7 +54,10 @@ imagesc(R);
 title("rect_mask: lower-left (-0.8, -0.4), 1.2 × 0.8")
 ```
 
-![plot 1](plots/masks/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/masks/plot-1-761baa90.svg)
+
+<!-- rustlab:output-end -->
 
 ## `disk_mask(X, Y, xc, yc, r)`
 
@@ -69,7 +75,10 @@ imagesc(D);
 title("disk_mask: centre (0, 0), radius 0.9")
 ```
 
-![plot 2](plots/masks/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/masks/plot-2-1aeadfc9.svg)
+
+<!-- rustlab:output-end -->
 
 ### Numerical sanity: integrating the mask gives π·r²
 
@@ -84,9 +93,12 @@ step = 3.0 / (N - 1);
 print(sum(sum(unit_disk)) * step * step)    % → ~3.135 (0.2 % off π)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 3.1353753693088553
 ```
+
+<!-- rustlab:output-end -->
 
 ## `polygon_mask(X, Y, verts)`
 
@@ -103,7 +115,10 @@ imagesc(T);
 title("polygon_mask: triangle (-1,-1)-(1,-1)-(0,1)")
 ```
 
-![plot 3](plots/masks/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/masks/plot-3-7db92379.svg)
+
+<!-- rustlab:output-end -->
 
 Degenerate inputs return an all-zero mask without panicking:
 
@@ -148,7 +163,10 @@ imagesc(regions);
 title("Two-shape regions: R only / D only / overlap")
 ```
 
-![plot 4](plots/masks/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/masks/plot-4-e3e2b3d2.svg)
+
+<!-- rustlab:output-end -->
 
 ## Building a layered material map
 
@@ -173,7 +191,10 @@ imagesc(device);
 title("Layered device: substrate / via / contact / trace")
 ```
 
-![plot 5](plots/masks/plot-5.svg)
+<!-- rustlab:output-start -->
+![plot 5](plots/masks/plot-5-149462c6.svg)
+
+<!-- rustlab:output-end -->
 
 The result is a single `ny × nx` matrix where the value of every cell is
 the integer ID of the topmost layer at that point — exactly the format a

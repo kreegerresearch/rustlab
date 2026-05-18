@@ -897,7 +897,7 @@ y      = upfirdn(x, h, 3, 2)
 # len(y) ≈ len(x) * 3/2
 ```
 
-See `examples/upfirdn.rlab` for a runnable demonstration of all three cases.
+See `examples/dsp/upfirdn.rlab` for a runnable demonstration of all three cases.
 
 ### `window(name, n)`
 Generate a standalone window function vector of length `n`.
@@ -1595,7 +1595,7 @@ T2 = load("/tmp/T.npy")
 ndims(T2)                           # → 3
 ```
 
-See `examples/tensor3/tensor3.rlab` for a full runnable demo.
+See `examples/linalg/tensor3.rlab` for a full runnable demo.
 
 ---
 

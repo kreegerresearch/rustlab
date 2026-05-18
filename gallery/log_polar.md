@@ -21,7 +21,10 @@ loglog(x, y);
 title("y = x² — slope 2 on log-log");
 ```
 
-![plot 1](plots/log_polar/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/log_polar/plot-1-6e57513e.svg)
+
+<!-- rustlab:output-end -->
 
 A power law `y = x^a` plots as a straight line of slope `a` on log-log
 axes. The shim labels the axes `log10(x)` and `log10(y)` so the
@@ -41,7 +44,10 @@ semilogy(t, y);
 title("Exponential decay e^{-t} on semilogy");
 ```
 
-![plot 2](plots/log_polar/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/log_polar/plot-2-932999e3.svg)
+
+<!-- rustlab:output-end -->
 
 `semilogy` log-transforms only the y-axis. Exponential decay shows up
 as a straight line of slope `-log10(e) ≈ -0.434` per unit `t`.
@@ -73,7 +79,10 @@ polar(theta, r);
 title("Three-petal rose: r = 1 + 0.3 cos(3θ)");
 ```
 
-![plot 3](plots/log_polar/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/log_polar/plot-3-46d35a15.svg)
+
+<!-- rustlab:output-end -->
 
 ## Hertzian dipole radiation pattern
 
@@ -88,7 +97,10 @@ polar(theta, r);
 title("Hertzian dipole pattern: |sin θ|");
 ```
 
-![plot 4](plots/log_polar/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/log_polar/plot-4-2f8ea14a.svg)
+
+<!-- rustlab:output-end -->
 
 Two lobes along the broadside direction, nulls along the dipole axis.
 

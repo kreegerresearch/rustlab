@@ -13,10 +13,13 @@ disp(months)
 disp(length(months))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 {1×6} "Jan", "Feb", "Mar", "Apr", "May", "Jun"
 6
 ```
+
+<!-- rustlab:output-end -->
 
 String arrays support 1-based indexing:
 
@@ -26,11 +29,14 @@ disp(months(end))
 disp(months(2:4))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 Jan
 Jun
 {1×3} "Feb", "Mar", "Apr"
 ```
+
+<!-- rustlab:output-end -->
 
 ## Categorical Bar Charts
 
@@ -42,7 +48,10 @@ sales = [120, 95, 140, 110, 165, 130];
 bar(months, sales, "Monthly Sales")
 ```
 
-![plot 1](plots/string_arrays/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/string_arrays/plot-1-282f33a9.svg)
+
+<!-- rustlab:output-end -->
 
 ## Grouped Comparison
 
@@ -58,11 +67,14 @@ subplot(1,2,2)
 bar(regions, q2, "Q2 Revenue");
 ```
 
+<!-- rustlab:output-start -->
 ```text
 12
 ```
 
-![plot 2](plots/string_arrays/plot-2.svg)
+![plot 2](plots/string_arrays/plot-2-25e8157b.svg)
+
+<!-- rustlab:output-end -->
 
 ## Type Checking
 
@@ -73,10 +85,13 @@ disp(iscell(labels))
 disp(iscell(numbers))
 ```
 
+<!-- rustlab:output-start -->
 ```text
 true
 false
 ```
+
+<!-- rustlab:output-end -->
 
 `iscell()` returns `true` for string arrays, `false` for everything else.
 

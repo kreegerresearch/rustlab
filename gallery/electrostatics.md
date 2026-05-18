@@ -28,10 +28,13 @@ print(issparse(A))       % → 1
 print(nnz(A))            % → ~50k after Dirichlet boundary trims
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 49600
 ```
+
+<!-- rustlab:output-end -->
 
 `A` has 10 000 unknowns and tens of thousands of non-zeros — a 0.05 %
 density. Densified, it would allocate roughly 800 MB. Sparse
@@ -60,9 +63,12 @@ V = reshape(v, ny, nx);
 print(size(V))         % → [100, 100]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  100.000000  100.000000
 ```
+
+<!-- rustlab:output-end -->
 
 The dispatch goes `auto → SPD detected (Hermitian, positive diagonals)
 → sparse Cholesky factorization with AMD ordering → forward + backward
@@ -77,7 +83,10 @@ imagesc(V);
 title("Electrostatic potential — four-charge quadrupole");
 ```
 
-![plot 1](plots/electrostatics/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/electrostatics/plot-1-7b196a01.svg)
+
+<!-- rustlab:output-end -->
 
 The four-fold symmetry of the charge configuration shows up clearly:
 red and blue lobes around each source, with the potential decaying
@@ -113,7 +122,10 @@ quiver(Xc, Yc, Exc, Eyc);
 title("Electric field E = -∇V over potential")
 ```
 
-![plot 2](plots/electrostatics/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/electrostatics/plot-2-75ae77c1.svg)
+
+<!-- rustlab:output-end -->
 
 The arrow field flows from positive to negative charges along the
 expected dipole-pair paths, with vortices in the regions between

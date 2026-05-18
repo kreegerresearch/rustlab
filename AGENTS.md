@@ -38,9 +38,19 @@ rustlab/
 ├── dev/
 │   └── plans/              # multi-phase development plans (see section below)
 ├── perf/                   # performance benchmarks and reports
-├── examples/               # 19+ top-level scripts, plus subdirectories:
-│   ├── controls/           # 14 control systems examples (tf, bode, lqr, ode, etc.)
-│   ├── audio/              # real-time audio: filter, spectrum monitor, platform launchers
+├── examples/               # 75 scripts organised by toolbox (one subdir per toolbox):
+│   ├── language/           # syntax, lambdas, structs, save/load, TOML, profiling (11)
+│   ├── math/               # complex basics, trig/special, random, ML activations (4)
+│   ├── linalg/             # eig, matrix_ops, tensor3, rank, roots, linear_algebra (6)
+│   ├── stats/              # stats aggregates, all/any (2)
+│   ├── sparse/             # sparse solve, complex sparse LU, eigs, sparse vec/mat (4)
+│   ├── dsp/                # FIR/IIR, Kaiser, firpm, upfirdn, fixed-point (6)
+│   ├── spectral/           # fft, pwelch, spectrogram, cwt (4)
+│   ├── controls/           # transfer functions, bode, nyquist, root locus, PID, LQR (15)
+│   ├── rf/                 # S-parameters, Smith chart, cascade, amplifier stability (6)
+│   ├── pde/                # laplacian / BCs, electrostatics, dielectric, vector_calc (5)
+│   ├── plot/               # contour, quiver, surf, heatmap, masks, animation (8)
+│   ├── audio/              # real-time PCM: filter, spectrum monitor, platform launchers (4)
 │   │   ├── filter.rlab          # FIR lowpass script used by all launchers
 │   │   ├── passthrough.rlab     # minimal stdin→stdout loopback
 │   │   ├── spectrum_monitor.rlab  # live two-panel terminal plot (waveform + FFT)
@@ -50,9 +60,7 @@ rustlab/
 │   │   ├── wsl.sh            # PulseAudio / WSL2 pipeline
 │   │   ├── tcp.sh            # socat/nc TCP streaming (cross-platform)
 │   │   └── test_filter.sh    # CI-friendly end-to-end test (no mic/speakers)
-│   ├── complex_basics.rlab, vectors.rlab, lowpass.rlab, bandpass.rlab, fft.rlab, ...
-│   ├── firpm.rlab, upfirdn.rlab, fixed_point.rlab, ml_activations.rlab, ...
-│   └── lambda.rlab, profiling.rlab, save_load.rlab, ...
+│   └── notebooks/          # source `.md` notebooks rendered by `rustlab-notebook`
 └── docs/
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
@@ -203,7 +211,7 @@ Any commit that adds or changes a builtin function, scripting construct, or CLI 
 
 1. **`docs/functions.md`** — add or update the function's section with its full signature, description, and at least one usage example.
 2. **REPL `HelpEntry`** — add a `HelpEntry { name, brief, detail }` record in `crates/rustlab-cli/src/commands/repl.rs`.
-3. **Category list** — add the function name to the appropriate category slice in `print_help_list()` in the same file.
+3. **Toolbox assignment** — add the function name to exactly one `CategoryRow` in `CATEGORIES` (same file). The 12 toolboxes are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio` (see `TOOLBOXES` for display order). Pick the existing subcategory that fits, or add a new `CategoryRow` with a new subcategory string. The `help_coverage_tests` unit tests fail the build if a `HELP` entry has no toolbox or appears in more than one.
 
 A feature is not done until a user can type `help foo` in the REPL and get a useful answer. Do not treat documentation as optional cleanup.
 
@@ -370,7 +378,7 @@ cargo test --workspace
 cargo doc --workspace --no-deps --open
 
 # Run a script directly without installing
-cargo run -p rustlab-cli --bin rustlab -- run examples/lowpass.rlab
+cargo run -p rustlab-cli --bin rustlab -- run examples/dsp/lowpass.rlab
 ```
 
 ### Installing the binary
@@ -579,8 +587,8 @@ release must be reflected in:
   `crates/rustlab-script/src/eval/builtins.rs`
 - `AGENTS.md` — "All builtin functions" table, grammar, crate details
 - `README.md` — if user-visible CLI flags, commands, or install steps changed
-- REPL `help` entries — `HelpEntry` + category slice in
-  `crates/rustlab-cli/src/commands/repl.rs`
+- REPL `help` entries — `HelpEntry` plus toolbox assignment in the
+  `CATEGORIES` table of `crates/rustlab-cli/src/commands/repl.rs`
 
 Find the previous release commit (`git log --oneline | grep -i 'bump to v' | head -1`)
 and diff forward:
@@ -650,7 +658,7 @@ the release binary works on a clean environment:
 ```sh
 make install
 rustlab --version                # must print the new version
-rustlab run examples/lowpass.rlab   # must exit 0 with a plot
+rustlab run examples/dsp/lowpass.rlab   # must exit 0 with a plot
 ```
 
 ### Release rules (do not violate)
@@ -811,7 +819,7 @@ rustlab-viewer --socket PATH    # custom socket path
 - `src/commands/convolve.rs` — reads CSV signals, calls `convolve` or `overlap_add`
 - `src/commands/window.rs` — generates window, prints values, optional `--plot`
 - `src/commands/plot.rs` — reads CSV, dispatches to plot functions
-- `src/commands/docs.rs` — `rustlab docs` subcommand. Surfaces the REPL's `HELP` and `CATEGORIES` tables (which live as `pub` items in `commands/repl.rs`) from the shell. Forms: `docs` (list-all by category), `docs <name>` (detail), `docs <category>` (single-category list), `docs --search <q>` (substring match over names+briefs), `docs --json` (machine-readable dump for editor extensions / AI tooling). Unknown topic exits non-zero with a "No help found" message. Tests in `tests/docs.rs`.
+- `src/commands/docs.rs` — `rustlab docs` subcommand. Surfaces the REPL's `HELP` array and `CATEGORIES` toolbox table (`pub` items in `commands/repl.rs`) from the shell. Forms: `docs` (list-all grouped by toolbox), `docs <name>` (detail), `docs <toolbox>` (single-toolbox list — e.g. `docs dsp`, `docs rf`), `docs <subcategory>` (cross-toolbox subcategory match), `docs --search <q>` (substring match over names+briefs), `docs --json` (machine-readable dump with `toolbox` + `subcategory` fields). Unknown topic exits non-zero with a "No help found" message. Tests in `tests/docs.rs`.
 
 **Default behaviour:** `rustlab` with no arguments starts the REPL.
 
@@ -1155,7 +1163,7 @@ Window names: `"hann"`, `"hamming"`, `"blackman"`, `"rectangular"`, `"kaiser"`
    ```
 2. Register: `r.register("foo", builtin_foo);` in `with_defaults()`
 3. No grammar changes needed
-4. Add a `HelpEntry` in `crates/rustlab-cli/src/commands/repl.rs` and add the name to the appropriate category in `print_help_list()` — required, not optional (see Workflow Rule 3)
+4. Add a `HelpEntry` in `crates/rustlab-cli/src/commands/repl.rs` and add the name to the appropriate `CategoryRow` in `CATEGORIES` (pick one of the 12 toolboxes: `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`) — required, not optional (see Workflow Rule 3). The `help_coverage_tests` unit tests fail if you skip this.
 5. Add the function to `docs/functions.md` with its signature, description, and an example (see Workflow Rule 5)
 6. Write at least one unit test in `crates/rustlab-script/src/tests.rs` (see Workflow Rule 2)
 
@@ -1261,7 +1269,7 @@ Run example scripts and assert they exit cleanly:
 #[test]
 fn example_lowpass_runs() {
     let status = Command::new(env!("CARGO_BIN_EXE_rustlab"))
-        .args(["run", "examples/lowpass.rlab"])
+        .args(["run", "examples/dsp/lowpass.rlab"])
         .status().unwrap();
     assert!(status.success());
 }

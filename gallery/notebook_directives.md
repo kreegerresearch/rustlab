@@ -32,7 +32,10 @@ ylabel("Amplitude")
 grid on
 ```
 
-![plot 1](plots/notebook_directives/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/notebook_directives/plot-1-35421e5b.svg)
+
+<!-- rustlab:output-end -->
 
 ## `<!-- details: Title -->`
 
@@ -57,6 +60,7 @@ legend()
 grid on
 ```
 
+<!-- rustlab:output-start -->
 <details>
 <summary>Show all magnitude responses</summary>
 
@@ -64,9 +68,11 @@ grid on
 5
 ```
 
-![plot 2](plots/notebook_directives/plot-2.svg)
+![plot 2](plots/notebook_directives/plot-2-ecbe0f35.svg)
 
 </details>
+
+<!-- rustlab:output-end -->
 
 In Markdown output the section uses native `<details>`; in LaTeX/PDF it
 becomes a labelled box; in HTML it's an animated disclosure widget.
@@ -93,11 +99,14 @@ figure(); imagesc(G2, "viridis"); title("Offset");        savefig("g2.svg")
 figure(); imagesc(G3, "viridis"); title("Difference");    savefig("g3.svg")
 ```
 
-![plot 3](plots/notebook_directives/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/notebook_directives/plot-3-26696c3b.svg)
 
-![plot 4](plots/notebook_directives/plot-4.svg)
+![plot 4](plots/notebook_directives/plot-4-4de70d2d.svg)
 
-![plot 5](plots/notebook_directives/plot-5.svg)
+![plot 5](plots/notebook_directives/plot-5-e9c91155.svg)
+
+<!-- rustlab:output-end -->
 
 `N` must be a positive integer. Text output (`disp`, `print`) appears
 above the grid full-width — only the plot zone is tiled.
@@ -153,7 +162,10 @@ ylabel("Magnitude (dB)")
 grid on
 ```
 
-![plot 6](plots/notebook_directives/plot-6.svg)
+<!-- rustlab:output-start -->
+![plot 6](plots/notebook_directives/plot-6-19192fca.svg)
+
+<!-- rustlab:output-end -->
 
 <details>
 <summary>Solution</summary>
@@ -179,11 +191,14 @@ legend()
 grid on
 ```
 
+<!-- rustlab:output-start -->
 ```text
 9
 ```
 
-![plot 7](plots/notebook_directives/plot-7.svg)
+![plot 7](plots/notebook_directives/plot-7-8e60ad68.svg)
+
+<!-- rustlab:output-end -->
 
 Solutions render collapsed by default — readers can attempt the
 exercise before clicking to reveal the answer.
@@ -196,9 +211,12 @@ Order within the stack does not matter. The block below combines
 `<!-- hide -->` and `<!-- grid: 2 -->` to produce a hidden-source,
 two-column gallery:
 
-![plot 8](plots/notebook_directives/plot-8.svg)
+<!-- rustlab:output-start -->
+![plot 8](plots/notebook_directives/plot-8-db152dcf.svg)
 
-![plot 9](plots/notebook_directives/plot-9.svg)
+![plot 9](plots/notebook_directives/plot-9-4a71695e.svg)
+
+<!-- rustlab:output-end -->
 
 The output is a tiled gallery without the surrounding boilerplate code —
 useful for "look at these results, the code is uninteresting" sections.

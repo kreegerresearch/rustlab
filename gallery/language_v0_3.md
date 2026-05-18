@@ -35,10 +35,13 @@ print(best)        % → 9
 print(where)       % → 6  (1-based position of max)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 9
 6
 ```
+
+<!-- rustlab:output-end -->
 
 Single-output use of the same multi-output function only picks `m`:
 
@@ -47,9 +50,12 @@ just_max = max_with_pos([10, 20, 5]);
 print(just_max)    % → 20
 ```
 
+<!-- rustlab:output-start -->
 ```text
 20
 ```
+
+<!-- rustlab:output-end -->
 
 Errors are loud:
 
@@ -79,10 +85,13 @@ in_set = (n == 1) || (n == 5) || (n == 99);
 print(in_set)      % → true  (stops at the second clause)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 false
 true
 ```
+
+<!-- rustlab:output-end -->
 
 Scalar operands work directly — no need to wrap in a comparison:
 
@@ -92,11 +101,14 @@ print(0 || 3)      % → true   (rhs decides)
 print(0 && 1)      % → false  (lhs short-circuits)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 true
 true
 false
 ```
+
+<!-- rustlab:output-end -->
 
 Matrix or vector operands error — use `any(...)` or `all(...)` to
 collapse them first.
@@ -114,12 +126,15 @@ print(M([1, 4, 6]))     % → [10, 20, 60]   (vector of picks)
 print(M(2, :))          % → [30, 40]   (row 2 — explicit form)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×6]  10.000000  30.000000  50.000000  20.000000  40.000000  60.000000
 30
 [1×3]  10.000000  20.000000  60.000000
 [1×2]  30.000000  40.000000
 ```
+
+<!-- rustlab:output-end -->
 
 This lets `find` round-trip naturally — `find(...)` returns 1-based
 linear indices in storage order, and `M(find(...))` picks them back:
@@ -129,9 +144,12 @@ ix = find([0, 1, 0, 1, 0, 1]);   % → [2, 4, 6]
 print(M(ix))                       % → [30, 20, 60]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×3]  30.000000  20.000000  60.000000
 ```
+
+<!-- rustlab:output-end -->
 
 > **Breaking change from v0.2**: `M(scalar)` on a matrix used to return
 > the n-th row. It now returns a single linear element. Migrate any
@@ -155,6 +173,7 @@ print(mean(Sn, 2))        % per-row means → ~0 in each row
 print(mean(Sn .* Sn, 2))  % → ~1 in each row
 ```
 
+<!-- rustlab:output-start -->
 ```text
 Matrix(2x1)
   [-0.000000]
@@ -164,6 +183,8 @@ Matrix(2x1)
   [1.000000]
 ```
 
+<!-- rustlab:output-end -->
+
 Override the default axis:
 
 ```rustlab
@@ -171,10 +192,13 @@ Sc = layernorm(S, 1);     % per-column normalisation
 print(mean(Sc))           % per-column means (default dim=1) → ~0
 ```
 
+<!-- rustlab:output-start -->
 ```text
 Matrix(1x5)
   [0.000000, 0.000000, 0.000000, 0.000000, 0.000000]
 ```
+
+<!-- rustlab:output-end -->
 
 Custom epsilon (third arg in the matrix form):
 
@@ -183,9 +207,12 @@ Se = layernorm(S, 2, 1e-8);
 print(mean(Se(1, :)))     % row 1 still has zero mean
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.000000000000000044408920985006264
 ```
+
+<!-- rustlab:output-end -->
 
 > **Why per-row by default?** `layernorm` is an ML primitive; per-row
 > matches the transformer convention where each row is a token / sample.
@@ -199,7 +226,10 @@ print(1)   % sentinel — if you see this in the output, all four
            % feature demos above completed without errors
 ```
 
+<!-- rustlab:output-start -->
 ```text
 1
 ```
+
+<!-- rustlab:output-end -->
 

@@ -50,7 +50,10 @@ imagesc(V_d);
 title("Dirichlet — V = 0 at boundary")
 ```
 
-![plot 1](plots/laplacian_bc/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/laplacian_bc/plot-1-3c8e9856.svg)
+
+<!-- rustlab:output-end -->
 
 The potential decays smoothly to zero at the grid edges — exactly the
 "grounded box" pattern you'd expect for a charge configuration in a
@@ -70,13 +73,16 @@ test_n = full(A_n) * ones_vec;
 print(norm(test_n))      % → ~3e-12 (machine precision)
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.0000000000034557806778981703
 ```
 
+<!-- rustlab:output-end -->
+
 The residual is at floating-point noise — confirming the null space.
 A practical Neumann solve requires pin-and-solve to remove the
-constant-shift ambiguity; see the `examples/laplacian_bc.rlab` script
+constant-shift ambiguity; see the `examples/pde/laplacian_bc.rlab` script
 for the (slightly verbose) idiom.
 
 ## Periodic — wrap-around
@@ -91,9 +97,12 @@ test_p = full(A_p) * ones(ny * nx, 1);
 print(norm(test_p))      % → ~3e-12
 ```
 
+<!-- rustlab:output-start -->
 ```text
 0.0000000000034299716484259964
 ```
+
+<!-- rustlab:output-end -->
 
 The use case is problems with translational symmetry: Bloch states in
 a periodic medium, periodic-replication boundary conditions for
@@ -109,9 +118,12 @@ the diagonal of boundary cells); Periodic adds wrap-around entries:
 print([nnz(A_d), nnz(A_n), nnz(A_p)])
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×3]  17760.000000  17760.000000  18000.000000
 ```
+
+<!-- rustlab:output-end -->
 
 Dirichlet and Neumann nnz are identical (the Neumann boundary cells
 absorb missing coefficients into the diagonal, so the off-diagonal
@@ -130,9 +142,12 @@ print([nnz(L1_d), nnz(L1_n), nnz(L1_p)])
 % → [22, 22, 24]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×3]  22.000000  22.000000  24.000000
 ```
+
+<!-- rustlab:output-end -->
 
 Useful for 1-D heat / diffusion problems, lattice Hamiltonians, and as
 the ingredient for tensor-product 2-D / 3-D operators on

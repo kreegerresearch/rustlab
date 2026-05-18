@@ -320,7 +320,7 @@ title("S11, S22 with input stability circles overlaid")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/amplifier_analysis/plot-6-cb183f20.svg)
+![plot 6](plots/amplifier_analysis/plot-6-a0363a0a.svg)
 
 <!-- rustlab:output-end -->
 
@@ -356,7 +356,7 @@ title("Gain circles at 3 GHz (MAG ≈ 11.7 dB)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 7](plots/amplifier_analysis/plot-7-e0afa11e.svg)
+![plot 7](plots/amplifier_analysis/plot-7-7a169d6f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -389,7 +389,7 @@ Original: 6 points,  Interpolated: 26 points
 |S21| at 2.5 GHz (interp): 9.70 dB
 ```
 
-![plot 8](plots/amplifier_analysis/plot-8-e0afa11e.svg)
+![plot 8](plots/amplifier_analysis/plot-8-7a169d6f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -434,13 +434,13 @@ noise resistance $R_n / Z_0$.
 The reader picks them up automatically when present and attaches them as
 extra fields on the sparameters struct. Build a small noise-bearing
 network inline (the repo ships
-`examples/sparameters/data/lna_with_noise.s2p` as a ready file you can
+`examples/rf/data/lna_with_noise.s2p` as a ready file you can
 load with `sparameters(path)` outside the notebook):
 
 ```rustlab
 % Synthesize a small 2-port S + noise block in memory by writing a
 % Touchstone file to a scratch path and reading it back. (The same
-% data is bundled in examples/sparameters/data/lna_with_noise.s2p.)
+% data is bundled in examples/rf/data/lna_with_noise.s2p.)
 tmp = "/tmp/_notebook_noise.s2p";
 % S-only network for clarity:
 S = zeros3(4, 2, 2);
@@ -551,7 +551,7 @@ Across the two notebooks, the toolbox surface is:
 - **Analysis** (this notebook): `rfplot` 2×2 + single-trace variants, `vswr`, `return_loss`, `insertion_loss`, `gammain`/`gammaout`, `stabilityk`, `stabilitymu`, `gammams`/`gammaml`, `gainmax`, `stability_circles`, `gain_circles`, `smith_circle`.
 - **Polish** (this notebook): `interp_freq`, `s2td`, noise accessors (`nfmin`, `gamma_opt`, `rn`, `noise_freqs`, `has_noise`), mixed-mode `s2smm`/`smm2s`, Touchstone v2 keyword tolerance.
 
-The standalone runnable scripts in `examples/sparameters/` are
+The standalone runnable scripts in `examples/rf/` are
 organised by phase if you want a smaller starting point for any single
 topic: `load_s2p.rlab`, `cascade_attenuator.rlab`, `smith_chart.rlab`,
 `measurement_review.rlab`, `amplifier_stability.rlab`,

@@ -24,9 +24,12 @@ Z = X .^ 2 + Y .^ 2;
 print(size(Z))     % → [41, 41]
 ```
 
+<!-- rustlab:output-start -->
 ```text
 [1×2]  41.000000  41.000000
 ```
+
+<!-- rustlab:output-end -->
 
 ## Line contours
 
@@ -39,7 +42,10 @@ title("contour(X, Y, Z) — 10 auto levels")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 1](plots/contour_plots/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/contour_plots/plot-1-0b3b202b.svg)
+
+<!-- rustlab:output-end -->
 
 The auto level-placement rounds step size to `{1, 2, 2.5, 5} × 10^k` so
 labels read cleanly — the same rule matplotlib and Octave use.
@@ -56,7 +62,10 @@ title("Explicit levels in black")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 2](plots/contour_plots/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/contour_plots/plot-2-927ba680.svg)
+
+<!-- rustlab:output-end -->
 
 The final string is interpreted as a colour when it matches one of
 `"r", "g", "b", "c", "m", "y", "k", "w"` (or the full names); otherwise
@@ -77,7 +86,10 @@ title("contourf with 12 colour bands")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 3](plots/contour_plots/plot-3.svg)
+<!-- rustlab:output-start -->
+![plot 3](plots/contour_plots/plot-3-c9cae118.svg)
+
+<!-- rustlab:output-end -->
 
 ## The canonical EM diagram: heatmap + equipotentials
 
@@ -95,7 +107,10 @@ title("imagesc + contour overlay under hold on")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 4](plots/contour_plots/plot-4.svg)
+<!-- rustlab:output-start -->
+![plot 4](plots/contour_plots/plot-4-ec5bd068.svg)
+
+<!-- rustlab:output-end -->
 
 When both are present in a subplot, the chart bounds come from the
 contour's `(X, Y)` and the heatmap cells auto-rescale to fit. That keeps
@@ -116,7 +131,10 @@ title("Filled background + black line contours")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 5](plots/contour_plots/plot-5.svg)
+<!-- rustlab:output-start -->
+![plot 5](plots/contour_plots/plot-5-5815fb5b.svg)
+
+<!-- rustlab:output-end -->
 
 ## Complex / saddle shaped fields
 
@@ -131,7 +149,10 @@ title("Saddle: x² − y²")
 xlabel("x"); ylabel("y")
 ```
 
-![plot 6](plots/contour_plots/plot-6.svg)
+<!-- rustlab:output-start -->
+![plot 6](plots/contour_plots/plot-6-881fd4b5.svg)
+
+<!-- rustlab:output-end -->
 
 Marching squares skips cells with NaN corners (so masked-out regions
 don't corrupt neighbouring levels), and saddle-point ambiguity (code 5 /

@@ -32,7 +32,10 @@ grid on
 ylim([-100, 5])
 ```
 
-![plot 1](plots/firpm_quantization/plot-1.svg)
+<!-- rustlab:output-start -->
+![plot 1](plots/firpm_quantization/plot-1-6d42ecd0.svg)
+
+<!-- rustlab:output-end -->
 
 ## Step 2 — Naïve quantization to 10 bits
 
@@ -108,7 +111,10 @@ xlim([0.30 * fs / 2, fs / 2])
 ylim([-80, -20])
 ```
 
-![plot 2](plots/firpm_quantization/plot-2.svg)
+<!-- rustlab:output-start -->
+![plot 2](plots/firpm_quantization/plot-2-879ed324.svg)
+
+<!-- rustlab:output-end -->
 
 ## Results
 
