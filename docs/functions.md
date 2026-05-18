@@ -632,6 +632,181 @@ freqs = fftshift(fftfreq(len(X), sr))
 # (pairs them into a matrix for plotdb)
 ```
 
+### `pwelch(x, fs)` — Welch's PSD estimator
+
+Estimates the power spectral density by averaging periodograms over
+overlapping windowed segments. The standard upgrade from a single
+periodogram: trades frequency resolution for variance reduction so
+spectral lines are easier to read above the noise floor.
+
+```
+[Pxx, f] = pwelch(x, fs)                          % defaults
+[Pxx, f] = pwelch(x, fs, window)                  % named window or vector
+[Pxx, f] = pwelch(x, fs, window, noverlap)
+[Pxx, f] = pwelch(x, fs, window, noverlap, nfft)
+[Pxx, f] = pwelch(x, fs, window, noverlap, nfft, sided)
+pwelch(x, fs)                                     % auto-plots dB PSD
+```
+
+**Defaults** (match MATLAB `pwelch`):
+- **Window:** Hamming of length `floor(2·length(x)/9)` (8 segments at 50% overlap).
+- **`noverlap`:** half the window length.
+- **`nfft`:** equal to the window length; rounded up internally to the next power of two.
+- **`sided`:** `"auto"` — `"onesided"` for real input, `"twosided"` for complex.
+- **No detrending.** Pass `pwelch(x - mean(x), fs)` if you want zero-mean
+  segments. (scipy's `welch` defaults to detrending; we match MATLAB's
+  no-detrend convention.)
+
+The `window` argument can be:
+- A **string name**: `"hann"`, `"hamming"`, `"blackman"`, `"rect"`, `"kaiser"`. Segment length comes from the default formula.
+- An **integer length** `N`: Hamming window of length `N` (MATLAB convention).
+- A **real coefficient vector**: used directly; its length is the segment length.
+
+Bare calls auto-plot `10·log10(Pxx)` vs frequency (matches `bode` /
+`nyquist`). To capture without plotting, use the multi-return form
+and discard the plot context — the rendering is a terminal-only
+no-op when running headless.
+
+```
+% Two-tone signal: pwelch will show two clean peaks
+fs = 1000; n = 4096;
+t = (0:(n-1)) / fs;
+x = sin(2*pi*100*t) + 0.5*sin(2*pi*250*t) + 0.01*randn(1, n);
+[Pxx, f] = pwelch(x, fs);
+```
+
+### `stft(x, fs)` — Short-Time Fourier Transform
+
+Computes a per-segment FFT and stacks the spectra as columns of a
+complex matrix. Pairs with `spectrogram` for time-frequency
+visualisation.
+
+```
+[S, f, t] = stft(x, fs)                          % defaults
+[S, f, t] = stft(x, fs, window)
+[S, f, t] = stft(x, fs, window, noverlap)
+[S, f, t] = stft(x, fs, window, noverlap, nfft)
+[S, f, t] = stft(x, fs, window, noverlap, nfft, sided)
+stft(x, fs)                                      % bare call also auto-renders
+```
+
+**Defaults** (match MATLAB `stft`):
+- **Window:** Hann of length **128**.
+- **`noverlap`:** half the window length.
+- **`nfft`:** equal to the window length; rounded up internally to the next power of two.
+- **`sided`:** `"auto"` (one-sided for real input, two-sided for complex).
+
+`S` has rows indexed by frequency bin (low at row 1) and columns
+indexed by time frame (early at col 1). `f` is in Hz; `t` is the
+segment-centre time in seconds.
+
+### `spectrogram(x, fs)` — heatmap of `20·log10(|STFT|)`
+
+Plot-only wrapper around `stft`. Pushes a `viridis` heatmap onto the
+current subplot with an 80 dB dynamic-range floor and the physics
+convention y-axis (frequency increases upward).
+
+```
+spectrogram(x, fs)
+spectrogram(x, fs, window, noverlap, nfft)
+```
+
+No data is returned — for the underlying matrices use
+`[S, f, t] = stft(...)`. Internally calls `stft`, then the shared
+`db_clip` helper (20·log10 then clip at `max − 80 dB`), then `imagesc`
+with `axis("xy")`.
+
+```
+% Linear chirp from 100 Hz to 5 kHz, visualised as a diagonal ramp
+fs = 10000; n = 20000;
+t = (0:(n-1)) / fs;
+x = sin(2*pi*(100*t + 0.5*4900*t.*t / 2));
+spectrogram(x, fs);
+```
+
+### `cwt(x, fs)` — Continuous Wavelet Transform (Morlet)
+
+Convolves the signal with scaled, shifted copies of the analytic
+Morlet wavelet (ω₀ = 6) to produce a `n_scales × length(x)` complex
+time-frequency matrix. Compared to the STFT, the CWT trades off time
+and frequency resolution *per row*: short scales (high frequencies)
+get fine time resolution at the cost of frequency resolution, and
+long scales (low frequencies) get the opposite — the classic
+"adaptive resolution" feature of wavelets.
+
+```
+[W, freqs, t] = cwt(x, fs)                              % 64 log-spaced scales
+[W, freqs, t] = cwt(x, fs, "morlet")
+[W, freqs, t] = cwt(x, fs, "morlet", n_scales)          % integer
+[W, freqs, t] = cwt(x, fs, "morlet", scales_vector)     % explicit (real, > 0)
+cwt(x, fs)                                              % bare -> scalogram render
+```
+
+**Defaults:**
+- **Family:** Morlet only (decision 1 of `dev/plans/time_frequency.md`).
+- **Scale grid:** 64 log-spaced scales from 2 samples (high freq) to
+  `length(x) / 4` samples (low freq).
+- **Edge effects:** the signal is zero-padded by `4·max_scale` samples
+  on each side before the forward FFT to suppress circular-convolution
+  wrap. Edges of the output may still show mild CWT artefacts — users
+  needing a strict cone-of-influence mask can post-process.
+
+Each scale `s` corresponds to a centre frequency `f = ω₀·fs/(2π·s)`.
+
+### `scalogram(x, fs)` — heatmap of `20·log10(|CWT|)`
+
+Plot-only wrapper around `cwt`. Same `imagesc` + `viridis` + 80 dB clip
++ `axis("xy")` pipeline as `spectrogram`. Because the default scales
+are log-spaced, the row-index y-axis is effectively a logarithmic
+frequency axis: high frequencies at the top, low at the bottom.
+
+```
+scalogram(x, fs)
+scalogram(x, fs, "morlet", 128)
+```
+
+For visualising non-stationary signals with a wide frequency range,
+the scalogram's adaptive resolution often reads more cleanly than a
+fixed-window spectrogram. See `examples/notebooks/time_frequency.md`
+for a side-by-side comparison.
+
+### Streaming time-frequency
+
+Frame-by-frame counterparts to `pwelch`, `stft`, and `cwt`. They mirror
+the `state_init` / `filter_stream` pattern: a single `state` handle
+holds the ring buffer plus any running accumulator, threaded through
+each call. Pair with `plot_update_heatmap` (below) and `figure_live`
+to drive realtime spectrogram displays from `audio_in` or any other
+frame source.
+
+```
+% pwelch — cumulative running PSD (default) or EMA via 5th arg
+state = pwelch_stream_init(fs, window, noverlap, nfft)
+state = pwelch_stream_init(fs, window, noverlap, nfft, ema_alpha)
+[Pxx, state] = pwelch_stream(frame, state)
+
+% stft — emits 0+ new spectrogram columns per frame
+state = stft_stream_init(fs, window, noverlap, nfft [, sided])
+[S_cols, state] = stft_stream(frame, state)
+
+% cwt — sliding-window CWT over the latest n_samples
+state = cwt_stream_init(fs, n_samples)
+state = cwt_stream_init(fs, n_samples, n_scales | scales_vector)
+[W, state] = cwt_stream(frame, state)
+```
+
+**Returned `state` is the same `Arc<Mutex<...>>` handle that was passed
+in** — re-binding it is script-language sugar, not a copy. State
+mutates in place across calls, mirroring `filter_stream`.
+
+**Warmup contract:** until enough samples have arrived for the first
+complete segment / full sliding window, the stream functions return
+empty matrices/vectors. Check `size(S_cols, 2) == 0` (stft) or
+`length(Pxx) == 0` (pwelch) before consuming the output.
+
+For the live spectrogram heatmap driver itself, see
+`plot_update_heatmap` in the Live Plotting section.
+
 ---
 
 ## DSP — FIR Filters (manual tap count)
@@ -3565,6 +3740,29 @@ plot_update(fig, panel, x, y)    # explicit x-axis
 ```
 
 Replaces the data in the given 1-based panel without redrawing. Call `figure_draw` after updating all panels for a single atomic screen refresh per loop iteration — this avoids partial-state flicker.
+
+### `plot_update_heatmap(fig, panel, matrix [, colormap [, vmin, vmax]])`
+
+```
+plot_update_heatmap(fig, panel, matrix)
+plot_update_heatmap(fig, panel, matrix, colormap)
+plot_update_heatmap(fig, panel, matrix, colormap, vmin, vmax)
+```
+
+The heatmap counterpart to `plot_update`. Replaces the heatmap on a 1-based live panel; rows are the vertical axis (low row at bottom under `axis("xy")`), cols are the horizontal axis. `colormap` defaults to `"viridis"`. When `vmin` and `vmax` are passed they pin the colour-normalisation range — useful for keeping a stable dB scale across frames.
+
+Drives both the ratatui live figure and the rustlab-viewer over the existing `PanelHeatmap` wire path. Pairs naturally with `stft_stream` / `cwt_stream` for realtime spectrograms / scalograms:
+
+```
+[S, st] = stft_stream(frame, st);
+if size(S, 2) > 0
+    S_db = 20*log10(abs(S) + 1e-12);
+    plot_update_heatmap(fig, 1, S_db, "viridis", -80, 0);
+    figure_draw(fig);
+end
+```
+
+Set axes via `plot_limits` separately — `plot_update_heatmap` does no auto-axis magic.
 
 ### `plot_labels(fig, panel, title, xlabel, ylabel)`
 

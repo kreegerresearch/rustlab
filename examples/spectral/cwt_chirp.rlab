@@ -1,0 +1,24 @@
+# Continuous Wavelet Transform of a linear chirp
+#
+# Same chirp as `spectrogram_chirp.rlab` — rendered through the CWT
+# instead of the STFT. With log-spaced Morlet scales (the default), the
+# scalogram shows the canonical wavelet trade-off: finer time
+# resolution at high frequencies, finer frequency resolution at low
+# frequencies. Both visualisations of the same chirp are useful side
+# by side.
+
+seed(42)
+
+fs   = 10000;
+dur  = 2.0;
+n    = round(fs * dur);
+t    = (0:(n-1)) / fs;
+f0   = 100;
+f1   = 5000;
+
+phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
+x     = sin(phase) + 0.05*randn(n);
+
+# Scalogram with the default 64 log-spaced Morlet scales. Bare call
+# auto-renders on the current subplot.
+scalogram(x, fs);

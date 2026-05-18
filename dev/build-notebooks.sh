@@ -24,20 +24,23 @@ gallery_dir="$repo_root/gallery"
 # Gaussian elimination in spsolve, vector-calculus stencils, FFT in freqz)
 # 50-150x slower. The laplacian notebook's Poisson solve goes from ~80
 # seconds in debug to ~0.5 seconds in release.
-cargo build -q --release -p rustlab-cli --bin rustlab
-rustlab_bin="$repo_root/target/release/rustlab"
+#
+# Notebook rendering lives in the standalone `rustlab-notebook` binary
+# (per the keep-rustlab-small rule); we no longer build the main CLI here.
+cargo build -q --release -p rustlab-notebook --bin rustlab-notebook
+notebook_bin="$repo_root/target/release/rustlab-notebook"
 
 mkdir -p "$gallery_dir"
 
 # Markdown build (per-notebook .md plus shared plots/<stem>/ tree).
-"$rustlab_bin" notebook render "$src_dir" \
+"$notebook_bin" render "$src_dir" \
     --format markdown \
     --output "$gallery_dir"
 
 # Interactive HTML build (one self-contained .html per notebook plus a
 # generated index.html with prev/next navigation). Lands alongside the
 # .md files in gallery/; gitignore handles the visibility split.
-"$rustlab_bin" notebook render "$src_dir" \
+"$notebook_bin" render "$src_dir" \
     --format html \
     --output "$gallery_dir" \
     --title "rustlab notebooks"

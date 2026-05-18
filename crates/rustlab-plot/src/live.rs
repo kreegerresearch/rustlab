@@ -177,6 +177,39 @@ impl crate::LivePlot for LiveFigure {
     ) {
         self.set_panel_limits(idx, xlim, ylim);
     }
+    fn update_panel_heatmap(
+        &mut self,
+        idx: usize,
+        matrix: &rustlab_core::RMatrix,
+        colormap: &str,
+        _vmin: Option<f64>,
+        _vmax: Option<f64>,
+    ) {
+        if idx >= self.panels.len() {
+            return;
+        }
+        let (nrows, ncols) = (matrix.nrows(), matrix.ncols());
+        if nrows == 0 || ncols == 0 {
+            return;
+        }
+        let z: Vec<Vec<f64>> = (0..nrows)
+            .map(|r| (0..ncols).map(|c| matrix[(r, c)]).collect())
+            .collect();
+        let panel = &mut self.panels[idx];
+        // axis("xy") for live heatmaps: physics convention with row 0 at
+        // the bottom, matching the spectrogram / scalogram builtin output.
+        panel.y_axis_direction = crate::figure::AxisYDirection::Xy;
+        panel.heatmap = Some(crate::figure::HeatmapData {
+            z,
+            colorscale: colormap.to_string(),
+            kind: crate::figure::HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        });
+    }
     fn redraw(&mut self) -> Result<(), crate::PlotError> {
         self.redraw()
     }

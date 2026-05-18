@@ -98,6 +98,54 @@ impl LivePlot for ViewerFigure {
         let _ = self.client.send_nowait(&msg);
     }
 
+    fn update_panel_heatmap(
+        &mut self,
+        idx: usize,
+        matrix: &rustlab_core::RMatrix,
+        colormap: &str,
+        _vmin: Option<f64>,
+        _vmax: Option<f64>,
+    ) {
+        let (nrows, ncols) = (matrix.nrows(), matrix.ncols());
+        if nrows == 0 || ncols == 0 {
+            return;
+        }
+        // Build a synthetic SubplotState with just the heatmap set, then
+        // rasterize through the same path the batch viewer uses. Reuses
+        // every pixel of the existing `imagesc` colormap pipeline (DRY).
+        let z: Vec<Vec<f64>> = (0..nrows)
+            .map(|r| (0..ncols).map(|c| matrix[(r, c)]).collect())
+            .collect();
+        let mut panel = crate::figure::SubplotState::new();
+        panel.y_axis_direction = crate::figure::AxisYDirection::Xy;
+        panel.heatmap = Some(crate::figure::HeatmapData {
+            z,
+            colorscale: colormap.to_string(),
+            kind: crate::figure::HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        });
+        let theme = crate::theme::Theme::default();
+        // Match the batch path's high-res pre-render (line 375) so zooms
+        // stay legible.
+        let (w, h) = (2400u32, 1600u32);
+        if let Ok(rgba) = crate::file::render_panel_to_rgba(&panel, theme.colors(), w, h) {
+            let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
+                fig_id: self.fig_id,
+                panel: idx as u16,
+                heatmap: WireHeatmap {
+                    width: w,
+                    height: h,
+                    rgba,
+                    smooth: true,
+                },
+            });
+        }
+    }
+
     fn redraw(&mut self) -> Result<(), PlotError> {
         let msg = ViewerMsg::Redraw {
             fig_id: self.fig_id,

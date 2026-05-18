@@ -173,13 +173,16 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             }
         } else if panel.axis_equal && panel.surface.is_none() {
             // axis("equal") for line/scatter panels — same scaleanchor pattern
-            // as heatmaps, no autorange override.
+            // as heatmaps. `constrain: "domain"` keeps Plotly honouring the
+            // explicit xlim/ylim instead of auto-expanding to fit overflow
+            // (the Smith-chart case: stability/gain circles routinely lie
+            // outside the unit disk and would otherwise squish the chart).
             let anchor = if axis_suffix.is_empty() {
                 "x".to_string()
             } else {
                 format!("x{axis_suffix}")
             };
-            format!(r#", scaleanchor: "{anchor}""#)
+            format!(r#", scaleanchor: "{anchor}", constrain: "domain""#)
         } else {
             String::new()
         };
@@ -761,7 +764,11 @@ fn escape_js(s: &str) -> String {
 
 fn format_range(lim: (Option<f64>, Option<f64>)) -> String {
     match lim {
-        (Some(lo), Some(hi)) => format!(", range: [{}, {}]", lo, hi),
+        // `autorange: false` together with the explicit range disables Plotly's
+        // tendency to silently expand the axis to fit data — important for
+        // Smith charts whose stability/gain-circle overlays reach far outside
+        // the unit disk and would otherwise stretch the chart.
+        (Some(lo), Some(hi)) => format!(", range: [{}, {}], autorange: false", lo, hi),
         _ => String::new(),
     }
 }
@@ -941,6 +948,14 @@ mod tests {
         assert!(
             div.contains(r#"scaleanchor: "x""#),
             "axis_equal panel should emit scaleanchor on y-axis; got:\n{}",
+            div
+        );
+        // Also pin `constrain: "domain"` — without it, Plotly auto-expands
+        // the explicit xlim/ylim to fit data that overflows, which squashes
+        // Smith charts when stability/gain circles lie outside the unit disk.
+        assert!(
+            div.contains(r#"constrain: "domain""#),
+            "axis_equal panel must emit constrain: domain so explicit ranges hold; got:\n{}",
             div
         );
 

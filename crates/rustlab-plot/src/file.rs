@@ -352,9 +352,14 @@ where
         let scale = (data_w_avail as f64 / dx).min(data_h_avail as f64 / dy);
         let data_w = (scale * dx).round().max(1.0) as u32;
         let data_h = (scale * dy).round().max(1.0) as u32;
-        let req_cw = panel_w.saturating_sub(data_w + 2 * MARGIN + Y_LABEL_AREA);
-        let req_ch = panel_h.saturating_sub(data_h + 2 * MARGIN + X_LABEL_AREA + caption_h);
-        panel.clone().shrink((0, 0), (req_cw, req_ch))
+        // plotters' `shrink((left_upper), (dimension))` interprets the second
+        // tuple as the FINAL pixel dimensions of the resulting drawing area,
+        // not as an amount to subtract. So target final size = data area +
+        // margins + label/caption gutters that the chart builder will carve
+        // back out via `.margin/.x_label_area_size/.y_label_area_size/.caption`.
+        let final_w = data_w + 2 * MARGIN + Y_LABEL_AREA;
+        let final_h = data_h + 2 * MARGIN + X_LABEL_AREA + caption_h;
+        panel.clone().shrink((0, 0), (final_w, final_h))
     } else {
         panel.clone()
     };
@@ -944,9 +949,11 @@ where
         let scale = (data_w_avail as f64 / dx).min(data_h_avail as f64 / dy);
         let data_w = (scale * dx).round().max(1.0) as u32;
         let data_h = (scale * dy).round().max(1.0) as u32;
-        let req_cw = panel_w.saturating_sub(data_w + 2 * MARGIN + Y_LABEL_AREA);
-        let req_ch = panel_h.saturating_sub(data_h + 2 * MARGIN + X_LABEL_AREA + caption_h);
-        (root.clone().shrink((0, 0), (req_cw, req_ch)), None)
+        // plotters' `shrink((left_upper), (dimension))` interprets the second
+        // tuple as the FINAL pixel dimensions — not as an amount to subtract.
+        let final_w = data_w + 2 * MARGIN + Y_LABEL_AREA;
+        let final_h = data_h + 2 * MARGIN + X_LABEL_AREA + caption_h;
+        (root.clone().shrink((0, 0), (final_w, final_h)), None)
     } else {
         (root.clone(), None)
     };
@@ -2021,6 +2028,82 @@ mod tests {
 
         let _ = std::fs::remove_file(&path_eq);
         let _ = std::fs::remove_file(&path_auto);
+    }
+
+    #[test]
+    fn axis_equal_with_explicit_limits_renders_square_chart() {
+        // Regression: with axis_equal + symmetric xlim/ylim, the chart pixel
+        // area must be near-square (data dx ≈ dy). Prior versions of
+        // `chart_area` passed a "shrink amount" to plotters' `shrink((), ())`
+        // where the second tuple is interpreted as FINAL DIMENSIONS — yielding
+        // a zero-height area that plotters partially recovered as a thin
+        // strip. Smith charts (xlim=ylim=[-1.1, 1.1]) rendered as 4:1
+        // squashed ellipses; stability circles outside the unit disk then
+        // appeared in surrounding empty space because the chart wasn't
+        // filling its allotted area.
+        let path = tmp_path("_axis_equal_square.svg");
+        let n = 96;
+        let xs: Vec<f64> = (0..=n)
+            .map(|i| (i as f64 / n as f64 * std::f64::consts::TAU).cos())
+            .collect();
+        let ys: Vec<f64> = (0..=n)
+            .map(|i| (i as f64 / n as f64 * std::f64::consts::TAU).sin())
+            .collect();
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(xs, ys, "", "", None, LineStyle::Solid);
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            let sp = fig.current_mut();
+            sp.axis_equal = true;
+            sp.xlim = (Some(-1.1), Some(1.1));
+            sp.ylim = (Some(-1.1), Some(1.1));
+        });
+        render_figure_file(&path).expect("render");
+        let svg = std::fs::read_to_string(&path).expect("read svg");
+
+        // Find the longest polyline (the unit-circle data series).
+        let mut best_dx = 0.0f64;
+        let mut best_dy = 0.0f64;
+        let mut i = 0;
+        while let Some(p) = svg[i..].find("points=\"") {
+            let start = i + p + 8;
+            let end = svg[start..].find('"').map(|e| start + e).unwrap_or(svg.len());
+            let mut xs_pl = Vec::new();
+            let mut ys_pl = Vec::new();
+            for tok in svg[start..end].split_whitespace() {
+                if let Some((x, y)) = tok.split_once(',') {
+                    if let (Ok(xv), Ok(yv)) = (x.parse::<f64>(), y.parse::<f64>()) {
+                        xs_pl.push(xv);
+                        ys_pl.push(yv);
+                    }
+                }
+            }
+            if xs_pl.len() > 20 {
+                let dx = xs_pl.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                    - xs_pl.iter().copied().fold(f64::INFINITY, f64::min);
+                let dy = ys_pl.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                    - ys_pl.iter().copied().fold(f64::INFINITY, f64::min);
+                if dx > best_dx {
+                    best_dx = dx;
+                    best_dy = dy;
+                }
+            }
+            i = end + 1;
+        }
+
+        assert!(
+            best_dx > 50.0 && best_dy > 50.0,
+            "data extents should be substantial — got dx={best_dx:.0}, dy={best_dy:.0}"
+        );
+        // Aspect should be near 1:1. Tolerate ±15% because of margin/label gutter
+        // rounding; without the fix this is ~4:1.
+        let aspect = best_dx.max(best_dy) / best_dx.min(best_dy);
+        assert!(
+            aspect < 1.15,
+            "axis_equal unit circle aspect should be ~1:1, got {aspect:.2} (dx={best_dx:.0}, dy={best_dy:.0})"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Pull every `<rect ... y="…" ... width="…" height="…" ... fill="…" .../>`

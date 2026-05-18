@@ -4126,6 +4126,502 @@ mod phase4_tests {
             .with(|f| f.borrow().current().series[0].x_data.len());
         assert_eq!(xlen, 2, "matrix arm should use nrows for x; got len {xlen}");
     }
+
+    // ── pwelch (Welch's PSD estimator) ────────────────────────────────────────
+
+    fn pwelch_two_tone_signal_src(fs: f64, f1: f64, f2: f64, n: usize) -> String {
+        format!(
+            "fs = {fs}; n = {n};\n\
+             t = (0:(n-1)) / fs;\n\
+             x = sin(2 * pi * {f1} * t) + 0.5 * sin(2 * pi * {f2} * t);\n"
+        )
+    }
+
+    #[test]
+    fn pwelch_returns_tuple_of_pxx_and_f() {
+        let src = format!(
+            "{}\
+             [Pxx, f] = pwelch(x, fs);",
+            pwelch_two_tone_signal_src(1000.0, 100.0, 250.0, 2048)
+        );
+        let ev = eval_str(&src);
+        let pxx = get_vector(&ev, "Pxx");
+        let f = get_vector(&ev, "f");
+        assert!(!pxx.is_empty());
+        assert_eq!(pxx.len(), f.len());
+        // One-sided default for real input: f starts at 0, ends at fs/2.
+        assert!(close(f[0], 0.0, 1e-9));
+        assert!(close(f[f.len() - 1], 500.0, 1.0));
+    }
+
+    #[test]
+    fn pwelch_identifies_two_tones() {
+        // 100 Hz and 250 Hz tones; both should rise far above the
+        // surrounding noise floor.
+        let src = format!(
+            "{}\
+             [Pxx, f] = pwelch(x, fs);",
+            pwelch_two_tone_signal_src(1000.0, 100.0, 250.0, 4096)
+        );
+        let ev = eval_str(&src);
+        let pxx = get_vector(&ev, "Pxx");
+        let f = get_vector(&ev, "f");
+        let nearest_bin = |freq: f64| {
+            let mut best = 0usize;
+            let mut bestd = f64::INFINITY;
+            for (i, &fi) in f.iter().enumerate() {
+                let d = (fi - freq).abs();
+                if d < bestd {
+                    bestd = d;
+                    best = i;
+                }
+            }
+            best
+        };
+        let b1 = nearest_bin(100.0);
+        let b2 = nearest_bin(250.0);
+        // Use the median as a robust noise-floor proxy.
+        let mut sorted = pxx.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted[sorted.len() / 2];
+        assert!(
+            pxx[b1] > 20.0 * median,
+            "tone at 100 Hz should be >> noise floor (pxx[b1]={}, median={median})",
+            pxx[b1]
+        );
+        assert!(
+            pxx[b2] > 5.0 * median,
+            "tone at 250 Hz should be >> noise floor (pxx[b2]={}, median={median})",
+            pxx[b2]
+        );
+    }
+
+    #[test]
+    fn pwelch_hamming_sidelobes_lower_than_rectangular() {
+        // Same signal, two windows: Hamming should suppress the
+        // far-from-peak sidelobes more aggressively than rectangular.
+        let base = pwelch_two_tone_signal_src(1000.0, 100.0, 250.0, 4096);
+        let src = format!(
+            "{base}\
+             [P_rect, f] = pwelch(x, fs, \"rect\");\n\
+             [P_hamm, f] = pwelch(x, fs, \"hamming\");"
+        );
+        let ev = eval_str(&src);
+        let p_rect = get_vector(&ev, "P_rect");
+        let p_hamm = get_vector(&ev, "P_hamm");
+        // Average power in the upper-frequency region (far from both
+        // tones) — sidelobe leakage shows up here.
+        let region = |v: &[f64]| {
+            let lo = v.len() * 7 / 10;
+            let slice = &v[lo..];
+            slice.iter().sum::<f64>() / slice.len() as f64
+        };
+        let mean_rect = region(&p_rect);
+        let mean_hamm = region(&p_hamm);
+        assert!(
+            mean_hamm < mean_rect,
+            "Hamming far-tail mean ({mean_hamm}) should be lower than rectangular ({mean_rect})"
+        );
+    }
+
+    #[test]
+    fn pwelch_string_window_matches_vector_window() {
+        // "hamming" with default segment length should equal an explicit
+        // Hamming-generated window of the same length.
+        let n = 1024;
+        let src = format!(
+            "fs = 1000; n = {n};\n\
+             t = (0:(n-1)) / fs;\n\
+             x = sin(2 * pi * 100 * t);\n\
+             L = floor(2 * n / 9);\n\
+             [P1, f1] = pwelch(x, fs, \"hamming\");\n\
+             [P2, f2] = pwelch(x, fs, window(\"hamming\", L));"
+        );
+        let ev = eval_str(&src);
+        let p1 = get_vector(&ev, "P1");
+        let p2 = get_vector(&ev, "P2");
+        assert_eq!(p1.len(), p2.len());
+        for (a, b) in p1.iter().zip(p2.iter()) {
+            assert!(
+                (a - b).abs() < 1e-9,
+                "string vs vector window mismatch: {a} vs {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn pwelch_explicit_sided_overrides_auto() {
+        // Real input + sided="twosided" should yield n_eff bins instead
+        // of n_eff/2 + 1.
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [P_one, f_one] = pwelch(x, fs, \"hann\", 50, 256, \"onesided\");\n\
+                   [P_two, f_two] = pwelch(x, fs, \"hann\", 50, 256, \"twosided\");";
+        let ev = eval_str(src);
+        let p_one = get_vector(&ev, "P_one");
+        let p_two = get_vector(&ev, "P_two");
+        assert_eq!(p_one.len(), 129); // 256/2 + 1
+        assert_eq!(p_two.len(), 256);
+    }
+
+    // ── stft / spectrogram ────────────────────────────────────────────────────
+
+    fn get_matrix_shape(ev: &Evaluator, name: &str) -> (usize, usize) {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (m.nrows(), m.ncols()),
+            other => panic!("expected matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stft_returns_three_outputs() {
+        let src = "fs = 1000; n = 2048;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [S, f, tt] = stft(x, fs, \"hann\", 64, 128);";
+        let ev = eval_str(src);
+        let (rows, cols) = get_matrix_shape(&ev, "S");
+        let f = get_vector(&ev, "f");
+        let tt = get_vector(&ev, "tt");
+        // Auto-sided on real input: 128/2 + 1 = 65 rows.
+        assert_eq!(rows, 65);
+        assert_eq!(f.len(), 65);
+        assert_eq!(tt.len(), cols);
+        assert!(cols >= 8);
+    }
+
+    #[test]
+    fn stft_pure_tone_peak_bin_constant() {
+        // Stationary 100 Hz tone -> same peak row in every column.
+        let src = "fs = 1000; n = 2048;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [S, f, tt] = stft(x, fs, \"hann\", 64, 256);";
+        let ev = eval_str(src);
+        let f = get_vector(&ev, "f");
+        let s = match ev.get("S").unwrap() {
+            Value::Matrix(m) => m.clone(),
+            _ => panic!("S not a matrix"),
+        };
+        let expected_bin = f
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (**a - 100.0).abs().partial_cmp(&(**b - 100.0).abs()).unwrap())
+            .unwrap()
+            .0;
+        for col in 0..s.ncols() {
+            let mut best = 0usize;
+            let mut bestmag = 0.0f64;
+            for row in 0..s.nrows() {
+                let m = s[(row, col)].norm();
+                if m > bestmag {
+                    bestmag = m;
+                    best = row;
+                }
+            }
+            assert!(
+                (best as i64 - expected_bin as i64).abs() <= 1,
+                "frame {col}: expected peak near bin {expected_bin}, got {best}"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrogram_renders_to_current_subplot() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = "fs = 1000; n = 2048;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   spectrogram(x, fs, \"hann\", 64, 256);";
+        eval_str(src);
+        // After spectrogram(), the current subplot should hold a HeatmapData
+        // with the right dimensions.
+        let (rows, cols, kind, colorscale) = rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            let hm = sp.heatmap.as_ref().expect("spectrogram should push a heatmap");
+            (
+                hm.z.len(),
+                hm.z[0].len(),
+                hm.kind.clone(),
+                hm.colorscale.clone(),
+            )
+        });
+        // 256/2 + 1 = 129 freq bins one-sided.
+        assert_eq!(rows, 129);
+        assert!(cols >= 8);
+        assert_eq!(kind, rustlab_plot::figure::HeatmapKind::Imagesc);
+        assert_eq!(colorscale, "viridis");
+    }
+
+    #[test]
+    fn spectrogram_sets_axis_xy_and_labels() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = "fs = 1000; n = 2048;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   spectrogram(x, fs);";
+        eval_str(src);
+        let (y_dir, xlabel, ylabel) = rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            (sp.y_axis_direction, sp.xlabel.clone(), sp.ylabel.clone())
+        });
+        assert_eq!(y_dir, rustlab_plot::AxisYDirection::Xy);
+        assert_eq!(xlabel, "Time (s)");
+        assert_eq!(ylabel, "Frequency (Hz)");
+    }
+
+    #[test]
+    fn stft_explicit_twosided_yields_full_bins() {
+        let src = "fs = 1000; n = 2048;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [S, f, tt] = stft(x, fs, \"hann\", 64, 128, \"twosided\");";
+        let ev = eval_str(src);
+        let (rows, _) = get_matrix_shape(&ev, "S");
+        assert_eq!(rows, 128);
+    }
+
+    fn spectrogram_savefig(ext: &str) -> (std::path::PathBuf, Vec<u8>) {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let tmp = std::env::temp_dir().join(format!("rustlab_phase4_spectrogram.{ext}"));
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let src = format!(
+            "fs = 1000; n = 2048;\n\
+             t = (0:(n-1)) / fs;\n\
+             x = sin(2*pi*100*t) + 0.3*sin(2*pi*250*t);\n\
+             spectrogram(x, fs, \"hann\", 64, 256);\n\
+             savefig(\"{tmp_str}\");"
+        );
+        eval_str(&src);
+        let bytes = std::fs::read(&tmp).expect("output file missing");
+        (tmp, bytes)
+    }
+
+    #[test]
+    fn spectrogram_svg_output_well_formed() {
+        let (path, bytes) = spectrogram_savefig("svg");
+        let s = String::from_utf8_lossy(&bytes);
+        assert!(s.contains("<svg"), "SVG output missing <svg> root");
+        assert!(s.len() > 500, "SVG output suspiciously small: {} bytes", s.len());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn spectrogram_html_output_well_formed() {
+        let (path, bytes) = spectrogram_savefig("html");
+        let s = String::from_utf8_lossy(&bytes);
+        // Plotly HTML always contains the Plotly.newPlot bootstrap.
+        assert!(
+            s.contains("Plotly") || s.contains("plotly"),
+            "HTML output missing Plotly bootstrap"
+        );
+        assert!(s.len() > 1000, "HTML output suspiciously small: {} bytes", s.len());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn spectrogram_png_output_well_formed() {
+        let (path, bytes) = spectrogram_savefig("png");
+        // PNG magic number: 89 50 4E 47 0D 0A 1A 0A.
+        assert!(
+            bytes.len() > 8 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n",
+            "PNG header missing or output truncated"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── cwt / scalogram ───────────────────────────────────────────────────────
+
+    #[test]
+    fn cwt_returns_three_outputs() {
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [W, freqs, tt] = cwt(x, fs);";
+        let ev = eval_str(src);
+        let (rows, cols) = get_matrix_shape(&ev, "W");
+        let freqs = get_vector(&ev, "freqs");
+        let tt = get_vector(&ev, "tt");
+        assert_eq!(rows, 64); // default n_scales
+        assert_eq!(cols, 1024);
+        assert_eq!(freqs.len(), rows);
+        assert_eq!(tt.len(), cols);
+    }
+
+    #[test]
+    fn cwt_explicit_n_scales_overrides_default() {
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [W, freqs, tt] = cwt(x, fs, \"morlet\", 32);";
+        let ev = eval_str(src);
+        let (rows, _) = get_matrix_shape(&ev, "W");
+        assert_eq!(rows, 32);
+    }
+
+    #[test]
+    fn cwt_explicit_scales_vector_used_directly() {
+        // Pass three explicit scales corresponding to 100, 50, 25 Hz at fs=1000.
+        // f = 6 * fs / (2π s) → s = 6 * fs / (2π * f)
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   omega0 = 6;\n\
+                   scales = [omega0*fs/(2*pi*100), omega0*fs/(2*pi*50), omega0*fs/(2*pi*25)];\n\
+                   [W, freqs, tt] = cwt(x, fs, \"morlet\", scales);";
+        let ev = eval_str(src);
+        let (rows, _) = get_matrix_shape(&ev, "W");
+        let freqs = get_vector(&ev, "freqs");
+        assert_eq!(rows, 3);
+        assert!((freqs[0] - 100.0).abs() < 1.0);
+        assert!((freqs[1] - 50.0).abs() < 1.0);
+        assert!((freqs[2] - 25.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn scalogram_renders_to_current_subplot() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   scalogram(x, fs);";
+        eval_str(src);
+        let (rows, cols, kind) = rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            let hm = sp.heatmap.as_ref().expect("scalogram should push a heatmap");
+            (hm.z.len(), hm.z[0].len(), hm.kind.clone())
+        });
+        assert_eq!(rows, 64);
+        assert_eq!(cols, 1024);
+        assert_eq!(kind, rustlab_plot::figure::HeatmapKind::Imagesc);
+    }
+
+    #[test]
+    fn scalogram_sets_axis_xy_and_labels() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = "fs = 1000; n = 1024;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   scalogram(x, fs);";
+        eval_str(src);
+        let (y_dir, xlabel, ylabel) = rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            (sp.y_axis_direction, sp.xlabel.clone(), sp.ylabel.clone())
+        });
+        assert_eq!(y_dir, rustlab_plot::AxisYDirection::Xy);
+        assert_eq!(xlabel, "Time (s)");
+        assert!(ylabel.contains("Frequency"));
+    }
+
+    #[test]
+    fn cwt_unknown_family_rejected() {
+        let src = "fs = 1000; n = 256;\n\
+                   t = (0:(n-1)) / fs;\n\
+                   x = sin(2 * pi * 100 * t);\n\
+                   [W, freqs, tt] = cwt(x, fs, \"daubechies\");";
+        let result = std::panic::catch_unwind(|| eval_str(src));
+        assert!(result.is_err(), "unknown wavelet family should error");
+    }
+
+    // ── Streaming time-frequency builtins ─────────────────────────────────────
+
+    #[test]
+    fn pwelch_stream_round_trip_smoke() {
+        let src = "fs = 1000.0; win = window(\"hann\", 128);\n\
+                   state = pwelch_stream_init(fs, win, 64, 128);\n\
+                   frame = sin(2*pi*100*(0:(256-1))/fs);\n\
+                   [Pxx, state] = pwelch_stream(frame, state);";
+        let ev = eval_str(src);
+        let pxx = get_vector(&ev, "Pxx");
+        // 128/2 + 1 = 65 one-sided bins (sided auto, real input).
+        assert_eq!(pxx.len(), 65);
+        // Bin near 100 Hz should dominate.
+        let bin_100 = (100.0_f64 / 1000.0 * 128.0).round() as usize;
+        assert!(pxx[bin_100] > 0.0);
+    }
+
+    #[test]
+    fn pwelch_stream_warmup_returns_empty() {
+        let src = "fs = 1000.0; win = window(\"hann\", 256);\n\
+                   state = pwelch_stream_init(fs, win, 128, 256);\n\
+                   frame = sin(2*pi*100*(0:(64-1))/fs);\n\
+                   [Pxx, state] = pwelch_stream(frame, state);";
+        let ev = eval_str(src);
+        let pxx = get_vector(&ev, "Pxx");
+        assert_eq!(pxx.len(), 0);
+    }
+
+    #[test]
+    fn stft_stream_emits_new_columns_per_frame() {
+        let src = "fs = 1000.0; win = window(\"hann\", 64);\n\
+                   state = stft_stream_init(fs, win, 32, 64);\n\
+                   frame = sin(2*pi*100*(0:(256-1))/fs);\n\
+                   [S, state] = stft_stream(frame, state);";
+        let ev = eval_str(src);
+        let (rows, cols) = get_matrix_shape(&ev, "S");
+        assert_eq!(rows, 33); // n_eff/2 + 1
+        assert!(cols >= 4);
+    }
+
+    #[test]
+    fn stft_stream_warmup_empty_keeps_freq_dim() {
+        let src = "fs = 1000.0; win = window(\"hann\", 256);\n\
+                   state = stft_stream_init(fs, win, 128, 256);\n\
+                   frame = sin(2*pi*100*(0:(32-1))/fs);\n\
+                   [S, state] = stft_stream(frame, state);";
+        let ev = eval_str(src);
+        let (rows, cols) = get_matrix_shape(&ev, "S");
+        assert_eq!(rows, 129);
+        assert_eq!(cols, 0);
+    }
+
+    #[test]
+    fn cwt_stream_round_trip_smoke() {
+        let src = "fs = 1000.0;\n\
+                   state = cwt_stream_init(fs, 512, 16);\n\
+                   frame = sin(2*pi*50*(0:(1024-1))/fs);\n\
+                   [W, state] = cwt_stream(frame, state);";
+        let ev = eval_str(src);
+        let (rows, cols) = get_matrix_shape(&ev, "W");
+        assert_eq!(rows, 16);
+        // After 1024 samples in with window=512, the buffer holds the
+        // latest 512 -> W has 512 columns.
+        assert_eq!(cols, 512);
+    }
+
+    #[test]
+    fn plot_update_heatmap_headless_noop() {
+        // Headless mode -> plot_update_heatmap should accept the call
+        // without panicking even though no figure can be opened.
+        rustlab_plot::set_plot_context(rustlab_plot::PlotContext::Headless);
+        let src = "fs = 1000.0; win = window(\"hann\", 64);\n\
+                   state = stft_stream_init(fs, win, 32, 64);\n\
+                   frame = sin(2*pi*100*(0:(256-1))/fs);\n\
+                   [S, state] = stft_stream(frame, state);\n\
+                   S_db = 20*log10(abs(S) + 1e-12);";
+        let result = std::panic::catch_unwind(|| eval_str(src));
+        // Restore for other tests.
+        rustlab_plot::set_plot_context(rustlab_plot::PlotContext::Terminal);
+        assert!(result.is_ok(), "headless streaming pipeline should not panic");
+    }
+
+    #[test]
+    fn streaming_state_value_type_name() {
+        // The state arg is opaque from the script side — type_name returns
+        // "dsp_stream_state" so error messages from misuse stay readable.
+        let src = "fs = 1000.0; win = window(\"hann\", 64);\n\
+                   state = pwelch_stream_init(fs, win, 32, 64);";
+        let ev = eval_str(src);
+        match ev.get("state").unwrap() {
+            Value::DspStreamState(_) => {}
+            other => panic!("expected DspStreamState, got {other:?}"),
+        }
+    }
 }
 
 // ─── Phase 5 tests — Optimal Control (LQR) ───────────────────────────────────

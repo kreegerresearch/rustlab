@@ -1,5 +1,5 @@
 use crate::error::ScriptError;
-use crate::eval::value::{insert_commas, SparseFactor, Value};
+use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value};
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
@@ -9,14 +9,17 @@ use rustlab_core::{OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
 use rustlab_dsp::fixed::{qadd as fixed_qadd, qconv as fixed_qconv, qmul as fixed_qmul};
 use rustlab_dsp::{
-    butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, divergence_2d, divergence_3d, fft,
+    butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, cwt_morlet, cwt_stream,
+    cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
     fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_2d, gradient_3d,
-    ifft, quantize_scalar, snr_db, upfirdn, IirFilter, QFmtSpec, WindowFunction,
+    ifft, pwelch_psd, pwelch_stream, pwelch_stream_init, quantize_scalar, snr_db,
+    stft as stft_math, stft_stream, stft_stream_init, upfirdn, IirFilter, QFmtSpec, Sided,
+    WindowFunction,
 };
 use rustlab_plot::{
-    colormap_rgb, compute_histogram, histogram_matrix, imagesc_terminal, plot_db, plot_histogram,
-    push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem, render_figure_file,
+    colormap_rgb, compute_histogram, db_clip, histogram_matrix, imagesc_terminal, plot_db,
+    plot_histogram, push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem, render_figure_file,
     render_figure_terminal, render_heatmap_tui, render_image_tui, surf_terminal,
     sync_figure_outputs, HeatmapData, HeatmapKind, LineStyle, LiveFigure, LivePlot, SeriesColor,
     FIGURE,
@@ -68,6 +71,17 @@ impl BuiltinRegistry {
         r.register("fftshift", builtin_fftshift);
         r.register("fftfreq", builtin_fftfreq);
         r.register("spectrum", builtin_spectrum);
+        r.register("pwelch", builtin_pwelch);
+        r.register("stft", builtin_stft);
+        r.register("spectrogram", builtin_spectrogram);
+        r.register("cwt", builtin_cwt);
+        r.register("scalogram", builtin_scalogram);
+        r.register("pwelch_stream_init", builtin_pwelch_stream_init);
+        r.register("pwelch_stream", builtin_pwelch_stream);
+        r.register("stft_stream_init", builtin_stft_stream_init);
+        r.register("stft_stream", builtin_stft_stream);
+        r.register("cwt_stream_init", builtin_cwt_stream_init);
+        r.register("cwt_stream", builtin_cwt_stream);
         // Kaiser FIR
         r.register("fir_lowpass_kaiser", builtin_fir_lowpass_kaiser);
         r.register("fir_highpass_kaiser", builtin_fir_highpass_kaiser);
@@ -369,6 +383,7 @@ impl BuiltinRegistry {
         // Live plotting
         r.register("figure_live", builtin_figure_live);
         r.register("plot_update", builtin_plot_update);
+        r.register("plot_update_heatmap", builtin_plot_update_heatmap);
         r.register("plot_limits", builtin_plot_limits);
         r.register("plot_labels", builtin_plot_labels);
         r.register("figure_draw", builtin_figure_draw);
@@ -2539,6 +2554,577 @@ fn builtin_fftfreq(args: Vec<Value>) -> Result<Value, ScriptError> {
     let freqs = fftfreq(n, sr);
     let cv: CVector = Array1::from_iter(freqs.iter().map(|&f| Complex::new(f, 0.0)));
     Ok(Value::Vector(cv))
+}
+
+/// Resolve the `window` argument of `pwelch` / `stft` to a real coefficient
+/// vector. Accepts a string name (uses `default_len` segment length), an
+/// integer scalar length (Hamming window of that length), or a precomputed
+/// coefficient vector. Returns the coefficients plus the resolved segment
+/// length.
+fn resolve_window_arg(
+    arg: &Value,
+    default_len: usize,
+    fn_name: &str,
+) -> Result<Array1<f64>, ScriptError> {
+    // String name → default segment length.
+    if let Ok(name) = arg.to_str() {
+        let wf = WindowFunction::from_str(&name, None).map_err(ScriptError::Dsp)?;
+        return Ok(wf.generate(default_len));
+    }
+    // Scalar integer → Hamming window of that length (MATLAB convention).
+    if let Value::Scalar(n) = arg {
+        if *n > 0.0 && n.fract() == 0.0 {
+            return Ok(WindowFunction::Hamming.generate(*n as usize));
+        }
+    }
+    // Otherwise treat as coefficient vector (rejects complex coefficients).
+    match arg {
+        Value::Vector(v) => {
+            let mut out = Array1::zeros(v.len());
+            for (i, c) in v.iter().enumerate() {
+                if c.im.abs() > 1e-12 {
+                    return Err(ScriptError::type_err(format!(
+                        "{fn_name}: window must be real-valued"
+                    )));
+                }
+                out[i] = c.re;
+            }
+            Ok(out)
+        }
+        other => Err(ScriptError::type_err(format!(
+            "{fn_name}: window must be a string, integer length, or real vector (got {})",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_sided(arg: &Value, fn_name: &str) -> Result<Sided, ScriptError> {
+    let s = arg
+        .to_str()
+        .map_err(|_| ScriptError::type_err(format!("{fn_name}: sided must be a string")))?;
+    match s.to_ascii_lowercase().as_str() {
+        "onesided" | "one-sided" | "one_sided" => Ok(Sided::OneSided),
+        "twosided" | "two-sided" | "two_sided" => Ok(Sided::TwoSided),
+        "auto" => Ok(Sided::Auto),
+        other => Err(ScriptError::type_err(format!(
+            "{fn_name}: sided must be \"onesided\", \"twosided\", or \"auto\"; got \"{other}\""
+        ))),
+    }
+}
+
+/// `pwelch(x, fs, ...)` — Welch's power spectral density estimator.
+///
+/// Forms:
+/// - `pwelch(x, fs)` — Hamming window of length `floor(2·length(x)/9)`,
+///   50% overlap, `nfft = window length`, sided = auto.
+/// - `pwelch(x, fs, window)` — `window` is a string name, an integer
+///   length (Hamming of that length), or a real coefficient vector.
+/// - `pwelch(x, fs, window, noverlap)`
+/// - `pwelch(x, fs, window, noverlap, nfft)`
+/// - `pwelch(x, fs, window, noverlap, nfft, sided)` — sided is
+///   `"onesided"`, `"twosided"`, or `"auto"`.
+///
+/// Returns the tuple `[Pxx, f]` and always renders a dB-scale PSD plot
+/// on the current subplot (matches `bode` / `nyquist` convention).
+fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("pwelch", &args, 2, 6)?;
+    let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let default_len = default_segment_len(x.len()).max(8);
+
+    let window = if args.len() >= 3 {
+        resolve_window_arg(&args[2], default_len, "pwelch")?
+    } else {
+        WindowFunction::Hamming.generate(default_len)
+    };
+    let win_len = window.len();
+    let noverlap = if args.len() >= 4 {
+        args[3].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        win_len / 2
+    };
+    let nfft = if args.len() >= 5 {
+        args[4].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        win_len
+    };
+    let sided = if args.len() >= 6 {
+        parse_sided(&args[5], "pwelch")?
+    } else {
+        Sided::Auto
+    };
+
+    let (pxx, freqs) = pwelch_psd(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+
+    let f_plot: Vec<f64> = freqs.iter().copied().collect();
+    let pxx_db: Vec<f64> = pxx.iter().map(|&p| 10.0 * p.max(1e-300).log10()).collect();
+    push_xy_line(
+        f_plot,
+        pxx_db,
+        "pwelch",
+        "Welch PSD",
+        None,
+        LineStyle::Solid,
+    );
+    FIGURE.with(|fig| {
+        let mut f = fig.borrow_mut();
+        let sp = f.current_mut();
+        sp.xlabel = "Frequency (Hz)".to_string();
+        sp.ylabel = "PSD (dB/Hz)".to_string();
+    });
+    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+
+    let pxx_c: CVector =
+        Array1::from_iter(pxx.iter().map(|&p| Complex::new(p, 0.0)));
+    let freqs_c: CVector =
+        Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
+    Ok(Value::Tuple(vec![Value::Vector(pxx_c), Value::Vector(freqs_c)]))
+}
+
+/// Resolve shared arguments for `stft` / `spectrogram`. Returns
+/// `(x, fs, window, noverlap, nfft, sided)`.
+fn resolve_stft_args(
+    args: &[Value],
+    fn_name: &str,
+) -> Result<(CVector, f64, Array1<f64>, usize, usize, Sided), ScriptError> {
+    let x = args[0]
+        .to_cvector()
+        .map_err(|e| ScriptError::type_err(e))?;
+    let fs = args[1]
+        .to_scalar()
+        .map_err(|e| ScriptError::type_err(e))?;
+    // MATLAB stft default segment length: 128.
+    let default_len = 128usize.min(x.len().max(1));
+    let window = if args.len() >= 3 {
+        resolve_window_arg(&args[2], default_len, fn_name)?
+    } else {
+        WindowFunction::Hann.generate(default_len)
+    };
+    let win_len = window.len();
+    let noverlap = if args.len() >= 4 {
+        args[3].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        win_len / 2
+    };
+    let nfft = if args.len() >= 5 {
+        args[4].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        win_len
+    };
+    let sided = if args.len() >= 6 {
+        parse_sided(&args[5], fn_name)?
+    } else {
+        Sided::Auto
+    };
+    Ok((x, fs, window, noverlap, nfft, sided))
+}
+
+/// Push a real-valued, pre-dB-clipped matrix onto the current subplot as
+/// an imagesc heatmap with explicit (vmin, vmax) limits. Also flips the
+/// y-axis to physics convention and sets the labels. Used by both
+/// `spectrogram` and (in Phase 3) `scalogram`.
+fn push_db_heatmap(
+    z: &rustlab_core::RMatrix,
+    vmin: f64,
+    vmax: f64,
+    title: &str,
+    colormap: &str,
+    xlabel: &str,
+    ylabel: &str,
+) -> Result<(), ScriptError> {
+    let (nrows, ncols) = (z.nrows(), z.ncols());
+    if nrows == 0 || ncols == 0 {
+        return Err(ScriptError::runtime("spectrogram: empty matrix".to_string()));
+    }
+    let z_nested: Vec<Vec<f64>> = (0..nrows)
+        .map(|r| (0..ncols).map(|c| z[(r, c)]).collect())
+        .collect();
+    let z_flat: Vec<f64> = z_nested.iter().flatten().copied().collect();
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            let sp = fig.current_mut();
+            sp.series.clear();
+            sp.title.clear();
+        }
+        let sp = fig.current_mut();
+        if !title.is_empty() && sp.title.is_empty() {
+            sp.title = title.to_string();
+        }
+        sp.xlabel = xlabel.to_string();
+        sp.ylabel = ylabel.to_string();
+        // axis("xy"): row 0 sits at the bottom so frequency increases upward.
+        sp.y_axis_direction = rustlab_plot::AxisYDirection::Xy;
+        sp.heatmap = Some(HeatmapData {
+            z: z_nested,
+            colorscale: colormap.to_string(),
+            kind: HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+        });
+    });
+    let range = (vmax - vmin).max(1e-12);
+    render_heatmap_tui(&z_flat, nrows, ncols, vmin, range, title, colormap)
+        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    sync_figure_outputs();
+    Ok(())
+}
+
+/// `stft(x, fs, ...)` — Short-Time Fourier Transform.
+///
+/// Forms mirror `pwelch`. Returns the tuple `[S, f, t]` where `S` is a
+/// complex matrix (rows = frequency bins, cols = time frames). When
+/// called bare, also auto-renders the magnitude spectrogram.
+///
+/// Defaults: Hann window of length 128 (MATLAB stft default), 50%
+/// overlap, `nfft = window length`, `sided = "auto"`.
+fn builtin_stft(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("stft", &args, 2, 6)?;
+    let (x, fs, window, noverlap, nfft, sided) = resolve_stft_args(&args, "stft")?;
+    let (s, f, t) = stft_math(&x, fs, &window, noverlap, nfft, sided)
+        .map_err(ScriptError::Dsp)?;
+
+    // Auto-render as a magnitude spectrogram on the current subplot.
+    let (z_db, vmin, vmax) = db_clip(&s, 80.0);
+    push_db_heatmap(
+        &z_db,
+        vmin,
+        vmax,
+        "STFT",
+        "viridis",
+        "Time (s)",
+        "Frequency (Hz)",
+    )?;
+
+    let f_c: CVector = Array1::from_iter(f.iter().map(|&v| Complex::new(v, 0.0)));
+    let t_c: CVector = Array1::from_iter(t.iter().map(|&v| Complex::new(v, 0.0)));
+    Ok(Value::Tuple(vec![
+        Value::Matrix(s),
+        Value::Vector(f_c),
+        Value::Vector(t_c),
+    ]))
+}
+
+/// `spectrogram(x, fs, ...)` — plot-only wrapper around `stft`.
+///
+/// Renders `20·log10(|S|)` via `imagesc` with viridis colormap, an 80 dB
+/// dynamic range floor, and physics-convention y-axis (frequency
+/// increases upward). No data returned; for the underlying matrices use
+/// `[S, f, t] = stft(...)`.
+fn builtin_spectrogram(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("spectrogram", &args, 2, 6)?;
+    let (x, fs, window, noverlap, nfft, sided) = resolve_stft_args(&args, "spectrogram")?;
+    let (s, _f, _t) =
+        stft_math(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+    let (z_db, vmin, vmax) = db_clip(&s, 80.0);
+    push_db_heatmap(
+        &z_db,
+        vmin,
+        vmax,
+        "Spectrogram",
+        "viridis",
+        "Time (s)",
+        "Frequency (Hz)",
+    )?;
+    Ok(Value::None)
+}
+
+/// Resolve the optional wavelet-family and scales arguments shared by
+/// `cwt` / `scalogram`. Returns `(scales, family_name)`.
+fn resolve_cwt_args(
+    args: &[Value],
+    signal_len: usize,
+    fn_name: &str,
+) -> Result<Array1<f64>, ScriptError> {
+    // arg[2] (optional): family name string. Phase 3 supports "morlet" only.
+    if args.len() >= 3 {
+        let name = args[2]
+            .to_str()
+            .map_err(|e| ScriptError::type_err(e))?;
+        if name.to_ascii_lowercase() != "morlet" {
+            return Err(ScriptError::type_err(format!(
+                "{fn_name}: only \"morlet\" is currently supported (got \"{name}\")"
+            )));
+        }
+    }
+    // arg[3] (optional): n_scales integer OR explicit scales vector.
+    if args.len() >= 4 {
+        if let Value::Scalar(n) = &args[3] {
+            if *n > 0.0 && n.fract() == 0.0 {
+                return Ok(default_scales(signal_len, *n as usize));
+            }
+        }
+        match &args[3] {
+            Value::Vector(v) => {
+                let mut out = Array1::zeros(v.len());
+                for (i, c) in v.iter().enumerate() {
+                    if c.im.abs() > 1e-12 || !(c.re > 0.0) {
+                        return Err(ScriptError::type_err(format!(
+                            "{fn_name}: scales must be a real positive vector"
+                        )));
+                    }
+                    out[i] = c.re;
+                }
+                Ok(out)
+            }
+            other => Err(ScriptError::type_err(format!(
+                "{fn_name}: 4th arg must be n_scales (integer) or scales vector, got {}",
+                other.type_name()
+            ))),
+        }
+    } else {
+        Ok(default_scales(signal_len, 64))
+    }
+}
+
+/// `cwt(x, fs, ...)` — Continuous Wavelet Transform (Morlet).
+///
+/// Forms:
+/// - `cwt(x, fs)` — 64 log-spaced scales, Morlet wavelet.
+/// - `cwt(x, fs, "morlet")` — same as above.
+/// - `cwt(x, fs, "morlet", n_scales)` — log-spaced grid with `n_scales` points.
+/// - `cwt(x, fs, "morlet", scales_vector)` — explicit scales (real, positive).
+///
+/// Returns the tuple `[W, freqs, t]` where `W` is `n_scales × len(x)`
+/// complex, `freqs` is `ω₀·fs/(2π·s)` per scale, `t = (0..len)/fs`.
+/// Bare calls auto-render the magnitude scalogram on the current subplot.
+fn builtin_cwt(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("cwt", &args, 2, 4)?;
+    let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let scales = resolve_cwt_args(&args, x.len(), "cwt")?;
+    let (w, freqs, t) = cwt_morlet(&x, fs, &scales).map_err(ScriptError::Dsp)?;
+
+    // Auto-render the scalogram on the current subplot.
+    let (z_db, vmin, vmax) = db_clip(&w, 80.0);
+    push_db_heatmap(
+        &z_db,
+        vmin,
+        vmax,
+        "CWT",
+        "viridis",
+        "Time (s)",
+        "Frequency (Hz, log scale)",
+    )?;
+
+    let freqs_c: CVector =
+        Array1::from_iter(freqs.iter().map(|&v| Complex::new(v, 0.0)));
+    let t_c: CVector = Array1::from_iter(t.iter().map(|&v| Complex::new(v, 0.0)));
+    Ok(Value::Tuple(vec![
+        Value::Matrix(w),
+        Value::Vector(freqs_c),
+        Value::Vector(t_c),
+    ]))
+}
+
+/// `scalogram(x, fs, ...)` — plot-only wrapper around `cwt`.
+///
+/// Renders `20·log10(|W|)` via `imagesc` with a `viridis` colormap and
+/// an 80 dB dynamic-range floor. Because the default scales are
+/// log-spaced, the row-index axis is effectively a logarithmic
+/// frequency axis (low frequency at top, high at bottom — `axis("xy")`
+/// flips it so high frequencies sit at the top). No data is returned;
+/// use `[W, freqs, t] = cwt(...)` for the underlying matrices.
+fn builtin_scalogram(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("scalogram", &args, 2, 4)?;
+    let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let scales = resolve_cwt_args(&args, x.len(), "scalogram")?;
+    let (w, _freqs, _t) = cwt_morlet(&x, fs, &scales).map_err(ScriptError::Dsp)?;
+    let (z_db, vmin, vmax) = db_clip(&w, 80.0);
+    push_db_heatmap(
+        &z_db,
+        vmin,
+        vmax,
+        "Scalogram",
+        "viridis",
+        "Time (s)",
+        "Frequency (Hz, log scale)",
+    )?;
+    Ok(Value::None)
+}
+
+// ─── Streaming time-frequency builtins ────────────────────────────────────────
+
+/// Extract the `DspStreamKind` Arc from a `Value::DspStreamState` arg,
+/// returning a clean error message if the arg type is wrong.
+fn expect_dsp_state(
+    arg: &Value,
+    fn_name: &str,
+) -> Result<Arc<Mutex<DspStreamKind>>, ScriptError> {
+    match arg {
+        Value::DspStreamState(s) => Ok(Arc::clone(s)),
+        other => Err(ScriptError::type_err(format!(
+            "{fn_name}: expected dsp_stream_state, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `pwelch_stream_init(fs, window, noverlap, nfft)`
+/// `pwelch_stream_init(fs, window, noverlap, nfft, ema_alpha)`
+fn builtin_pwelch_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("pwelch_stream_init", &args, 4, 5)?;
+    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let window = resolve_window_arg(&args[1], 256, "pwelch_stream_init")?;
+    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let ema_alpha = if args.len() == 5 {
+        Some(args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+    } else {
+        None
+    };
+    let state = pwelch_stream_init(fs, &window, noverlap, nfft, ema_alpha, Sided::Auto)
+        .map_err(ScriptError::Dsp)?;
+    Ok(Value::DspStreamState(Arc::new(Mutex::new(
+        DspStreamKind::Pwelch(state),
+    ))))
+}
+
+/// `[Pxx, state] = pwelch_stream(frame, state)`
+fn builtin_pwelch_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("pwelch_stream", &args, 2)?;
+    let frame = args[0]
+        .to_cvector()
+        .map_err(|e| ScriptError::type_err(e))?;
+    let state_arc = expect_dsp_state(&args[1], "pwelch_stream")?;
+    let pxx = {
+        let mut state = state_arc.lock().unwrap();
+        match &mut *state {
+            DspStreamKind::Pwelch(ps) => pwelch_stream(&frame, ps),
+            _ => {
+                return Err(ScriptError::type_err(
+                    "pwelch_stream: state was not initialised via pwelch_stream_init".to_string(),
+                ))
+            }
+        }
+    };
+    let pxx_c: CVector = Array1::from_iter(pxx.iter().map(|&p| Complex::new(p, 0.0)));
+    Ok(Value::Tuple(vec![
+        Value::Vector(pxx_c),
+        Value::DspStreamState(state_arc),
+    ]))
+}
+
+/// `stft_stream_init(fs, window, noverlap, nfft)`
+/// `stft_stream_init(fs, window, noverlap, nfft, sided)`
+fn builtin_stft_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("stft_stream_init", &args, 4, 5)?;
+    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let window = resolve_window_arg(&args[1], 128, "stft_stream_init")?;
+    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let sided = if args.len() == 5 {
+        parse_sided(&args[4], "stft_stream_init")?
+    } else {
+        Sided::OneSided
+    };
+    let state =
+        stft_stream_init(fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+    Ok(Value::DspStreamState(Arc::new(Mutex::new(
+        DspStreamKind::Stft(state),
+    ))))
+}
+
+/// `[S_cols, state] = stft_stream(frame, state)`
+fn builtin_stft_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("stft_stream", &args, 2)?;
+    let frame = args[0]
+        .to_cvector()
+        .map_err(|e| ScriptError::type_err(e))?;
+    let state_arc = expect_dsp_state(&args[1], "stft_stream")?;
+    let s = {
+        let mut state = state_arc.lock().unwrap();
+        match &mut *state {
+            DspStreamKind::Stft(ss) => stft_stream(&frame, ss),
+            _ => {
+                return Err(ScriptError::type_err(
+                    "stft_stream: state was not initialised via stft_stream_init".to_string(),
+                ))
+            }
+        }
+    };
+    Ok(Value::Tuple(vec![
+        Value::Matrix(s),
+        Value::DspStreamState(state_arc),
+    ]))
+}
+
+/// `cwt_stream_init(fs, n_samples)`
+/// `cwt_stream_init(fs, n_samples, n_scales | scales_vector)`
+fn builtin_cwt_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("cwt_stream_init", &args, 2, 3)?;
+    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let n_samples = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let scales = if args.len() == 3 {
+        // Integer -> default log-spaced grid with that many scales.
+        if let Value::Scalar(n) = &args[2] {
+            if *n > 0.0 && n.fract() == 0.0 {
+                default_scales(n_samples, *n as usize)
+            } else {
+                return Err(ScriptError::type_err(
+                    "cwt_stream_init: 3rd arg must be n_scales (positive integer) or scales vector"
+                        .to_string(),
+                ));
+            }
+        } else {
+            // Vector form.
+            match &args[2] {
+                Value::Vector(v) => {
+                    let mut out = Array1::zeros(v.len());
+                    for (i, c) in v.iter().enumerate() {
+                        if c.im.abs() > 1e-12 || !(c.re > 0.0) {
+                            return Err(ScriptError::type_err(
+                                "cwt_stream_init: scales must be real positive".to_string(),
+                            ));
+                        }
+                        out[i] = c.re;
+                    }
+                    out
+                }
+                other => {
+                    return Err(ScriptError::type_err(format!(
+                        "cwt_stream_init: 3rd arg must be n_scales or scales vector, got {}",
+                        other.type_name()
+                    )))
+                }
+            }
+        }
+    } else {
+        default_scales(n_samples, 64)
+    };
+    let state = cwt_stream_init(fs, n_samples, &scales).map_err(ScriptError::Dsp)?;
+    Ok(Value::DspStreamState(Arc::new(Mutex::new(
+        DspStreamKind::Cwt(state),
+    ))))
+}
+
+/// `[W, state] = cwt_stream(frame, state)`
+fn builtin_cwt_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("cwt_stream", &args, 2)?;
+    let frame = args[0]
+        .to_cvector()
+        .map_err(|e| ScriptError::type_err(e))?;
+    let state_arc = expect_dsp_state(&args[1], "cwt_stream")?;
+    let w = {
+        let mut state = state_arc.lock().unwrap();
+        match &mut *state {
+            DspStreamKind::Cwt(cs) => cwt_stream(&frame, cs),
+            _ => {
+                return Err(ScriptError::type_err(
+                    "cwt_stream: state was not initialised via cwt_stream_init".to_string(),
+                ))
+            }
+        }
+    };
+    Ok(Value::Tuple(vec![
+        Value::Matrix(w),
+        Value::DspStreamState(state_arc),
+    ]))
 }
 
 fn builtin_spectrum(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -10040,6 +10626,73 @@ fn builtin_plot_update(args: Vec<Value>) -> Result<Value, ScriptError> {
         .as_mut()
         .ok_or_else(|| ScriptError::runtime("plot_update: figure is closed".to_string()))?
         .update_panel(panel, x, y);
+    Ok(Value::None)
+}
+
+/// `plot_update_heatmap(fig, panel, matrix)` —
+/// `plot_update_heatmap(fig, panel, matrix, colormap)` —
+/// `plot_update_heatmap(fig, panel, matrix, colormap, vmin, vmax)` —
+/// replace the heatmap on a 1-based live panel. Matrix rows are the
+/// vertical axis (low row at the bottom under `axis("xy")`), cols are
+/// the horizontal axis. Optional colormap defaults to `"viridis"`;
+/// `vmin`/`vmax` pin the colour range when both are passed.
+fn builtin_plot_update_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("plot_update_heatmap", &args, 3, 6)?;
+    let Value::LiveFigure(fig) = &args[0] else {
+        return Err(ScriptError::runtime(format!(
+            "plot_update_heatmap: expected live_figure, got {}",
+            args[0].type_name()
+        )));
+    };
+    let panel = args[1]
+        .to_usize()
+        .map_err(|e| ScriptError::runtime(e))?
+        .saturating_sub(1);
+    let matrix_complex = match &args[2] {
+        Value::Matrix(m) => m.clone(),
+        Value::Vector(v) => {
+            let n = v.len();
+            ndarray::Array2::from_shape_fn((n, 1), |(i, _)| v[i])
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "plot_update_heatmap: matrix arg must be a matrix or vector, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let colormap = if args.len() >= 4 {
+        args[3].to_str().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        "viridis".to_string()
+    };
+    let vmin = if args.len() >= 5 {
+        Some(args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+    } else {
+        None
+    };
+    let vmax = if args.len() >= 6 {
+        Some(args[5].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+    } else {
+        None
+    };
+    // Convert complex -> real via `.re` (caller is expected to supply
+    // a real-valued display matrix; an imaginary part is treated as
+    // "user already collapsed magnitudes themselves").
+    let (rows, cols) = (matrix_complex.nrows(), matrix_complex.ncols());
+    let mut real = ndarray::Array2::<f64>::zeros((rows, cols));
+    for r in 0..rows {
+        for c in 0..cols {
+            real[(r, c)] = matrix_complex[(r, c)].re;
+        }
+    }
+    fig.lock()
+        .unwrap()
+        .as_mut()
+        .ok_or_else(|| {
+            ScriptError::runtime("plot_update_heatmap: figure is closed".to_string())
+        })?
+        .update_panel_heatmap(panel, &real, &colormap, vmin, vmax);
     Ok(Value::None)
 }
 

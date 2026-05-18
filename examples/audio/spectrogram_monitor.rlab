@@ -1,0 +1,74 @@
+# Real-time audio spectrogram monitor
+#
+# Drives a live heatmap panel (in rustlab-viewer or the ratatui fallback)
+# with a scrolling Short-Time Fourier Transform of the incoming audio.
+# Each frame from `audio_in` is pushed into `stft_stream`, which emits
+# new spectrogram columns; the display matrix scrolls left and the new
+# columns are appended on the right.
+#
+# Acceptance demo for Phase 4 of dev/plans/time_frequency.md — uses
+# `stft_stream_init`, `stft_stream`, and `plot_update_heatmap`.
+#
+# Run with sox (macOS):
+#   sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
+#     | rustlab run examples/audio/spectrogram_monitor.rlab
+#
+# Run with arecord (Linux):
+#   arecord -f FLOAT_LE -r 44100 -c 1 -t raw \
+#     | rustlab run examples/audio/spectrogram_monitor.rlab
+#
+# Or use the wrapper:
+#   ./examples/audio/spectrogram_monitor.sh
+#   ./examples/audio/spectrogram_monitor.sh --test
+
+# ── Configuration ──
+sr             = 44100.0;
+frame          = 1024;    # audio_in frame size
+nfft           = 1024;    # FFT size per STFT column
+noverlap       = 512;     # 50% overlap → hop = 512
+n_cols_visible = 256;     # scrolling-display history (≈ 3 s at 44.1 kHz)
+vmin_db        = -100.0;  # heatmap colour-clip floor
+vmax_db        = 0.0;     # heatmap colour-clip ceiling
+update_every   = 1;       # redraw every N audio frames
+
+# ── State ──
+win   = window("hann", nfft);
+state = stft_stream_init(sr, win, noverlap, nfft);
+
+# Display matrix: rows = freq bins (nfft/2 + 1 for one-sided), cols = time
+n_freqs   = nfft / 2 + 1;
+S_display = ones(n_freqs, n_cols_visible) * vmin_db;
+
+# ── Plot setup ──
+fig = figure_live(1, 1);
+plot_labels(fig, 1, "Live Spectrogram", "Time", "Frequency (Hz)");
+
+# ── Main loop ──
+adc = audio_in(sr, frame);
+count = 0;
+
+while true
+    samples = audio_read(adc);
+
+    # Push frame into the streaming STFT; receive zero or more new columns
+    [S_new, state] = stft_stream(samples, state);
+
+    n_new = size(S_new, 2);
+    if n_new > 0
+        # New columns in dB; clamp magnitude floor so log10 stays finite
+        S_new_db = 20 * log10(max(abs(S_new), 1e-12));
+
+        # Scroll the display left by n_new columns, append the new ones
+        if n_new >= n_cols_visible
+            S_display = S_new_db(:, n_new - n_cols_visible + 1:end);
+        else
+            S_display = [S_display(:, n_new + 1:end), S_new_db];
+        end
+
+        count = count + 1;
+        if mod(count, update_every) == 0
+            plot_update_heatmap(fig, 1, S_display, "viridis", vmin_db, vmax_db);
+            figure_draw(fig);
+        end
+    end
+end

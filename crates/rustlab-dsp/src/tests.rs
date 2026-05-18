@@ -1775,3 +1775,712 @@ mod vector_calc_phase3_tests {
         assert!(gradient_2d(&owned, 0.1, 0.1).is_ok());
     }
 }
+
+#[cfg(test)]
+mod welch_tests {
+    use crate::welch::{pwelch_psd, segment_iter, Sided};
+    use crate::window::WindowFunction;
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    fn trapezoid(y: &[f64], dx: f64) -> f64 {
+        if y.len() < 2 {
+            return 0.0;
+        }
+        let mut s = 0.5 * (y[0] + y[y.len() - 1]);
+        for &v in &y[1..y.len() - 1] {
+            s += v;
+        }
+        s * dx
+    }
+
+    #[test]
+    fn segment_iter_basic() {
+        let segs: Vec<_> = segment_iter(10, 4, 2).collect();
+        // hop = 2, segments at [0..4], [2..6], [4..8], [6..10]
+        assert_eq!(segs, vec![(0, 4), (2, 6), (4, 8), (6, 10)]);
+    }
+
+    #[test]
+    fn segment_iter_no_overlap() {
+        let segs: Vec<_> = segment_iter(8, 4, 0).collect();
+        assert_eq!(segs, vec![(0, 4), (4, 8)]);
+    }
+
+    #[test]
+    fn segment_iter_too_short() {
+        // window larger than signal -> no segments
+        let segs: Vec<_> = segment_iter(3, 4, 0).collect();
+        assert!(segs.is_empty());
+    }
+
+    #[test]
+    fn unit_sine_one_sided_integrates_to_half() {
+        // Unit-amplitude real sine: power = A²/2 = 0.5.
+        let fs = 1000.0;
+        let n = 4096;
+        let f0 = 100.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(512);
+        let (pxx, f) = pwelch_psd(&x, fs, &win, 256, 512, Sided::OneSided).unwrap();
+        let df = f[1] - f[0];
+        let total_power = trapezoid(pxx.as_slice().unwrap(), df);
+        // Allow some tolerance: windowing + segmentation gives ~5% error.
+        assert!(
+            (total_power - 0.5).abs() < 0.05,
+            "integrated PSD should ≈ 0.5, got {total_power}"
+        );
+    }
+
+    #[test]
+    fn dc_signal_concentrates_in_bin_zero() {
+        // Locks the no-detrending convention (decision 6). Rectangular
+        // window so windowing doesn't smear DC into adjacent bins.
+        let fs = 1000.0;
+        let n = 2048;
+        let x = real_signal((0..n).map(|_| 1.0_f64));
+        let win = WindowFunction::Rectangular.generate(256);
+        let (pxx, _) = pwelch_psd(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        let total: f64 = pxx.iter().sum();
+        assert!(
+            pxx[0] > 0.99 * total,
+            "DC signal: bin 0 should hold ~all power; bin0={}, total={total}",
+            pxx[0]
+        );
+    }
+
+    #[test]
+    fn white_noise_approximately_flat() {
+        // Use a deterministic pseudo-random signal so the test is repeatable.
+        let fs = 1000.0;
+        let n = 8192;
+        // Linear congruential generator -> mean 0, unit variance.
+        let mut s: u64 = 0xC0FFEE_C0DE;
+        let x = real_signal((0..n).map(|_| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let u = ((s >> 33) as f64) / ((1u64 << 31) as f64) - 1.0; // ~[-1, 1)
+            u
+        }));
+        let win = WindowFunction::Hann.generate(512);
+        let (pxx, _) = pwelch_psd(&x, fs, &win, 256, 512, Sided::OneSided).unwrap();
+        // Exclude DC and Nyquist (boundary bins behave differently).
+        let interior: Vec<f64> = pxx.iter().copied().skip(2).take(pxx.len() - 4).collect();
+        let mean = interior.iter().sum::<f64>() / interior.len() as f64;
+        let var = interior.iter().map(|p| (p - mean).powi(2)).sum::<f64>() / interior.len() as f64;
+        // For Welch with K segments the relative std of each bin is ~1/sqrt(K).
+        // Here K is about (n - L)/hop + 1 ~ 31. So expect var/mean² ≲ 0.1.
+        let rel_var = var / (mean * mean);
+        assert!(rel_var < 0.2, "white noise flatness: rel_var={rel_var}");
+    }
+
+    #[test]
+    fn even_nfft_one_sided_matches_two_sided_total() {
+        // The total power should match between one-sided and two-sided.
+        let fs = 500.0;
+        let n = 2048;
+        let f0 = 75.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(512);
+        let (p1, f1) = pwelch_psd(&x, fs, &win, 256, 512, Sided::OneSided).unwrap();
+        let (p2, _) = pwelch_psd(&x, fs, &win, 256, 512, Sided::TwoSided).unwrap();
+        let df1 = f1[1] - f1[0];
+        let df2 = fs / p2.len() as f64;
+        let total1 = trapezoid(p1.as_slice().unwrap(), df1);
+        // For two-sided, use rectangle rule since the freq axis wraps.
+        let total2: f64 = p2.iter().sum::<f64>() * df2;
+        assert!(
+            (total1 - total2).abs() < 0.05 * total1,
+            "one-sided total={total1}, two-sided total={total2}"
+        );
+    }
+
+    #[test]
+    fn auto_sided_real_input_gives_one_sided() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * 50.0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (pxx, _) = pwelch_psd(&x, fs, &win, 128, 256, Sided::Auto).unwrap();
+        // Auto on real -> one-sided -> n_eff/2 + 1 = 129 bins.
+        assert_eq!(pxx.len(), 129);
+    }
+
+    #[test]
+    fn auto_sided_complex_input_gives_two_sided() {
+        let fs = 1000.0;
+        let n = 1024;
+        // Complex exponential — imaginary part non-zero.
+        let x: CVector = Array1::from_iter((0..n).map(|k| {
+            let phase = 2.0 * PI * 50.0 * k as f64 / fs;
+            Complex::new(phase.cos(), phase.sin())
+        }));
+        let win = WindowFunction::Hann.generate(256);
+        let (pxx, _) = pwelch_psd(&x, fs, &win, 128, 256, Sided::Auto).unwrap();
+        // Auto on complex -> two-sided -> n_eff = 256 bins.
+        assert_eq!(pxx.len(), 256);
+    }
+
+    #[test]
+    fn rejects_invalid_noverlap() {
+        let x = real_signal((0..100).map(|k| k as f64));
+        let win = WindowFunction::Hann.generate(32);
+        // noverlap = win_len -> hop = 0
+        assert!(pwelch_psd(&x, 1000.0, &win, 32, 32, Sided::OneSided).is_err());
+    }
+
+    #[test]
+    fn rejects_window_longer_than_signal() {
+        let x = real_signal((0..10).map(|k| k as f64));
+        let win = WindowFunction::Hann.generate(32);
+        assert!(pwelch_psd(&x, 1000.0, &win, 16, 32, Sided::OneSided).is_err());
+    }
+}
+
+#[cfg(test)]
+mod stft_tests {
+    use crate::stft::stft;
+    use crate::welch::Sided;
+    use crate::window::WindowFunction;
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    #[test]
+    fn pure_tone_peak_bin_constant_across_frames() {
+        // A stationary sine should produce the same peak frequency bin
+        // in every column of S.
+        let fs = 1000.0;
+        let n = 4096;
+        let f0 = 125.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, f, _t) = stft(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        assert!(s.ncols() >= 4);
+
+        // Expected bin: closest to f0.
+        let expected_bin = f
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (**a - f0).abs().partial_cmp(&(**b - f0).abs()).unwrap())
+            .unwrap()
+            .0;
+
+        for col in 0..s.ncols() {
+            let mut best = 0;
+            let mut bestmag = 0.0f64;
+            for row in 0..s.nrows() {
+                let m = s[(row, col)].norm();
+                if m > bestmag {
+                    bestmag = m;
+                    best = row;
+                }
+            }
+            assert!(
+                best == expected_bin || (best as i64 - expected_bin as i64).abs() <= 1,
+                "frame {col}: expected peak near bin {expected_bin}, got {best}"
+            );
+        }
+    }
+
+    #[test]
+    fn linear_chirp_peak_tracks_instantaneous_frequency() {
+        // Linear chirp from f0 to f1 over the signal duration.
+        // The peak STFT bin per frame should grow monotonically and
+        // the first/last frame peaks should bracket [f0, f1].
+        let fs = 4000.0;
+        let dur = 2.0;
+        let n = (fs * dur) as usize;
+        let f0 = 200.0;
+        let f1 = 1500.0;
+        let x = real_signal((0..n).map(|k| {
+            let t = k as f64 / fs;
+            // Phase = 2π·∫₀ᵗ f(τ)dτ for f(τ) = f0 + (f1-f0)τ/dur
+            let phase = 2.0 * PI * (f0 * t + 0.5 * (f1 - f0) * t * t / dur);
+            phase.sin()
+        }));
+        let win = WindowFunction::Hann.generate(512);
+        let (s, f, _t) = stft(&x, fs, &win, 256, 512, Sided::OneSided).unwrap();
+        assert!(s.ncols() >= 10);
+
+        let peak_freq_at = |col: usize| -> f64 {
+            let mut best = 0;
+            let mut bestmag = 0.0f64;
+            for row in 0..s.nrows() {
+                let m = s[(row, col)].norm();
+                if m > bestmag {
+                    bestmag = m;
+                    best = row;
+                }
+            }
+            f[best]
+        };
+
+        let first_peak = peak_freq_at(0);
+        let last_peak = peak_freq_at(s.ncols() - 1);
+        // First frame should be near f0; last frame should be near f1.
+        // Hann main-lobe width at win=512 is ~2·fs/512 = ~15 Hz; allow generous margin.
+        assert!(
+            (first_peak - f0).abs() < 100.0,
+            "first frame peak {first_peak} should be near f0 = {f0}"
+        );
+        assert!(
+            (last_peak - f1).abs() < 100.0,
+            "last frame peak {last_peak} should be near f1 = {f1}"
+        );
+        assert!(
+            last_peak > first_peak + 0.5 * (f1 - f0),
+            "chirp should sweep upward: first={first_peak}, last={last_peak}"
+        );
+    }
+
+    #[test]
+    fn shape_one_sided_even_nfft() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| k as f64 * 0.001));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, f, t) = stft(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        assert_eq!(s.nrows(), 256 / 2 + 1); // 129
+        assert_eq!(s.nrows(), f.len());
+        assert_eq!(s.ncols(), t.len());
+        // Hop = 128, n_frames = (n - m)/hop + 1 = (1024 - 256)/128 + 1 = 7
+        assert_eq!(s.ncols(), 7);
+    }
+
+    #[test]
+    fn shape_two_sided() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| k as f64 * 0.001));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, f, _t) = stft(&x, fs, &win, 128, 256, Sided::TwoSided).unwrap();
+        assert_eq!(s.nrows(), 256); // full FFT length
+        assert_eq!(s.nrows(), f.len());
+    }
+
+    #[test]
+    fn auto_sided_real_is_one_sided() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * 50.0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, _, _) = stft(&x, fs, &win, 128, 256, Sided::Auto).unwrap();
+        assert_eq!(s.nrows(), 129);
+    }
+
+    #[test]
+    fn auto_sided_complex_is_two_sided() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x: CVector = Array1::from_iter((0..n).map(|k| {
+            let phase = 2.0 * PI * 50.0 * k as f64 / fs;
+            Complex::new(phase.cos(), phase.sin())
+        }));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, _, _) = stft(&x, fs, &win, 128, 256, Sided::Auto).unwrap();
+        assert_eq!(s.nrows(), 256);
+    }
+}
+
+#[cfg(test)]
+mod wavelet_tests {
+    use crate::wavelet::{cwt_morlet, default_scales};
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    fn closest_row_to_freq(freqs: &Array1<f64>, target: f64) -> usize {
+        freqs
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                (**a - target)
+                    .abs()
+                    .partial_cmp(&((**b - target).abs()))
+                    .unwrap()
+            })
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn shape_matches_inputs() {
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * 50.0 * k as f64 / fs).sin()));
+        let scales = default_scales(n, 32);
+        let (w, freqs, t) = cwt_morlet(&x, fs, &scales).unwrap();
+        assert_eq!(w.nrows(), 32);
+        assert_eq!(w.ncols(), n);
+        assert_eq!(freqs.len(), 32);
+        assert_eq!(t.len(), n);
+    }
+
+    #[test]
+    fn gaussian_pulse_localises_in_time_and_frequency() {
+        // Gaussian-modulated 50 Hz tone, centre at 2 s.
+        let fs = 1000.0;
+        let n = 4096;
+        let dur = n as f64 / fs;
+        let t0 = 2.0;
+        let sigma = 0.1;
+        let f0 = 50.0;
+        let x = real_signal((0..n).map(|k| {
+            let t = k as f64 / fs;
+            let env = (-(t - t0).powi(2) / (2.0 * sigma * sigma)).exp();
+            env * (2.0 * PI * f0 * t).sin()
+        }));
+        let scales = default_scales(n, 64);
+        let (w, freqs, _t) = cwt_morlet(&x, fs, &scales).unwrap();
+
+        // Find arg-max of |W|.
+        let (mut best_row, mut best_col) = (0usize, 0usize);
+        let mut best_mag = 0.0f64;
+        for r in 0..w.nrows() {
+            for c in 0..w.ncols() {
+                let m = w[(r, c)].norm();
+                if m > best_mag {
+                    best_mag = m;
+                    best_row = r;
+                    best_col = c;
+                }
+            }
+        }
+        let peak_time = best_col as f64 / fs;
+        let peak_freq = freqs[best_row];
+        assert!(
+            (peak_time - t0).abs() < 0.2,
+            "peak time {peak_time} should be near {t0} s (signal duration {dur} s)"
+        );
+        // Hand-roll Morlet has finite-band peak; tolerate ~30% relative.
+        assert!(
+            (peak_freq - f0).abs() / f0 < 0.35,
+            "peak freq {peak_freq} Hz should be near {f0} Hz"
+        );
+    }
+
+    #[test]
+    fn two_tones_resolved_as_horizontal_bands() {
+        // Two well-separated stationary tones; each should produce
+        // a row of large |W| at its corresponding scale.
+        let fs = 1000.0;
+        let n = 4096;
+        let f1 = 50.0;
+        let f2 = 250.0;
+        let x = real_signal((0..n).map(|k| {
+            let t = k as f64 / fs;
+            (2.0 * PI * f1 * t).sin() + (2.0 * PI * f2 * t).sin()
+        }));
+        let scales = default_scales(n, 64);
+        let (w, freqs, _t) = cwt_morlet(&x, fs, &scales).unwrap();
+
+        // Mean |W| per row.
+        let mean_per_row: Vec<f64> = (0..w.nrows())
+            .map(|r| {
+                let mut s = 0.0;
+                for c in 0..w.ncols() {
+                    s += w[(r, c)].norm();
+                }
+                s / w.ncols() as f64
+            })
+            .collect();
+        let mut sorted = mean_per_row.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted[sorted.len() / 2];
+
+        let row_f1 = closest_row_to_freq(&freqs, f1);
+        let row_f2 = closest_row_to_freq(&freqs, f2);
+        assert!(
+            mean_per_row[row_f1] > 5.0 * median,
+            "f1 band ({f1} Hz, row {row_f1}) mean={} should >> median={median}",
+            mean_per_row[row_f1]
+        );
+        assert!(
+            mean_per_row[row_f2] > 5.0 * median,
+            "f2 band ({f2} Hz, row {row_f2}) mean={} should >> median={median}",
+            mean_per_row[row_f2]
+        );
+    }
+
+    #[test]
+    fn energy_ratio_two_tones_approx_double_one_tone() {
+        // ∑|W|² should be additive for well-separated equal-amplitude tones.
+        let fs = 1000.0;
+        let n = 4096;
+        let f1 = 50.0;
+        let f2 = 250.0;
+        let one = real_signal((0..n).map(|k| (2.0 * PI * f1 * k as f64 / fs).sin()));
+        let two = real_signal((0..n).map(|k| {
+            let t = k as f64 / fs;
+            (2.0 * PI * f1 * t).sin() + (2.0 * PI * f2 * t).sin()
+        }));
+        let scales = default_scales(n, 64);
+        let (w1, _, _) = cwt_morlet(&one, fs, &scales).unwrap();
+        let (w2, _, _) = cwt_morlet(&two, fs, &scales).unwrap();
+        let e1: f64 = w1.iter().map(|c| c.norm_sqr()).sum();
+        let e2: f64 = w2.iter().map(|c| c.norm_sqr()).sum();
+        let ratio = e2 / e1;
+        assert!(
+            (ratio - 2.0).abs() < 0.2,
+            "two-tone / one-tone energy ratio {ratio} should be near 2.0"
+        );
+    }
+
+    #[test]
+    fn default_scales_log_spaced() {
+        let s = default_scales(1024, 8);
+        assert_eq!(s.len(), 8);
+        assert!((s[0] - 2.0).abs() < 1e-9);
+        let s_max = 1024.0 / 4.0;
+        assert!((s[7] - s_max).abs() / s_max < 1e-9);
+        // Log spacing: ratios between consecutive scales constant.
+        let r0 = s[1] / s[0];
+        for i in 2..s.len() {
+            let r = s[i] / s[i - 1];
+            assert!(
+                (r - r0).abs() / r0 < 1e-9,
+                "expected constant log-ratio; got {r0} then {r}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_empty_signal() {
+        let x: CVector = Array1::zeros(0);
+        let scales = Array1::from_vec(vec![4.0]);
+        assert!(cwt_morlet(&x, 1000.0, &scales).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_scales() {
+        let x = real_signal((0..100).map(|k| k as f64));
+        let scales: rustlab_core::RVector = Array1::zeros(0);
+        assert!(cwt_morlet(&x, 1000.0, &scales).is_err());
+    }
+}
+
+#[cfg(test)]
+mod welch_stream_tests {
+    use crate::welch::{pwelch_psd, Sided};
+    use crate::welch_stream::{
+        pwelch_stream, pwelch_stream_init, stft_stream, stft_stream_init,
+    };
+    use crate::window::WindowFunction;
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    #[test]
+    fn pwelch_stream_converges_to_batch() {
+        let fs = 1000.0;
+        let n = 8192;
+        let f0 = 100.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (pxx_batch, _) = pwelch_psd(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+
+        let mut state = pwelch_stream_init(fs, &win, 128, 256, None, Sided::OneSided).unwrap();
+        let mut last_pxx = Array1::zeros(0);
+        for chunk in x.exact_chunks(64) {
+            let frame = chunk.to_owned();
+            last_pxx = pwelch_stream(&frame, &mut state);
+        }
+        assert_eq!(last_pxx.len(), pxx_batch.len());
+        // Streaming cumulative should match batch within tight numerical tol.
+        for (s, b) in last_pxx.iter().zip(pxx_batch.iter()) {
+            assert!(
+                (s - b).abs() < 1e-9,
+                "stream={s} vs batch={b} differ"
+            );
+        }
+    }
+
+    #[test]
+    fn pwelch_stream_empty_during_warmup() {
+        let fs = 1000.0;
+        let win = WindowFunction::Hann.generate(256);
+        let mut state = pwelch_stream_init(fs, &win, 128, 256, None, Sided::OneSided).unwrap();
+        // Frame smaller than win_len -> no segment yet.
+        let frame = real_signal((0..64).map(|_| 0.5));
+        let pxx = pwelch_stream(&frame, &mut state);
+        assert!(pxx.is_empty(), "expected empty during warmup, got len={}", pxx.len());
+    }
+
+    #[test]
+    fn pwelch_stream_ema_tracks_step_change() {
+        // Step from f=100 Hz to f=300 Hz halfway through. EMA-mode
+        // pwelch_stream should track: by the end, the bin near 300 Hz
+        // holds more energy than the bin near 100 Hz.
+        let fs = 1000.0;
+        let n = 4096;
+        let switch = n / 2;
+        let x = real_signal((0..n).map(|k| {
+            let t = k as f64 / fs;
+            if k < switch {
+                (2.0 * PI * 100.0 * t).sin()
+            } else {
+                (2.0 * PI * 300.0 * t).sin()
+            }
+        }));
+        let win = WindowFunction::Hann.generate(256);
+        let mut state = pwelch_stream_init(fs, &win, 128, 256, Some(0.3), Sided::OneSided)
+            .unwrap();
+        let mut pxx = Array1::zeros(0);
+        for chunk in x.exact_chunks(64) {
+            let frame = chunk.to_owned();
+            pxx = pwelch_stream(&frame, &mut state);
+        }
+        // n_eff = 256; bin index for f Hz = round(f / fs * n_eff).
+        let bin_100 = (100.0 / fs * 256.0).round() as usize;
+        let bin_300 = (300.0 / fs * 256.0).round() as usize;
+        assert!(
+            pxx[bin_300] > pxx[bin_100],
+            "after step to 300 Hz: pxx[300]={} should exceed pxx[100]={}",
+            pxx[bin_300],
+            pxx[bin_100]
+        );
+    }
+
+    #[test]
+    fn stft_stream_concatenation_matches_batch_columns() {
+        use crate::stft::stft;
+        let fs = 1000.0;
+        let n = 2048;
+        let f0 = 75.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(128);
+        let (batch, _, _) = stft(&x, fs, &win, 64, 128, Sided::OneSided).unwrap();
+
+        let mut state = stft_stream_init(fs, &win, 64, 128, Sided::OneSided).unwrap();
+        let mut cols_collected: Vec<Vec<Complex<f64>>> = Vec::new();
+        for chunk in x.exact_chunks(64) {
+            let frame = chunk.to_owned();
+            let s = stft_stream(&frame, &mut state);
+            for c in 0..s.ncols() {
+                cols_collected.push((0..s.nrows()).map(|r| s[(r, c)]).collect());
+            }
+        }
+        assert_eq!(cols_collected.len(), batch.ncols());
+        // Per-column peak bins match between batch and streaming.
+        for (col_idx, col) in cols_collected.iter().enumerate() {
+            let stream_peak = col
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.norm().partial_cmp(&b.norm()).unwrap())
+                .unwrap()
+                .0;
+            let batch_peak = (0..batch.nrows())
+                .max_by(|&a, &b| {
+                    batch[(a, col_idx)]
+                        .norm()
+                        .partial_cmp(&batch[(b, col_idx)].norm())
+                        .unwrap()
+                })
+                .unwrap();
+            assert_eq!(stream_peak, batch_peak, "col {col_idx} peak bin mismatch");
+        }
+    }
+
+    #[test]
+    fn stft_stream_empty_shape_keeps_freq_dimension() {
+        let fs = 1000.0;
+        let win = WindowFunction::Hann.generate(128);
+        let mut state = stft_stream_init(fs, &win, 64, 128, Sided::OneSided).unwrap();
+        let frame = real_signal((0..32).map(|_| 0.5)); // smaller than win_len
+        let s = stft_stream(&frame, &mut state);
+        assert_eq!(s.nrows(), 65); // n_eff/2 + 1
+        assert_eq!(s.ncols(), 0);
+    }
+
+    #[test]
+    fn pwelch_stream_init_rejects_invalid_ema() {
+        let win = WindowFunction::Hann.generate(64);
+        assert!(pwelch_stream_init(1000.0, &win, 32, 64, Some(0.0), Sided::Auto).is_err());
+        assert!(pwelch_stream_init(1000.0, &win, 32, 64, Some(1.5), Sided::Auto).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cwt_stream_tests {
+    use crate::wavelet::{cwt_morlet, cwt_stream, cwt_stream_init, default_scales};
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    #[test]
+    fn cwt_stream_empty_during_warmup() {
+        let fs = 1000.0;
+        let n_window = 1024;
+        let scales = default_scales(n_window, 16);
+        let mut state = cwt_stream_init(fs, n_window, &scales).unwrap();
+        let frame = real_signal((0..256).map(|_| 0.5));
+        let w = cwt_stream(&frame, &mut state);
+        assert_eq!(w.ncols(), 0);
+        assert_eq!(w.nrows(), 16);
+    }
+
+    #[test]
+    fn cwt_stream_full_buffer_matches_batch() {
+        let fs = 1000.0;
+        let n_window = 1024;
+        let scales = default_scales(n_window, 16);
+        let x = real_signal((0..n_window).map(|k| {
+            (2.0 * PI * 50.0 * k as f64 / fs).sin()
+        }));
+        // Push the whole signal in one frame.
+        let mut state = cwt_stream_init(fs, n_window, &scales).unwrap();
+        let w_stream = cwt_stream(&x, &mut state);
+        // Batch cwt on the same window.
+        let (w_batch, _, _) = cwt_morlet(&x, fs, &scales).unwrap();
+        assert_eq!(w_stream.shape(), w_batch.shape());
+        // Compare central column to dodge boundary artefacts.
+        let mid = n_window / 2;
+        for row in 0..scales.len() {
+            let a = w_stream[(row, mid)];
+            let b = w_batch[(row, mid)];
+            assert!(
+                (a - b).norm() < 1e-9,
+                "row {row} mid col: stream={a:?} vs batch={b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cwt_stream_sliding_window_drops_old_samples() {
+        let fs = 1000.0;
+        let n_window = 256;
+        let scales = default_scales(n_window, 8);
+        let mut state = cwt_stream_init(fs, n_window, &scales).unwrap();
+        // Push 512 samples, twice the window — only the latest 256 stay.
+        let big = real_signal((0..512).map(|k| (k as f64) * 0.001));
+        let w = cwt_stream(&big, &mut state);
+        assert_eq!(w.nrows(), 8);
+        assert_eq!(w.ncols(), n_window);
+    }
+}

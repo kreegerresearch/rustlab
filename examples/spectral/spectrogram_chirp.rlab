@@ -1,0 +1,22 @@
+# Spectrogram of a linear chirp
+#
+# A linear chirp sweeps its instantaneous frequency from f0 to f1 over
+# the signal duration. The spectrogram heatmap should show a clean
+# diagonal ramp from f0 at t = 0 to f1 at t = dur.
+
+seed(42)
+
+fs   = 10000;
+dur  = 2.0;            # seconds
+n    = round(fs * dur);
+t    = (0:(n-1)) / fs;
+f0   = 100;
+f1   = 5000;
+
+# Linear-chirp phase: 2π·(f0·t + (f1−f0)·t²/(2·dur))
+phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
+x     = sin(phase) + 0.05*randn(n);
+
+# Spectrogram: 512-sample Hann window, 75% overlap (hop = 128) for a
+# smooth time axis; 1024-point FFT for finer frequency resolution.
+spectrogram(x, fs, window("hann", 512), 384, 1024);

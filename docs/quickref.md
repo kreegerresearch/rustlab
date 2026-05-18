@@ -244,6 +244,15 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `fftshift(V)` | Shift zero-frequency to center |
 | `fftfreq(n, sr)` | Frequency axis for n-point DFT at sample rate sr |
 | `spectrum(v, sr)` | Returns 2×n matrix: row 1 = Hz (DC-centered), row 2 = complex spectrum |
+| `[Pxx, f] = pwelch(x, fs)` | Welch's PSD estimator (Hamming default, 50% overlap, no detrending, auto-sided). Bare call auto-plots dB PSD |
+| `[S, f, t] = stft(x, fs)` | Short-Time Fourier Transform. Hann window default length 128, 50% overlap. Rows = freq, cols = time. Bare call auto-renders spectrogram |
+| `spectrogram(x, fs)` | Heatmap of `20·log10(|S|)` via `imagesc` with viridis colormap, 80 dB floor, `axis("xy")` |
+| `[W, freqs, t] = cwt(x, fs)` | Continuous Wavelet Transform (Morlet). 64 log-spaced scales by default; `cwt(x, fs, "morlet", n_or_vector)` overrides. Bare call auto-renders scalogram |
+| `scalogram(x, fs)` | Heatmap of `20·log10(|W|)` — same colormap/floor as `spectrogram`, log-frequency y-axis (rows are log-spaced scales) |
+| `state = pwelch_stream_init(fs, win, noverlap, nfft [, ema_alpha])` / `[Pxx, state] = pwelch_stream(frame, state)` | Streaming Welch PSD. Cumulative average converges to batch `pwelch_psd`; `ema_alpha ∈ (0, 1]` opts into EMA |
+| `state = stft_stream_init(fs, win, noverlap, nfft [, sided])` / `[S_cols, state] = stft_stream(frame, state)` | Streaming STFT. Emits 0+ new spectrogram columns per frame; `n_freqs × 0` when none |
+| `state = cwt_stream_init(fs, n_samples [, n_scales \| scales])` / `[W, state] = cwt_stream(frame, state)` | Sliding-window CWT — recomputes over the latest `n_samples` on each call |
+| `plot_update_heatmap(fig, panel, matrix [, colormap [, vmin, vmax]])` | Live heatmap counterpart of `plot_update`. Drives ratatui + rustlab-viewer over the existing PanelHeatmap wire |
 
 ---
 

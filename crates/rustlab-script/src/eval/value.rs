@@ -84,6 +84,17 @@ impl NumberFormat {
     }
 }
 
+/// Internal dispatch for `Value::DspStreamState`. One variant per
+/// streaming builtin family. Holds the math-layer state struct
+/// directly; no `Clone` required because the outer `Arc<Mutex<...>>`
+/// gives the sharing semantics.
+#[derive(Debug)]
+pub enum DspStreamKind {
+    Pwelch(rustlab_dsp::PwelchState),
+    Stft(rustlab_dsp::StftState),
+    Cwt(rustlab_dsp::CwtState),
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Scalar(f64),
@@ -130,6 +141,14 @@ pub enum Value {
     /// Arc<Mutex<...>> allows cheap Clone (ref-counted) while providing
     /// &mut access inside filter_stream with no heap reallocation per frame.
     FirState(Arc<Mutex<Vec<C64>>>),
+    /// Opaque state for the streaming time-frequency builtins
+    /// (`pwelch_stream`, `stft_stream`, `cwt_stream`). One Value variant
+    /// wraps three different state types via an internal enum; the
+    /// concrete kind is dispatched inside the corresponding builtin.
+    /// Sharing semantics match `FirState`: `Arc<Mutex<...>>` lets the
+    /// script-level `state` handle be rebound across frames without
+    /// copying the underlying ring buffer.
+    DspStreamState(Arc<Mutex<DspStreamKind>>),
     /// Metadata handle for stdin audio input. Opens no file descriptors.
     AudioIn {
         sample_rate: f64,
@@ -213,6 +232,7 @@ impl Value {
             Value::Lambda { .. } => "lambda",
             Value::FuncHandle(_) => "function_handle",
             Value::FirState(_) => "fir_state",
+            Value::DspStreamState(_) => "dsp_stream_state",
             Value::AudioIn { .. } => "audio_in",
             Value::AudioOut { .. } => "audio_out",
             Value::LiveFigure(_) => "live_figure",
@@ -1922,6 +1942,14 @@ impl fmt::Display for Value {
             Value::FirState(buf) => {
                 let n = buf.lock().unwrap().len();
                 write!(f, "<fir_state {}>", n)
+            }
+            Value::DspStreamState(kind) => {
+                let tag = match &*kind.lock().unwrap() {
+                    DspStreamKind::Pwelch(_) => "pwelch",
+                    DspStreamKind::Stft(_) => "stft",
+                    DspStreamKind::Cwt(_) => "cwt",
+                };
+                write!(f, "<dsp_stream_state {tag}>")
             }
             Value::AudioIn {
                 sample_rate,
