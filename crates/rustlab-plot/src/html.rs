@@ -277,11 +277,20 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                     };
                     let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
                     let z_json = format!("[{}]", z_rows.join(","));
+                    // Fixed colour range, when set on the HeatmapData, becomes
+                    // Plotly's zmin/zmax so the colour mapping matches the SVG
+                    // path. Without this Plotly auto-scales per render, which
+                    // gives a different colour stretch than the static backend.
+                    let zrange = match (hm.value_min, hm.value_max) {
+                        (Some(a), Some(b)) if a < b => format!(", zmin: {a}, zmax: {b}"),
+                        _ => String::new(),
+                    };
                     traces.push_str(&format!(
-                        r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
+                        r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true{zr}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
                         z = z_json,
                         cmap = plotly_cmap,
+                        zr = zrange,
                         xa = xaxis_ref,
                         ya = yaxis_ref,
                     ));
@@ -796,6 +805,8 @@ mod tests {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+        value_min: None,
+        value_max: None,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
@@ -824,6 +835,8 @@ mod tests {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+        value_min: None,
+        value_max: None,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());

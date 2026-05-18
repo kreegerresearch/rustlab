@@ -35,9 +35,12 @@ update_every   = 1;       # redraw every N audio frames
 win   = window("hann", nfft);
 state = stft_stream_init(sr, win, noverlap, nfft);
 
-# Display matrix: rows = freq bins (nfft/2 + 1 for one-sided), cols = time
+# Display starts EMPTY (zero columns) and grows column-by-column until it
+# reaches n_cols_visible, then begins to scroll. Pre-filling with a
+# floor-value sentinel would create a visible vertical "edge" sweeping
+# across the heatmap as the sentinel scrolled off the left.
 n_freqs   = nfft / 2 + 1;
-S_display = ones(n_freqs, n_cols_visible) * vmin_db;
+S_display = zeros(n_freqs, 0);
 
 # ── Plot setup ──
 fig = figure_live(1, 1);
@@ -58,11 +61,17 @@ while true
         # New columns in dB; additive epsilon keeps log10 finite at silence
         S_new_db = 20 * log10(abs(S_new) + 1e-12);
 
-        # Scroll the display left by n_new columns, append the new ones
+        # Append the new columns, then trim the left edge once we exceed
+        # the visible width. Until the display is full, we render a
+        # partial column count and the viewer fits it to the panel width.
         if n_new >= n_cols_visible
             S_display = S_new_db(:, n_new - n_cols_visible + 1:end);
         else
-            S_display = [S_display(:, n_new + 1:end), S_new_db];
+            S_display = [S_display, S_new_db];
+            ncols_now = size(S_display, 2);
+            if ncols_now > n_cols_visible
+                S_display = S_display(:, ncols_now - n_cols_visible + 1:end);
+            end
         end
 
         count = count + 1;

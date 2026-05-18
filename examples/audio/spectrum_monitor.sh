@@ -30,6 +30,21 @@ set -euo pipefail
 SCRIPT="$(dirname "$0")/spectrum_monitor.rlab"
 SR=44100
 
+# Pre-flight: rustlab-viewer connectivity hint. The .rlab script always works
+# (it falls back to the in-terminal ratatui plot), but for the interactive
+# egui window the user has to start rustlab-viewer first. The .rlab itself
+# can't print this until *after* figure_live has captured the alt-screen and
+# raw mode, by which point any message would be invisible — so we surface it
+# from the wrapper before the pipeline starts.
+VIEWER_SOCK="${RUSTLAB_VIEWER_SOCK:-/tmp/rustlab-viewer-$(id -u).sock}"
+if [ ! -S "$VIEWER_SOCK" ]; then
+    echo "Note: rustlab-viewer is not running (no socket at $VIEWER_SOCK)."
+    echo "      Rendering in the terminal (ratatui) instead. For the"
+    echo "      interactive egui GUI, run \`rustlab-viewer\` in another"
+    echo "      terminal first, then re-run this script."
+    echo ""
+fi
+
 if [[ "${1:-}" == "--test" ]]; then
     echo "Generating 5 s synthetic test signal (440 Hz + 2 kHz) ..."
     python3 -c "

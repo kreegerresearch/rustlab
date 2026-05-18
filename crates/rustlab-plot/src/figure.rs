@@ -127,6 +127,15 @@ pub struct HeatmapData {
     pub rgba: Option<Vec<u8>>,
     pub rgba_width: u32,
     pub rgba_height: u32,
+    /// Fixed colour-mapping lower bound. `None` falls back to the matrix
+    /// minimum (auto-scale). Producers that need a stable colour scale
+    /// across redraws — live spectrograms, dB-clipped heatmaps — pin this
+    /// to a known value (e.g. `vmin_db = -100.0`).
+    pub value_min: Option<f64>,
+    /// Fixed colour-mapping upper bound. See `value_min` for behaviour
+    /// when `None`. Both must be `Some` for the fixed range to take
+    /// effect; a single-sided `Some` is treated as auto-scale.
+    pub value_max: Option<f64>,
 }
 
 impl Default for HeatmapData {
@@ -140,6 +149,8 @@ impl Default for HeatmapData {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+            value_min: None,
+            value_max: None,
         }
     }
 }

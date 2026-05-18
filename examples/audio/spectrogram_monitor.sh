@@ -33,6 +33,35 @@ set -euo pipefail
 SCRIPT="$(dirname "$0")/spectrogram_monitor.rlab"
 SR=44100
 
+# Pre-flight: this demo requires rustlab-viewer. The .rlab script's
+# `figure_live` would otherwise fall back to ratatui, but a scrolling
+# spectrogram heatmap is effectively unreadable inside the alt-screen
+# (the terminal just looks blank). Fail fast with a clear hint instead.
+#
+# `figure_live` captures the alt-screen and raw mode before we could
+# surface anything from inside the .rlab script, so the check has to
+# happen here in the wrapper.
+VIEWER_SOCK="${RUSTLAB_VIEWER_SOCK:-/tmp/rustlab-viewer-$(id -u).sock}"
+if [ ! -S "$VIEWER_SOCK" ]; then
+    echo "error: rustlab-viewer is not running." >&2
+    echo "       Expected socket at: $VIEWER_SOCK" >&2
+    echo "" >&2
+    echo "       This demo renders a scrolling spectrogram heatmap, which" >&2
+    echo "       only works in the interactive egui viewer. Start it in" >&2
+    echo "       another terminal and re-run:" >&2
+    echo "" >&2
+    echo "         rustlab-viewer" >&2
+    echo "" >&2
+    echo "       Then in this terminal:" >&2
+    echo "" >&2
+    echo "         ./examples/audio/spectrogram_monitor.sh         # mic" >&2
+    echo "         ./examples/audio/spectrogram_monitor.sh --test  # chirp" >&2
+    echo "" >&2
+    echo "       (To use a named session: \`rustlab-viewer --name foo\` and" >&2
+    echo "       set RUSTLAB_VIEWER_SOCK=/tmp/rustlab-viewer-\$(id -u)-foo.sock.)" >&2
+    exit 1
+fi
+
 if [[ "${1:-}" == "--test" ]]; then
     echo "Generating 10 s synthetic test signal (100 Hz → 8 kHz chirp) ..."
     python3 -c "

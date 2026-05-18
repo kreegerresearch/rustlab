@@ -103,8 +103,8 @@ impl LivePlot for ViewerFigure {
         idx: usize,
         matrix: &rustlab_core::RMatrix,
         colormap: &str,
-        _vmin: Option<f64>,
-        _vmax: Option<f64>,
+        vmin: Option<f64>,
+        vmax: Option<f64>,
     ) {
         let (nrows, ncols) = (matrix.nrows(), matrix.ncols());
         if nrows == 0 || ncols == 0 {
@@ -127,6 +127,8 @@ impl LivePlot for ViewerFigure {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+            value_min: vmin,
+            value_max: vmax,
         });
         let theme = crate::theme::Theme::default();
         // Match the batch path's high-res pre-render (line 375) so zooms

@@ -1128,16 +1128,26 @@ where
                 if nrows > 0 && ncols > 0 {
                     let vals: Vec<f64> =
                         hm.z.iter().flat_map(|row| row.iter().copied()).collect();
-                    let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
-                    let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                    // Match Plotly's auto-zmin/zmax behaviour: scale to the
-                    // actual data range. Even a floating-point-noise spread
-                    // (e.g. divU on a linear field where range ~ 1e-15 from
-                    // rounding) gets that tiny range mapped across the full
-                    // colormap, exactly as Plotly does. Only when the range
-                    // is *literally* zero (every cell bit-equal to every
-                    // other cell) do we collapse to a single mid-colormap
-                    // value — division by zero would otherwise yield NaN.
+                    // Fixed colour range (both `value_min` and `value_max`
+                    // set on the HeatmapData) takes precedence over auto-
+                    // scaling. Producers that need a stable colour scale
+                    // across redraws — live spectrograms, dB-clipped
+                    // heatmaps — pin this. Otherwise fall through to
+                    // Plotly's auto-zmin / auto-zmax behaviour: scale to
+                    // the actual data range. Even a floating-point-noise
+                    // spread (e.g. divU on a linear field where range
+                    // ~ 1e-15 from rounding) gets that tiny range mapped
+                    // across the full colormap, exactly as Plotly does.
+                    // Only when the range is *literally* zero do we
+                    // collapse to a single mid-colormap value — division
+                    // by zero would otherwise yield NaN.
+                    let (min_v, max_v) = match (hm.value_min, hm.value_max) {
+                        (Some(a), Some(b)) if a < b => (a, b),
+                        _ => (
+                            vals.iter().copied().fold(f64::INFINITY, f64::min),
+                            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                        ),
+                    };
                     let raw_range = max_v - min_v;
                     let degenerate = raw_range == 0.0;
                     let range = if degenerate { 1.0 } else { raw_range };
@@ -1152,7 +1162,15 @@ where
                     for r in 0..nrows {
                         for c in 0..ncols {
                             let v = vals[r * ncols + c];
-                            let t = if degenerate { 0.5 } else { (v - min_v) / range };
+                            // With a fixed range, clamp samples outside
+                            // [min_v, max_v] to the endpoints so they
+                            // saturate to the colormap's extremes rather
+                            // than producing out-of-range `t` values.
+                            let t = if degenerate {
+                                0.5
+                            } else {
+                                ((v - min_v) / range).clamp(0.0, 1.0)
+                            };
                             let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
                             let color = RGBColor(rr, gg, bb);
                             let x0 = x_lo + c as f64 * cell_w;
@@ -2239,6 +2257,8 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
+            value_min: None,
+            value_max: None,
             });
             // Eight contour levels evenly spread across the data range
             // [0, max(z)].
@@ -2324,6 +2344,8 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
+            value_min: None,
+            value_max: None,
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -2423,6 +2445,8 @@ mod tests {
                 rgba: None,
                 rgba_width: 0,
                 rgba_height: 0,
+            value_min: None,
+            value_max: None,
             });
         });
         render_figure_file(&path).expect("render should succeed");

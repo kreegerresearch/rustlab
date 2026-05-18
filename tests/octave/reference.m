@@ -110,4 +110,36 @@ snr_v = 10*log10(sum(ref.^2) / sum((ref - noisy).^2));
 csvwrite('ref_snr.csv', snr_v);
 fprintf('SNR = %.6f dB\n', snr_v);
 
+% ── 16. STFT magnitude of a steady 440 Hz tone ───────────────────────────────
+% Hand-rolled to match rustlab's stft() conventions: identical Hann window
+% (symmetric form, denominator N-1), identical hop = win_len - noverlap,
+% identical one-sided FFT (rows 1..nfft/2+1). For a steady tone the
+% per-column magnitude is mathematically constant; a fixed colour-mapping
+% range (value_min / value_max on HeatmapData) then renders every column
+% the same colour. This file is the algorithmic reference for that claim.
+sr_st = 8000;
+N_st  = 1024;
+fc_st = 440;
+n_st  = 0:(N_st-1);
+x_st  = sin(2*pi*fc_st*n_st/sr_st);
+
+win_len = 256;
+hop_st  = 128;            % noverlap = 128 -> hop = 256 - 128 = 128
+nfft_st = 256;
+nfreqs  = nfft_st/2 + 1;
+
+% Hann window in the same symmetric form rustlab uses (window("hann", N)).
+w_st = 0.5 * (1 - cos(2*pi*(0:win_len-1)/(win_len-1)));
+
+% Segment starts: {k*hop | k*hop + win_len <= N_st}.
+n_segs = floor((N_st - win_len)/hop_st) + 1;
+S_ref  = zeros(nfreqs, n_segs);
+for m = 1:n_segs
+    seg = x_st((m-1)*hop_st + 1 : (m-1)*hop_st + win_len);
+    X   = fft(seg .* w_st, nfft_st);
+    S_ref(:, m) = X(1:nfreqs).';
+end
+csvwrite('ref_stft_mag.csv', abs(S_ref));
+csvwrite('ref_stft_f.csv', (0:nfreqs-1) * sr_st / nfft_st);
+
 fprintf('\nAll reference files written.\n');

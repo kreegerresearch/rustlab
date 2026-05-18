@@ -60,6 +60,8 @@ T_FIRPM   = 1e-4;   % Parks-McClellan: different implementations may vary slight
 [p,f]=check('Kaiser LP',        'ref_kaiser_lp.csv',      'out_kaiser_lp.csv',     T_FILTER); pass_count+=p; fail_count+=f;
 [p,f]=check('Kaiser HP',        'ref_kaiser_hp.csv',      'out_kaiser_hp.csv',     T_FILTER); pass_count+=p; fail_count+=f;
 [p,f]=check('SNR formula',      'ref_snr.csv',            'out_snr.csv',           T_FILTER); pass_count+=p; fail_count+=f;
+[p,f]=check('STFT freq axis',   'ref_stft_f.csv',         'out_stft_f.csv',        T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('STFT magnitude',   'ref_stft_mag.csv',       'out_stft_mag.csv',      T_FILTER); pass_count+=p; fail_count+=f;
 
 fprintf('%s\n', repmat('-', 1, 65));
 fprintf('Total: %d passed, %d failed\n', pass_count, fail_count);

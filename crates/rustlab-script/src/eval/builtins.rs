@@ -2765,6 +2765,11 @@ fn push_db_heatmap(
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+            // Pin the dB-clipped colour range so the SVG / Plotly / viewer
+            // backends all map magnitudes onto the same scale (the TUI
+            // path below already takes vmin + range explicitly).
+            value_min: Some(vmin),
+            value_max: Some(vmax),
         });
     });
     let range = (vmax - vmin).max(1e-12);

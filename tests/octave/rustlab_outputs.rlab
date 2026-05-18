@@ -69,3 +69,19 @@ noisy = [0.875, 0.5, -0.625, -0.875, 0.125, 0.75, -0.75, 0.25]
 snr_v = snr(ref, noisy)
 print("SNR:", snr_v)
 save("out_snr.csv", snr_v)
+
+# ── 16. STFT magnitude of a steady 440 Hz tone ───────────────────────────────
+# Validates the spectrogram pipeline against Octave: identical Hann window,
+# identical hop (50% overlap), identical FFT size, identical one-sided
+# dispatch. A steady tone must produce per-column magnitudes that vary by
+# less than a small numerical tolerance — *no* time-dependent drift, which
+# is the "edge effect" symptom we ship the spectrogram_monitor with.
+sr_st = 8000.0;
+N_st  = 1024;
+fc_st = 440.0;
+n_st  = 0:(N_st - 1);
+x_st  = sin(2.0 .* pi .* fc_st .* n_st ./ sr_st);
+w_st  = window("hann", 256);
+[S_st, f_st, t_st] = stft(x_st, sr_st, w_st, 128, 256);
+save("out_stft_mag.csv", abs(S_st))
+save("out_stft_f.csv",   real(f_st))

@@ -182,8 +182,8 @@ impl crate::LivePlot for LiveFigure {
         idx: usize,
         matrix: &rustlab_core::RMatrix,
         colormap: &str,
-        _vmin: Option<f64>,
-        _vmax: Option<f64>,
+        vmin: Option<f64>,
+        vmax: Option<f64>,
     ) {
         if idx >= self.panels.len() {
             return;
@@ -208,6 +208,8 @@ impl crate::LivePlot for LiveFigure {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
+            value_min: vmin,
+            value_max: vmax,
         });
     }
     fn redraw(&mut self) -> Result<(), crate::PlotError> {
