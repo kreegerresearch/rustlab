@@ -110,15 +110,23 @@ impl LivePlot for ViewerFigure {
         if nrows == 0 || ncols == 0 {
             return;
         }
-        // Build a synthetic SubplotState with just the heatmap set, then
-        // rasterize through the same path the batch viewer uses. Reuses
-        // every pixel of the existing `imagesc` colormap pipeline (DRY).
+        // Send the heatmap to the viewer as a tight one-pixel-per-cell
+        // RGBA buffer with no axes / title / labels baked in. The viewer
+        // wraps this in `egui_plot::PlotImage` and draws its own axes at
+        // native screen resolution. Doing the full-chart pre-rasterize
+        // here (the way `render_panel_to_rgba` does for static-export
+        // panels) produced a "double axes" artefact — one set baked into
+        // the texture, one drawn natively by egui — with the baked set
+        // rendering at 2400×1600 plotter scale and looking microscopic
+        // when downscaled to fit the actual viewer panel.
+        //
+        // Physics convention (row 0 / DC at the bottom of the plot) is
+        // applied centrally inside `render_heatmap_cells_to_rgba`; we
+        // just hand it the raw source matrix.
         let z: Vec<Vec<f64>> = (0..nrows)
             .map(|r| (0..ncols).map(|c| matrix[(r, c)]).collect())
             .collect();
-        let mut panel = crate::figure::SubplotState::new();
-        panel.y_axis_direction = crate::figure::AxisYDirection::Xy;
-        panel.heatmap = Some(crate::figure::HeatmapData {
+        let hm = crate::figure::HeatmapData {
             z,
             colorscale: colormap.to_string(),
             kind: crate::figure::HeatmapKind::Imagesc,
@@ -129,23 +137,36 @@ impl LivePlot for ViewerFigure {
             rgba_height: 0,
             value_min: vmin,
             value_max: vmax,
-        });
-        let theme = crate::theme::Theme::default();
-        // Match the batch path's high-res pre-render (line 375) so zooms
-        // stay legible.
-        let (w, h) = (2400u32, 1600u32);
-        if let Ok(rgba) = crate::file::render_panel_to_rgba(&panel, theme.colors(), w, h) {
-            let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
-                fig_id: self.fig_id,
-                panel: idx as u16,
-                heatmap: WireHeatmap {
-                    width: w,
-                    height: h,
-                    rgba,
-                    smooth: true,
-                },
-            });
+        };
+        let rgba = crate::file::render_heatmap_cells_to_rgba(&hm);
+        if rgba.is_empty() {
+            return;
         }
+        let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
+            fig_id: self.fig_id,
+            panel: idx as u16,
+            heatmap: WireHeatmap {
+                width: ncols as u32,
+                height: nrows as u32,
+                rgba,
+                // `smooth: true` lets egui linearly interpolate between
+                // cells so the spectrogram doesn't show staircase aliasing
+                // when the texture is upscaled to the panel size.
+                smooth: true,
+                // `x_extent` / `y_extent` are populated from the panel's
+                // `plot_limits` on the viewer side at render time —
+                // sending them here would duplicate that state and force
+                // a wire round-trip every time the script tweaks limits.
+                // Leaving them None lets the viewer use plot_limits
+                // (which arrives via a separate PanelLimits message) as
+                // the source of truth.
+                x_extent: None,
+                y_extent: None,
+                value_min: vmin,
+                value_max: vmax,
+                colorscale: colormap.to_string(),
+            },
+        });
     }
 
     fn redraw(&mut self) -> Result<(), PlotError> {
@@ -434,6 +455,16 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                         height: h,
                         rgba,
                         smooth: true,
+                        // Pre-rendered overlays (contour / quiver /
+                        // streamline) already have their axes baked into
+                        // the pixels, so we leave the viewer's own axes
+                        // off this texture's data range. No colorbar
+                        // either — these aren't dB-clipped heatmaps.
+                        x_extent: None,
+                        y_extent: None,
+                        value_min: None,
+                        value_max: None,
+                        colorscale: String::new(),
                     },
                 })?;
             }
@@ -491,28 +522,13 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                     if width == 0 || height == 0 {
                         (0, 0, Vec::new())
                     } else {
-                        let mut min_v = f64::INFINITY;
-                        let mut max_v = f64::NEG_INFINITY;
-                        for row in &hm.z {
-                            for &v in row {
-                                if v < min_v {
-                                    min_v = v;
-                                }
-                                if v > max_v {
-                                    max_v = v;
-                                }
-                            }
-                        }
-                        let range = (max_v - min_v).max(1e-12);
-                        let mut rgba = Vec::with_capacity(width * height * 4);
-                        for row in &hm.z {
-                            for &v in row {
-                                let t = (v - min_v) / range;
-                                let (r, g, b) =
-                                    crate::figure::colormap_rgb(t, &hm.colorscale);
-                                rgba.extend_from_slice(&[r, g, b, 255]);
-                            }
-                        }
+                        // Same physics-convention layout as the live
+                        // path: source row 0 lands at the BOTTOM of the
+                        // texture so egui's y-axis tick labels (which
+                        // read plot-coord directly) match the visible
+                        // cell rows. Reuse the central renderer so it
+                        // also picks up `value_min` / `value_max`.
+                        let rgba = crate::file::render_heatmap_cells_to_rgba(hm);
                         (width, height, rgba)
                     }
                 }
@@ -526,6 +542,16 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                         height: height as u32,
                         rgba,
                         smooth: false,
+                        // Static sync_viewer heatmaps inherit colour
+                        // range from the producing builtin (spectrogram,
+                        // scalogram, etc.) via HeatmapData's value_min /
+                        // value_max. Extents come from plot_limits the
+                        // same way as the live path.
+                        x_extent: None,
+                        y_extent: None,
+                        value_min: hm.value_min,
+                        value_max: hm.value_max,
+                        colorscale: hm.colorscale.clone(),
                     },
                 })?;
             }

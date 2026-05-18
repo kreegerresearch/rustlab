@@ -81,7 +81,7 @@ impl Default for SurfaceCamera {
 
 /// Colormap lookup (viridis / jet / hot / gray). Keeps the viewer free of
 /// a direct rustlab-plot dependency.
-fn colormap_rgb(t: f64, name: &str) -> (u8, u8, u8) {
+pub(crate) fn colormap_rgb(t: f64, name: &str) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
     type Pts = &'static [(f64, (u8, u8, u8))];
     let pts: Pts = match name {

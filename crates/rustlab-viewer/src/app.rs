@@ -122,6 +122,11 @@ impl ViewerApp {
                                 rgba: heatmap.rgba,
                                 smooth: heatmap.smooth,
                                 texture: None, // created on first render
+                                x_extent: heatmap.x_extent,
+                                y_extent: heatmap.y_extent,
+                                value_min: heatmap.value_min,
+                                value_max: heatmap.value_max,
+                                colorscale: heatmap.colorscale,
                             });
                             fig.dirty = true;
                         }

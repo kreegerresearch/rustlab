@@ -128,6 +128,32 @@ pub struct WireHeatmap {
     /// raw data heatmaps. Defaults to false for backward compatibility.
     #[serde(default)]
     pub smooth: bool,
+    /// Data-coordinate extent for the x-axis: `Some((x_lo, x_hi))`
+    /// places the texture's left edge at plot-x = x_lo and its right
+    /// edge at x_hi so the viewer's tick labels read in user units
+    /// (e.g. seconds for a spectrogram). `None` falls back to pixel-
+    /// index extents `[0, width]`.
+    #[serde(default)]
+    pub x_extent: Option<(f64, f64)>,
+    /// Data-coordinate extent for the y-axis: same shape as `x_extent`.
+    /// For a spectrogram this should be `Some((0.0, fs / 2.0))` so the
+    /// viewer's y-axis ticks read in Hz.
+    #[serde(default)]
+    pub y_extent: Option<(f64, f64)>,
+    /// Colormap value-range floor used by the sender's RGBA renderer.
+    /// `Some(v)` lets the viewer draw a matching colorbar legend.
+    /// `None` means the renderer auto-scaled from data; the viewer
+    /// then has no canonical scale to label and skips the legend.
+    #[serde(default)]
+    pub value_min: Option<f64>,
+    /// Colormap value-range ceiling. See `value_min`.
+    #[serde(default)]
+    pub value_max: Option<f64>,
+    /// Colormap name (e.g. "viridis", "jet", "hot", "gray"). Empty
+    /// string means "default" — the viewer falls back to viridis when
+    /// it needs to render a colorbar gradient.
+    #[serde(default)]
+    pub colorscale: String,
 }
 
 /// Raw 3D surface grid on the wire. The viewer handles projection/shading
@@ -370,6 +396,11 @@ mod tests {
                     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 128, 128, 128, 255,
                 ],
                 smooth: false,
+                x_extent: None,
+                y_extent: None,
+                value_min: None,
+                value_max: None,
+                colorscale: String::new(),
             },
         };
         let mut buf = Vec::new();

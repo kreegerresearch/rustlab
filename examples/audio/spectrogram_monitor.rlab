@@ -26,10 +26,19 @@ sr             = 44100.0;
 frame          = 1024;    # audio_in frame size
 nfft           = 1024;    # FFT size per STFT column
 noverlap       = 512;     # 50% overlap → hop = 512
-n_cols_visible = 256;     # scrolling-display history (≈ 3 s at 44.1 kHz)
+# Scrolling-display history (in seconds). Hop is `nfft - noverlap` samples,
+# so one STFT column covers hop/sr seconds; ceil(time_history*sr/hop)
+# columns fit the chosen window. Bump `time_history` for a longer tail.
+time_history   = 5.0;
+n_cols_visible = ceil(time_history * sr / (nfft - noverlap));
 vmin_db        = -100.0;  # heatmap colour-clip floor
 vmax_db        = 0.0;     # heatmap colour-clip ceiling
-update_every   = 1;       # redraw every N audio frames
+# Redraw cadence in audio-frame units. At sr=44100 / frame=1024 the audio
+# loop ticks ~43 Hz; the viewer can't repaint a 513×N heatmap that fast
+# on most laptops, and pushing every frame through `send_nowait` will
+# eventually back-pressure the unix socket and stall the script. 4 →
+# ~11 Hz redraws is plenty smooth and leaves headroom.
+update_every   = 4;
 
 # ── State ──
 win   = window("hann", nfft);
@@ -44,7 +53,15 @@ S_display = zeros(n_freqs, 0);
 
 # ── Plot setup ──
 fig = figure_live(1, 1);
-plot_labels(fig, 1, "Live Spectrogram", "Time", "Frequency (Hz)");
+plot_labels(fig, 1, "Live Spectrogram", "Time (s)", "Frequency (Hz)");
+
+# Pin the data-coordinate extents so the viewer's y-axis reads in Hz
+# (0 to Nyquist) and the x-axis reads in seconds of scrollback rather
+# than bin / column indices. Hop = nfft - noverlap samples per column,
+# so n_cols_visible columns span time_span = n_cols_visible*hop/sr.
+hop_samples = nfft - noverlap;
+time_span   = n_cols_visible * hop_samples / sr;
+plot_limits(fig, 1, [0.0, time_span], [0.0, sr / 2.0]);
 
 # ── Main loop ──
 adc = audio_in(sr, frame);

@@ -172,6 +172,76 @@ pub fn render_figure_state_to_rgb_buffer(
     Ok((buf, w, h))
 }
 
+/// Render a `HeatmapData` into a tight RGBA pixel buffer — one pixel per
+/// matrix cell, no axes, no labels, no margins, no colorbar. The live
+/// viewer wraps this in an `egui_plot::PlotImage` so the viewer's own
+/// axes are the visible ones (avoids the double-axes / tiny-font artefact
+/// that `render_panel_to_rgba` produces when it bakes the full chart into
+/// the texture).
+///
+/// Layout: source row 0 lands at the BOTTOM of the texture (physics
+/// convention). `egui_plot::PlotImage` paints the texture's top pixel at
+/// the top of the bounding box, so the bottom pixel — which is now
+/// source row 0 — lands at plot-y = 0. That matches how spectrograms,
+/// scalograms, and `axis("xy")` static heatmaps are laid out everywhere
+/// else: low row index at the bottom, high at the top.
+///
+/// Honours `value_min` / `value_max` on the `HeatmapData` as the colour-
+/// mapping endpoints when both are `Some`; falls back to auto-scaling
+/// otherwise. Out-of-range cells saturate to the colormap extremes.
+pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> {
+    let nrows = hm.z.len();
+    let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
+    if nrows == 0 || ncols == 0 {
+        return Vec::new();
+    }
+    let (min_v, max_v) = match (hm.value_min, hm.value_max) {
+        (Some(a), Some(b)) if a < b => (a, b),
+        _ => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for row in &hm.z {
+                for &v in row {
+                    if v < lo {
+                        lo = v;
+                    }
+                    if v > hi {
+                        hi = v;
+                    }
+                }
+            }
+            (lo, hi)
+        }
+    };
+    let raw_range = max_v - min_v;
+    let degenerate = raw_range == 0.0;
+    let range = if degenerate { 1.0 } else { raw_range };
+    let mut rgba = vec![0u8; nrows * ncols * 4];
+    for r in 0..nrows {
+        // Flip vertically so source row 0 ends up at the BOTTOM pixel
+        // row of the texture (which becomes plot-y = 0 in egui). The
+        // texture's pixel-row 0 is at the top of the bounding box; we
+        // write source row `nrows-1-r` there, source row 0 into pixel-
+        // row `nrows-1` (the bottom).
+        let src_row = nrows - 1 - r;
+        for c in 0..ncols {
+            let v = hm.z[src_row][c];
+            let t = if degenerate {
+                0.5
+            } else {
+                ((v - min_v) / range).clamp(0.0, 1.0)
+            };
+            let (rr, gg, bb) = crate::figure::colormap_rgb(t, &hm.colorscale);
+            let off = (r * ncols + c) * 4;
+            rgba[off] = rr;
+            rgba[off + 1] = gg;
+            rgba[off + 2] = bb;
+            rgba[off + 3] = 255;
+        }
+    }
+    rgba
+}
+
 /// Render a single subplot panel into an RGBA pixel buffer (row-major, 4 bytes
 /// per pixel) using the same plotters pipeline as SVG/PNG output. Used by the
 /// viewer backend to display panels containing plot kinds the viewer can't
