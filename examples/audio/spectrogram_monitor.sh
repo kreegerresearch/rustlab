@@ -11,12 +11,19 @@
 #   macOS:  brew install sox
 #   Linux:  sudo apt install alsa-utils   (Debian/Ubuntu)
 #           sudo dnf install alsa-utils   (Fedora)
+#   WSL2:   alsa-utils plus PulseAudio or PipeWire-pulse (e.g.
+#           `sudo apt install alsa-utils pulseaudio-utils`). Windows 11
+#           22H2+ exposes the host mic to WSL2 out of the box; on
+#           older WSL2 builds run `wsl --update` first. If the default
+#           ALSA device doesn't pick up the mic, set ALSA_IN=pulse or
+#           ALSA_IN=hw:0 before invoking. WSL1 has no audio passthrough.
 #
 # Usage:
 #   chmod +x examples/audio/spectrogram_monitor.sh
 #   ./examples/audio/spectrogram_monitor.sh
 #
-# Hardware-free test (10 seconds of a 100 Hz → 8 kHz linear chirp):
+# Hardware-free test (10 seconds of a 100 Hz → 8 kHz linear chirp;
+# works on every platform including WSL1):
 #   ./examples/audio/spectrogram_monitor.sh --test
 #
 # Press Ctrl-C to stop.
