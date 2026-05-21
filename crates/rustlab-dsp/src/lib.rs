@@ -8,6 +8,7 @@ pub mod laplacian;
 pub mod rasterize;
 pub mod stft;
 pub mod upfirdn;
+pub mod waterfall;
 pub mod vector_calc;
 pub mod wavelet;
 pub mod welch;
@@ -32,6 +33,7 @@ pub use laplacian::{
 pub use rasterize::{disk_mask, polygon_mask, rect_mask};
 pub use stft::stft;
 pub use upfirdn::upfirdn;
+pub use waterfall::waterfall;
 pub use vector_calc::{curl_2d, curl_3d, divergence_2d, divergence_3d, gradient_2d, gradient_3d};
 pub use wavelet::{
     cwt_morlet, cwt_state_n_scales, cwt_stream, cwt_stream_init, default_scales, CwtState,

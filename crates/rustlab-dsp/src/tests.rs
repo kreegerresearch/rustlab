@@ -2094,6 +2094,146 @@ mod stft_tests {
 }
 
 #[cfg(test)]
+mod waterfall_tests {
+    use crate::stft::stft;
+    use crate::waterfall::waterfall;
+    use crate::welch::Sided;
+    use crate::window::WindowFunction;
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    #[test]
+    fn shape_matches_transposed_stft() {
+        // W is [n_time × n_freqs], i.e. transpose of S which is [n_freqs × n_time].
+        let fs = 1000.0;
+        let n = 1024;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * 50.0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, f_stft, t_stft) = stft(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        let (w, f_wf, t_wf) = waterfall(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        assert_eq!(w.nrows(), s.ncols(), "rows = n_time = stft cols");
+        assert_eq!(w.ncols(), s.nrows(), "cols = n_freqs = stft rows");
+        assert_eq!(f_wf.len(), f_stft.len());
+        assert_eq!(t_wf.len(), t_stft.len());
+    }
+
+    #[test]
+    fn row_zero_is_newest_segment() {
+        // Per the API contract, W[0, :] holds the dB magnitudes of the
+        // LAST stft column. W[n-1, :] holds the first.
+        let fs = 1000.0;
+        let n = 2048;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * 100.0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (s, _, _) = stft(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        let (w, _, _) = waterfall(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+
+        let n_time = w.nrows();
+        let n_freqs = w.ncols();
+        let eps = 1e-12_f64;
+
+        for col in 0..n_freqs {
+            let expected_newest = 20.0 * (s[(col, n_time - 1)].norm() + eps).log10();
+            let expected_oldest = 20.0 * (s[(col, 0)].norm() + eps).log10();
+            assert!(
+                (w[(0, col)] - expected_newest).abs() < 1e-9,
+                "row 0 col {col}: expected {expected_newest}, got {}",
+                w[(0, col)]
+            );
+            assert!(
+                (w[(n_time - 1, col)] - expected_oldest).abs() < 1e-9,
+                "last row col {col}: expected {expected_oldest}, got {}",
+                w[(n_time - 1, col)]
+            );
+        }
+    }
+
+    #[test]
+    fn time_axis_descends_aligned_with_rows() {
+        // t[0] is the LATEST segment centre; t[n-1] the FIRST.
+        // The vector should be monotonically decreasing and bracket the
+        // stft time vector's range.
+        let fs = 1000.0;
+        let n = 2048;
+        let x = real_signal((0..n).map(|k| k as f64 * 0.001));
+        let win = WindowFunction::Hann.generate(256);
+        let (_, _, t_stft) = stft(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        let (_, _, t_wf) = waterfall(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+
+        assert!((t_wf[0] - t_stft[t_stft.len() - 1]).abs() < 1e-12);
+        assert!((t_wf[t_wf.len() - 1] - t_stft[0]).abs() < 1e-12);
+        for i in 0..t_wf.len() - 1 {
+            assert!(
+                t_wf[i] > t_wf[i + 1],
+                "t must be monotonically decreasing: t[{i}]={}, t[{}]={}",
+                t_wf[i],
+                i + 1,
+                t_wf[i + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn pure_tone_peak_column_constant_across_rows() {
+        // A stationary sine should produce the same peak frequency
+        // column on every row (analogous to the per-frame peak test for stft).
+        let fs = 1000.0;
+        let n = 4096;
+        let f0 = 125.0;
+        let x = real_signal((0..n).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        let win = WindowFunction::Hann.generate(256);
+        let (w, f, _) = waterfall(&x, fs, &win, 128, 256, Sided::OneSided).unwrap();
+        assert!(w.nrows() >= 4);
+
+        let expected_col = f
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| (**a - f0).abs().partial_cmp(&(**b - f0).abs()).unwrap())
+            .unwrap()
+            .0;
+
+        for row in 0..w.nrows() {
+            let mut best = 0;
+            let mut bestmag = f64::NEG_INFINITY;
+            for col in 0..w.ncols() {
+                if w[(row, col)] > bestmag {
+                    bestmag = w[(row, col)];
+                    best = col;
+                }
+            }
+            assert!(
+                best == expected_col || (best as i64 - expected_col as i64).abs() <= 1,
+                "row {row}: expected peak near col {expected_col}, got {best}"
+            );
+        }
+    }
+
+    #[test]
+    fn silence_floor_is_finite() {
+        // 20·log10(0) = -inf; the epsilon guard should keep silent bins at
+        // approximately 20·log10(eps) = -240 dB rather than -inf.
+        let fs = 1000.0;
+        let n = 512;
+        let x = real_signal((0..n).map(|_| 0.0));
+        let win = WindowFunction::Hann.generate(128);
+        let (w, _, _) = waterfall(&x, fs, &win, 64, 128, Sided::OneSided).unwrap();
+        for row in 0..w.nrows() {
+            for col in 0..w.ncols() {
+                let v = w[(row, col)];
+                assert!(v.is_finite(), "w[{row},{col}] = {v} should be finite");
+                assert!(v < -100.0, "silence should be deeply negative dB");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod wavelet_tests {
     use crate::wavelet::{cwt_morlet, default_scales};
     use ndarray::Array1;

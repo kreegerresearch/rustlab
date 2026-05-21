@@ -196,6 +196,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "stft(x, fs)\nstft(x, fs, window, noverlap, nfft, sided)\n[S, f, t] = stft(...)\n\nDefaults: Hann window of length 128 (MATLAB stft default), 50% overlap,\nnfft = window length (padded up to next power of two), sided = \"auto\".\n\nReturns a complex matrix S with rows indexed by frequency (low at row 1)\nand columns indexed by time frame. Bare call also auto-renders a 20*log10(|S|)\nspectrogram on the current subplot.\n\nExample:\n  [S, f, t] = stft(x, 1000);\n  stft(x, 1000, \"hamming\", 256, 1024);   % bare call -> spectrogram render" },
     HelpEntry { name: "spectrogram", brief: "Heatmap of |STFT|^2 in dB",
         detail: "spectrogram(x, fs)\nspectrogram(x, fs, window, noverlap, nfft, sided)\n\nPlot-only wrapper around stft(). Renders 20*log10(|S|) via imagesc with\nviridis colormap, an 80 dB dynamic-range floor, and physics-convention\ny-axis (frequency increases upward).\n\nNo data is returned — for the underlying matrices, use [S, f, t] = stft(...).\n\nExample:\n  spectrogram(x, 1000);\n  spectrogram(x, 1000, \"hamming\", 256, 1024);" },
+    HelpEntry { name: "waterfall", brief: "Frequency waterfall (downward-scrolling spectrogram orientation)",
+        detail: "waterfall(x, fs)\nwaterfall(x, fs, window, noverlap, nfft, sided)\n[W, f, t] = waterfall(...)\n\nReturns the magnitude spectrogram oriented for a downward-scrolling\ndisplay. W is a real [n_time × n_freqs] matrix in dB with row 1 = newest\nsegment and the last row = first segment. Columns are frequency bins\n(col 1 = DC). The time vector t is aligned with rows and therefore\nmonotonically decreasing (latest segment first).\n\nArgument forms mirror stft / spectrogram. The combined live two-panel\nview (line spectrum on top, downward waterfall heatmap below) is the\nstreaming form — see waterfall_stream (Phase 3).\n\nExample:\n  [W, f, t] = waterfall(x, 1000);\n  W_newest_row = W(1, :);   % current spectrum (most recent segment)" },
     HelpEntry { name: "cwt", brief: "Continuous Wavelet Transform (Morlet)",
         detail: "cwt(x, fs)\ncwt(x, fs, \"morlet\")\ncwt(x, fs, \"morlet\", n_scales)\ncwt(x, fs, \"morlet\", scales_vector)\n[W, freqs, t] = cwt(...)\n\nAnalytic Morlet wavelet (ω₀ = 6). Returns a complex matrix W with\nn_scales rows and length(x) columns; freqs = ω₀·fs/(2π·scales) per row;\nt = (0..len)/fs. Default scale grid: 64 log-spaced from 2 samples to\nlength(x)/4 (high to low frequency).\n\nBare calls auto-render the magnitude scalogram on the current subplot.\nWhen scales are log-spaced (default), the row-index axis is effectively\na logarithmic frequency axis — finer time resolution at high frequencies,\nfiner frequency resolution at low frequencies (the canonical CWT trade-off).\n\nExample:\n  [W, freqs, t] = cwt(x, 1000);\n  cwt(x, 1000, \"morlet\", 128);   % bare call -> scalogram render" },
     HelpEntry { name: "scalogram", brief: "Heatmap of |CWT| in dB",
@@ -1119,7 +1121,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "spectral", subcategory: "Power spectral density",
         names: &["pwelch", "pwelch_stream_init", "pwelch_stream"] },
     CategoryRow { toolbox: "spectral", subcategory: "Short-time Fourier",
-        names: &["stft", "spectrogram", "stft_stream_init", "stft_stream"] },
+        names: &["stft", "spectrogram", "waterfall", "stft_stream_init", "stft_stream"] },
     CategoryRow { toolbox: "spectral", subcategory: "Continuous wavelet",
         names: &["cwt", "scalogram", "cwt_stream_init", "cwt_stream"] },
 

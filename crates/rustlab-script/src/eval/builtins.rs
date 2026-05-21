@@ -14,7 +14,8 @@ use rustlab_dsp::{
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
     fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_2d, gradient_3d,
     ifft, pwelch_psd, pwelch_stream, pwelch_stream_init, quantize_scalar, snr_db,
-    stft as stft_math, stft_stream, stft_stream_init, upfirdn, IirFilter, QFmtSpec, Sided,
+    stft as stft_math, stft_stream, stft_stream_init, upfirdn, waterfall as waterfall_math,
+    IirFilter, QFmtSpec, Sided,
     WindowFunction,
 };
 use rustlab_plot::{
@@ -74,6 +75,7 @@ impl BuiltinRegistry {
         r.register("pwelch", builtin_pwelch);
         r.register("stft", builtin_stft);
         r.register("spectrogram", builtin_spectrogram);
+        r.register("waterfall", builtin_waterfall);
         r.register("cwt", builtin_cwt);
         r.register("scalogram", builtin_scalogram);
         r.register("pwelch_stream_init", builtin_pwelch_stream_init);
@@ -2836,6 +2838,36 @@ fn builtin_spectrogram(args: Vec<Value>) -> Result<Value, ScriptError> {
         "Frequency (Hz)",
     )?;
     Ok(Value::None)
+}
+
+/// `waterfall(x, fs, ...)` — frequency waterfall (downward-scrolling
+/// spectrogram orientation).
+///
+/// Argument forms mirror `stft` / `spectrogram`. Returns the tuple
+/// `[W, f, t]` where `W` is the `[n_time × n_freqs]` real magnitude
+/// matrix in dB with **row 0 = newest segment**, and `t` is the
+/// segment-centre time vector aligned with `W` rows (monotonically
+/// decreasing). For the column-oriented spectrogram layout (rows = freq,
+/// cols = time) use `[S, f, t] = stft(...)` and dB-scale yourself.
+///
+/// Phase 1: data-only. The live two-panel layout (line spectrum on top,
+/// downward-scrolling waterfall below) lands in Phase 3 via
+/// `waterfall_stream`.
+fn builtin_waterfall(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("waterfall", &args, 2, 6)?;
+    let (x, fs, window, noverlap, nfft, sided) = resolve_stft_args(&args, "waterfall")?;
+    let (w, f, t) =
+        waterfall_math(&x, fs, &window, noverlap, nfft, sided).map_err(ScriptError::Dsp)?;
+
+    // Script values use complex matrices; lift the real dB magnitudes.
+    let w_c = w.mapv(|v| Complex::new(v, 0.0));
+    let f_c: CVector = Array1::from_iter(f.iter().map(|&v| Complex::new(v, 0.0)));
+    let t_c: CVector = Array1::from_iter(t.iter().map(|&v| Complex::new(v, 0.0)));
+    Ok(Value::Tuple(vec![
+        Value::Matrix(w_c),
+        Value::Vector(f_c),
+        Value::Vector(t_c),
+    ]))
 }
 
 /// Resolve the optional wavelet-family and scales arguments shared by

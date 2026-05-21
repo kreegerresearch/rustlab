@@ -247,6 +247,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `[Pxx, f] = pwelch(x, fs)` | Welch's PSD estimator (Hamming default, 50% overlap, no detrending, auto-sided). Bare call auto-plots dB PSD |
 | `[S, f, t] = stft(x, fs)` | Short-Time Fourier Transform. Hann window default length 128, 50% overlap. Rows = freq, cols = time. Bare call auto-renders spectrogram |
 | `spectrogram(x, fs)` | Heatmap of `20·log10(|S|)` via `imagesc` with viridis colormap, 80 dB floor, `axis("xy")` |
+| `[W, f, t] = waterfall(x, fs)` | Frequency waterfall: `[n_time × n_freqs]` dB magnitude matrix with row 1 = newest segment, col 1 = DC. `t` is monotonically decreasing |
 | `[W, freqs, t] = cwt(x, fs)` | Continuous Wavelet Transform (Morlet). 64 log-spaced scales by default; `cwt(x, fs, "morlet", n_or_vector)` overrides. Bare call auto-renders scalogram |
 | `scalogram(x, fs)` | Heatmap of `20·log10(|W|)` — same colormap/floor as `spectrogram`, log-frequency y-axis (rows are log-spaced scales) |
 | `state = pwelch_stream_init(fs, win, noverlap, nfft [, ema_alpha])` / `[Pxx, state] = pwelch_stream(frame, state)` | Streaming Welch PSD. Cumulative average converges to batch `pwelch_psd`; `ema_alpha ∈ (0, 1]` opts into EMA |
