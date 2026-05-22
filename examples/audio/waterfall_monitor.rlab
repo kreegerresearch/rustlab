@@ -1,0 +1,48 @@
+# Real-time audio frequency-waterfall monitor.
+#
+# Drives a 2-panel live figure (line spectrum on top, downward-scrolling
+# heatmap below) with a frequency waterfall of the incoming audio. Each
+# frame from `audio_in` is handed to `waterfall_stream`, which pushes
+# new STFT columns into a rolling history, throttles redraws to ~11 Hz
+# at sr=44100/frame=1024, and atomically refreshes both panels.
+#
+# Use `waterfall_stream(samples, fig, state)` rather than the
+# spectrogram-style two-call pattern: one call advances the state,
+# updates the spectrum line, updates the waterfall heatmap, and
+# redraws. Panel labels and limits are set on the first redraw.
+#
+# Run with sox (macOS):
+#   sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
+#     | rustlab run examples/audio/waterfall_monitor.rlab
+#
+# Run with arecord (Linux):
+#   arecord -f FLOAT_LE -r 44100 -c 1 -t raw \
+#     | rustlab run examples/audio/waterfall_monitor.rlab
+#
+# Or use the wrapper:
+#   ./examples/audio/waterfall_monitor.sh
+#   ./examples/audio/waterfall_monitor.sh --test
+
+# ── Configuration ──
+sr           = 44100.0;
+frame        = 1024;
+nfft         = 1024;
+noverlap     = 512;
+time_history = 5.0;     # seconds of scroll-back in the heatmap
+vmin_db      = -100.0;
+vmax_db      = 0.0;
+smooth       = 1;       # top-panel rolling average (1 = none)
+update_every = 4;       # redraw every Nth audio frame
+
+# ── State + figure ──
+win  = window("hann", nfft);
+st   = waterfall_stream_init(sr, win, noverlap, nfft, time_history,
+                             vmin_db, vmax_db, "viridis", smooth, update_every);
+fig  = figure_live(2, 1);
+
+# ── Main loop ──
+adc = audio_in(sr, frame);
+while true
+    samples = audio_read(adc);
+    [fig, st] = waterfall_stream(samples, fig, st);
+end

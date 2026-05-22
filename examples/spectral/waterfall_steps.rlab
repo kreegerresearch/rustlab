@@ -1,0 +1,33 @@
+# Offline frequency waterfall of a stepwise frequency-changing sine.
+#
+# Three consecutive 1-second tones at 200 Hz, 1500 Hz, and 3500 Hz make
+# a deliberately non-stationary signal. The waterfall heatmap shows
+# three distinct horizontal bands stacked top-down: the most recent
+# 3500 Hz tone at the top, then 1500 Hz, then 200 Hz at the bottom.
+# This is the layout that makes step-change events easy to read off —
+# a moving cursor down the chart corresponds to scrolling back in time.
+
+seed(42)
+
+fs       = 10000;
+seg_dur  = 1.0;                       # seconds per tone
+freqs    = [200, 1500, 3500];        # Hz, oldest → newest
+n_seg    = round(fs * seg_dur);
+n        = n_seg * length(freqs);
+
+# Build the signal segment-by-segment.
+x = zeros(n);
+for k = 1:length(freqs)
+    t_seg = (0:(n_seg - 1)) / fs;
+    x((k - 1) * n_seg + 1 : k * n_seg) = sin(2*pi*freqs(k)*t_seg);
+end
+x = x + 0.02*randn(n);
+
+# Waterfall: short window (256 samples) so the step transitions look
+# crisp on the time axis; 1024-point FFT for a finer frequency grid.
+[W, f, twf] = waterfall(x, fs, window("hann", 256), 192, 1024);
+
+imagesc(W, "viridis");
+title("Tone steps 200 → 1500 → 3500 Hz — frequency waterfall");
+xlabel("Frequency bin");
+ylabel("Time (newest at top)");

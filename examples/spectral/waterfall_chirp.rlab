@@ -1,0 +1,37 @@
+# Offline frequency waterfall of a linear chirp.
+#
+# Same input as spectrogram_chirp.rlab — a 100 Hz → 5 kHz linear sweep —
+# rendered through the new `waterfall(...)` builtin. The waterfall returns
+# a [n_time × n_freqs] real matrix of magnitudes in dB with row 1 = newest
+# segment, so the heatmap reads top-down: the chirp's instantaneous
+# frequency moves from low (oldest, bottom) to high (newest, top).
+#
+# Compare with `spectrogram_chirp.rlab`: same data, transposed
+# orientation. The waterfall layout is the natural choice when the
+# x-axis carries frequency (e.g. when comparing against a paired live
+# spectrum line plot in `waterfall_stream`).
+
+seed(42)
+
+fs   = 10000;
+dur  = 2.0;            # seconds
+n    = round(fs * dur);
+t    = (0:(n-1)) / fs;
+f0   = 100;
+f1   = 5000;
+
+# Linear-chirp phase: 2π·(f0·t + (f1−f0)·t²/(2·dur))
+phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
+x     = sin(phase) + 0.05*randn(n);
+
+# Run the waterfall. Argument forms mirror spectrogram: 512-sample Hann
+# window, 75% overlap (hop = 128) for a smooth time axis, 1024-point FFT.
+[W, f, twf] = waterfall(x, fs, window("hann", 512), 384, 1024);
+
+# Render. The default `axis("ij")` orientation already places row 1
+# (the newest segment) at the top of the chart — exactly what we want
+# for a waterfall. Frequency runs along x (DC to Nyquist).
+imagesc(W, "viridis");
+title("Linear chirp 100 Hz → 5 kHz — frequency waterfall");
+xlabel("Frequency bin");
+ylabel("Time (newest at top)");
