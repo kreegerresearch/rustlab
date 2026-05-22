@@ -4,10 +4,24 @@ use rustlab_proto::{default_socket_path, read_msg, write_msg, ViewerMsg, ViewerR
 use std::io::BufWriter;
 use std::sync::mpsc;
 
+/// Bound on the listener → app channel. A `PanelHeatmap` from a streaming
+/// builtin can carry ~1 MB of RGBA, so a small bound is enough to absorb a
+/// normal render frame's worth of messages while ensuring the listener
+/// blocks (and so the socket fills, and the producer's `send()` blocks) if
+/// the egui app ever falls behind. Picked so the worst-case backlog stays
+/// in low tens of MB, not hundreds.
+const APP_CHANNEL_BOUND: usize = 64;
+
 /// Start the Unix socket listener in a background thread.
 /// Returns a receiver for incoming messages.
+///
+/// The channel is bounded so backpressure propagates back to the client:
+/// when the egui app can't keep up, `tx.send` blocks the listener thread,
+/// the socket's kernel buffer fills, and the producer's `write` (and thus
+/// its `send` waiting for `Ok`) blocks. Without the bound a slow egui
+/// frame would let RGBA-heavy messages pile up in memory unboundedly.
 pub fn start_listener() -> mpsc::Receiver<ViewerMsg> {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(APP_CHANNEL_BOUND);
 
     std::thread::Builder::new()
         .name("viewer-listener".into())
@@ -21,7 +35,7 @@ pub fn start_listener() -> mpsc::Receiver<ViewerMsg> {
     rx
 }
 
-fn run_listener(tx: mpsc::Sender<ViewerMsg>) -> std::io::Result<()> {
+fn run_listener(tx: mpsc::SyncSender<ViewerMsg>) -> std::io::Result<()> {
     let path = default_socket_path();
 
     // Check for existing socket — if a live viewer is listening, refuse to start
@@ -103,7 +117,7 @@ fn run_listener(tx: mpsc::Sender<ViewerMsg>) -> std::io::Result<()> {
 
 fn handle_connection<S: std::io::Read + std::io::Write>(
     mut stream: S,
-    tx: mpsc::Sender<ViewerMsg>,
+    tx: mpsc::SyncSender<ViewerMsg>,
 ) {
     loop {
         match read_msg::<_, ViewerMsg>(&mut stream) {
