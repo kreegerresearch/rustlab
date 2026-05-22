@@ -41,6 +41,8 @@ pub use wavelet::{
 pub use welch::{default_segment_len, pwelch_psd, Sided};
 pub use welch_stream::{
     pwelch_stream, pwelch_stream_init, stft_state_is_onesided, stft_state_n_freqs, stft_stream,
-    stft_stream_init, PwelchState, StftState,
+    stft_stream_init, waterfall_current_history, waterfall_current_spectrum, waterfall_state_fs,
+    waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time, waterfall_stream,
+    waterfall_stream_init, PwelchState, StftState, WaterfallState,
 };
 pub use window::WindowFunction;

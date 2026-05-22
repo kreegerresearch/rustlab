@@ -16,7 +16,8 @@ use crate::fft::fft_raw;
 use crate::welch::Sided;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
-use rustlab_core::{CMatrix, CVector, RVector, C64};
+use rustlab_core::{CMatrix, CVector, RMatrix, RVector, C64};
+use std::collections::VecDeque;
 
 /// Sliding-window segment producer shared by `pwelch_stream` and
 /// `stft_stream`. Push frames in, drain complete `win_len`-long
@@ -311,4 +312,180 @@ pub fn stft_state_is_onesided(state: &StftState) -> bool {
 /// Number of frequency bins (rows) this state emits per column.
 pub fn stft_state_n_freqs(state: &StftState) -> usize {
     state.n_freqs
+}
+
+// ─── waterfall_stream ────────────────────────────────────────────────────────
+
+/// Streaming state for a frequency waterfall: wraps an `StftState` plus a
+/// rolling history of the most recent `n_time` magnitude columns (in dB).
+///
+/// Geometry: rows are stored newest-at-front in a `VecDeque<Vec<f64>>`.
+/// Each row is a length-`n_freqs` dB-magnitude column from the underlying
+/// streaming STFT. `current_history()` materialises the deque as an
+/// `[n_time × n_freqs]` real matrix with row 0 = newest, suitable for
+/// rendering with [`crate::waterfall::waterfall`] semantics
+/// (`HeatmapOrigin::Upper`).
+///
+/// `current_spectrum()` returns the most recent column for the top
+/// (line-plot) panel, optionally averaged over the last `smooth_frames`
+/// columns to reduce frame-to-frame jitter without altering the waterfall
+/// itself.
+pub struct WaterfallState {
+    stft: StftState,
+    fs: f64,
+    /// Maximum number of history rows (= n_time).
+    n_time: usize,
+    /// Number of frequency bins per column, mirrored from `stft.n_freqs`
+    /// for cheap access without touching the inner state.
+    n_freqs: usize,
+    /// Newest column at the front. Each entry is `n_freqs` long.
+    rows: VecDeque<Vec<f64>>,
+    /// Top-panel rolling average window. `1` disables averaging.
+    smooth_frames: usize,
+    /// Most recent `smooth_frames` columns held for the line-plot smoothing.
+    /// Independent of `rows` so the waterfall history is unsmoothed.
+    spectrum_buf: VecDeque<Vec<f64>>,
+}
+
+impl std::fmt::Debug for WaterfallState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WaterfallState")
+            .field("fs", &self.fs)
+            .field("n_time", &self.n_time)
+            .field("n_freqs", &self.n_freqs)
+            .field("rows_filled", &self.rows.len())
+            .field("smooth_frames", &self.smooth_frames)
+            .finish()
+    }
+}
+
+/// Construct a streaming-waterfall state. `time_history_secs` sets the
+/// vertical extent of the display history; `n_time` is computed as
+/// `ceil(time_history_secs · fs / hop)` where `hop = window.len() − noverlap`.
+///
+/// `smooth_frames` averages the most recent N columns for the top-panel
+/// spectrum; pass `1` for no smoothing.
+pub fn waterfall_stream_init(
+    fs: f64,
+    window: &RVector,
+    noverlap: usize,
+    nfft: usize,
+    time_history_secs: f64,
+    smooth_frames: usize,
+) -> Result<WaterfallState, DspError> {
+    if !(time_history_secs > 0.0) {
+        return Err(DspError::InvalidParameter(format!(
+            "waterfall_stream_init: time_history_secs {time_history_secs} must be > 0"
+        )));
+    }
+    if smooth_frames == 0 {
+        return Err(DspError::InvalidParameter(
+            "waterfall_stream_init: smooth_frames must be >= 1".into(),
+        ));
+    }
+    // Resolves all the same validation rules as stft_stream_init (window
+    // non-empty, noverlap < window.len(), nfft >= window.len(), fs > 0).
+    // Streaming forces one-sided like stft_stream_init does — we need a
+    // fixed n_freqs at init time.
+    let stft = stft_stream_init(fs, window, noverlap, nfft, Sided::OneSided)?;
+    let hop = window.len() - noverlap;
+    let n_time = ((time_history_secs * fs / hop as f64).ceil() as usize).max(1);
+    let n_freqs = stft.n_freqs;
+    Ok(WaterfallState {
+        stft,
+        fs,
+        n_time,
+        n_freqs,
+        rows: VecDeque::with_capacity(n_time),
+        smooth_frames,
+        spectrum_buf: VecDeque::with_capacity(smooth_frames),
+    })
+}
+
+/// Push a frame of new samples and update the rolling history. Returns
+/// the number of new spectrogram columns absorbed (`0` when no segment
+/// boundary was crossed). Magnitudes are stored in dB with a small
+/// additive epsilon to keep silent bins finite.
+pub fn waterfall_stream(frame: &CVector, state: &mut WaterfallState) -> usize {
+    let s = stft_stream(frame, &mut state.stft);
+    let new_cols = s.ncols();
+    if new_cols == 0 {
+        return 0;
+    }
+    let eps = 1e-12_f64;
+    for col in 0..new_cols {
+        let mut row = vec![0.0; state.n_freqs];
+        for k in 0..state.n_freqs {
+            row[k] = 20.0 * (s[(k, col)].norm() + eps).log10();
+        }
+        // Spectrum buffer: keep only the last `smooth_frames` columns.
+        state.spectrum_buf.push_back(row.clone());
+        while state.spectrum_buf.len() > state.smooth_frames {
+            state.spectrum_buf.pop_front();
+        }
+        // History: newest pushed to the FRONT so row 0 of the rendered
+        // matrix is the newest segment (matches `waterfall(...)` layout).
+        state.rows.push_front(row);
+        while state.rows.len() > state.n_time {
+            state.rows.pop_back();
+        }
+    }
+    new_cols
+}
+
+/// Smoothed current spectrum (most recent column, or the mean of the
+/// last `smooth_frames` columns when smoothing is enabled). `None` until
+/// the first column has been absorbed.
+pub fn waterfall_current_spectrum(state: &WaterfallState) -> Option<RVector> {
+    if state.spectrum_buf.is_empty() {
+        return None;
+    }
+    let n = state.n_freqs;
+    let m = state.spectrum_buf.len() as f64;
+    let mut out = vec![0.0; n];
+    for col in state.spectrum_buf.iter() {
+        for k in 0..n {
+            out[k] += col[k];
+        }
+    }
+    for k in 0..n {
+        out[k] /= m;
+    }
+    Some(Array1::from(out))
+}
+
+/// Materialise the rolling history as `[rows_filled × n_freqs]` with
+/// row 0 = newest. Returns a `[0 × n_freqs]` matrix when no columns
+/// have been absorbed yet; the heatmap renderer handles empty input
+/// gracefully.
+pub fn waterfall_current_history(state: &WaterfallState) -> RMatrix {
+    let r = state.rows.len();
+    let mut out = RMatrix::zeros((r, state.n_freqs));
+    for (i, row) in state.rows.iter().enumerate() {
+        for k in 0..state.n_freqs {
+            out[(i, k)] = row[k];
+        }
+    }
+    out
+}
+
+/// Sample rate the state was initialised with (Hz).
+pub fn waterfall_state_fs(state: &WaterfallState) -> f64 {
+    state.fs
+}
+
+/// Number of frequency bins per column.
+pub fn waterfall_state_n_freqs(state: &WaterfallState) -> usize {
+    state.n_freqs
+}
+
+/// Configured history depth (max number of rows).
+pub fn waterfall_state_n_time(state: &WaterfallState) -> usize {
+    state.n_time
+}
+
+/// Hop in samples (`window.len() - noverlap`). Used by callers to
+/// convert `n_time` rows to seconds for y-axis labelling.
+pub fn waterfall_state_hop(state: &WaterfallState) -> usize {
+    state.stft.seg.hop
 }

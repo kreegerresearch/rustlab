@@ -252,6 +252,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `scalogram(x, fs)` | Heatmap of `20·log10(|W|)` — same colormap/floor as `spectrogram`, log-frequency y-axis (rows are log-spaced scales) |
 | `state = pwelch_stream_init(fs, win, noverlap, nfft [, ema_alpha])` / `[Pxx, state] = pwelch_stream(frame, state)` | Streaming Welch PSD. Cumulative average converges to batch `pwelch_psd`; `ema_alpha ∈ (0, 1]` opts into EMA |
 | `state = stft_stream_init(fs, win, noverlap, nfft [, sided])` / `[S_cols, state] = stft_stream(frame, state)` | Streaming STFT. Emits 0+ new spectrogram columns per frame; `n_freqs × 0` when none |
+| `state = waterfall_stream_init(fs, win, noverlap, nfft, time_history [, vmin_db, vmax_db, colormap, smooth_frames, update_every])` / `[fig, state] = waterfall_stream(samples, fig, state)` | Combined-call streaming waterfall: `figure_live(2, 1)` gets a line spectrum on top and a downward-scrolling heatmap below (newest row at top). Auto-labels panels on first redraw |
 | `state = cwt_stream_init(fs, n_samples [, n_scales \| scales])` / `[W, state] = cwt_stream(frame, state)` | Sliding-window CWT — recomputes over the latest `n_samples` on each call |
 | `plot_update_heatmap(fig, panel, matrix [, colormap [, vmin, vmax]])` | Live heatmap counterpart of `plot_update`. Drives ratatui + rustlab-viewer over the existing PanelHeatmap wire. Row 0 at the bottom (`imagesc` convention); waterfalls use a separate path that puts row 0 at the top |
 

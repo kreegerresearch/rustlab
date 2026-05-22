@@ -93,6 +93,25 @@ pub enum DspStreamKind {
     Pwelch(rustlab_dsp::PwelchState),
     Stft(rustlab_dsp::StftState),
     Cwt(rustlab_dsp::CwtState),
+    Waterfall(WaterfallStreamState),
+}
+
+/// Streaming state for the frequency waterfall, plus the per-stream
+/// display config that the script-side combined-call builtin needs but
+/// doesn't belong on the DSP type.
+#[derive(Debug)]
+pub struct WaterfallStreamState {
+    pub state: rustlab_dsp::WaterfallState,
+    pub vmin_db: f64,
+    pub vmax_db: f64,
+    pub colormap: String,
+    pub update_every: usize,
+    /// Number of stream calls since init. Wraps; only `% update_every`
+    /// matters for redraw throttling.
+    pub tick_count: usize,
+    /// True once the panel labels / limits have been pushed to the live
+    /// figure. Stays sticky across redraws.
+    pub labels_set: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1948,6 +1967,7 @@ impl fmt::Display for Value {
                     DspStreamKind::Pwelch(_) => "pwelch",
                     DspStreamKind::Stft(_) => "stft",
                     DspStreamKind::Cwt(_) => "cwt",
+                    DspStreamKind::Waterfall(_) => "waterfall",
                 };
                 write!(f, "<dsp_stream_state {tag}>")
             }

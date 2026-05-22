@@ -1,5 +1,5 @@
 use crate::error::ScriptError;
-use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value};
+use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
 use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
@@ -15,7 +15,10 @@ use rustlab_dsp::{
     fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_2d, gradient_3d,
     ifft, pwelch_psd, pwelch_stream, pwelch_stream_init, quantize_scalar, snr_db,
     stft as stft_math, stft_stream, stft_stream_init, upfirdn, waterfall as waterfall_math,
-    IirFilter, QFmtSpec, Sided,
+    waterfall_current_history, waterfall_current_spectrum, waterfall_state_fs,
+    waterfall_state_hop, waterfall_state_n_freqs, waterfall_state_n_time,
+    waterfall_stream as waterfall_stream_dsp,
+    waterfall_stream_init as waterfall_stream_init_dsp, IirFilter, QFmtSpec, Sided,
     WindowFunction,
 };
 use rustlab_plot::{
@@ -82,6 +85,8 @@ impl BuiltinRegistry {
         r.register("pwelch_stream", builtin_pwelch_stream);
         r.register("stft_stream_init", builtin_stft_stream_init);
         r.register("stft_stream", builtin_stft_stream);
+        r.register("waterfall_stream_init", builtin_waterfall_stream_init);
+        r.register("waterfall_stream", builtin_waterfall_stream);
         r.register("cwt_stream_init", builtin_cwt_stream_init);
         r.register("cwt_stream", builtin_cwt_stream);
         // Kaiser FIR
@@ -3161,6 +3166,175 @@ fn builtin_cwt_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     Ok(Value::Tuple(vec![
         Value::Matrix(w),
+        Value::DspStreamState(state_arc),
+    ]))
+}
+
+/// `waterfall_stream_init(fs, window, noverlap, nfft, time_history)`
+/// `waterfall_stream_init(fs, window, noverlap, nfft, time_history, vmin_db, vmax_db)`
+/// `waterfall_stream_init(fs, window, noverlap, nfft, time_history, vmin_db, vmax_db,
+///                        colormap, smooth_frames, update_every)`
+///
+/// Builds the streaming-waterfall state used by [`waterfall_stream`].
+/// The display config (colour clip, colormap, top-panel smoothing, redraw
+/// throttling) lives on the returned handle so the combined-call
+/// `waterfall_stream` only ever sees `(samples, fig, state)`.
+///
+/// Defaults: `vmin_db = -100`, `vmax_db = 0`, `colormap = "viridis"`,
+/// `smooth_frames = 1` (no smoothing), `update_every = 4`.
+fn builtin_waterfall_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("waterfall_stream_init", &args, 5, 10)?;
+    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let window = resolve_window_arg(&args[1], 128, "waterfall_stream_init")?;
+    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let time_history = args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let vmin_db = if args.len() >= 6 {
+        args[5].to_scalar().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        -100.0
+    };
+    let vmax_db = if args.len() >= 7 {
+        args[6].to_scalar().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        0.0
+    };
+    let colormap = if args.len() >= 8 {
+        args[7].to_str().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        "viridis".to_string()
+    };
+    let smooth_frames = if args.len() >= 9 {
+        args[8].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        1
+    };
+    let update_every = if args.len() >= 10 {
+        args[9].to_usize().map_err(|e| ScriptError::type_err(e))?
+    } else {
+        4
+    };
+    if update_every == 0 {
+        return Err(ScriptError::type_err(
+            "waterfall_stream_init: update_every must be >= 1".to_string(),
+        ));
+    }
+    if !(vmin_db < vmax_db) {
+        return Err(ScriptError::type_err(format!(
+            "waterfall_stream_init: vmin_db ({vmin_db}) must be < vmax_db ({vmax_db})"
+        )));
+    }
+    let state = waterfall_stream_init_dsp(fs, &window, noverlap, nfft, time_history, smooth_frames)
+        .map_err(ScriptError::Dsp)?;
+    Ok(Value::DspStreamState(Arc::new(Mutex::new(
+        DspStreamKind::Waterfall(WaterfallStreamState {
+            state,
+            vmin_db,
+            vmax_db,
+            colormap,
+            update_every,
+            tick_count: 0,
+            labels_set: false,
+        }),
+    ))))
+}
+
+/// `[fig, state] = waterfall_stream(samples, fig, state)`
+///
+/// Combined-call streaming waterfall: push `samples` into the state,
+/// then — once `update_every` ticks have elapsed since the last redraw
+/// — refresh the live figure's two panels (panel 1 = current spectrum
+/// line plot, panel 2 = downward-scrolling history heatmap with
+/// `HeatmapOrigin::Upper`) and call `figure_draw` for an atomic redraw.
+///
+/// One-time labelling: on the first redraw, the panels' titles, axis
+/// labels, and data-coord limits are pushed so the viewer's tick labels
+/// read in Hz / dB / seconds-ago.
+fn builtin_waterfall_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("waterfall_stream", &args, 3)?;
+    let frame = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let fig_handle = match &args[1] {
+        Value::LiveFigure(f) => Arc::clone(f),
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "waterfall_stream: expected live_figure as 2nd arg, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    let state_arc = expect_dsp_state(&args[2], "waterfall_stream")?;
+
+    let mut state_lock = state_arc.lock().unwrap();
+    let ws = match &mut *state_lock {
+        DspStreamKind::Waterfall(w) => w,
+        _ => {
+            return Err(ScriptError::type_err(
+                "waterfall_stream: state was not initialised via waterfall_stream_init".to_string(),
+            ))
+        }
+    };
+
+    let new_cols = waterfall_stream_dsp(&frame, &mut ws.state);
+    if new_cols > 0 {
+        ws.tick_count = ws.tick_count.wrapping_add(1);
+        let should_redraw = !ws.labels_set || (ws.tick_count % ws.update_every == 0);
+        if should_redraw {
+            let fs = waterfall_state_fs(&ws.state);
+            let n_freqs = waterfall_state_n_freqs(&ws.state);
+            let n_time = waterfall_state_n_time(&ws.state);
+            let hop = waterfall_state_hop(&ws.state);
+
+            // Frequency axis (Hz), one bin per freq column. Shared by both panels.
+            let nyquist = fs / 2.0;
+            let freqs: Vec<f64> =
+                (0..n_freqs).map(|k| k as f64 * nyquist / (n_freqs - 1).max(1) as f64).collect();
+            // Spectrum: smoothed most-recent column. Always populated when
+            // new_cols > 0 — the dB columns just pushed seeded the buffer.
+            let spectrum = waterfall_current_spectrum(&ws.state)
+                .expect("spectrum buffer non-empty after a new column was absorbed")
+                .to_vec();
+            let history = waterfall_current_history(&ws.state);
+            let time_span = n_time as f64 * hop as f64 / fs;
+
+            let mut fig_lock = fig_handle.lock().unwrap();
+            let fig = fig_lock.as_mut().ok_or_else(|| {
+                ScriptError::runtime("waterfall_stream: figure is closed".to_string())
+            })?;
+            if !ws.labels_set {
+                fig.set_panel_labels(0, "Spectrum", "Frequency (Hz)", "Magnitude (dB)");
+                fig.set_panel_labels(1, "Waterfall", "Frequency (Hz)", "Time (s, newest at top)");
+                fig.set_panel_limits(
+                    0,
+                    (Some(0.0), Some(nyquist)),
+                    (Some(ws.vmin_db), Some(ws.vmax_db)),
+                );
+                // Waterfall y-axis: seconds-ago, monotonically decreasing
+                // downward. With HeatmapOrigin::Upper the texture's row 0
+                // (newest) sits at the top; pin y limits so the top reads
+                // 0 and the bottom reads -time_span.
+                fig.set_panel_limits(
+                    1,
+                    (Some(0.0), Some(nyquist)),
+                    (Some(-time_span), Some(0.0)),
+                );
+                ws.labels_set = true;
+            }
+            fig.update_panel(0, freqs, spectrum);
+            fig.update_panel_heatmap(
+                1,
+                &history,
+                &ws.colormap,
+                Some(ws.vmin_db),
+                Some(ws.vmax_db),
+                rustlab_plot::HeatmapOrigin::Upper,
+            );
+            fig.redraw().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        }
+    }
+    drop(state_lock);
+
+    Ok(Value::Tuple(vec![
+        Value::LiveFigure(fig_handle),
         Value::DspStreamState(state_arc),
     ]))
 }

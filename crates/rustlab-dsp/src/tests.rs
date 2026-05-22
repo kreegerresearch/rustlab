@@ -2562,6 +2562,169 @@ mod welch_stream_tests {
 }
 
 #[cfg(test)]
+mod waterfall_stream_tests {
+    use crate::welch_stream::{
+        waterfall_current_history, waterfall_current_spectrum, waterfall_state_hop,
+        waterfall_state_n_freqs, waterfall_state_n_time, waterfall_stream, waterfall_stream_init,
+    };
+    use crate::window::WindowFunction;
+    use ndarray::Array1;
+    use num_complex::Complex;
+    use rustlab_core::CVector;
+    use std::f64::consts::PI;
+
+    fn real_signal(samples: impl IntoIterator<Item = f64>) -> CVector {
+        Array1::from_iter(samples.into_iter().map(|s| Complex::new(s, 0.0)))
+    }
+
+    #[test]
+    fn n_time_matches_ceil_time_history_over_hop() {
+        let fs = 44100.0;
+        let win = WindowFunction::Hann.generate(1024);
+        let noverlap = 512;
+        let st = waterfall_stream_init(fs, &win, noverlap, 1024, 5.0, 1).unwrap();
+        let hop = 1024 - noverlap;
+        let expected = (5.0 * fs / hop as f64).ceil() as usize;
+        assert_eq!(waterfall_state_n_time(&st), expected);
+        assert_eq!(waterfall_state_hop(&st), hop);
+        // n_freqs = nfft / 2 + 1 for one-sided.
+        assert_eq!(waterfall_state_n_freqs(&st), 1024 / 2 + 1);
+    }
+
+    #[test]
+    fn history_fills_then_scrolls_with_newest_at_row_zero() {
+        // Feed a long signal in small frames; verify the history grows
+        // monotonically up to n_time and then stays capped, with row 0
+        // always equal to the most recent column's dB.
+        let fs = 1000.0;
+        let win = WindowFunction::Hann.generate(64);
+        let noverlap = 32;
+        // time_history = 0.2 s, fs = 1000, hop = 32 → n_time = ceil(0.2*1000/32) = 7
+        let mut st = waterfall_stream_init(fs, &win, noverlap, 64, 0.2, 1).unwrap();
+        let n_time = waterfall_state_n_time(&st);
+
+        // Drive 4096 samples in chunks of 32 (= hop) so each chunk
+        // produces ~1 new column.
+        let x = real_signal((0..4096).map(|k| (2.0 * PI * 125.0 * k as f64 / fs).sin()));
+        let mut row_counts = Vec::new();
+        for chunk in x.exact_chunks(32) {
+            let frame = chunk.to_owned();
+            let new = waterfall_stream(&frame, &mut st);
+            if new > 0 {
+                let h = waterfall_current_history(&st);
+                row_counts.push(h.nrows());
+            }
+        }
+        // History grows until capped at n_time, then stays there.
+        let max_rows = *row_counts.iter().max().unwrap();
+        assert_eq!(max_rows, n_time);
+        for &rc in row_counts.iter().skip(2 * n_time) {
+            assert_eq!(rc, n_time, "history exceeded cap once full");
+        }
+
+        // Row 0 should equal the current spectrum (smooth_frames=1 → no avg).
+        let history = waterfall_current_history(&st);
+        let spectrum = waterfall_current_spectrum(&st).unwrap();
+        for k in 0..history.ncols() {
+            assert!(
+                (history[(0, k)] - spectrum[k]).abs() < 1e-12,
+                "row 0 col {k}: history={}, spectrum={}",
+                history[(0, k)],
+                spectrum[k]
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_is_smoothed_average_when_smooth_frames_gt_one() {
+        // smooth_frames = 4 → current_spectrum returns mean of last 4
+        // columns; rows still hold the raw (unsmoothed) columns. After
+        // enough frames, the spectrum should NOT equal row 0 in general
+        // (raw columns differ slightly between segments).
+        let fs = 1000.0;
+        let win = WindowFunction::Hann.generate(64);
+        let mut st = waterfall_stream_init(fs, &win, 32, 64, 0.5, 4).unwrap();
+        // White-ish input — different per segment.
+        let x = real_signal((0..2048).map(|k| ((k * 31 + 7) % 13) as f64 / 6.0 - 1.0));
+        for chunk in x.exact_chunks(32) {
+            let frame = chunk.to_owned();
+            waterfall_stream(&frame, &mut st);
+        }
+        let history = waterfall_current_history(&st);
+        let spectrum = waterfall_current_spectrum(&st).unwrap();
+        // History row 0 ≠ smoothed spectrum (averaged across 4 rows).
+        let mut differed = false;
+        for k in 0..history.ncols() {
+            if (history[(0, k)] - spectrum[k]).abs() > 1e-6 {
+                differed = true;
+                break;
+            }
+        }
+        assert!(differed, "smoothed spectrum should differ from raw row 0");
+        // Smoothed spectrum should equal the column-wise mean of the top
+        // smooth_frames rows.
+        let m = 4usize.min(history.nrows());
+        for k in 0..history.ncols() {
+            let mut acc = 0.0;
+            for r in 0..m {
+                acc += history[(r, k)];
+            }
+            let want = acc / m as f64;
+            assert!(
+                (spectrum[k] - want).abs() < 1e-9,
+                "col {k}: spectrum={}, want={}",
+                spectrum[k],
+                want
+            );
+        }
+    }
+
+    #[test]
+    fn pure_tone_peak_column_constant_across_history() {
+        // Stationary tone — every history row should peak at the same
+        // frequency bin (analogous to the offline waterfall test).
+        let fs = 1000.0;
+        let f0 = 200.0;
+        let win = WindowFunction::Hann.generate(256);
+        let mut st = waterfall_stream_init(fs, &win, 128, 256, 1.0, 1).unwrap();
+        let x = real_signal((0..8192).map(|k| (2.0 * PI * f0 * k as f64 / fs).sin()));
+        for chunk in x.exact_chunks(128) {
+            let frame = chunk.to_owned();
+            waterfall_stream(&frame, &mut st);
+        }
+        let history = waterfall_current_history(&st);
+        let n_freqs = history.ncols();
+        let bin = (f0 / fs * 256.0).round() as usize;
+        for r in 0..history.nrows() {
+            let mut best = 0;
+            let mut bestmag = f64::NEG_INFINITY;
+            for c in 0..n_freqs {
+                if history[(r, c)] > bestmag {
+                    bestmag = history[(r, c)];
+                    best = c;
+                }
+            }
+            assert!(
+                (best as i64 - bin as i64).abs() <= 1,
+                "row {r}: peak bin {best} should be near {bin}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_rejects_invalid_args() {
+        let win = WindowFunction::Hann.generate(64);
+        // time_history must be > 0
+        assert!(waterfall_stream_init(1000.0, &win, 32, 64, 0.0, 1).is_err());
+        assert!(waterfall_stream_init(1000.0, &win, 32, 64, -1.0, 1).is_err());
+        // smooth_frames must be >= 1
+        assert!(waterfall_stream_init(1000.0, &win, 32, 64, 1.0, 0).is_err());
+        // Inherited from stft_stream_init: noverlap < win.len()
+        assert!(waterfall_stream_init(1000.0, &win, 64, 64, 1.0, 1).is_err());
+    }
+}
+
+#[cfg(test)]
 mod cwt_stream_tests {
     use crate::wavelet::{cwt_morlet, cwt_stream, cwt_stream_init, default_scales};
     use ndarray::Array1;
