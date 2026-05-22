@@ -108,6 +108,27 @@ pub enum HeatmapKind {
     ImageRgba,
 }
 
+/// Where row 0 of a heatmap matrix lands in the rendered image.
+///
+/// Independent of [`AxisYDirection`], which controls axis label orientation.
+/// Defaults to [`HeatmapOrigin::Lower`] — physics/MATLAB-`imagesc` convention,
+/// matching the existing live-spectrogram pipeline.
+///
+/// - `Lower` — row 0 of `z` sits at the **bottom** of the rendered image.
+///   Used by `imagesc`, `spectrogram`, `scalogram`, and any plot where
+///   row index increases with the displayed y-coordinate.
+/// - `Upper` — row 0 of `z` sits at the **top** of the rendered image.
+///   Used by frequency waterfalls and any downward-scrolling history
+///   where row 0 is the newest sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeatmapOrigin {
+    /// Row 0 at the bottom. Default — matches `imagesc`, `spectrogram`.
+    #[default]
+    Lower,
+    /// Row 0 at the top. Used by downward-scrolling waterfalls.
+    Upper,
+}
+
 /// 2D heatmap data for a subplot (produced by `imagesc`, `heatmap`, `image`).
 #[derive(Debug, Clone)]
 pub struct HeatmapData {
@@ -136,6 +157,10 @@ pub struct HeatmapData {
     /// when `None`. Both must be `Some` for the fixed range to take
     /// effect; a single-sided `Some` is treated as auto-scale.
     pub value_max: Option<f64>,
+    /// Where row 0 of `z` lands in the rendered image. Defaults to
+    /// [`HeatmapOrigin::Lower`] (physics/MATLAB-`imagesc` convention).
+    /// Downward-scrolling waterfalls set this to [`HeatmapOrigin::Upper`].
+    pub origin: HeatmapOrigin,
 }
 
 impl Default for HeatmapData {
@@ -151,6 +176,7 @@ impl Default for HeatmapData {
             rgba_height: 0,
             value_min: None,
             value_max: None,
+            origin: HeatmapOrigin::Lower,
         }
     }
 }

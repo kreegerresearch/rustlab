@@ -105,6 +105,7 @@ impl LivePlot for ViewerFigure {
         colormap: &str,
         vmin: Option<f64>,
         vmax: Option<f64>,
+        origin: crate::figure::HeatmapOrigin,
     ) {
         let (nrows, ncols) = (matrix.nrows(), matrix.ncols());
         if nrows == 0 || ncols == 0 {
@@ -120,9 +121,10 @@ impl LivePlot for ViewerFigure {
         // rendering at 2400×1600 plotter scale and looking microscopic
         // when downscaled to fit the actual viewer panel.
         //
-        // Physics convention (row 0 / DC at the bottom of the plot) is
-        // applied centrally inside `render_heatmap_cells_to_rgba`; we
-        // just hand it the raw source matrix.
+        // `origin` controls the vertical flip inside
+        // `render_heatmap_cells_to_rgba`: Lower (default — spectrogram)
+        // puts row 0 at the bottom; Upper (waterfall) puts row 0 at the
+        // top so scrolling history reads newest-on-top.
         let z: Vec<Vec<f64>> = (0..nrows)
             .map(|r| (0..ncols).map(|c| matrix[(r, c)]).collect())
             .collect();
@@ -137,6 +139,7 @@ impl LivePlot for ViewerFigure {
             rgba_height: 0,
             value_min: vmin,
             value_max: vmax,
+            origin,
         };
         let rgba = crate::file::render_heatmap_cells_to_rgba(&hm);
         if rgba.is_empty() {

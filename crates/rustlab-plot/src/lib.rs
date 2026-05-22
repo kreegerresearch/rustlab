@@ -33,7 +33,7 @@ pub use figure::{
     figure_new_html, figure_switch, plot_context, push_notebook_figure_snapshot,
     restore_thread_state, set_current_figure_output, set_default_axis_y_direction,
     set_plot_context, take_notebook_figures, AxisYDirection, ContourData, FigureOutput,
-    FigureState, HeatmapData, HeatmapKind, LineStyle, PlotContext, PlotKind, PlotSnapshot,
+    FigureState, HeatmapData, HeatmapKind, HeatmapOrigin, LineStyle, PlotContext, PlotKind, PlotSnapshot,
     QuiverData, Series, SeriesColor, StreamlineData, SubplotState, SurfaceData, FIGURE,
 };
 pub use file::{
@@ -85,6 +85,12 @@ pub trait LivePlot: Send + std::fmt::Debug {
     /// `vmin` and `vmax` are `Some`, they pin the colour normalisation
     /// range — otherwise the panel auto-scales from the matrix.
     ///
+    /// `origin` controls where row 0 of `matrix` lands in the rendered
+    /// image. [`HeatmapOrigin::Lower`] (default in callers' builders) is
+    /// the physics / `imagesc` convention used by spectrograms;
+    /// [`HeatmapOrigin::Upper`] is used by downward-scrolling waterfalls
+    /// where row 0 is the newest sample.
+    ///
     /// Default implementation is a no-op so backends that don't
     /// support live heatmaps (e.g. pure line-plot ratatui) compile
     /// without per-call boilerplate.
@@ -95,6 +101,7 @@ pub trait LivePlot: Send + std::fmt::Debug {
         _colormap: &str,
         _vmin: Option<f64>,
         _vmax: Option<f64>,
+        _origin: crate::figure::HeatmapOrigin,
     ) {
     }
     fn redraw(&mut self) -> Result<(), PlotError>;

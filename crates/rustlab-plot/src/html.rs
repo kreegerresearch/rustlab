@@ -807,6 +807,7 @@ mod tests {
             rgba_height: 0,
         value_min: None,
         value_max: None,
+        origin: crate::figure::HeatmapOrigin::Lower,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
@@ -837,6 +838,7 @@ mod tests {
             rgba_height: 0,
         value_min: None,
         value_max: None,
+        origin: crate::figure::HeatmapOrigin::Lower,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());

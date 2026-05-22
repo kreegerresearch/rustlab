@@ -2772,6 +2772,7 @@ fn push_db_heatmap(
             // path below already takes vmin + range explicitly).
             value_min: Some(vmin),
             value_max: Some(vmax),
+            origin: rustlab_plot::HeatmapOrigin::Lower,
         });
     });
     let range = (vmax - vmin).max(1e-12);
@@ -10729,7 +10730,14 @@ fn builtin_plot_update_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         .ok_or_else(|| {
             ScriptError::runtime("plot_update_heatmap: figure is closed".to_string())
         })?
-        .update_panel_heatmap(panel, &real, &colormap, vmin, vmax);
+        .update_panel_heatmap(
+            panel,
+            &real,
+            &colormap,
+            vmin,
+            vmax,
+            rustlab_plot::HeatmapOrigin::Lower,
+        );
     Ok(Value::None)
 }
 

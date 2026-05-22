@@ -184,6 +184,7 @@ impl crate::LivePlot for LiveFigure {
         colormap: &str,
         vmin: Option<f64>,
         vmax: Option<f64>,
+        origin: crate::figure::HeatmapOrigin,
     ) {
         if idx >= self.panels.len() {
             return;
@@ -196,9 +197,14 @@ impl crate::LivePlot for LiveFigure {
             .map(|r| (0..ncols).map(|c| matrix[(r, c)]).collect())
             .collect();
         let panel = &mut self.panels[idx];
-        // axis("xy") for live heatmaps: physics convention with row 0 at
-        // the bottom, matching the spectrogram / scalogram builtin output.
-        panel.y_axis_direction = crate::figure::AxisYDirection::Xy;
+        // Map the heatmap origin onto the subplot y-axis convention so
+        // axis ticks (when shown) read consistently with the rendered
+        // image: Lower → Xy (physics, row 0 at bottom — spectrogram);
+        // Upper → Ij (image, row 0 at top — waterfall scrolling down).
+        panel.y_axis_direction = match origin {
+            crate::figure::HeatmapOrigin::Lower => crate::figure::AxisYDirection::Xy,
+            crate::figure::HeatmapOrigin::Upper => crate::figure::AxisYDirection::Ij,
+        };
         panel.heatmap = Some(crate::figure::HeatmapData {
             z,
             colorscale: colormap.to_string(),
@@ -210,6 +216,7 @@ impl crate::LivePlot for LiveFigure {
             rgba_height: 0,
             value_min: vmin,
             value_max: vmax,
+            origin,
         });
     }
     fn redraw(&mut self) -> Result<(), crate::PlotError> {

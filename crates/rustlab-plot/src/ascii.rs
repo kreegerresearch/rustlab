@@ -467,8 +467,9 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
-        value_min: None,
-        value_max: None,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
         });
     });
 

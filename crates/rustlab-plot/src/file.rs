@@ -218,12 +218,19 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
     let range = if degenerate { 1.0 } else { raw_range };
     let mut rgba = vec![0u8; nrows * ncols * 4];
     for r in 0..nrows {
-        // Flip vertically so source row 0 ends up at the BOTTOM pixel
-        // row of the texture (which becomes plot-y = 0 in egui). The
-        // texture's pixel-row 0 is at the top of the bounding box; we
-        // write source row `nrows-1-r` there, source row 0 into pixel-
-        // row `nrows-1` (the bottom).
-        let src_row = nrows - 1 - r;
+        // Lower (default): flip vertically so source row 0 ends up at
+        // the BOTTOM pixel row of the texture (which becomes plot-y = 0
+        // in egui). The texture's pixel-row 0 is at the top of the
+        // bounding box; we write source row `nrows-1-r` there, source
+        // row 0 into pixel-row `nrows-1` (the bottom). This is the
+        // physics / `imagesc` convention.
+        //
+        // Upper (waterfall): no flip — source row 0 sits at the TOP of
+        // the texture so a downward-scrolling history reads newest-on-top.
+        let src_row = match hm.origin {
+            crate::figure::HeatmapOrigin::Lower => nrows - 1 - r,
+            crate::figure::HeatmapOrigin::Upper => r,
+        };
         for c in 0..ncols {
             let v = hm.z[src_row][c];
             let t = if degenerate {
@@ -1648,6 +1655,56 @@ mod tests {
     use super::*;
     use crate::{push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem};
 
+    fn rgba_at(rgba: &[u8], ncols: usize, row: usize, col: usize) -> (u8, u8, u8) {
+        let off = (row * ncols + col) * 4;
+        (rgba[off], rgba[off + 1], rgba[off + 2])
+    }
+
+    /// HeatmapOrigin::Lower flips vertically (source row 0 → bottom pixel
+    /// row); Upper passes through (source row 0 → top pixel row). The two
+    /// renderings of the same matrix should be exact vertical mirrors of
+    /// each other.
+    #[test]
+    fn render_heatmap_cells_to_rgba_honours_origin() {
+        use crate::figure::{HeatmapData, HeatmapKind, HeatmapOrigin};
+        let z = vec![
+            vec![0.0, 0.0], // row 0
+            vec![1.0, 1.0], // row 1
+        ];
+        let mk = |origin| HeatmapData {
+            z: z.clone(),
+            colorscale: "viridis".to_string(),
+            kind: HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+            value_min: Some(0.0),
+            value_max: Some(1.0),
+            origin,
+        };
+        let lower = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Lower));
+        let upper = render_heatmap_cells_to_rgba(&mk(HeatmapOrigin::Upper));
+        let ncols = 2;
+
+        // Lower: source row 0 (value 0) at the bottom = pixel row 1.
+        let lower_top = rgba_at(&lower, ncols, 0, 0);
+        let lower_bot = rgba_at(&lower, ncols, 1, 0);
+        // Upper: source row 0 (value 0) at the top = pixel row 0.
+        let upper_top = rgba_at(&upper, ncols, 0, 0);
+        let upper_bot = rgba_at(&upper, ncols, 1, 0);
+
+        // Same value → same colour. Lower's top pixel is value 1; Lower's
+        // bottom pixel is value 0. Upper is the mirror image.
+        assert_eq!(lower_top, upper_bot, "lower top == upper bottom (value 1)");
+        assert_eq!(lower_bot, upper_top, "lower bottom == upper top (value 0)");
+        assert_ne!(
+            lower_top, lower_bot,
+            "top and bottom must differ — the two source rows have distinct values"
+        );
+    }
+
     fn tmp_path(suffix: &str) -> String {
         let mut p = std::env::temp_dir();
         p.push(format!(
@@ -2329,6 +2386,7 @@ mod tests {
                 rgba_height: 0,
             value_min: None,
             value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
             // Eight contour levels evenly spread across the data range
             // [0, max(z)].
@@ -2416,6 +2474,7 @@ mod tests {
                 rgba_height: 0,
             value_min: None,
             value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
         });
         render_figure_file(&path).expect("render should succeed");
@@ -2517,6 +2576,7 @@ mod tests {
                 rgba_height: 0,
             value_min: None,
             value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
             });
         });
         render_figure_file(&path).expect("render should succeed");
