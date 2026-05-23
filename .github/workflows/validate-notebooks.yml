@@ -17,26 +17,30 @@ name: validate-notebooks
 # pdflatex install cost becomes worth paying in CI.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'crates/rustlab-notebook/**'
-      - 'crates/rustlab-plot/**'
-      - 'crates/rustlab-notebook/src/validate.rs'
-      - 'crates/rustlab-notebook/tests/fixtures/bad/**'
-      - 'examples/notebooks/**'
-      - 'Makefile'
-      - '.github/workflows/validate-notebooks.yml'
-  pull_request:
-    paths:
-      - 'crates/rustlab-notebook/**'
-      - 'crates/rustlab-plot/**'
-      - 'crates/rustlab-notebook/src/validate.rs'
-      - 'crates/rustlab-notebook/tests/fixtures/bad/**'
-      - 'examples/notebooks/**'
-      - 'Makefile'
-      - '.github/workflows/validate-notebooks.yml'
+  # Manual-only while we work out the right noise floor on
+  # markdownlint / chktex output. The on-push and on-pull-request
+  # triggers below are intentionally left commented so re-enabling
+  # is a quick uncomment when we're happy with the rule set.
   workflow_dispatch:
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'crates/rustlab-notebook/**'
+  #     - 'crates/rustlab-plot/**'
+  #     - 'crates/rustlab-notebook/src/validate.rs'
+  #     - 'crates/rustlab-notebook/tests/fixtures/bad/**'
+  #     - 'examples/notebooks/**'
+  #     - 'Makefile'
+  #     - '.github/workflows/validate-notebooks.yml'
+  # pull_request:
+  #   paths:
+  #     - 'crates/rustlab-notebook/**'
+  #     - 'crates/rustlab-plot/**'
+  #     - 'crates/rustlab-notebook/src/validate.rs'
+  #     - 'crates/rustlab-notebook/tests/fixtures/bad/**'
+  #     - 'examples/notebooks/**'
+  #     - 'Makefile'
+  #     - '.github/workflows/validate-notebooks.yml'
 
 jobs:
   validate:
