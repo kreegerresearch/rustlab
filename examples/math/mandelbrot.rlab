@@ -1,0 +1,65 @@
+# mandelbrot.rlab — Mandelbrot set rendered with arrayfun vs parmap
+#
+# Run with:
+#   rustlab run --profile --plot none examples/math/mandelbrot.rlab
+#
+# Each row of the image is computed by a single lambda call, so parmap
+# parallelises across rows. The profiler report at the end shows the
+# wall-clock speedup from parallelism.
+
+max_iter = 100;
+nx = 800;
+ny = 600;
+
+# ── Per-row escape-time computation ──────────────────────────────────
+# Given a row index k (1-based), compute escape iteration counts for
+# every pixel in that row.  Returns a length-nx vector.
+# (Functions don't capture outer scope, so constants are repeated.)
+function row = mandelbrot_row(k)
+    nx = 800;
+    ny = 600;
+    max_iter = 100;
+    cr = linspace(-2.5, 1.0, nx);
+    y_all = linspace(-1.2, 1.2, ny);
+    ci = y_all(k);
+    zr = zeros(nx);
+    zi = zeros(nx);
+    counts = zeros(nx);
+    for iter = 1:max_iter
+        zr2 = zr .* zr;
+        zi2 = zi .* zi;
+        mask = (zr2 + zi2) < 4;
+        counts = counts + mask;
+        zi = 2 * zr .* zi + ci;
+        zr = zr2 - zi2 + cr;
+    end
+    row = counts;
+end
+
+# ── Sequential: arrayfun ─────────────────────────────────────────────
+disp("Computing Mandelbrot set (800 x 600, 100 iterations)")
+disp("")
+
+profile(arrayfun)
+M_seq = arrayfun(@mandelbrot_row, 1:ny);
+profile_report()
+
+# ── Parallel: parmap ─────────────────────────────────────────────────
+profile(parmap)
+M_par = parmap(@mandelbrot_row, 1:ny);
+profile_report()
+
+# ── Verify identical results ─────────────────────────────────────────
+err = max(max(abs(M_seq - M_par)));
+fprintf("max diff (arrayfun vs parmap): %.2e\n", err)
+
+# ── Render ───────────────────────────────────────────────────────────
+figure();
+imagesc(M_par, "hot");
+title("Mandelbrot set (parmap)");
+savefig("/tmp/rustlab_mandelbrot.svg");
+savefig("/tmp/rustlab_mandelbrot.html");
+
+disp("")
+disp("Saved to /tmp/rustlab_mandelbrot.{svg,html}")
+disp("Done — see profiler reports above for timing comparison.")
