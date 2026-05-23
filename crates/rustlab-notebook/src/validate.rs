@@ -201,42 +201,85 @@ impl ValidateOutcome {
 /// Drive validation: collect fixtures, render each into a temp dir for
 /// every requested format, pipe each artefact through the matching
 /// linter, return findings.
+///
+/// On any render FAIL the temp directory is auto-preserved (with its
+/// path printed to stderr) so the user can inspect the `<stem>.log`
+/// pdflatex build log that `compile_pdf` writes next to a failed PDF.
+/// Pass `keep_tmp = true` to preserve unconditionally.
 pub fn cmd_validate(input: PathBuf, opts: ValidateOpts) -> ValidateOutcome {
-    let fixtures = collect_fixtures(&input);
+    // Validate the input path up front: a typo or missing directory
+    // would otherwise produce an empty findings set and exit 0,
+    // making CI report green for work that never ran.
+    let fixtures = match collect_fixtures(&input) {
+        Ok(v) => v,
+        Err(detail) => {
+            return ValidateOutcome {
+                schema_version: 1,
+                summary: Summary { pass: 0, fail: 1, skipped: 0 },
+                results: vec![Finding {
+                    fixture: input.display().to_string(),
+                    format: Format::Markdown,
+                    linter: "input".into(),
+                    status: Status::Fail,
+                    detail,
+                }],
+            };
+        }
+    };
+
     let tmp_root = tempfile::Builder::new()
         .prefix("rustlab-validate.")
         .tempdir()
         .expect("failed to create temp dir");
-
-    // `keep_tmp` works by intentionally leaking the TempDir guard so
-    // the directory survives process exit; we print the path so the
-    // user can inspect.
     let tmp_path = tmp_root.path().to_path_buf();
+
+    let outcome = run_loop(&input, &fixtures, &tmp_path, &opts);
+
+    // Decide whether to keep the temp dir:
+    //   - explicit --keep-tmp: always keep
+    //   - any FAIL: keep automatically so the user can inspect logs
+    //     (especially the pdflatex `<stem>.log` written next to a
+    //     failed PDF)
+    let auto_keep = outcome.summary.fail > 0 && !opts.keep_tmp;
     if opts.keep_tmp {
         let _leaked = tmp_root.keep();
-        eprintln!("→ keeping render dir for inspection: {}", tmp_path.display());
-    } else {
-        // Move the TempDir into an inner scope so it drops at the end.
-        // We can't easily do that without restructuring; instead we'll
-        // explicitly drop it after the loop completes by holding it
-        // in `keep_alive` (named to make intent obvious).
-        let _keep_alive = tmp_root;
-        return run_loop(&fixtures, &tmp_path, &opts);
+        eprintln!(
+            "→ keeping render dir for inspection: {}",
+            tmp_path.display()
+        );
+    } else if auto_keep {
+        let _leaked = tmp_root.keep();
+        eprintln!(
+            "→ {} failure(s) — keeping render dir for inspection: {}",
+            outcome.summary.fail,
+            tmp_path.display(),
+        );
     }
+    // Otherwise: tmp_root drops here, dir is cleaned up.
 
-    run_loop(&fixtures, &tmp_path, &opts)
+    outcome
 }
 
-fn run_loop(fixtures: &[PathBuf], tmp_path: &Path, opts: &ValidateOpts) -> ValidateOutcome {
+fn run_loop(
+    input: &Path,
+    fixtures: &[PathBuf],
+    tmp_path: &Path,
+    opts: &ValidateOpts,
+) -> ValidateOutcome {
     let renderer = renderer_command();
     let mut results: Vec<Finding> = Vec::new();
+    let input_root = fixture_root(input);
 
     for src in fixtures {
-        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("?").to_string();
-        let fdir = tmp_path.join(&stem);
+        let display = fixture_display_name(src, &input_root);
+        // Mirror the relative path under the temp dir so two fixtures
+        // with the same file_stem in different subdirectories don't
+        // overwrite each other (e.g. notebooks/foo.md vs
+        // notebooks/sub/foo.md both rendering to `<tmp>/foo/foo.html`).
+        let fdir = tmp_path.join(&display);
         if std::fs::create_dir_all(&fdir).is_err() {
             results.push(Finding {
-                fixture: stem.clone(),
+                fixture: display.clone(),
                 format: Format::Markdown,
                 linter: "render".into(),
                 status: Status::Fail,
@@ -245,16 +288,18 @@ fn run_loop(fixtures: &[PathBuf], tmp_path: &Path, opts: &ValidateOpts) -> Valid
             continue;
         }
 
+        let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+
         for &fmt in &opts.formats {
             let out_path = fdir.join(format!("{stem}.{}", fmt.extension()));
             match render_one(&renderer, src, &out_path, fmt) {
                 Ok(()) => {
-                    let mut findings = lint(fmt, &stem, &out_path, opts);
+                    let mut findings = lint(fmt, &display, &out_path, opts);
                     results.append(&mut findings);
                 }
                 Err(detail) => {
                     results.push(Finding {
-                        fixture: stem.clone(),
+                        fixture: display.clone(),
                         format: fmt,
                         linter: "render".into(),
                         status: Status::Fail,
@@ -276,14 +321,53 @@ fn run_loop(fixtures: &[PathBuf], tmp_path: &Path, opts: &ValidateOpts) -> Valid
     ValidateOutcome { schema_version: 1, summary, results }
 }
 
+/// Root used to derive a fixture's relative display name. For a single
+/// file input we use its parent directory; for a directory input we
+/// use the directory itself.
+fn fixture_root(input: &Path) -> PathBuf {
+    if input.is_dir() {
+        input.to_path_buf()
+    } else {
+        input
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
+/// Stable, collision-free name for a fixture, derived from its path
+/// relative to `input_root` with the `.md` extension stripped. Used as
+/// both the user-visible `fixture` label in findings AND the
+/// per-fixture subdirectory under the temp render root.
+fn fixture_display_name(fixture: &Path, input_root: &Path) -> String {
+    let rel = fixture.strip_prefix(input_root).unwrap_or(fixture);
+    rel.with_extension("").to_string_lossy().into_owned()
+}
+
 // ── fixture discovery ────────────────────────────────────────────────────────
 
-fn collect_fixtures(input: &Path) -> Vec<PathBuf> {
+fn collect_fixtures(input: &Path) -> Result<Vec<PathBuf>, String> {
     if input.is_file() {
-        return vec![input.to_path_buf()];
+        // Single-file mode: must actually be a markdown notebook source.
+        // A non-`.md` file would silently render-fail with a cryptic
+        // detail; surface the type error explicitly instead.
+        if input.extension().and_then(|s| s.to_str()) != Some("md") {
+            return Err(format!(
+                "input `{}` is not a .md notebook (validate accepts a single .md file or a directory of .md files)",
+                input.display()
+            ));
+        }
+        return Ok(vec![input.to_path_buf()]);
     }
     if !input.is_dir() {
-        return Vec::new();
+        // Missing path. The previous behaviour silently returned an
+        // empty list, producing 0/0/0 + exit 0 — CI would report
+        // green for a fixture path that doesn't exist.
+        return Err(format!(
+            "input `{}` does not exist (no such file or directory)",
+            input.display()
+        ));
     }
     // Walk recursively, collect `.md` files, skip README.md.
     let mut out = Vec::new();
@@ -305,7 +389,7 @@ fn collect_fixtures(input: &Path) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 // ── render dispatch ──────────────────────────────────────────────────────────
@@ -807,6 +891,114 @@ mod tests {
         assert_ne!(f.status, Status::Ok, "smoke check accepted a non-PDF: {f:?}");
     }
 
+    // ── is_html5_tidy banner detection ────────────────────────────────────
+    //
+    // Spawn a tiny shell script that prints a fixed banner and exits, so we
+    // can exercise the version-string match against every banner variant we
+    // care about without depending on the host's actual tidy install.
+
+    #[cfg(unix)]
+    fn fake_tidy(banner: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .prefix("fake-tidy-")
+            .tempfile()
+            .unwrap();
+        // Echo to stdout regardless of args.
+        writeln!(f, "#!/bin/sh\ncat <<'EOF'\n{banner}\nEOF\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        f
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_html5_tidy_accepts_ubuntu_5_6_banner() {
+        // Ubuntu 24.04 (noble) ships tidy 5.6.0 with this exact banner —
+        // notice it has no "HTML5" substring, which is why the original
+        // check skipped tidy on every Linux CI run.
+        let fake = fake_tidy("HTML Tidy for Linux version 5.6.0");
+        assert!(is_html5_tidy(fake.path()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_html5_tidy_accepts_brew_html5_banner() {
+        let fake = fake_tidy("HTML Tidy for HTML5 (Mac OS X 64-bit) version 5.8.0");
+        assert!(is_html5_tidy(fake.path()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_html5_tidy_rejects_macos_2006_banner() {
+        // /usr/bin/tidy on every macOS install — HTML4 era, rejects <nav>,
+        // <main>, <footer>, etc. Must NOT be detected as html5-capable.
+        let fake = fake_tidy(
+            "HTML Tidy for Mac OS X released on 31 October 2006 - Apple Inc. build 11418",
+        );
+        assert!(!is_html5_tidy(fake.path()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_html5_tidy_rejects_unrelated_binary() {
+        let fake = fake_tidy("some other tool v1.2.3");
+        assert!(!is_html5_tidy(fake.path()));
+    }
+
+    // ── lint_latex via fake chktex ────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn fake_chktex(script: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .prefix("fake-chktex-")
+            .tempfile()
+            .unwrap();
+        writeln!(f, "#!/bin/sh\n{script}").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        f
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lint_latex_warnings_only_returns_ok_with_ignored_detail() {
+        // chktex's exit code is 0 even on findings, so we count
+        // Warning/Error lines. Warnings-only must yield OK (with a
+        // detail noting the warning count for visibility) — matching
+        // the tidy-html5 wrapper that already tolerates Plotly bundle
+        // warnings. Real LaTeX syntax bugs are reported as Error.
+        let fake = fake_chktex(
+            "cat <<'EOF'\nWarning 1 in foo.tex line 1: Use \\(...\\) instead\nWarning 2 in foo.tex line 2: Use \\(...\\) instead\nEOF",
+        );
+        let mut opts = opts_default();
+        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        let f = lint_latex("test", Path::new("/dev/null"), &opts);
+        assert_eq!(f.status, Status::Ok, "{f:?}");
+        assert!(f.detail.contains("2 warning"), "{f:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lint_latex_errors_still_fail() {
+        let fake = fake_chktex("cat <<'EOF'\nError 1 in foo.tex line 1: Unmatched brace\nEOF");
+        let mut opts = opts_default();
+        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        let f = lint_latex("test", Path::new("/dev/null"), &opts);
+        assert_eq!(f.status, Status::Fail, "{f:?}");
+        assert!(f.detail.contains("1 error"), "{f:?}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lint_latex_clean_run_returns_ok_no_detail() {
+        let fake = fake_chktex(":"); // no-op, no output
+        let mut opts = opts_default();
+        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        let f = lint_latex("test", Path::new("/dev/null"), &opts);
+        assert_eq!(f.status, Status::Ok, "{f:?}");
+        assert_eq!(f.detail, "");
+    }
+
     // ── locate() / linter overrides ───────────────────────────────────────
 
     #[test]
@@ -910,7 +1102,7 @@ mod tests {
     fn collect_fixtures_single_file() {
         let f = std::env::temp_dir().join("rustlab-validate-test-single.md");
         std::fs::File::create(&f).unwrap().write_all(b"# x").unwrap();
-        let got = collect_fixtures(&f);
+        let got = collect_fixtures(&f).expect("single .md file is valid");
         assert_eq!(got, vec![f.clone()]);
         let _ = std::fs::remove_file(&f);
     }
@@ -922,11 +1114,77 @@ mod tests {
         std::fs::write(dir.path().join("b.md"), "y").unwrap();
         std::fs::write(dir.path().join("README.md"), "skip me").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "skip me too").unwrap();
-        let got = collect_fixtures(dir.path());
+        let got = collect_fixtures(dir.path()).expect("valid dir");
         let names: Vec<String> = got
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["a.md".to_string(), "b.md".to_string()]);
+    }
+
+    // ── Regression: Bug 2 — collect_fixtures must reject a missing path
+    // rather than silently returning [] and exiting 0. Typo'd CI input
+    // would otherwise report green for work that never ran.
+    #[test]
+    fn collect_fixtures_errors_on_missing_path() {
+        let bogus = std::env::temp_dir().join("rustlab-validate-no-such-path-xyz");
+        let _ = std::fs::remove_dir_all(&bogus);
+        let _ = std::fs::remove_file(&bogus);
+        let err = collect_fixtures(&bogus).unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+    }
+
+    // ── Regression: Bug 4 — single-file mode rejects non-.md inputs
+    // up front rather than letting render fail with a cryptic detail.
+    #[test]
+    fn collect_fixtures_errors_on_non_md_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("notes.txt");
+        std::fs::write(&f, "not a notebook").unwrap();
+        let err = collect_fixtures(&f).unwrap_err();
+        assert!(err.contains("not a .md"), "{err}");
+    }
+
+    // ── cmd_validate surfaces the input error as a Fail finding ────────
+    #[test]
+    fn cmd_validate_returns_fail_on_missing_input() {
+        let bogus = std::env::temp_dir().join("rustlab-validate-still-no-such-path");
+        let _ = std::fs::remove_dir_all(&bogus);
+        let _ = std::fs::remove_file(&bogus);
+        let outcome = cmd_validate(bogus.clone(), ValidateOpts::default());
+        assert_eq!(outcome.summary.fail, 1);
+        assert_eq!(outcome.summary.pass, 0);
+        assert_eq!(outcome.results.len(), 1);
+        let f = &outcome.results[0];
+        assert_eq!(f.status, Status::Fail);
+        assert_eq!(f.linter, "input");
+        assert_eq!(outcome.exit_code(false), 1);
+    }
+
+    // ── Regression: Bug 1 — fixture_display_name uses path relative to
+    // the input root, so two .md files with the same file_stem in
+    // different subdirectories produce distinct findings (no temp-dir
+    // collision, no merged report row).
+    #[test]
+    fn fixture_display_name_disambiguates_same_stem_in_subdirs() {
+        let root = Path::new("/some/root");
+        let a = Path::new("/some/root/foo.md");
+        let b = Path::new("/some/root/sub/foo.md");
+        let na = fixture_display_name(a, root);
+        let nb = fixture_display_name(b, root);
+        assert_ne!(na, nb, "got duplicate display names: {na} vs {nb}");
+        assert_eq!(na, "foo");
+        // The exact separator may be platform-specific; just assert
+        // it contains the disambiguating segment.
+        assert!(nb.contains("foo"));
+        assert!(nb.contains("sub"));
+    }
+
+    #[test]
+    fn fixture_display_name_for_single_file_input_uses_just_stem() {
+        // Single-file input: root = file's parent, relative = filename.
+        let input = Path::new("/some/dir/foo.md");
+        let root = fixture_root(input);
+        assert_eq!(fixture_display_name(input, &root), "foo");
     }
 }
