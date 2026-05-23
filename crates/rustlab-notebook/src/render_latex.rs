@@ -224,6 +224,7 @@ pub fn render_latex(
 \newunicodechar{{δ}}{{\ensuremath{{\delta}}}}
 \newunicodechar{{Δ}}{{\ensuremath{{\Delta}}}}
 \newunicodechar{{ε}}{{\ensuremath{{\varepsilon}}}}
+\newunicodechar{{η}}{{\ensuremath{{\eta}}}}
 \newunicodechar{{θ}}{{\ensuremath{{\theta}}}}
 \newunicodechar{{Θ}}{{\ensuremath{{\Theta}}}}
 \newunicodechar{{λ}}{{\ensuremath{{\lambda}}}}
@@ -245,11 +246,47 @@ pub fn render_latex(
 \newunicodechar{{→}}{{\ensuremath{{\to}}}}
 \newunicodechar{{←}}{{\ensuremath{{\leftarrow}}}}
 \newunicodechar{{↔}}{{\ensuremath{{\leftrightarrow}}}}
-% Superscripts and units
+\newunicodechar{{↗}}{{\ensuremath{{\nearrow}}}}
+\newunicodechar{{↘}}{{\ensuremath{{\searrow}}}}
+\newunicodechar{{↙}}{{\ensuremath{{\swarrow}}}}
+\newunicodechar{{↖}}{{\ensuremath{{\nwarrow}}}}
+% Superscripts and units. Full 0–9 range so notebooks using subscript
+% / superscript notation (variable indexing, exponents, footnote
+% numerals) compile cleanly — pdflatex with [utf8]{{inputenc}} rejects
+% undeclared codepoints fatally, so partial coverage is brittle.
+\newunicodechar{{⁰}}{{\ensuremath{{^0}}}}
+\newunicodechar{{¹}}{{\ensuremath{{^1}}}}
 \newunicodechar{{²}}{{\ensuremath{{^2}}}}
 \newunicodechar{{³}}{{\ensuremath{{^3}}}}
+\newunicodechar{{⁴}}{{\ensuremath{{^4}}}}
+\newunicodechar{{⁵}}{{\ensuremath{{^5}}}}
+\newunicodechar{{⁶}}{{\ensuremath{{^6}}}}
+\newunicodechar{{⁷}}{{\ensuremath{{^7}}}}
+\newunicodechar{{⁸}}{{\ensuremath{{^8}}}}
+\newunicodechar{{⁹}}{{\ensuremath{{^9}}}}
+\newunicodechar{{₀}}{{\ensuremath{{_0}}}}
+\newunicodechar{{₁}}{{\ensuremath{{_1}}}}
+\newunicodechar{{₂}}{{\ensuremath{{_2}}}}
+\newunicodechar{{₃}}{{\ensuremath{{_3}}}}
+\newunicodechar{{₄}}{{\ensuremath{{_4}}}}
+\newunicodechar{{₅}}{{\ensuremath{{_5}}}}
+\newunicodechar{{₆}}{{\ensuremath{{_6}}}}
+\newunicodechar{{₇}}{{\ensuremath{{_7}}}}
+\newunicodechar{{₈}}{{\ensuremath{{_8}}}}
+\newunicodechar{{₉}}{{\ensuremath{{_9}}}}
 \newunicodechar{{°}}{{\ensuremath{{^{{\circ}}}}}}
 \newunicodechar{{µ}}{{\ensuremath{{\mu}}}}
+% Combining diacritics — combining chars overlay on the preceding
+% glyph, but as a `\newunicodechar` substitution they're already
+% standalone. Emit empty so pdflatex doesn't fatal; authors who need
+% true overlay (x̄, x̃, …) should use `$\bar{{x}}$` / `$\tilde{{x}}$`
+% in source rather than relying on Unicode combining sequences.
+\newunicodechar{{̄}}{{}}
+% Marks and check glyphs (commonly used in LLM/ML notebook output,
+% architecture diagrams, prose). `\checkmark` is provided by amssymb
+% (already loaded above).
+\newunicodechar{{✓}}{{\ensuremath{{\checkmark}}}}
+\newunicodechar{{✗}}{{$\times$}}
 % Punctuation, dashes, ellipsis
 \newunicodechar{{§}}{{\S{{}}}}
 \newunicodechar{{·}}{{\ensuremath{{\cdot}}}}
@@ -257,12 +294,21 @@ pub fn render_latex(
 \newunicodechar{{–}}{{\textendash{{}}}}
 \newunicodechar{{…}}{{\ensuremath{{\ldots}}}}
 \newunicodechar{{ï}}{{\"\i{{}}}}
-% Box-drawing characters appear in REPL/console output captured into
-% verbatim blocks — map to ASCII so the layout reads sensibly.
+% Box-drawing characters appear in REPL/console output AND in
+% architecture diagrams in ML/LLM lesson prose. Map to ASCII so the
+% layout reads sensibly through the LaTeX render (pdfTeX can't render
+% the actual box-drawing glyphs without a Unicode-aware font setup).
 \newunicodechar{{─}}{{-}}
 \newunicodechar{{│}}{{|}}
+\newunicodechar{{┌}}{{+}}
+\newunicodechar{{┐}}{{+}}
 \newunicodechar{{└}}{{+}}
+\newunicodechar{{┘}}{{+}}
 \newunicodechar{{├}}{{+}}
+\newunicodechar{{┤}}{{+}}
+\newunicodechar{{┬}}{{+}}
+\newunicodechar{{┴}}{{+}}
+\newunicodechar{{┼}}{{+}}
 \usepackage{{xcolor}}
 \usepackage{{booktabs}}
 \usepackage{{hyperref}}
@@ -721,7 +767,17 @@ mod tests {
         );
         assert!(tex.contains("\\usepackage{newunicodechar}"));
         // Spot-check the characters that broke real notebooks.
-        for ch in ['≈', '∇', 'π', 'Ω', '⇒', '×'] {
+        // Includes the 7 chars from the rustlab_llm bug report
+        // (η ┬ ₁ ↘ ⁵ ✓ plus combining-macron U+0304), the original
+        // anchor set, and the wider 0–9 sub/super range — pdflatex
+        // fatals on any undeclared codepoint, so partial coverage is
+        // brittle and easy to break.
+        for ch in [
+            '≈', '∇', 'π', 'Ω', '⇒', '×',
+            'η', '┬', '₁', '↘', '⁵', '✓',
+            '⁰', '¹', '⁴', '⁹', '₀', '₉',
+            '↗', '↙', '✗', '┼',
+        ] {
             assert!(
                 tex.contains(&format!("\\newunicodechar{{{ch}}}")),
                 "preamble missing declaration for U+{:04X}",
