@@ -318,7 +318,58 @@ pub fn render_markdown(
         body.push_str("\n\n");
     }
 
-    body
+    collapse_blank_runs(&body)
+}
+
+/// Final-pass cleanup: collapse runs of two or more blank lines to a
+/// single blank line, but only *outside* fenced code blocks
+/// (` ``` `). Defensive against extra blanks leaking out of any of
+/// the per-block emitters above — markdownlint's MD012 fires on
+/// double-blanks and the .markdownlint-cli2.jsonc rule is suppressed
+/// only to tolerate this; preventing the emission at the source is
+/// strictly better than silencing the detector.
+///
+/// Code blocks pass through verbatim — text output captured from a
+/// rustlab run may include intentional blank-line spacing that's part
+/// of the program's stdout.
+fn collapse_blank_runs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_fence = false;
+    let mut blanks = 0usize;
+    for line in s.lines() {
+        let is_fence = line.trim_start().starts_with("```");
+        if is_fence {
+            in_fence = !in_fence;
+            blanks = 0;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if line.trim().is_empty() {
+            blanks += 1;
+            if blanks <= 1 {
+                out.push('\n');
+            }
+            // else: skip — already have one blank, don't emit more
+        } else {
+            blanks = 0;
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    // Strip trailing blank lines: every per-block emitter appends "\n\n"
+    // for separator-after, but at end-of-file that becomes a phantom
+    // "blank line + EOF" which markdownlint MD012 counts as 2 blanks.
+    // POSIX-conventional output ends with exactly one '\n'.
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
 }
 
 /// Convert standard `[Text](Foo.md[#anchor])` links into Obsidian
@@ -562,6 +613,67 @@ mod tests {
     fn theme() -> &'static ThemeColors {
         Theme::Dark.colors()
     }
+
+    // ── collapse_blank_runs (Bug 2 defensive cleanup) ─────────────────────
+
+    #[test]
+    fn collapse_blank_runs_preserves_in_body_blank_separators() {
+        // Body separators (single blank between paragraphs) survive
+        // unchanged; the trailing "\n\n" is collapsed to "\n" per the
+        // EOF-trim policy tested elsewhere.
+        let input = "para one\n\npara two\n";
+        assert_eq!(collapse_blank_runs(input), input);
+    }
+
+    #[test]
+    fn collapse_blank_runs_squashes_double_blanks() {
+        let input = "para one\n\n\npara two\n";
+        let expected = "para one\n\npara two\n";
+        assert_eq!(collapse_blank_runs(input), expected);
+    }
+
+    #[test]
+    fn collapse_blank_runs_squashes_many_blanks() {
+        let input = "first\n\n\n\n\nsecond\n";
+        let expected = "first\n\nsecond\n";
+        assert_eq!(collapse_blank_runs(input), expected);
+    }
+
+    #[test]
+    fn collapse_blank_runs_preserves_blanks_inside_fenced_code() {
+        // Captured rustlab output may contain meaningful blank-line
+        // spacing — must not collapse those.
+        let input = "prose\n\n```text\nline one\n\n\nline two\n```\n\nmore prose\n";
+        let got = collapse_blank_runs(input);
+        // Triple blank between "line one" and "line two" preserved.
+        assert!(got.contains("line one\n\n\nline two"), "{got:?}");
+        // But blank runs outside the fence still collapsed.
+        assert!(!got.contains("\n\n\n```"), "{got:?}");
+    }
+
+    #[test]
+    fn collapse_blank_runs_strips_trailing_blank_lines() {
+        // Per-block emitters always append "\n\n" for separator-after
+        // behaviour, but at EOF that's a phantom blank line that fires
+        // markdownlint MD012. File should end with a single "\n".
+        assert_eq!(collapse_blank_runs("text\n\n"), "text\n");
+        assert_eq!(collapse_blank_runs("text\n\n\n\n"), "text\n");
+        assert_eq!(collapse_blank_runs("text\n"), "text\n");
+    }
+
+    #[test]
+    fn collapse_blank_runs_handles_sentinel_neighborhood() {
+        // Matches the actual emission pattern around output-region
+        // sentinels — verify no double-blanks leak even when a chunk
+        // already ends in \n\n and the post-sentinel "\n\n" is added.
+        let input =
+            "```rustlab\nx = 1\n```\n\n<!-- rustlab:output-start -->\n![p](x.svg)\n\n<!-- rustlab:output-end -->\n\nNext prose\n";
+        let got = collapse_blank_runs(input);
+        // No triple newlines anywhere outside fenced code.
+        assert!(!got.contains("\n\n\n"), "{got:?}");
+    }
+
+    // ── render_markdown ───────────────────────────────────────────────────
 
     #[test]
     fn generated_banner_is_emitted() {
