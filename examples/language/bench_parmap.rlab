@@ -1,0 +1,57 @@
+# bench_parmap.rlab — compare arrayfun (sequential) vs parmap (parallel)
+#
+# Run with:
+#   rustlab run --profile --plot none examples/language/bench_parmap.rlab
+#
+# Uses a compute-heavy pure lambda (deterministic matrix ops) so
+# parallelism overhead is visible against real per-element work.
+
+# ── Heavy lambda: deterministic matrix ops from the index. ───────────
+function y = heavy(k)
+    N = 60;
+    v = sin((1:N) * k);
+    A = v' * v + eye(N) * k;
+    B = A * A;
+    y = norm(B, 'fro');
+end
+
+# Lighter lambda for small-N regime
+function y = light(k)
+    y = sum(sin((1:200) * k));
+end
+
+# ── Warm up the rayon thread pool ─────────────────────────────────────
+_ = parmap(@heavy, 1:4);
+
+disp("========================================================")
+disp("  arrayfun (sequential) vs parmap (parallel) benchmark")
+disp("========================================================")
+disp("")
+
+# ── Heavy workload ────────────────────────────────────────────────────
+disp("--- Heavy workload (60x60 matrix multiply per element) ---")
+disp("")
+
+for n = [10, 50, 100, 200, 500]
+    fprintf("n = %d:\n", n)
+    xs = 1:n;
+    y_seq = arrayfun(@heavy, xs);
+    y_par = parmap(@heavy, xs);
+    err = max(abs(y_seq - y_par));
+    fprintf("  max element-wise diff = %.2e\n\n", err)
+end
+
+disp("")
+disp("--- Light workload (sin sum, 200 elements per call) ---")
+disp("")
+
+for n = [50, 100, 500, 1000, 2000]
+    fprintf("n = %d:\n", n)
+    xs = 1:n;
+    y_seq = arrayfun(@light, xs);
+    y_par = parmap(@light, xs);
+    err = max(abs(y_seq - y_par));
+    fprintf("  max element-wise diff = %.2e\n\n", err)
+end
+
+disp("Done — see profiler report above/below for timing details.")
