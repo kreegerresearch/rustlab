@@ -10,12 +10,13 @@
 // .markdownlint-cli2.jsonc to override.
 {
   "config": {
-    // Multiple consecutive blank lines. The notebook renderer
-    // occasionally emits an extra blank around output-region
-    // sentinels — a renderer-side cleanup is tracked separately,
-    // but the extra newline is a stylistic artifact, not a bug
-    // that would break GitHub or any markdown viewer.
-    "MD012": false,
+    // MD012 (multiple consecutive blank lines) was previously
+    // suppressed here because the renderer emitted occasional double
+    // blanks around output-region sentinels. The renderer now runs a
+    // `collapse_blank_runs` pass before returning, so MD012 stays
+    // enabled — a future regression should fail CI rather than
+    // silently sneak through.
+    //
     // Long lines: notebook prose often runs past 80 cols by design
     // (math expressions, table rows, plot captions). Not a wrap target.
     "MD013": false,
