@@ -122,18 +122,40 @@ fn handle_connection<S: std::io::Read + std::io::Write>(
     loop {
         match read_msg::<_, ViewerMsg>(&mut stream) {
             Ok(Some(msg)) => {
+                // Only reply to messages the producer actually reads
+                // back. `ViewerClient::send()` (sync) is used for
+                // FigureOpen / Redraw / Reset / Ping; everything else
+                // goes through `send_nowait()` and never reads the
+                // socket again. Writing a reply for a fire-and-forget
+                // message lets Ok bytes pile up in the producer's
+                // incoming socket buffer with nothing to drain them.
+                // macOS unix-stream buffers default to 8 KB
+                // (`net.local.stream.recvspace`), so on the live
+                // waterfall demo — which sends two `send_nowait`
+                // messages per redraw at ~11 Hz — the reply buffer
+                // fills in ~55 s, the listener's write blocks, the
+                // producer's next send blocks, and both deadlock with
+                // the egui app still responsive. Replying only when a
+                // reply is read keeps the back-channel quiescent and
+                // restores end-to-end progress.
+                let reply = match &msg {
+                    ViewerMsg::Ping => Some(ViewerReply::Pong),
+                    ViewerMsg::FigureOpen { .. }
+                    | ViewerMsg::Redraw { .. }
+                    | ViewerMsg::Reset => Some(ViewerReply::Ok),
+                    _ => None,
+                };
                 let is_ping = matches!(msg, ViewerMsg::Ping);
-                let reply = if is_ping {
-                    ViewerReply::Pong
-                } else {
+                if !is_ping {
                     if tx.send(msg).is_err() {
                         return; // app shut down
                     }
-                    ViewerReply::Ok
-                };
-                let mut bw = BufWriter::new(&mut stream);
-                if write_msg(&mut bw, &reply).is_err() {
-                    return;
+                }
+                if let Some(reply) = reply {
+                    let mut bw = BufWriter::new(&mut stream);
+                    if write_msg(&mut bw, &reply).is_err() {
+                        return;
+                    }
                 }
             }
             Ok(None) => return, // clean EOF

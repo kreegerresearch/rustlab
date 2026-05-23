@@ -978,12 +978,22 @@ fn cmd_ls(path: &str) {
 
 /// Run a script source string through the evaluator.
 pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
+    use rustlab_script::ScriptError;
     match lexer::tokenize(src).and_then(|t| parser::parse(t)) {
         Err(e) => eprintln!("error: {e}"),
         Ok(stmts) => {
             for stmt in &stmts {
                 if let Err(e) = ev.exec_stmt(stmt) {
-                    eprintln!("error: {e}");
+                    // AudioEof / Interrupted are the documented clean-exit
+                    // signals: stdin closing on an audio pipeline or the
+                    // user pressing Ctrl-C / 'q' under a live figure. The
+                    // --profile branch of `rustlab run` already treats
+                    // them as exit-0; mirror that here so a finished sox /
+                    // chirp pipe doesn't surface as "error: stdin closed".
+                    match e {
+                        ScriptError::AudioEof | ScriptError::Interrupted => {}
+                        _ => eprintln!("error: {e}"),
+                    }
                     break;
                 }
             }
