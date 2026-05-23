@@ -363,6 +363,44 @@ File the study in `dev/plans/<topic>-tradeoff.md` and link it from the implement
 
 **Why:** Core functionality is rustlab's *value proposition* — the curriculum is partly about students reading the algorithms running their physics. Vendored solvers undermine that. Infrastructure is plumbing — let mature crates handle it.
 
+### 11. Non-trivial work ships on a feature branch via PR
+
+`main` is a protected branch — `git push origin main` is rejected
+server-side for everyone, including admins. Any new feature, new
+subcommand, renderer change, or other multi-file / multi-commit work
+must develop on a topic branch and land via a pull request.
+
+**Trivial-exception list** (still OK direct to main):
+- single-line typo fixes in prose,
+- workspace version bumps,
+- CI workflow tweaks (e.g. adding a missing apt dep, tightening path
+  filters),
+- `.gitignore` carve-outs.
+
+Everything else — yes, even "just" a documentation update that
+introduces a new convention — branches.
+
+**Standard flow:**
+
+```sh
+git switch -c feature/<short-name>            # branch from main
+# work, commit; reuse the usual "commit only on user approval" rule
+git push -u origin feature/<short-name>
+gh pr create --title "..." --body "..."       # open PR
+gh pr merge --squash --delete-branch          # or merge via the web UI
+```
+
+`workflow_dispatch` runs of `validate-notebooks` from a feature branch
+are encouraged before opening the PR — surface CI noise on the branch,
+not on a freshly-merged main.
+
+**Why:** the `rustlab-notebook validate` subcommand landed via 9
+sequential commits directly on main in 2026-05-23, four of which had
+red CI runs. A feature branch + PR would have kept main's history
+clean, confined the CI noise to the branch, and given the work a
+single PR-shaped review surface. Branch protection on `main` now
+enforces this mechanically.
+
 ---
 
 ## Build & Test
