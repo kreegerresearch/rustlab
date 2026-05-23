@@ -274,8 +274,6 @@ title("plot(x, 1×N row-Matrix)")
 
 <!-- rustlab:output-end -->
 
-![plot 1](plots/language_v0_3_4/plot-1.svg)
-
 Genuine `m × n` matrices (m > 1 *and* n > 1) are unaffected — they
 still dispatch to the Matrix arm as multi-series data.
 
