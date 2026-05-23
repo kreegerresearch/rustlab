@@ -75,8 +75,8 @@ Layout convention matches every commercial RF tool:
 
 |        |        |
 |---|---|
-| `|S11|` (input return loss)  | `|S21|` (forward gain) |
-| `|S12|` (reverse isolation)  | `|S22|` (output return loss) |
+| `\|S11\|` (input return loss)  | `\|S21\|` (forward gain) |
+| `\|S12\|` (reverse isolation)  | `\|S22\|` (output return loss) |
 
 For non-2-port networks the same call falls back to a single `|S11|` dB
 trace; the multi-trace 2×2 layout is specifically the 2-port review.
