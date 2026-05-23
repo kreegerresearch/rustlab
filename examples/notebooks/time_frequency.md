@@ -196,7 +196,7 @@ above (153). For a live display, the typical pattern is:
 ```
 
 The live demo lives at
-[`examples/audio/spectrogram_monitor.{sh,rlab}`](../audio/spectrogram_monitor.sh)
+[`examples/audio/spectrogram_monitor.{sh,rlab}`](../examples/audio/spectrogram_monitor.sh)
 — wire it up to `sox` (macOS) or `arecord` (Linux) and watch a real
 spectrogram scroll past in `rustlab-viewer` or the ratatui fallback.
 

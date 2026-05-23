@@ -168,5 +168,5 @@ iteration counts show proportionally larger absolute savings.
 
 - [Parallel Monte Carlo](parallel_montecarlo.md) — `parmap` for
   stochastic workloads with seeded RNG.
-- [`examples/math/mandelbrot.rlab`](../../examples/math/mandelbrot.rlab) —
+- [`examples/math/mandelbrot.rlab`](../examples/math/mandelbrot.rlab) —
   standalone script version with profiler output.
