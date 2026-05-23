@@ -57,6 +57,7 @@ throughout the project: in the REPL (`help`, `help <toolbox>`), the CLI
 |----------|----------------|
 | [Spectral Estimation](spectral_estimation.md) | Periodogram vs windowed PSD, Hann vs Hamming, variance reduction via averaging |
 | [Time-Frequency Analysis](time_frequency.md) | `stft` and `spectrogram` on a linear chirp; window-length time/frequency trade-off |
+| [Frequency Waterfalls](waterfall.md) | Waterfall display for SDR / audio analysis — time scrolls vertically, frequency reads horizontally |
 
 ## controls
 

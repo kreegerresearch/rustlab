@@ -202,10 +202,10 @@ accident.
 
 ## See also
 
-- [`dev/plans/parmap_parreduce.md`](../dev/plans/parmap_parreduce.md) —
+- [`dev/plans/closed/parmap_parreduce.md`](../dev/plans/closed/parmap_parreduce.md) —
   v1 implementation plan, deferred phases (`parreduce`, cluster backend),
   open design questions.
-- [`dev/plans/parmap_nonscalar_outputs.md`](../dev/plans/parmap_nonscalar_outputs.md) —
+- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../dev/plans/closed/parmap_nonscalar_outputs.md) —
   vector/matrix output extension (the "stacks into Matrix / Tensor3" rule
   used above).
 - [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
