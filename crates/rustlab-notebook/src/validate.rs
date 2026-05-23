@@ -544,14 +544,26 @@ fn lint_latex(fixture: &str, file: &Path, opts: &ValidateOpts) -> Finding {
     };
     // chktex's own exit code is 0 even on findings; count Warning/Error
     // lines for the FAIL signal.
+    // chktex's own exit code is 0 even on findings, so we count its
+    // Warning/Error lines. Treat *errors* as FAIL (real LaTeX syntax
+    // problems) and warnings as OK — chktex warnings are stylistic
+    // (straight quotes, double spaces, math-spacing) and inevitable in
+    // notebook-renderer output, where titles and captions come from
+    // user-authored prose. Symmetric with the tidy-html5 path that
+    // tolerates Plotly bundle warnings.
     let out = Command::new(&bin).arg("-q").arg(file).output();
     match out {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let warnings = stdout.lines().filter(|l| l.starts_with("Warning")).count();
             let errors = stdout.lines().filter(|l| l.starts_with("Error")).count();
-            if warnings == 0 && errors == 0 {
-                finding(fixture, Format::Latex, "chktex", Status::Ok, "")
+            if errors == 0 {
+                let detail = if warnings > 0 {
+                    format!("{warnings} warning(s) (ignored)")
+                } else {
+                    String::new()
+                };
+                finding(fixture, Format::Latex, "chktex", Status::Ok, detail)
             } else {
                 finding(
                     fixture,
