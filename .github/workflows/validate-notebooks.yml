@@ -55,10 +55,18 @@ jobs:
         with:
           shared-key: validate-notebooks
 
-      - name: Install external linters
+      - name: Install build + linter system deps
+        # libfontconfig1-dev / libfreetype-dev are required to compile
+        # rustlab-plot — `plotters/ttf` pulls in `font-kit` →
+        # `yeslogic-fontconfig-sys` / `freetype-sys`, both of which
+        # link against system libraries. macOS dev machines ship these
+        # via the SDK; Ubuntu runners do not.
         run: |
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            pkg-config \
             chktex \
             poppler-utils \
             qpdf \

@@ -423,8 +423,12 @@ cargo install --path crates/rustlab-cli   # → ~/.cargo/bin/rustlab
 > `make install` handles this automatically. If you copy the binary manually, run:
 > `codesign --sign - --force <destination>/rustlab`
 
-> **Linux note:** No system libraries required. The `plotters` crate uses
-> `default-features = false` to avoid `font-kit` → `freetype-sys` → `fontconfig-sys`.
+> **Linux note:** Building `rustlab-plot` needs `libfontconfig1-dev`
+> and `libfreetype-dev` on the system (`apt-get install
+> libfontconfig1-dev libfreetype-dev pkg-config`). The `plotters/ttf`
+> feature pulls in `font-kit` → `yeslogic-fontconfig-sys` /
+> `freetype-sys`, both of which link against system libraries; the
+> macOS SDK provides them implicitly.
 
 ### Octave numerical comparison
 
