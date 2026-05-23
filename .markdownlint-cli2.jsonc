@@ -42,6 +42,20 @@
     // collapsible sections and <iframe> under --obsidian. The renderer's
     // generated header is also an HTML comment. Banning inline HTML
     // wholesale isn't workable for this output.
-    "MD033": false
+    "MD033": false,
+    // Table column count: GFM permits `|` inside inline-code cells
+    // (e.g. `` `|S11|` ``) and GitHub renders these correctly, but
+    // markdownlint's column counter doesn't respect inline-code spans
+    // and miscounts cells. False positive on legitimate tables.
+    "MD056": false,
+    // Emphasis used as heading: notebooks occasionally use *italic
+    // labels* as inline visual structure (flow diagrams, callouts).
+    // Author intent, not a heading-level miscount.
+    "MD036": false,
+    // Blank line inside blockquote: required to keep adjacent but
+    // distinct blockquotes separate — especially when a regular
+    // `> quote` is immediately followed by a `> [!WARNING]` GFM alert
+    // callout. Merging them would change the rendering.
+    "MD028": false
   }
 }
