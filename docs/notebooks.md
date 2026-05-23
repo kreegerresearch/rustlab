@@ -828,7 +828,9 @@ light text, matching the Catppuccin Mocha palette.
 ### PDF (`--format pdf`)
 
 Generates LaTeX then compiles to PDF. Requires `pdflatex` or `tectonic`
-in PATH.
+in PATH, plus `inkscape` (the `svg` LaTeX package shells out to it to
+convert plot SVGs). See `AGENTS.md` § *Testing dependencies* for
+per-platform install commands.
 
 ```
 rustlab-notebook render analysis.md -f pdf

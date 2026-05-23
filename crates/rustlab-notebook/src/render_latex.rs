@@ -184,7 +184,85 @@ pub fn render_latex(
 \geometry{{margin=1in}}
 \usepackage{{graphicx}}
 \usepackage{{svg}}
+% Bypass inkscape's LaTeX text export. Default svg.sty invokes inkscape
+% with --export-latex, producing a `_svg-tex.pdf_tex` companion file that
+% re-typesets plot titles through pdflatex — which then chokes on `^`,
+% `_`, `×`, em-dash etc. in titles. inkscapelatex=false renders text as
+% embedded glyphs in the PDF instead.
+\svgsetup{{inkscapelatex=false}}
 \usepackage{{amsmath,amssymb}}
+\usepackage{{newunicodechar}}
+% Map common math / Greek / arrow Unicode characters that appear in
+% notebook prose and code-block output. Without these, pdflatex with
+% [utf8]{{inputenc}} rejects the character with "not set up for use".
+% Source: the failing characters observed across examples/notebooks/.
+% Math relations and operators
+\newunicodechar{{≈}}{{\ensuremath{{\approx}}}}
+\newunicodechar{{≡}}{{\ensuremath{{\equiv}}}}
+\newunicodechar{{≤}}{{\ensuremath{{\le}}}}
+\newunicodechar{{≥}}{{\ensuremath{{\ge}}}}
+\newunicodechar{{≠}}{{\ensuremath{{\ne}}}}
+\newunicodechar{{±}}{{\ensuremath{{\pm}}}}
+\newunicodechar{{∓}}{{\ensuremath{{\mp}}}}
+\newunicodechar{{×}}{{\ensuremath{{\times}}}}
+\newunicodechar{{÷}}{{\ensuremath{{\div}}}}
+\newunicodechar{{−}}{{\ensuremath{{-}}}}
+\newunicodechar{{∇}}{{\ensuremath{{\nabla}}}}
+\newunicodechar{{∂}}{{\ensuremath{{\partial}}}}
+\newunicodechar{{∞}}{{\ensuremath{{\infty}}}}
+\newunicodechar{{∫}}{{\ensuremath{{\int}}}}
+\newunicodechar{{∑}}{{\ensuremath{{\sum}}}}
+\newunicodechar{{∏}}{{\ensuremath{{\prod}}}}
+\newunicodechar{{√}}{{\ensuremath{{\sqrt{{}}}}}}
+\newunicodechar{{∠}}{{\ensuremath{{\angle}}}}
+\newunicodechar{{∩}}{{\ensuremath{{\cap}}}}
+% Greek letters (lowercase + selected uppercase)
+\newunicodechar{{α}}{{\ensuremath{{\alpha}}}}
+\newunicodechar{{β}}{{\ensuremath{{\beta}}}}
+\newunicodechar{{γ}}{{\ensuremath{{\gamma}}}}
+\newunicodechar{{Γ}}{{\ensuremath{{\Gamma}}}}
+\newunicodechar{{δ}}{{\ensuremath{{\delta}}}}
+\newunicodechar{{Δ}}{{\ensuremath{{\Delta}}}}
+\newunicodechar{{ε}}{{\ensuremath{{\varepsilon}}}}
+\newunicodechar{{θ}}{{\ensuremath{{\theta}}}}
+\newunicodechar{{Θ}}{{\ensuremath{{\Theta}}}}
+\newunicodechar{{λ}}{{\ensuremath{{\lambda}}}}
+\newunicodechar{{Λ}}{{\ensuremath{{\Lambda}}}}
+\newunicodechar{{μ}}{{\ensuremath{{\mu}}}}
+\newunicodechar{{π}}{{\ensuremath{{\pi}}}}
+\newunicodechar{{Π}}{{\ensuremath{{\Pi}}}}
+\newunicodechar{{σ}}{{\ensuremath{{\sigma}}}}
+\newunicodechar{{Σ}}{{\ensuremath{{\Sigma}}}}
+\newunicodechar{{φ}}{{\ensuremath{{\varphi}}}}
+\newunicodechar{{Φ}}{{\ensuremath{{\Phi}}}}
+\newunicodechar{{ψ}}{{\ensuremath{{\psi}}}}
+\newunicodechar{{Ψ}}{{\ensuremath{{\Psi}}}}
+\newunicodechar{{Ω}}{{\ensuremath{{\Omega}}}}
+\newunicodechar{{ω}}{{\ensuremath{{\omega}}}}
+% Arrows
+\newunicodechar{{⇒}}{{\ensuremath{{\Rightarrow}}}}
+\newunicodechar{{⇔}}{{\ensuremath{{\Leftrightarrow}}}}
+\newunicodechar{{→}}{{\ensuremath{{\to}}}}
+\newunicodechar{{←}}{{\ensuremath{{\leftarrow}}}}
+\newunicodechar{{↔}}{{\ensuremath{{\leftrightarrow}}}}
+% Superscripts and units
+\newunicodechar{{²}}{{\ensuremath{{^2}}}}
+\newunicodechar{{³}}{{\ensuremath{{^3}}}}
+\newunicodechar{{°}}{{\ensuremath{{^{{\circ}}}}}}
+\newunicodechar{{µ}}{{\ensuremath{{\mu}}}}
+% Punctuation, dashes, ellipsis
+\newunicodechar{{§}}{{\S{{}}}}
+\newunicodechar{{·}}{{\ensuremath{{\cdot}}}}
+\newunicodechar{{—}}{{\textemdash{{}}}}
+\newunicodechar{{–}}{{\textendash{{}}}}
+\newunicodechar{{…}}{{\ensuremath{{\ldots}}}}
+\newunicodechar{{ï}}{{\"\i{{}}}}
+% Box-drawing characters appear in REPL/console output captured into
+% verbatim blocks — map to ASCII so the layout reads sensibly.
+\newunicodechar{{─}}{{-}}
+\newunicodechar{{│}}{{|}}
+\newunicodechar{{└}}{{+}}
+\newunicodechar{{├}}{{+}}
 \usepackage{{xcolor}}
 \usepackage{{booktabs}}
 \usepackage{{hyperref}}
@@ -214,7 +292,6 @@ fn markdown_to_latex(md: &str) -> String {
     let parser = Parser::new_ext(&md, opts);
 
     let mut out = String::new();
-    let mut in_table = false;
     #[allow(unused_assignments)]
     let mut table_alignments: Vec<pulldown_cmark::Alignment> = Vec::new();
     let mut table_cell_idx: usize = 0;
@@ -245,7 +322,6 @@ fn markdown_to_latex(md: &str) -> String {
                 Tag::List(None) => out.push_str("\\begin{itemize}\n"),
                 Tag::Item => out.push_str("\\item "),
                 Tag::Table(alignments) => {
-                    in_table = true;
                     table_alignments = alignments;
                     let cols: String = table_alignments
                         .iter()
@@ -289,7 +365,6 @@ fn markdown_to_latex(md: &str) -> String {
                 TagEnd::Item => out.push('\n'),
                 TagEnd::Table => {
                     out.push_str("\\bottomrule\n\\end{tabular}\n\n");
-                    in_table = false;
                 }
                 TagEnd::TableHead => {
                     out.push_str(" \\\\\n\\midrule\n");
@@ -307,12 +382,14 @@ fn markdown_to_latex(md: &str) -> String {
                 _ => {}
             },
             Event::Text(text) => {
-                if in_table {
-                    // Don't escape $ in tables — formulas should pass through
-                    out.push_str(&escape_latex_preserving_math(&text));
-                } else {
-                    out.push_str(&escape_latex_preserving_math(&text));
-                }
+                // With `Options::ENABLE_MATH` on, pulldown-cmark delivers
+                // inline math via `Event::InlineMath` and display math via
+                // `Event::DisplayMath`. Anything that survives into a Text
+                // event is literal prose — including a backslash-escaped
+                // `\$` from the source, which arrives here as a bare `$`
+                // that must be escaped to `\$`, not preserved as a math
+                // delimiter.
+                out.push_str(&escape_latex(&text));
             }
             Event::Code(code) => {
                 out.push_str(&format!("\\texttt{{{}}}", escape_latex(&code)));
@@ -340,44 +417,10 @@ fn markdown_to_latex(md: &str) -> String {
     out
 }
 
-/// Escape special LaTeX characters, but preserve $...$ math delimiters.
-fn escape_latex_preserving_math(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut in_math = false;
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        let ch = chars[i];
-        if ch == '$' {
-            in_math = !in_math;
-            out.push('$');
-            i += 1;
-            continue;
-        }
-        if in_math {
-            out.push(ch);
-        } else {
-            match ch {
-                '&' => out.push_str("\\&"),
-                '%' => out.push_str("\\%"),
-                '#' => out.push_str("\\#"),
-                '_' => out.push_str("\\_"),
-                '{' => out.push_str("\\{"),
-                '}' => out.push_str("\\}"),
-                '~' => out.push_str("\\textasciitilde{}"),
-                '^' => out.push_str("\\textasciicircum{}"),
-                '\\' => out.push_str("\\textbackslash{}"),
-                _ => out.push(ch),
-            }
-        }
-        i += 1;
-    }
-
-    out
-}
-
-/// Escape special LaTeX characters (no math preservation).
+/// Escape special LaTeX characters (no math preservation — math is
+/// delivered through `Event::InlineMath` / `Event::DisplayMath` with
+/// `Options::ENABLE_MATH`, so anything reaching us in a `Text` event is
+/// literal prose).
 fn escape_latex(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -479,38 +522,6 @@ mod tests {
     #[test]
     fn escape_latex_passthrough() {
         assert_eq!(escape_latex("hello world"), "hello world");
-    }
-
-    // ── escape_latex_preserving_math ──
-
-    #[test]
-    fn preserve_math_inline() {
-        let result = escape_latex_preserving_math("value of $x_1$ is 5%");
-        assert_eq!(result, "value of $x_1$ is 5\\%");
-    }
-
-    #[test]
-    fn preserve_math_multiple() {
-        let result = escape_latex_preserving_math("$a$ and $b$");
-        assert_eq!(result, "$a$ and $b$");
-    }
-
-    #[test]
-    fn preserve_math_no_math() {
-        let result = escape_latex_preserving_math("a & b");
-        assert_eq!(result, "a \\& b");
-    }
-
-    #[test]
-    fn preserve_math_special_inside_math() {
-        // Inside $...$, special chars should NOT be escaped
-        let result = escape_latex_preserving_math("$x_{max}$");
-        assert_eq!(result, "$x_{max}$");
-    }
-
-    #[test]
-    fn preserve_math_empty() {
-        assert_eq!(escape_latex_preserving_math(""), "");
     }
 
     // ── markdown_to_latex ──
@@ -632,6 +643,29 @@ mod tests {
         assert_eq!(markdown_to_latex(""), "");
     }
 
+    // ── regression: Bug B — escaped `\$` in markdown prose stays literal in
+    // LaTeX. Before the fix, `\$` reached us as a bare `$` in a Text event
+    // and `escape_latex_preserving_math` toggled math mode, breaking
+    // template_interpolation.md at the `Use \${...}` paragraph.
+    #[test]
+    fn md_to_latex_escaped_dollar_stays_literal() {
+        let out = markdown_to_latex(r"literal: \${not_evaluated}.");
+        // Every `$` in the output must be preceded by a backslash —
+        // otherwise it opens math mode and pdflatex fails with
+        // "Missing $ inserted".
+        for (i, ch) in out.char_indices() {
+            if ch == '$' {
+                let prev = out[..i].chars().next_back();
+                assert_eq!(
+                    prev, Some('\\'),
+                    "unescaped `$` at offset {i} in output: {out:?}"
+                );
+            }
+        }
+        // Sanity: the escaped form should be present at all.
+        assert!(out.contains("\\$"), "no literal \\$ in output: {out:?}");
+    }
+
     // ── render_latex (integration) ──
 
     #[test]
@@ -651,6 +685,49 @@ mod tests {
         assert!(tex.contains("\\begin{document}"));
         assert!(tex.contains("\\end{document}"));
         assert!(tex.contains("\\maketitle"));
+    }
+
+    // Regression: Bug C — svg.sty must run inkscape WITHOUT --export-latex
+    // so plot titles containing `^`, `×`, em-dash, etc. don't get
+    // re-typeset by pdflatex through a `_svg-tex.pdf_tex` companion file.
+    // Previously this broke log_polar.md / masks.md / surface_plots.md.
+    #[test]
+    fn render_latex_preamble_disables_inkscape_latex_bridge() {
+        let tex = render_latex(
+            "x",
+            &[],
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+        );
+        assert!(
+            tex.contains("\\svgsetup{inkscapelatex=false}"),
+            "preamble missing \\svgsetup{{inkscapelatex=false}}"
+        );
+    }
+
+    // Regression: Bug D — preamble must declare common math/Greek Unicode
+    // characters so pdflatex with [utf8]{inputenc} doesn't reject body
+    // text or verbatim contents containing ≈, ∇, π, Ω, ⇒, ×, etc.
+    // (Previously broke 7 of the example notebooks.)
+    #[test]
+    fn render_latex_preamble_declares_unicode_math_chars() {
+        let tex = render_latex(
+            "x",
+            &[],
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+        );
+        assert!(tex.contains("\\usepackage{newunicodechar}"));
+        // Spot-check the characters that broke real notebooks.
+        for ch in ['≈', '∇', 'π', 'Ω', '⇒', '×'] {
+            assert!(
+                tex.contains(&format!("\\newunicodechar{{{ch}}}")),
+                "preamble missing declaration for U+{:04X}",
+                ch as u32,
+            );
+        }
     }
 
     #[test]
