@@ -1,24 +1,14 @@
-# mandelbrot.rlab — Mandelbrot set rendered with arrayfun vs parmap
+# mandelbrot.rlab — Mandelbrot set: arrayfun vs parmap
 #
 # Run with:
 #   rustlab run --profile --plot none examples/math/mandelbrot.rlab
 #
-# Each row of the image is computed by a single lambda call, so parmap
-# parallelises across rows. The profiler report at the end shows the
-# wall-clock speedup from parallelism.
-
-max_iter = 100;
-nx = 800;
-ny = 600;
+# Each row is computed by a single lambda call, so parmap parallelises
+# across rows. The profiler report at the end shows the speedup.
 
 # ── Per-row escape-time computation ──────────────────────────────────
-# Given a row index k (1-based), compute escape iteration counts for
-# every pixel in that row.  Returns a length-nx vector.
-# (Functions don't capture outer scope, so constants are repeated.)
 function row = mandelbrot_row(k)
-    nx = 800;
-    ny = 600;
-    max_iter = 100;
+    nx = 800; ny = 600; max_iter = 100;
     cr = linspace(-2.5, 1.0, nx);
     y_all = linspace(-1.2, 1.2, ny);
     ci = y_all(k);
@@ -36,30 +26,79 @@ function row = mandelbrot_row(k)
     row = counts;
 end
 
-# ── Sequential: arrayfun ─────────────────────────────────────────────
+# ── Sequential vs parallel ───────────────────────────────────────────
 disp("Computing Mandelbrot set (800 x 600, 100 iterations)")
 disp("")
 
 profile(arrayfun)
-M_seq = arrayfun(@mandelbrot_row, 1:ny);
+M_seq = arrayfun(@mandelbrot_row, 1:600);
 profile_report()
 
-# ── Parallel: parmap ─────────────────────────────────────────────────
 profile(parmap)
-M_par = parmap(@mandelbrot_row, 1:ny);
+M_par = parmap(@mandelbrot_row, 1:600);
 profile_report()
 
-# ── Verify identical results ─────────────────────────────────────────
 err = max(max(abs(M_seq - M_par)));
 fprintf("max diff (arrayfun vs parmap): %.2e\n", err)
 
-# ── Render ───────────────────────────────────────────────────────────
+# ── Render full set ──────────────────────────────────────────────────
 figure();
 imagesc(M_par, "hot");
-title("Mandelbrot set (parmap)");
+title("Mandelbrot set — 800x600, 100 iterations");
 savefig("/tmp/rustlab_mandelbrot.svg");
-savefig("/tmp/rustlab_mandelbrot.html");
+
+# ── Zoom: Seahorse Valley ───────────────────────────────────────────
+function row = mandelbrot_zoom(k)
+    nx = 800; ny = 600; max_iter = 250;
+    cr = linspace(-0.9, -0.6, nx);
+    y_all = linspace(0.0, 0.3, ny);
+    ci = y_all(k);
+    zr = zeros(nx);
+    zi = zeros(nx);
+    counts = zeros(nx);
+    for iter = 1:max_iter
+        zr2 = zr .* zr;
+        zi2 = zi .* zi;
+        mask = (zr2 + zi2) < 4;
+        counts = counts + mask;
+        zi = 2 * zr .* zi + ci;
+        zr = zr2 - zi2 + cr;
+    end
+    row = counts;
+end
+
+figure();
+Z = parmap(@mandelbrot_zoom, 1:600);
+imagesc(Z, "hot");
+title("Seahorse Valley — 250 iterations");
+savefig("/tmp/rustlab_mandelbrot_seahorse.svg");
+
+# ── Zoom: Elephant Valley ───────────────────────────────────────────
+function row = mandelbrot_elephant(k)
+    nx = 800; ny = 600; max_iter = 300;
+    cr = linspace(0.15, 0.4, nx);
+    y_all = linspace(-0.15, 0.15, ny);
+    ci = y_all(k);
+    zr = zeros(nx);
+    zi = zeros(nx);
+    counts = zeros(nx);
+    for iter = 1:max_iter
+        zr2 = zr .* zr;
+        zi2 = zi .* zi;
+        mask = (zr2 + zi2) < 4;
+        counts = counts + mask;
+        zi = 2 * zr .* zi + ci;
+        zr = zr2 - zi2 + cr;
+    end
+    row = counts;
+end
+
+figure();
+E = parmap(@mandelbrot_elephant, 1:600);
+imagesc(E, "hot");
+title("Elephant Valley — 300 iterations");
+savefig("/tmp/rustlab_mandelbrot_elephant.svg");
 
 disp("")
-disp("Saved to /tmp/rustlab_mandelbrot.{svg,html}")
+disp("Saved SVGs to /tmp/rustlab_mandelbrot*.svg")
 disp("Done — see profiler reports above for timing comparison.")

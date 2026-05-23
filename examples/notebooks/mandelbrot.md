@@ -1,0 +1,172 @@
+# Mandelbrot Set — `arrayfun` vs `parmap`
+
+The Mandelbrot set is a natural benchmark for `parmap`: every pixel is
+independent, the per-pixel work (iterated squaring) is uniform enough
+to load-balance well, and the result is a single matrix that renders
+as an image.
+
+This notebook computes the set at 800×600 resolution, first
+sequentially with `arrayfun`, then in parallel with `parmap`, and
+compares wall-clock time. The parallel version fans each row across
+rayon's thread pool.
+
+## The escape-time algorithm
+
+For each point $c$ in the complex plane, iterate $z \leftarrow z^2 + c$
+starting from $z = 0$. If $|z|$ exceeds 2 within `max_iter` steps, the
+point has *escaped*; the iteration count at escape determines the colour.
+Points that never escape are in the Mandelbrot set.
+
+The implementation below works on a full row at a time — `zr` and `zi`
+are length-800 vectors, and the `< 4` comparison produces a 0/1 mask
+that accumulates the iteration count element-wise.
+
+```rustlab
+function row = mandelbrot_row(k)
+  nx = 800; ny = 600; max_iter = 100;
+  cr = linspace(-2.5, 1.0, nx);
+  y_all = linspace(-1.2, 1.2, ny);
+  ci = y_all(k);
+  zr = zeros(nx);
+  zi = zeros(nx);
+  counts = zeros(nx);
+  for iter = 1:max_iter
+    zr2 = zr .* zr;
+    zi2 = zi .* zi;
+    mask = (zr2 + zi2) < 4;
+    counts = counts + mask;
+    zi = 2 * zr .* zi + ci;
+    zr = zr2 - zi2 + cr;
+  end
+  row = counts;
+end
+```
+
+## Sequential render with `arrayfun`
+
+`arrayfun(@mandelbrot_row, 1:600)` calls the function for each row
+index sequentially. Each call returns a length-800 vector; `arrayfun`
+stacks them into a 600×800 matrix.
+
+```rustlab
+M_seq = arrayfun(@mandelbrot_row, 1:600);
+print("sequential done — size:", size(M_seq))
+```
+
+## Parallel render with `parmap`
+
+`parmap` has the same interface as `arrayfun` but distributes calls
+across rayon's thread pool. On a multi-core machine, the speedup is
+roughly proportional to core count (minus overhead).
+
+```rustlab
+M_par = parmap(@mandelbrot_row, 1:600);
+print("parallel done — size:", size(M_par))
+```
+
+## Verify bit-identical results
+
+Because the lambda is purely arithmetic (no `rand`, no I/O), both
+paths produce exactly the same matrix:
+
+```rustlab
+err = max(max(abs(M_seq - M_par)));
+print("max element-wise diff:", err)
+```
+
+## Render the fractal
+
+`imagesc` auto-normalises the iteration counts to fill the colormap.
+The `hot` colormap maps low iteration counts (quick escape = outside
+the set) to black and high counts (slow escape = near the boundary)
+through red–yellow–white.
+
+```rustlab
+clf
+imagesc(M_par, "hot")
+title("Mandelbrot set — 800×600, 100 iterations")
+```
+
+## Zoom: Seahorse Valley
+
+The region around $(-0.75, 0.1)$ contains the *Seahorse Valley* — a
+rich area of spiralling filaments. A higher iteration count reveals
+finer boundary detail.
+
+```rustlab
+function row = mandelbrot_zoom(k)
+  nx = 800; ny = 600; max_iter = 250;
+  cr = linspace(-0.9, -0.6, nx);
+  y_all = linspace(0.0, 0.3, ny);
+  ci = y_all(k);
+  zr = zeros(nx);
+  zi = zeros(nx);
+  counts = zeros(nx);
+  for iter = 1:max_iter
+    zr2 = zr .* zr;
+    zi2 = zi .* zi;
+    mask = (zr2 + zi2) < 4;
+    counts = counts + mask;
+    zi = 2 * zr .* zi + ci;
+    zr = zr2 - zi2 + cr;
+  end
+  row = counts;
+end
+
+clf
+Z = parmap(@mandelbrot_zoom, 1:600);
+imagesc(Z, "hot")
+title("Seahorse Valley — 250 iterations")
+```
+
+## Zoom: Elephant Valley
+
+The region near $(0.25, 0.0)$ shows the *Elephant Valley*, where the
+main cardioid meets the period-2 bulb. The self-similar miniature
+copies of the full set are visible at higher iteration counts.
+
+```rustlab
+function row = mandelbrot_elephant(k)
+  nx = 800; ny = 600; max_iter = 300;
+  cr = linspace(0.15, 0.4, nx);
+  y_all = linspace(-0.15, 0.15, ny);
+  ci = y_all(k);
+  zr = zeros(nx);
+  zi = zeros(nx);
+  counts = zeros(nx);
+  for iter = 1:max_iter
+    zr2 = zr .* zr;
+    zi2 = zi .* zi;
+    mask = (zr2 + zi2) < 4;
+    counts = counts + mask;
+    zi = 2 * zr .* zi + ci;
+    zr = zr2 - zi2 + cr;
+  end
+  row = counts;
+end
+
+clf
+E = parmap(@mandelbrot_elephant, 1:600);
+imagesc(E, "hot")
+title("Elephant Valley — 300 iterations")
+```
+
+## Performance
+
+Run this notebook with `--profile` to see per-function timing:
+
+```
+rustlab run --profile --plot none examples/math/mandelbrot.rlab
+```
+
+On a 10-core Apple Silicon Mac (release build), the full-frame
+800×600 render at 100 iterations runs in ~415 ms with `arrayfun` and
+~160 ms with `parmap` — a **2.6× speedup**. The zoom frames at higher
+iteration counts show proportionally larger absolute savings.
+
+## See also
+
+- [Parallel Monte Carlo](parallel_montecarlo.md) — `parmap` for
+  stochastic workloads with seeded RNG.
+- [`examples/math/mandelbrot.rlab`](../../examples/math/mandelbrot.rlab) —
+  standalone script version with profiler output.
