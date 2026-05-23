@@ -209,6 +209,111 @@ enum Command {
         #[arg(long)]
         pretty: bool,
     },
+    /// Render notebooks and lint each output against trusted external linters.
+    ///
+    /// Drop-in CI check for projects that ship rustlab-notebook sources —
+    /// catches output-side regressions (broken HTML, malformed LaTeX,
+    /// unparseable PDFs) that the source-side `check` command cannot see.
+    ///
+    /// Examples:
+    ///   rustlab-notebook validate notebooks/
+    ///   rustlab-notebook validate notebooks/ --format html,pdf
+    ///   rustlab-notebook validate notebooks/ --require-all --report json
+    ///   rustlab-notebook validate notebooks/ --linter vnu=$HOME/jars/vnu.jar
+    #[command(
+        long_about = "Render notebooks and lint each output against trusted external linters.\n\n\
+            Linter selection per format:\n  \
+            markdown → markdownlint-cli2 (npm i -g markdownlint-cli2)\n  \
+            html     → vnu ($VNU_JAR or PATH) → tidy-html5 (5.x+) fallback\n  \
+            latex    → chktex\n  \
+            pdf      → pdfinfo + pdftotext (smoke), qpdf --check (structure),\n             \
+                       verapdf (PDF/A, opt-in via --pdf-a)\n\n\
+            Each linter is shelled out only when installed; otherwise the row\n\
+            reports SKIPPED + an install hint. Set --require-all to upgrade any\n\
+            SKIPPED to a FAIL — useful for CI to enforce a baseline toolchain.\n\n\
+            Exit codes:\n  \
+            0 = clean (no findings, or only SKIPPED)\n  \
+            1 = at least one linter reported FAIL\n  \
+            2 = --require-all set and at least one linter is missing"
+    )]
+    Validate {
+        /// Input .md file or directory of .md files (recursive).
+        input: PathBuf,
+        /// Output formats to validate (comma-separated).
+        #[arg(short, long, value_delimiter = ',',
+              default_values_t = vec![CliValidateFormat::Markdown,
+                                      CliValidateFormat::Html,
+                                      CliValidateFormat::Latex,
+                                      CliValidateFormat::Pdf])]
+        format: Vec<CliValidateFormat>,
+        /// Report format: text (default) | json.
+        #[arg(long, value_enum, default_value = "text")]
+        report: CliReportFormat,
+        /// Missing linter → FAIL (default: SKIPPED).
+        #[arg(long)]
+        require_all: bool,
+        /// Also run verapdf PDF/A conformance check on PDFs.
+        /// Off by default — the pipeline does not target PDF/A.
+        #[arg(long)]
+        pdf_a: bool,
+        /// Leave the temp render dir for inspection after the run.
+        #[arg(long)]
+        keep_tmp: bool,
+        /// Override a linter's binary path (repeatable). Format: KEY=PATH.
+        /// Keys: markdownlint-cli2, markdownlint, vnu, tidy, chktex,
+        /// pdfinfo, pdftotext, qpdf, verapdf. For `vnu`, pass a `.jar`
+        /// path to invoke via `java -jar`.
+        #[arg(long = "linter", value_name = "KEY=PATH",
+              value_parser = parse_linter_override, action = clap::ArgAction::Append)]
+        linter_overrides: Vec<(String, PathBuf)>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum CliValidateFormat {
+    Markdown,
+    Html,
+    Latex,
+    Pdf,
+}
+
+impl CliValidateFormat {
+    fn to_format(&self) -> rustlab_notebook::validate::Format {
+        match self {
+            CliValidateFormat::Markdown => rustlab_notebook::validate::Format::Markdown,
+            CliValidateFormat::Html => rustlab_notebook::validate::Format::Html,
+            CliValidateFormat::Latex => rustlab_notebook::validate::Format::Latex,
+            CliValidateFormat::Pdf => rustlab_notebook::validate::Format::Pdf,
+        }
+    }
+}
+
+impl std::fmt::Display for CliValidateFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CliValidateFormat::Markdown => "markdown",
+            CliValidateFormat::Html => "html",
+            CliValidateFormat::Latex => "latex",
+            CliValidateFormat::Pdf => "pdf",
+        };
+        f.write_str(s)
+    }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum CliReportFormat {
+    Text,
+    Json,
+}
+
+fn parse_linter_override(s: &str) -> Result<(String, PathBuf), String> {
+    let (key, path) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected KEY=PATH, got `{s}`"))?;
+    if key.is_empty() {
+        return Err("linter override key is empty".to_string());
+    }
+    Ok((key.to_string(), PathBuf::from(path)))
 }
 
 fn main() {
@@ -335,6 +440,39 @@ fn main() {
         Command::Check { input, fix, strict } => {
             let outcome = rustlab_notebook::cmd_check(input, fix, strict);
             let code = outcome.exit_code(strict);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Command::Validate {
+            input,
+            format,
+            report,
+            require_all,
+            pdf_a,
+            keep_tmp,
+            linter_overrides,
+        } => {
+            use rustlab_notebook::validate::{
+                cmd_validate, ReportFormat, ValidateOpts,
+            };
+            let opts = ValidateOpts {
+                formats: format.iter().map(|f| f.to_format()).collect(),
+                report: match report {
+                    CliReportFormat::Text => ReportFormat::Text,
+                    CliReportFormat::Json => ReportFormat::Json,
+                },
+                require_all,
+                pdf_a,
+                keep_tmp,
+                linter_overrides: linter_overrides.into_iter().collect(),
+            };
+            let outcome = cmd_validate(input, opts.clone());
+            match opts.report {
+                ReportFormat::Text => print!("{}", outcome.render_text()),
+                ReportFormat::Json => println!("{}", outcome.render_json()),
+            }
+            let code = outcome.exit_code(require_all);
             if code != 0 {
                 std::process::exit(code);
             }

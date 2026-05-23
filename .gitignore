@@ -52,6 +52,11 @@ gallery/*.html
 gallery/*.gif
 !gallery/
 !gallery/**/*.svg
+
+# Test fixtures: the deliberately-broken inputs for
+# `rustlab-notebook validate`'s wrapper self-tests must be committed
+# even though they match the global *.html ignore.
+!crates/rustlab-notebook/tests/fixtures/**
 !gallery/plots/**/*.gif
 
 # Time-frequency notebook's CWT scalogram outputs render as ~1.28M SVG

@@ -1,0 +1,81 @@
+name: validate-notebooks
+
+# Output-side validation for the notebook renderer: build
+# rustlab-notebook, run `validate` against examples/notebooks/, and
+# pipe each rendered artefact through a trusted external linter
+# (markdownlint-cli2, tidy-html5, chktex, pdfinfo + pdftotext + qpdf).
+# `--require-all` fails the run if any required linter is missing, so
+# silent regressions can't slip in.
+#
+# Source-level lint (`rustlab-notebook check`) runs as part of the
+# regular crate test suite and is not duplicated here.
+#
+# PDF rendering needs pdflatex (~500 MB of TeX Live) plus inkscape for
+# `\includesvg`; skipping it keeps CI under a couple of minutes and
+# still validates 3 of 4 output formats. Run `make validate-notebooks`
+# locally for full PDF coverage, or extend this workflow when the
+# pdflatex install cost becomes worth paying in CI.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/rustlab-notebook/**'
+      - 'crates/rustlab-plot/**'
+      - 'crates/rustlab-notebook/src/validate.rs'
+      - 'crates/rustlab-notebook/tests/fixtures/bad/**'
+      - 'examples/notebooks/**'
+      - 'Makefile'
+      - '.github/workflows/validate-notebooks.yml'
+  pull_request:
+    paths:
+      - 'crates/rustlab-notebook/**'
+      - 'crates/rustlab-plot/**'
+      - 'crates/rustlab-notebook/src/validate.rs'
+      - 'crates/rustlab-notebook/tests/fixtures/bad/**'
+      - 'examples/notebooks/**'
+      - 'Makefile'
+      - '.github/workflows/validate-notebooks.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: validate-notebooks
+
+      - name: Install external linters
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            chktex \
+            poppler-utils \
+            qpdf \
+            tidy
+          sudo npm install -g markdownlint-cli2
+
+      - name: Build rustlab-notebook (release)
+        run: cargo build --release -q -p rustlab-notebook --bin rustlab-notebook
+
+      - name: Self-test linter wrappers
+        run: cargo test -q -p rustlab-notebook --lib validate::tests
+
+      - name: Validate notebook output (html + markdown + latex)
+        # PDF intentionally omitted — installing pdflatex + inkscape on
+        # every CI run costs ~5 minutes for an artefact local devs
+        # already validate via `make validate-notebooks`.
+        run: |
+          ./target/release/rustlab-notebook validate examples/notebooks/ \
+            --format html,markdown,latex \
+            --require-all

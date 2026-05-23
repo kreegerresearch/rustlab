@@ -381,6 +381,33 @@ cargo doc --workspace --no-deps --open
 cargo run -p rustlab-cli --bin rustlab -- run examples/dsp/lowpass.rlab
 ```
 
+### Testing dependencies
+
+`cargo test` is the only requirement for the standard test suite. Higher-tier
+checks pull in external tools — install only what you need for the targets
+you run.
+
+| Tool | Required by | macOS | Ubuntu / Debian | Notes |
+|------|-------------|-------|------------------|-------|
+| `rustc`, `cargo` | everything | https://rustup.rs | https://rustup.rs | mandatory |
+| `octave` | `make octave-compare` | `brew install octave` | `apt-get install octave` | release-mandatory |
+| `pdflatex` (TeX Live) | PDF render in `make notebooks` / `rustlab-notebook validate … -f pdf` | `brew install --cask mactex-no-gui` | `apt-get install texlive-latex-recommended texlive-fonts-recommended texlive-latex-extra texlive-pictures` | needs TS1 fonts (`cm-super`) for full Unicode coverage |
+| `tectonic` | PDF render alt | `brew install tectonic` | `cargo install tectonic` | used if `pdflatex` not in PATH |
+| `inkscape` | PDF render — `svg.sty` shells out to it to convert plot SVGs | `brew install inkscape` | `apt-get install inkscape` | required whenever PDF is requested |
+| `markdownlint-cli2` | `make validate-notebooks` (markdown) | `npm i -g markdownlint-cli2` | `npm i -g markdownlint-cli2` | optional |
+| `vnu` (W3C Nu) | `make validate-notebooks` (html, preferred) | `brew install vnu` | https://validator.github.io/validator/ | optional; alternatively set `VNU_JAR=/path/to/vnu.jar` |
+| `tidy-html5` (5.x+) | `make validate-notebooks` (html, fallback) | `brew install tidy-html5` | `apt-get install tidy` | optional; macOS's `/usr/bin/tidy` is the 2006 HTML4 build and is auto-skipped |
+| `chktex` | `make validate-notebooks` (latex) | `brew install chktex` | `apt-get install chktex` | optional; standalone, does not pull in TeX Live |
+| `pdfinfo`, `pdftotext` (poppler) | `make validate-notebooks` (pdf smoke) | `brew install poppler` | `apt-get install poppler-utils` | optional |
+| `qpdf` | `make validate-notebooks` (pdf structure) | `brew install qpdf` | `apt-get install qpdf` | optional |
+| `verapdf` | `rustlab-notebook validate` (pdf PDF/A, only with `--pdf-a`) | https://verapdf.org/software/ | https://verapdf.org/software/ | opt-in; pipeline does not target PDF/A by default |
+
+`rustlab-notebook validate` shells out to each linter only when it's
+present and reports `SKIPPED` + an install hint for anything missing.
+Pass `--require-all` to upgrade any `SKIPPED` to a hard failure — the
+CI workflow at `.github/workflows/validate-notebooks.yml` uses this to
+enforce a baseline toolchain.
+
 ### Installing the binary
 
 `make install` works on both macOS and Linux. It installs to `~/.local/bin` by default and detects the OS to run `codesign` only on macOS:
@@ -520,6 +547,93 @@ broken templating / KaTeX / figure-snapshot change does not slip out:
 Open the artifacts and confirm code blocks, math, and plots render. The
 `--obsidian` variant should additionally append an `<iframe>` to the
 sibling `.html` at the bottom of the `.md`.
+
+For an automatable version of step 6 — one that runs renders through
+trusted external linters and reports a per-format PASS/FAIL — use the
+`validate` subcommand:
+
+```sh
+rustlab-notebook validate examples/notebooks/                  # all 4 formats
+rustlab-notebook validate examples/notebooks/ -f html,pdf      # restrict formats
+rustlab-notebook validate examples/notebooks/ --require-all    # CI: missing linter → fail
+rustlab-notebook validate examples/notebooks/ --report json    # machine-readable
+rustlab-notebook validate examples/notebooks/ --pdf-a          # add verapdf PDF/A
+rustlab-notebook validate examples/notebooks/ --keep-tmp       # inspect renders
+rustlab-notebook validate examples/notebooks/ \
+    --linter vnu=$HOME/jars/vnu.jar --linter chktex=/opt/bin/chktex
+```
+
+Wrapped by `make validate-notebooks` for convenience. The
+implementation lives at `crates/rustlab-notebook/src/validate.rs`.
+Linter selection:
+
+| Format   | Linter (in order)                                                 |
+|----------|-------------------------------------------------------------------|
+| markdown | `markdownlint-cli2` → `markdownlint`                              |
+| html     | `vnu` (via `$VNU_JAR` or `--linter vnu=…`) → `tidy-html5` (5.x+; macOS's 2006 HTML4 tidy is auto-skipped) |
+| latex    | `chktex`                                                          |
+| pdf      | `pdfinfo` + `pdftotext` (smoke) → `qpdf --check` (structure) → `verapdf` (PDF/A, opt-in via `--pdf-a`) |
+
+Each linter shells out only when installed; otherwise the row reports
+`SKIPPED` plus an install hint. Exit codes: `0` clean, `1` any FAIL,
+`2` `--require-all` set and a linter is missing. This is output-side
+validation; the complementary source-side linter is `rustlab-notebook
+check`. For per-platform install commands for every linter (and the
+PDF render toolchain — `pdflatex`, `inkscape`), see the *Testing
+dependencies* table under [Build & Test](#build--test).
+
+**Downstream projects.** Because `validate` ships in the
+`rustlab-notebook` binary itself, a project that depends on rustlab
+(e.g. `rustlab_em`) consumes it with no extra script vendoring:
+
+```sh
+cargo install rustlab-notebook                  # one-time per dev / CI host
+rustlab-notebook validate notebooks/            # run from the downstream repo
+rustlab-notebook validate notebooks/ --report json > validation.json   # CI
+```
+
+When a downstream notebook surfaces a renderer bug, file a rustlab
+issue with the source `.md`, the `--report json` capture, and (for PDF
+failures) the auto-preserved `<stem>.log` build log that
+`compile_pdf` writes next to the output path.
+
+**Self-test.** The linter wrappers are guarded by their own unit tests:
+
+```sh
+make validate-notebooks-self-test
+# equivalent: cargo test -p rustlab-notebook --lib validate::tests
+```
+
+These exercise each wrapper against a deliberately-broken fixture
+under `crates/rustlab-notebook/tests/fixtures/bad/` and assert the
+wrapper reports FAIL — guarding against silent regressions where a
+wrapper stops detecting real problems (wrong exit-code mapping, swapped
+grep pattern, etc.).
+
+**JSON report schema.** `--report json` emits a versioned document:
+
+```json
+{
+  "schema_version": 1,
+  "summary": { "pass": 33, "fail": 0, "skipped": 5 },
+  "results": [
+    { "fixture": "quick_look", "format": "pdf", "linter": "qpdf",
+      "status": "OK", "detail": "" }
+  ]
+}
+```
+
+Pin against `schema_version` in downstream tooling; additive changes
+keep the same version, breaking changes bump it.
+
+**CI integration.** `.github/workflows/validate-notebooks.yml` runs
+`cargo test -p rustlab-notebook --lib validate::tests` followed by
+`rustlab-notebook validate examples/notebooks/ --format
+html,markdown,latex --require-all` on every PR and main push that
+touches the notebook crate, fixtures, or the workflow itself. PDF
+validation is deliberately omitted from CI — installing pdflatex +
+inkscape costs minutes per run for an artefact already exercised by
+`make validate-notebooks` locally.
 
 **Notebook source layout.** Sources live at `examples/notebooks/*.md`.
 Generated files never mix with sources — `make notebooks` writes
