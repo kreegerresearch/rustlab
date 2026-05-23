@@ -262,4 +262,3 @@ spectrogram scroll past in `rustlab-viewer` or the ratatui fallback.
 | `cwt`                           | Complex time-scale matrix          | When you need wavelet coefficients for further analysis |
 | `scalogram`                     | dB magnitude heatmap, log-freq y   | Wide-band signals where one window can't capture both ends |
 | `*_stream` + `plot_update_heatmap` | Frame-by-frame analysis + live heatmap | Realtime audio / SDR / sensor monitoring |
-

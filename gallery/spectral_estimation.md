@@ -160,4 +160,3 @@ with time. When that assumption breaks (chirps, transients, speech,
 modulated RF) reach for the **Short-Time Fourier Transform** and its
 heatmap visualisation, the spectrogram. See the companion notebook
 [Time-Frequency Analysis](time_frequency.md).
-

@@ -129,4 +129,3 @@ antenna lobes, decay curves — the pre-transform shims are sufficient.
 
 All four accept the same option syntax as `plot()` — color, label,
 style, title — and honour `hold on` for overlay with other plot kinds.
-

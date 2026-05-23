@@ -228,4 +228,3 @@ binary keeps the composition rules clean.
 Each builder validates its inputs: shape mismatches between `X` and `Y`,
 non-`N × 2` `verts`, and non-finite or negative dimensions all return a
 clean error rather than producing a corrupt mask.
-

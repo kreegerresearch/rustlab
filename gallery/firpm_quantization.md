@@ -155,4 +155,3 @@ quantization, green = `firpmq` 10-bit optimized.
 The naïve approach degrades both the passband ripple and the stopband
 floor because rounding destroys the equiripple property. `firpmq`
 recovers most of the loss by re-optimizing with quantization in the loop.
-

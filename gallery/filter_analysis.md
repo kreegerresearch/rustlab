@@ -72,4 +72,3 @@ subplot(2,1,2); plot(y(1:256)); title("Filtered Output"); grid on
 <!-- rustlab:output-end -->
 
 The filter cleanly recovers the underlying sinusoid.
-

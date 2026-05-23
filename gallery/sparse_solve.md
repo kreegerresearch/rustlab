@@ -208,4 +208,3 @@ Both factorization paths use AMD ordering by default. The script-level
 defaults are sized for the curriculum's typical inputs; users who need
 different defaults can build the factorizations directly via
 `rustlab_core::sparse_solve` from Rust.
-

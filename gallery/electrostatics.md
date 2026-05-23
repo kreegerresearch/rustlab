@@ -167,4 +167,3 @@ which is the best ordering on grid-natural numbering. AMD (the
 A multi-source Poisson on a 100×100 grid runs end-to-end in well under
 a second, leaving headroom for parameter sweeps, animations, or
 embedding the solver in a larger curriculum script.
-
