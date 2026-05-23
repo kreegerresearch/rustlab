@@ -95,8 +95,6 @@ ylabel("call price");
 title("Black–Scholes call price vs. spot")
 ```
 
-![plot 1](plots/parallel_montecarlo/plot-1.svg)
-
 The price rises monotonically with spot and approaches the deep-in-the-money
 asymptote `S_0 - K·exp(-rT)` for large `S_0`.
 
@@ -197,8 +195,6 @@ clf;
 plot(1:length(results), results, "MC π estimates");
 title("Per-trial estimates of π")
 ```
-
-![plot 2](plots/parallel_montecarlo/plot-2.svg)
 
 This isn't a limitation so much as an honest separation: parallel = compute,
 serial = I/O. The contract makes that boundary impossible to cross by

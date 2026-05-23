@@ -108,8 +108,6 @@ title("Black–Scholes call price vs. spot")
 
 <!-- rustlab:output-end -->
 
-![plot 1](plots/parallel_montecarlo/plot-1.svg)
-
 The price rises monotonically with spot and approaches the deep-in-the-money
 asymptote `S_0 - K·exp(-rT)` for large `S_0`.
 
@@ -215,8 +213,6 @@ title("Per-trial estimates of π")
 ![plot 2](plots/parallel_montecarlo/plot-2-2d93ad0f.svg)
 
 <!-- rustlab:output-end -->
-
-![plot 2](plots/parallel_montecarlo/plot-2.svg)
 
 This isn't a limitation so much as an honest separation: parallel = compute,
 serial = I/O. The contract makes that boundary impossible to cross by
