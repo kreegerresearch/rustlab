@@ -447,4 +447,3 @@ toolbox. The companion notebook `amplifier_analysis.md` continues with:
 Together the two notebooks cover the full toolbox surface; the standalone
 runnable scripts in `examples/rf/` are organised by phase if
 you want a smaller starting point per topic.
-

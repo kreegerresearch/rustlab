@@ -20,7 +20,7 @@ title("randn(2000) — different every render")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/seed/plot-1-7b4b40d2.svg)
+![plot 1](plots/seed/plot-1-6fa5c735.svg)
 
 <!-- rustlab:output-end -->
 
@@ -85,4 +85,3 @@ Skip `seed()` when:
 - the noise *is* the demonstration (e.g. showing variability across
   trials).
 - the notebook isn't being committed and re-render churn doesn't matter.
-

@@ -187,4 +187,3 @@ axis 1 = x (cols), axis 2 = z (pages). The companion helpers
 | `laplacian_3d(nx, ny, nz, dx, dy, dz, bc)` | full form |
 
 The `bc` string is always one of `"dirichlet"`, `"neumann"`, or `"periodic"`.
-

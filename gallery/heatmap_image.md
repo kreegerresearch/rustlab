@@ -223,4 +223,3 @@ Terminal rendering for both is best-effort coloured-block characters and
 labels are *not* drawn in the TUI; HTML / SVG / viewer output is the
 primary pretty path. Empty matrices return a clear runtime error rather
 than rendering nothing.
-

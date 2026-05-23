@@ -74,4 +74,3 @@ grid on
 Designed a **64-tap** FIR lowpass filter with cutoff at
 3000 Hz. The filter has 64 coefficients and its DC gain
 is 1.000000.
-

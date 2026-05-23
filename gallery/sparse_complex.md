@@ -190,4 +190,3 @@ $10^{-12}$) and routes them through the 4×-faster real solver.
 
 For a deeper walk-through of the full dispatch and orderings, see
 `gallery/sparse_solve.md`.
-

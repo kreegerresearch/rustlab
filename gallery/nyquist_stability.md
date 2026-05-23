@@ -239,4 +239,3 @@ The plot panel is automatically rendered with `axis("equal")` so the
 unit circle around $-1$ reads as round across all four backends —
 terminal, viewer, static SVG, and interactive Plotly HTML. Geometric
 shape matters here, and the framework respects that.
-

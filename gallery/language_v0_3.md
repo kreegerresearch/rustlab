@@ -232,4 +232,3 @@ print(1)   % sentinel — if you see this in the output, all four
 ```
 
 <!-- rustlab:output-end -->
-

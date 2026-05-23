@@ -229,4 +229,3 @@ detected by a seed-return heuristic and drawn once rather than looping.
 Terminal output does not render `quiver` / `streamplot` — a one-time
 warning fires and the advice is to `savefig("plot.html")` or
 `savefig("plot.svg")` to view the figure.
-

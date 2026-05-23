@@ -199,4 +199,3 @@ The headline: **the dense fallback was the actual scaling cliff.**
 With the sparse paths in place, every Lesson-05+ assembly that fits
 in workspace memory is now solvable in a curriculum-tolerant amount of
 wall-clock time.
-

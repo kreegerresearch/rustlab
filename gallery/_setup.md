@@ -18,4 +18,3 @@ x = sin(2*pi*3000*(0:N-1)/Fs) + 0.4*randn(N);
 
 Lessons that embed this file gain `Fs`, `N`, and `x` for use in
 subsequent code blocks.
-

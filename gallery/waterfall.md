@@ -232,4 +232,3 @@ deserves which screen direction for your task.
   on x-axis, leftward scroll)
 - `examples/audio/waterfall_monitor.sh` — live waterfall (time on
   y-axis, downward scroll)
-

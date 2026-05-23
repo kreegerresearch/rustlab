@@ -75,4 +75,3 @@ Decimation: ${N} samples → ${M} samples
 flowchart LR
   S[64 samples] --> P[/4 decimator/] --> O[16 samples]
 ```
-

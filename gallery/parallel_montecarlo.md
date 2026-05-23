@@ -27,7 +27,7 @@ print("logical CPUs")
 <!-- rustlab:output-start -->
 ```text
 running parmap on
-14
+10
 logical CPUs
 ```
 
@@ -232,4 +232,3 @@ accident.
   used above).
 - [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
 - `help parmap` and `help nproc` in the REPL.
-

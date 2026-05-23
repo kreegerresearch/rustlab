@@ -17,7 +17,6 @@ The line below is `![[_setup]]` in the source. It transcludes
 `_setup.md` (defining `Fs`, `N`, and `x`) so this notebook can use
 those names without repeating the setup code.
 
-
 ## Shared Setup
 
 This file is **not** rendered as a standalone notebook in the gallery —
@@ -36,7 +35,6 @@ x = sin(2*pi*3000*(0:N-1)/Fs) + 0.4*randn(N);
 
 Lessons that embed this file gain `Fs`, `N`, and `x` for use in
 subsequent code blocks.
-
 
 `Fs`, `N`, and `x` are now in scope. Verify:
 
@@ -96,4 +94,3 @@ the rest of the notebook regardless.
 
 That's the whole feature — narrative prose and code blocks compose as
 usual; the embed pass just runs first.
-

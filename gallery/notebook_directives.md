@@ -232,4 +232,3 @@ useful for "look at these results, the code is uninteresting" sections.
 | `<!-- exercise -->`, `<!-- solution -->` | Auto-numbered exercises with hidden solutions |
 
 For the canonical reference and edge cases, see `docs/notebooks.md`.
-
