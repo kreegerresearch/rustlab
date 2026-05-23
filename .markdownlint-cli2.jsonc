@@ -27,6 +27,21 @@
     "MD025": false,
     // Fenced-code-block-around-files emits ``` without a language tag
     // (the notebook ouput sentinels), which is intentional.
-    "MD040": false
+    "MD040": false,
+    // Table column style — the renderer doesn't normalize cell padding
+    // across rows. Tables still render correctly on GitHub and in every
+    // markdown viewer; markdownlint's tight/compact/aligned style detector
+    // just disagrees with whatever pulldown-cmark emits.
+    "MD060": false,
+    // Lists not surrounded by blank lines: many notebook sources use a
+    // tight `prose:\n- item` cadence (lead-in colon directly followed by
+    // a bullet). GitHub renders this correctly as a list; the renderer
+    // faithfully preserves the author's chosen tightness.
+    "MD032": false,
+    // Inline HTML: notebooks legitimately use <details>/<summary> for
+    // collapsible sections and <iframe> under --obsidian. The renderer's
+    // generated header is also an HTML comment. Banning inline HTML
+    // wholesale isn't workable for this output.
+    "MD033": false
   }
 }

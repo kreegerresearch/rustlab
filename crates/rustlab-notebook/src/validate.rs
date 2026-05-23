@@ -497,6 +497,15 @@ fn vnu_jar(opts: &ValidateOpts) -> Option<PathBuf> {
 }
 
 fn is_html5_tidy(bin: &Path) -> bool {
+    // Banner variants we need to recognise:
+    //   macOS brew tidy-html5  → "HTML Tidy for HTML5 (Mac OS X 64-bit) version 5.8.0"
+    //   Ubuntu apt tidy 5.6.0  → "HTML Tidy for Linux version 5.6.0"   (no "HTML5"!)
+    //   macOS 2006 /usr/bin/tidy → "HTML Tidy for Mac OS X released on 31 October 2006 …"
+    //
+    // Accept anything that mentions "HTML Tidy" AND either advertises
+    // HTML5 explicitly OR reports a 5.x / 6.x version number. macOS's
+    // 2006-vintage tidy has neither and stays SKIPped (it rejects
+    // every HTML5 tag).
     Command::new(bin)
         .arg("--version")
         .output()
@@ -507,7 +516,10 @@ fn is_html5_tidy(bin: &Path) -> bool {
                 String::from_utf8_lossy(&o.stdout),
                 String::from_utf8_lossy(&o.stderr),
             );
-            combined.contains("HTML Tidy for HTML5")
+            combined.contains("HTML Tidy")
+                && (combined.contains("HTML5")
+                    || combined.contains("version 5.")
+                    || combined.contains("version 6."))
         })
         .unwrap_or(false)
 }
