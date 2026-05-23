@@ -178,4 +178,3 @@ physics.
 `eps_map` is shape `(ny, nx)` — the meshgrid / imagesc convention.
 Real or complex (lossy) entries supported. `bc` is one of
 `"dirichlet"`, `"neumann"`, or `"periodic"`.
-

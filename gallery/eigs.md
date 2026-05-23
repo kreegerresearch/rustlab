@@ -215,4 +215,3 @@ This implementation is:
   for eigenvectors.
 
 No `arpack-ng-sys`, no Fortran FFI, no large library dependency.
-

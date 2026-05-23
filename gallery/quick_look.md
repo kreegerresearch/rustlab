@@ -19,4 +19,3 @@ grid on
 <!-- rustlab:output-end -->
 
 Looks like noise to me.
-

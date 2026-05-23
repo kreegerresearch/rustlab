@@ -245,4 +245,3 @@ print(Cz3(3, 3, 3))                        % ≈ 2
 
 Each axis must have length ≥ 3 (so the 2nd-order one-sided boundary
 stencil has enough samples). All kernels accept complex inputs.
-

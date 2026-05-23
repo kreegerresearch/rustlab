@@ -166,4 +166,3 @@ cargo run --release -p rustlab-cli -- run examples/plot/animation_wave.rlab
 
 It writes both `gallery/animation_wave.html` (gitignored — open locally)
 and `gallery/animation_wave.gif` (committed — viewable on GitHub).
-

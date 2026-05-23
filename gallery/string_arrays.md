@@ -106,4 +106,3 @@ best_month = months(argmax(sales));
 
 Across 6 months, total sales were **760** units
 (average 126.7/month). Best month: **May**.
-

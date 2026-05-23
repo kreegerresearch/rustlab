@@ -42,4 +42,3 @@ grid on
 <!-- rustlab:output-end -->
 
 The signal decays with time constant $\tau = 10$.
-

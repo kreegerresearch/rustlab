@@ -150,4 +150,3 @@ values in the right-hand side, or build a custom stencil via `spdiags` /
 
 **Ordering:** column-major `(j-1)*ny + i` everywhere. The third argument
 of `ij2k` / `k2ij` is `ny`.
-

@@ -292,4 +292,3 @@ still dispatch to the Matrix arm as multi-series data.
 - `examples/notebooks/language_v0_3.md` — the v0.3 language
   additions (multi-output user fns, `&&`/`||`, `M(k)` / `M(I)`
   linear gather, `layernorm(M)` matrix overload).
-

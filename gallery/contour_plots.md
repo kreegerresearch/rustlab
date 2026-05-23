@@ -178,4 +178,3 @@ clears the subplot's contour list before adding the new layer; under
 Terminal output does not render contours — a one-time warning fires, and
 the advice is to `savefig("plot.html")` or `savefig("plot.svg")` to view
 the figure.
-

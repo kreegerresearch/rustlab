@@ -127,4 +127,3 @@ the full grid:
 
 Under the hood this is the same vectorisation that makes Octave and NumPy
 fast for array workloads — and it's how `surf` expects its arguments.
-
