@@ -91,6 +91,12 @@ throughout the project: in the REPL (`help`, `help <toolbox>`), the CLI
 | [Geometry & Masks](masks.md) | `rect_mask`, `disk_mask`, `polygon_mask` on a meshgrid; boolean composition; layered material maps |
 | [Multi-Frame Animation](animation.md) | `frame()` + `saveanim()` — capture a loop of figure snapshots, flush as Plotly HTML (play/pause + slider) or animated GIF (embeds inline in this very Markdown view) |
 
+## math
+
+| Notebook | What it shows |
+|----------|----------------|
+| [Mandelbrot Set](mandelbrot.md) | Escape-time fractal at 800×600 — `arrayfun` vs `parmap` speedup, Seahorse Valley and Elephant Valley zooms |
+
 ## Local interactive view
 
 For Plotly hover/zoom/pan and KaTeX-rendered math, run `make notebooks` then
