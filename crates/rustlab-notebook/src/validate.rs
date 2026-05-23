@@ -897,17 +897,27 @@ mod tests {
     // can exercise the version-string match against every banner variant we
     // care about without depending on the host's actual tidy install.
 
+    // `NamedTempFile` keeps the file open for writing, which on Linux
+    // makes `exec` fail with ETXTBSY ("Text file busy"). macOS doesn't
+    // enforce that, so the bug was invisible locally. We write the
+    // script, set the +x bit, then drop the writer by converting to
+    // `TempPath` — the file persists (TempPath cleans up on drop) and
+    // is no longer open, so the kernel will let us exec it.
     #[cfg(unix)]
-    fn fake_tidy(banner: &str) -> tempfile::NamedTempFile {
+    fn fake_executable(prefix: &str, body: &str) -> tempfile::TempPath {
+        use std::os::unix::fs::PermissionsExt;
         let mut f = tempfile::Builder::new()
-            .prefix("fake-tidy-")
+            .prefix(prefix)
             .tempfile()
             .unwrap();
-        // Echo to stdout regardless of args.
-        writeln!(f, "#!/bin/sh\ncat <<'EOF'\n{banner}\nEOF\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
+        writeln!(f, "#!/bin/sh\n{body}").unwrap();
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        f
+        f.into_temp_path()
+    }
+
+    #[cfg(unix)]
+    fn fake_tidy(banner: &str) -> tempfile::TempPath {
+        fake_executable("fake-tidy-", &format!("cat <<'EOF'\n{banner}\nEOF"))
     }
 
     #[test]
@@ -917,14 +927,14 @@ mod tests {
         // notice it has no "HTML5" substring, which is why the original
         // check skipped tidy on every Linux CI run.
         let fake = fake_tidy("HTML Tidy for Linux version 5.6.0");
-        assert!(is_html5_tidy(fake.path()));
+        assert!(is_html5_tidy(&fake));
     }
 
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_accepts_brew_html5_banner() {
         let fake = fake_tidy("HTML Tidy for HTML5 (Mac OS X 64-bit) version 5.8.0");
-        assert!(is_html5_tidy(fake.path()));
+        assert!(is_html5_tidy(&fake));
     }
 
     #[test]
@@ -935,28 +945,21 @@ mod tests {
         let fake = fake_tidy(
             "HTML Tidy for Mac OS X released on 31 October 2006 - Apple Inc. build 11418",
         );
-        assert!(!is_html5_tidy(fake.path()));
+        assert!(!is_html5_tidy(&fake));
     }
 
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_rejects_unrelated_binary() {
         let fake = fake_tidy("some other tool v1.2.3");
-        assert!(!is_html5_tidy(fake.path()));
+        assert!(!is_html5_tidy(&fake));
     }
 
     // ── lint_latex via fake chktex ────────────────────────────────────────
 
     #[cfg(unix)]
-    fn fake_chktex(script: &str) -> tempfile::NamedTempFile {
-        let mut f = tempfile::Builder::new()
-            .prefix("fake-chktex-")
-            .tempfile()
-            .unwrap();
-        writeln!(f, "#!/bin/sh\n{script}").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        f
+    fn fake_chktex(script: &str) -> tempfile::TempPath {
+        fake_executable("fake-chktex-", script)
     }
 
     #[test]
@@ -971,7 +974,7 @@ mod tests {
             "cat <<'EOF'\nWarning 1 in foo.tex line 1: Use \\(...\\) instead\nWarning 2 in foo.tex line 2: Use \\(...\\) instead\nEOF",
         );
         let mut opts = opts_default();
-        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Ok, "{f:?}");
         assert!(f.detail.contains("2 warning"), "{f:?}");
@@ -982,7 +985,7 @@ mod tests {
     fn lint_latex_errors_still_fail() {
         let fake = fake_chktex("cat <<'EOF'\nError 1 in foo.tex line 1: Unmatched brace\nEOF");
         let mut opts = opts_default();
-        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Fail, "{f:?}");
         assert!(f.detail.contains("1 error"), "{f:?}");
@@ -993,7 +996,7 @@ mod tests {
     fn lint_latex_clean_run_returns_ok_no_detail() {
         let fake = fake_chktex(":"); // no-op, no output
         let mut opts = opts_default();
-        opts.linter_overrides.insert("chktex".into(), fake.path().to_path_buf());
+        opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
         let f = lint_latex("test", Path::new("/dev/null"), &opts);
         assert_eq!(f.status, Status::Ok, "{f:?}");
         assert_eq!(f.detail, "");
