@@ -66,6 +66,51 @@ if [ ! -S "$VIEWER_SOCK" ]; then
     exit 1
 fi
 
+# ── Audio capture tool pre-flight (live mic only) ──
+if [[ -z "${1:-}" ]]; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if ! command -v sox &>/dev/null; then
+            echo "error: sox is not installed." >&2
+            echo "       Install it with:  brew install sox" >&2
+            echo "" >&2
+            echo "       To test without a microphone:" >&2
+            echo "         $0 --chirp" >&2
+            echo "         $0 --steps" >&2
+            exit 1
+        fi
+    else
+        if ! command -v arecord &>/dev/null; then
+            echo "error: arecord (alsa-utils) is not installed." >&2
+            echo "       Install it with:" >&2
+            echo "         Debian/Ubuntu:  sudo apt install alsa-utils" >&2
+            echo "         Fedora:         sudo dnf install alsa-utils" >&2
+            echo "" >&2
+            echo "       To test without a microphone:" >&2
+            echo "         $0 --chirp" >&2
+            echo "         $0 --steps" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# Capture audio-tool stderr so device errors surface instead of vanishing.
+AUDIO_ERR="$(mktemp)"
+_audio_err_cleanup() {
+    local rc=$?
+    if [ $rc -ne 0 ] && [ $rc -lt 128 ] && [ -s "$AUDIO_ERR" ]; then
+        echo "" >&2
+        echo "error: audio capture failed:" >&2
+        sed 's/^/       /' "$AUDIO_ERR" >&2
+        if [[ "$(uname)" == "Darwin" ]]; then
+            echo "" >&2
+            echo "       Tip: check System Settings > Privacy & Security > Microphone" >&2
+            echo "       to ensure Terminal (or your terminal app) has mic access." >&2
+        fi
+    fi
+    rm -f "$AUDIO_ERR"
+}
+trap _audio_err_cleanup EXIT
+
 case "${1:-}" in
     --chirp)
         echo "Generating 10 s synthetic chirp (100 Hz → 8 kHz) ..."
@@ -95,11 +140,11 @@ for cycle in range(3):
         ;;
     "")
         if [[ "$(uname)" == "Darwin" ]]; then
-            sox -d -t raw -r "$SR" -e float -b 32 -c 1 - 2>/dev/null \
+            sox -d -t raw -r "$SR" -e float -b 32 -c 1 - 2>"$AUDIO_ERR" \
                 | rustlab run "$SCRIPT"
         else
             ALSA_IN="${ALSA_IN:-default}"
-            arecord -D "$ALSA_IN" -f FLOAT_LE -r "$SR" -c 1 -t raw 2>/dev/null \
+            arecord -D "$ALSA_IN" -f FLOAT_LE -r "$SR" -c 1 -t raw 2>"$AUDIO_ERR" \
                 | rustlab run "$SCRIPT"
         fi
         ;;
