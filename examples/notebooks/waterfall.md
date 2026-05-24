@@ -13,7 +13,7 @@ behaved over the recent past.
 This notebook introduces the offline `waterfall(...)` builtin and shows
 how it differs from `spectrogram`. The companion live-streaming form,
 `waterfall_stream`, is demonstrated in
-[`examples/audio/waterfall_monitor.sh`](../audio/waterfall_monitor.sh).
+[`examples/audio/waterfall_monitor.sh`](../examples/audio/waterfall_monitor.sh).
 
 ## Spectrogram vs. waterfall — same data, different orientation
 
@@ -171,7 +171,7 @@ while true
 end
 ```
 
-The wrapper [`examples/audio/waterfall_monitor.{sh,rlab}`](../audio/waterfall_monitor.sh)
+The wrapper [`examples/audio/waterfall_monitor.{sh,rlab}`](../examples/audio/waterfall_monitor.sh)
 runs this from a microphone (or from a piped synthetic chirp / tone-step
 test signal via `--chirp` / `--steps`) in `rustlab-viewer`.
 

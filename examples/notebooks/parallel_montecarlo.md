@@ -95,8 +95,6 @@ ylabel("call price");
 title("Black–Scholes call price vs. spot")
 ```
 
-![plot 1](plots/parallel_montecarlo/plot-1.svg)
-
 The price rises monotonically with spot and approaches the deep-in-the-money
 asymptote `S_0 - K·exp(-rT)` for large `S_0`.
 
@@ -198,18 +196,16 @@ plot(1:length(results), results, "MC π estimates");
 title("Per-trial estimates of π")
 ```
 
-![plot 2](plots/parallel_montecarlo/plot-2.svg)
-
 This isn't a limitation so much as an honest separation: parallel = compute,
 serial = I/O. The contract makes that boundary impossible to cross by
 accident.
 
 ## See also
 
-- [`dev/plans/parmap_parreduce.md`](../dev/plans/parmap_parreduce.md) —
+- [`dev/plans/closed/parmap_parreduce.md`](../dev/plans/closed/parmap_parreduce.md) —
   v1 implementation plan, deferred phases (`parreduce`, cluster backend),
   open design questions.
-- [`dev/plans/parmap_nonscalar_outputs.md`](../dev/plans/parmap_nonscalar_outputs.md) —
+- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../dev/plans/closed/parmap_nonscalar_outputs.md) —
   vector/matrix output extension (the "stacks into Matrix / Tensor3" rule
   used above).
 - [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
