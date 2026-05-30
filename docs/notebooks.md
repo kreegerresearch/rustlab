@@ -178,20 +178,30 @@ Pair it with `--obsidian` for a "edit in Editing view, see updates in
 Reading view" loop with no manual rerun.
 
 ```
-rustlab-notebook watch notebooks/                                  # in-place: render back to notebooks/<name>.md
+rustlab-notebook watch notebooks/ --obsidian                       # vault-friendly in-place rewrite
+rustlab-notebook watch notebooks/ -o notebooks/                    # non-vault in-place (explicit consent)
 rustlab-notebook watch notebooks/ -o vault/ --obsidian             # two-dir: vault-native output to a separate dir
 rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
 ```
 
+**Watch refuses to render in-place without explicit consent.** Bare
+`rustlab-notebook watch notebooks/` errors out with a message
+listing the three legitimate forms below. The intent is that a
+user trying watch for the first time can never accidentally rewrite
+their authored markdown — they have to opt in by name (`--obsidian`)
+or by pointing `-o` somewhere (even at the source dir, if that's
+genuinely what they want).
+
 Two layouts work:
 
-- **In-place (single file).** Omit `-o` and the watcher renders each
-  `.md` back onto itself. Open the same file in Obsidian's Editing
-  view to author; switch to Reading view to see the rendered output
-  inline. The renderer wraps its output regions in sentinel
-  comments so the next pass strips them on re-parse, producing
-  byte-identical output and converging in one extra render after
-  any user save.
+- **In-place (single file).** Either use `--obsidian` (the common
+  case — vault-friendly rewrites) or pass `-o <same-dir>` for plain
+  in-place rendering without the Obsidian-specific frontmatter and
+  wikilinks. Open the same file in Obsidian's Editing view to
+  author; switch to Reading view to see the rendered output inline.
+  The renderer wraps its output regions in sentinel comments so the
+  next pass strips them on re-parse, producing byte-identical output
+  and converging in one extra render after any user save.
 - **Two-dir.** Set `-o <dir>` to write outputs to a separate
   directory (typically a sibling Obsidian vault). Useful when you
   want the source tree to stay pristine, or when committing
