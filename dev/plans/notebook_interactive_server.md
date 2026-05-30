@@ -582,6 +582,16 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-30 — **Hardening (post 5a–5d review).** The WS client's
+  reconnect path hard-reloads to recover missed state; in `--editable`
+  mode that would silently discard unsaved editor edits on a transient
+  disconnect (e.g. laptop sleep/wake). Added a `window.__rlBlockReload`
+  veto the editor sets while its buffer is dirty (`cm.isClean()` is
+  false; cleared via `cm.markClean()` on a successful save) — on
+  reconnect with unsaved edits the page is kept and a "reload to
+  refresh" banner is shown instead of reloading. Combined real-binary
+  smoke (directory + `--editable`) exercises index listing, the editor,
+  `/raw` + `/save`, and runaway preemption together.
 - 2026-05-30 — **Phase 5d complete.** Real render preemption
   (locked-in #9). `rustlab-script`: `Evaluator` gained
   `cancel: Option<Arc<AtomicBool>>` (default `None`), builder

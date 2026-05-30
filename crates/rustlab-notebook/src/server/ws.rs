@@ -244,8 +244,15 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       hideBanner();
       if (!firstConnect) {
         // Reconnect path: a save we missed during the gap could mean
-        // the document is stale. Hard-reload to get the latest.
-        location.reload();
+        // the document is stale, so hard-reload to get the latest —
+        // UNLESS the page chrome vetoes it (e.g. the --editable editor
+        // has unsaved changes a reload would discard). In that case keep
+        // the page and let the user reload manually.
+        if (window.__rlBlockReload && window.__rlBlockReload()) {
+          showBanner('rustlab-notebook: reconnected — unsaved edits kept; reload to refresh');
+        } else {
+          location.reload();
+        }
       }
       firstConnect = false;
     };

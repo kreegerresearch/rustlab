@@ -226,7 +226,8 @@ fn body_extra(opts: PageOpts) -> String {
         headers: {{ 'Content-Type': 'text/markdown' }},
         body: cm.getValue(),
       }});
-      setStatus(r.ok ? 'saved ✓' : ('save failed (' + r.status + ')'));
+      if (r.ok) {{ cm.markClean(); setStatus('saved ✓'); }}
+      else {{ setStatus('save failed (' + r.status + ')'); }}
     }} catch (e) {{ setStatus('save failed'); }}
     setTimeout(() => {{ if ((status || {{}}).textContent === 'saved ✓') setStatus(''); }}, 1800);
   }}
@@ -256,6 +257,9 @@ fn body_extra(opts: PageOpts) -> String {
 
   // Read-only panes refresh on re-render; the editor keeps its buffer.
   window.__rlAfterUpdate = () => {{ if (open && !EDITABLE) loadReadonly(); }};
+  // Veto the WS-client's reconnect hard-reload while the editor has
+  // unsaved changes, so a transient disconnect can't discard them.
+  window.__rlBlockReload = () => EDITABLE && cm != null && !cm.isClean();
 }})();
 </script>
 "##,
@@ -300,6 +304,9 @@ mod tests {
         assert!(out.contains("/assets/codemirror/mode/markdown/markdown.min.js"));
         assert!(out.contains("/save/' + slug"), "save POST target present");
         assert!(out.contains("CodeMirror("), "editor is constructed");
+        // Reconnect-reload guard + clean-on-save protect unsaved edits.
+        assert!(out.contains("__rlBlockReload"), "reconnect-reload veto present");
+        assert!(out.contains("markClean"), "buffer marked clean after save");
         // The read-only <pre> element is absent in editable mode (the JS
         // still defines a loadReadonly helper, so check the element markup).
         assert!(!out.contains("id=\"rl-source-pre\""), "no read-only <pre> element in editable mode");
