@@ -76,8 +76,8 @@ rustlab-notebook render analysis.md              # → analysis.html (default, d
 rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
-rustlab-notebook render analysis.md -f markdown  # → analysis.md + plots/analysis/*.svg
-rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native md (wikilinks, _attachments/, frontmatter, iframe)
+rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
+rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native in-place rewrite
 rustlab-notebook render analysis.md -o out.html  # explicit output path
 rustlab-notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
@@ -90,6 +90,13 @@ vault-native mode (see [Obsidian integration](#obsidian-integration--obsidian)
 below). See
 [`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
 source/rendered split design pattern.
+
+**`-f markdown` requires explicit consent to overwrite the source.**
+Running `render note.md -f markdown` without `-o` or `--obsidian`
+would land on `note.md` itself — so the renderer refuses and prints
+the three legitimate forms. Same rule as `notebook watch`: only
+`--obsidian` modifies a `.md` source implicitly; everything else
+needs an explicit destination.
 
 ### Obsidian integration (`--obsidian`)
 
