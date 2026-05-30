@@ -175,6 +175,7 @@ together whenever a phase finishes.
 | `rustlab_llm` Gap Closure (v0.3) | `~/.claude/plans/lively-roaming-abelson.md` | Complete — all four open gaps shipped: short-circuit `&&`/`\|\|`, `M(I)` linear-index gather (with `M(scalar)` flip), `layernorm(M)` matrix overload, multi-output user functions `function [a, b] = name(x)`. Tour example/notebook in `examples/language_v0_3.{rlab,md}`. |
 | Notebook / Plot Follow-ups (2026-05-16) | `dev/plans/notebook_followups_2026_05_16.md` | Mostly shipped — B1 (cwd guard), B2 (post-render plot sweep), B3 (write_output hash cache), P2 (`self_writes` u64 digest), L1 (`rustlab-notebook check` linter, 7 checks) all done. P1 (snapshot memory cap) and P3 (`strip_render_artifacts` single-pass) deferred until profiling justifies. Each item is self-contained — file paths, fix sketch, and tests listed in the plan doc. |
 | Obsidian Plugin Phase 1 — `rustlab-notebook render --format json` | `dev/plans/notebook_obsidian_plugin.md` § Phase 1 | Shipped — JSON emitter in `rustlab-notebook/src/render_json.rs` plus `cmd_render_json` in `lib.rs`. CLI flags `--format json`, `--stdin`, `--cwd <DIR>`, `--pretty`. Schema version 1: prose blocks ship with pre-rendered HTML, code blocks with inline SVG plots + `blake3:` source hash, mermaid with inline SVG (under the `mermaid` feature), callouts with HTML, exercise/solution markers. Output goes to stdout only — JSON has no `--output` path. Lives entirely in `rustlab-notebook` per the "keep `rustlab` binary small" rule (main `rustlab` CLI does not depend on this crate). Phase-1 scope: SVG plots only; Plotly HTML and animation GIFs reserved as future `JsonPlot` formats. Phases 2–4 (the actual Obsidian TypeScript plugin) are out-of-tree, separate work. |
+| Persistent Function-Result Cache | `dev/plans/persistent_function_cache.md` | Phases 0–5 shipped + Phase 6a/b/c/d shipped. Storage + WAL + multi-process, Fingerprint trait + AST hash + purity walkers (incl. transitive impurity with mutual-recursion rescan), `cache` statement parser + registry + dispatcher with real hits/misses for **both single- and multi-output** functions (`p = f(x)` and `[p, q] = f(x)` share one cache entry), CLI subcommands on both `rustlab` and `rustlab-notebook`, docs/REPL help/example notebook. The time-constraint threshold design was removed mid-Phase-3 on 2026-05-24: every in-scope call now looks up, every miss with a serialisable result writes. Phase 6 deferred (none blocking): Rust-side `#[memoize]` proc-macro, `%%cache` cell directive, zstd blob compression, per-function-within-a-file hashing, cross-process counter aggregation. |
 | RF S-Parameter / Smith Chart Toolbox | `dev/plans/closed/sparameters.md` | Complete — all 6 phases shipped 2026-05-17. Touchstone v1.1 + v2-keyword-tolerant reader, optional noise-parameter block, conversions (S↔Z↔Y↔T↔ABCD, mixed-mode), cascade, deembed, newref, interp_freq, Smith chart, rfplot 2×2 review, VSWR/return loss/insertion loss, Rollett K + µ-parameters, simultaneous-conjugate-match Γms/Γml, MAG/MSG, stability and gain circles, smith_circle overlay, s2td time-domain via IFFT. 50+ builtins under one S-Parameters (RF) help category. Tests: 1185 in rustlab-script (analytic anchors include matched attenuator round-trips, isolator stability K=∞, series-resistor cascade additivity, mixed-mode mode-isolation for symmetric thru pair, simultaneous-conjugate-match defining identity Γin(Γml) = conj(Γms)). Outstanding follow-ups noted in the closed plan: Touchstone writer doesn't round-trip noise data; per-port `[Reference]` Z0 lists rejected (workaround: use single-ended export + `s2smm`); Octave-comparison harness deferred (stock Octave has no `sparameters` equivalent). |
 
 ---
@@ -435,7 +436,7 @@ you run.
 | `markdownlint-cli2` | `make validate-notebooks` (markdown) | `npm i -g markdownlint-cli2` | `npm i -g markdownlint-cli2` | optional |
 | `vnu` (W3C Nu) | `make validate-notebooks` (html, preferred) | `brew install vnu` | https://validator.github.io/validator/ | optional; alternatively set `VNU_JAR=/path/to/vnu.jar` |
 | `tidy-html5` (5.x+) | `make validate-notebooks` (html, fallback) | `brew install tidy-html5` | `apt-get install tidy` | optional; macOS's `/usr/bin/tidy` is the 2006 HTML4 build and is auto-skipped |
-| `chktex` | `make validate-notebooks` (latex) | `brew install chktex` | `apt-get install chktex` | optional; standalone, does not pull in TeX Live |
+| `chktex` | `rustlab-notebook validate` (latex) | `sudo tlmgr install chktex` (ships with MacTeX/TeX Live; **not** a brew formula) | `apt-get install chktex` | apt's chktex is standalone; macOS needs MacTeX first |
 | `pdfinfo`, `pdftotext` (poppler) | `make validate-notebooks` (pdf smoke) | `brew install poppler` | `apt-get install poppler-utils` | optional |
 | `qpdf` | `make validate-notebooks` (pdf structure) | `brew install qpdf` | `apt-get install qpdf` | optional |
 | `verapdf` | `rustlab-notebook validate` (pdf PDF/A, only with `--pdf-a`) | https://verapdf.org/software/ | https://verapdf.org/software/ | opt-in; pipeline does not target PDF/A by default |
@@ -445,6 +446,17 @@ present and reports `SKIPPED` + an install hint for anything missing.
 Pass `--require-all` to upgrade any `SKIPPED` to a hard failure — the
 CI workflow at `.github/workflows/validate-notebooks.yml` uses this to
 enforce a baseline toolchain.
+
+**Quick install** for local CI parity (the three linters above:
+`tidy-html5`, `chktex`, `markdownlint-cli2`):
+
+```sh
+make install-validate-deps   # detects macOS vs Linux, uses brew/tlmgr/npm or apt/npm
+```
+
+The target doesn't install the PDF render toolchain (`pdflatex` +
+`inkscape`) — those are large, often already present, and skipping
+PDF validation is the same option CI uses on Ubuntu runners.
 
 ### Installing the binary
 

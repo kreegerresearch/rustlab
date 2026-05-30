@@ -594,6 +594,35 @@ pub const HELP: &[HelpEntry] = &[
         detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.rlab" },
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
         detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
+    // Persistent function-result cache
+    HelpEntry { name: "cache", brief: "Skip recomputes — persistent function-result cache that survives restarts",
+        detail: "cache enable [path]               — open or create a cache store\n\
+                 cache off                         — close the active store\n\
+                 cache add file <path>             — source a .rlab file and register its\n                                     functions as cacheable\n\
+                 cache add function name[, ...]    — register one or more already-defined\n                                     functions for caching\n\
+                 cache remove function name        — drop a function from scope (keeps DB rows)\n\
+                 cache status                      — print store path, scope, and counters\n\
+                 cache list [limit=N]              — print stored entries with fn name + load status:\n                                       loaded             — current body matches a cached entry_id\n                                       loaded (variant)   — fn is defined but cached row is from an older body\n                                       not loaded         — function name not defined in this session\n                                       <unknown>          — pre-metadata row from an older binary\n\
+                 cache clear                       — wipe every entry in the active store\n\
+                 cache prune [older=DUR] [max_size=BYTES]\n                                  — drop old/oversized entries\n\
+                 cache \"path\"                      — sugar for `cache enable \"path\"`\n\n\
+                 Bareword paths must contain a `.` or `/` to be recognised as paths\n\
+                 (so a typo like `cache list` errors loudly instead of silently opening\n\
+                 a new store file called `list`). Quoted strings are always paths.\n\n\
+                 With no path, `cache enable` uses .rustlab/cache.db relative to CWD.\n\
+                 Once a store is open, every call to an in-scope user function consults\n\
+                 the cache; misses with serialisable results are stored, and matching\n\
+                 future calls return the stored value without recomputing.\n\n\
+                 Purity contract: cached functions may not call impure builtins (rand,\n\
+                 plot, file I/O, etc.) or reference unbound symbols. `cache add file`\n\
+                 hard-errors on free variables; impure helpers in the file are silently\n\
+                 skipped (still installed, just not cache-routed).\n\n\
+                 Outside a script, inspect/manage the store with:\n  \
+                 rustlab cache status [--store PATH]\n  \
+                 rustlab cache list [--store PATH] [--limit N]\n  \
+                 rustlab cache prune [--older-than DUR] [--max-size BYTES]\n  \
+                 rustlab cache clear [--store PATH]\n\n\
+                 Plan: dev/plans/persistent_function_cache.md" },
     // Streaming DSP
     HelpEntry { name: "state_init", brief: "Allocate a FIR history buffer of n zeros",
         detail: "state_init(n)  — allocate FIR state for a filter with n+1 taps\n  n = length(h) - 1  where h is the coefficient vector\n\nReturns an opaque fir_state handle. Pass it to filter_stream each frame.\nTwo independent handles allow stereo (or any multi-channel) processing\nwith no shared state.\n\nExample:\n  h  = firpm(64, [0, 0.04, 0.05, 1.0], [1, 1, 0, 0])\n  st = state_init(length(h) - 1)" },
@@ -1055,6 +1084,8 @@ pub static CATEGORIES: &[CategoryRow] = &[
         names: &["arrayfun", "feval"] },
     CategoryRow { toolbox: "language", subcategory: "Profiling",
         names: &["profile", "profile_report"] },
+    CategoryRow { toolbox: "language", subcategory: "Persistent cache",
+        names: &["cache"] },
     CategoryRow { toolbox: "language", subcategory: "Parallelism",
         names: &["parmap", "nproc"] },
     CategoryRow { toolbox: "language", subcategory: "Structs",
@@ -1247,6 +1278,31 @@ pub fn subcategory_of(entry_name: &str) -> &'static str {
     ""
 }
 
+/// `true` for a trimmed source line that opens a block needing a
+/// matching `end`. Used by the REPL's multi-line capture loop so
+/// inner `for`/`if`/`while`/`switch` blocks inside a function body
+/// don't false-trigger the function's exit at their own `end`.
+///
+/// We match on the leading keyword token rather than calling the
+/// real lexer — this is a small heuristic that has to be cheap and
+/// stable; a line like `for i = 1:n` is identified by its `for `
+/// prefix regardless of what follows. A bare keyword on its own
+/// line (`function`, `for`, etc.) also counts.
+fn line_opens_block(line: &str) -> bool {
+    const OPENERS: &[&str] = &["function", "if", "for", "while", "switch"];
+    for kw in OPENERS {
+        if line == *kw {
+            return true;
+        }
+        if let Some(rest) = line.strip_prefix(kw) {
+            if rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('(') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn print_help_list() {
     println!();
     println!(
@@ -1351,6 +1407,76 @@ pub fn print_help_detail(topic: &str) -> bool {
         color::bold("'help'")
     );
     false
+}
+
+#[cfg(test)]
+mod block_opener_tests {
+    use super::*;
+
+    #[test]
+    fn keywords_followed_by_space_or_paren_count_as_openers() {
+        assert!(line_opens_block("function y = f(x)"));
+        assert!(line_opens_block("function [a, b] = stats(x)"));
+        assert!(line_opens_block("if x > 0"));
+        assert!(line_opens_block("for i = 1:n"));
+        assert!(line_opens_block("while cond"));
+        assert!(line_opens_block("switch expr"));
+    }
+
+    #[test]
+    fn bare_keywords_count_as_openers() {
+        assert!(line_opens_block("function"));
+        assert!(line_opens_block("if"));
+        assert!(line_opens_block("for"));
+        assert!(line_opens_block("while"));
+        assert!(line_opens_block("switch"));
+    }
+
+    #[test]
+    fn end_and_other_lines_do_not_open_blocks() {
+        assert!(!line_opens_block("end"));
+        assert!(!line_opens_block("end;"));
+        assert!(!line_opens_block("y = 0"));
+        assert!(!line_opens_block("disp(\"x\")"));
+        assert!(!line_opens_block(""));
+    }
+
+    #[test]
+    fn similar_identifiers_are_not_openers() {
+        // Don't false-trigger on names that start with a keyword
+        // (function_value, ifelse, foreman, whilet, switcheroo).
+        assert!(!line_opens_block("functional = 1"));
+        assert!(!line_opens_block("ifelse(c, a, b)"));
+        assert!(!line_opens_block("foreman = x"));
+        assert!(!line_opens_block("whilelist = y"));
+        assert!(!line_opens_block("switchback = z"));
+    }
+
+    /// End-to-end sanity check: a function body containing a
+    /// `for ... end` block should net out to depth 0 after both
+    /// `end`s, modelling the multi-line capture loop's logic.
+    #[test]
+    fn for_loop_inside_function_balances_to_zero() {
+        let lines = [
+            "function y = expensive(n)",
+            "  y = 0",
+            "  for i = 1:n",
+            "    y = y + sqrt(i)",
+            "  end",
+            "end",
+        ];
+        let mut depth: i32 = 0;
+        for ln in lines {
+            let ct = ln.trim();
+            if line_opens_block(ct) {
+                depth += 1;
+            }
+            if ct == "end" || ct == "end;" {
+                depth -= 1;
+            }
+        }
+        assert_eq!(depth, 0, "function with inner for should net to depth 0");
+    }
 }
 
 #[cfg(test)]
@@ -1668,23 +1794,49 @@ pub fn execute() -> Result<()> {
                     continue;
                 }
 
-                // Multi-line input for function definitions
+                // Multi-line input for function definitions. We enter
+                // this branch when the first non-empty line starts with
+                // `function`. Depth tracks open block-introducing keywords
+                // (`function`, `if`, `for`, `while`, `switch`) minus
+                // matching `end`s, so a `for ... end` inside a function
+                // body doesn't trick us into early exit at the inner
+                // `end` — every block opener bumps depth and any `end`
+                // decrements it.
+                //
+                // We also handle bracketed paste, where the terminal
+                // delivers the whole multi-line block as a single
+                // `readline` result. In that case we process each of
+                // its lines through the depth tracker before deciding
+                // whether to keep prompting for continuation.
                 let source = if trimmed.starts_with("function ") || trimmed == "function" {
-                    let mut buf = format!("{}\n", trimmed);
-                    let mut depth: i32 = 1;
-                    loop {
+                    let mut buf = String::new();
+                    let mut depth: i32 = 0;
+                    let process = |line: &str, buf: &mut String, depth: &mut i32| {
+                        let ct = line.trim();
+                        if line_opens_block(ct) {
+                            *depth += 1;
+                        }
+                        buf.push_str(line);
+                        buf.push('\n');
+                        if ct == "end" || ct == "end;" {
+                            *depth -= 1;
+                        }
+                    };
+                    // Feed every line of the initial input (the prompt
+                    // line OR a single-shot pasted block) through the
+                    // tracker. Most of the time this is just one line —
+                    // the user typed `function y = ...` and hit Enter.
+                    for ln in line.lines() {
+                        process(ln, &mut buf, &mut depth);
+                    }
+                    while depth > 0 {
                         match rl.readline(&cont_prompt) {
                             Ok(cont) => {
-                                let ct = cont.trim();
-                                rl.add_history_entry(ct).ok();
-                                // Track nesting for nested function defs
-                                if ct.starts_with("function ") || ct == "function" {
-                                    depth += 1;
-                                }
-                                buf.push_str(ct);
-                                buf.push('\n');
-                                if ct == "end" || ct == "end;" {
-                                    depth -= 1;
+                                rl.add_history_entry(cont.trim()).ok();
+                                // A continuation read can itself be a
+                                // multi-line bracketed paste; iterate.
+                                for ln in cont.lines() {
+                                    process(ln, &mut buf, &mut depth);
                                     if depth <= 0 {
                                         break;
                                     }

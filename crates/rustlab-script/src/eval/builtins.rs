@@ -417,6 +417,20 @@ impl BuiltinRegistry {
         self.call_with_nargout(name, args, 1)
     }
 
+    /// `true` iff `name` is a registered builtin. Used by the cache
+    /// purity walkers to distinguish builtin calls from references to
+    /// undefined names.
+    pub fn contains(&self, name: &str) -> bool {
+        self.map.contains_key(name)
+    }
+
+    /// Snapshot every registered builtin name. Used by the canonical
+    /// entry-id hasher so its closure can answer "is this name a
+    /// builtin?" without borrowing back into the evaluator.
+    pub fn all_names(&self) -> Vec<String> {
+        self.map.keys().cloned().collect()
+    }
+
     pub fn call_with_nargout(
         &self,
         name: &str,

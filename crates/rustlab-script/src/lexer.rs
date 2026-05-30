@@ -63,6 +63,7 @@ pub enum Token {
     Grid,      // grid
     Viewer,    // viewer
     Close,     // close
+    Cache,     // cache (persistent function-result cache directive)
     Dot,       // . (field access)
     // Structure
     Newline,
@@ -545,6 +546,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                     "grid" => Token::Grid,
                     "viewer" => Token::Viewer,
                     "close" => Token::Close,
+                    "cache" => Token::Cache,
                     _ => Token::Ident(ident),
                 };
                 tokens.push(Spanned { token: tok, line });

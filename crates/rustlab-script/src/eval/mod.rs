@@ -9,14 +9,16 @@ pub mod toml_io;
 pub mod touchstone;
 pub mod value;
 
-use crate::ast::{BinOp, Expr, Stmt, StmtKind};
+use crate::ast::{BinOp, CacheStmt, Expr, Stmt, StmtKind};
+use crate::cache_registry::CacheRegistry;
 use crate::error::ScriptError;
 pub use builtins::BuiltinRegistry;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 pub use profile::FnStats;
 use rustlab_core::C64;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::path::PathBuf;
 pub use value::NumberFormat;
 pub use value::Value;
 
@@ -44,6 +46,17 @@ pub struct Evaluator {
     pub number_format: value::NumberFormat,
     /// Source line of the statement currently being executed (for error messages).
     current_line: usize,
+    /// Persistent function-result cache state. Phase 3b: data only;
+    /// the StmtKind::Cache arm and the dispatcher (Phase 3c/d) operate
+    /// on this. Defaults to inactive — `cache enable` opens a store.
+    pub(crate) cache_registry: CacheRegistry,
+    /// Memoized canonical entry ids — Phase 7 (Option 3) rename-
+    /// invariant function identity hashes. Populated lazily by the
+    /// dispatcher; cleared en bloc on every `FunctionDef` so a
+    /// redefinition (or a sibling redefinition that transitively
+    /// affects a caller) forces re-computation. The keys here are
+    /// user-fn names; the values are the canonical 32-byte ids.
+    cached_entry_ids: HashMap<String, [u8; 32]>,
 }
 
 impl Evaluator {
@@ -66,6 +79,14 @@ impl Evaluator {
             color_output: self.color_output,
             number_format: self.number_format,
             current_line: self.current_line,
+            // Cache registry: the store is `Arc<Store>`, so the
+            // clone shares the SQLite connection. Scope sets and
+            // counters are snapshotted with the evaluator — the
+            // notebook prefix cache relies on this to roll back
+            // cache state consistently with the rest of the eval
+            // session.
+            cache_registry: self.cache_registry.clone(),
+            cached_entry_ids: self.cached_entry_ids.clone(),
         }
     }
 
@@ -99,12 +120,40 @@ impl Evaluator {
             color_output: false,
             number_format: value::NumberFormat::Short,
             current_line: 0,
+            cache_registry: CacheRegistry::new(),
+            cached_entry_ids: HashMap::new(),
         }
     }
 
     /// Look up a variable in the environment (used by tests).
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.env.get(name)
+    }
+
+    // ── Cache-state accessors (used by tests + future REPL `cache status`) ──
+
+    /// `true` when the cache has an open store.
+    pub fn cache_active(&self) -> bool {
+        self.cache_registry.is_active()
+    }
+
+    /// `true` iff a call to a user fn named `name` would be routed
+    /// through the cache. Resolution rules in
+    /// [`crate::cache_registry::CacheRegistry::is_in_scope`].
+    pub fn is_fn_cache_scoped(&self, name: &str) -> bool {
+        self.cache_registry.is_in_scope(name)
+    }
+
+    /// `true` iff a user function with this name has been defined in
+    /// the evaluator (inline, via `run`, or via `cache add file`).
+    pub fn is_user_fn_defined(&self, name: &str) -> bool {
+        self.user_fns.contains_key(name)
+    }
+
+    /// Snapshot of the per-process cache counters surfaced by
+    /// `cache status`.
+    pub fn cache_counters(&self) -> crate::cache_registry::CacheCounters {
+        self.cache_registry.counters().clone()
     }
 
     /// Set a variable in the environment.
@@ -227,6 +276,26 @@ impl Evaluator {
                         body: body.clone(),
                     },
                 );
+                // Phase 7: invalidate the canonical-entry-id cache.
+                // A new or redefined function may be a callee of any
+                // already-hashed caller, so the safe correct thing is
+                // to nuke the whole memo and let the dispatcher
+                // rebuild on demand. The cost is one walk per fn next
+                // call; cheap.
+                self.cached_entry_ids.clear();
+                // Phase 6a: if the cache is on, gate the freshly
+                // defined function against the purity contract. An
+                // impure function quietly falls out of cache scope
+                // here — the dispatcher would otherwise route through
+                // the cache under `all_scope` and silently return
+                // stale results. The function itself is still
+                // callable; only the cache-routing changes.
+                self.cache_gate_user_fn(name, params, body);
+                // Phase 6c: re-check any previously-removed sibling.
+                // A function that failed the free-var gate because a
+                // helper wasn't defined yet can now pass — mutual
+                // recursion (`ping` ↔ `pong`) is the canonical case.
+                self.cache_rescan_removed();
             }
             StmtKind::FieldAssign {
                 object,
@@ -1099,6 +1168,9 @@ impl Evaluator {
                 if !suppress && !self.in_function && !matches!(val, Value::None) {
                     output::script_println(&val.format_display(self.number_format));
                 }
+            }
+            StmtKind::Cache(c) => {
+                self.exec_cache_stmt(c)?;
             }
         }
         Ok(())
@@ -2185,6 +2257,80 @@ impl Evaluator {
             )));
         }
 
+        // ── Cache fast path (Phase 3d + 6d) ───────────────────────
+        //
+        // Both single- and multi-output calls go through the cache.
+        // The stored blob is always a `Value::Tuple` of the function's
+        // declared return vars in source order — the **canonical
+        // output set**, with `Value::None` filling unassigned slots.
+        // The caller's `nargout` only shapes the user-facing return
+        // value (via [`shape_user_fn_return`]); the body execution
+        // and the cache key are both nargout-independent. So
+        // `p = f(x)` and `[p, q] = f(x)` share a cache entry — the
+        // body runs once across both call sites.
+        //
+        // The keys: entry_id mixes (file_ast_hash, fn_name) when the
+        // function was loaded via `cache add file`, or the body's
+        // own AST hash for inline-defined functions. input_hash is
+        // BLAKE3 over the canonical encoding of the argument list.
+        // Either can fail (NaN arg, non-cacheable variant) — in that
+        // case we bypass the cache for this invocation only.
+        let cache_in_scope = self.cache_registry.is_in_scope(&func.name);
+        let cache_keys: Option<([u8; 32], [u8; 32])> = if cache_in_scope {
+            // Phase 7 (Option 3): canonical, rename-invariant,
+            // transitively-correct identity hash. Both inline-
+            // defined and file-loaded functions use the same
+            // formula — the file_ast_hash mixing the original
+            // design used for file-loaded functions is dropped on
+            // purpose, so moving a function between files (without
+            // editing the body) preserves cache warmth.
+            let entry_id = self.canonical_entry_id_for(&func);
+            match crate::cache_value::fingerprint_args(&args) {
+                Some(input_hash) => Some((entry_id, input_hash)),
+                None => {
+                    self.cache_registry.counters_mut().uncacheable_arg_skips += 1;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // GET path: on a hit, decode the canonical tuple and shape
+        // the user-facing return per the caller's nargout. On miss
+        // or any error, fall through to the normal compute path;
+        // we'll PUT after.
+        if let Some((entry_id, input_hash)) = cache_keys {
+            let stored = self
+                .cache_registry
+                .store()
+                .and_then(|s| s.get(&entry_id, &input_hash).ok().flatten());
+            if let Some(bytes) = stored {
+                match crate::cache_value::deserialize_value(&bytes) {
+                    Some(Value::Tuple(canonical)) => {
+                        self.cache_registry.record_hit(&func.name);
+                        return shape_user_fn_return(
+                            &canonical,
+                            nargout,
+                            &func.name,
+                            &func.return_vars,
+                        );
+                    }
+                    // Either the wire format mismatched (e.g. an old
+                    // v1 single-Value blob) or the row decoded as
+                    // something that isn't the expected Tuple. Either
+                    // way: stale; bump the skip counter and recompute.
+                    // A `cache clear` or version-aware prune handles
+                    // cleanup of the leftover row.
+                    Some(_) | None => {
+                        self.cache_registry.counters_mut().serialization_skips += 1;
+                    }
+                }
+            } else {
+                self.cache_registry.record_miss(&func.name);
+            }
+        }
+
         // Profiling: check before entering scope
         let tracking = self.profiler.should_track(&func.name);
         let in_bytes: u64 = if tracking {
@@ -2222,59 +2368,62 @@ impl Evaluator {
             }
             Ok(()) => {}
         }
-        // Build the return based on declared outputs and the caller's nargout.
-        // - 0 declared OR nargout=0 → None
-        // - 1 picked → single Value (back-compat: never a Tuple)
-        // - n >= 2 picked → Tuple of the first n declared outputs
-        // For the classic single-output case (1 declared, body never assigned
-        // it) we fall back to None to match prior behaviour. Multi-output
-        // missing-assignment is loud — matlab errors and so do we.
-        let declared = func.return_vars.len();
-        let ret_val = if declared == 0 || nargout == 0 {
-            Value::None
-        } else if nargout > declared {
-            // Restore env before erroring so subsequent calls don't see leftover state.
-            self.env = saved_env;
-            self.in_function = saved_in_fn;
-            self.profiler.exit_higher_order();
-            return Err(ScriptError::runtime(format!(
-                "function '{}' declares {} output(s), but caller asked for {}",
-                func.name, declared, nargout
-            )));
-        } else if nargout == 1 {
-            // Back-compat path: 1-output single value, missing assignment → None.
-            self.env
-                .get(func.return_vars[0].as_str())
-                .cloned()
-                .unwrap_or(Value::None)
-        } else {
-            let mut vals: Vec<Value> = Vec::with_capacity(nargout);
-            for ret in func.return_vars.iter().take(nargout) {
-                let v = self.env.get(ret.as_str()).cloned().ok_or_else(|| {
-                    ScriptError::runtime(format!(
-                        "function '{}': output '{}' was not assigned in the body",
-                        func.name, ret
-                    ))
-                })?;
-                vals.push(v);
-            }
-            Value::Tuple(vals)
-        };
+        // Capture the canonical full output set from the function
+        // body's environment BEFORE we restore. One slot per declared
+        // return var, in source order, with `Value::None` filling
+        // any slot the body didn't assign. This is the unit the
+        // cache stores; the caller's `nargout` only shapes the
+        // user-facing return below.
+        let canonical: Vec<Value> = func
+            .return_vars
+            .iter()
+            .map(|ret| self.env.get(ret.as_str()).cloned().unwrap_or(Value::None))
+            .collect();
+
         // Restore outer env and function flag
         self.env = saved_env;
         self.in_function = saved_in_fn;
         self.profiler.exit_higher_order();
 
+        if let Some(e) = body_err {
+            return Err(e);
+        }
+
+        // Shape the user-facing return from the canonical tuple.
+        // Same helper the cache-hit path uses; the under-assignment
+        // error path is identical whether we computed or replayed.
+        let ret_val = shape_user_fn_return(&canonical, nargout, &func.name, &func.return_vars)?;
+
         // Record if tracking and no error
-        if let (true, Some(t0), None) = (tracking, t0, &body_err) {
+        if let (true, Some(t0)) = (tracking, t0) {
             let ns = t0.elapsed().as_nanos() as u64;
             self.profiler
                 .record(&func.name, ns, in_bytes, Self::value_bytes(&ret_val));
         }
 
-        if let Some(e) = body_err {
-            return Err(e);
+        // ── Cache PUT (Phase 3d + 6d) ────────────────────────────
+        // Store the canonical full output set wrapped in a
+        // `Value::Tuple`. If any output is non-cacheable (e.g. a
+        // `Lambda` captured from outer scope, a `LiveFigure` handle),
+        // `serialize_value` returns `None` and we silently skip the
+        // store — the call ran correctly, just no cache row.
+        // `Store::put` swallows transient write errors (disk full,
+        // RO FS) per Phase 1's design.
+        if let Some((entry_id, input_hash)) = cache_keys {
+            if let Some(bytes) =
+                crate::cache_value::serialize_value(&Value::Tuple(canonical))
+            {
+                if let Some(store) = self.cache_registry.store() {
+                    // Pass the function name through so `cache list`
+                    // can show it. The metadata table is sibling to
+                    // cache_entries; if the row already has metadata
+                    // recorded (same entry_id from a prior write or
+                    // process), INSERT OR IGNORE keeps the first.
+                    let _ = store.put_with_meta(&entry_id, &input_hash, &bytes, &func.name);
+                }
+            }
         }
+
         Ok(ret_val)
     }
 
@@ -2339,6 +2488,577 @@ impl Evaluator {
             _ => 0,
         }
     }
+
+    // ── Persistent function-result cache (Phase 3c) ───────────────────
+    //
+    // Each `cache ...` statement lands here from `exec_stmt_kind`. The
+    // registry (`self.cache_registry`) is the source of truth for the
+    // active store, scope set, and counters; this layer wires the
+    // parsed AST to the registry's lifecycle methods, runs the purity
+    // walks at file-load time, and prints any user-visible output.
+
+    fn exec_cache_stmt(&mut self, c: &CacheStmt) -> Result<(), ScriptError> {
+        match c {
+            CacheStmt::Enable { path } => self.cache_enable(path.as_deref()),
+            CacheStmt::Off => {
+                self.cache_registry.off();
+                Ok(())
+            }
+            CacheStmt::AddFile { path } => self.cache_add_file(path),
+            CacheStmt::AddFunctions { names } => self.cache_add_functions(names),
+            CacheStmt::RemoveFunction { name } => {
+                self.cache_registry.remove_function(name);
+                Ok(())
+            }
+            CacheStmt::Status => {
+                let text = self.cache_registry.status_text();
+                output::script_print(text.trim_end_matches('\n'));
+                Ok(())
+            }
+            CacheStmt::Clear => self.cache_clear(),
+            CacheStmt::Prune {
+                older,
+                max_size_bytes,
+            } => self.cache_prune(older.as_deref(), *max_size_bytes),
+            CacheStmt::List { limit } => self.cache_list(*limit),
+        }
+    }
+
+    fn cache_enable(&mut self, path: Option<&str>) -> Result<(), ScriptError> {
+        self.cache_registry
+            .enable(path.map(PathBuf::from))
+            .map_err(|e| ScriptError::runtime(format!("cache enable: {e}")))?;
+        // Echo the resolved store path. Until this was added, `cache
+        // enable` ran silently — which made a typo like `cache list`
+        // (silently misparsed as `cache enable list` via the bareword
+        // sugar) invisible. Now the user sees the actual file that
+        // got opened.
+        if let Some(p) = self.cache_registry.store_path() {
+            output::script_println(&format!("cache: active ({})", p.display()));
+        }
+        // Scan every already-defined user function for purity. Without
+        // this, a script that defines `noisy()` *before* `cache enable`
+        // would let `noisy()` cache under `all_scope`. Capture the
+        // fingerprintable inputs up front so we can drop `self`'s
+        // borrows before mutating the registry.
+        let snapshots: Vec<(String, Vec<String>, Vec<Stmt>)> = self
+            .user_fns
+            .values()
+            .map(|f| (f.name.clone(), f.params.clone(), f.body.clone()))
+            .collect();
+        for (name, params, body) in &snapshots {
+            self.cache_gate_user_fn(name, params, body);
+        }
+        Ok(())
+    }
+
+    /// Phase 6a gate. With the cache active, refuse to route calls to
+    /// `name` through the cache if its body fails the purity contract:
+    /// any unbound name (free var) or call to an impure builtin marks
+    /// the function as removed from scope. The function itself is
+    /// untouched — it still runs normally when called; only the
+    /// dispatcher's `is_in_scope` check changes.
+    ///
+    /// No-op when the cache is off so the FunctionDef arm pays nothing
+    /// on the common cold-path. When the cache is on, the cost is one
+    /// AST walk per definition, which is dwarfed by the parse cost.
+    fn cache_gate_user_fn(&mut self, name: &str, params: &[String], body: &[Stmt]) {
+        if !self.cache_registry.is_active() {
+            return;
+        }
+        // Snapshot the set of sibling names so the closures don't
+        // hold a borrow of `self` while we later mutate the registry.
+        let sibling_names: std::collections::BTreeSet<String> =
+            self.user_fns.keys().cloned().collect();
+        let free = crate::purity::check_free_vars(
+            body,
+            params,
+            &|n: &str| self.builtins.contains(n),
+            &|n: &str| sibling_names.contains(n),
+        );
+        if !free.is_clean() {
+            self.cache_registry.counters_mut().free_var_skips += 1;
+            self.cache_registry.remove_function(name);
+            return;
+        }
+        // Transitive impurity check (Phase 6c): catches `f → g →
+        // rand` where g is an already-defined user function. Helpers
+        // defined *after* the caller are opaque to this walk; the
+        // caller will be re-checked next time it's redefined or on
+        // the next `cache enable` sweep.
+        let bodies: std::collections::BTreeMap<String, Vec<Stmt>> = self
+            .user_fns
+            .iter()
+            .map(|(k, f)| (k.clone(), f.body.clone()))
+            .collect();
+        let imp = crate::purity::check_transitive_impurity(body, &|n: &str| {
+            bodies.get(n).map(|v| v.as_slice())
+        });
+        if !imp.is_clean() {
+            self.cache_registry.counters_mut().impurity_skips += 1;
+            self.cache_registry.remove_function(name);
+        }
+    }
+
+    /// Phase 7 (Option 3): compute and memoize a function's canonical
+    /// entry id. The walker is rename-invariant for params, locals,
+    /// return vars, and the function's own name; transitively folds
+    /// in every called sibling user-fn so editing a callee invalidates
+    /// every caller. Builtin names stay verbatim (external anchors).
+    ///
+    /// Memoized in `self.cached_entry_ids`; the table is cleared
+    /// wholesale on every `FunctionDef` so a redefinition forces
+    /// re-computation of every caller.
+    fn canonical_entry_id_for(&mut self, func: &UserFn) -> [u8; 32] {
+        if let Some(&id) = self.cached_entry_ids.get(&func.name) {
+            return id;
+        }
+        // Snapshot every user fn body so the walker can recurse into
+        // sibling callees without borrow conflicts. Cloning is
+        // necessary because the canonical walker reads bodies while
+        // we'd otherwise hold a mutable borrow on `self` for the
+        // memo. The snapshot cost is amortised by the memo — the
+        // first call to any function pays it, subsequent calls hit
+        // the cache.
+        let snapshot: std::collections::BTreeMap<
+            String,
+            crate::ast_hash::CanonicalFnSnapshot,
+        > = self
+            .user_fns
+            .iter()
+            .map(|(k, f)| {
+                (
+                    k.clone(),
+                    crate::ast_hash::CanonicalFnSnapshot {
+                        params: f.params.clone(),
+                        return_vars: f.return_vars.clone(),
+                        body: f.body.clone(),
+                    },
+                )
+            })
+            .collect();
+        // Snapshot the builtin set into a HashSet so the closure
+        // doesn't borrow self.
+        let builtin_names: std::collections::HashSet<String> = self
+            .builtins
+            .all_names()
+            .into_iter()
+            .collect();
+        let is_builtin = |n: &str| builtin_names.contains(n);
+        let id = crate::ast_hash::canonical_entry_id(
+            &func.name,
+            &func.params,
+            &func.return_vars,
+            &func.body,
+            &snapshot,
+            &is_builtin,
+        );
+        self.cached_entry_ids.insert(func.name.clone(), id);
+        id
+    }
+
+    /// Walk every name currently marked removed and try the gate
+    /// again. A name re-enters scope when its previously-failing
+    /// free-var or impurity check now passes — typically because a
+    /// helper has just been defined or one was redefined as pure.
+    /// Counters are not double-counted: `restore_removed` is the only
+    /// state change on success, and re-failures stay in the removed
+    /// set with their original counter bump intact.
+    fn cache_rescan_removed(&mut self) {
+        if !self.cache_registry.is_active() {
+            return;
+        }
+        let candidates = self.cache_registry.removed_fns_snapshot();
+        // Snapshot bodies up front so the gate's closures and the
+        // mutable cache_registry calls don't fight the borrow checker.
+        let user_fn_names: std::collections::BTreeSet<String> =
+            self.user_fns.keys().cloned().collect();
+        let bodies: std::collections::BTreeMap<String, (Vec<String>, Vec<Stmt>)> = self
+            .user_fns
+            .iter()
+            .map(|(k, f)| (k.clone(), (f.params.clone(), f.body.clone())))
+            .collect();
+        for name in candidates {
+            let Some((params, body)) = bodies.get(&name) else {
+                continue; // user_fns no longer holds this name
+            };
+            let free = crate::purity::check_free_vars(
+                body,
+                params,
+                &|n: &str| self.builtins.contains(n),
+                &|n: &str| user_fn_names.contains(n),
+            );
+            if !free.is_clean() {
+                continue;
+            }
+            let imp = crate::purity::check_transitive_impurity(body, &|n: &str| {
+                bodies.get(n).map(|(_, b)| b.as_slice())
+            });
+            if !imp.is_clean() {
+                continue;
+            }
+            // Now clean. Lift the removal so the dispatcher will
+            // route calls through the cache next time.
+            self.cache_registry.restore_removed(&name);
+        }
+    }
+
+    fn cache_add_file(&mut self, path: &str) -> Result<(), ScriptError> {
+        if !self.cache_registry.is_active() {
+            return Err(ScriptError::runtime(
+                "cache add file: no active store — run `cache enable` first".to_string(),
+            ));
+        }
+        let path_buf = PathBuf::from(path);
+        let canonical = std::fs::canonicalize(&path_buf).map_err(|e| {
+            ScriptError::runtime(format!("cache add file: {path}: {e}"))
+        })?;
+        let stmts = crate::parse_file(&canonical)?;
+        let file_hash = crate::ast_hash::hash_stmts(&stmts);
+
+        // Pre-compute the set of function names defined in this file
+        // so the free-variable walker can recognise sibling calls.
+        let sibling_names: BTreeSet<String> = stmts
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::FunctionDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        if sibling_names.is_empty() {
+            return Err(ScriptError::runtime(format!(
+                "cache add file: {path}: no function definitions found"
+            )));
+        }
+
+        let mut registered: usize = 0;
+        let mut skipped: Vec<(String, String)> = Vec::new();
+
+        for stmt in &stmts {
+            let StmtKind::FunctionDef {
+                name,
+                params,
+                return_vars,
+                body,
+            } = &stmt.kind
+            else {
+                // Non-FunctionDef top-level statements in a cached
+                // file are deliberately ignored. The file is treated
+                // as a library of definitions; running its top-level
+                // side effects would surprise users who source the
+                // same file twice.
+                continue;
+            };
+
+            // Free-variable check is a hard error at file-load time —
+            // capturing the wrong outer name would silently corrupt
+            // every cached call to the function.
+            let free = crate::purity::check_free_vars(
+                body,
+                params,
+                &|n: &str| self.builtins.contains(n),
+                &|n: &str| sibling_names.contains(n),
+            );
+            if !free.is_clean() {
+                return Err(ScriptError::runtime(format!(
+                    "cache add file: {path}: function '{name}' references unbound symbols: {} — only pure functions can be cached",
+                    free.free_vars.join(", "),
+                )));
+            }
+
+            // Impurity check is a silent skip — `cache add file` is a
+            // batch operation and one impure helper shouldn't block
+            // the rest of the file from loading. The function is
+            // still installed so it can be called normally; only the
+            // cache-registration step is skipped. Marking the name
+            // as removed prevents the default `all_scope` from
+            // re-picking the impure function up at dispatch time.
+            let imp = crate::purity::check_impurity(body);
+            if !imp.is_clean() {
+                self.cache_registry.counters_mut().impurity_skips += 1;
+                skipped.push((
+                    name.clone(),
+                    format!("calls impure builtins: {}", imp.impure_calls.join(", ")),
+                ));
+                self.user_fns.insert(
+                    name.clone(),
+                    UserFn {
+                        name: name.clone(),
+                        params: params.clone(),
+                        return_vars: return_vars.clone(),
+                        body: body.clone(),
+                    },
+                );
+                self.cache_registry.remove_function(name);
+                continue;
+            }
+
+            self.user_fns.insert(
+                name.clone(),
+                UserFn {
+                    name: name.clone(),
+                    params: params.clone(),
+                    return_vars: return_vars.clone(),
+                    body: body.clone(),
+                },
+            );
+            self.cache_registry
+                .register_file_function(name.clone(), file_hash, canonical.clone());
+            registered += 1;
+        }
+
+        // `cache` lifecycle messages bypass `echo_enabled()` — they
+        // describe an explicit user action, not an auto-printed
+        // expression result. The notebook context would otherwise
+        // hide them, which makes the operation feel like a silent
+        // no-op.
+        let mut msg = format!("cache: loaded {registered} function(s) from {path}");
+        for (n, reason) in &skipped {
+            msg.push_str(&format!("\n  skipped {n}: {reason}"));
+        }
+        output::script_println(&msg);
+        Ok(())
+    }
+
+    fn cache_add_functions(&mut self, names: &[String]) -> Result<(), ScriptError> {
+        if !self.cache_registry.is_active() {
+            return Err(ScriptError::runtime(
+                "cache add function: no active store — run `cache enable` first".to_string(),
+            ));
+        }
+        // Validate every name first so a failure mid-list doesn't
+        // leave half-registered scope.
+        for name in names {
+            let user_fn = self.user_fns.get(name).cloned().ok_or_else(|| {
+                ScriptError::runtime(format!(
+                    "cache add function: '{name}' is not a user-defined function"
+                ))
+            })?;
+
+            let free = crate::purity::check_free_vars(
+                &user_fn.body,
+                &user_fn.params,
+                &|n: &str| self.builtins.contains(n),
+                &|n: &str| self.user_fns.contains_key(n),
+            );
+            if !free.is_clean() {
+                return Err(ScriptError::runtime(format!(
+                    "cache add function: '{name}' references unbound symbols: {}",
+                    free.free_vars.join(", "),
+                )));
+            }
+
+            // Explicit-mode policy: impurity is a hard error here
+            // (the user named this function specifically).
+            let imp = crate::purity::check_impurity(&user_fn.body);
+            if !imp.is_clean() {
+                return Err(ScriptError::runtime(format!(
+                    "cache add function: '{name}' calls impure builtins ({}) — cannot cache",
+                    imp.impure_calls.join(", "),
+                )));
+            }
+        }
+        self.cache_registry.add_functions(names.iter().cloned());
+        Ok(())
+    }
+
+    fn cache_list(&mut self, limit: Option<u64>) -> Result<(), ScriptError> {
+        let store = match self.cache_registry.store() {
+            Some(s) => s,
+            None => {
+                return Err(ScriptError::runtime(
+                    "cache list: no active store — run `cache enable` first".to_string(),
+                ));
+            }
+        };
+        let rows = store
+            .list_entries(limit.map(|n| n as usize))
+            .map_err(|e| ScriptError::runtime(format!("cache list: {e}")))?;
+        if rows.is_empty() {
+            let path = self
+                .cache_registry
+                .store_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<active store>".to_string());
+            output::script_println(&format!("cache: no entries in {path}"));
+            return Ok(());
+        }
+
+        // Index currently-loaded user fns by entry_id (the same hash
+        // the dispatcher uses) so each list row can be tagged with
+        // its load status. We also index by name → entry_id so we
+        // can detect *variants*: a cached row whose name matches a
+        // loaded function but whose entry_id doesn't is from an
+        // earlier body version that's been edited.
+        //
+        // Cloning the user_fns map into a local Vec sidesteps the
+        // borrow conflict between the iterator and the mutable call
+        // to canonical_entry_id_for.
+        let mut loaded_by_id: std::collections::BTreeMap<[u8; 32], String> =
+            std::collections::BTreeMap::new();
+        let mut loaded_by_name: std::collections::BTreeMap<String, [u8; 32]> =
+            std::collections::BTreeMap::new();
+        let fn_list: Vec<UserFn> = self.user_fns.values().cloned().collect();
+        for f in &fn_list {
+            let id = self.canonical_entry_id_for(f);
+            loaded_by_id.insert(id, f.name.clone());
+            loaded_by_name.insert(f.name.clone(), id);
+        }
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "{:<20}  {:>9}  {:>10}  {:>8}  {:>8}  {}\n",
+            "fn name", "entry_id", "input_hash", "bytes", "rl_ver", "status",
+        ));
+        for row in rows {
+            let displayed_name = row.fn_name.clone().unwrap_or_else(|| "<unknown>".to_string());
+            // Status logic:
+            //   loaded            — entry_id matches a currently-defined fn
+            //   loaded (variant)  — fn_name matches a defined fn, but the
+            //                       loaded body's entry_id differs (stale)
+            //   not loaded        — no defined fn carries this name
+            //   <unknown>         — pre-metadata row; can't say either way
+            let status = match &row.fn_name {
+                None => "<unknown>".to_string(),
+                Some(name) => {
+                    if loaded_by_id.contains_key(&row.entry_id) {
+                        "loaded".to_string()
+                    } else if loaded_by_name.contains_key(name) {
+                        "loaded (variant)".to_string()
+                    } else {
+                        "not loaded".to_string()
+                    }
+                }
+            };
+            out.push_str(&format!(
+                "{:<20}  {:>9}  {:>10}  {:>8}  {:>8}  {}\n",
+                displayed_name,
+                row.entry_id_short,
+                row.input_hash_short,
+                row.bytes,
+                row.rustlab_version,
+                status,
+            ));
+        }
+        output::script_print(out.trim_end_matches('\n'));
+        Ok(())
+    }
+
+    fn cache_clear(&mut self) -> Result<(), ScriptError> {
+        if !self.cache_registry.is_active() {
+            return Err(ScriptError::runtime(
+                "cache clear: no active store".to_string(),
+            ));
+        }
+        let removed = self
+            .cache_registry
+            .clear()
+            .map_err(|e| ScriptError::runtime(format!("cache clear: {e}")))?;
+        // Bypass echo_enabled — see comment in cache_add_file.
+        output::script_println(&format!("cache: cleared {removed} entries"));
+        Ok(())
+    }
+
+    fn cache_prune(
+        &mut self,
+        older: Option<&str>,
+        max_size_bytes: Option<u64>,
+    ) -> Result<(), ScriptError> {
+        if !self.cache_registry.is_active() {
+            return Err(ScriptError::runtime(
+                "cache prune: no active store".to_string(),
+            ));
+        }
+        // Order of operations when both kwargs are present: age-based
+        // first, then size-based. That way `older=` clears stale rows
+        // before `max_size=` has to evict newer ones to make room.
+        let mut total_removed: usize = 0;
+        let mut messages: Vec<String> = Vec::new();
+        let did_specify = older.is_some() || max_size_bytes.is_some();
+        if let Some(s) = older {
+            let secs = rustlab_cache::parse_duration_secs(s)
+                .map_err(|e| ScriptError::runtime(format!("cache prune: {e}")))?;
+            let n = self
+                .cache_registry
+                .prune_older(Some(secs))
+                .map_err(|e| ScriptError::runtime(format!("cache prune: {e}")))?;
+            total_removed += n;
+            messages.push(format!("{n} older than {secs}s"));
+        }
+        if let Some(max) = max_size_bytes {
+            let n = self
+                .cache_registry
+                .prune_to_max_size(max)
+                .map_err(|e| ScriptError::runtime(format!("cache prune: {e}")))?;
+            total_removed += n;
+            messages.push(format!("{n} to fit max_size={max}"));
+        }
+        if !did_specify {
+            // No kwargs → age-based default of 30 days per the
+            // locked design.
+            let n = self
+                .cache_registry
+                .prune_older(None)
+                .map_err(|e| ScriptError::runtime(format!("cache prune: {e}")))?;
+            total_removed += n;
+            messages.push(format!("{n} older than 30 days (default)"));
+        }
+        // Bypass echo_enabled — see comment in cache_add_file.
+        output::script_println(&format!(
+            "cache: pruned {total_removed} entries ({})",
+            messages.join(", "),
+        ));
+        Ok(())
+    }
+}
+
+/// Shape a user function's user-facing return value from its
+/// canonical output set (one slot per declared return var) given the
+/// caller's `nargout`. Used by both the body-execution path and the
+/// cache-replay path so the error messages and edge-case semantics
+/// are identical regardless of where the canonical came from.
+///
+/// Rules:
+/// - `nargout == 0`, OR a function that declares zero outputs → return
+///   `Value::None`.
+/// - `nargout > declared` → loud error (matches the body-path
+///   behaviour for an over-asking caller).
+/// - `nargout == 1` → return `canonical[0]` even if it's `Value::None`
+///   (back-compat: a 1-output function whose body never assigned its
+///   return var has always returned `None` rather than erroring).
+/// - `nargout >= 2` → first `nargout` slots must each be assigned
+///   (i.e. not `Value::None`), else error naming the unassigned
+///   output; return them as a `Value::Tuple`.
+fn shape_user_fn_return(
+    canonical: &[Value],
+    nargout: usize,
+    fn_name: &str,
+    return_vars: &[String],
+) -> Result<Value, ScriptError> {
+    let declared = canonical.len();
+    if declared == 0 || nargout == 0 {
+        return Ok(Value::None);
+    }
+    if nargout > declared {
+        return Err(ScriptError::runtime(format!(
+            "function '{}' declares {} output(s), but caller asked for {}",
+            fn_name, declared, nargout
+        )));
+    }
+    if nargout == 1 {
+        return Ok(canonical[0].clone());
+    }
+    let mut vals: Vec<Value> = Vec::with_capacity(nargout);
+    for (i, v) in canonical.iter().take(nargout).enumerate() {
+        if matches!(v, Value::None) {
+            return Err(ScriptError::runtime(format!(
+                "function '{}': output '{}' was not assigned in the body",
+                fn_name, return_vars[i],
+            )));
+        }
+        vals.push(v.clone());
+    }
+    Ok(Value::Tuple(vals))
 }
 
 impl Default for Evaluator {

@@ -178,20 +178,30 @@ Pair it with `--obsidian` for a "edit in Editing view, see updates in
 Reading view" loop with no manual rerun.
 
 ```
-rustlab-notebook watch notebooks/                                  # in-place: render back to notebooks/<name>.md
+rustlab-notebook watch notebooks/ --obsidian                       # vault-friendly in-place rewrite
+rustlab-notebook watch notebooks/ -o notebooks/                    # non-vault in-place (explicit consent)
 rustlab-notebook watch notebooks/ -o vault/ --obsidian             # two-dir: vault-native output to a separate dir
 rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
 ```
 
+**Watch refuses to render in-place without explicit consent.** Bare
+`rustlab-notebook watch notebooks/` errors out with a message
+listing the three legitimate forms below. The intent is that a
+user trying watch for the first time can never accidentally rewrite
+their authored markdown — they have to opt in by name (`--obsidian`)
+or by pointing `-o` somewhere (even at the source dir, if that's
+genuinely what they want).
+
 Two layouts work:
 
-- **In-place (single file).** Omit `-o` and the watcher renders each
-  `.md` back onto itself. Open the same file in Obsidian's Editing
-  view to author; switch to Reading view to see the rendered output
-  inline. The renderer wraps its output regions in sentinel
-  comments so the next pass strips them on re-parse, producing
-  byte-identical output and converging in one extra render after
-  any user save.
+- **In-place (single file).** Either use `--obsidian` (the common
+  case — vault-friendly rewrites) or pass `-o <same-dir>` for plain
+  in-place rendering without the Obsidian-specific frontmatter and
+  wikilinks. Open the same file in Obsidian's Editing view to
+  author; switch to Reading view to see the rendered output inline.
+  The renderer wraps its output regions in sentinel comments so the
+  next pass strips them on re-parse, producing byte-identical output
+  and converging in one extra render after any user save.
 - **Two-dir.** Set `-o <dir>` to write outputs to a separate
   directory (typically a sibling Obsidian vault). Useful when you
   want the source tree to stay pristine, or when committing
@@ -1090,6 +1100,147 @@ Total sales: ${sum(sales):%,.0f} units.
 
 See `docs/functions.md` → Cell Arrays for full reference.
 
+## Persistent function cache
+
+The `cache` statement opts a notebook into a SQLite-backed function
+result cache. Place it at the top of a notebook:
+
+````markdown
+```rustlab
+cache enable
+```
+````
+
+After that line, every call to an in-scope user function consults the
+cache. Misses with serialisable results are stored; future calls with
+the same arguments return in roughly a millisecond regardless of how
+long the original computation took. The cache persists across
+`notebook render`, `notebook watch` restarts, REPL sessions, and CI
+runs.
+
+### Why use this
+
+For a notebook author the win is concrete: **the second render of an
+unchanged expensive cell is effectively free**. A 30-second FFT or
+eigensolve returns from disk in ~1 ms on every subsequent open of the
+notebook. The cache survives:
+
+- Restarting `notebook watch` (the in-memory prefix cache evaporates;
+  this one doesn't).
+- Switching between `notebook render` and `notebook watch`.
+- CI rebuilds, if you commit a populated `.rcache` next to the
+  source.
+- Multiple notebooks pointing at the same store — they share warm
+  results automatically.
+
+Common notebook patterns this accelerates:
+
+- **The edit-prose-and-iterate loop.** Tweak a paragraph or a
+  callout; only the prose pipeline runs. Expensive code blocks hit
+  the cache.
+- **Long parameter sweeps that revisit inputs.** Build a 1000-element
+  series from 200 unique calls; the second render touches each entry
+  once via the cache.
+- **Classroom or pair workflows.** Commit a warm `.rcache` so the
+  next person to open the notebook gets results in seconds, not
+  minutes.
+
+When the cache won't help:
+
+- Cells whose runtime is dominated by I/O (the cache stores compute
+  results, not faster disk reads).
+- Functions returning live figure handles, FIR stream state, or
+  lambdas — the cache silently skips these.
+- A truly one-off notebook with no second render coming.
+
+### Composes with `notebook watch`'s prefix cache
+
+The two caches solve different problems and stack:
+
+- The **block prefix cache** in `notebook watch` (in-memory, watcher-
+  scoped) handles *"I'm still in the same editing session — keep
+  blocks 0-4 cached while I'm fiddling with block 5."* It evaporates
+  when the watcher restarts.
+- The **persistent function cache** handles *"I closed everything
+  yesterday — when I open this tomorrow / in CI / on another machine
+  with the shipped `.rcache`, the expensive calls inside any
+  surviving block hit instantly."* It also helps when the prefix
+  cache invalidates (someone edited block 0 — every later block has
+  to re-execute, but the slow function calls inside them still hit).
+
+In short: prefix cache speeds up the same session; persistent
+function cache speeds up across sessions.
+
+### Storage
+
+`cache enable` with no path opens `.rustlab/cache.db` relative to the
+notebook's working directory. The workspace `.gitignore` excludes
+`.rustlab/` by default. To ship a notebook with a warm cache, use a
+named store and commit it explicitly:
+
+````markdown
+```rustlab
+cache enable "lectures/week3.rcache"
+```
+````
+
+### Purity contract
+
+A function is only cached if its body is pure. The walkers in
+`crates/rustlab-script/src/purity.rs` enforce this at three
+checkpoints — file-load (`cache add file`), explicit registration
+(`cache add function`), and inline definition under the default
+`all` scope:
+
+- It may not reference unbound names. `cache add file` hard-errors
+  with the offending file:line. An inline `function ...` defined
+  while the cache is active is silently dropped from cache scope
+  (still runs; just not cache-routed). `cache add function` is the
+  strictest — it hard-errors so the user knows the explicit ask
+  can't be honoured.
+- It may not call impure builtins: `rand` / `randn` / `randi`,
+  plotting (`plot`, `figure`, `hold`, …), file I/O (`load`, `save`,
+  `audio_read` / `audio_write`), TTY output (`disp`, `fprintf`).
+  Future names like `tic` / `toc` / `now` / `fopen` are reserved on
+  the denylist too — they get the same treatment if they ever
+  ship as real builtins.
+
+NaN arguments bypass the cache on a per-call basis. The call still
+runs; only the cache lookup is skipped. `cache status` lists the
+counters (hits, misses, impurity / free-var / non-cacheable-arg /
+stale-blob skips, plus a per-function hit/miss table).
+
+### CLI
+
+Manage the cache outside a notebook with `rustlab cache ...` (or the
+mirrored `rustlab-notebook cache ...`):
+
+```sh
+rustlab cache status
+rustlab cache list --limit 20
+rustlab cache prune --older-than 30d --max-size 5000000
+rustlab cache clear
+rustlab cache --store lectures/week3.rcache status
+```
+
+### Multi-instance behaviour
+
+SQLite is opened in WAL mode, so two `notebook watch` processes (or a
+REPL + a render) can share the same store safely. Two cold misses on
+the same key happen to both compute; the second writer's `INSERT` is
+silently absorbed by `INSERT OR IGNORE`. Results stay correct; only
+CPU is wasted in the race.
+
+**NFS caveat:** SQLite's file-locking semantics are unreliable over
+NFS. If your project lives on a network mount, pass `cache enable
+"/path/on/local/fs/my.rcache"` and skip the per-project default.
+
+For the full design rationale see
+`dev/plans/persistent_function_cache.md`. For a worked example, open
+`examples/notebooks/persistent_cache_demo.md`.
+
+---
+
 ## Examples
 
 See `examples/notebooks/` for working examples:
@@ -1100,3 +1251,4 @@ See `examples/notebooks/` for working examples:
 - **template_interpolation.md** — embedding computed values with `${expr}` and format specs
 - **string_arrays.md** — string arrays, categorical bar charts, `iscell()`
 - **multi_notebook.md** — directory rendering and cross-notebook links
+- **persistent_cache_demo.md** — `cache enable`, hit-vs-miss timing, file load, status / clear

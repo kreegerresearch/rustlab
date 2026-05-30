@@ -55,17 +55,44 @@ pub fn cmd_watch(
     theme: &'static ThemeColors,
     debounce_ms: u64,
 ) {
-    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-    let out_dir = output
-        .map(|o| std::path::absolute(&o).unwrap_or(o))
-        .unwrap_or_else(|| dir.clone());
-
     if !matches!(format, Format::Markdown { .. }) {
         eprintln!(
             "error: notebook watch supports --format markdown only (HTML/PDF/LaTeX coming later)"
         );
         std::process::exit(1);
     }
+
+    // Refuse to render in-place by default. The source-modifying
+    // single-file layout is only legitimate when the user explicitly
+    // opts in — either by naming `--obsidian` (vault-friendly
+    // rewrite intended to land in the source) or by passing
+    // `--output` (an explicit destination, even if it happens to be
+    // the source dir). Anything else is the wrong default: a fresh
+    // user expects `watch` to be read-only against their authored
+    // markdown.
+    let is_obsidian = matches!(&format, Format::Markdown { obsidian: Some(_) });
+    if output.is_none() && !is_obsidian {
+        eprintln!(
+            "error: notebook watch refuses to render in-place without explicit consent.\n\
+             \n\
+             To render to a separate directory:\n  \
+             rustlab-notebook watch {input} --output <DIR>\n\
+             \n\
+             To rewrite the source(s) in place with Obsidian-vault rewrites:\n  \
+             rustlab-notebook watch {input} --obsidian\n\
+             \n\
+             To keep the non-vault single-file layout (rendered output\n\
+             inlined back into each source), pass `--output` pointing at\n\
+             the source directory itself.",
+            input = dir.display(),
+        );
+        std::process::exit(1);
+    }
+
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let out_dir = output
+        .map(|o| std::path::absolute(&o).unwrap_or(o))
+        .unwrap_or_else(|| dir.clone());
 
     println!(
         "[watch] watching {} → {} (debounce: {} ms)",

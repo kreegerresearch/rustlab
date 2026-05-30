@@ -1,4 +1,4 @@
-use crate::ast::{BinOp, Expr, Stmt, StmtKind};
+use crate::ast::{BinOp, CacheStmt, Expr, Stmt, StmtKind};
 use crate::error::ScriptError;
 use crate::lexer::{Spanned, Token};
 
@@ -17,6 +17,12 @@ enum BlockEnd {
 struct Parser {
     tokens: Vec<Spanned>,
     pos: usize,
+}
+
+/// Recognised keyword arguments for the `cache` statement family. Used
+/// by the parser to stop bareword path collection at the first kwarg.
+fn is_cache_kwarg(name: &str) -> bool {
+    matches!(name, "older" | "max_size" | "limit")
 }
 
 impl Parser {
@@ -142,6 +148,9 @@ impl Parser {
                 }
                 Token::Close => {
                     stmts.push(self.parse_close_stmt()?);
+                }
+                Token::Cache => {
+                    stmts.push(self.parse_cache_stmt()?);
                 }
                 Token::Else | Token::ElseIf => {
                     return Err(ScriptError::Parse {
@@ -541,6 +550,7 @@ impl Parser {
             Token::Grid => self.parse_on_off_stmt("grid"),
             Token::Viewer => self.parse_on_off_stmt("viewer"),
             Token::Close => self.parse_close_stmt(),
+            Token::Cache => self.parse_cache_stmt(),
             Token::LBracket if self.is_multi_assign() => self.parse_multi_assign(),
             Token::Ident(_) => {
                 if self.is_field_assignment() {
@@ -681,6 +691,403 @@ impl Parser {
             });
         }
         Ok(Stmt::new(StmtKind::Run { path }, line))
+    }
+
+    /// Parse a `cache` statement. Dispatches on the first token after
+    /// `cache` to one of the subcommand sub-parsers. The bare-path
+    /// sugar (`cache "my.rcache"` / `cache foo.rcache`) maps to
+    /// `cache enable <path>`. See [`CacheStmt`] for the full grammar.
+    fn parse_cache_stmt(&mut self) -> Result<Stmt, ScriptError> {
+        let line = self.current_line();
+        self.advance(); // consume 'cache'
+
+        match self.peek_token().clone() {
+            Token::Newline | Token::Eof | Token::Semicolon => {
+                Err(ScriptError::Parse {
+                    line,
+                    msg: "cache: expected a subcommand (enable, off, add, remove, status, clear, prune) or a path".to_string(),
+                })
+            }
+            // `cache "path"` — sugar for `cache enable "path"`.
+            Token::Str(s) => {
+                self.advance();
+                let _ = self.consume_stmt_end()?;
+                Ok(Stmt::new(
+                    StmtKind::Cache(CacheStmt::Enable { path: Some(s) }),
+                    line,
+                ))
+            }
+            Token::Ident(name) => match name.as_str() {
+                "enable" => {
+                    self.advance();
+                    self.parse_cache_enable(line)
+                }
+                "off" => {
+                    self.advance();
+                    let _ = self.consume_stmt_end()?;
+                    Ok(Stmt::new(StmtKind::Cache(CacheStmt::Off), line))
+                }
+                "add" => {
+                    self.advance();
+                    self.parse_cache_add(line)
+                }
+                "remove" => {
+                    self.advance();
+                    self.parse_cache_remove(line)
+                }
+                "status" => {
+                    self.advance();
+                    let _ = self.consume_stmt_end()?;
+                    Ok(Stmt::new(StmtKind::Cache(CacheStmt::Status), line))
+                }
+                "clear" => {
+                    self.advance();
+                    let _ = self.consume_stmt_end()?;
+                    Ok(Stmt::new(StmtKind::Cache(CacheStmt::Clear), line))
+                }
+                "prune" => {
+                    self.advance();
+                    self.parse_cache_prune(line)
+                }
+                "list" => {
+                    self.advance();
+                    self.parse_cache_list(line)
+                }
+                // Not a known subcommand. Disambiguate via lookahead:
+                // a bareword followed by `.` or `/` is clearly a
+                // path-shaped sugar form (`cache foo.rcache`,
+                // `cache ./helpers`). Anything else — a sole
+                // identifier with no path punctuation — is almost
+                // certainly a typo for an intended subcommand (the
+                // motivating case: someone types `cache list`
+                // expecting to inspect entries, and silently opens
+                // a new store file named `list`). Error loudly so
+                // the typo isn't invisible; the path sugar still
+                // works for genuinely path-shaped input.
+                _ => {
+                    let next = self.peek_token_at(1);
+                    if matches!(next, Some(Token::Dot) | Some(Token::Slash)) {
+                        let path = self.collect_cache_bareword_path()?;
+                        let _ = self.consume_stmt_end()?;
+                        Ok(Stmt::new(
+                            StmtKind::Cache(CacheStmt::Enable { path: Some(path) }),
+                            line,
+                        ))
+                    } else {
+                        Err(ScriptError::Parse {
+                            line,
+                            msg: format!(
+                                "cache: unknown subcommand '{name}'. \
+                                 Subcommands: enable, off, add, remove, status, clear, prune, list. \
+                                 To open a store, use `cache enable \"{name}\"` or `cache enable {name}.rcache`."
+                            ),
+                        })
+                    }
+                }
+            },
+            other => Err(ScriptError::Parse {
+                line,
+                msg: format!("cache: unexpected token {:?}", other),
+            }),
+        }
+    }
+
+    /// Parse the body of `cache enable [path]`.
+    fn parse_cache_enable(&mut self, line: usize) -> Result<Stmt, ScriptError> {
+        let path = self.parse_optional_cache_path()?;
+        let _ = self.consume_stmt_end()?;
+        Ok(Stmt::new(
+            StmtKind::Cache(CacheStmt::Enable { path }),
+            line,
+        ))
+    }
+
+    /// Parse `cache add file <path>` / `cache add function <name>[, …]`.
+    ///
+    /// `function` is a reserved keyword (`Token::Function`), not an
+    /// identifier, so the `function` arm matches that token directly.
+    fn parse_cache_add(&mut self, line: usize) -> Result<Stmt, ScriptError> {
+        match self.peek_token().clone() {
+            Token::Ident(s) if s == "file" => {
+                self.advance();
+                let path = self
+                    .parse_optional_cache_path()?
+                    .ok_or_else(|| ScriptError::Parse {
+                        line: self.current_line(),
+                        msg: "cache add file: expected a path".to_string(),
+                    })?;
+                let _ = self.consume_stmt_end()?;
+                Ok(Stmt::new(
+                    StmtKind::Cache(CacheStmt::AddFile { path }),
+                    line,
+                ))
+            }
+            Token::Function => {
+                self.advance();
+                let names = self.parse_cache_name_list()?;
+                if names.is_empty() {
+                    return Err(ScriptError::Parse {
+                        line: self.current_line(),
+                        msg: "cache add function: expected at least one function name".to_string(),
+                    });
+                }
+                let _ = self.consume_stmt_end()?;
+                Ok(Stmt::new(
+                    StmtKind::Cache(CacheStmt::AddFunctions { names }),
+                    line,
+                ))
+            }
+            other => Err(ScriptError::Parse {
+                line,
+                msg: format!("cache add: expected 'file' or 'function', got {:?}", other),
+            }),
+        }
+    }
+
+    /// Parse `cache remove function <name>`. Same `function`-is-keyword
+    /// caveat as `parse_cache_add`.
+    fn parse_cache_remove(&mut self, line: usize) -> Result<Stmt, ScriptError> {
+        match self.peek_token().clone() {
+            Token::Function => {
+                self.advance();
+                let name = match self.peek_token().clone() {
+                    Token::Ident(n) => {
+                        self.advance();
+                        n
+                    }
+                    other => {
+                        return Err(ScriptError::Parse {
+                            line: self.current_line(),
+                            msg: format!(
+                                "cache remove function: expected a function name, got {:?}",
+                                other
+                            ),
+                        })
+                    }
+                };
+                let _ = self.consume_stmt_end()?;
+                Ok(Stmt::new(
+                    StmtKind::Cache(CacheStmt::RemoveFunction { name }),
+                    line,
+                ))
+            }
+            other => Err(ScriptError::Parse {
+                line,
+                msg: format!("cache remove: expected 'function', got {:?}", other),
+            }),
+        }
+    }
+
+    /// Parse `cache list [limit=N]`.
+    fn parse_cache_list(&mut self, line: usize) -> Result<Stmt, ScriptError> {
+        let limit = if self.peek_is_kwarg("limit") {
+            self.advance(); // ident
+            self.advance(); // =
+            Some(self.parse_cache_u64_value("limit")?)
+        } else {
+            None
+        };
+        let _ = self.consume_stmt_end()?;
+        Ok(Stmt::new(StmtKind::Cache(CacheStmt::List { limit }), line))
+    }
+
+    /// Parse `cache prune [older=DUR] [max_size=BYTES]`. Both kwargs
+    /// optional and may appear in either order.
+    fn parse_cache_prune(&mut self, line: usize) -> Result<Stmt, ScriptError> {
+        let mut older: Option<String> = None;
+        let mut max_size_bytes: Option<u64> = None;
+        loop {
+            if self.peek_is_kwarg("older") {
+                self.advance(); // ident
+                self.advance(); // =
+                // `older=` accepts either a quoted duration string or
+                // a bareword (Number+Ident pair like 30 + d).
+                older = Some(self.parse_cache_duration_value("older")?);
+                continue;
+            }
+            if self.peek_is_kwarg("max_size") {
+                self.advance();
+                self.advance();
+                max_size_bytes = Some(self.parse_cache_u64_value("max_size")?);
+                continue;
+            }
+            break;
+        }
+        let _ = self.consume_stmt_end()?;
+        Ok(Stmt::new(
+            StmtKind::Cache(CacheStmt::Prune {
+                older,
+                max_size_bytes,
+            }),
+            line,
+        ))
+    }
+
+    // ── small parser helpers used only by `cache` ────────────────────
+
+    /// Consume an optional path argument for `cache enable` /
+    /// `cache add file`. Accepts a quoted string OR a bareword that
+    /// isn't a known kwarg key. Returns `None` if the next token is a
+    /// statement terminator or the start of a kwarg.
+    fn parse_optional_cache_path(&mut self) -> Result<Option<String>, ScriptError> {
+        match self.peek_token() {
+            Token::Newline | Token::Eof | Token::Semicolon => Ok(None),
+            Token::Str(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Some(s))
+            }
+            Token::Ident(name) if is_cache_kwarg(name) => Ok(None),
+            Token::Ident(_) => Ok(Some(self.collect_cache_bareword_path()?)),
+            // Anything else (Number that starts a path, etc.) — also
+            // try bareword collection; collect_cache_bareword_path
+            // surfaces a clean error if it can't build anything.
+            _ => Ok(Some(self.collect_cache_bareword_path()?)),
+        }
+    }
+
+    /// Walk a contiguous run of path-shaped tokens (`Ident`, `Dot`,
+    /// `Slash`, `Minus`, `Number`) and join them. Stops at a newline,
+    /// EOF, semicolon, or any token that signals a kwarg or other
+    /// statement boundary. Mirrors `parse_run_stmt`'s bareword
+    /// collector, but stops at recognised cache kwargs so
+    /// `cache enable foo.rcache threshold=50` parses cleanly.
+    fn collect_cache_bareword_path(&mut self) -> Result<String, ScriptError> {
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            // Stop at a kwarg key (an Ident immediately followed by =).
+            if let Token::Ident(name) = self.peek_token() {
+                if is_cache_kwarg(name) && self.peek_token_at(1) == Some(&Token::Eq) {
+                    break;
+                }
+            }
+            let tok = self.peek_token().clone();
+            match tok {
+                Token::Newline | Token::Eof | Token::Semicolon => break,
+                Token::Ident(s) => {
+                    parts.push(s);
+                    self.advance();
+                }
+                Token::Dot => {
+                    parts.push(".".to_string());
+                    self.advance();
+                }
+                Token::Slash => {
+                    parts.push("/".to_string());
+                    self.advance();
+                }
+                Token::Minus => {
+                    parts.push("-".to_string());
+                    self.advance();
+                }
+                Token::Number(n) => {
+                    parts.push(format!("{}", n));
+                    self.advance();
+                }
+                Token::Str(s) => {
+                    parts.push(s);
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+        let path = parts.join("").trim().to_string();
+        if path.is_empty() {
+            return Err(ScriptError::Parse {
+                line: self.current_line(),
+                msg: "cache: expected a path".to_string(),
+            });
+        }
+        Ok(path)
+    }
+
+    /// `cache add function a, b, c` — comma-separated identifier list.
+    fn parse_cache_name_list(&mut self) -> Result<Vec<String>, ScriptError> {
+        let mut names = Vec::new();
+        loop {
+            match self.peek_token().clone() {
+                Token::Ident(n) => {
+                    self.advance();
+                    names.push(n);
+                }
+                _ => break,
+            }
+            if self.peek_token() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        Ok(names)
+    }
+
+    /// Parse a `u64` value used on the right side of a cache kwarg.
+    fn parse_cache_u64_value(&mut self, kwarg: &str) -> Result<u64, ScriptError> {
+        match self.peek_token().clone() {
+            Token::Number(n) if n.fract() == 0.0 && n >= 0.0 && n.is_finite() => {
+                self.advance();
+                Ok(n as u64)
+            }
+            other => Err(ScriptError::Parse {
+                line: self.current_line(),
+                msg: format!(
+                    "cache {kwarg}=: expected a non-negative integer, got {:?}",
+                    other
+                ),
+            }),
+        }
+    }
+
+    /// Parse a duration value: either a quoted string (`"30d"`) or a
+    /// bareword pair like `Number(30) Ident("d")`. Returns the value
+    /// as the user typed it; the evaluator parses the unit suffix.
+    fn parse_cache_duration_value(&mut self, kwarg: &str) -> Result<String, ScriptError> {
+        match self.peek_token().clone() {
+            Token::Str(s) => {
+                self.advance();
+                Ok(s)
+            }
+            Token::Number(n) => {
+                self.advance();
+                // Optional immediate Ident suffix (unit).
+                let unit = if let Token::Ident(u) = self.peek_token() {
+                    let u = u.clone();
+                    self.advance();
+                    u
+                } else {
+                    String::new()
+                };
+                let trimmed = if n.fract() == 0.0 {
+                    format!("{}", n as i64)
+                } else {
+                    format!("{}", n)
+                };
+                Ok(format!("{trimmed}{unit}"))
+            }
+            other => Err(ScriptError::Parse {
+                line: self.current_line(),
+                msg: format!(
+                    "cache {kwarg}=: expected a duration string or number, got {:?}",
+                    other
+                ),
+            }),
+        }
+    }
+
+    /// `true` iff the current token is `Ident(name)` and the next is
+    /// `=`. Used to disambiguate kwargs from bareword path components.
+    fn peek_is_kwarg(&self, name: &str) -> bool {
+        if let Token::Ident(s) = self.peek_token() {
+            if s == name {
+                return self.peek_token_at(1) == Some(&Token::Eq);
+            }
+        }
+        false
+    }
+
+    /// Lookahead helper. Returns `None` past EOF.
+    fn peek_token_at(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset).map(|s| &s.token)
     }
 
     /// Parse `hold on` / `hold off` / `grid on` / `grid off` (bare command)

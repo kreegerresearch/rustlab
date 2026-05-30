@@ -87,6 +87,56 @@ pub enum StmtKind {
         expr: Expr,
         suppress: bool,
     },
+    /// `cache <subcommand>` — persistent function-result cache directive.
+    /// See [`CacheStmt`] for the sub-forms.
+    Cache(CacheStmt),
+}
+
+/// Sub-forms of the `cache` statement (see Phase 3 of
+/// `dev/plans/persistent_function_cache.md`).
+///
+/// Semantics live with the evaluator; this enum is purely the parsed
+/// shape of the user's directive.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum CacheStmt {
+    /// `cache enable [path]`
+    ///
+    /// With no `path`, opens or creates the per-project default store at
+    /// `.rustlab/cache.db`. With a `path`, opens or creates that file.
+    Enable { path: Option<String> },
+    /// `cache off` — close the active store. Subsequent calls fall back
+    /// to direct execution; in-DB entries are preserved.
+    Off,
+    /// `cache add file <path>` — source a `.rlab` file and register
+    /// every top-level function it defines as cacheable. Free-variable
+    /// + impurity checks fire here.
+    AddFile { path: String },
+    /// `cache add function <name>[, <name>, ...]` — register one or
+    /// more already-defined functions for caching. Loud error if any
+    /// fails the purity contract.
+    AddFunctions { names: Vec<String> },
+    /// `cache remove function <name>` — drop a function from scope.
+    /// DB rows are kept; only the in-process dispatch routing changes.
+    RemoveFunction { name: String },
+    /// `cache status` — print this process's active store, scope, and
+    /// counters.
+    Status,
+    /// `cache clear` — wipe every entry in the active store. DB file
+    /// is preserved.
+    Clear,
+    /// `cache prune [older=DUR] [max_size=BYTES]` — drop old or
+    /// oversized entries. With no kwargs, defaults to `older=30d`.
+    Prune {
+        /// Duration string like `"30d"`, `"12h"`, `"500ms"`. Parsed
+        /// at exec time so the AST stays format-agnostic.
+        older: Option<String>,
+        max_size_bytes: Option<u64>,
+    },
+    /// `cache list [limit=N]` — print the active store's entries
+    /// (short-hex keys + sizes + timestamps). Never prints cached
+    /// values. Mirrors `rustlab cache list` so users in the REPL
+    /// don't have to drop to a shell to inspect what's been stored.
+    List { limit: Option<u64> },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

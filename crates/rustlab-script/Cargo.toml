@@ -13,6 +13,7 @@ viewer  = ["rustlab-plot/viewer"]
 
 [dependencies]
 rustlab-core.workspace  = true
+rustlab-cache.workspace = true
 rustlab-dsp.workspace   = true
 rustlab-plot.workspace  = true
 num-complex             = { workspace = true, features = ["serde"] }
@@ -25,6 +26,9 @@ rayon.workspace         = true
 zip.workspace           = true
 toml.workspace          = true
 serde                   = { workspace = true, features = ["derive", "rc"] }
+blake3.workspace        = true
 
 [dev-dependencies]
 rmp-serde.workspace = true
+tempfile.workspace  = true
+rusqlite.workspace  = true
