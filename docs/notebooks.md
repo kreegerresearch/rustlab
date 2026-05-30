@@ -76,8 +76,8 @@ rustlab-notebook render analysis.md              # → analysis.html (default, d
 rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
-rustlab-notebook render analysis.md -f markdown  # → analysis.md + plots/analysis/*.svg
-rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native md (wikilinks, _attachments/, frontmatter, iframe)
+rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
+rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native in-place rewrite
 rustlab-notebook render analysis.md -o out.html  # explicit output path
 rustlab-notebook watch notebooks/ --obsidian     # live re-render on save (Obsidian Reading view)
 ```
@@ -90,6 +90,13 @@ vault-native mode (see [Obsidian integration](#obsidian-integration--obsidian)
 below). See
 [`examples/notebooks/README.md`](../examples/notebooks/README.md) for the
 source/rendered split design pattern.
+
+**`-f markdown` requires explicit consent to overwrite the source.**
+Running `render note.md -f markdown` without `-o` or `--obsidian`
+would land on `note.md` itself — so the renderer refuses and prints
+the three legitimate forms. Same rule as `notebook watch`: only
+`--obsidian` modifies a `.md` source implicitly; everything else
+needs an explicit destination.
 
 ### Obsidian integration (`--obsidian`)
 
@@ -184,13 +191,20 @@ rustlab-notebook watch notebooks/ -o vault/ --obsidian             # two-dir: va
 rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
 ```
 
-**Watch refuses to render in-place without explicit consent.** Bare
-`rustlab-notebook watch notebooks/` errors out with a message
-listing the three legitimate forms below. The intent is that a
-user trying watch for the first time can never accidentally rewrite
-their authored markdown — they have to opt in by name (`--obsidian`)
-or by pointing `-o` somewhere (even at the source dir, if that's
-genuinely what they want).
+**Watch never modifies your source `.md` without explicit consent.**
+Bare `rustlab-notebook watch notebooks/` (or a single file) falls
+back to a read-only `notebook check` pass and prints a warning
+naming the three flag combinations that actually render. The intent
+is that a user trying watch for the first time can never
+accidentally rewrite their authored markdown — they have to opt in
+by name (`--obsidian`) or by pointing `-o` somewhere (even at the
+source dir, if that's genuinely what they want).
+
+The fallback is interim. The next iteration replaces it with an
+**interactive local web server** — same bare command, but the page
+opens in your browser and re-renders on save without touching the
+source. See `dev/plans/notebook_interactive_server.md` for the
+design.
 
 Two layouts work:
 

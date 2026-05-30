@@ -62,31 +62,36 @@ pub fn cmd_watch(
         std::process::exit(1);
     }
 
-    // Refuse to render in-place by default. The source-modifying
-    // single-file layout is only legitimate when the user explicitly
-    // opts in — either by naming `--obsidian` (vault-friendly
-    // rewrite intended to land in the source) or by passing
-    // `--output` (an explicit destination, even if it happens to be
-    // the source dir). Anything else is the wrong default: a fresh
-    // user expects `watch` to be read-only against their authored
-    // markdown.
+    // When the user invokes `watch` without `--obsidian` and without
+    // `--output`, they haven't named a target format or destination
+    // — the only safe action is read-only. We fall back to a
+    // one-shot `cmd_check` lint pass against the input and surface a
+    // clear "no target specified" warning explaining the three
+    // legitimate forms.
+    //
+    // This is the interim behaviour. The plan in
+    // `dev/plans/notebook_interactive_server.md` describes the
+    // intended next step: spin up a local web server, render the
+    // notebook to an interactive page, and re-render on save. Until
+    // that's built, validate-and-warn is the least surprising
+    // default that's still useful.
     let is_obsidian = matches!(&format, Format::Markdown { obsidian: Some(_) });
     if output.is_none() && !is_obsidian {
         eprintln!(
-            "error: notebook watch refuses to render in-place without explicit consent.\n\
+            "notebook watch: no target format specified — running read-only validation.\n\
              \n\
-             To render to a separate directory:\n  \
-             rustlab-notebook watch {input} --output <DIR>\n\
+             Three ways to make this an actual render:\n  \
+             rustlab-notebook watch {input} --obsidian              (vault-friendly in-place)\n  \
+             rustlab-notebook watch {input} --output <DIR>          (separate destination)\n  \
+             rustlab-notebook watch {input} --output {input}        (explicit in-place, non-vault)\n\
              \n\
-             To rewrite the source(s) in place with Obsidian-vault rewrites:\n  \
-             rustlab-notebook watch {input} --obsidian\n\
-             \n\
-             To keep the non-vault single-file layout (rendered output\n\
-             inlined back into each source), pass `--output` pointing at\n\
-             the source directory itself.",
+             For now, running `notebook check` against the input — the source files\n\
+             will NOT be modified.\n",
             input = dir.display(),
         );
-        std::process::exit(1);
+        let outcome = crate::cmd_check(dir.clone(), /* fix = */ false, /* strict = */ false);
+        let code = outcome.exit_code(/* strict = */ false);
+        std::process::exit(code);
     }
 
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);

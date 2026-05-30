@@ -519,6 +519,63 @@ impl CachedRenderSummary {
     }
 }
 
+/// Refuse to silently overwrite a notebook's source `.md` when
+/// `render -f markdown` would land its **defaulted** output on the
+/// input path. Returns `Err` after printing a structured message
+/// naming the three legitimate forms.
+///
+/// Rules:
+///
+/// 1. Only relevant for `Format::Markdown` — every other output
+///    format writes to a different extension and can't collide.
+/// 2. `--obsidian` (i.e. `Format::Markdown { obsidian: Some(_) }`)
+///    is the documented in-place consent flag and bypasses the guard.
+/// 3. **The guard only fires when output was DEFAULTED** (i.e. the
+///    caller passed `None` and the renderer computed `<stem>.md`).
+///    An explicit `-o <input>` is the user's deliberate "yes, I
+///    want in-place" — pass `was_default_output = false` and the
+///    guard short-circuits. This mirrors the watch rule's third
+///    legitimate form (`watch <input> -o <input>`).
+/// 4. The path check is against the resolved-absolute paths. We
+///    canonicalize the input (which must exist) and
+///    `std::path::absolute` the candidate output (which need not
+///    exist yet). Matching abs-paths → refuse.
+fn guard_markdown_overwrite(
+    canon_input: &Path,
+    out_path: &Path,
+    format: &Format,
+    was_default_output: bool,
+) -> Result<(), ()> {
+    let Format::Markdown { obsidian } = format else { return Ok(()); };
+    if obsidian.is_some() {
+        return Ok(());
+    }
+    if !was_default_output {
+        // User explicitly chose -o — that's their explicit consent,
+        // even if it points at the source. Same rule as
+        // `notebook watch <input> -o <input>`.
+        return Ok(());
+    }
+    let abs_out = match std::path::absolute(out_path) {
+        Ok(p) => p,
+        Err(_) => return Ok(()), // can't decide; let render proceed
+    };
+    let abs_out_norm = std::fs::canonicalize(&abs_out).unwrap_or(abs_out);
+    if canon_input != abs_out_norm {
+        return Ok(());
+    }
+    let input = canon_input.display();
+    eprintln!(
+        "error: rustlab-notebook render -f markdown refuses to overwrite the source.\n\
+         \n\
+         Three ways to make this an actual render:\n  \
+         rustlab-notebook render {input} -f markdown --obsidian        (vault-friendly in-place)\n  \
+         rustlab-notebook render {input} -f markdown -o <PATH>         (separate destination)\n  \
+         rustlab-notebook render {input} -f markdown -o {input}        (explicit in-place, non-vault)\n",
+    );
+    Err(())
+}
+
 /// Render a single notebook file using a watcher-owned cache. Returns
 /// a summary the watcher uses to log "code blocks unchanged" /
 /// "N of M code blocks cached" lines so the user can see the cache
@@ -531,6 +588,9 @@ pub fn cmd_render_cached(
     cache: &mut cache::NotebookCache,
 ) -> CachedRenderSummary {
     let _cwd_guard = CwdGuard::new();
+    // Capture the canonical input BEFORE the chdir so the markdown-
+    // overwrite guard can compare it against the resolved output.
+    let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -558,10 +618,17 @@ pub fn cmd_render_cached(
     let outcome = execute::execute_notebook_with_cache(&blocks, Some(cache));
 
     let ext = format.extension();
+    let was_default_output = output.is_none();
     let out_path = output.unwrap_or_else(|| {
         let stem = input.file_stem().unwrap_or_default();
         PathBuf::from(format!("{}.{ext}", stem.to_string_lossy()))
     });
+    if guard_markdown_overwrite(&canon_input, &out_path, &format, was_default_output).is_err() {
+        return CachedRenderSummary {
+            cached_blocks: 0,
+            total_blocks: 0,
+        };
+    }
 
     render_output(
         &out_path,
@@ -582,6 +649,9 @@ pub fn cmd_render_cached(
 
 pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {
     let _cwd_guard = CwdGuard::new();
+    // Capture the canonical input BEFORE the chdir so the markdown-
+    // overwrite guard can compare it against the resolved output.
+    let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -612,10 +682,14 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
     let rendered = execute::execute_notebook(&blocks);
 
     let ext = format.extension();
+    let was_default_output = output.is_none();
     let out_path = output.unwrap_or_else(|| {
         let stem = input.file_stem().unwrap_or_default();
         PathBuf::from(format!("{}.{ext}", stem.to_string_lossy()))
     });
+    if guard_markdown_overwrite(&canon_input, &out_path, &format, was_default_output).is_err() {
+        std::process::exit(1);
+    }
 
     render_output(
         &out_path,
@@ -1638,6 +1712,111 @@ fn escape_html(s: &str) -> String {
 mod tests {
     use super::*;
     use rustlab_plot::Theme;
+
+    // ── guard_markdown_overwrite ────────────────────────────────────
+
+    #[test]
+    fn guard_refuses_defaulted_markdown_overwrite_of_source() {
+        // Same canonical path for input and output, output was
+        // DEFAULTED (was_default_output = true) → must refuse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "body").unwrap();
+        let canon = std::fs::canonicalize(&path).unwrap();
+        assert!(
+            guard_markdown_overwrite(
+                &canon,
+                &canon,
+                &Format::Markdown { obsidian: None },
+                /* was_default_output = */ true,
+            )
+            .is_err(),
+            "guard must refuse a defaulted output that resolves to the source"
+        );
+    }
+
+    #[test]
+    fn guard_allows_explicit_output_pointing_at_source() {
+        // User said `-o <input>` explicitly — that's the documented
+        // third legitimate form. Pass.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "body").unwrap();
+        let canon = std::fs::canonicalize(&path).unwrap();
+        assert!(
+            guard_markdown_overwrite(
+                &canon,
+                &canon,
+                &Format::Markdown { obsidian: None },
+                /* was_default_output = */ false,
+            )
+            .is_ok(),
+            "explicit `-o <input>` is the user's deliberate consent"
+        );
+    }
+
+    #[test]
+    fn guard_allows_markdown_when_output_is_different() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("note.md");
+        let output = dir.path().join("rendered.md");
+        std::fs::write(&input, "body").unwrap();
+        let canon_in = std::fs::canonicalize(&input).unwrap();
+        assert!(
+            guard_markdown_overwrite(
+                &canon_in,
+                &output,
+                &Format::Markdown { obsidian: None },
+                /* was_default_output = */ false,
+            )
+            .is_ok(),
+            "guard must allow distinct output path"
+        );
+    }
+
+    #[test]
+    fn guard_allows_obsidian_in_place_even_when_defaulted() {
+        // --obsidian is the explicit consent flag; guard must pass
+        // even when input == output AND the output was defaulted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "body").unwrap();
+        let canon = std::fs::canonicalize(&path).unwrap();
+        let opts = ObsidianOpts::default();
+        assert!(
+            guard_markdown_overwrite(
+                &canon,
+                &canon,
+                &Format::Markdown {
+                    obsidian: Some(opts)
+                },
+                /* was_default_output = */ true,
+            )
+            .is_ok(),
+            "--obsidian bypasses the guard"
+        );
+    }
+
+    #[test]
+    fn guard_ignores_non_markdown_formats() {
+        // HTML / LaTeX / PDF write to different extensions and can't
+        // collide with the source. Guard must always pass.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "body").unwrap();
+        let canon = std::fs::canonicalize(&path).unwrap();
+        for (label, fmt) in [
+            ("Html", Format::Html),
+            ("Latex", Format::Latex),
+            ("Pdf", Format::Pdf),
+        ] {
+            assert!(
+                guard_markdown_overwrite(&canon, &canon, &fmt, /* was_default_output = */ true)
+                    .is_ok(),
+                "guard must ignore {label} — distinct extension"
+            );
+        }
+    }
 
     // write_output is the single sink for rendered .md/.html/.tex output.
     // Skipping the actual write when content is unchanged is what lets
