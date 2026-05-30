@@ -225,6 +225,13 @@ Behaviour:
   `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
   then `gio open` / `sensible-browser`, falling back to printing the
   URL if none are present.
+- **Source pane (split view).** A "Source" button in the top-right
+  toolbar slides in a pane showing the raw `.md` (served from
+  `/raw/<slug>`). The toolbar and pane live outside the rendered
+  `<main>`, so live re-renders update only the rendered side and
+  leave the pane in place; an open read-only pane refreshes itself
+  when a save lands. With `--editable` this pane becomes an
+  in-browser editor (see below).
 - **Ctrl-C** stops the server. Plot artefacts live in a tempdir
   that's cleaned up on exit.
 - **Live reload on save** with block-level diffing. The rendered

@@ -158,17 +158,23 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (banner) { banner.remove(); banner = null; }
   }
 
-  function rerunBodyScripts() {
-    document.body.querySelectorAll('script').forEach(old => {
+  // The rendered notebook lives inside <main>; the page chrome
+  // (toolbar, source/editor pane — see server::page) sits OUTSIDE it.
+  // Scoping updates to <main> keeps that chrome (and any open editor
+  // buffer) intact across re-renders.
+  function mainEl() { return document.querySelector('main'); }
+
+  function rerunScripts(root) {
+    root.querySelectorAll('script').forEach(old => {
       const s = document.createElement('script');
       for (const attr of old.attributes) s.setAttribute(attr.name, attr.value);
       s.textContent = old.textContent;
       old.parentNode.replaceChild(s, old);
     });
   }
-  function rerunKaTeX() {
+  function rerunKaTeX(root) {
     if (window.renderMathInElement) {
-      window.renderMathInElement(document.body, {
+      window.renderMathInElement(root, {
         delimiters: [
           {left: '$$', right: '$$', display: true},
           {left: '$',  right: '$',  display: false}
@@ -176,12 +182,26 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       });
     }
   }
+  // Page chrome registers a hook here to react to re-renders (e.g.
+  // refresh an open read-only source pane). Best-effort.
+  function afterUpdate() {
+    if (window.__rlAfterUpdate) { try { window.__rlAfterUpdate(); } catch (e) {} }
+  }
 
   function applyFull(html) {
     const parsed = new DOMParser().parseFromString(html, 'text/html');
-    document.body.innerHTML = parsed.body.innerHTML;
-    rerunBodyScripts();
-    rerunKaTeX();
+    const newMain = parsed.querySelector('main');
+    const tgt = mainEl();
+    if (newMain && tgt) {
+      tgt.innerHTML = newMain.innerHTML;
+    } else {
+      // Degenerate render with no <main> — replace the whole body.
+      document.body.innerHTML = parsed.body.innerHTML;
+    }
+    if (parsed.title) document.title = parsed.title;
+    rerunScripts(tgt || document.body);
+    rerunKaTeX(tgt || document.body);
+    afterUpdate();
   }
 
   function applyPartial(blocks) {
@@ -210,21 +230,10 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     for (const b of blocks) {
       const fresh = refreshed[b.position];
       if (!fresh) continue;
-      fresh.querySelectorAll('script').forEach(old => {
-        const s = document.createElement('script');
-        for (const attr of old.attributes) s.setAttribute(attr.name, attr.value);
-        s.textContent = old.textContent;
-        old.parentNode.replaceChild(s, old);
-      });
-      if (window.renderMathInElement) {
-        window.renderMathInElement(fresh, {
-          delimiters: [
-            {left: '$$', right: '$$', display: true},
-            {left: '$',  right: '$',  display: false}
-          ]
-        });
-      }
+      rerunScripts(fresh);
+      rerunKaTeX(fresh);
     }
+    afterUpdate();
   }
 
   function connect() {

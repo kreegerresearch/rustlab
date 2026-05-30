@@ -199,9 +199,10 @@ async fn rerender_notebook(theme: &'static ThemeColors, state: &Arc<ServerState>
     let input = nb.source_path.clone();
     let slug = nb.slug.clone();
     let plot_root = state.plot_dir.path().to_path_buf();
+    let editable = state.editable;
 
     let render_result = tokio::task::spawn_blocking(move || {
-        super::render_for_server(&input, theme, &plot_root, &slug)
+        super::render_for_server(&input, theme, &plot_root, &slug, editable)
     })
     .await;
 
@@ -326,7 +327,8 @@ mod tests {
         let nb_path = dir.path().join("nb.md");
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
-        let html0 = super::super::render_for_server(&nb_path, theme, dir.path(), "nb").unwrap();
+        let html0 =
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false).unwrap();
         let (state, nb) = single_state(&nb_path, html0);
 
         let mut sub = nb.broadcast.subscribe();

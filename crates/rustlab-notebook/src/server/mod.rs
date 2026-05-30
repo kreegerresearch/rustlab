@@ -16,6 +16,7 @@
 pub mod assets;
 pub mod diff;
 pub mod http;
+pub mod page;
 pub mod render_loop;
 pub mod ws;
 
@@ -145,7 +146,7 @@ fn build_state(
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
-        let html = render_for_server(path, theme, plot_tempdir.path(), &slug)
+        let html = render_for_server(path, theme, plot_tempdir.path(), &slug, editable)
             .with_context(|| format!("rendering {} for server", path.display()))?;
         let nb = Arc::new(http::Notebook::new(slug.clone(), path.clone(), title, html));
         notebooks.insert(slug.clone(), nb);
@@ -211,9 +212,10 @@ fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
 /// directory mode keeps each notebook's plots separate.
 pub(super) fn render_for_server(
     input: &Path,
-    theme: &ThemeColors,
+    theme: &'static ThemeColors,
     plot_root: &Path,
     slug: &str,
+    editable: bool,
 ) -> Result<String> {
     use crate::{embed, execute, parse, render};
 
@@ -237,6 +239,7 @@ pub(super) fn render_for_server(
     let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, None);
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
+    let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
     Ok(html)
 }
 

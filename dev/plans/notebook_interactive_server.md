@@ -511,8 +511,14 @@ shipped.
       `/raw/<slug>`, `/plots/<slug>/`. Also hardened browser
       auto-open for WSL/Linux (`wslview`→`xdg-open`→`gio`→
       `sensible-browser`).
-- [ ] Source-pane mode: split view with the rendered output on
-      one side and the raw `.md` on the other
+- [x] **Source-pane / split view (5b, done 2026-05-30)** — new
+      `server::page::inject_chrome` adds a top-right toolbar with a
+      "Source" toggle and a slide-in pane showing the raw `.md`
+      (fetched from `/raw/<slug>`). Chrome lives outside `<main>`;
+      the WS client's `applyFull`/`applyPartial` were rescoped from
+      `document.body` to `<main>` so the chrome (and a future open
+      editor) survive re-renders. An open read-only pane refreshes
+      via a `window.__rlAfterUpdate` hook the WS client calls.
 - [ ] Optional in-browser editor (Monaco / CodeMirror) writing
       back to the same `.md` — explicitly opt-in via
       `--editable`, because it violates the "only `--obsidian`
@@ -553,6 +559,22 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-30 — **Phase 5b complete.** Source pane / split view.
+  New module `server/page.rs`: `inject_chrome(html, theme, opts)`
+  injects a `<style>` into `<head>` and a toolbar + slide-in source
+  pane before `</body>`. The "Source" button toggles a fixed
+  right-side pane that fetches `/raw/<slug>` into a `<pre>` and
+  shifts `<main>` left (responsive: full-width pane under 768px).
+  `render_for_server` now ends with `page::inject_chrome` (threads a
+  new `editable` param through from `build_state`/the coordinator).
+  Critical WS-client refactor: `applyFull` no longer replaces
+  `document.body` — it swaps only `<main>`'s `innerHTML` (and
+  `document.title`), so the injected chrome survives re-renders;
+  `applyPartial` unchanged in addressing (sections live in `<main>`)
+  but now shares the `rerunScripts`/`rerunKaTeX(root)` helpers and
+  fires a `window.__rlAfterUpdate` hook the pane uses to refresh.
+  4 `page` unit tests + smoke confirming the toolbar sits after
+  `</main>`. Next: 5c in-browser editor.
 - 2026-05-30 — **Phase 5a complete.** Directory mode landed.
   `ServerState` generalised from one notebook to
   `HashMap<slug, Arc<Notebook>>` (each `Notebook` owns its
