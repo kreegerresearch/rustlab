@@ -9,7 +9,9 @@
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use rustlab_notebook::server::assets::{asset_for_path, rewrite_cdn_urls};
+use rustlab_notebook::server::http::{Notebook, ServerState};
 use rustlab_plot::Theme;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::util::ServiceExt;
@@ -55,24 +57,25 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
     );
     let html = rewrite_cdn_urls(&html);
 
-    // Move the plot_dir into a fresh TempDir for ServerState (it owns it).
-    // The original `plot_dir` handle drops here when we re-create.
+    // Single-notebook state keyed by slug "smoke".
     let owned_plot_dir = TempDir::new().unwrap();
-    // Copy any animation gifs the render produced into the owned dir.
-    // For this smoke fixture there are no plots, but the test stays
-    // honest about the contract.
-    if let Ok(entries) = std::fs::read_dir(plot_dir.path()) {
-        for entry in entries.flatten() {
-            let from = entry.path();
-            let to = owned_plot_dir.path().join(entry.file_name());
-            let _ = std::fs::copy(&from, &to);
-        }
-    }
-
-    let state = Arc::new(rustlab_notebook::server::http::ServerState::new(
+    let nb = Arc::new(Notebook::new(
+        "smoke".to_string(),
+        notebook.clone(),
+        title,
         html,
-        owned_plot_dir,
     ));
+    let mut notebooks = HashMap::new();
+    notebooks.insert("smoke".to_string(), nb);
+    let state = Arc::new(ServerState {
+        notebooks,
+        order: vec!["smoke".to_string()],
+        plot_dir: owned_plot_dir,
+        editable: false,
+        single: true,
+        theme,
+        index_title: "smoke".to_string(),
+    });
     (state, src_dir, plot_dir)
 }
 
@@ -84,7 +87,7 @@ async fn notebook_html_renders_smoke_fixture() {
     let res = app
         .oneshot(
             Request::builder()
-                .uri("/notebook.html")
+                .uri("/n/smoke")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -130,7 +133,7 @@ async fn notebook_html_renders_smoke_fixture() {
 }
 
 #[tokio::test]
-async fn root_redirects_to_notebook_html() {
+async fn root_redirects_to_sole_notebook() {
     let (state, _src, _plot) = build_state();
     let app = rustlab_notebook::server::http::router(state);
 
@@ -145,10 +148,7 @@ async fn root_redirects_to_notebook_html() {
         .unwrap();
 
     assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-    assert_eq!(
-        res.headers().get(header::LOCATION).unwrap(),
-        "/notebook.html"
-    );
+    assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/n/smoke");
 }
 
 #[tokio::test]

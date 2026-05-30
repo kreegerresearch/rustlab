@@ -3,18 +3,47 @@
 //! re-rendered HTML arrives over WS wrapped in
 //! `{"kind":"full","html":"…"}`.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use rustlab_notebook::server::{
-    http::{router, ServerState},
+    http::{router, Notebook, ServerState},
     render_loop,
 };
 use rustlab_plot::Theme;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
+
+/// Build a single-notebook `ServerState` keyed by `slug` — the shape
+/// `server::start` produces for `watch <file>`.
+fn single_state(
+    slug: &str,
+    source_path: &Path,
+    html: String,
+    plot_dir: TempDir,
+) -> Arc<ServerState> {
+    let nb = Arc::new(Notebook::new(
+        slug.to_string(),
+        source_path.to_path_buf(),
+        slug.to_string(),
+        html,
+    ));
+    let mut notebooks = HashMap::new();
+    notebooks.insert(slug.to_string(), nb);
+    Arc::new(ServerState {
+        notebooks,
+        order: vec![slug.to_string()],
+        plot_dir,
+        editable: false,
+        single: true,
+        theme: Theme::Dark.colors(),
+        index_title: slug.to_string(),
+    })
+}
 
 const INITIAL: &str = "# Live Reload Smoke\n\nbefore-edit body.\n";
 const EDITED: &str = "# Live Reload Smoke\n\nafter-edit body with marker LIVE_RELOAD_OK.\n";
@@ -92,7 +121,7 @@ async fn ws_receives_full_envelope_on_file_save() {
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
     };
-    let state = Arc::new(ServerState::new(initial_html, plot_dir));
+    let state = single_state("smoke", &nb_path, initial_html, plot_dir);
 
     // ── 3. Bind ephemeral port ────────────────────────────────────
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -100,7 +129,7 @@ async fn ws_receives_full_envelope_on_file_save() {
 
     // ── 4. Spawn the fs watcher + render coordinator ──────────────
     let (_watcher, _coord_handle) =
-        render_loop::spawn(nb_path.clone(), theme, state.clone()).unwrap();
+        render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
 
     // ── 5. Spawn axum server on this runtime ──────────────────────
     let app = router(state.clone());
@@ -110,7 +139,7 @@ async fn ws_receives_full_envelope_on_file_save() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // ── 6. Open WebSocket client ──────────────────────────────────
-    let ws_url = format!("ws://{}/ws", addr);
+    let ws_url = format!("ws://{}/n/smoke/ws", addr);
     let (mut ws, _resp) = connect_async(&ws_url)
         .await
         .expect("ws connect failed");
@@ -188,17 +217,17 @@ async fn ws_receives_partial_envelope_when_one_of_many_blocks_changes() {
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
     };
-    let state = Arc::new(ServerState::new(initial_html, plot_dir));
+    let state = single_state("phase3", &nb_path, initial_html, plot_dir);
 
     // Bind, spawn coordinator, serve.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (_watcher, _coord) = render_loop::spawn(nb_path.clone(), theme, state.clone()).unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/ws", addr);
+    let ws_url = format!("ws://{}/n/phase3/ws", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     // Edit only the middle prose block.

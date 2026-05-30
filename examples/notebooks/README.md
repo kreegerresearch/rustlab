@@ -53,6 +53,9 @@ gallery, point the interactive server at it:
 rustlab-notebook watch examples/notebooks/contour_plots.md
 # → opens http://127.0.0.1:8042 in your browser
 # → save the .md in your editor → page swaps the changed blocks live
+
+rustlab-notebook watch examples/notebooks/
+# → serves every notebook behind an index page at /, one URL each
 ```
 
 Source `.md` is never modified, no `_attachments/` directory is

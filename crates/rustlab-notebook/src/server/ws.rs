@@ -7,19 +7,28 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::response::Response;
+use axum::extract::{Path as AxPath, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use tokio::sync::broadcast::error::RecvError;
 
-use super::http::ServerState;
+use super::http::{Notebook, ServerState};
 
-/// Axum upgrade handler. Sends the upgrade response, then hands the
-/// socket to [`handle_socket`].
+/// Axum upgrade handler for `/n/{slug}/ws`. Resolves the notebook by
+/// slug, then hands the socket to [`handle_socket`] bound to that
+/// notebook's broadcast channel. Unknown slug → 404 (no upgrade).
 pub async fn ws_upgrade(
     State(state): State<Arc<ServerState>>,
+    AxPath(slug): AxPath<String>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    match state.notebook(&slug) {
+        Some(nb) => {
+            let nb = nb.clone();
+            ws.on_upgrade(move |socket| handle_socket(socket, nb))
+        }
+        None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
+    }
 }
 
 /// Per-connection task: stream every re-render as it lands. We do
@@ -36,8 +45,8 @@ pub async fn ws_upgrade(
 /// `dev/plans/notebook_interactive_server.md` locked-in #14; see
 /// `dev/plans/notebook_interactive_widgets.md` for the planned
 /// `{"kind":"widget_update",…}` payload that would land here.
-async fn handle_socket(mut socket: WebSocket, state: Arc<ServerState>) {
-    let mut rx = state.broadcast.subscribe();
+async fn handle_socket(mut socket: WebSocket, nb: Arc<Notebook>) {
+    let mut rx = nb.broadcast.subscribe();
 
     loop {
         tokio::select! {
@@ -83,7 +92,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<ServerState>) {
                         // Client fell so far behind we lost frames; re-sync
                         // from the latest state and keep going.
                         let resync = {
-                            let guard = state.html.read().await;
+                            let guard = nb.html.read().await;
                             full_envelope(&guard)
                         };
                         if socket.send(Message::Text(resync.into())).await.is_err() {
@@ -120,7 +129,12 @@ pub fn full_envelope(html: &str) -> String {
 /// don't ship stale content if updates were missed.
 pub const WS_CLIENT_SCRIPT: &str = r#"<script>
 (() => {
-  const url = `ws://${location.host}/ws`;
+  // Derive this page's notebook slug from its URL (`/n/<slug>`). The
+  // index page (`/`) has no slug, so it simply never opens a socket.
+  const slugMatch = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
+  if (!slugMatch) return;
+  const slug = slugMatch[1];
+  const url = `ws://${location.host}/n/${slug}/ws`;
   let ws;
   let reconnectDelay = 500;
   let reconnectTries = 0;

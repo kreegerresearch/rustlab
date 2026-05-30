@@ -1,35 +1,37 @@
-//! Phase-2 render coordinator + fs watcher.
+//! Render coordinator + fs watcher.
 //!
 //! ## Pipeline
 //!
 //! ```text
 //! notify watcher (std thread)
-//!     │   (raw events on the input .md / its parent dir)
+//!     │   (raw events on the watched file / directory tree)
 //!     ▼
-//! filter & forward (same std thread)
-//!     │   (tokio::sync::mpsc — bounded channel)
+//! filter & map path → slug (same std thread)
+//!     │   (tokio::sync::mpsc — carries the slug that changed)
 //!     ▼
 //! coordinator task (tokio)
-//!     │  debounce 250ms → spawn_blocking(render_for_server)
+//!     │  debounce 250ms → for each changed slug: spawn_blocking(render)
 //!     ▼
-//! state.html.write() + state.broadcast.send(json envelope)
+//! notebook.html.write() + notebook.broadcast.send(json envelope)
 //!     │
-//!     ▼  /ws subscribers forward the JSON message to every connected page.
+//!     ▼  /n/<slug>/ws subscribers forward the JSON to every connected page.
 //! ```
+//!
+//! Phase 5 generalised this from one notebook to many: a single
+//! directory watcher feeds a single coordinator that maps each changed
+//! path back to its [`Notebook`] (by source path) and re-renders just
+//! that one. Single-file mode is the one-entry case.
 //!
 //! ## Cancellation policy
 //!
-//! Phase 2 ships *let-it-finish*: a save during a slow render does
-//! not preempt the in-flight execution (rustlab-script doesn't poll
-//! for cancellation tokens — that's a Phase 5 follow-up). What
-//! Phase 2 *does* guarantee: only one render runs at a time, and
-//! once the current render finishes, the coordinator immediately
-//! consumes any pending event and starts a fresh render. So a
-//! prose edit during a slow code-block render waits exactly one
-//! debounce cycle past the slow render completing — not multiple
-//! cycles, and not forever.
+//! Today this ships *let-it-finish*: a save during a slow render does
+//! not preempt the in-flight execution. Only one render runs at a time
+//! per coordinator; once it finishes, any pending slugs trigger fresh
+//! renders. (Phase 5d replaces this with true preemption via a
+//! rustlab-script cancellation token.)
 
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,8 +40,8 @@ use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rustlab_plot::ThemeColors;
 use tokio::sync::mpsc;
 
-use super::diff::{self, Block, Broadcast};
-use super::http::ServerState;
+use super::diff::{self, Broadcast};
+use super::http::{Notebook, ServerState};
 use super::ws;
 
 /// Debounce window for filesystem events. Matches the existing
@@ -47,30 +49,40 @@ use super::ws;
 /// editor save collapses to one render pass.
 const DEBOUNCE: Duration = Duration::from_millis(250);
 
-/// Spawn the render coordinator. Returns the live `notify` watcher
-/// (caller must keep it alive — dropping it stops the fs events) and
-/// a `JoinHandle` for the coordinator task (caller drops it when
-/// the runtime shuts down).
+/// Spawn the render coordinator. `watch_root` is the directory (dir
+/// mode) or the single notebook file (file mode); `is_dir` selects
+/// recursive directory watching vs watching the file's parent.
+///
+/// Returns the live `notify` watcher (caller must keep it alive —
+/// dropping it stops fs events) and a `JoinHandle` for the coordinator
+/// task (caller drops it when the runtime shuts down).
 pub fn spawn(
-    input: PathBuf,
+    watch_root: &Path,
+    is_dir: bool,
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
 ) -> Result<(RecommendedWatcher, tokio::task::JoinHandle<()>)> {
-    let canonical_input = std::fs::canonicalize(&input)
-        .with_context(|| format!("canonicalizing {}", input.display()))?;
-    let target_name = canonical_input
-        .file_name()
-        .map(|s| s.to_os_string())
-        .ok_or_else(|| anyhow::anyhow!("input has no file name: {}", input.display()))?;
+    // Map every notebook's source path → slug so the bridge can route a
+    // changed file to the right notebook. Key by canonical path when we
+    // can resolve it, falling back to the stored path.
+    let mut by_path: HashMap<PathBuf, String> = HashMap::new();
+    for (slug, nb) in &state.notebooks {
+        let key = std::fs::canonicalize(&nb.source_path).unwrap_or_else(|_| nb.source_path.clone());
+        by_path.insert(key, slug.clone());
+    }
 
-    // Watch the parent dir non-recursively so atomic-rename editor
-    // saves (vim default, vscode's "safe write") still trigger us
-    // after the inode swap. We filter by file name in the bridge
-    // below so unrelated siblings don't cause spurious renders.
-    let parent = canonical_input
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
+    // What to watch, and how. Dir mode: the whole tree (catches new
+    // files and nested notebooks). File mode: the parent dir
+    // non-recursively, so atomic-rename editor saves still fire.
+    let (watch_target, mode) = if is_dir {
+        (watch_root.to_path_buf(), RecursiveMode::Recursive)
+    } else {
+        let parent = watch_root
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        (parent, RecursiveMode::NonRecursive)
+    };
 
     let (raw_tx, raw_rx) = std::sync::mpsc::channel::<notify::Result<notify::Event>>();
     let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res| {
@@ -78,12 +90,12 @@ pub fn spawn(
     })
     .context("creating notify watcher")?;
     watcher
-        .watch(&parent, RecursiveMode::NonRecursive)
-        .with_context(|| format!("watching {}", parent.display()))?;
+        .watch(&watch_target, mode)
+        .with_context(|| format!("watching {}", watch_target.display()))?;
 
     // Bridge: std mpsc (notify thread) → tokio mpsc (coordinator task).
-    let (tx, rx) = mpsc::unbounded_channel::<()>();
-    let target_name_for_thread = target_name.clone();
+    // Forwards the slug of whichever watched notebook changed.
+    let (tx, rx) = mpsc::unbounded_channel::<String>();
     std::thread::spawn(move || {
         while let Ok(res) = raw_rx.recv() {
             let event = match res {
@@ -96,30 +108,45 @@ pub fn spawn(
             if !is_relevant_event(&event) {
                 continue;
             }
-            if !event
-                .paths
-                .iter()
-                .any(|p| p.file_name() == Some(&target_name_for_thread))
-            {
-                continue;
-            }
-            if tx.send(()).is_err() {
-                break; // coordinator gone, watcher will drop next
+            for path in &event.paths {
+                if let Some(slug) = match_slug(&by_path, path) {
+                    if tx.send(slug).is_err() {
+                        return; // coordinator gone
+                    }
+                }
             }
         }
     });
 
-    // Spawn coordinator task.
-    let handle = tokio::spawn(coordinator(canonical_input, theme, state, rx));
-
+    let handle = tokio::spawn(coordinator(theme, state, rx));
     Ok((watcher, handle))
 }
 
+/// Resolve an event path back to a notebook slug. Tries an exact
+/// canonical-path match first, then falls back to a unique file-name
+/// match (handles atomic-rename saves where the new inode hasn't been
+/// canonicalised into our map).
+fn match_slug(by_path: &HashMap<PathBuf, String>, path: &Path) -> Option<String> {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Some(slug) = by_path.get(&canon) {
+        return Some(slug.clone());
+    }
+    // Fall back to matching by file name if exactly one notebook has it.
+    let name = path.file_name()?;
+    let mut hit: Option<&String> = None;
+    for (key, slug) in by_path {
+        if key.file_name() == Some(name) {
+            if hit.is_some() {
+                return None; // ambiguous — don't guess
+            }
+            hit = Some(slug);
+        }
+    }
+    hit.cloned()
+}
+
 /// Decide whether a notify event is a content-changing save worth
-/// re-rendering on. We drop pure-access and metadata-only events
-/// because editors and the OS produce a steady drizzle of them; only
-/// content writes (Modify / Create / Remove + the catch-all `Any`
-/// that some backends emit) actually warrant a re-render.
+/// re-rendering on. Pure-access / metadata-only events are dropped.
 fn is_relevant_event(event: &notify::Event) -> bool {
     matches!(
         event.kind,
@@ -127,110 +154,115 @@ fn is_relevant_event(event: &notify::Event) -> bool {
     )
 }
 
-/// Coordinator task: receives debounced "something changed" pings
-/// and produces one re-render per debounce cycle. Loops forever
-/// until the channel closes (server shutdown).
-///
-/// Phase 3 added the block-diff decision: after each render the
-/// coordinator splits the new document into blocks
-/// ([`diff::split_blocks`]), compares against the previous
-/// snapshot, and either sends a `kind="partial"` envelope (only
-/// changed blocks), a `kind="full"` envelope (large change or
-/// blocks removed — see [`diff::classify`]), or nothing at all
-/// (renderer was deterministic and the source didn't change).
+/// Coordinator task: receives debounced "slug X changed" pings and
+/// produces one re-render per changed notebook per debounce cycle.
+/// Loops until the channel closes (server shutdown).
 async fn coordinator(
-    input: PathBuf,
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
-    mut rx: mpsc::UnboundedReceiver<()>,
+    mut rx: mpsc::UnboundedReceiver<String>,
 ) {
-    // Seed the prev-block snapshot from the initial render that
-    // `server::start` produced before we were spawned.
-    let mut prev_blocks: Vec<Block> = {
-        let html = state.html.read().await;
-        diff::split_blocks(&html)
-    };
-
     loop {
-        // Wait for at least one event.
-        if rx.recv().await.is_none() {
-            return;
-        }
-        // Debounce: drain further events until the channel is quiet
-        // for `DEBOUNCE`. Editors produce a burst per save; this
-        // collapses the burst into one render pass.
+        // Wait for at least one event, capturing the first slug.
+        let first = match rx.recv().await {
+            Some(s) => s,
+            None => return,
+        };
+        let mut pending: HashSet<String> = HashSet::new();
+        pending.insert(first);
+
+        // Debounce: keep draining slugs until quiet for `DEBOUNCE`.
         loop {
             tokio::select! {
                 evt = rx.recv() => {
-                    if evt.is_none() { return; }
+                    match evt {
+                        Some(s) => { pending.insert(s); }
+                        None => return,
+                    }
                 }
                 _ = tokio::time::sleep(DEBOUNCE) => break,
             }
         }
 
-        // Render off the runtime thread — execution is CPU-bound.
-        // The render reads the plot tempdir from state directly.
-        let render_input = input.clone();
-        let render_state = state.clone();
-        let render_result = tokio::task::spawn_blocking(move || {
-            let plot_dir = render_state.plot_dir.path().to_path_buf();
-            super::render_for_server(&render_input, theme, &plot_dir)
-        })
-        .await;
-
-        let new_html = match render_result {
-            Ok(Ok(html)) => html,
-            Ok(Err(e)) => {
-                eprintln!("[watch] render error: {e:#}");
+        for slug in pending {
+            let Some(nb) = state.notebook(&slug).cloned() else {
                 continue;
-            }
-            Err(e) => {
-                eprintln!("[watch] render task panicked: {e}");
-                continue;
-            }
-        };
-
-        // Diff against the previous render *before* publishing the
-        // new HTML, so the comparison is against last-render's
-        // blocks (not the freshly-overwritten state).
-        let new_blocks = diff::split_blocks(&new_html);
-        let decision = diff::classify(&prev_blocks, &new_blocks);
-
-        // Publish state regardless of broadcast kind so a fresh
-        // page-load over GET /notebook.html always gets the latest.
-        {
-            let mut guard = state.html.write().await;
-            *guard = new_html.clone();
+            };
+            rerender_notebook(theme, &state, &nb).await;
         }
+    }
+}
 
-        match decision {
-            Broadcast::None => {
-                eprintln!("[watch] re-rendered {} (no change)", input.display());
-            }
-            Broadcast::Partial(changed) => {
-                let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
-                let _ = state.broadcast.send(env);
-                eprintln!(
-                    "[watch] re-rendered {} (partial: {} block{})",
-                    input.display(),
-                    changed.len(),
-                    if changed.len() == 1 { "" } else { "s" },
-                );
-            }
-            Broadcast::Full => {
-                let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
-                let _ = state.broadcast.send(env);
-                eprintln!("[watch] re-rendered {} (full)", input.display());
-            }
+/// Re-render a single notebook, publish its new HTML, and broadcast a
+/// partial/full/none envelope to that notebook's WS subscribers.
+async fn rerender_notebook(theme: &'static ThemeColors, state: &Arc<ServerState>, nb: &Arc<Notebook>) {
+    let input = nb.source_path.clone();
+    let slug = nb.slug.clone();
+    let plot_root = state.plot_dir.path().to_path_buf();
+
+    let render_result = tokio::task::spawn_blocking(move || {
+        super::render_for_server(&input, theme, &plot_root, &slug)
+    })
+    .await;
+
+    let new_html = match render_result {
+        Ok(Ok(html)) => html,
+        Ok(Err(e)) => {
+            eprintln!("[watch] render error ({}): {e:#}", nb.slug);
+            return;
         }
+        Err(e) => {
+            eprintln!("[watch] render task panicked ({}): {e}", nb.slug);
+            return;
+        }
+    };
 
-        prev_blocks = new_blocks;
+    // Diff against this notebook's previous block list before publishing.
+    let new_blocks = diff::split_blocks(&new_html);
+    let decision = {
+        let prev = nb.prev_blocks.lock().unwrap();
+        diff::classify(&prev, &new_blocks)
+    };
+
+    // Publish state regardless of broadcast kind so a fresh page load
+    // always gets the latest, and update the diff baseline.
+    {
+        let mut guard = nb.html.write().await;
+        *guard = new_html.clone();
+    }
+    {
+        let mut prev = nb.prev_blocks.lock().unwrap();
+        *prev = new_blocks;
+    }
+
+    match decision {
+        Broadcast::None => {
+            eprintln!("[watch] re-rendered {} (no change)", nb.slug);
+        }
+        Broadcast::Partial(changed) => {
+            let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
+            let _ = nb.broadcast.send(env);
+            eprintln!(
+                "[watch] re-rendered {} (partial: {} block{})",
+                nb.slug,
+                changed.len(),
+                if changed.len() == 1 { "" } else { "s" },
+            );
+        }
+        Broadcast::Full => {
+            let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
+            let _ = nb.broadcast.send(env);
+            eprintln!("[watch] re-rendered {} (full)", nb.slug);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustlab_plot::Theme;
+    use std::collections::HashMap as Map;
+    use tempfile::TempDir;
 
     #[test]
     fn is_relevant_event_drops_access_events() {
@@ -246,54 +278,76 @@ mod tests {
         let create = notify::Event::new(EventKind::Create(notify::event::CreateKind::File));
         assert!(is_relevant_event(&create));
 
-        // Metadata-only modifies still count as Modify so we accept
-        // them — better to re-render once spuriously than miss a save.
         let mtime_only = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Metadata(
             MetadataKind::WriteTime,
         )));
         assert!(is_relevant_event(&mtime_only));
     }
 
+    #[test]
+    fn match_slug_by_filename_fallback() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("note.md");
+        std::fs::write(&p, "x").unwrap();
+        let mut by_path = HashMap::new();
+        by_path.insert(std::fs::canonicalize(&p).unwrap(), "note".to_string());
+        // A non-canonical spelling of the same file still resolves.
+        let alt = dir.path().join("./note.md");
+        assert_eq!(match_slug(&by_path, &alt).as_deref(), Some("note"));
+    }
+
+    /// Build a single-notebook state for the coordinator test.
+    fn single_state(nb_path: &Path, html: String) -> (Arc<ServerState>, Arc<Notebook>) {
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            nb_path.to_path_buf(),
+            "nb".to_string(),
+            html,
+        ));
+        let mut notebooks: Map<String, Arc<Notebook>> = Map::new();
+        notebooks.insert("nb".to_string(), nb.clone());
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir: TempDir::new().unwrap(),
+            editable: false,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+        });
+        (state, nb)
+    }
+
     #[tokio::test]
     async fn coordinator_renders_on_event_and_broadcasts() {
-        use rustlab_plot::Theme;
-        use tempfile::TempDir;
-
         let theme: &'static _ = Theme::Dark.colors();
 
         let dir = TempDir::new().unwrap();
-        let nb = dir.path().join("nb.md");
-        std::fs::write(&nb, "# Initial\n\nbody A.\n").unwrap();
+        let nb_path = dir.path().join("nb.md");
+        std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
-        let html0 = super::super::render_for_server(&nb, theme, dir.path()).unwrap();
-        let state = Arc::new(ServerState::new(html0, TempDir::new().unwrap()));
+        let html0 = super::super::render_for_server(&nb_path, theme, dir.path(), "nb").unwrap();
+        let (state, nb) = single_state(&nb_path, html0);
 
-        let mut sub = state.broadcast.subscribe();
-        let (tx, rx) = mpsc::unbounded_channel::<()>();
+        let mut sub = nb.broadcast.subscribe();
+        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let coord = tokio::spawn(coordinator(theme, state.clone(), rx));
 
-        let coord_state = state.clone();
-        let coord = tokio::spawn(coordinator(nb.clone(), theme, coord_state, rx));
+        // Edit the file and ping the coordinator with the slug.
+        std::fs::write(&nb_path, "# Initial\n\nbody B with marker XYZ.\n").unwrap();
+        tx.send("nb".to_string()).unwrap();
 
-        // Edit the file and ping.
-        std::fs::write(&nb, "# Initial\n\nbody B with marker XYZ.\n").unwrap();
-        tx.send(()).unwrap();
-
-        // Wait for the broadcast (debounce window + render).
         let msg = tokio::time::timeout(Duration::from_secs(5), sub.recv())
             .await
             .expect("broadcast did not arrive in time")
             .expect("broadcast channel closed");
         let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
-        assert_eq!(parsed["kind"], "full");
-        let html = parsed["html"].as_str().unwrap();
-        assert!(
-            html.contains("XYZ"),
-            "re-rendered HTML missing the marker: {}",
-            &html[..html.len().min(256)]
-        );
+        // Single prose edit on a 1-block doc → kind may be full or partial;
+        // either way the new marker must be present.
+        let text = parsed.to_string();
+        assert!(text.contains("XYZ"), "re-render missing marker: {text:.256}");
 
-        // Also check the state was updated.
-        assert!(state.html.read().await.contains("XYZ"));
+        assert!(state.notebook("nb").unwrap().html.read().await.contains("XYZ"));
 
         drop(tx);
         let _ = tokio::time::timeout(Duration::from_secs(1), coord).await;

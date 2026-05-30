@@ -16,10 +16,12 @@ explicit user approval.
 | 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
 | 3 — Block-level diffing | **complete** (2026-05-30) | renderer wraps every block in `<section class="rl-block" id="b-<hash>">…</section>`; new server::diff module splits a rendered doc and computes per-position changes; coordinator picks `partial`/`full`/`None` per render; WS client gains `applyPartial` for in-place outerHTML swap + script re-exec + KaTeX re-render. 47 unit + 5 + 2 integration tests. |
 | 4 — Docs + CLI help | **complete** (2026-05-30) | `docs/notebooks.md` § "Live preview" extended through Phase 2/3 (live reload + partial diffs + scroll preservation); `watch --help` long_about rewritten to lead with the interactive server (default) and demote re-render-on-save to secondary; `examples/notebooks/README.md` gained a "Live-edit one example" section. |
-| 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor, real render preemption, removal-aware partial diffs |
+| 5 — Polish (optional) | **in progress** | item 1 (directory mode, 5a) done 2026-05-30; remaining: source pane (5b), in-browser editor (5c), real render preemption (5d), removal-aware partial diffs |
 
-**Next concrete action:** all required phases are done. Pick up
-Phase 5 polish if desired, otherwise this plan can land.
+**Next concrete action:** Phase 5 is underway (user asked for items
+1–4). 5a (directory mode) is done; 5b (source pane), 5c (in-browser
+editor), 5d (preemption) are next, then a discussion of item 5
+(removal-aware partial diffs).
 
 Phases 0–4 are complete:
 - **Phase 0** — design, deps, vendored assets (offline-capable).
@@ -497,8 +499,18 @@ shipped.
 
 ### Phase 5 — Polish / optional  **Status:** not started
 
-- [ ] `--watch-dir <DIR>` — watch a whole directory, index page
-      lists notebooks
+- [x] **Directory mode (5a, done 2026-05-30)** — bare
+      `watch <dir>` serves every `.md` under it behind a generated
+      index page (`/`), one URL per notebook at `/n/<slug>`.
+      Implemented as bare-directory input rather than a separate
+      `--watch-dir <DIR>` flag (the `watch` positional already
+      accepts a dir; a separate flag would be redundant).
+      `ServerState` generalised to `HashMap<slug, Arc<Notebook>>`;
+      each notebook owns its own `html`/`prev_blocks`/`broadcast`.
+      Per-notebook routes `/n/<slug>`, `/n/<slug>/ws`,
+      `/raw/<slug>`, `/plots/<slug>/`. Also hardened browser
+      auto-open for WSL/Linux (`wslview`→`xdg-open`→`gio`→
+      `sensible-browser`).
 - [ ] Source-pane mode: split view with the rendered output on
       one side and the raw `.md` on the other
 - [ ] Optional in-browser editor (Monaco / CodeMirror) writing
@@ -541,6 +553,32 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-30 — **Phase 5a complete.** Directory mode landed.
+  `ServerState` generalised from one notebook to
+  `HashMap<slug, Arc<Notebook>>` (each `Notebook` owns its
+  `html: RwLock<String>`, `prev_blocks: Mutex<Vec<Block>>`, and a
+  per-notebook `broadcast` channel). Bare `watch <dir>` serves
+  every `.md` under the directory (reuses
+  `list_md_files_recursive`, now `pub`) behind a generated index
+  page at `/` (reuses `generate_index_html`); single-file mode is
+  the one-entry case. URL scheme unified on `/n/<slug>` (slug =
+  URL-safe stem via `http::slugify`, `-N` on collision); per-page
+  WS at `/n/<slug>/ws`, raw source at `/raw/<slug>`, plots at
+  `/plots/<slug>/`. `/notebook.html` kept as a redirect to `/`.
+  WS-client script derives its slug from `location.pathname` so it
+  stays a static const. `render_loop` watches the dir recursively
+  (single file: parent non-recursive), maps each changed path back
+  to its notebook by source path, and re-renders just that one.
+  Also: hardened browser auto-open for WSL/Linux — try
+  `wslview` (under WSL → Windows browser), then `xdg-open`, `gio
+  open`, `sensible-browser`; first present-and-exit-0 wins, else
+  the existing "open … manually" hint. Extracted `build_state`
+  from `start` for testability. New/updated tests: `http` unit
+  (slugify, routes, save-route gating), `mod` unit (dir index +
+  serves each + per-notebook broadcast isolation), `render_loop`
+  unit (slug matching, coordinator), integration smoke updated to
+  the new URL scheme. All server tests green. Docs + AGENTS row +
+  `--help` updated. Next: 5b source pane.
 - 2026-05-30 — Agent-handoff section + status log added; the
   plan is now self-describing for any agent picking it up.
 - 2026-05-30 — Review pass tightened locked-ins: loopback-only

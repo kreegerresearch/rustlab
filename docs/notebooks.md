@@ -194,15 +194,21 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 #### Interactive server (bare input)
 
 ```
-rustlab-notebook watch analysis.md                       # → opens http://127.0.0.1:8042
+rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042
+rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
+rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 ```
 
 Behaviour:
 
-- **Single .md file only** for Phase 1; pass a directory only with
-  `--obsidian` or `--output` (re-render mode).
+- **A single `.md` serves one notebook; a directory serves every
+  `.md` under it** (recursive, `README.md` skipped) behind a
+  generated index page at `/`. Each notebook lives at `/n/<slug>`
+  where `<slug>` is its URL-safe file stem (collisions get a `-N`
+  suffix). Passing a directory *with* `--obsidian`/`--output` still
+  selects the re-render-on-save mode instead.
 - **Loopback bind on `127.0.0.1:8042` by default.** If 8042 is busy
   the server tries 8043, 8044, … up to 10 attempts and logs the
   actual bound URL. An explicit `--port <N>` skips auto-increment
@@ -210,15 +216,22 @@ Behaviour:
 - **Embedded KaTeX + Plotly.** The page references local `/assets/`
   paths, not jsdelivr/cdn.plot.ly. Works fully offline (e.g. tablet
   over an SSH tunnel on a plane).
-- **Source `.md` is never modified.** No `_attachments/` directory,
-  no `<!-- Generated -->` header, no in-place rewrite.
+- **Source `.md` is never modified** (unless you opt into
+  `--editable`, the in-browser editor — see below). No
+  `_attachments/` directory, no `<!-- Generated -->` header, no
+  in-place rewrite.
 - **Browser auto-opens** when stderr is a TTY and `CI` is unset;
-  `--no-browser` forces off.
+  `--no-browser` forces off. On Linux/WSL the server tries
+  `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
+  then `gio open` / `sensible-browser`, falling back to printing the
+  URL if none are present.
 - **Ctrl-C** stops the server. Plot artefacts live in a tempdir
   that's cleaned up on exit.
 - **Live reload on save** with block-level diffing. The rendered
   page includes a tiny WebSocket client that connects back to
-  `/ws`. On every save of the watched `.md`, the server
+  `/n/<slug>/ws` (one channel per notebook, so a save to one
+  notebook in directory mode only reloads that page). On every
+  save of the watched `.md`, the server
   re-renders (debounced 250 ms) and chooses between two payload
   shapes:
   - `{"kind":"partial","blocks":[{"position":N,"html":"…"}]}` —

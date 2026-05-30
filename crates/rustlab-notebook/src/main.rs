@@ -92,22 +92,26 @@ enum Command {
     #[command(
         long_about = "Watch a notebook source and react to saves.\n\n\
             Two modes — picked by what you pass:\n\n  \
-            Interactive server (single .md file, no other flags):\n    \
+            Interactive server (a .md file or a directory, no --obsidian/--output):\n    \
             Spins up a local web server on http://127.0.0.1:8042 (auto-bumps\n    \
             up to +10 if busy), opens your browser, and live-reloads the\n    \
-            page on every save via a WebSocket push. KaTeX + Plotly assets\n    \
-            are embedded in the binary so the page works fully offline.\n    \
-            Small edits ship as block-level partial diffs and preserve\n    \
-            scroll position; structural edits fall back to a full refresh.\n    \
-            Source .md is never modified.\n\n  \
+            page on every save via a WebSocket push. A single .md serves one\n    \
+            notebook; a directory serves every .md under it behind an index\n    \
+            page (one URL per notebook). KaTeX + Plotly assets are embedded\n    \
+            in the binary so the page works fully offline. Small edits ship\n    \
+            as block-level partial diffs and preserve scroll position;\n    \
+            structural edits fall back to a full refresh. Source .md is never\n    \
+            modified — unless you pass --editable (in-browser editor).\n\n  \
             Re-render on save (directory + --obsidian or --output):\n    \
             Long-running counterpart of `render`. Re-renders any notebook\n    \
             whose source changes, debouncing fs events. Pairs with\n    \
             --obsidian for an Obsidian Editing/Reading view loop.\n\n\
             Examples:\n  \
-            rustlab-notebook watch analysis.md                             # interactive server (default)\n  \
+            rustlab-notebook watch analysis.md                             # interactive server (one notebook)\n  \
+            rustlab-notebook watch notebooks/                              # interactive server (whole directory + index)\n  \
             rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
             rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
+            rustlab-notebook watch analysis.md --editable                  # edit the .md in the browser (writes back)\n  \
             rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
@@ -146,6 +150,12 @@ enum Command {
         /// (interactive server mode only) Do not auto-open the browser.
         #[arg(long)]
         no_browser: bool,
+        /// (interactive server mode only) Enable the in-browser editor:
+        /// a split-pane CodeMirror editor whose saves write back to the
+        /// source .md. This is the one interactive path that modifies
+        /// source (parallels --obsidian), so it is strictly opt-in.
+        #[arg(long)]
+        editable: bool,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -402,6 +412,7 @@ fn main() {
             debounce_ms,
             port,
             no_browser,
+            editable,
         } => {
             let theme = match theme {
                 CliTheme::Dark => Theme::Dark,
@@ -410,16 +421,14 @@ fn main() {
             let colors = theme.colors();
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
-            // the interactive server. Any other combination falls
-            // through to the existing two-dir / obsidian render loop.
+            // the interactive server: a single .md file serves one
+            // notebook; a directory serves every notebook under it behind
+            // an index page. Any other combination falls through to the
+            // existing two-dir / obsidian render loop.
             // Per dev/plans/notebook_interactive_server.md locked-in #1.
             if !obsidian && output.is_none() {
-                if !input.is_file() {
-                    eprintln!(
-                        "error: interactive watch expects a single .md file (got {}).\n\
-                         hint: directory mode requires --obsidian or --output for now.",
-                        input.display(),
-                    );
+                if !input.exists() {
+                    eprintln!("error: {} does not exist", input.display());
                     std::process::exit(2);
                 }
                 if attachments_dir.is_some() || no_iframe {
@@ -430,6 +439,7 @@ fn main() {
                 let opts = rustlab_notebook::server::ServerOpts {
                     port,
                     no_browser,
+                    editable,
                 };
                 if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -438,9 +448,9 @@ fn main() {
                 return;
             }
 
-            if port.is_some() || no_browser {
+            if port.is_some() || no_browser || editable {
                 eprintln!(
-                    "warning: --port / --no-browser only apply to the bare-input interactive server; ignored",
+                    "warning: --port / --no-browser / --editable only apply to the bare-input interactive server; ignored",
                 );
             }
 
