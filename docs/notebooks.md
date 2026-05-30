@@ -1108,16 +1108,58 @@ long the original computation took. The cache persists across
 `notebook render`, `notebook watch` restarts, REPL sessions, and CI
 runs.
 
-### Why this is notebook-shaped
+### Why use this
 
-Notebooks frequently re-execute every cell from the top on save —
-either because the watcher's prefix cache invalidated (an earlier cell
-was edited), or because a `notebook render` is starting from a cold
-session. The block-level prefix cache in `notebook watch` is the right
-tool for "this whole notebook ran the same way last time"; the
-persistent function cache is the right tool for "this slow function
-saw the same inputs it saw last time, regardless of what else
-changed." The two layers compose naturally.
+For a notebook author the win is concrete: **the second render of an
+unchanged expensive cell is effectively free**. A 30-second FFT or
+eigensolve returns from disk in ~1 ms on every subsequent open of the
+notebook. The cache survives:
+
+- Restarting `notebook watch` (the in-memory prefix cache evaporates;
+  this one doesn't).
+- Switching between `notebook render` and `notebook watch`.
+- CI rebuilds, if you commit a populated `.rcache` next to the
+  source.
+- Multiple notebooks pointing at the same store — they share warm
+  results automatically.
+
+Common notebook patterns this accelerates:
+
+- **The edit-prose-and-iterate loop.** Tweak a paragraph or a
+  callout; only the prose pipeline runs. Expensive code blocks hit
+  the cache.
+- **Long parameter sweeps that revisit inputs.** Build a 1000-element
+  series from 200 unique calls; the second render touches each entry
+  once via the cache.
+- **Classroom or pair workflows.** Commit a warm `.rcache` so the
+  next person to open the notebook gets results in seconds, not
+  minutes.
+
+When the cache won't help:
+
+- Cells whose runtime is dominated by I/O (the cache stores compute
+  results, not faster disk reads).
+- Functions returning live figure handles, FIR stream state, or
+  lambdas — the cache silently skips these.
+- A truly one-off notebook with no second render coming.
+
+### Composes with `notebook watch`'s prefix cache
+
+The two caches solve different problems and stack:
+
+- The **block prefix cache** in `notebook watch` (in-memory, watcher-
+  scoped) handles *"I'm still in the same editing session — keep
+  blocks 0-4 cached while I'm fiddling with block 5."* It evaporates
+  when the watcher restarts.
+- The **persistent function cache** handles *"I closed everything
+  yesterday — when I open this tomorrow / in CI / on another machine
+  with the shipped `.rcache`, the expensive calls inside any
+  surviving block hit instantly."* It also helps when the prefix
+  cache invalidates (someone edited block 0 — every later block has
+  to re-execute, but the slow function calls inside them still hit).
+
+In short: prefix cache speeds up the same session; persistent
+function cache speeds up across sessions.
 
 ### Storage
 

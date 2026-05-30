@@ -595,7 +595,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
         detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
     // Persistent function-result cache
-    HelpEntry { name: "cache", brief: "Persistent function-result cache directive",
+    HelpEntry { name: "cache", brief: "Skip recomputes — persistent function-result cache that survives restarts",
         detail: "cache enable [path]               — open or create a cache store\n\
                  cache off                         — close the active store\n\
                  cache add file <path>             — source a .rlab file and register its\n                                     functions as cacheable\n\

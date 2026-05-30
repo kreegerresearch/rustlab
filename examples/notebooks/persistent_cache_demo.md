@@ -7,6 +7,18 @@ the second call return without recomputing. The cache survives
 at the same store path, so warmth carries between watch-mode reloads
 and even between CI runs that ship a committed `.rcache`.
 
+## What this saves you
+
+The interesting number is the **hit-path latency floor**: ~1 ms,
+regardless of how long the original computation took. A function
+whose first call takes 3 seconds returns from the cache on the
+second call effectively instantly. The
+"second call" can be next week, next CI run, or another notebook
+that points at the same store. If you re-render this notebook
+locally with `notebook watch`, the first render does the work; every
+subsequent render is dominated by parsing and prose pipeline, not by
+`heavy()` below.
+
 ## Enable the cache
 
 `cache enable` with no path opens (or creates) the per-project store
@@ -69,6 +81,14 @@ cache status
 
 Notice `1 hits, 1 misses` and `heavy` showing `1 hits, 1 misses` in
 the per-function table. `a` and `b` are bit-identical.
+
+**What this saved**: the work `heavy(50000)` did the first time —
+50,000 iterations of `sqrt(i) * sin(i / 100)` summed in
+single-threaded interpreted rustlab — didn't happen on the second
+call. The dispatcher fingerprinted the argument `50000`, looked up
+the matching row in `.rustlab/cache.db`, deserialised the stored
+`Value::Tuple([Scalar(1.886e6)])`, and returned. From your
+perspective: the result was already there.
 
 ## A different argument is a different key
 

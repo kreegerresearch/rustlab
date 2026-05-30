@@ -3834,10 +3834,48 @@ See `examples/audio/spectrum_monitor.rlab` for the full annotated script.
 
 The `cache` statement opts a session into a SQLite-backed persistent cache:
 once enabled, every call to an in-scope user function consults the store,
-and misses with serialisable results are saved for next time. Hits return
-in roughly a millisecond regardless of how long the original computation
-took, and the cache survives REPL restarts, `notebook render` invocations,
-CI runs, and concurrent processes.
+and misses with serialisable results are saved for next time.
+
+### Why use this
+
+The hit path returns a stored result in **roughly a millisecond
+regardless of how long the original computation took** — a 30-second
+FFT or eigensolve comes back instantly on the second call with the
+same arguments. Results survive REPL restarts, `notebook render`,
+`notebook watch` reloads, CI runs, and concurrent processes against
+the same store file.
+
+Concrete wins:
+
+- **Notebook iteration loop.** Edit a prose paragraph, re-render —
+  expensive code blocks return cached results without re-executing.
+  Pairs with `notebook watch`'s in-memory prefix cache: the prefix
+  cache handles "I'm still editing the same session" and the
+  persistent cache handles "I closed the editor / CI cold-started".
+- **Parameter sweeps that revisit inputs.** A 1000-element loop with
+  200 unique arguments recomputes 200 entries the first time, then
+  hits the cache on every subsequent call — independent of order.
+- **CI parity with local.** Commit a populated `.rcache` next to a
+  notebook so CI renders in seconds instead of minutes.
+- **Shared workflows.** Two notebooks pointing at the same
+  `.rustlab/cache.db` (or a named `.rcache`) share warm results
+  automatically. Worth it for classroom decks and pair sessions.
+
+When the cache is the **wrong** tool:
+
+- **One-shot scripts.** No second call to benefit from.
+- **Functions dominated by I/O.** The cache stores compute results,
+  not accelerated disk reads.
+- **Functions returning non-serialisable types** (lambdas, live
+  figure handles, FIR stream state, sparse decomposition handles).
+  The cache silently skips these — see § Purity contract.
+
+The hit path is correctness-first: the function's identity hash
+includes its algorithmic structure, so editing a function's body
+correctly invalidates the cached entry (Phase 7's
+rename-invariant canonical hash; cosmetic renames of parameters,
+locals, return vars, or the function name itself preserve the
+cache).
 
 ### Statements
 
