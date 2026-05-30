@@ -2,7 +2,7 @@ CARGO       := cargo
 INSTALL_DIR := $(HOME)/.local/bin
 UNAME       := $(shell uname)
 
-.PHONY: all build release test install perf octave-compare notebooks validate-notebooks validate-notebooks-self-test clean-notebooks clean help
+.PHONY: all build release test install install-validate-deps perf octave-compare notebooks validate-notebooks validate-notebooks-self-test clean-notebooks clean help
 
 all: help
 
@@ -64,6 +64,33 @@ validate-notebooks:
 	$(CARGO) build --release -q -p rustlab-notebook --bin rustlab-notebook
 	@./target/release/rustlab-notebook validate examples/notebooks/
 
+# One-shot installer for the external linters that `make
+# validate-notebooks` uses. Mirrors the install block in
+# `.github/workflows/validate-notebooks.yml` so local runs match CI
+# coverage. Safe to re-run — brew / apt / npm / tlmgr treat already-
+# installed deps as no-ops.
+#
+# Doesn't install pdflatex / inkscape (PDF render toolchain) — those
+# are large and often already present via MacTeX / TeX Live. See
+# AGENTS.md § Testing dependencies for the full table.
+install-validate-deps:
+ifeq ($(UNAME), Darwin)
+	@command -v brew  >/dev/null 2>&1 || { echo "error: brew not installed (see https://brew.sh)"; exit 1; }
+	@command -v npm   >/dev/null 2>&1 || { echo "error: npm not installed (Node.js: https://nodejs.org)"; exit 1; }
+	@command -v tlmgr >/dev/null 2>&1 || { echo "error: tlmgr not installed — chktex ships with TeX Live / MacTeX (install MacTeX first)"; exit 1; }
+	brew install tidy-html5
+	sudo tlmgr install chktex
+	npm install -g markdownlint-cli2
+else
+	@command -v apt-get >/dev/null 2>&1 || { echo "error: apt-get not found (this target supports apt-based distros only)"; exit 1; }
+	@command -v npm     >/dev/null 2>&1 || { echo "error: npm not installed (Node.js)"; exit 1; }
+	sudo apt-get update -y
+	sudo apt-get install -y --no-install-recommends tidy chktex
+	sudo npm install -g markdownlint-cli2
+endif
+	@echo
+	@echo "Validate linters installed. Run: make validate-notebooks"
+
 # Self-test the validate linter wrappers: each one is exercised against
 # a deliberately-broken fixture and asserted to report FAIL. Guards
 # against silent regressions where a wrapper stops detecting real
@@ -94,6 +121,7 @@ help:
 	@echo "  notebooks       Render examples/notebooks/*.md → gallery/ (md committed, html ignored)"
 	@echo "  validate-notebooks  Render quick_look.md to every format and lint each output (CI)"
 	@echo "  validate-notebooks-self-test  Verify each linter wrapper rejects its broken fixture"
+	@echo "  install-validate-deps  Install external linters (tidy-html5, chktex, markdownlint-cli2)"
 	@echo "  clean-notebooks Remove gallery/*.html (committed gallery/*.md is left alone)"
 	@echo "  clean     Remove build artifacts (also runs clean-notebooks)"
 	@echo ""
