@@ -3846,6 +3846,7 @@ dependencies = [
  "rand_distr",
  "rayon",
  "rmp-serde",
+ "rusqlite",
  "rustlab-cache",
  "rustlab-core",
  "rustlab-dsp",

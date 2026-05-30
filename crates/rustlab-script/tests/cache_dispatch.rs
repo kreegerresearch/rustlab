@@ -739,6 +739,169 @@ fn lambda_rename_invariance_for_captured_outer_vars() {
 }
 
 #[test]
+fn mutual_recursion_loses_rename_invariance_for_cycle_participants() {
+    // Phase 7 limitation: when two functions form a cycle, the
+    // canonical walker uses *name fallback* to break the cycle (it
+    // feeds the callee's name as bytes instead of recursing into the
+    // entry id). That means the cycle participants — and only the
+    // cycle participants — bust the cache when renamed.
+    //
+    // This test makes the trade-off visible: ping + pong renamed to
+    // foo + bar with the same bodies *does* invalidate the cache,
+    // even though renaming a function NOT involved in a cycle would
+    // have preserved the entry (covered by `function_name_rename_
+    // preserves_cache_entry`).
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("mr_lim.rcache");
+
+    // Session 1: populate.
+    let mut ev1 = Evaluator::new();
+    run(
+        &mut ev1,
+        &format!(
+            "cache enable \"{}\"\n\
+             function y = ping(n); if n<1; y=0; else; y = pong(n-1); end; end\n\
+             function y = pong(n); if n<1; y=1; else; y = ping(n-1); end; end\n\
+             a = ping(4)\n",
+            store.display()
+        ),
+    )
+    .unwrap();
+    let s1 = ev1.cache_counters();
+    assert_eq!(s1.misses, 5, "session 1 should cascade 5 misses");
+    drop(ev1);
+
+    // Session 2: rename both cycle participants, same algorithm.
+    let mut ev2 = Evaluator::new();
+    run(
+        &mut ev2,
+        &format!(
+            "cache enable \"{}\"\n\
+             function y = alpha(n); if n<1; y=0; else; y = beta(n-1); end; end\n\
+             function y = beta(n); if n<1; y=1; else; y = alpha(n-1); end; end\n",
+            store.display()
+        ),
+    )
+    .unwrap();
+    // Sanity: both renamed fns should be in cache scope.
+    assert!(
+        ev2.is_fn_cache_scoped("alpha"),
+        "alpha should be cache-scoped after both definitions + rescan"
+    );
+    assert!(
+        ev2.is_fn_cache_scoped("beta"),
+        "beta should be cache-scoped after both definitions"
+    );
+
+    run(&mut ev2, "b = alpha(4)\n").unwrap();
+    let s2 = ev2.cache_counters();
+    // Five distinct keys cascade down the chain; under the canonical
+    // hash, renaming cycle participants busts every one of them.
+    assert_eq!(
+        s2.hits, 0,
+        "renaming both cycle participants busts the cache: {s2:?}",
+    );
+    assert_eq!(s2.misses, 5, "{s2:?}");
+}
+
+#[test]
+fn stale_wire_version_blob_triggers_recompute_each_call() {
+    // End-to-end test for the silent-recompute path AND the second
+    // limitation it exposes: stale blobs persist forever until
+    // manually cleared.
+    //
+    // When a row's value blob predates the current wire format, the
+    // dispatcher's GET succeeds at the SQLite level but
+    // `deserialize_value` rejects the version byte and returns None.
+    // The dispatcher bumps `serialization_skips` and recomputes the
+    // body. The PUT step then runs `INSERT OR IGNORE` — which is a
+    // **no-op because the row already exists**. So the stale blob
+    // stays in place and the same path fires on every call until
+    // the user runs `cache clear` (or the row ages out via
+    // `cache prune`).
+    //
+    // This is a deliberate trade-off: INSERT OR IGNORE keeps
+    // simultaneous cold-misses on the same key from racing each
+    // other (one writer wins, the other's INSERT no-ops). The cost
+    // is that stale rows aren't auto-refreshed. After a rustlab
+    // upgrade that bumps the wire format, users should
+    // `cache clear` to drop the legacy rows.
+    //
+    // We simulate the upgrade by populating the cache with the
+    // current binary, then patching the raw value BLOBs in SQLite
+    // to a 1-byte blob containing wire version 1 (which the v2
+    // dispatcher won't accept).
+    use rusqlite::Connection;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store_path = dir.path().join("stale.rcache");
+    let mut ev = Evaluator::new();
+    run(
+        &mut ev,
+        &format!(
+            "cache enable \"{}\"\n\
+             function y = sq(x); y = x * x; end\n\
+             a = sq(7)\n",
+            store_path.display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(ev.cache_counters().misses, 1);
+    assert_eq!(ev.cache_counters().serialization_skips, 0);
+    drop(ev);
+
+    // Corrupt every cached blob to look like a wire-version-1 entry.
+    // Bind a brand-new 1-byte blob via the parameter API (SQLite's
+    // `||` operator on BLOBs coerces to TEXT, which we don't want).
+    {
+        let conn = Connection::open(&store_path).unwrap();
+        let stale_blob = vec![0x01u8];
+        let n = conn
+            .execute(
+                "UPDATE cache_entries SET value = ?1",
+                rusqlite::params![stale_blob],
+            )
+            .unwrap();
+        assert_eq!(n, 1, "expected exactly one row to patch");
+    }
+
+    // Reopen and call again. The GET reads the stale bytes,
+    // deserialize returns None, dispatcher bumps the skip counter
+    // and recomputes. PUT no-ops because the row exists.
+    let mut ev2 = Evaluator::new();
+    run(
+        &mut ev2,
+        &format!(
+            "cache enable \"{}\"\n\
+             function y = sq(x); y = x * x; end\n\
+             b = sq(7)\n\
+             c = sq(7)\n",
+            store_path.display()
+        ),
+    )
+    .unwrap();
+    assert_scalar(&ev2, "b", 49.0);
+    assert_scalar(&ev2, "c", 49.0);
+    let counters = ev2.cache_counters();
+    assert_eq!(
+        counters.serialization_skips, 2,
+        "stale row triggers a skip on every call (no auto-refresh): {counters:?}",
+    );
+    assert_eq!(
+        counters.hits, 0,
+        "stale row never becomes a hit until cleared: {counters:?}",
+    );
+
+    // The documented escape hatch: clear the cache. The next call
+    // re-populates the row with the current wire format and
+    // subsequent calls hit it cleanly.
+    run(&mut ev2, "cache clear\nd = sq(7)\ne = sq(7)\n").unwrap();
+    let post_clear = ev2.cache_counters();
+    assert_eq!(post_clear.hits, 1, "after `cache clear` the cache works again: {post_clear:?}");
+    assert_eq!(post_clear.misses, 1);
+}
+
+#[test]
 fn file_to_inline_move_preserves_cache_when_body_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("move.rcache");
