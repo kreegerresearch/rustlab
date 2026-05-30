@@ -32,6 +32,9 @@ pub enum Commands {
     Docs(crate::commands::docs::DocsArgs),
     /// Show version and feature information
     Info,
+    /// Inspect, prune, or clear a persistent function-result cache
+    #[command(subcommand)]
+    Cache(crate::commands::cache::CacheCommands),
 }
 
 impl Cli {
@@ -45,6 +48,7 @@ impl Cli {
             Commands::Plot(args) => crate::commands::plot::execute(args),
             Commands::Docs(args) => crate::commands::docs::execute(args),
             Commands::Info => crate::commands::info::execute(),
+            Commands::Cache(cmd) => crate::commands::cache::execute(cmd),
         }
     }
 }

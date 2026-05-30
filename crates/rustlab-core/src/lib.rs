@@ -1,10 +1,12 @@
 pub mod error;
+pub mod fingerprint;
 pub mod sparse_eig;
 pub mod sparse_solve;
 pub mod traits;
 pub mod types;
 
 pub use error::CoreError;
+pub use fingerprint::Fingerprint;
 pub use traits::{
     decompose::{
         CholeskyDecomposable, Decomposable, EigenDecomposable, LuDecomposable, SvdDecomposable,

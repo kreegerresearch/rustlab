@@ -267,6 +267,53 @@ enum Command {
               value_parser = parse_linter_override, action = clap::ArgAction::Append)]
         linter_overrides: Vec<(String, PathBuf)>,
     },
+    /// Inspect, prune, or clear a persistent function-result cache.
+    /// Mirrors `rustlab cache ...` so notebook-driven workflows can
+    /// manage the cache without leaving the notebook binary.
+    #[command(subcommand)]
+    Cache(CacheCommands),
+}
+
+#[derive(Subcommand)]
+enum CacheCommands {
+    /// Print store path, entry count, and total stored bytes
+    Status(CacheCommonArgs),
+    /// List cached entries (key, size, version, timestamp) — never prints values
+    List(CacheListArgs),
+    /// Drop every cached entry; keeps the DB file
+    Clear(CacheCommonArgs),
+    /// Drop entries older than a duration and/or to fit a max byte cap
+    Prune(CachePruneArgs),
+}
+
+#[derive(clap::Args, Clone)]
+struct CacheCommonArgs {
+    /// Path to the `.rcache` / `.db` store to operate on
+    /// (default: `.rustlab/cache.db`)
+    #[arg(long, value_name = "PATH")]
+    store: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Clone)]
+struct CacheListArgs {
+    #[command(flatten)]
+    common: CacheCommonArgs,
+    /// Cap the number of rows shown (newest first)
+    #[arg(long, value_name = "N")]
+    limit: Option<usize>,
+}
+
+#[derive(clap::Args, Clone)]
+struct CachePruneArgs {
+    #[command(flatten)]
+    common: CacheCommonArgs,
+    /// Age cutoff: drops entries older than this. Format: `30d`, `12h`,
+    /// `500ms`, etc. (units: ms, s, m, h, d, w)
+    #[arg(long, value_name = "DURATION")]
+    older_than: Option<String>,
+    /// Size cap in bytes: drops oldest entries until total ≤ this
+    #[arg(long, value_name = "BYTES")]
+    max_size: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -477,5 +524,122 @@ fn main() {
                 std::process::exit(code);
             }
         }
+        Command::Cache(cmd) => {
+            if let Err(e) = run_cache_command(cmd) {
+                eprintln!("rustlab-notebook cache: {e:#}");
+                std::process::exit(1);
+            }
+        }
     }
+}
+
+/// Per-project default. Resolved against CWD at command time.
+const CACHE_DEFAULT_PATH: &str = ".rustlab/cache.db";
+
+fn resolve_cache_path(common: &CacheCommonArgs) -> PathBuf {
+    common
+        .store
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(CACHE_DEFAULT_PATH))
+}
+
+fn open_cache(path: &std::path::Path, must_exist: bool) -> anyhow::Result<rustlab_cache::Store> {
+    use anyhow::Context;
+    if must_exist && !path.exists() {
+        anyhow::bail!(
+            "no cache file at {} (use `rustlab-notebook render` after `cache enable` in your notebook, or pass --store PATH)",
+            path.display(),
+        );
+    }
+    rustlab_cache::Store::open(path).with_context(|| format!("opening cache at {}", path.display()))
+}
+
+fn run_cache_command(cmd: CacheCommands) -> anyhow::Result<()> {
+    use anyhow::Context;
+    match cmd {
+        CacheCommands::Status(args) => {
+            let path = resolve_cache_path(&args);
+            if !path.exists() {
+                println!("cache: no store at {}", path.display());
+                return Ok(());
+            }
+            let store = open_cache(&path, true)?;
+            let schema = store
+                .schema_meta("version")?
+                .unwrap_or_else(|| "<absent>".to_string());
+            let rl_version = store
+                .schema_meta("rustlab_version")?
+                .unwrap_or_else(|| "<absent>".to_string());
+            println!("cache: {}", path.display());
+            println!("  schema version: {schema}");
+            println!("  rustlab version: {rl_version}");
+            println!("  entries: {}", store.entry_count()?);
+            println!("  stored bytes: {}", store.total_bytes()?);
+            if store.is_disabled() {
+                println!("  status: DISABLED (schema is newer than this binary supports)");
+            }
+        }
+        CacheCommands::List(args) => {
+            let path = resolve_cache_path(&args.common);
+            let store = open_cache(&path, true)?;
+            let rows = store.list_entries(args.limit)?;
+            if rows.is_empty() {
+                println!("cache: no entries in {}", path.display());
+                return Ok(());
+            }
+            println!(
+                "{:<20}  {:>9}  {:>10}  {:>10}  {:>9}  created_at",
+                "fn name", "entry_id", "input_hash", "bytes", "rl_ver"
+            );
+            for row in rows {
+                let fn_name = row.fn_name.unwrap_or_else(|| "<unknown>".to_string());
+                println!(
+                    "{:<20}  {:>9}  {:>10}  {:>10}  {:>9}  {}",
+                    fn_name,
+                    row.entry_id_short,
+                    row.input_hash_short,
+                    row.bytes,
+                    row.rustlab_version,
+                    row.created_at,
+                );
+            }
+        }
+        CacheCommands::Clear(args) => {
+            let path = resolve_cache_path(&args);
+            let store = open_cache(&path, true)?;
+            let n = store.clear()?;
+            println!("cache: cleared {n} entries from {}", path.display());
+        }
+        CacheCommands::Prune(args) => {
+            let path = resolve_cache_path(&args.common);
+            let store = open_cache(&path, true)?;
+            let did_specify = args.older_than.is_some() || args.max_size.is_some();
+            let mut total: usize = 0;
+            let mut notes: Vec<String> = Vec::new();
+            if let Some(s) = args.older_than.as_deref() {
+                let secs = rustlab_cache::parse_duration_secs(s)
+                    .with_context(|| format!("--older-than {s}"))?;
+                let n = store.prune_older_than(secs)?;
+                total += n;
+                notes.push(format!("{n} older than {secs}s"));
+            }
+            if let Some(max) = args.max_size {
+                let n = store.prune_to_max_size(max)?;
+                total += n;
+                notes.push(format!("{n} to fit max_size={max}"));
+            }
+            if !did_specify {
+                const THIRTY_DAYS: u64 = 30 * 24 * 60 * 60;
+                let n = store.prune_older_than(THIRTY_DAYS)?;
+                total += n;
+                notes.push(format!("{n} older than 30 days (default)"));
+            }
+            println!(
+                "cache: pruned {total} entries from {} ({})",
+                path.display(),
+                notes.join(", "),
+            );
+        }
+    }
+    Ok(())
 }

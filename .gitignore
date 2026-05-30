@@ -23,6 +23,13 @@ dev/issues/
 # Environment files
 .env
 
+# Per-project persistent function-result cache. Default location
+# written by `cache enable` (see dev/plans/persistent_function_cache.md).
+# User-named `.rcache` files at other paths are the user's call —
+# commit them to ship pre-warmed notebooks, ignore them for ephemeral
+# scratch caches.
+.rustlab/
+
 # Rust documentation
 /doc/
 *.svg

@@ -11,6 +11,7 @@ description = "Core matrix and complex-number types for rustlab"
 num-complex.workspace = true
 ndarray.workspace     = true
 thiserror.workspace   = true
+blake3.workspace      = true
 
 [dev-dependencies]
 proptest.workspace = true

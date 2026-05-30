@@ -63,6 +63,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `feval("name", args...)` | Call function by string name |
 | `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all |
 | `profile_report()` | Print profiling table to stderr immediately |
+| `cache enable [path]` | Open the persistent function-result cache; defaults to `.rustlab/cache.db`. Forms: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache clear`, `cache prune older="30d" max_size=N`. See `docs/functions.md` § "Persistent Function Cache". |
 | `logspace(a, b, n)` | n log-spaced points from 10^a to 10^b |
 | `rk4(f, x0, t)` | Fixed-step 4th-order Runge-Kutta; f(x,t)→x_dot |
 | `lyap(A, Q)` | Solve Lyapunov equation A*X + X*A' + Q = 0 |

@@ -1090,6 +1090,105 @@ Total sales: ${sum(sales):%,.0f} units.
 
 See `docs/functions.md` → Cell Arrays for full reference.
 
+## Persistent function cache
+
+The `cache` statement opts a notebook into a SQLite-backed function
+result cache. Place it at the top of a notebook:
+
+````markdown
+```rustlab
+cache enable
+```
+````
+
+After that line, every call to an in-scope user function consults the
+cache. Misses with serialisable results are stored; future calls with
+the same arguments return in roughly a millisecond regardless of how
+long the original computation took. The cache persists across
+`notebook render`, `notebook watch` restarts, REPL sessions, and CI
+runs.
+
+### Why this is notebook-shaped
+
+Notebooks frequently re-execute every cell from the top on save —
+either because the watcher's prefix cache invalidated (an earlier cell
+was edited), or because a `notebook render` is starting from a cold
+session. The block-level prefix cache in `notebook watch` is the right
+tool for "this whole notebook ran the same way last time"; the
+persistent function cache is the right tool for "this slow function
+saw the same inputs it saw last time, regardless of what else
+changed." The two layers compose naturally.
+
+### Storage
+
+`cache enable` with no path opens `.rustlab/cache.db` relative to the
+notebook's working directory. The workspace `.gitignore` excludes
+`.rustlab/` by default. To ship a notebook with a warm cache, use a
+named store and commit it explicitly:
+
+````markdown
+```rustlab
+cache enable "lectures/week3.rcache"
+```
+````
+
+### Purity contract
+
+A function is only cached if its body is pure. The walkers in
+`crates/rustlab-script/src/purity.rs` enforce this at three
+checkpoints — file-load (`cache add file`), explicit registration
+(`cache add function`), and inline definition under the default
+`all` scope:
+
+- It may not reference unbound names. `cache add file` hard-errors
+  with the offending file:line. An inline `function ...` defined
+  while the cache is active is silently dropped from cache scope
+  (still runs; just not cache-routed). `cache add function` is the
+  strictest — it hard-errors so the user knows the explicit ask
+  can't be honoured.
+- It may not call impure builtins: `rand` / `randn` / `randi`,
+  plotting (`plot`, `figure`, `hold`, …), file I/O (`load`, `save`,
+  `audio_read` / `audio_write`), TTY output (`disp`, `fprintf`).
+  Future names like `tic` / `toc` / `now` / `fopen` are reserved on
+  the denylist too — they get the same treatment if they ever
+  ship as real builtins.
+
+NaN arguments bypass the cache on a per-call basis. The call still
+runs; only the cache lookup is skipped. `cache status` lists the
+counters (hits, misses, impurity / free-var / non-cacheable-arg /
+stale-blob skips, plus a per-function hit/miss table).
+
+### CLI
+
+Manage the cache outside a notebook with `rustlab cache ...` (or the
+mirrored `rustlab-notebook cache ...`):
+
+```sh
+rustlab cache status
+rustlab cache list --limit 20
+rustlab cache prune --older-than 30d --max-size 5000000
+rustlab cache clear
+rustlab cache --store lectures/week3.rcache status
+```
+
+### Multi-instance behaviour
+
+SQLite is opened in WAL mode, so two `notebook watch` processes (or a
+REPL + a render) can share the same store safely. Two cold misses on
+the same key happen to both compute; the second writer's `INSERT` is
+silently absorbed by `INSERT OR IGNORE`. Results stay correct; only
+CPU is wasted in the race.
+
+**NFS caveat:** SQLite's file-locking semantics are unreliable over
+NFS. If your project lives on a network mount, pass `cache enable
+"/path/on/local/fs/my.rcache"` and skip the per-project default.
+
+For the full design rationale see
+`dev/plans/persistent_function_cache.md`. For a worked example, open
+`examples/notebooks/persistent_cache_demo.md`.
+
+---
+
 ## Examples
 
 See `examples/notebooks/` for working examples:
@@ -1100,3 +1199,4 @@ See `examples/notebooks/` for working examples:
 - **template_interpolation.md** — embedding computed values with `${expr}` and format specs
 - **string_arrays.md** — string arrays, categorical bar charts, `iscell()`
 - **multi_notebook.md** — directory rendering and cross-notebook links
+- **persistent_cache_demo.md** — `cache enable`, hit-vs-miss timing, file load, status / clear

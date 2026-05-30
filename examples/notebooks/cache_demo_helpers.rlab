@@ -1,0 +1,24 @@
+% Helpers loaded by examples/notebooks/persistent_cache_demo.md via
+% `cache add file`. All three functions are pure: parameters in, scalar
+% or vector out, no globals, no plotting, no RNG.
+
+function y = square(x)
+  y = x .* x
+end
+
+function y = sum_of_squares(n)
+  y = 0
+  for k = 1:n
+    y = y + square(k)
+  end
+end
+
+function y = heavy(n)
+  % Synthetic loop chosen to be slow enough that the cache speedup is
+  % visible without being slow enough to make CI sad. Real workloads
+  % use the cache for FFTs, eigensolves, dataset processing.
+  y = 0
+  for i = 1:n
+    y = y + sqrt(i) * sin(i / 100)
+  end
+end

@@ -3830,6 +3830,147 @@ See `examples/audio/spectrum_monitor.rlab` for the full annotated script.
 
 ---
 
+## Persistent Function Cache
+
+The `cache` statement opts a session into a SQLite-backed persistent cache:
+once enabled, every call to an in-scope user function consults the store,
+and misses with serialisable results are saved for next time. Hits return
+in roughly a millisecond regardless of how long the original computation
+took, and the cache survives REPL restarts, `notebook render` invocations,
+CI runs, and concurrent processes.
+
+### Statements
+
+| Form | Effect |
+|------|--------|
+| `cache enable` | Open or create the per-project store at `.rustlab/cache.db` |
+| `cache enable "path.rcache"` | Open or create a user-named store at `path.rcache` |
+| `cache "path.rcache"` | Sugar for `cache enable "path.rcache"` |
+| `cache off` | Close the active store (DB rows preserved on disk) |
+| `cache add file "helpers.rlab"` | Source a `.rlab` file and register each top-level function as cacheable |
+| `cache add function expensive` | Register an already-defined function for caching |
+| `cache add function f1, f2, f3` | Same, comma-separated list |
+| `cache remove function expensive` | Drop a function from scope; DB rows kept (re-add restores them) |
+| `cache status` | Print the active store path and per-process counters |
+| `cache list [limit=N]` | Print stored entry keys + sizes + timestamps (never prints values) |
+| `cache clear` | Wipe every entry in the active store |
+| `cache prune` | Default age-based prune (drops entries older than 30 days) |
+| `cache prune older="30d"` | Drop entries older than the given duration |
+| `cache prune max_size=5000000` | Drop oldest entries until total size ≤ N bytes |
+| `cache prune older="7d" max_size=1000000` | Both: age-based first, then size-based |
+
+Duration units: `ms`, `s` (default if absent), `m`, `h`, `d`, `w`. Quote
+the value (`older="30d"`) for portability across notebooks; the bareword
+form (`older=30d`) also works at the script level.
+
+Path arguments accept both quoted strings (`cache enable "my.rcache"`)
+and barewords (`cache enable my.rcache`). The quoted form is the
+canonical one used throughout this reference because it composes
+cleanly with paths that contain spaces, dashes, or other punctuation
+the lexer would otherwise split.
+
+The sugar form `cache <path>` (without `enable`) requires the path to
+contain a `.` or `/` so the parser can distinguish it from a typoed
+subcommand. `cache foo.rcache` is sugar; `cache foo` errors with
+`cache: unknown subcommand 'foo'` — use `cache enable "foo"` or
+`cache enable foo.rcache` if you really did mean to open a store
+called `foo`.
+
+### Scope
+
+After `cache enable`, every user-defined function is in scope by default.
+`cache add function` / `cache add file` are explicit registrations;
+`cache remove function` is an opt-out. Resolution order at each call:
+
+1. No active store → bypass cache.
+2. Name explicitly removed → bypass.
+3. Name explicitly added (function or file) → cache.
+4. Otherwise → cache (the default `all` scope).
+
+### Purity contract
+
+A cached function must be pure with respect to its inputs. The
+walkers in `crates/rustlab-script/src/purity.rs` enforce this at
+three checkpoints:
+
+- **Unbound names** (no globals, no captured-from-REPL variables).
+  `cache add file` hard-errors with the file:line of the offending
+  reference. An inline function defined while the cache is active is
+  silently dropped from cache scope (still callable; just not
+  cache-routed) — `cache enable` also runs this scan over every
+  pre-existing user function. `cache add function name` is the
+  strictest: explicit ask → explicit error.
+- **Impure builtins**: `rand` / `randn` / `randi`, plotting (`plot`,
+  `figure`, `hold`, `subplot`, `title`, `xlabel`, `ylabel`, `legend`,
+  `bar`, `scatter`, `stem`), file I/O (`load`, `save`, `audio_read`,
+  `audio_write`), TTY output (`disp`, `fprintf`, `sprintf`). The
+  denylist also reserves names not currently shipped as builtins —
+  `tic`, `toc`, `now`, `clock`, `fopen`, `fclose`, `fread`, `fwrite`,
+  `input`, `keyboard`, `printf`, `randperm`, `audio_play` — so that
+  if/when those land they're already excluded. Same in-file / explicit
+  / inline policy as for free vars.
+
+NaN arguments bypass the cache on a per-call basis (a NaN-bearing
+input can't fingerprint deterministically). The call still runs; only
+the cache lookup is skipped. `cache status` shows the
+`uncacheable_arg_skips` counter.
+
+**v1 walker limitations** (deferred items in the plan):
+
+- *Direct calls only* — `f` calling `g` which itself calls `rand` is
+  not flagged. Workaround: mark `g` directly, or `cache clear` if you
+  spot stale results.
+- *Name-based, not resolution-based* — a user function literally
+  named `rand` or `tic` is flagged regardless of whether it
+  shadows a real builtin. Rename to sidestep.
+
+### Storage and concurrency
+
+The default `.rustlab/cache.db` is gitignored at the workspace root.
+User-named `.rcache` files are the user's call — commit them to ship
+a notebook with a warm cache, gitignore them for ephemeral local work.
+
+SQLite is opened in WAL mode, so two `notebook watch` processes (or a
+REPL + a render) can share the same store safely. Two simultaneous
+cold misses on the same key both compute and the second writer's
+INSERT is silently absorbed by `INSERT OR IGNORE` — results stay
+correct, only CPU is wasted. Caveat: SQLite locking is unreliable
+over NFS; pick a local path if your project is on a network mount.
+
+### Example
+
+```
+cache enable                          % opens .rustlab/cache.db
+
+function y = expensive(x)
+  y = ifft(fft(x) .* H)               % long pipeline
+end
+
+y1 = expensive(big_signal)            % first call: computes + stores
+y2 = expensive(big_signal)            % second call: hits, returns in ~1ms
+```
+
+See `examples/notebooks/persistent_cache_demo.md` for a full walkthrough
+with a slow function, a status read-out, and the file-load flow.
+
+### CLI
+
+Outside a script, the same operations are available without an
+evaluator:
+
+```sh
+rustlab cache status                   # print path, schema, counters
+rustlab cache list [--limit N]         # short-hex keys + sizes
+rustlab cache clear                    # wipe everything
+rustlab cache prune --older-than 30d   # age-based
+rustlab cache prune --max-size 5000000 # size-based
+rustlab cache --store path.rcache list # against a non-default store
+```
+
+The same four subcommands are mirrored on `rustlab-notebook cache ...`.
+
+---
+
 ## REPL Commands
 
 These are interactive commands available in the `rustlab` REPL only (not in script files).
