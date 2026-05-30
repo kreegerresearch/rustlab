@@ -100,9 +100,12 @@ enum Command {
             Currently --format markdown only."
     )]
     Watch {
-        /// Directory of .md files to watch
+        /// Notebook .md file (interactive server mode) or directory of .md
+        /// files (with --obsidian / --output).
         input: PathBuf,
-        /// Output directory (default: same as input)
+        /// Output directory (default: same as input). Setting --output or
+        /// --obsidian switches off the interactive server and runs the
+        /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Color theme: dark (default), light
@@ -120,6 +123,15 @@ enum Command {
         /// Debounce window for filesystem events (default 250 ms)
         #[arg(long, value_name = "MS", default_value = "250")]
         debounce_ms: u64,
+        /// (interactive server mode only) Port to bind on 127.0.0.1.
+        /// Default 8042 with auto-increment up to +10 if busy; setting
+        /// --port explicitly disables auto-increment (fails loud on
+        /// collision).
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// (interactive server mode only) Do not auto-open the browser.
+        #[arg(long)]
+        no_browser: bool,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -374,12 +386,50 @@ fn main() {
             attachments_dir,
             no_iframe,
             debounce_ms,
+            port,
+            no_browser,
         } => {
             let theme = match theme {
                 CliTheme::Dark => Theme::Dark,
                 CliTheme::Light => Theme::Light,
             };
             let colors = theme.colors();
+
+            // Bare `watch <input>` (no --obsidian, no --output) spins up
+            // the interactive server. Any other combination falls
+            // through to the existing two-dir / obsidian render loop.
+            // Per dev/plans/notebook_interactive_server.md locked-in #1.
+            if !obsidian && output.is_none() {
+                if !input.is_file() {
+                    eprintln!(
+                        "error: interactive watch expects a single .md file (got {}).\n\
+                         hint: directory mode requires --obsidian or --output for now.",
+                        input.display(),
+                    );
+                    std::process::exit(2);
+                }
+                if attachments_dir.is_some() || no_iframe {
+                    eprintln!(
+                        "warning: --attachments-dir / --no-iframe only apply with --obsidian; ignored"
+                    );
+                }
+                let opts = rustlab_notebook::server::ServerOpts {
+                    port,
+                    no_browser,
+                };
+                if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
+                    eprintln!("rustlab-notebook watch: {e:#}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            if port.is_some() || no_browser {
+                eprintln!(
+                    "warning: --port / --no-browser only apply to the bare-input interactive server; ignored",
+                );
+            }
+
             let obsidian_opts = if obsidian {
                 let mut opts = rustlab_notebook::ObsidianOpts::default();
                 if let Some(dir) = attachments_dir {

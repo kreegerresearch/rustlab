@@ -9,6 +9,7 @@ pub mod render;
 pub mod render_json;
 pub mod render_latex;
 pub mod render_markdown;
+pub mod server;
 pub mod validate;
 pub mod watch;
 

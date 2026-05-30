@@ -12,25 +12,33 @@ explicit user approval.
 | Phase | State | Headline deliverable |
 |-------|-------|----------------------|
 | 0 — Design + dep trade-off | **complete** (2026-05-30) | trade-off doc, port 8042 + auto-bump, WS full→partial, embed Plotly + KaTeX (vendored), pdflatex external, license audit clean, deps added, vendored assets in tree |
-| 1 — Server skeleton | not started | `server::start`, one-shot render over HTTP, plot serving |
+| 1 — Server skeleton | **complete** (2026-05-30) | `server::start`, one-shot render over HTTP, embedded `/assets/`, plot tempdir, browser auto-open, 15 unit + 5 integration tests |
 | 2 — Live re-render | not started | fs watcher → cancellable re-render → WS push |
 | 3 — Block-level diffing | not started | content-hash block IDs, partial DOM updates |
 | 4 — Docs + REPL help | not started | `docs/notebooks.md` section, AGENTS.md close-out |
 | 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor |
 
-**Next concrete action:** start Phase 0. Deliver in order:
+**Next concrete action:** start Phase 2 (live re-render on save).
 
-1. Write `dev/plans/notebook_interactive_server-tradeoff.md`
-   (axum vs tiny-http vs hand-rolled; tokio runtime surface —
-   note that `notify` runs on `std::sync::mpsc`, so tokio is
-   net-new).
-2. Decide default port + collision behaviour (auto-bump or fail —
-   see Open Questions §1).
-3. Decide WS protocol shape (full-only in Phase 2, partial added
-   in Phase 3, vs both up-front — see Open Questions §2 and §3).
+Phase 0 and Phase 1 are complete. The server skeleton at
+`crates/rustlab-notebook/src/server/` serves the rendered HTML +
+embedded assets + animation artefacts once at startup, but does
+not re-render when the source `.md` is saved. Phase 2 task list
+(below) adds:
 
-Bring those three back to the user for sign-off before opening
-Phase 1.
+1. `notify`-based fs watcher on the input file (reuse the
+   debouncer pattern from `watch.rs`).
+2. WebSocket endpoint `/ws` with the discriminated message shape
+   `{"kind": "full", "html": "…"}` (partial diffs land in Phase
+   3).
+3. Cancellable render task so prose edits don't stall behind a
+   slow `cache enable`-d function from the previous render.
+4. LRU bound on the in-memory plot table.
+5. Page JS: connect WS, swap document body on receive, reconnect
+   with exponential backoff 500 ms → 5 s capped + visible
+   "disconnected" banner.
+6. Documentation pointers at the two future widget extension
+   sites (per locked-in #14).
 
 **Required reading before touching code:**
 
@@ -318,28 +326,53 @@ DOM replacement on the changed blocks, no scroll position loss.
 
 **Phase 0 complete.** Phase 1 unblocked as of 2026-05-30.
 
-### Phase 1 — Server skeleton  **Status:** not started
+### Phase 1 — Server skeleton  **Status:** complete (2026-05-30)
 
-- [ ] `server::start(input, opts)` — bind on `127.0.0.1:8042`
-      (default) with auto-increment up to 10 attempts per
-      locked-in #12, log the bound URL, block until Ctrl-C
-- [ ] Browser auto-open (TTY-gated, `CI`-aware) per locked-in #8
-- [ ] `GET /notebook.html` returns a one-shot render of the input
-- [ ] `GET /plots/<index>.svg` serves figures from the render's
-      in-memory plot table (per-notebook figure index, no new
-      hashing scheme — see § wire format)
-- [ ] `GET /assets/katex/…` and `GET /assets/plotly.min.js` serve
-      the embedded bundles via `include_bytes!` per locked-in #15
-- [ ] Render emits page HTML referencing the local `/assets/…`
-      paths instead of CDN URLs (new "served" path mode on
-      `render.rs` per Crate layout)
-- [ ] Initial render runs once at startup
-- [ ] Integration test: spawn the server in-process against a
-      fixture `.md`, fetch `/notebook.html`, assert the rendered
-      output contains the expected text *and* references
-      `/assets/` paths (not `cdn.jsdelivr.net` / `cdn.plot.ly`).
-      Also fetch `/assets/katex/katex.min.css` and assert it
-      starts with KaTeX's banner comment.
+- [x] `server::start(input, opts)` — current-thread tokio runtime,
+      binds on `127.0.0.1:8042` (default) with auto-increment up
+      to 10 attempts per locked-in #12, logs the bound URL, blocks
+      on `tokio::signal::ctrl_c` via `axum`'s graceful shutdown.
+      Explicit `--port <N>` fails loud on collision.
+      [crates/rustlab-notebook/src/server/mod.rs](../../crates/rustlab-notebook/src/server/mod.rs)
+- [x] Browser auto-open (TTY-gated via `std::io::IsTerminal`,
+      `CI`-aware) per locked-in #8. Shells out to `open` /
+      `xdg-open` / `cmd /c start` per platform; failure logs a
+      hint without crashing the server.
+- [x] `GET /notebook.html` returns the one-shot render of the
+      input, with all CDN URLs swapped to local `/assets/…` paths.
+- [x] `GET /plots/<file>` serves animation artefacts from the
+      per-server tempdir (static plots are inline Plotly so no
+      `<index>.svg` endpoint was needed — the route shape can
+      carry SVGs once Phase 3 / scoped re-render produces them).
+      Includes traversal protection.
+- [x] `GET /assets/<path>` serves the embedded KaTeX (CSS + JS +
+      auto-render + 20 woff2 fonts) and Plotly bundle via
+      `include_bytes!` per locked-in #15.
+      [crates/rustlab-notebook/src/server/assets.rs](../../crates/rustlab-notebook/src/server/assets.rs)
+- [x] Render uses local `/assets/…` paths instead of CDN URLs via
+      `assets::rewrite_cdn_urls` post-processing — no
+      modification to `render.rs` itself; existing render modes
+      (`notebook render`, `--obsidian`) keep CDN refs.
+- [x] Initial render runs once at startup, on the calling thread,
+      before the tokio runtime spins up.
+- [x] CLI: `--port` and `--no-browser` added to the `watch`
+      subcommand; bare-input mode now dispatches to
+      `server::start` (replacing the old `cmd_check` fallback).
+      [crates/rustlab-notebook/src/main.rs](../../crates/rustlab-notebook/src/main.rs)
+- [x] Tests: 15 unit tests in
+      `server::{assets,http,…}::tests` + 5 integration tests in
+      [tests/server_smoke.rs](../../crates/rustlab-notebook/tests/server_smoke.rs)
+      covering route shape, asset embedding, CDN-rewrite, and
+      end-to-end render of a fixture notebook. All 490 notebook
+      crate tests pass with no regressions.
+- [x] Real-world smoke: `target/debug/rustlab-notebook watch
+      examples/notebooks/contour_plots.md --no-browser --port
+      18042` serves `/notebook.html` referencing only `/assets/`,
+      `/assets/katex/katex.min.css` returns 23 KB of CSS, and
+      `/assets/plotly.min.js` returns 4.5 MB of JS.
+- [x] Docs: `docs/notebooks.md` § "Live preview" rewritten to
+      describe the interactive default + the existing re-render
+      mode as the two `watch` paths.
 
 ### Phase 2 — Live re-render  **Status:** not started
 
@@ -450,6 +483,26 @@ this in sync with the Phase checkboxes and the AGENTS.md row.
   shared persistent cache; corrected the tokio dependency claim
   (`notify` runs on std-mpsc, axum brings net-new tokio);
   switched plot endpoint to `<index>.svg`.
+- 2026-05-30 — **Phase 1 complete.** Server skeleton landed:
+  `crates/rustlab-notebook/src/server/{mod.rs, http.rs,
+  assets.rs}` (~530 LOC + ~360 LOC of tests). One-shot render at
+  startup; current-thread tokio + axum 0.8 serves
+  `/notebook.html`, `/assets/*` (embedded KaTeX + Plotly), and
+  `/plots/*` (per-server tempdir for animations). Bare-input
+  `notebook watch <file.md>` dispatches to `server::start`,
+  replacing the prior `cmd_check` fallback. New CLI flags
+  `--port` and `--no-browser`. Port 8042 with auto-increment up
+  to 10 attempts; explicit `--port` fails loud. Browser
+  auto-open is TTY-gated + CI-aware. CDN URLs in the rendered
+  HTML are rewritten to local `/assets/…` paths via
+  `assets::rewrite_cdn_urls` so no `render.rs` change was
+  needed; existing render modes keep CDN refs. Tests: 15 unit
+  + 5 integration (490 total in the crate, no regressions).
+  End-to-end smoke: ran against
+  `examples/notebooks/contour_plots.md` — page loads with no
+  CDN references, KaTeX CSS (23 KB) and Plotly JS (4.5 MB)
+  serve from `/assets/`. Docs updated. Next: Phase 2 (live
+  re-render on save via fs watcher + WebSocket).
 - 2026-05-30 — **Phase 0 complete.** Vendored KaTeX 0.16.21
   (1.4 MB) + Plotly 2.35.0 (4.3 MB) under
   `crates/rustlab-notebook/assets/vendor/{katex,plotly}/` via

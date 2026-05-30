@@ -178,11 +178,54 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 
 ### Live preview with `notebook watch`
 
-`rustlab-notebook watch <dir>` is the long-running counterpart of
-`render`: it re-renders any notebook whose source changes, debouncing
-filesystem events so a single editor save produces one render pass.
-Pair it with `--obsidian` for a "edit in Editing view, see updates in
-Reading view" loop with no manual rerun.
+`rustlab-notebook watch` has two modes:
+
+1. **Interactive server (bare-input default, single file).** Spins
+   up a local web server, renders the notebook to an HTML page, and
+   opens your browser. Source `.md` is never modified. Phase 1 ships
+   the one-shot render; live re-render on save lands in Phase 2.
+2. **Re-render on save (with `--obsidian` or `--output`).** The
+   long-running counterpart of `render`: re-renders any notebook
+   whose source changes, debouncing filesystem events so a single
+   editor save produces one render pass. Pair with `--obsidian` for
+   the "edit in Editing view, see updates in Reading view" Obsidian
+   loop.
+
+#### Interactive server (bare input)
+
+```
+rustlab-notebook watch analysis.md                       # → opens http://127.0.0.1:8042
+rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
+rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
+```
+
+Behaviour:
+
+- **Single .md file only** for Phase 1; pass a directory only with
+  `--obsidian` or `--output` (re-render mode).
+- **Loopback bind on `127.0.0.1:8042` by default.** If 8042 is busy
+  the server tries 8043, 8044, … up to 10 attempts and logs the
+  actual bound URL. An explicit `--port <N>` skips auto-increment
+  and fails loud on collision.
+- **Embedded KaTeX + Plotly.** The page references local `/assets/`
+  paths, not jsdelivr/cdn.plot.ly. Works fully offline (e.g. tablet
+  over an SSH tunnel on a plane).
+- **Source `.md` is never modified.** No `_attachments/` directory,
+  no `<!-- Generated -->` header, no in-place rewrite.
+- **Browser auto-opens** when stderr is a TTY and `CI` is unset;
+  `--no-browser` forces off.
+- **Ctrl-C** stops the server. Plot artefacts live in a tempdir
+  that's cleaned up on exit.
+- **No live updates yet.** Save the file → the page does *not*
+  refresh in Phase 1. Phase 2 adds a WebSocket-driven re-render.
+  Until then, refresh the browser tab manually or restart the
+  watcher.
+
+For implementation status, the agent-handoff section, and
+forward-looking design, see
+`dev/plans/notebook_interactive_server.md`.
+
+#### Re-render on save (--obsidian / --output)
 
 ```
 rustlab-notebook watch notebooks/ --obsidian                       # vault-friendly in-place rewrite
@@ -192,19 +235,10 @@ rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter edi
 ```
 
 **Watch never modifies your source `.md` without explicit consent.**
-Bare `rustlab-notebook watch notebooks/` (or a single file) falls
-back to a read-only `notebook check` pass and prints a warning
-naming the three flag combinations that actually render. The intent
-is that a user trying watch for the first time can never
-accidentally rewrite their authored markdown — they have to opt in
-by name (`--obsidian`) or by pointing `-o` somewhere (even at the
-source dir, if that's genuinely what they want).
-
-The fallback is interim. The next iteration replaces it with an
-**interactive local web server** — same bare command, but the page
-opens in your browser and re-renders on save without touching the
-source. See `dev/plans/notebook_interactive_server.md` for the
-design.
+The bare command (no `--obsidian`, no `--output`) hits the
+interactive-server path described above and never touches the file;
+the re-render-on-save modes below require you to name a destination
+by flag.
 
 Two layouts work:
 

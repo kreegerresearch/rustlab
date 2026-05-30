@@ -46,3 +46,9 @@ blake3                   = { version = "1",   optional = true }
 axum                     = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
 tokio                    = { version = "1",   default-features = false, features = ["rt", "macros", "net", "io-util", "time", "sync", "signal"] }
 tower-http               = { version = "0.6", default-features = false, features = ["fs"] }
+
+[dev-dependencies]
+# `tower::util::ServiceExt::oneshot` is the idiomatic way to drive a
+# Router from a unit/integration test. axum brings tower transitively
+# but we have to depend on it directly to import from it.
+tower                    = { version = "0.5", default-features = false, features = ["util"] }
