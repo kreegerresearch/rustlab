@@ -250,9 +250,10 @@ Behaviour:
     and **preserves scroll position**.
   - `{"kind":"full","html":"…"}` — block count changed
     (structural edit), or >50% of blocks changed. The page
-    swaps `document.body`, re-executes all inline `<script>`s,
-    and re-renders KaTeX over the whole body. Scroll position
-    snaps to top.
+    swaps the rendered `<main>` (not the whole body, so the
+    toolbar / source pane survive), re-executes its inline
+    `<script>`s, and re-renders KaTeX. Scroll position snaps to
+    top.
 
   If the server stops, the page shows a red "disconnected" banner
   and retries with exponential backoff 500 ms → 5 s capped at 10
@@ -267,6 +268,33 @@ Behaviour:
 For implementation status, the agent-handoff section, and
 forward-looking design, see
 `dev/plans/notebook_interactive_server.md`.
+
+#### In-browser editor (`--editable`)
+
+```
+rustlab-notebook watch analysis.md --editable
+rustlab-notebook watch notebooks/  --editable     # whole directory, every page editable
+```
+
+`--editable` turns the source pane into a [CodeMirror](https://codemirror.net/5/)
+editor (Markdown mode, line numbers) that **writes back to the
+`.md`**:
+
+- Click **Edit** to open the pane, change the source, then **Save**
+  (or `Ctrl`/`Cmd`-S). The buffer is `POST`ed to `/save/<slug>`, the
+  server writes the file, and the normal fs-watch → re-render → WS
+  push updates the rendered side. The edit loop is exactly the same
+  one your external editor would trigger — the browser just happens to
+  be the editor.
+- The editor buffer is never clobbered by a re-render: live updates
+  swap only the rendered `<main>`, while the editor lives outside it.
+- This is the **one** interactive mode that modifies your source
+  (parallel to the "only `--obsidian` modifies" rule), so it is
+  strictly opt-in. Without `--editable` the pane is read-only and the
+  `/save/<slug>` route is not even mounted.
+- CodeMirror is embedded in the binary and served from
+  `/assets/codemirror/…` (works offline like KaTeX/Plotly), but only
+  referenced on the page under `--editable`.
 
 #### Re-render on save (--obsidian / --output)
 

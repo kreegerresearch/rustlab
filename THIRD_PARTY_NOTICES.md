@@ -22,6 +22,10 @@ reproducible via `dev/scripts/vendor-notebook-assets.sh`.
 |---|---|---|---|---|
 | KaTeX (CSS + JS + auto-render + fonts) | 0.16.21 | https://github.com/KaTeX/KaTeX | MIT — see `crates/rustlab-notebook/assets/vendor/katex/LICENSE` | `crates/rustlab-notebook/assets/vendor/katex/` |
 | Plotly.js | 2.35.0 | https://github.com/plotly/plotly.js | MIT — see `crates/rustlab-notebook/assets/vendor/plotly/LICENSE` | `crates/rustlab-notebook/assets/vendor/plotly/` |
+| CodeMirror 5 (core + CSS + Markdown mode) | 5.65.19 | https://github.com/codemirror/codemirror5 | MIT — see `crates/rustlab-notebook/assets/vendor/codemirror/LICENSE` | `crates/rustlab-notebook/assets/vendor/codemirror/` |
+
+CodeMirror is served only under `rustlab-notebook watch --editable`
+(the in-browser editor); the other assets are always served.
 
 The KaTeX fonts ship under the same MIT license as the rest of
 KaTeX — they are Computer Modern derivatives generated from

@@ -144,6 +144,22 @@ pub fn asset_for_path(path: &str) -> Option<Asset> {
             KATEX_JS
         ),
 
+        // ── CodeMirror 5 (in-browser editor; served only under
+        //    `--editable`, but embedded unconditionally — harmless dead
+        //    weight on the non-editable path) ──────────────────────────
+        "codemirror/codemirror.min.js" => asset!(
+            include_bytes!("../../assets/vendor/codemirror/codemirror.min.js"),
+            KATEX_JS
+        ),
+        "codemirror/codemirror.min.css" => asset!(
+            include_bytes!("../../assets/vendor/codemirror/codemirror.min.css"),
+            KATEX_CSS
+        ),
+        "codemirror/mode/markdown/markdown.min.js" => asset!(
+            include_bytes!("../../assets/vendor/codemirror/mode/markdown/markdown.min.js"),
+            KATEX_JS
+        ),
+
         _ => None,
     }
 }

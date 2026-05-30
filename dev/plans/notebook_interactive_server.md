@@ -519,10 +519,17 @@ shipped.
       `document.body` to `<main>` so the chrome (and a future open
       editor) survive re-renders. An open read-only pane refreshes
       via a `window.__rlAfterUpdate` hook the WS client calls.
-- [ ] Optional in-browser editor (Monaco / CodeMirror) writing
-      back to the same `.md` — explicitly opt-in via
-      `--editable`, because it violates the "only `--obsidian`
-      modifies" rule
+- [x] **In-browser editor (5c, done 2026-05-30)** — opt-in
+      `--editable` turns the source pane into a vendored CodeMirror 5
+      editor (Markdown mode) whose Save / Ctrl-S `POST`s to
+      `/save/<slug>`; the server writes the `.md`, the watcher
+      re-renders, and the WS push updates only the rendered `<main>`
+      so the editor buffer is preserved. The `/save` route is mounted
+      only under `--editable`. CodeMirror vendored under
+      `assets/vendor/codemirror/` (MIT), served from
+      `/assets/codemirror/…` but referenced only in editable mode.
+      Chose CodeMirror 5 over Monaco (single-file bundle, ~190 KB, no
+      bundler/AMD loader).
 
 ## Open questions
 
@@ -559,6 +566,24 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-30 — **Phase 5c complete.** In-browser editor
+  (`--editable`). Vendored CodeMirror 5.65.19 (core + CSS + Markdown
+  mode, MIT) under `assets/vendor/codemirror/` via the extended
+  `vendor-notebook-assets.sh`; SHA256SUMS regenerated, `VENDOR.md` +
+  `THIRD_PARTY_NOTICES.md` updated; served from `/assets/codemirror/…`
+  (`assets::asset_for_path`). `page::inject_chrome` now branches on
+  `PageOpts.editable`: editable mode swaps the read-only `<pre>` for a
+  CodeMirror host, links the bundle in `<head>` (+ dark-theme
+  overrides), and the controller script wires Edit/Save buttons +
+  Ctrl/Cmd-S → `POST /save/<slug>`. The `/save/<slug>` route (added in
+  5a) is mounted only under `--editable`. Edit loop: save → fs watch →
+  re-render → WS updates only `<main>`, so the editor buffer is never
+  clobbered (`window.__rlAfterUpdate` skips reload when editable).
+  `--editable` CLI flag → `ServerOpts.editable` → `render_for_server`.
+  Chose CodeMirror 5 over Monaco/CM6 (single-file, ~190 KB, no
+  bundler). 5 `page` unit tests (readonly vs editable scaffold), http
+  save-route gating tests from 5a; end-to-end smoke confirms save
+  writes the file and triggers a re-render. Next: 5d preemption.
 - 2026-05-30 — **Phase 5b complete.** Source pane / split view.
   New module `server/page.rs`: `inject_chrome(html, theme, opts)`
   injects a `<style>` into `<head>` and a toolbar + slide-in source
