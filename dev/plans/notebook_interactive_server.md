@@ -1,10 +1,77 @@
 # Interactive `notebook watch` — local web server + live page
 
-**Current phase:** Phase 0 — Design & scoping
-**Status:** Not started. Watch's bare-input default is currently a
-read-only `cmd_check` fallback (see
-`crates/rustlab-notebook/src/watch.rs::cmd_watch`); this plan
-replaces that fallback with the real interactive experience.
+## Agent handoff — read this first
+
+**Where we are:** Phase 0 (Design & scoping). No code has landed.
+Locked-in decisions and phase task lists below are the agreed
+scope; the locked-ins are *not* up for renegotiation without
+explicit user approval.
+
+**Phase progress at a glance:**
+
+| Phase | State | Headline deliverable |
+|-------|-------|----------------------|
+| 0 — Design + dep trade-off | **complete** (2026-05-30) | trade-off doc, port 8042 + auto-bump, WS full→partial, embed Plotly + KaTeX (vendored), pdflatex external, license audit clean, deps added, vendored assets in tree |
+| 1 — Server skeleton | not started | `server::start`, one-shot render over HTTP, plot serving |
+| 2 — Live re-render | not started | fs watcher → cancellable re-render → WS push |
+| 3 — Block-level diffing | not started | content-hash block IDs, partial DOM updates |
+| 4 — Docs + REPL help | not started | `docs/notebooks.md` section, AGENTS.md close-out |
+| 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor |
+
+**Next concrete action:** start Phase 0. Deliver in order:
+
+1. Write `dev/plans/notebook_interactive_server-tradeoff.md`
+   (axum vs tiny-http vs hand-rolled; tokio runtime surface —
+   note that `notify` runs on `std::sync::mpsc`, so tokio is
+   net-new).
+2. Decide default port + collision behaviour (auto-bump or fail —
+   see Open Questions §1).
+3. Decide WS protocol shape (full-only in Phase 2, partial added
+   in Phase 3, vs both up-front — see Open Questions §2 and §3).
+
+Bring those three back to the user for sign-off before opening
+Phase 1.
+
+**Required reading before touching code:**
+
+- `crates/rustlab-notebook/src/watch.rs` — current `cmd_watch`
+  entry point and `notify` + debouncer pattern this plan reuses.
+- `crates/rustlab-notebook/src/cache.rs` — `NotebookCache` (the
+  prefix cache the server re-uses verbatim).
+- `crates/rustlab-notebook/src/execute.rs` —
+  `execute_notebook_with_cache`, the entry point the render loop
+  calls.
+- `crates/rustlab-notebook/src/render.rs` and
+  `render_markdown.rs` — where block-ID injection and the new
+  "served" plot-path mode go (see Crate layout below).
+- `crates/rustlab-notebook/src/lib.rs` — how existing notebook
+  commands (`cmd_render`, `cmd_check`) wire CLI to the render
+  pipeline.
+
+**Workflow rules** (per `AGENTS.md` and user memory):
+
+- Plan-first. If anything below needs to change, **update this
+  plan and get user approval** before coding.
+- Feature branch only; never push to main. Suggested name:
+  `feature/notebook-interactive-server`.
+- Stage freely (`git add`) but do not commit or push without
+  explicit user approval. No `Co-Authored-By: Claude …` lines
+  in commit messages.
+- Keep the rustlab binary small — all new code lands in
+  `rustlab-notebook`, not in the main `rustlab` CLI.
+- Update on every meaningful change: (1) the Phase checkboxes
+  in this plan, (2) the AGENTS.md "Active Plans" row, (3) the
+  Status log at the bottom of this file (one dated line). These
+  three views must stay in sync — that's what lets the next
+  agent pick up cleanly.
+- When a Phase ships: also update `docs/notebooks.md` and any
+  REPL help text touched.
+
+**Companion plan:** `notebook_interactive_widgets.md` (sliders,
+option buttons, number inputs) depends on Phase 2 of this plan.
+The widgets plan adds a `widget_update` inbound WS message kind
+and a render-with-overrides entry point on the render loop — keep
+both reserved when designing Phase 2, or you'll retrofit.
 
 ## Motivation
 
@@ -44,11 +111,80 @@ Captured up front so review can focus on the open questions:
    `crates/rustlab-notebook/src/cache.rs::NotebookCache`) is reused
    directly. Edit a prose-only block, every code block returns
    cached output instantly.
-5. **Composes with the persistent function cache** at zero extra
-   work. A notebook starting with `cache enable` populates
-   `.rustlab/cache.db` the same way it does under `notebook render`.
+5. **Persistent function cache is shared** with other rustlab
+   processes through `.rustlab/cache.db`, exactly like
+   `notebook render`. The server does not scope the cache to its
+   own session (sharing is the whole point of the persistent layer).
 6. **Single notebook per server instance** for v1. Pointing at a
    directory in interactive mode is a follow-up.
+7. **Loopback-only bind.** The server listens on `127.0.0.1`
+   exclusively; any user-supplied bind that isn't loopback is
+   rejected at startup with a clear error pointing at SSH tunnels.
+8. **Auto-open the browser** when stdout is a TTY and `CI` is
+   unset; never otherwise. `--no-browser` forces off.
+9. **Cancel in-flight render on new fs event.** A prose edit must
+   never block waiting for a slow code block from the previous
+   render to finish. The render task is cancellable; the next
+   debounced fs event preempts it.
+10. **LRU bound on served plots.** In-memory plot table is an LRU
+    keyed on `(block_id, source_hash)` capped at 256 entries.
+    Evicted entries fall back to re-render on next request.
+11. **HTTP/WS stack: axum 0.8 + current-thread tokio + tower-http**
+    with the trimmed feature set in the trade-off doc. Tokio
+    stays contained inside `rustlab-notebook`; main `rustlab` CLI
+    is unaffected.
+12. **Default port 8042; auto-increment up to 10 attempts** on
+    collision when the port is the default. An explicit
+    `--port <N>` fails loud on collision (explicit means
+    explicit). Each retry and the final bound URL are logged
+    prominently so SSH-tunnel users see what port actually bound.
+13. **WS protocol shape: full-document refresh only in Phase 2;
+    partial added in Phase 3.** The `{"kind": …}` discriminator
+    ships from day one so Phase 3 is additive (new case, not a
+    schema change).
+14. **Widget integration boundary is *not* reserved up front.**
+    Phase 2 documents the touchpoints (a future
+    `widget_update` inbound WS kind and a render-overrides
+    channel on the render loop) but ships no scaffolding. The
+    widgets plan's Phase 1 wires both when it lands; cost of any
+    resulting refactor is accepted.
+15. **Server-mode page is fully offline-capable; assets are
+    embedded in the binary.** KaTeX (CSS + JS + fonts) and the
+    Plotly bundle are vendored under
+    `crates/rustlab-notebook/assets/vendor/{katex,plotly}/` and
+    embedded via `include_bytes!`. The server serves them from
+    `/assets/katex/…` and `/assets/plotly.min.js`; emitted page
+    HTML references those local paths instead of the
+    `cdn.jsdelivr.net` / `cdn.plot.ly` URLs the renderer uses
+    today. Net binary growth ≈ 4.5 MB on the standalone
+    `rustlab-notebook` binary; main `rustlab` CLI is unaffected.
+    `pdflatex`/`tectonic` remain external (PDF output only); the
+    existing graceful "neither found in PATH" error is correct.
+    `notebook render --output foo.html` keeps emitting CDN
+    `<script src=…>` tags by default (a future
+    `--self-contained-html` flag can opt into inlining for
+    emailable offline HTML — out of scope here).
+16. **License hygiene: every addition is compatible with the
+    workspace's `MIT OR Apache-2.0` dual license.**
+    - Rust deps (`axum`, `tokio`, `tower-http`, transitives) are
+      MIT or MIT/Apache-2.0. Two notables: `matchit 0.8.4` is
+      `MIT AND BSD-3-Clause` (both notices required, trivially
+      satisfied); `sync_wrapper 1.0.2` is Apache-2.0-only (the
+      workspace dual license permits the Apache redistribution
+      path).
+    - Vendored Plotly.js, KaTeX JS, KaTeX CSS, **and KaTeX
+      fonts** are all under the upstream KaTeX/Plotly MIT
+      LICENSE — KaTeX's bundled woff2/ttf/woff fonts are
+      generated from Metafont under the KaTeX project's MIT
+      license (Computer Modern derivatives, not OFL). No
+      separate OFL notice is required.
+    - No TLS stack pulled in (`ring`/`rustls` avoided), keeping
+      the license audit short.
+    - A repo-root `THIRD_PARTY_NOTICES.md` enumerates each
+      vendored asset + upstream URL + version + license. SHA256
+      checksums for every vendored file live in
+      `crates/rustlab-notebook/assets/vendor/SHA256SUMS`,
+      regenerated by `dev/scripts/vendor-notebook-assets.sh`.
 
 ## Non-goals (out of scope for v1)
 
@@ -80,21 +216,39 @@ Most of the work fits in `crates/rustlab-notebook`:
   `execute::execute_notebook_with_cache` and the in-memory
   `NotebookCache`.
 
+Cross-cutting touches outside `server/`:
+
+- `crates/rustlab-notebook/src/render.rs` and
+  `render_markdown.rs` — emit a stable `id="b-<short-hash>"`
+  attribute on every rendered block so Phase 3 partial diffs can
+  identify what changed even when blocks are reordered. Hash is
+  blake3-truncated over the block source.
+- `crates/rustlab-notebook/src/render.rs` — new "served" plot path
+  mode that rewrites `<img src>` to `/plots/<index>.svg` for the
+  server, alongside the existing file-path and `_attachments/`
+  modes.
+
 Dependencies: `axum = "0.8"` (well-maintained, small surface),
-`tokio` (already a transitive dep via `notify`), `tower-http` for
-static-file handling. Trade-off doc required because these are
-infrastructure libraries; see
-`dev/plans/notebook_interactive_server-tradeoff.md` (to be
-written before Phase 1).
+`tokio` (net-new — `notify` uses `std::sync::mpsc`, not the
+tokio-backed debouncer, so the runtime arrives with this work),
+`tower-http` for static-file handling. Trade-off doc is
+best-practice here rather than policy-mandated (notebook server is
+infrastructure, not core numerics — see `feedback_licensing`), but
+the axum+tokio surface is large enough to warrant one anyway:
+`dev/plans/notebook_interactive_server-tradeoff.md` (to be written
+before Phase 1).
 
 ## CLI surface
 
 ```
 rustlab-notebook watch <input>                          (default — interactive server)
-rustlab-notebook watch <input> --port 8765              (override default port)
+rustlab-notebook watch <input> --port 8765              (override default port; loopback always)
 rustlab-notebook watch <input> --no-browser             (don't auto-open the browser)
-rustlab-notebook watch <input> --bind 127.0.0.1:8765    (full bind spec, takes precedence over --port)
 ```
+
+There is no `--bind` flag: the server is loopback-only by
+design (see locked-in #7). Users who need remote access set up
+an SSH tunnel.
 
 The existing `--obsidian` and `--output` flags retain their current
 meanings and continue to suppress interactive mode (since the user
@@ -106,7 +260,7 @@ has explicitly chosen a render destination).
 |---|---|
 | `GET /` | Redirect to `/notebook.html` (the index for the active notebook) |
 | `GET /notebook.html` | The current rendered HTML, with the WebSocket connect snippet injected at the bottom |
-| `GET /plots/<hash>.svg` | Served from the in-memory render |
+| `GET /plots/<index>.svg` | Served from the in-memory render. Index is the per-notebook figure number the existing renderer already assigns; no new hashing scheme. |
 | `GET /assets/<name>` | Static CSS/JS (the same KaTeX bundle that the render uses) |
 | `WS /ws` | Re-render push channel. Server sends one of: `{"kind":"full","html":"…"}` (initial / large change), or `{"kind":"partial","blocks":[{"id":"b3","html":"…"}]}` (only the blocks that re-executed) |
 
@@ -116,44 +270,122 @@ DOM replacement on the changed blocks, no scroll position loss.
 
 ## Phases
 
-### Phase 0 — Design & dependency trade-off  **Status:** not started
+### Phase 0 — Design & dependency trade-off  **Status:** library / port / WS / widget questions signed off; asset-embedding still pending
 
-- [ ] Write `dev/plans/notebook_interactive_server-tradeoff.md`
-      (axum vs tiny-http vs hand-rolled, tokio dep surface)
-- [ ] Pick the WebSocket protocol shape (full vs partial; see § wire format above)
-- [ ] Decide default port + collision behaviour (auto-bump? fail?)
-- [ ] Decide auto-browser-open behaviour (`xdg-open` / `open` /
-      `start` — refuse on headless CI)
+- [x] Write `dev/plans/notebook_interactive_server-tradeoff.md`.
+- [x] HTTP/WS library: axum 0.8 + current-thread tokio +
+      tower-http (locked-in #11).
+- [x] Default port + collision: 8042, auto-increment up to 10
+      attempts; explicit `--port` fails loud (locked-in #12).
+      Signed off 2026-05-30.
+- [x] WebSocket protocol shape: full-document only in Phase 2;
+      partial added in Phase 3; discriminated union from day one
+      (locked-in #13). Signed off 2026-05-30.
+- [x] Widget integration boundary: not reserved up front;
+      documented in Phase 2 as a forward-compat note
+      (locked-in #14). Signed off 2026-05-30.
+- [x] Self-contained-binary asset embedding: embed Plotly +
+      KaTeX, leave pdflatex/tectonic external (locked-in #15).
+      Signed off 2026-05-30.
+- [x] License hygiene: verified `MIT OR Apache-2.0` compatibility
+      of all proposed deps and vendored assets (locked-in #16).
+      Signed off 2026-05-30.
+
+**Phase 0 closing tasks** (Phase 1 unblocks when all green):
+
+- [x] Add `axum`, `tokio`, `tower-http` deps to
+      `crates/rustlab-notebook/Cargo.toml` with the trimmed
+      feature set from the trade-off doc; verifies it compiles
+      (release build green in 30.6 s incremental).
+- [x] `cargo tree -p rustlab-notebook` audit — all 29 new
+      transitives are permissive (MIT / MIT-or-Apache-2.0 / one
+      Apache-2.0-only and one MIT-AND-BSD-3-Clause — both
+      compatible). See Status log entry 2026-05-30.
+- [x] Measure release binary-size delta: **+16 KB** with deps
+      added but unused (dead-code elimination is doing its
+      work). Real growth lands when Phase 1 wires the deps; the
+      +1.5-2 MB estimate from the trade-off doc still applies
+      at that point. Recorded in Status log.
+- [x] Vendor KaTeX 0.16.21 + Plotly 2.35.0 under
+      `crates/rustlab-notebook/assets/vendor/{katex,plotly}/`
+      via `dev/scripts/vendor-notebook-assets.sh`. Each dir has
+      `LICENSE` (both MIT — KaTeX fonts also MIT, the OFL
+      assumption was incorrect), `VENDOR.md`, and the repo-wide
+      `SHA256SUMS` manifest. Total vendored size 5.7 MB
+      (KaTeX 1.4 MB + Plotly 4.3 MB).
+- [x] Create `THIRD_PARTY_NOTICES.md` at repo root enumerating
+      the new vendored assets.
+
+**Phase 0 complete.** Phase 1 unblocked as of 2026-05-30.
 
 ### Phase 1 — Server skeleton  **Status:** not started
 
-- [ ] `server::start(input, opts)` — bind, log the URL, block until
-      Ctrl-C
+- [ ] `server::start(input, opts)` — bind on `127.0.0.1:8042`
+      (default) with auto-increment up to 10 attempts per
+      locked-in #12, log the bound URL, block until Ctrl-C
+- [ ] Browser auto-open (TTY-gated, `CI`-aware) per locked-in #8
 - [ ] `GET /notebook.html` returns a one-shot render of the input
-- [ ] `GET /plots/<hash>.svg` serves figures from the render's
-      in-memory plot table
+- [ ] `GET /plots/<index>.svg` serves figures from the render's
+      in-memory plot table (per-notebook figure index, no new
+      hashing scheme — see § wire format)
+- [ ] `GET /assets/katex/…` and `GET /assets/plotly.min.js` serve
+      the embedded bundles via `include_bytes!` per locked-in #15
+- [ ] Render emits page HTML referencing the local `/assets/…`
+      paths instead of CDN URLs (new "served" path mode on
+      `render.rs` per Crate layout)
 - [ ] Initial render runs once at startup
-- [ ] Integration test: spawn the server in-process against a fixture
-      `.md`, fetch `/notebook.html`, assert the rendered output
-      contains the expected text
+- [ ] Integration test: spawn the server in-process against a
+      fixture `.md`, fetch `/notebook.html`, assert the rendered
+      output contains the expected text *and* references
+      `/assets/` paths (not `cdn.jsdelivr.net` / `cdn.plot.ly`).
+      Also fetch `/assets/katex/katex.min.css` and assert it
+      starts with KaTeX's banner comment.
 
 ### Phase 2 — Live re-render  **Status:** not started
 
 - [ ] fs watcher on the input file (reuse `notify` + `watch.rs`'s
       debouncer pattern)
-- [ ] WebSocket endpoint `/ws` accepting one connection per page
+- [ ] WebSocket endpoint `/ws` accepting many concurrent
+      connections (one per page-load — laptop tab + tablet is the
+      headline use case)
+- [ ] Cancellable render task: a new debounced fs event preempts
+      the in-flight render (see locked-in #9) so prose edits don't
+      stall behind slow code blocks
+- [ ] LRU eviction on the in-memory plot table per locked-in #10
 - [ ] Re-render on save → push `{"kind":"full","html":"…"}` to every
       connected client
-- [ ] Page JS: connect WS, replace document on receive, retry on
-      disconnect
+- [ ] Page JS: connect WS, replace document on receive, reconnect
+      with exponential backoff 500 ms → 5 s capped (~10 tries),
+      then surface a visible "disconnected" banner until the next
+      successful connect
+- [ ] **Document widget integration touchpoints** (locked-in #14)
+      in code comments at the two future-extension sites: the WS
+      inbound-message `match` (where `widget_update` will land as
+      a new arm) and the `render_loop` entry signature (where the
+      optional `&BTreeMap<String, WidgetValue>` override will be
+      added). Goal: when the widgets plan's Phase 1 starts, the
+      author finds the two extension points by grep without
+      reading the WS plumbing end-to-end. Add a `// see:
+      dev/plans/notebook_interactive_widgets.md` pointer at each
+      site.
 
 ### Phase 3 — Block-level diffing  **Status:** not started
 
-- [ ] Tag each rendered block with a stable `id="b<n>"` attribute
+- [ ] Tag each rendered block with `id="b-<short-hash>"` where the
+      hash is blake3 over the block source, truncated to 8 hex
+      chars. Content-addressed so a moved-but-unchanged block keeps
+      its ID; positional `b<n>` is rejected because inserting a
+      block at the top would shift every subsequent ID and degrade
+      the partial diff into a full refresh. Position is the
+      tiebreaker for duplicate-source blocks.
 - [ ] After a re-render, diff against the previous render's per-block
-      HTML; emit only changed blocks
-- [ ] Page JS: replace only the changed `<section id="b…">`
+      HTML keyed on the stable ID; emit only changed blocks
+- [ ] Page JS: replace only the changed `<section id="b-…">`
       elements; preserve scroll position
+- [ ] Note: when the *content* of a block genuinely changes, its
+      ID changes too, so the page sees a remove+insert pair rather
+      than an in-place swap. Document the scroll-position
+      implications.
 
 ### Phase 4 — Docs + REPL help  **Status:** not started
 
@@ -177,20 +409,13 @@ DOM replacement on the changed blocks, no scroll position loss.
 
 ## Open questions
 
-1. **Re-render cost on a save during heavy compute.** If a notebook
-   contains a slow `cache enable`-d function and a user edits prose
-   while the slow function is running, what does the server do?
-   Naive: re-renders are serialised, prose edit waits for compute.
-   Better: cancel the in-flight render when a new fs event arrives.
-2. **Memory bound for served figures.** Each re-render produces a
-   fresh set of plot SVGs; without LRU eviction the in-memory table
-   grows unbounded across a long session. Decision needed by Phase
-   2.
-3. **Browser auto-open vs CI safety.** Phase 0 question (above).
-4. **Should the persistent function cache scope to the server's
-   own session, or share `.rustlab/cache.db` with other processes?**
-   Probably share (the whole point of persistent cache); flag if any
-   reason to isolate.
+(All Phase 0 design questions are resolved. Asset embedding
+signed off 2026-05-30 and moved into Locked-in design decisions
+#15; license hygiene moved into #16. Default port, WS protocol
+shape, and widget integration boundary moved into #12, #13, #14.
+Phase 1 unblocks once the Phase 0 closing tasks — `cargo tree`
+licence audit, binary-size measurement, vendored asset
+acquisition — complete.)
 
 ## Risks
 
@@ -211,3 +436,65 @@ real browser without modifying anything"*. Phase 2 (live re-render)
 follows immediately because that's the actual reason users want this.
 
 Phases 3-5 are polish that can ship independently.
+
+## Status log
+
+One dated line per meaningful change. Newest at the top. Keep
+this in sync with the Phase checkboxes and the AGENTS.md row.
+
+- 2026-05-30 — Agent-handoff section + status log added; the
+  plan is now self-describing for any agent picking it up.
+- 2026-05-30 — Review pass tightened locked-ins: loopback-only
+  bind (dropped `--bind`), TTY-gated auto-open, cancel-in-flight
+  render, LRU plot table (256 entries), content-hash block IDs,
+  shared persistent cache; corrected the tokio dependency claim
+  (`notify` runs on std-mpsc, axum brings net-new tokio);
+  switched plot endpoint to `<index>.svg`.
+- 2026-05-30 — **Phase 0 complete.** Vendored KaTeX 0.16.21
+  (1.4 MB) + Plotly 2.35.0 (4.3 MB) under
+  `crates/rustlab-notebook/assets/vendor/{katex,plotly}/` via
+  the new `dev/scripts/vendor-notebook-assets.sh` (reproducible
+  fetch). Each dir has upstream `LICENSE` (both MIT — the
+  earlier OFL claim for KaTeX fonts was wrong; KaTeX's bundled
+  woff2/ttf/woff are Computer Modern derivatives generated from
+  Metafont under KaTeX's project MIT license). Per-file SHA256
+  in `assets/vendor/SHA256SUMS`. Repo-root
+  `THIRD_PARTY_NOTICES.md` enumerates the new vendored assets.
+  Locked-in #16 and trade-off doc § Licensing corrected for
+  the KaTeX font-license issue. Phase 1 unblocked.
+- 2026-05-30 — Phase 0 closing tasks partial: deps added to
+  `crates/rustlab-notebook/Cargo.toml` (axum 0.8 + tokio 1 +
+  tower-http 0.6, all with trimmed feature sets). `cargo build
+  --release -p rustlab-notebook --features mermaid` succeeded in
+  30.6 s incremental. **Binary size delta: +16 KB** (10,473,376
+  → 10,490,272 bytes) — much smaller than the +1.5-2 MB estimate
+  because rustc's dead-code elimination strips nearly all the
+  new crate code; nothing references axum/tokio yet. Real
+  binary-size growth lands when Phase 1 code actually uses these
+  deps; estimate stands at +1.5-2 MB for that point. License
+  audit on the 29 new transitives via `cargo metadata`: all
+  permissive, all compatible with `MIT OR Apache-2.0`. Two
+  noteworthy: `matchit 0.8.4` is `MIT AND BSD-3-Clause` (both
+  notices required; trivially satisfied) and `sync_wrapper 1.0.2`
+  is Apache-2.0-only (workspace dual license lets downstream
+  pick the Apache path). Still open: vendor KaTeX + Plotly
+  bundles; create `THIRD_PARTY_NOTICES.md`.
+- 2026-05-30 — Phase 0 design fully signed off. Locked-in
+  decisions #11–#16 capture: axum 0.8 + current-thread tokio +
+  tower-http; default port **8042** with auto-increment up to 10
+  attempts (explicit `--port` still fails loud); WS full-only in
+  Phase 2 with partial added in Phase 3; widget integration
+  documented in Phase 2 rather than reserved; KaTeX + Plotly
+  embedded via `include_bytes!`, pdflatex/tectonic remain
+  external; license audit confirms `MIT OR Apache-2.0`
+  compatibility for all additions (KaTeX fonts are OFL 1.1,
+  shipping their notice; no TLS stack). Phase 0 closing tasks
+  remaining: add deps to `Cargo.toml`, run `cargo tree` license
+  audit, measure binary-size + clean-build-time deltas, vendor
+  KaTeX + Plotly bundles under
+  `crates/rustlab-notebook/assets/vendor/`, create
+  `THIRD_PARTY_NOTICES.md`.
+- 2026-05-30 — Phase 0 work started on branch
+  `feature/notebook-interactive-server`. Trade-off doc drafted at
+  `dev/plans/notebook_interactive_server-tradeoff.md`.
+- 2026-05-30 — Initial design + scoping doc landed.
