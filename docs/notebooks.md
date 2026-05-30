@@ -184,13 +184,20 @@ rustlab-notebook watch notebooks/ -o vault/ --obsidian             # two-dir: va
 rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter editor, slower triggers
 ```
 
-**Watch refuses to render in-place without explicit consent.** Bare
-`rustlab-notebook watch notebooks/` errors out with a message
-listing the three legitimate forms below. The intent is that a
-user trying watch for the first time can never accidentally rewrite
-their authored markdown — they have to opt in by name (`--obsidian`)
-or by pointing `-o` somewhere (even at the source dir, if that's
-genuinely what they want).
+**Watch never modifies your source `.md` without explicit consent.**
+Bare `rustlab-notebook watch notebooks/` (or a single file) falls
+back to a read-only `notebook check` pass and prints a warning
+naming the three flag combinations that actually render. The intent
+is that a user trying watch for the first time can never
+accidentally rewrite their authored markdown — they have to opt in
+by name (`--obsidian`) or by pointing `-o` somewhere (even at the
+source dir, if that's genuinely what they want).
+
+The fallback is interim. The next iteration replaces it with an
+**interactive local web server** — same bare command, but the page
+opens in your browser and re-renders on save without touching the
+source. See `dev/plans/notebook_interactive_server.md` for the
+design.
 
 Two layouts work:
 
