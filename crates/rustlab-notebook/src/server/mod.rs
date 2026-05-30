@@ -217,6 +217,24 @@ pub(super) fn render_for_server(
     slug: &str,
     editable: bool,
 ) -> Result<String> {
+    // A never-tripped flag → the cancellable path can't return `None`.
+    let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    Ok(render_for_server_cancellable(input, theme, plot_root, slug, editable, never)?
+        .expect("render with a never-set cancel flag cannot be cancelled"))
+}
+
+/// Cancellable form of [`render_for_server`]. Returns `Ok(None)` when
+/// `cancel` trips mid-render (a newer save preempted this one); the
+/// coordinator discards that result. See `render_loop` for the
+/// preemption wiring.
+pub(super) fn render_for_server_cancellable(
+    input: &Path,
+    theme: &'static ThemeColors,
+    plot_root: &Path,
+    slug: &str,
+    editable: bool,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Option<String>> {
     use crate::{embed, execute, parse, render};
 
     let source = std::fs::read_to_string(input)
@@ -232,7 +250,10 @@ pub(super) fn render_for_server(
     let title = crate::extract_title(&source, &input.to_path_buf());
     let expanded = embed::expand_embeds(&source, &host_dir, &host_dir);
     let blocks = parse::parse_notebook(&expanded);
-    let rendered = execute::execute_notebook(&blocks);
+    let rendered = match execute::execute_notebook_cancellable(&blocks, cancel) {
+        Some(r) => r,
+        None => return Ok(None), // preempted
+    };
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
@@ -240,7 +261,7 @@ pub(super) fn render_for_server(
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
     let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
-    Ok(html)
+    Ok(Some(html))
 }
 
 /// Bind 127.0.0.1 on either the explicit user port (fail loud) or

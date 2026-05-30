@@ -22,16 +22,22 @@
 //! path back to its [`Notebook`] (by source path) and re-renders just
 //! that one. Single-file mode is the one-entry case.
 //!
-//! ## Cancellation policy
+//! ## Cancellation policy (Phase 5d — true preemption)
 //!
-//! Today this ships *let-it-finish*: a save during a slow render does
-//! not preempt the in-flight execution. Only one render runs at a time
-//! per coordinator; once it finishes, any pending slugs trigger fresh
-//! renders. (Phase 5d replaces this with true preemption via a
-//! rustlab-script cancellation token.)
+//! Each scheduled render runs in its own task with an
+//! `Arc<AtomicBool>` cancel flag and a monotonic generation number
+//! (per notebook). When a newer save for the same notebook arrives, the
+//! coordinator **sets the in-flight render's flag** (the evaluator polls
+//! it between statements / loop iterations and bails with
+//! `ScriptError::Cancelled`) and schedules a fresh render. A finishing
+//! render publishes only if its generation is still the latest, so a
+//! preempted (stale) render can never clobber a newer one. A runaway
+//! code block (`while true; end;`) therefore stops promptly on the next
+//! save instead of pinning a core forever.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -188,74 +194,110 @@ async fn coordinator(
             let Some(nb) = state.notebook(&slug).cloned() else {
                 continue;
             };
-            rerender_notebook(theme, &state, &nb).await;
+            schedule_render(theme, state.clone(), nb);
         }
     }
 }
 
-/// Re-render a single notebook, publish its new HTML, and broadcast a
-/// partial/full/none envelope to that notebook's WS subscribers.
-async fn rerender_notebook(theme: &'static ThemeColors, state: &Arc<ServerState>, nb: &Arc<Notebook>) {
-    let input = nb.source_path.clone();
-    let slug = nb.slug.clone();
-    let plot_root = state.plot_dir.path().to_path_buf();
-    let editable = state.editable;
+/// Schedule a (preemptible) re-render of `nb`. Non-blocking: the render
+/// runs in its own task, so the coordinator stays responsive and a
+/// follow-up save can preempt this render. Any render already in flight
+/// for this notebook is cancelled first.
+fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc<Notebook>) {
+    // Bump generation and preempt any in-flight render for this notebook.
+    let my_gen = nb.render_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let my_cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut guard = nb.cancel.lock().unwrap();
+        if let Some(prev) = guard.replace(my_cancel.clone()) {
+            prev.store(true, Ordering::SeqCst); // tell the slow render to stop
+        }
+    }
 
-    let render_result = tokio::task::spawn_blocking(move || {
-        super::render_for_server(&input, theme, &plot_root, &slug, editable)
-    })
-    .await;
+    tokio::spawn(async move {
+        let input = nb.source_path.clone();
+        let slug = nb.slug.clone();
+        let plot_root = state.plot_dir.path().to_path_buf();
+        let editable = state.editable;
+        let cancel = my_cancel.clone();
 
-    let new_html = match render_result {
-        Ok(Ok(html)) => html,
-        Ok(Err(e)) => {
-            eprintln!("[watch] render error ({}): {e:#}", nb.slug);
+        let render_result = tokio::task::spawn_blocking(move || {
+            super::render_for_server_cancellable(&input, theme, &plot_root, &slug, editable, cancel)
+        })
+        .await;
+
+        // Release our cancel slot (only if it's still ours).
+        {
+            let mut guard = nb.cancel.lock().unwrap();
+            if guard.as_ref().is_some_and(|c| Arc::ptr_eq(c, &my_cancel)) {
+                *guard = None;
+            }
+        }
+
+        let new_html = match render_result {
+            Ok(Ok(Some(html))) => html,
+            Ok(Ok(None)) => {
+                // Preempted mid-render (a newer save tripped our flag).
+                eprintln!("[watch] render preempted ({})", nb.slug);
+                return;
+            }
+            Ok(Err(e)) => {
+                eprintln!("[watch] render error ({}): {e:#}", nb.slug);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[watch] render task panicked ({}): {e}", nb.slug);
+                return;
+            }
+        };
+
+        // Stale-render guard: a newer render superseded us while this one
+        // ran to completion → drop our (now-stale) output so it can't
+        // clobber the newer one. (A *cancelled* render already returned
+        // above; this only catches a render that finished anyway.)
+        if nb.render_gen.load(Ordering::SeqCst) != my_gen {
             return;
         }
-        Err(e) => {
-            eprintln!("[watch] render task panicked ({}): {e}", nb.slug);
-            return;
-        }
-    };
 
-    // Diff against this notebook's previous block list before publishing.
-    let new_blocks = diff::split_blocks(&new_html);
-    let decision = {
-        let prev = nb.prev_blocks.lock().unwrap();
-        diff::classify(&prev, &new_blocks)
-    };
+        // Diff against this notebook's previous block list before publishing.
+        let new_blocks = diff::split_blocks(&new_html);
+        let decision = {
+            let prev = nb.prev_blocks.lock().unwrap();
+            diff::classify(&prev, &new_blocks)
+        };
 
-    // Publish state regardless of broadcast kind so a fresh page load
-    // always gets the latest, and update the diff baseline.
-    {
-        let mut guard = nb.html.write().await;
-        *guard = new_html.clone();
-    }
-    {
-        let mut prev = nb.prev_blocks.lock().unwrap();
-        *prev = new_blocks;
-    }
+        // Publish state regardless of broadcast kind so a fresh page load
+        // always gets the latest, and update the diff baseline.
+        {
+            let mut guard = nb.html.write().await;
+            *guard = new_html.clone();
+        }
+        {
+            let mut prev = nb.prev_blocks.lock().unwrap();
+            *prev = new_blocks;
+        }
 
-    match decision {
-        Broadcast::None => {
-            eprintln!("[watch] re-rendered {} (no change)", nb.slug);
+        match decision {
+            Broadcast::None => {
+                eprintln!("[watch] re-rendered {} (no change)", nb.slug);
+            }
+            Broadcast::Partial(changed) => {
+                let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
+                let _ = nb.broadcast.send(env);
+                eprintln!(
+                    "[watch] re-rendered {} (partial: {} block{})",
+                    nb.slug,
+                    changed.len(),
+                    if changed.len() == 1 { "" } else { "s" },
+                );
+            }
+            Broadcast::Full => {
+                let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
+                let _ = nb.broadcast.send(env);
+                eprintln!("[watch] re-rendered {} (full)", nb.slug);
+            }
         }
-        Broadcast::Partial(changed) => {
-            let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
-            let _ = nb.broadcast.send(env);
-            eprintln!(
-                "[watch] re-rendered {} (partial: {} block{})",
-                nb.slug,
-                changed.len(),
-                if changed.len() == 1 { "" } else { "s" },
-            );
-        }
-        Broadcast::Full => {
-            let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
-            let _ = nb.broadcast.send(env);
-            eprintln!("[watch] re-rendered {} (full)", nb.slug);
-        }
-    }
+    });
 }
 
 #[cfg(test)]
@@ -353,5 +395,45 @@ mod tests {
 
         drop(tx);
         let _ = tokio::time::timeout(Duration::from_secs(1), coord).await;
+    }
+
+    /// True preemption: a render stuck in an infinite loop is cancelled
+    /// when a newer save arrives, and the newer render's output wins.
+    /// Runs on the current-thread runtime (matching the server); the
+    /// runaway render spins on a `spawn_blocking` thread, not the runtime
+    /// thread, so the test stays responsive.
+    #[tokio::test]
+    async fn schedule_render_preempts_a_runaway_render() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let nb_path = dir.path().join("nb.md");
+        // Start benign so the *initial* (non-cancellable) render is fast.
+        std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
+
+        let html0 =
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false).unwrap();
+        let (state, nb) = single_state(&nb_path, html0);
+
+        // Now make the source a runaway and kick off a render; it spins on
+        // a blocking thread until preempted.
+        std::fs::write(&nb_path, "```rustlab\nwhile true; end;\n```\n").unwrap();
+        schedule_render(theme, state.clone(), nb.clone());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Now edit to fast content and subscribe before re-scheduling.
+        std::fs::write(&nb_path, "# Fast\n\nPREEMPT_MARKER body.\n").unwrap();
+        let mut sub = nb.broadcast.subscribe();
+        schedule_render(theme, state.clone(), nb.clone());
+
+        // The second render preempts the first and broadcasts.
+        let msg = tokio::time::timeout(Duration::from_secs(8), sub.recv())
+            .await
+            .expect("preempting render did not broadcast in time")
+            .expect("channel closed");
+        assert!(
+            msg.contains("PREEMPT_MARKER"),
+            "winning render missing the new marker"
+        );
+        assert!(state.notebook("nb").unwrap().html.read().await.contains("PREEMPT_MARKER"));
     }
 }

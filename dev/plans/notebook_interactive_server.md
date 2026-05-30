@@ -16,7 +16,7 @@ explicit user approval.
 | 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
 | 3 — Block-level diffing | **complete** (2026-05-30) | renderer wraps every block in `<section class="rl-block" id="b-<hash>">…</section>`; new server::diff module splits a rendered doc and computes per-position changes; coordinator picks `partial`/`full`/`None` per render; WS client gains `applyPartial` for in-place outerHTML swap + script re-exec + KaTeX re-render. 47 unit + 5 + 2 integration tests. |
 | 4 — Docs + CLI help | **complete** (2026-05-30) | `docs/notebooks.md` § "Live preview" extended through Phase 2/3 (live reload + partial diffs + scroll preservation); `watch --help` long_about rewritten to lead with the interactive server (default) and demote re-render-on-save to secondary; `examples/notebooks/README.md` gained a "Live-edit one example" section. |
-| 5 — Polish (optional) | **in progress** | item 1 (directory mode, 5a) done 2026-05-30; remaining: source pane (5b), in-browser editor (5c), real render preemption (5d), removal-aware partial diffs |
+| 5 — Polish (optional) | **items 1–4 done** (2026-05-30) | directory mode (5a), source pane (5b), in-browser editor (5c), real render preemption (5d) all landed; removal-aware partial diffs (item 5) deferred for discussion |
 
 **Next concrete action:** Phase 5 is underway (user asked for items
 1–4). 5a (directory mode) is done; 5b (source pane), 5c (in-browser
@@ -32,9 +32,10 @@ Phases 0–4 are complete:
   in-place swap).
 - **Phase 4** — docs + CLI help close-out.
 
-Phase 5 polish items (optional, won't block landing):
-- **Real render preemption** (locked-in #9 — rustlab-script
-  cancellation-token plumbing).
+Phase 5 polish items:
+- ~~**Real render preemption** (locked-in #9)~~ — **done (5d,
+  2026-05-30)**: `Arc<AtomicBool>` cancel flag on the
+  `rustlab-script` Evaluator.
 - **`--watch-dir <DIR>`** — directory mode + index page.
 - **Source-pane / split view** — raw .md alongside rendered.
 - **Optional in-browser editor** (Monaco / CodeMirror) — opt-in
@@ -497,8 +498,23 @@ REPL does not expose notebook subcommands. Renaming this phase
 "Docs + CLI help" in the table above to match what actually
 shipped.
 
-### Phase 5 — Polish / optional  **Status:** not started
+### Phase 5 — Polish / optional  **Status:** items 1–4 done (2026-05-30); item 5 (removal-aware partial diffs) deferred
 
+- [x] **Real render preemption (5d, done 2026-05-30, locked-in #9)** —
+      `Evaluator` gained an optional `cancel: Option<Arc<AtomicBool>>`
+      (default `None` → REPL/CLI unaffected) polled in `exec_stmt` and
+      at the top of While/For iterations, returning the new
+      `ScriptError::Cancelled`. `execute::execute_notebook_cancellable`
+      builds the evaluator with the flag and returns `None` when
+      tripped; `server::render_for_server_cancellable` propagates that.
+      The coordinator's `schedule_render` runs each render in its own
+      task with a per-notebook generation counter + cancel slot; a new
+      save sets the in-flight render's flag and schedules a fresh one,
+      and a stale (superseded) render never publishes. Verified: a real
+      `while true; end;` notebook stops on the next save with CPU back
+      to ~0% (not leaked). The *initial* startup render is the one
+      non-preemptible render (nothing to preempt yet). All capture
+      state is thread-local so concurrent renders don't collide.
 - [x] **Directory mode (5a, done 2026-05-30)** — bare
       `watch <dir>` serves every `.md` under it behind a generated
       index page (`/`), one URL per notebook at `/n/<slug>`.
@@ -566,6 +582,30 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-30 — **Phase 5d complete.** Real render preemption
+  (locked-in #9). `rustlab-script`: `Evaluator` gained
+  `cancel: Option<Arc<AtomicBool>>` (default `None`), builder
+  `with_cancel` / `set_cancel`, and a `check_cancelled` polled at the
+  top of `exec_stmt` and each While/For iteration → new
+  `ScriptError::Cancelled`. Cost when unset: one `is_some` branch per
+  statement; REPL/CLI unchanged (4 `tests/cancellation.rs` cases incl.
+  interrupting `while true; end;` from another thread). Notebook:
+  `execute::execute_notebook_cancellable(blocks, cancel) -> Option<…>`
+  (None = abandoned); `server::render_for_server_cancellable` returns
+  `Ok(None)` when preempted, and `render_for_server` delegates with a
+  never-set flag. Coordinator rewritten: `schedule_render` spawns each
+  render in its own task with a per-notebook `render_gen` counter +
+  `cancel` slot on `Notebook`; a newer save sets the in-flight flag and
+  schedules fresh, and a render whose gen is stale never publishes.
+  All notebook capture state is thread-local, so concurrent
+  cancel-unwinding + fresh render don't collide. Real-binary smoke: a
+  `while true; end;` notebook, on the next save, logs `render preempted`
+  then `re-rendered (full)` and CPU returns to ~0% (the runaway thread
+  was cancelled, not leaked). 3 `execute` cancellable tests + 1
+  `render_loop` preemption test. Full workspace suite 2403 passed, 0
+  failed. Docs (`docs/notebooks.md` "Render preemption") +
+  `render_loop` doc-comment updated. **Phase 5 items 1–4 all done;
+  item 5 (removal-aware partial diffs) deferred for discussion.**
 - 2026-05-30 — **Phase 5c complete.** In-browser editor
   (`--editable`). Vendored CodeMirror 5.65.19 (core + CSS + Markdown
   mode, MIT) under `assets/vendor/codemirror/` via the extended

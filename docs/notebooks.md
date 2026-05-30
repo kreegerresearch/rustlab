@@ -259,11 +259,16 @@ Behaviour:
   and retries with exponential backoff 500 ms → 5 s capped at 10
   attempts; on a successful reconnect it hard-reloads to pick up
   any state it might have missed.
-- **Render queueing.** A save during a slow render does *not*
-  preempt the in-flight execution (Phase 5 follow-up). The
-  coordinator runs one render at a time; once the current render
-  finishes, any pending save triggers exactly one fresh render
-  immediately after — never queues multiple stale renders.
+- **Render preemption.** A save during a slow render *cancels* the
+  in-flight execution and starts fresh on the new source. The
+  evaluator polls a cancel flag between statements and loop
+  iterations, so even a runaway code block (`while true; end;`)
+  stops promptly on the next save instead of pinning a CPU core. A
+  preempted render never publishes — only the latest render's output
+  reaches the page. (The one exception is the **initial** render at
+  startup, which has nothing to preempt: an infinite-loop notebook
+  will hang startup until you fix the source — the same as
+  `notebook render`.)
 
 For implementation status, the agent-handoff section, and
 forward-looking design, see

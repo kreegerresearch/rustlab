@@ -61,6 +61,14 @@ pub struct Notebook {
     /// Pre-framed WS messages broadcast on every re-render of *this*
     /// notebook. Receivers are minted per WebSocket connection.
     pub broadcast: broadcast::Sender<Arc<str>>,
+    /// Monotonic render generation. Each scheduled render bumps this; a
+    /// finishing render only publishes if its generation is still the
+    /// latest, so a preempted (stale) render can't clobber a newer one.
+    pub render_gen: std::sync::atomic::AtomicU64,
+    /// Cancel flag of the render currently in flight for this notebook
+    /// (if any). A newer save sets it to preempt the slow render. See
+    /// `render_loop::schedule_render`.
+    pub cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl Notebook {
@@ -77,6 +85,8 @@ impl Notebook {
             html: RwLock::new(initial_html),
             prev_blocks: Mutex::new(prev_blocks),
             broadcast,
+            render_gen: std::sync::atomic::AtomicU64::new(0),
+            cancel: Mutex::new(None),
         }
     }
 }
