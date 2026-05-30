@@ -52,3 +52,7 @@ tower-http               = { version = "0.6", default-features = false, features
 # Router from a unit/integration test. axum brings tower transitively
 # but we have to depend on it directly to import from it.
 tower                    = { version = "0.5", default-features = false, features = ["util"] }
+# WS client used by the server integration test. Loopback ws://
+# only — no TLS feature needed.
+tokio-tungstenite        = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+futures-util             = { version = "0.3", default-features = false, features = ["sink"] }

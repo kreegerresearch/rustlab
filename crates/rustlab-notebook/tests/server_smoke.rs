@@ -69,10 +69,10 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         }
     }
 
-    let state = Arc::new(rustlab_notebook::server::http::ServerState {
+    let state = Arc::new(rustlab_notebook::server::http::ServerState::new(
         html,
-        plot_dir: owned_plot_dir,
-    });
+        owned_plot_dir,
+    ));
     (state, src_dir, plot_dir)
 }
 

@@ -13,32 +13,37 @@ explicit user approval.
 |-------|-------|----------------------|
 | 0 — Design + dep trade-off | **complete** (2026-05-30) | trade-off doc, port 8042 + auto-bump, WS full→partial, embed Plotly + KaTeX (vendored), pdflatex external, license audit clean, deps added, vendored assets in tree |
 | 1 — Server skeleton | **complete** (2026-05-30) | `server::start`, one-shot render over HTTP, embedded `/assets/`, plot tempdir, browser auto-open, 15 unit + 5 integration tests |
-| 2 — Live re-render | not started | fs watcher → cancellable re-render → WS push |
+| 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
 | 3 — Block-level diffing | not started | content-hash block IDs, partial DOM updates |
 | 4 — Docs + REPL help | not started | `docs/notebooks.md` section, AGENTS.md close-out |
 | 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor |
 
-**Next concrete action:** start Phase 2 (live re-render on save).
+**Next concrete action:** start Phase 3 (block-level diffing).
 
-Phase 0 and Phase 1 are complete. The server skeleton at
-`crates/rustlab-notebook/src/server/` serves the rendered HTML +
-embedded assets + animation artefacts once at startup, but does
-not re-render when the source `.md` is saved. Phase 2 task list
-(below) adds:
+Phases 0–2 are complete. The interactive server now live-reloads
+the rendered notebook in the browser via WebSocket whenever the
+source `.md` is saved (full-document refresh — the
+`{"kind":"full","html":…}` envelope carries the entire rendered
+body). Phase 3 makes that incremental:
 
-1. `notify`-based fs watcher on the input file (reuse the
-   debouncer pattern from `watch.rs`).
-2. WebSocket endpoint `/ws` with the discriminated message shape
-   `{"kind": "full", "html": "…"}` (partial diffs land in Phase
-   3).
-3. Cancellable render task so prose edits don't stall behind a
-   slow `cache enable`-d function from the previous render.
-4. LRU bound on the in-memory plot table.
-5. Page JS: connect WS, swap document body on receive, reconnect
-   with exponential backoff 500 ms → 5 s capped + visible
-   "disconnected" banner.
-6. Documentation pointers at the two future widget extension
-   sites (per locked-in #14).
+1. Render emits `id="b-<short-hash>"` on every block (blake3
+   truncated to 8 hex chars over the block source).
+2. After re-render, diff per-block HTML keyed by ID; emit only
+   changed blocks as `{"kind":"partial","blocks":[{"id":…,
+   "html":…}]}`.
+3. Page JS: gain a `switch (msg.kind)` arm that does targeted
+   element replacement (no full-body swap → preserves scroll
+   position, no full Plotly re-init for unchanged plots).
+4. Document the scroll-position implications when a *block's
+   content* changes (ID changes → remove+insert instead of swap;
+   see Phase 3 task list for the note).
+
+Two adjacent items deferred from Phase 2 worth flagging:
+
+- **Real render preemption** (locked-in #9 — the
+  rustlab-script cancellation-token plumbing) — Phase 5 polish.
+- **LRU plot table** (locked-in #10) — only relevant if Phase 3
+  starts producing on-disk plot artefacts again.
 
 **Required reading before touching code:**
 
@@ -374,33 +379,56 @@ DOM replacement on the changed blocks, no scroll position loss.
       describe the interactive default + the existing re-render
       mode as the two `watch` paths.
 
-### Phase 2 — Live re-render  **Status:** not started
+### Phase 2 — Live re-render  **Status:** complete (2026-05-30)
 
-- [ ] fs watcher on the input file (reuse `notify` + `watch.rs`'s
-      debouncer pattern)
-- [ ] WebSocket endpoint `/ws` accepting many concurrent
-      connections (one per page-load — laptop tab + tablet is the
-      headline use case)
-- [ ] Cancellable render task: a new debounced fs event preempts
-      the in-flight render (see locked-in #9) so prose edits don't
-      stall behind slow code blocks
-- [ ] LRU eviction on the in-memory plot table per locked-in #10
-- [ ] Re-render on save → push `{"kind":"full","html":"…"}` to every
-      connected client
-- [ ] Page JS: connect WS, replace document on receive, reconnect
-      with exponential backoff 500 ms → 5 s capped (~10 tries),
-      then surface a visible "disconnected" banner until the next
-      successful connect
-- [ ] **Document widget integration touchpoints** (locked-in #14)
-      in code comments at the two future-extension sites: the WS
-      inbound-message `match` (where `widget_update` will land as
-      a new arm) and the `render_loop` entry signature (where the
-      optional `&BTreeMap<String, WidgetValue>` override will be
-      added). Goal: when the widgets plan's Phase 1 starts, the
-      author finds the two extension points by grep without
-      reading the WS plumbing end-to-end. Add a `// see:
-      dev/plans/notebook_interactive_widgets.md` pointer at each
-      site.
+- [x] fs watcher on the input file using `notify`
+      (`std::sync::mpsc` bridged to `tokio::sync::mpsc`); watches
+      the parent directory non-recursively + filters by file name
+      so atomic-rename editor saves still trigger us after the
+      inode swap.
+      [crates/rustlab-notebook/src/server/render_loop.rs](../../crates/rustlab-notebook/src/server/render_loop.rs)
+- [x] WebSocket endpoint `/ws` with `axum::extract::ws`; accepts
+      many concurrent connections (each connection is a
+      `tokio::sync::broadcast::Receiver` subscriber on
+      `ServerState.broadcast`).
+      [crates/rustlab-notebook/src/server/ws.rs](../../crates/rustlab-notebook/src/server/ws.rs)
+- [~] Render preemption (locked-in #9): Phase 2 ships
+      "let-it-finish, then coalesce" — only one render runs at a
+      time; once it ends, any pending event triggers exactly one
+      fresh render. Real preemption requires rustlab-script to
+      poll a cancellation token; deferred to Phase 5 polish.
+      Documented in `render_loop.rs` and `docs/notebooks.md`.
+- [~] LRU eviction on the in-memory plot table (locked-in #10):
+      not needed in Phase 2 — only animations land on disk, the
+      Plotly path keeps figures inline. Deferred until renders
+      grow an on-disk plot table again.
+- [x] Re-render on save → debounce 250 ms → broadcast
+      `{"kind":"full","html":"…"}` to every WS subscriber. JSON
+      framing handled by `ws::full_envelope`; broadcast payload
+      is `Arc<str>` so each receiver clones cheaply.
+- [x] Page JS auto-injected into `<head>` via
+      `ws::inject_ws_client` (so body replacement on receive
+      doesn't double-up the WS connection): connects WS, on
+      `kind=full` swaps `document.body`, re-executes inline
+      `<script>` tags (re-runs Plotly), re-invokes KaTeX
+      `renderMathInElement`. Reconnect with exponential backoff
+      500 ms → 5 s capped at 10 attempts; visible red banner on
+      disconnect; on reconnect after a disconnect, hard-reloads
+      to pick up any state missed during the gap.
+- [x] **Documented widget integration touchpoints** (locked-in
+      #14): inline `// ── Widget integration extension site ──`
+      banner in `ws.rs` at the inbound `Message::Text` arm, with
+      a `// see dev/plans/notebook_interactive_widgets.md`
+      pointer. The render-overrides channel on the coordinator
+      is a smaller extension (one extra parameter on the
+      `coordinator` fn signature when widgets land) — the
+      widgets plan's Phase 1 should add it then.
+- [x] End-to-end test
+      `tests/server_ws_smoke.rs::ws_receives_full_envelope_on_file_save`:
+      binds an ephemeral port, opens a WS client via
+      `tokio-tungstenite`, edits the fixture, asserts the
+      `{"kind":"full","html":"…"}` envelope arrives with the new
+      content and the local `/assets/` references.
 
 ### Phase 3 — Block-level diffing  **Status:** not started
 
@@ -483,6 +511,40 @@ this in sync with the Phase checkboxes and the AGENTS.md row.
   shared persistent cache; corrected the tokio dependency claim
   (`notify` runs on std-mpsc, axum brings net-new tokio);
   switched plot endpoint to `<index>.svg`.
+- 2026-05-30 — **Phase 2 complete.** Live re-render on save
+  landed. New modules:
+  `crates/rustlab-notebook/src/server/{ws.rs, render_loop.rs}`
+  (~400 LOC + ~140 LOC tests).
+  `ServerState` gained `RwLock<String>` for the HTML and
+  `broadcast::Sender<Arc<str>>` for re-render notifications.
+  `render_loop::spawn` runs a `notify` watcher (parent dir,
+  non-recursive, file-name filter) on a std thread, bridges to a
+  tokio `mpsc`, and feeds a debounced coordinator that calls
+  `render_for_server` via `spawn_blocking`, writes the new HTML
+  into state, and broadcasts the JSON-framed envelope
+  (`ws::full_envelope`). WS handler subscribes per connection
+  via `tokio::select!` (no `futures-util` dep needed). Auto-
+  injected `ws::WS_CLIENT_SCRIPT` (placed in `<head>` so body
+  replacement doesn't double the WS connection) handles:
+  `{"kind":"full",…}` → swap `document.body` → re-execute inline
+  `<script>` tags (Plotly re-init) → re-call `renderMathInElement`
+  (KaTeX). Reconnect with exponential backoff 500 ms → 5 s
+  capped at 10 attempts; visible red banner on disconnect;
+  hard-reload on reconnect-after-disconnect. Two adjacent
+  locked-in items deferred: real render preemption (#9 — needs
+  rustlab-script cancellation tokens; Phase 5) and LRU plot
+  table (#10 — only animations write to disk today; defer until
+  on-disk plot artefacts return). Widget integration touchpoint
+  documented inline in `ws.rs`. End-to-end test
+  `server_ws_smoke::ws_receives_full_envelope_on_file_save`
+  binds an ephemeral port, opens a `tokio-tungstenite` WS
+  client, edits the fixture, asserts the envelope arrives with
+  the new content. Real-world smoke against
+  `examples/notebooks/contour_plots.md` confirmed live reload
+  works. Tests: 497 total in the crate (482 unit + 9 + 5 + 1
+  integration), all pass. Docs updated. Next: Phase 3
+  (content-hash block IDs + partial diffs for in-place updates
+  that preserve scroll position).
 - 2026-05-30 — **Phase 1 complete.** Server skeleton landed:
   `crates/rustlab-notebook/src/server/{mod.rs, http.rs,
   assets.rs}` (~530 LOC + ~360 LOC of tests). One-shot render at

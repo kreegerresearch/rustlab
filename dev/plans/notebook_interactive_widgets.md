@@ -7,20 +7,23 @@ Locked-in decisions and phase task lists below are the agreed
 scope; the locked-ins are *not* up for renegotiation without
 explicit user approval.
 
-**This plan is blocked on the companion plan.** Widgets require
-[`notebook_interactive_server.md`](notebook_interactive_server.md)
-to reach **Phase 2** (live re-render over WebSocket) before any
-widget code can be wired up. Phase 0 work below — the design
-coordination — can and should happen in parallel with the server
-plan's Phase 0/1 so the server reserves the `widget_update` WS
-message kind and the render-with-overrides entry point.
+**This plan is unblocked as of 2026-05-30.** The server plan's
+Phase 2 (live re-render over WebSocket) shipped, so widgets can
+now ride the existing WS channel. The widget extension touchpoint
+is already documented inline in
+`crates/rustlab-notebook/src/server/ws.rs` at the inbound
+`Message::Text` match arm — that's where the
+`{"kind":"widget_update",…}` parsing lands. The render coordinator
+in `render_loop.rs` will need an additional input channel (or a
+small refactor to its signature) for widget-value overrides — see
+Open Question §1 below.
 
 **Phase progress at a glance:**
 
 | Phase | State | Headline deliverable | Blocked on |
 |-------|-------|----------------------|------------|
-| 0 — Design + coordination | not started | parser choice, server-plan coordination, builtin context shape | — |
-| 1 — Slider only, full re-render | not started | `rustlab-widget` fence parse, `widget()` builtin, slider HTML, `widget_update` WS | server Phase 2 |
+| 0 — Design + coordination | not started | parser choice, builtin context shape (server plan unblocked 2026-05-30) | — |
+| 1 — Slider only, full re-render | not started | `rustlab-widget` fence parse, `widget()` builtin, slider HTML, `widget_update` WS | — (unblocked) |
 | 2 — All three widget types | not started | `option` + `number`, validation, value carry-over on `.md` reload | Phase 1 |
 | 3 — Scoped re-render | not started | per-block `widget()` read-set instrumentation, narrow cache invalidation | Phase 2 |
 | 4 — Docs + REPL help | not started | `docs/notebooks.md` section, `examples/notebooks/widgets_demo.md`, AGENTS.md close-out | Phase 2 |
@@ -353,5 +356,11 @@ this in sync with the Phase checkboxes and the AGENTS.md row.
 
 - 2026-05-30 — Agent-handoff section + status log added; the
   plan is now self-describing for any agent picking it up.
+- 2026-05-30 — Server plan's Phase 2 shipped; widgets Phase 1
+  is now unblocked. The WS extension touchpoint is documented
+  inline in `crates/rustlab-notebook/src/server/ws.rs` at the
+  inbound `Message::Text` arm; `render_loop` will need a small
+  signature tweak when widget overrides arrive. No widget code
+  yet.
 - 2026-05-30 — Initial design + scoping doc landed alongside
   `notebook_interactive_server.md`.

@@ -1,13 +1,14 @@
 //! Axum routes for the interactive `notebook watch` server.
 //!
-//! Phase 1 surface:
+//! Phase 1+2 surface:
 //!
 //! | Path | Handler |
 //! |---|---|
 //! | `GET /` | redirect to `/notebook.html` |
-//! | `GET /notebook.html` | the pre-rendered HTML (Phase 2 will add WS auto-refresh) |
+//! | `GET /notebook.html` | the current rendered HTML (re-render on save via WS in Phase 2) |
 //! | `GET /assets/<path>` | embedded KaTeX/Plotly bundle from [`super::assets`] |
 //! | `GET /plots/<file>` | served from the per-server tempdir (animation GIFs) |
+//! | `GET /ws` | WebSocket: on connect, sends the current HTML wrapped in `{"kind":"full","html":"…"}`. On subsequent saves, pushes the re-rendered HTML in the same envelope. See [`super::ws`]. |
 //!
 //! Animations are the only artefact the HTML renderer writes to disk
 //! (static plots are inline Plotly JS); future renders can land more
@@ -20,29 +21,56 @@ use axum::{
     body::Body,
     extract::{Path as AxPath, State},
     http::{header, StatusCode},
-    response::{Html, IntoResponse, Redirect, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
     Router,
 };
 use tempfile::TempDir;
+use tokio::sync::{broadcast, RwLock};
 
-use super::assets;
+use super::{assets, ws};
 
-/// Snapshot passed to every handler. Immutable for Phase 1; Phase 2
-/// will swap fields under a lock or channel as re-renders land.
+/// Shared state passed to every handler.
+///
+/// Phase 2 made `html` mutable behind an `RwLock` and added a
+/// `broadcast::Sender` so the render loop can publish freshly-rendered
+/// HTML to every connected WebSocket. The `Arc<str>` carried by the
+/// broadcast is the *already JSON-framed* WS message
+/// (`{"kind":"full","html":"…"}`) — cheap to clone per receiver, and
+/// avoids re-serialising per client.
 pub struct ServerState {
-    /// Fully-rendered HTML with CDN URLs already rewritten to local
-    /// `/assets/…` paths.
-    pub html: String,
+    /// Current rendered HTML (with CDN URLs swapped to `/assets/…`
+    /// and the WS-client script injected into `<head>`).
+    pub html: RwLock<String>,
     /// Owns the tempdir that holds animation GIFs etc. Dropping the
     /// state (= shutting the server down) cleans it up.
     pub plot_dir: TempDir,
+    /// Pre-framed WS messages broadcast on every re-render.
+    /// Receivers are minted per WebSocket connection. Capacity 8:
+    /// slow clients tolerate brief bursts; if they fall further
+    /// behind the broadcast drops the oldest message and the next
+    /// successful recv re-syncs them via the current `html` snapshot.
+    pub broadcast: broadcast::Sender<Arc<str>>,
+}
+
+impl ServerState {
+    /// Build a fresh state with the given initial HTML and tempdir,
+    /// a new broadcast channel, and no subscribers.
+    pub fn new(initial_html: String, plot_dir: TempDir) -> Self {
+        let (broadcast, _) = broadcast::channel(8);
+        Self {
+            html: RwLock::new(initial_html),
+            plot_dir,
+            broadcast,
+        }
+    }
 }
 
 pub fn router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/", get(root_redirect))
         .route("/notebook.html", get(notebook_html))
+        .route("/ws", get(ws::ws_upgrade))
         .route("/assets/{*path}", get(asset))
         .route("/plots/{*path}", get(plot))
         .with_state(state)
@@ -52,8 +80,13 @@ async fn root_redirect() -> Redirect {
     Redirect::temporary("/notebook.html")
 }
 
-async fn notebook_html(State(state): State<Arc<ServerState>>) -> Html<String> {
-    Html(state.html.clone())
+async fn notebook_html(State(state): State<Arc<ServerState>>) -> Response {
+    let html = state.html.read().await.clone();
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        html,
+    )
+        .into_response()
 }
 
 async fn asset(AxPath(path): AxPath<String>) -> Response {
@@ -118,10 +151,10 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn make_state() -> Arc<ServerState> {
-        Arc::new(ServerState {
-            html: "<h1>hello</h1>".to_string(),
-            plot_dir: TempDir::new().unwrap(),
-        })
+        Arc::new(ServerState::new(
+            "<h1>hello</h1>".to_string(),
+            TempDir::new().unwrap(),
+        ))
     }
 
     #[tokio::test]

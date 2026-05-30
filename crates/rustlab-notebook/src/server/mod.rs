@@ -15,6 +15,8 @@
 
 pub mod assets;
 pub mod http;
+pub mod render_loop;
+pub mod ws;
 
 use anyhow::{Context, Result};
 use rustlab_plot::ThemeColors;
@@ -53,22 +55,22 @@ impl Default for ServerOpts {
 }
 
 /// Start the interactive server against `input` and block until
-/// Ctrl-C (or unrecoverable error). The render runs once on the
-/// calling thread before the tokio runtime spins up; the runtime
-/// only serves the already-rendered page (Phase 1 has no re-render
-/// loop yet).
+/// Ctrl-C (or unrecoverable error). The initial render runs once on
+/// the calling thread before the tokio runtime spins up; the
+/// runtime serves the page, accepts WebSocket connections, and
+/// (Phase 2) drives the render coordinator that re-renders on save.
 pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Result<()> {
+    let canonical_input = std::fs::canonicalize(input)
+        .with_context(|| format!("resolving {}", input.display()))?;
+
     // ── 1. Render once ────────────────────────────────────────────
     let plot_tempdir =
         TempDir::new().context("creating tempdir for served plot artefacts")?;
-    let html = render_for_server(input, theme, plot_tempdir.path())
-        .with_context(|| format!("rendering {} for server", input.display()))?;
+    let html = render_for_server(&canonical_input, theme, plot_tempdir.path())
+        .with_context(|| format!("rendering {} for server", canonical_input.display()))?;
 
     // ── 2. Build server state ─────────────────────────────────────
-    let state = Arc::new(http::ServerState {
-        html,
-        plot_dir: plot_tempdir, // owns the tempdir; cleaned up on drop
-    });
+    let state = Arc::new(http::ServerState::new(html, plot_tempdir));
 
     // ── 3. Bind ───────────────────────────────────────────────────
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -90,7 +92,14 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             }
         }
 
-        // ── 5. Serve until Ctrl-C ─────────────────────────────────
+        // ── 5. Spawn fs watcher + render coordinator ──────────────
+        // `_watcher` is held to keep the notify watcher alive; the
+        // task handle is dropped on shutdown.
+        let (_watcher, _coord) =
+            render_loop::spawn(canonical_input.clone(), theme, state.clone())
+                .context("spawning render coordinator")?;
+
+        // ── 6. Serve until Ctrl-C ─────────────────────────────────
         let app = http::router(state.clone());
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal())
@@ -104,9 +113,17 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 /// Re-implementation of the render pipeline in `lib::cmd_render` minus
 /// the disk-output step: read input → strip artefacts → expand embeds
 /// → parse → execute → render to HTML → swap CDN URLs to local
-/// `/assets/`. Animations land in `plot_dir`; the server serves them
+/// `/assets/` → inject the WS-client live-reload script into
+/// `<head>`. Animations land in `plot_dir`; the server serves them
 /// from there at `/plots/<filename>`.
-fn render_for_server(input: &Path, theme: &ThemeColors, plot_dir: &Path) -> Result<String> {
+///
+/// Public to the server module so [`render_loop`] can re-invoke it
+/// on save without duplicating the pipeline.
+pub(super) fn render_for_server(
+    input: &Path,
+    theme: &ThemeColors,
+    plot_dir: &Path,
+) -> Result<String> {
     use crate::{embed, execute, parse, render};
 
     let source = std::fs::read_to_string(input)
@@ -125,7 +142,9 @@ fn render_for_server(input: &Path, theme: &ThemeColors, plot_dir: &Path) -> Resu
     let rendered = execute::execute_notebook(&blocks);
 
     let html = render::render_html(&title, &rendered, plot_dir, "/plots", theme, None);
-    Ok(assets::rewrite_cdn_urls(&html))
+    let html = assets::rewrite_cdn_urls(&html);
+    let html = ws::inject_ws_client(&html);
+    Ok(html)
 }
 
 /// Bind 127.0.0.1 on either the explicit user port (fail loud) or

@@ -181,9 +181,9 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 `rustlab-notebook watch` has two modes:
 
 1. **Interactive server (bare-input default, single file).** Spins
-   up a local web server, renders the notebook to an HTML page, and
-   opens your browser. Source `.md` is never modified. Phase 1 ships
-   the one-shot render; live re-render on save lands in Phase 2.
+   up a local web server, renders the notebook to an HTML page,
+   opens your browser, and **live-reloads on save** via a
+   WebSocket push. Source `.md` is never modified.
 2. **Re-render on save (with `--obsidian` or `--output`).** The
    long-running counterpart of `render`: re-renders any notebook
    whose source changes, debouncing filesystem events so a single
@@ -216,10 +216,21 @@ Behaviour:
   `--no-browser` forces off.
 - **Ctrl-C** stops the server. Plot artefacts live in a tempdir
   that's cleaned up on exit.
-- **No live updates yet.** Save the file → the page does *not*
-  refresh in Phase 1. Phase 2 adds a WebSocket-driven re-render.
-  Until then, refresh the browser tab manually or restart the
-  watcher.
+- **Live reload on save.** The rendered page includes a tiny
+  WebSocket client that connects back to `/ws`. On every save of
+  the watched `.md`, the server re-renders (debounced 250 ms),
+  pushes `{"kind":"full","html":"…"}` over the WS, and the page
+  swaps `document.body`, re-executes inline `<script>` tags
+  (re-running Plotly), and re-invokes KaTeX. No browser refresh.
+  If the server stops, the page shows a red "disconnected" banner
+  and retries with exponential backoff 500 ms → 5 s capped at 10
+  attempts; on a successful reconnect it hard-reloads to pick up
+  any state it might have missed.
+- **Render queueing.** A save during a slow render does *not*
+  preempt the in-flight execution (Phase 5 follow-up). The
+  coordinator runs one render at a time; once the current render
+  finishes, any pending save triggers exactly one fresh render
+  immediately after — never queues multiple stale renders.
 
 For implementation status, the agent-handoff section, and
 forward-looking design, see
