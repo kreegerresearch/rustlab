@@ -15,35 +15,35 @@ explicit user approval.
 | 1 — Server skeleton | **complete** (2026-05-30) | `server::start`, one-shot render over HTTP, embedded `/assets/`, plot tempdir, browser auto-open, 15 unit + 5 integration tests |
 | 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
 | 3 — Block-level diffing | **complete** (2026-05-30) | renderer wraps every block in `<section class="rl-block" id="b-<hash>">…</section>`; new server::diff module splits a rendered doc and computes per-position changes; coordinator picks `partial`/`full`/`None` per render; WS client gains `applyPartial` for in-place outerHTML swap + script re-exec + KaTeX re-render. 47 unit + 5 + 2 integration tests. |
-| 4 — Docs + REPL help | not started | `docs/notebooks.md` section, AGENTS.md close-out |
-| 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor |
+| 4 — Docs + CLI help | **complete** (2026-05-30) | `docs/notebooks.md` § "Live preview" extended through Phase 2/3 (live reload + partial diffs + scroll preservation); `watch --help` long_about rewritten to lead with the interactive server (default) and demote re-render-on-save to secondary; `examples/notebooks/README.md` gained a "Live-edit one example" section. |
+| 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor, real render preemption, removal-aware partial diffs |
 
-**Next concrete action:** start Phase 4 (docs + REPL help
-close-out) or jump to Phase 5 polish.
+**Next concrete action:** all required phases are done. Pick up
+Phase 5 polish if desired, otherwise this plan can land.
 
-Phases 0–3 are complete. The interactive server now live-reloads
-notebooks in the browser via WebSocket on every save, with
-block-level partial diffs that preserve scroll position for small
-edits and fall back to a full-document refresh only when the
-notebook's block count changes or >50% of blocks are touched.
+Phases 0–4 are complete:
+- **Phase 0** — design, deps, vendored assets (offline-capable).
+- **Phase 1** — server skeleton (one-shot render over HTTP).
+- **Phase 2** — live re-render on save via WebSocket
+  (full-document refresh).
+- **Phase 3** — block-level partial diffs (scroll-preserving
+  in-place swap).
+- **Phase 4** — docs + CLI help close-out.
 
-Phase 4 is the standard close-out:
-- Polish `docs/notebooks.md` (the "Interactive server" section
-  is already extended for live reload + block diffs; review for
-  any remaining gaps).
-- `examples/notebooks/README.md` could pick up a "try the
-  interactive server" pointer.
-- Mark AGENTS.md row complete on landing of phase 4.
-
-Phase 5 polish items still open (won't block close-out):
+Phase 5 polish items (optional, won't block landing):
 - **Real render preemption** (locked-in #9 — rustlab-script
   cancellation-token plumbing).
 - **`--watch-dir <DIR>`** — directory mode + index page.
 - **Source-pane / split view** — raw .md alongside rendered.
-- **Optional in-browser editor** (Monaco / CodeMirror).
+- **Optional in-browser editor** (Monaco / CodeMirror) — opt-in
+  via `--editable` because it would violate the
+  "only `--obsidian` modifies" rule.
 - **Removal-aware partial diffs** — today a block-count change
   forces full; with an `ops:["remove","insert"]` payload we
   could keep scroll position for structural edits too.
+
+If the user is ready to land, open a PR; otherwise the next
+agent can pick any Phase 5 item from the list above.
 
 **Required reading before touching code:**
 
@@ -470,14 +470,30 @@ DOM replacement on the changed blocks, no scroll position loss.
       structural edits (count change) and large rewrites fall
       back to `kind:"full"` which resets scroll to top.
 
-### Phase 4 — Docs + REPL help  **Status:** not started
+### Phase 4 — Docs + CLI help  **Status:** complete (2026-05-30)
 
-- [ ] `docs/notebooks.md`: new section "Interactive watch
-      (`--interactive` / default)"
-- [ ] `examples/notebooks/README.md`: how to point the server at a
-      shipped example
-- [ ] AGENTS.md Active Plans row → mark this plan complete on
-      landing
+- [x] `docs/notebooks.md` § "Live preview" rewritten across
+      Phases 2–3 to describe the interactive server default,
+      re-render-on-save flow, live-reload via WS, block-level
+      partial diffs, scroll preservation, and reconnect/banner
+      UX.
+- [x] `examples/notebooks/README.md` gained a "Live-edit one
+      example with `notebook watch`" section pointing at the
+      interactive server, with a concrete command against
+      `contour_plots.md`.
+- [x] `rustlab-notebook watch --help` long_about rewritten to
+      lead with the interactive server (default for single .md
+      files) and demote re-render-on-save to the secondary
+      mode. New examples for `--port` and `--no-browser`.
+      [crates/rustlab-notebook/src/main.rs](../../crates/rustlab-notebook/src/main.rs)
+- [x] AGENTS.md Active Plans row reflects Phases 0–4 complete;
+      Phase 5 is the only remaining (optional) work.
+
+There is no REPL help to update — `watch` is a CLI-only command
+on the standalone `rustlab-notebook` binary; the main `rustlab`
+REPL does not expose notebook subcommands. Renaming this phase
+"Docs + CLI help" in the table above to match what actually
+shipped.
 
 ### Phase 5 — Polish / optional  **Status:** not started
 
@@ -533,6 +549,26 @@ this in sync with the Phase checkboxes and the AGENTS.md row.
   shared persistent cache; corrected the tokio dependency claim
   (`notify` runs on std-mpsc, axum brings net-new tokio);
   switched plot endpoint to `<index>.svg`.
+- 2026-05-30 — **Phase 4 complete.** Documentation +
+  CLI-help close-out:
+  - `rustlab-notebook watch --help` long_about rewritten to
+    lead with the interactive server (default for single .md
+    files); demoted re-render-on-save to the secondary mode.
+    New examples for `--port` and `--no-browser`.
+  - `examples/notebooks/README.md` gained a "Live-edit one
+    example with `notebook watch`" section with a concrete
+    command against `contour_plots.md`.
+  - `docs/notebooks.md` § "Live preview" was already extended
+    through Phases 2/3 to cover live reload + block-level
+    diffs + scroll preservation + reconnect/banner UX; no
+    further changes needed.
+  - AGENTS.md row updated to phases 0–4 complete.
+  Renamed the phase in the at-a-glance table from "Docs + REPL
+  help" to "Docs + CLI help" — `watch` is a CLI-only command
+  on the standalone `rustlab-notebook` binary; the main
+  `rustlab` REPL doesn't expose notebook subcommands. All
+  required phases (0–4) now complete; Phase 5 polish items
+  remain optional. Plan is ready to land.
 - 2026-05-30 — **Phase 3 complete.** Block-level diffing
   landed. Render path now wraps every diffable block (Markdown,
   Code, Mermaid, Callout) in

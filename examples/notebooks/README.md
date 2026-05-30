@@ -44,6 +44,27 @@ and once for HTML — both writing into `gallery/`. The `.gitignore`
 splits visibility: `*.md` and `plots/**/*.svg` are committed; `*.html`
 files are local-only.
 
+## Live-edit one example with `notebook watch`
+
+For poking at a single notebook without rebuilding the whole
+gallery, point the interactive server at it:
+
+```sh
+rustlab-notebook watch examples/notebooks/contour_plots.md
+# → opens http://127.0.0.1:8042 in your browser
+# → save the .md in your editor → page swaps the changed blocks live
+```
+
+Source `.md` is never modified, no `_attachments/` directory is
+created, KaTeX + Plotly load from the binary (works offline). Small
+edits ship as block-level partial diffs that preserve scroll
+position; structural edits fall back to a full refresh. Pass
+`--port <N>` to override the default port (8042 with auto-increment
+up to +10 if busy) or `--no-browser` to skip the auto-open. See
+`rustlab-notebook watch --help` and
+[`docs/notebooks.md`](../../docs/notebooks.md) § "Live preview" for
+the full details.
+
 ## Output formats
 
 The `rustlab-notebook render` command supports four formats:

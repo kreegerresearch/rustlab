@@ -88,16 +88,30 @@ enum Command {
             dark   Catppuccin Mocha — dark background, light text (default)\n  \
             light  Catppuccin Latte — light background, dark text"
     )]
-    /// Watch a directory of notebooks and re-render on save (markdown only)
+    /// Watch a notebook (interactive server) or directory (re-render on save)
     #[command(
-        long_about = "Watch a directory of notebooks and re-render whenever a source file changes.\n\n\
-            Pairs naturally with --obsidian: edit notes in Obsidian's Editing view,\n\
-            switch to Reading view, see updated plots and text within ~500 ms.\n\n\
+        long_about = "Watch a notebook source and react to saves.\n\n\
+            Two modes — picked by what you pass:\n\n  \
+            Interactive server (single .md file, no other flags):\n    \
+            Spins up a local web server on http://127.0.0.1:8042 (auto-bumps\n    \
+            up to +10 if busy), opens your browser, and live-reloads the\n    \
+            page on every save via a WebSocket push. KaTeX + Plotly assets\n    \
+            are embedded in the binary so the page works fully offline.\n    \
+            Small edits ship as block-level partial diffs and preserve\n    \
+            scroll position; structural edits fall back to a full refresh.\n    \
+            Source .md is never modified.\n\n  \
+            Re-render on save (directory + --obsidian or --output):\n    \
+            Long-running counterpart of `render`. Re-renders any notebook\n    \
+            whose source changes, debouncing fs events. Pairs with\n    \
+            --obsidian for an Obsidian Editing/Reading view loop.\n\n\
             Examples:\n  \
-            rustlab-notebook watch notebooks/                              # → re-render to notebooks/<name>.md on save\n  \
-            rustlab-notebook watch notebooks/ -o vault/ --obsidian         # vault-native output to a separate dir\n  \
+            rustlab-notebook watch analysis.md                             # interactive server (default)\n  \
+            rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
+            rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
+            rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
+            rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
-            Currently --format markdown only."
+            Re-render-on-save is markdown-only currently."
     )]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
