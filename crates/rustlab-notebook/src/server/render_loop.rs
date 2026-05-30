@@ -38,6 +38,7 @@ use notify::{event::EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rustlab_plot::ThemeColors;
 use tokio::sync::mpsc;
 
+use super::diff::{self, Block, Broadcast};
 use super::http::ServerState;
 use super::ws;
 
@@ -129,12 +130,27 @@ fn is_relevant_event(event: &notify::Event) -> bool {
 /// Coordinator task: receives debounced "something changed" pings
 /// and produces one re-render per debounce cycle. Loops forever
 /// until the channel closes (server shutdown).
+///
+/// Phase 3 added the block-diff decision: after each render the
+/// coordinator splits the new document into blocks
+/// ([`diff::split_blocks`]), compares against the previous
+/// snapshot, and either sends a `kind="partial"` envelope (only
+/// changed blocks), a `kind="full"` envelope (large change or
+/// blocks removed — see [`diff::classify`]), or nothing at all
+/// (renderer was deterministic and the source didn't change).
 async fn coordinator(
     input: PathBuf,
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
     mut rx: mpsc::UnboundedReceiver<()>,
 ) {
+    // Seed the prev-block snapshot from the initial render that
+    // `server::start` produced before we were spawned.
+    let mut prev_blocks: Vec<Block> = {
+        let html = state.html.read().await;
+        diff::split_blocks(&html)
+    };
+
     loop {
         // Wait for at least one event.
         if rx.recv().await.is_none() {
@@ -174,18 +190,41 @@ async fn coordinator(
             }
         };
 
-        // Publish: write the new HTML into shared state and
-        // broadcast the JSON-framed envelope to every WS subscriber.
+        // Diff against the previous render *before* publishing the
+        // new HTML, so the comparison is against last-render's
+        // blocks (not the freshly-overwritten state).
+        let new_blocks = diff::split_blocks(&new_html);
+        let decision = diff::classify(&prev_blocks, &new_blocks);
+
+        // Publish state regardless of broadcast kind so a fresh
+        // page-load over GET /notebook.html always gets the latest.
         {
             let mut guard = state.html.write().await;
             *guard = new_html.clone();
         }
-        let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
-        // `send` only errors when there are zero subscribers; that's
-        // fine — the next page load will pick up the new HTML via
-        // GET /notebook.html.
-        let _ = state.broadcast.send(env);
-        eprintln!("[watch] re-rendered {}", input.display());
+
+        match decision {
+            Broadcast::None => {
+                eprintln!("[watch] re-rendered {} (no change)", input.display());
+            }
+            Broadcast::Partial(changed) => {
+                let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
+                let _ = state.broadcast.send(env);
+                eprintln!(
+                    "[watch] re-rendered {} (partial: {} block{})",
+                    input.display(),
+                    changed.len(),
+                    if changed.len() == 1 { "" } else { "s" },
+                );
+            }
+            Broadcast::Full => {
+                let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
+                let _ = state.broadcast.send(env);
+                eprintln!("[watch] re-rendered {} (full)", input.display());
+            }
+        }
+
+        prev_blocks = new_blocks;
     }
 }
 

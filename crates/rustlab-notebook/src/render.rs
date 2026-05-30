@@ -5,6 +5,9 @@ use pulldown_cmark::{html::push_html, Options, Parser};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 /// Render executed notebook blocks into an HTML string.
@@ -33,6 +36,10 @@ pub fn render_html(
     let mut plot_idx = 0;
     let mut in_solution = false;
     let mut in_exercise = false;
+    // Phase 3: per-render counter so identical-source blocks at
+    // different positions get unique IDs (collision → "-N" suffix).
+    // See dev/plans/notebook_interactive_server.md Phase 3.
+    let mut block_id_counter: HashMap<u64, usize> = HashMap::new();
 
     for block in blocks {
         // Auto-close solution/exercise when we hit a new exercise or solution marker
@@ -53,6 +60,7 @@ pub fn render_html(
 
         match block {
             Rendered::Markdown(md) => {
+                let mark = body.len();
                 // Transform `[[wiki]]` / `![[embed]]` to standard markdown
                 let md = transform_wikilinks(md);
                 // Rewrite .md links to .html for cross-notebook references
@@ -71,6 +79,7 @@ pub fn render_html(
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
                 body.push_str("</div>\n");
+                finalize_block(&mut body, mark, &mut block_id_counter);
             }
             Rendered::Code {
                 source,
@@ -82,6 +91,7 @@ pub fn render_html(
                 details,
                 grid_cols,
             } => {
+                let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
 
                 // Source code (unless hidden)
@@ -183,6 +193,7 @@ pub fn render_html(
                 }
 
                 body.push_str("</div>\n");
+                finalize_block(&mut body, mark, &mut block_id_counter);
             }
             Rendered::Mermaid {
                 source,
@@ -193,6 +204,7 @@ pub fn render_html(
                 if *hidden {
                     continue;
                 }
+                let mark = body.len();
                 if let Some(title) = details {
                     body.push_str("<details class=\"code-details\">\n");
                     body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
@@ -209,12 +221,14 @@ pub fn render_html(
                 if details.is_some() {
                     body.push_str("</details>\n");
                 }
+                finalize_block(&mut body, mark, &mut block_id_counter);
             }
             Rendered::Callout {
                 kind,
                 title,
                 content,
             } => {
+                let mark = body.len();
                 let (class, default_label) = callout_style(*kind);
                 let label = title.as_deref().unwrap_or(default_label);
                 body.push_str(&format!("<div class=\"callout callout-{class}\">\n"));
@@ -231,6 +245,7 @@ pub fn render_html(
                 let html = restore_math(&html, &math);
                 body.push_str(&html);
                 body.push_str("</div>\n");
+                finalize_block(&mut body, mark, &mut block_id_counter);
             }
             Rendered::ExerciseStart { number } => {
                 body.push_str(&format!(
@@ -1510,6 +1525,53 @@ fn find_inline_close(s: &[u8], start: usize) -> Option<usize> {
     None
 }
 
+/// Phase 3 block-wrapping helper. Called at the end of every
+/// match arm in [`render_html`] that emits a *diffable* block
+/// (Markdown / Code / Mermaid / Callout — *not* the structural
+/// markers ExerciseStart / SolutionStart).
+///
+/// Looks at the bytes pushed to `body` since `mark`, treats them
+/// as the rendered chunk for one block, wraps them in
+/// `<section class="rl-block" id="b-<hash>">…</section>`, and
+/// replaces the chunk in `body`. ID is the low 32 bits of the
+/// chunk's `DefaultHasher` digest rendered as 8 hex chars; if
+/// the same hash already appeared in this render the suffix
+/// `-N` disambiguates (per locked-in #14 of the plan, position
+/// is the collision tiebreaker).
+///
+/// Empty / whitespace-only chunks emit nothing (matches the
+/// existing renderer's behaviour for skipped blocks).
+fn finalize_block(body: &mut String, mark: usize, counter: &mut HashMap<u64, usize>) {
+    if body.len() <= mark {
+        return;
+    }
+    let chunk_len = body.len() - mark;
+    if body[mark..].chars().all(char::is_whitespace) {
+        body.truncate(mark);
+        return;
+    }
+
+    let mut hasher = DefaultHasher::new();
+    body[mark..].hash(&mut hasher);
+    let raw = hasher.finish();
+    let prefix = format!("{:08x}", raw as u32);
+    let n = counter.entry(raw).or_insert(0);
+    let id = if *n == 0 {
+        format!("b-{prefix}")
+    } else {
+        format!("b-{prefix}-{n}", n = *n)
+    };
+    *n += 1;
+
+    // Splice: insert opening section tag at `mark`, append closing
+    // tag. Using `String::insert_str` here means the chunk doesn't
+    // need to be cloned out and back in.
+    let open = format!("<section class=\"rl-block\" id=\"{id}\">\n");
+    body.insert_str(mark, &open);
+    let _ = chunk_len; // (kept for debugging — closing tag goes at end)
+    body.push_str("</section>\n");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1779,6 +1841,50 @@ mod tests {
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
         assert!(html.contains("Generated by rustlab-notebook"));
+    }
+
+    // ── Phase 3: stable block-id wrapping ──
+
+    #[test]
+    fn render_html_wraps_blocks_in_rl_block_section() {
+        let blocks = vec![
+            Rendered::Markdown("hello".to_string()),
+            Rendered::Markdown("world".to_string()),
+        ];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        // Each prose block lives inside a rl-block section.
+        let opens: Vec<_> = html.matches("<section class=\"rl-block\" id=\"b-").collect();
+        assert_eq!(opens.len(), 2, "expected 2 block wrappers, full html:\n{html}");
+        // The pre-existing prose div is preserved inside the section.
+        assert!(html.contains("class=\"prose\""));
+    }
+
+    #[test]
+    fn render_html_block_ids_suffix_on_collision() {
+        let blocks = vec![
+            Rendered::Markdown("dup".to_string()),
+            Rendered::Markdown("dup".to_string()),
+            Rendered::Markdown("unique".to_string()),
+        ];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        // The two `dup` blocks have identical content → identical
+        // 8-char hashes → second gets the "-1" suffix.
+        let suffixed = html.matches("\" id=\"b-").count();
+        assert_eq!(suffixed, 3);
+        assert!(
+            html.matches("-1\">").count() >= 1,
+            "expected a collision-suffixed id (…-1) in:\n{html}",
+        );
+    }
+
+    #[test]
+    fn render_html_block_ids_stable_across_renders() {
+        let blocks = vec![Rendered::Markdown("stable content".to_string())];
+        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
+        let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(id1, id2, "block id changed between identical renders");
     }
 
     #[test]

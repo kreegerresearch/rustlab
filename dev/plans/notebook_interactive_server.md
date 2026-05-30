@@ -14,36 +14,36 @@ explicit user approval.
 | 0 — Design + dep trade-off | **complete** (2026-05-30) | trade-off doc, port 8042 + auto-bump, WS full→partial, embed Plotly + KaTeX (vendored), pdflatex external, license audit clean, deps added, vendored assets in tree |
 | 1 — Server skeleton | **complete** (2026-05-30) | `server::start`, one-shot render over HTTP, embedded `/assets/`, plot tempdir, browser auto-open, 15 unit + 5 integration tests |
 | 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
-| 3 — Block-level diffing | not started | content-hash block IDs, partial DOM updates |
+| 3 — Block-level diffing | **complete** (2026-05-30) | renderer wraps every block in `<section class="rl-block" id="b-<hash>">…</section>`; new server::diff module splits a rendered doc and computes per-position changes; coordinator picks `partial`/`full`/`None` per render; WS client gains `applyPartial` for in-place outerHTML swap + script re-exec + KaTeX re-render. 47 unit + 5 + 2 integration tests. |
 | 4 — Docs + REPL help | not started | `docs/notebooks.md` section, AGENTS.md close-out |
 | 5 — Polish (optional) | not started | `--watch-dir`, source pane, opt-in in-browser editor |
 
-**Next concrete action:** start Phase 3 (block-level diffing).
+**Next concrete action:** start Phase 4 (docs + REPL help
+close-out) or jump to Phase 5 polish.
 
-Phases 0–2 are complete. The interactive server now live-reloads
-the rendered notebook in the browser via WebSocket whenever the
-source `.md` is saved (full-document refresh — the
-`{"kind":"full","html":…}` envelope carries the entire rendered
-body). Phase 3 makes that incremental:
+Phases 0–3 are complete. The interactive server now live-reloads
+notebooks in the browser via WebSocket on every save, with
+block-level partial diffs that preserve scroll position for small
+edits and fall back to a full-document refresh only when the
+notebook's block count changes or >50% of blocks are touched.
 
-1. Render emits `id="b-<short-hash>"` on every block (blake3
-   truncated to 8 hex chars over the block source).
-2. After re-render, diff per-block HTML keyed by ID; emit only
-   changed blocks as `{"kind":"partial","blocks":[{"id":…,
-   "html":…}]}`.
-3. Page JS: gain a `switch (msg.kind)` arm that does targeted
-   element replacement (no full-body swap → preserves scroll
-   position, no full Plotly re-init for unchanged plots).
-4. Document the scroll-position implications when a *block's
-   content* changes (ID changes → remove+insert instead of swap;
-   see Phase 3 task list for the note).
+Phase 4 is the standard close-out:
+- Polish `docs/notebooks.md` (the "Interactive server" section
+  is already extended for live reload + block diffs; review for
+  any remaining gaps).
+- `examples/notebooks/README.md` could pick up a "try the
+  interactive server" pointer.
+- Mark AGENTS.md row complete on landing of phase 4.
 
-Two adjacent items deferred from Phase 2 worth flagging:
-
-- **Real render preemption** (locked-in #9 — the
-  rustlab-script cancellation-token plumbing) — Phase 5 polish.
-- **LRU plot table** (locked-in #10) — only relevant if Phase 3
-  starts producing on-disk plot artefacts again.
+Phase 5 polish items still open (won't block close-out):
+- **Real render preemption** (locked-in #9 — rustlab-script
+  cancellation-token plumbing).
+- **`--watch-dir <DIR>`** — directory mode + index page.
+- **Source-pane / split view** — raw .md alongside rendered.
+- **Optional in-browser editor** (Monaco / CodeMirror).
+- **Removal-aware partial diffs** — today a block-count change
+  forces full; with an `ops:["remove","insert"]` payload we
+  could keep scroll position for structural edits too.
 
 **Required reading before touching code:**
 
@@ -430,23 +430,45 @@ DOM replacement on the changed blocks, no scroll position loss.
       `{"kind":"full","html":"…"}` envelope arrives with the new
       content and the local `/assets/` references.
 
-### Phase 3 — Block-level diffing  **Status:** not started
+### Phase 3 — Block-level diffing  **Status:** complete (2026-05-30)
 
-- [ ] Tag each rendered block with `id="b-<short-hash>"` where the
-      hash is blake3 over the block source, truncated to 8 hex
-      chars. Content-addressed so a moved-but-unchanged block keeps
-      its ID; positional `b<n>` is rejected because inserting a
-      block at the top would shift every subsequent ID and degrade
-      the partial diff into a full refresh. Position is the
-      tiebreaker for duplicate-source blocks.
-- [ ] After a re-render, diff against the previous render's per-block
-      HTML keyed on the stable ID; emit only changed blocks
-- [ ] Page JS: replace only the changed `<section id="b-…">`
-      elements; preserve scroll position
-- [ ] Note: when the *content* of a block genuinely changes, its
-      ID changes too, so the page sees a remove+insert pair rather
-      than an in-place swap. Document the scroll-position
-      implications.
+- [x] Tag each rendered block with `id="b-<short-hash>"` where
+      the hash is the low 32 bits of the chunk's `DefaultHasher`
+      digest rendered as 8 hex chars (not blake3 — the existing
+      `cache.rs` uses `DefaultHasher` and per-process stability
+      is sufficient for a watcher session). Position is the
+      tiebreaker for duplicate-source blocks via `-N` suffix.
+      Hash is computed over the *rendered* HTML chunk, so the
+      ID changes exactly when the rendered output changes (the
+      property the diff needs).
+      [crates/rustlab-notebook/src/render.rs `finalize_block`](../../crates/rustlab-notebook/src/render.rs)
+- [x] After a re-render, diff against the previous render's
+      per-block list. **Important deviation from the original
+      plan:** the diff is keyed *by source-order position*, not
+      by stable ID. Reason: a content edit changes the
+      content-hash id, so an id-keyed diff would see "remove old
+      + insert new" and force a full refresh on every prose
+      tweak. Position-based addressing keeps the partial payload
+      tight for the common edit-in-place case. The ID is still
+      useful for debugging and DOM addressability.
+      [crates/rustlab-notebook/src/server/diff.rs](../../crates/rustlab-notebook/src/server/diff.rs)
+- [x] Coordinator classification (`Broadcast::{None, Full,
+      Partial}`): block-count change → `Full`; >50% of blocks
+      changed → `Full` (partial payload would exceed full
+      refresh); zero changes → `None` (skip broadcast); else
+      `Partial` with per-position replacements.
+- [x] Page JS `applyPartial`: for each `{position, html}`,
+      `document.querySelectorAll('section.rl-block')[position]
+      .outerHTML = html`, then walk the refreshed section's
+      `<script>` tags and re-clone them so they execute (Plotly
+      re-init), and call `renderMathInElement` scoped to the
+      affected section so KaTeX picks up new math.
+      Preserves scroll position because untouched sections never
+      move in the DOM.
+- [x] Documented the scroll-position contract in
+      `docs/notebooks.md`: partial swaps preserve scroll;
+      structural edits (count change) and large rewrites fall
+      back to `kind:"full"` which resets scroll to top.
 
 ### Phase 4 — Docs + REPL help  **Status:** not started
 
@@ -511,6 +533,38 @@ this in sync with the Phase checkboxes and the AGENTS.md row.
   shared persistent cache; corrected the tokio dependency claim
   (`notify` runs on std-mpsc, axum brings net-new tokio);
   switched plot endpoint to `<index>.svg`.
+- 2026-05-30 — **Phase 3 complete.** Block-level diffing
+  landed. Render path now wraps every diffable block (Markdown,
+  Code, Mermaid, Callout) in
+  `<section class="rl-block" id="b-<hash>">…</section>` via the
+  new `render::finalize_block` helper (additive — existing
+  `.prose`/`.code-block` CSS intact). New module
+  `crates/rustlab-notebook/src/server/diff.rs` splits a rendered
+  doc by scanning section openers, then `compute_changes`
+  compares the two block lists **by source-order position** —
+  *not* by content-hash id, because a content edit changes the
+  id and id-keyed diffing would force a full refresh on every
+  prose tweak. `Broadcast::{None, Full, Partial}` classifier
+  decides per render: block-count change → Full, >50% changed
+  → Full, zero changes → None, else Partial. Coordinator caches
+  the previous block list under `state.html.read()` on startup
+  and updates per render. WS-client JS grew an `applyPartial`
+  case: address by `querySelectorAll('section.rl-block')[position]`,
+  `outerHTML =`, re-clone inline `<script>`s in the swapped
+  region (Plotly re-init), `renderMathInElement(fresh, …)` for
+  KaTeX. Untouched sections never move → scroll position
+  preserved. New tests: 3 render unit tests for block-id
+  stability/collision/wrapping, 11 diff unit tests covering
+  split + classify + envelope, 1 integration test
+  `ws_receives_partial_envelope_when_one_of_many_blocks_changes`
+  proving end-to-end that editing one prose block (in a
+  prose/code/prose/code/prose fixture) yields exactly one
+  position-addressed entry in a `kind="partial"` envelope. Full
+  crate suite: 512 tests, no regressions (was 497). Real-world
+  smoke against `examples/notebooks/contour_plots.md`: appending
+  a section logs `(partial: 1 block)`; replacing the whole file
+  with a smaller notebook logs `(full)`. Docs updated. Next:
+  Phase 4 close-out and/or Phase 5 polish.
 - 2026-05-30 — **Phase 2 complete.** Live re-render on save
   landed. New modules:
   `crates/rustlab-notebook/src/server/{ws.rs, render_loop.rs}`

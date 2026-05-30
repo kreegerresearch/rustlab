@@ -216,12 +216,24 @@ Behaviour:
   `--no-browser` forces off.
 - **Ctrl-C** stops the server. Plot artefacts live in a tempdir
   that's cleaned up on exit.
-- **Live reload on save.** The rendered page includes a tiny
-  WebSocket client that connects back to `/ws`. On every save of
-  the watched `.md`, the server re-renders (debounced 250 ms),
-  pushes `{"kind":"full","html":"…"}` over the WS, and the page
-  swaps `document.body`, re-executes inline `<script>` tags
-  (re-running Plotly), and re-invokes KaTeX. No browser refresh.
+- **Live reload on save** with block-level diffing. The rendered
+  page includes a tiny WebSocket client that connects back to
+  `/ws`. On every save of the watched `.md`, the server
+  re-renders (debounced 250 ms) and chooses between two payload
+  shapes:
+  - `{"kind":"partial","blocks":[{"position":N,"html":"…"}]}` —
+    only the blocks whose rendered HTML changed (typical for
+    small prose edits or a single code-block change). The page
+    swaps the specific `<section class="rl-block">` elements
+    in-place, re-executes inline `<script>`s in the new content
+    (re-runs Plotly), re-invokes KaTeX on the affected nodes,
+    and **preserves scroll position**.
+  - `{"kind":"full","html":"…"}` — block count changed
+    (structural edit), or >50% of blocks changed. The page
+    swaps `document.body`, re-executes all inline `<script>`s,
+    and re-renders KaTeX over the whole body. Scroll position
+    snaps to top.
+
   If the server stops, the page shows a red "disconnected" banner
   and retries with exponential backoff 500 ms → 5 s capped at 10
   attempts; on a successful reconnect it hard-reloads to pick up

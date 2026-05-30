@@ -14,6 +14,7 @@
 //! yet. Source `.md` is never modified.
 
 pub mod assets;
+pub mod diff;
 pub mod http;
 pub mod render_loop;
 pub mod ws;

@@ -170,6 +170,49 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     rerunKaTeX();
   }
 
+  function applyPartial(blocks) {
+    // Address blocks by source-order position (the server computed
+    // the diff pairwise by index, not by content-hash id, so a
+    // content edit stays at its current DOM position even though
+    // the new <section> carries a fresh id="b-...").
+    const targets = document.querySelectorAll('section.rl-block');
+    for (const b of blocks) {
+      const el = targets[b.position];
+      if (!el) {
+        console.warn('rustlab-notebook ws: partial position out of range', b.position);
+        continue;
+      }
+      // outerHTML triggers a parse but DOMParser is *not* needed
+      // here: the new <section> is a single sibling, browsers
+      // accept it inline. Inline <script>s in the new content
+      // won't run (innerHTML/outerHTML doesn't execute them), so
+      // we walk and re-clone below.
+      el.outerHTML = b.html;
+    }
+    // Re-execute scripts and re-render KaTeX in the affected nodes.
+    // Re-querying after outerHTML swap because the original `el`
+    // references are stale.
+    const refreshed = document.querySelectorAll('section.rl-block');
+    for (const b of blocks) {
+      const fresh = refreshed[b.position];
+      if (!fresh) continue;
+      fresh.querySelectorAll('script').forEach(old => {
+        const s = document.createElement('script');
+        for (const attr of old.attributes) s.setAttribute(attr.name, attr.value);
+        s.textContent = old.textContent;
+        old.parentNode.replaceChild(s, old);
+      });
+      if (window.renderMathInElement) {
+        window.renderMathInElement(fresh, {
+          delimiters: [
+            {left: '$$', right: '$$', display: true},
+            {left: '$',  right: '$',  display: false}
+          ]
+        });
+      }
+    }
+  }
+
   function connect() {
     ws = new WebSocket(url);
     ws.onopen = () => {
@@ -188,8 +231,9 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
         const msg = JSON.parse(ev.data);
         if (msg.kind === 'full' && typeof msg.html === 'string') {
           applyFull(msg.html);
+        } else if (msg.kind === 'partial' && Array.isArray(msg.blocks)) {
+          applyPartial(msg.blocks);
         }
-        // Future: msg.kind === 'partial' lands in Phase 3.
       } catch (e) {
         console.error('rustlab-notebook ws: bad message', e);
       }
