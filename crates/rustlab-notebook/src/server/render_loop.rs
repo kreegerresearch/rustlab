@@ -260,10 +260,13 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
         }
 
         // Diff against this notebook's previous block list before publishing.
+        // `is_flat` gates the scroll-preserving structural reconcile: only
+        // notebooks without exercise/solution nesting are safe to reconcile.
         let new_blocks = diff::split_blocks(&new_html);
+        let allow_reconcile = diff::is_flat(&new_html);
         let decision = {
             let prev = nb.prev_blocks.lock().unwrap();
-            diff::classify(&prev, &new_blocks)
+            diff::classify(&prev, &new_blocks, allow_reconcile)
         };
 
         // Publish state regardless of broadcast kind so a fresh page load
@@ -289,6 +292,17 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
                     nb.slug,
                     changed.len(),
                     if changed.len() == 1 { "" } else { "s" },
+                );
+            }
+            Broadcast::Reconcile(items) => {
+                let reused = items.iter().filter(|i| i.html.is_none()).count();
+                let env: Arc<str> = Arc::from(diff::reconcile_envelope(&items));
+                let _ = nb.broadcast.send(env);
+                eprintln!(
+                    "[watch] re-rendered {} (reconcile: {} blocks, {} reused)",
+                    nb.slug,
+                    items.len(),
+                    reused,
                 );
             }
             Broadcast::Full => {

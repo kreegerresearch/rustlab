@@ -25,6 +25,8 @@
 //!    `document.querySelectorAll("section.rl-block")[position]
 //!    .outerHTML = html`.
 
+use std::collections::HashSet;
+
 /// One block extracted from a rendered document. `id` is the
 /// `b-<8-hex-chars>[-N]` identifier the renderer emitted; `html`
 /// is the full `<section class="rl-block" id="…">…</section>`
@@ -124,6 +126,28 @@ pub struct BlockDiff {
     pub html: String,
 }
 
+/// One entry in a *reconcile* payload (item 5 — removal-aware
+/// structural diffs). The client reconciles its live
+/// `section.rl-block` node list to match this sequence, keyed by the
+/// content-hash `id`:
+///
+/// - `html: None` → a block whose id already exists in the page;
+///   the client **reuses** (and, if needed, moves) the existing DOM
+///   node without re-rendering it. Plotly charts / KaTeX in untouched
+///   blocks are preserved.
+/// - `html: Some(_)` → a new-or-changed block (its content-hash id is
+///   not in the previous render); the client **creates** it from this
+///   HTML and re-runs its scripts + KaTeX.
+///
+/// Blocks present before but absent from this sequence are removed.
+/// Because untouched nodes keep their DOM identity, scroll position
+/// survives inserts / removes / reorders — the win over a full refresh.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileItem {
+    pub id: String,
+    pub html: Option<String>,
+}
+
 /// Compare two block lists *pairwise by position*. Returns:
 ///
 /// - `None` if the block counts differ (structural change —
@@ -152,20 +176,69 @@ pub fn compute_changes(prev: &[Block], new: &[Block]) -> Option<Vec<BlockDiff>> 
 /// refresh, and we'd rather pay one big swap than many small ones.
 pub const FULL_REFRESH_RATIO: f32 = 0.5;
 
+/// Build a reconcile sequence: for each block in the new render, mark
+/// it as *reusable* (`html: None`) when its content-hash id already
+/// existed in the previous render, or *fresh* (`html: Some`) otherwise.
+/// See [`ReconcileItem`].
+pub fn reconcile_items(prev: &[Block], new: &[Block]) -> Vec<ReconcileItem> {
+    let prev_ids: HashSet<&str> = prev.iter().map(|b| b.id.as_str()).collect();
+    new.iter()
+        .map(|b| ReconcileItem {
+            id: b.id.clone(),
+            html: if prev_ids.contains(b.id.as_str()) {
+                None
+            } else {
+                Some(b.html.clone())
+            },
+        })
+        .collect()
+}
+
+/// Whether a rendered document is "flat" — i.e. every `rl-block`
+/// section is a direct child of `<main>`, with no exercise/solution
+/// wrappers nesting sections inside `<div class="exercise">` or
+/// `<details class="solution">`. Only flat documents are safe to
+/// reconcile, because the client reorders/inserts/removes sections as
+/// direct children of `<main>`; moving a nested section would reparent
+/// it out of its wrapper. Non-flat documents fall back to a full
+/// refresh on structural edits.
+pub fn is_flat(html: &str) -> bool {
+    !html.contains("class=\"exercise\"") && !html.contains("<details class=\"solution\"")
+}
+
 /// Decide which envelope to send. `None` means "no content
-/// change" (skip the broadcast — the next page load will pick up
-/// the new HTML via `GET /notebook.html` anyway).
+/// change" (skip the broadcast — the next page load picks up the new
+/// HTML via `GET /n/<slug>` anyway).
+///
+/// `allow_reconcile` is the caller's [`is_flat`] verdict on the new
+/// render: when a structural change (block count differs) lands on a
+/// flat document, a [`Broadcast::Reconcile`] preserves scroll position;
+/// otherwise such a change forces a [`Broadcast::Full`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum Broadcast {
     None,
     Full,
     Partial(Vec<BlockDiff>),
+    Reconcile(Vec<ReconcileItem>),
 }
 
-pub fn classify(prev: &[Block], new: &[Block]) -> Broadcast {
+pub fn classify(prev: &[Block], new: &[Block], allow_reconcile: bool) -> Broadcast {
     match compute_changes(prev, new) {
-        // Structural change (block count differs) — full refresh.
-        None => Broadcast::Full,
+        // Structural change (block count differs).
+        None => {
+            if !allow_reconcile || new.is_empty() {
+                return Broadcast::Full;
+            }
+            let items = reconcile_items(prev, new);
+            // If most of the new doc is fresh content, a full refresh is
+            // cheaper than a big reconcile payload.
+            let fresh = items.iter().filter(|i| i.html.is_some()).count();
+            if fresh as f32 / new.len() as f32 >= FULL_REFRESH_RATIO {
+                Broadcast::Full
+            } else {
+                Broadcast::Reconcile(items)
+            }
+        }
         Some(diffs) if diffs.is_empty() => Broadcast::None,
         Some(diffs) if (diffs.len() as f32 / new.len() as f32) >= FULL_REFRESH_RATIO => {
             Broadcast::Full
@@ -182,6 +255,20 @@ pub fn partial_envelope(diffs: &[BlockDiff]) -> String {
         .map(|d| serde_json::json!({ "position": d.position, "html": d.html }))
         .collect();
     serde_json::json!({ "kind": "partial", "blocks": payload }).to_string()
+}
+
+/// Wrap a reconcile sequence in the item-5 `{"kind":"reconcile",…}`
+/// envelope. Each entry carries an `id` and, for fresh blocks, the
+/// `html` to create them from; reusable blocks omit `html`.
+pub fn reconcile_envelope(items: &[ReconcileItem]) -> String {
+    let payload: Vec<serde_json::Value> = items
+        .iter()
+        .map(|i| match &i.html {
+            Some(h) => serde_json::json!({ "id": i.id, "html": h }),
+            None => serde_json::json!({ "id": i.id }),
+        })
+        .collect();
+    serde_json::json!({ "kind": "reconcile", "blocks": payload }).to_string()
 }
 
 #[cfg(test)]
@@ -273,7 +360,7 @@ mod tests {
     #[test]
     fn classify_no_change_returns_none() {
         let blocks = vec![block("b-a", "<section ...>A</section>")];
-        assert_eq!(classify(&blocks, &blocks), Broadcast::None);
+        assert_eq!(classify(&blocks, &blocks, true), Broadcast::None);
     }
 
     #[test]
@@ -288,7 +375,7 @@ mod tests {
             block("b-b",  "<section ...>B</section>"),
             block("b-c",  "<section ...>C</section>"),
         ];
-        match classify(&prev, &new) {
+        match classify(&prev, &new, true) {
             Broadcast::Partial(diffs) => {
                 assert_eq!(diffs.len(), 1);
                 assert_eq!(diffs[0].position, 0);
@@ -299,13 +386,100 @@ mod tests {
     }
 
     #[test]
-    fn classify_count_mismatch_forces_full() {
+    fn classify_count_mismatch_forces_full_when_reconcile_disallowed() {
         let prev = vec![
             block("b-a", "<section ...>A</section>"),
             block("b-b", "<section ...>B</section>"),
         ];
         let new = vec![block("b-a", "<section ...>A</section>")];
-        assert_eq!(classify(&prev, &new), Broadcast::Full);
+        // Non-flat document (allow_reconcile=false) → full refresh.
+        assert_eq!(classify(&prev, &new, false), Broadcast::Full);
+    }
+
+    #[test]
+    fn classify_block_removed_reconciles_when_flat() {
+        // Removing block B (keeping A and C, both unchanged ids) is a
+        // count change but every surviving block is reusable → reconcile.
+        let prev = vec![
+            block("b-a", "<section ...>A</section>"),
+            block("b-b", "<section ...>B</section>"),
+            block("b-c", "<section ...>C</section>"),
+        ];
+        let new = vec![
+            block("b-a", "<section ...>A</section>"),
+            block("b-c", "<section ...>C</section>"),
+        ];
+        match classify(&prev, &new, true) {
+            Broadcast::Reconcile(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].id, "b-a");
+                assert!(items[0].html.is_none(), "A is reusable");
+                assert_eq!(items[1].id, "b-c");
+                assert!(items[1].html.is_none(), "C is reusable");
+            }
+            other => panic!("expected Reconcile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_block_inserted_reconciles_with_only_new_block_carrying_html() {
+        // Insert a fresh block between A and B.
+        let prev = vec![
+            block("b-a", "<section ...>A</section>"),
+            block("b-b", "<section ...>B</section>"),
+        ];
+        let new = vec![
+            block("b-a", "<section ...>A</section>"),
+            block("b-new", "<section ...>NEW</section>"),
+            block("b-b", "<section ...>B</section>"),
+        ];
+        match classify(&prev, &new, true) {
+            Broadcast::Reconcile(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(items[0].html.is_none(), "A reusable");
+                assert_eq!(items[1].id, "b-new");
+                assert!(items[1].html.as_deref().unwrap().contains("NEW"), "new block carries html");
+                assert!(items[2].html.is_none(), "B reusable");
+            }
+            other => panic!("expected Reconcile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_count_change_with_mostly_fresh_blocks_falls_back_to_full() {
+        // Old had 1 block; new has 3, all fresh → cheaper as full.
+        let prev = vec![block("b-a", "<section ...>A</section>")];
+        let new = vec![
+            block("b-x", "<section ...>X</section>"),
+            block("b-y", "<section ...>Y</section>"),
+            block("b-z", "<section ...>Z</section>"),
+        ];
+        assert_eq!(classify(&prev, &new, true), Broadcast::Full);
+    }
+
+    #[test]
+    fn is_flat_detects_exercise_and_solution() {
+        assert!(is_flat("<main><section class=\"rl-block\" id=\"b-a\">x</section></main>"));
+        assert!(!is_flat("<div class=\"exercise\"><section class=\"rl-block\">x</section></div>"));
+        assert!(!is_flat("<details class=\"solution\"><summary>s</summary></details>"));
+        // code-details wraps content *inside* a block, not other sections.
+        assert!(is_flat("<section class=\"rl-block\"><details class=\"code-details\">x</details></section>"));
+    }
+
+    #[test]
+    fn reconcile_envelope_omits_html_for_reusable_blocks() {
+        let items = vec![
+            ReconcileItem { id: "b-a".into(), html: None },
+            ReconcileItem { id: "b-new".into(), html: Some("<section>NEW</section>".into()) },
+        ];
+        let env = reconcile_envelope(&items);
+        let parsed: serde_json::Value = serde_json::from_str(&env).unwrap();
+        assert_eq!(parsed["kind"], "reconcile");
+        let arr = parsed["blocks"].as_array().unwrap();
+        assert_eq!(arr[0]["id"], "b-a");
+        assert!(arr[0].get("html").is_none(), "reusable block omits html");
+        assert_eq!(arr[1]["id"], "b-new");
+        assert_eq!(arr[1]["html"], "<section>NEW</section>");
     }
 
     #[test]
@@ -318,7 +492,7 @@ mod tests {
             block("b-x", "<section ...>X</section>"),
             block("b-y", "<section ...>Y</section>"),
         ];
-        assert_eq!(classify(&prev, &new), Broadcast::Full);
+        assert_eq!(classify(&prev, &new, true), Broadcast::Full);
     }
 
     #[test]

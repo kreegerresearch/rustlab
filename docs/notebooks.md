@@ -239,18 +239,27 @@ Behaviour:
   `/n/<slug>/ws` (one channel per notebook, so a save to one
   notebook in directory mode only reloads that page). On every
   save of the watched `.md`, the server
-  re-renders (debounced 250 ms) and chooses between two payload
-  shapes:
+  re-renders (debounced 250 ms) and chooses the smallest payload
+  that does the job:
   - `{"kind":"partial","blocks":[{"position":N,"html":"…"}]}` —
-    only the blocks whose rendered HTML changed (typical for
-    small prose edits or a single code-block change). The page
-    swaps the specific `<section class="rl-block">` elements
-    in-place, re-executes inline `<script>`s in the new content
-    (re-runs Plotly), re-invokes KaTeX on the affected nodes,
-    and **preserves scroll position**.
-  - `{"kind":"full","html":"…"}` — block count changed
-    (structural edit), or >50% of blocks changed. The page
-    swaps the rendered `<main>` (not the whole body, so the
+    same block count, only some blocks' rendered HTML changed
+    (typical for small prose edits or a single code-block change).
+    The page swaps the specific `<section class="rl-block">`
+    elements in-place, re-executes inline `<script>`s in the new
+    content (re-runs Plotly), re-invokes KaTeX on the affected
+    nodes, and **preserves scroll position**.
+  - `{"kind":"reconcile","blocks":[{"id":"b-…","html":"…"?}]}` —
+    a **structural** edit (blocks inserted, removed, or reordered)
+    on a flat notebook. Each entry is keyed by its content-hash
+    `id`; entries with no `html` are reused in place (the existing
+    DOM node — and its live Plotly/KaTeX state — is kept and moved
+    if needed), and only new/changed blocks carry `html`. Leftover
+    blocks are removed. Because untouched nodes keep their DOM
+    identity, **scroll position survives** inserts and removes too.
+  - `{"kind":"full","html":"…"}` — a structural edit on a notebook
+    that nests blocks inside exercise/solution wrappers (not safe
+    to reconcile), or any edit where >50% of blocks are new. The
+    page swaps the rendered `<main>` (not the whole body, so the
     toolbar / source pane survive), re-executes its inline
     `<script>`s, and re-renders KaTeX. Scroll position snaps to
     top.
@@ -258,7 +267,9 @@ Behaviour:
   If the server stops, the page shows a red "disconnected" banner
   and retries with exponential backoff 500 ms → 5 s capped at 10
   attempts; on a successful reconnect it hard-reloads to pick up
-  any state it might have missed.
+  any state it might have missed (unless the `--editable` editor
+  has unsaved changes, in which case it keeps the page and shows a
+  "reload to refresh" banner).
 - **Render preemption.** A save during a slow render *cancels* the
   in-flight execution and starts fresh on the new source. The
   evaluator polls a cancel flag between statements and loop

@@ -16,7 +16,7 @@ explicit user approval.
 | 2 — Live re-render | **complete** (2026-05-30) | notify fs watcher → debounced render coordinator → WS broadcast (`{"kind":"full",…}`) → page swaps body + re-runs Plotly + KaTeX. WS-client script auto-injected. Reconnect with exponential backoff + visible "disconnected" banner. 21 unit + 5 + 1 integration tests. |
 | 3 — Block-level diffing | **complete** (2026-05-30) | renderer wraps every block in `<section class="rl-block" id="b-<hash>">…</section>`; new server::diff module splits a rendered doc and computes per-position changes; coordinator picks `partial`/`full`/`None` per render; WS client gains `applyPartial` for in-place outerHTML swap + script re-exec + KaTeX re-render. 47 unit + 5 + 2 integration tests. |
 | 4 — Docs + CLI help | **complete** (2026-05-30) | `docs/notebooks.md` § "Live preview" extended through Phase 2/3 (live reload + partial diffs + scroll preservation); `watch --help` long_about rewritten to lead with the interactive server (default) and demote re-render-on-save to secondary; `examples/notebooks/README.md` gained a "Live-edit one example" section. |
-| 5 — Polish (optional) | **items 1–4 done** (2026-05-30) | directory mode (5a), source pane (5b), in-browser editor (5c), real render preemption (5d) all landed; removal-aware partial diffs (item 5) deferred for discussion |
+| 5 — Polish (optional) | **all items done** (5a–5d 2026-05-30; item 5 2026-05-31) | directory mode (5a), source pane (5b), in-browser editor (5c), real render preemption (5d), removal-aware reconcile diffs (item 5) all landed |
 
 **Next concrete action:** Phase 5 is underway (user asked for items
 1–4). 5a (directory mode) is done; 5b (source pane), 5c (in-browser
@@ -41,9 +41,10 @@ Phase 5 polish items:
 - **Optional in-browser editor** (Monaco / CodeMirror) — opt-in
   via `--editable` because it would violate the
   "only `--obsidian` modifies" rule.
-- **Removal-aware partial diffs** — today a block-count change
-  forces full; with an `ops:["remove","insert"]` payload we
-  could keep scroll position for structural edits too.
+- ~~**Removal-aware partial diffs**~~ — **done (item 5,
+  2026-05-31)**: a `kind:"reconcile"` keyed-by-content-hash payload
+  keeps scroll position for inserts/removes/reorders on flat
+  notebooks (exercise/solution-nested docs still fall back to full).
 
 If the user is ready to land, open a PR; otherwise the next
 agent can pick any Phase 5 item from the list above.
@@ -582,6 +583,32 @@ Phases 3-5 are polish that can ship independently.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-05-31 — **Item 5 complete.** Removal-aware structural diffs
+  via a new `kind:"reconcile"` payload. `diff.rs` gained
+  `ReconcileItem { id, html: Option<String> }`, `reconcile_items`
+  (each new block is *reusable* `html:None` when its content-hash id
+  already existed, else *fresh* `html:Some`), `is_flat` (false when
+  the doc nests sections in `class="exercise"` / `<details
+  class="solution">`), a `Broadcast::Reconcile` variant, and
+  `reconcile_envelope`. `classify` took an `allow_reconcile` bool: on
+  a block-count change for a flat doc it emits `Reconcile` (unless
+  >50% of the new blocks are fresh → cheaper as `Full`); non-flat
+  docs keep `Full`. The coordinator passes `is_flat(new_html)`. WS
+  client gained `applyReconcile`: reconciles the `:scope >
+  section.rl-block` direct-child list to the desired id sequence —
+  reuse/move existing nodes (keeping their Plotly/KaTeX state),
+  create fresh ones from html, drop leftovers — so scroll position
+  survives inserts/removes/reorders. Chose keyed-by-id reconcile
+  over the originally-sketched positional `ops:["remove","insert"]`
+  (more robust, naturally handles reorder, subsumes the cases).
+  Scoped to flat notebooks because the client moves sections as
+  direct children of `<main>`; reparenting a nested section would
+  corrupt exercise/solution structure. 11 new `diff` unit tests + 1
+  WS integration test (`ws_receives_reconcile_envelope_when_blocks_
+  are_inserted`); real-binary smoke logs `reconcile: 5 blocks, 3
+  reused` on an insert, and `node --check` validates the injected
+  client JS. Notebook suite 524 tests, 0 failed. **All Phase 5 items
+  now done.**
 - 2026-05-30 — **Hardening (post 5a–5d review).** The WS client's
   reconnect path hard-reloads to recover missed state; in `--editable`
   mode that would silently discard unsaved editor edits on a transient

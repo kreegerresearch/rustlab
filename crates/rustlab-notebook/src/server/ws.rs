@@ -236,6 +236,45 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     afterUpdate();
   }
 
+  // Item 5: removal-aware structural reconcile. The server only sends
+  // this for "flat" notebooks (rl-block sections are direct children of
+  // <main>), so we reconcile that direct-child list to the desired
+  // id sequence: reuse existing nodes (moving if needed), create fresh
+  // ones from their html, and drop leftovers. Untouched nodes keep their
+  // DOM identity → Plotly/KaTeX state and scroll position are preserved.
+  function applyReconcile(blocks) {
+    const main = mainEl();
+    if (!main) return;
+    const byId = new Map();
+    main.querySelectorAll(':scope > section.rl-block').forEach(n => byId.set(n.id, n));
+    const keep = new Set();
+    const tmp = document.createElement('div');
+    let anchor = null; // last positioned section; fresh nodes go after it
+
+    for (const b of blocks) {
+      keep.add(b.id);
+      let node = byId.get(b.id);
+      const fresh = !node;
+      if (fresh) { tmp.innerHTML = b.html || ''; node = tmp.firstElementChild; }
+      if (!node) continue; // defensive: malformed html
+
+      if (anchor === null) {
+        const firstNow = main.querySelector(':scope > section.rl-block');
+        if (node !== firstNow) main.insertBefore(node, firstNow);
+      } else if (anchor.nextElementSibling !== node) {
+        anchor.after(node);
+      }
+      // Only fresh (created or changed) blocks carry html and need
+      // their scripts/KaTeX (re-)run; reused nodes keep their state.
+      if (b.html) { rerunScripts(node); rerunKaTeX(node); }
+      anchor = node;
+    }
+
+    // Remove sections no longer present.
+    byId.forEach((node, id) => { if (!keep.has(id)) node.remove(); });
+    afterUpdate();
+  }
+
   function connect() {
     ws = new WebSocket(url);
     ws.onopen = () => {
@@ -263,6 +302,8 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
           applyFull(msg.html);
         } else if (msg.kind === 'partial' && Array.isArray(msg.blocks)) {
           applyPartial(msg.blocks);
+        } else if (msg.kind === 'reconcile' && Array.isArray(msg.blocks)) {
+          applyReconcile(msg.blocks);
         }
       } catch (e) {
         console.error('rustlab-notebook ws: bad message', e);

@@ -275,3 +275,113 @@ async fn ws_receives_partial_envelope_when_one_of_many_blocks_changes() {
     drop(ws);
     server.abort();
 }
+
+// Item 5: inserting blocks (a structural / count change) on a flat
+// notebook yields a `{"kind":"reconcile",…}` envelope where unchanged
+// blocks are reused (no `html`) and only the new blocks carry `html`.
+const RECONCILE_INITIAL: &str = r#"# Reconcile
+
+alpha prose — stable.
+
+```rustlab
+1
+```
+
+gamma prose — stable.
+"#;
+// Inserts a new prose block + code block between the code and gamma.
+const RECONCILE_EDITED: &str = r#"# Reconcile
+
+alpha prose — stable.
+
+```rustlab
+1
+```
+
+beta INSERTED prose.
+
+```rustlab
+2
+```
+
+gamma prose — stable.
+"#;
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_receives_reconcile_envelope_when_blocks_are_inserted() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("recon.md");
+    std::fs::write(&nb_path, RECONCILE_INITIAL).unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    let plot_dir = TempDir::new().unwrap();
+    let initial_html = {
+        let source = std::fs::read_to_string(&nb_path).unwrap();
+        let source = rustlab_notebook::strip_render_artifacts(&source);
+        let title = rustlab_notebook::extract_title(&source, &nb_path);
+        let expanded = rustlab_notebook::embed::expand_embeds(
+            &source,
+            nb_path.parent().unwrap(),
+            nb_path.parent().unwrap(),
+        );
+        let blocks = rustlab_notebook::parse::parse_notebook(&expanded);
+        let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
+        let html = rustlab_notebook::render::render_html(
+            &title,
+            &rendered,
+            plot_dir.path(),
+            "/plots",
+            theme,
+            None,
+        );
+        let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
+        rustlab_notebook::server::ws::inject_ws_client(&html)
+    };
+    let state = single_state("recon", &nb_path, initial_html, plot_dir);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/recon/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    std::fs::write(&nb_path, RECONCILE_EDITED).unwrap();
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("ws message did not arrive in time")
+        .expect("ws stream closed")
+        .expect("ws read error");
+    let payload = match msg {
+        Message::Text(s) => s.to_string(),
+        other => panic!("expected text frame, got {other:?}"),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(parsed["kind"], "reconcile", "expected reconcile; got: {parsed}");
+
+    let blocks = parsed["blocks"].as_array().expect("blocks array missing");
+    // Some blocks reused (no html), some fresh (carry html); at least one
+    // fresh block must contain the inserted prose.
+    let reused = blocks.iter().filter(|b| b.get("html").is_none()).count();
+    let fresh: Vec<_> = blocks.iter().filter(|b| b.get("html").is_some()).collect();
+    assert!(reused >= 1, "expected some reused blocks; got {parsed}");
+    assert!(!fresh.is_empty(), "expected some fresh blocks; got {parsed}");
+    assert!(
+        fresh
+            .iter()
+            .any(|b| b["html"].as_str().unwrap_or("").contains("INSERTED")),
+        "no fresh block carried the inserted content: {parsed}"
+    );
+    // Every entry carries a stable id.
+    assert!(blocks.iter().all(|b| b["id"].as_str().is_some_and(|s| s.starts_with("b-"))));
+
+    drop(ws);
+    server.abort();
+}
