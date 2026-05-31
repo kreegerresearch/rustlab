@@ -19,6 +19,8 @@ pub use profile::FnStats;
 use rustlab_core::C64;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 pub use value::NumberFormat;
 pub use value::Value;
 
@@ -57,6 +59,13 @@ pub struct Evaluator {
     /// affects a caller) forces re-computation. The keys here are
     /// user-fn names; the values are the canonical 32-byte ids.
     cached_entry_ids: HashMap<String, [u8; 32]>,
+    /// Optional cooperative-cancellation flag. When `Some` and set to
+    /// `true`, the evaluator returns [`ScriptError::Cancelled`] at the
+    /// next statement / loop-iteration boundary. `None` (the default)
+    /// means execution never cancels — so the REPL and one-shot CLI are
+    /// unaffected; only the notebook watch server's preemptible renders
+    /// install a flag (via [`Evaluator::with_cancel`]).
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Evaluator {
@@ -87,6 +96,9 @@ impl Evaluator {
             // session.
             cache_registry: self.cache_registry.clone(),
             cached_entry_ids: self.cached_entry_ids.clone(),
+            // Share the same cancel flag — a snapshot restored mid-render
+            // should still observe a preemption signal.
+            cancel: self.cancel.clone(),
         }
     }
 
@@ -122,7 +134,35 @@ impl Evaluator {
             current_line: 0,
             cache_registry: CacheRegistry::new(),
             cached_entry_ids: HashMap::new(),
+            cancel: None,
         }
+    }
+
+    /// Install a cooperative cancellation flag (builder form). While the
+    /// flag reads `true`, execution returns [`ScriptError::Cancelled`] at
+    /// the next statement or loop-iteration boundary. Long-running
+    /// *builtins* are not interruptible (they're bounded); this targets
+    /// runaway script-level loops. Default-off: a fresh `Evaluator` has
+    /// no flag and never cancels.
+    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(flag);
+        self
+    }
+
+    /// Install (or replace) the cooperative cancellation flag in place.
+    pub fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
+        self.cancel = Some(flag);
+    }
+
+    /// Return `Err(Cancelled)` if a cancel flag is installed and set.
+    #[inline]
+    fn check_cancelled(&self) -> Result<(), ScriptError> {
+        if let Some(flag) = &self.cancel {
+            if flag.load(Ordering::Relaxed) {
+                return Err(ScriptError::Cancelled);
+            }
+        }
+        Ok(())
     }
 
     /// Look up a variable in the environment (used by tests).
@@ -228,6 +268,11 @@ impl Evaluator {
     }
 
     pub fn exec_stmt(&mut self, stmt: &Stmt) -> Result<(), ScriptError> {
+        // Cooperative cancellation: bail before each statement. Combined
+        // with the per-iteration checks in the While/For arms, this makes
+        // even an empty-body infinite loop (`while true; end`)
+        // interruptible. No-op when no cancel flag is installed.
+        self.check_cancelled()?;
         self.current_line = stmt.line;
         self.exec_stmt_kind(&stmt.kind)
             .map_err(|e| e.with_line(stmt.line))
@@ -611,6 +656,9 @@ impl Evaluator {
                 }
             }
             StmtKind::While { cond, body } => loop {
+                // Per-iteration cancel check so an empty-body loop still
+                // stops (the body's `exec_stmt` checks cover non-empty ones).
+                self.check_cancelled()?;
                 let cv = self.eval_expr(cond)?;
                 if !Self::is_truthy(&cv, "while")? {
                     break;
@@ -632,6 +680,8 @@ impl Evaluator {
                     }
                 };
                 for elem in elements {
+                    // Per-iteration cancel check (covers empty-body loops).
+                    self.check_cancelled()?;
                     let val = if elem.im == 0.0 {
                         Value::Scalar(elem.re)
                     } else {

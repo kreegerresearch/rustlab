@@ -299,6 +299,79 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
     execute_notebook_internal(blocks).0
 }
 
+/// Like [`execute_notebook`] but cooperatively cancellable. The
+/// evaluator is built with `cancel` (see
+/// [`rustlab_script::Evaluator::with_cancel`]); during a long
+/// script-level loop it returns early, and this function also checks
+/// `cancel` between blocks. Returns `None` if cancellation tripped
+/// mid-render — the caller (the notebook watch coordinator preempting a
+/// stale render) discards the partial result. Used only by the
+/// interactive server; the persistent cache is intentionally not
+/// involved (server renders don't touch `.rustlab/cache.db`).
+pub fn execute_notebook_cancellable(
+    blocks: &[Block],
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Option<Vec<Rendered>> {
+    use std::sync::atomic::Ordering;
+
+    set_plot_context(PlotContext::Notebook);
+    // Fresh thread-locals (this runs on a dedicated render thread).
+    FIGURE.with(|f| f.borrow_mut().reset());
+    clear_notebook_figures();
+    clear_notebook_animations();
+
+    let mut ev = Evaluator::new().with_cancel(cancel.clone());
+    let mut rendered = Vec::with_capacity(blocks.len());
+    let mut exercise_counter = 0usize;
+
+    for block in blocks {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        match block {
+            Block::Markdown(text) => {
+                rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
+            }
+            Block::Code { source, directives } => {
+                let output = run_code_block_capturing(&mut ev, source, directives);
+                // A code block that hit the cancel flag mid-execution
+                // surfaces as a "cancelled" error — abandon the render.
+                if cancel.load(Ordering::Relaxed) {
+                    return None;
+                }
+                rendered.push(output);
+            }
+            Block::Mermaid { source, directives } => {
+                let MermaidDirectives { hidden, details, caption } = directives.clone();
+                rendered.push(Rendered::Mermaid {
+                    source: source.clone(),
+                    hidden,
+                    details,
+                    caption,
+                });
+            }
+            Block::Callout { kind, title, content } => {
+                rendered.push(Rendered::Callout {
+                    kind: *kind,
+                    title: title.clone(),
+                    content: interpolate_markdown(content, &mut ev),
+                });
+            }
+            Block::ExerciseStart => {
+                exercise_counter += 1;
+                rendered.push(Rendered::ExerciseStart {
+                    number: exercise_counter,
+                });
+            }
+            Block::SolutionStart => {
+                rendered.push(Rendered::SolutionStart);
+            }
+        }
+    }
+
+    Some(rendered)
+}
+
 /// Same as `execute_notebook` but also returns the final evaluator so
 /// the cache layer can capture end-state without a wasteful replay.
 /// Kept private because most callers don't care about the evaluator
@@ -1049,6 +1122,50 @@ mod tests {
             }
             _ => panic!("expected Code block"),
         }
+    }
+
+    /// A pre-tripped cancel flag aborts the render → `None`.
+    #[test]
+    fn cancellable_returns_none_when_pretripped() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(true));
+        let blocks = crate::parse::parse_notebook("# Title\n\n```rustlab\n1+1\n```\n");
+        assert!(execute_notebook_cancellable(&blocks, cancel).is_none());
+    }
+
+    /// Without cancellation the cancellable path renders normally.
+    #[test]
+    fn cancellable_completes_when_not_cancelled() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let blocks = crate::parse::parse_notebook("# Title\n\nprose\n\n```rustlab\n2+3\n```\n");
+        let rendered = execute_notebook_cancellable(&blocks, cancel).expect("not cancelled");
+        // Markdown + code block present.
+        assert!(rendered.iter().any(|r| matches!(r, Rendered::Markdown(_))));
+        assert!(rendered.iter().any(|r| matches!(r, Rendered::Code { .. })));
+    }
+
+    /// A long script-level loop is interrupted when the flag flips
+    /// mid-execution (proves the evaluator polls the flag, not just the
+    /// per-block boundary check).
+    #[test]
+    fn cancellable_interrupts_long_loop_midflight() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trip = cancel.clone();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            trip.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let blocks = crate::parse::parse_notebook("```rustlab\nwhile true; end;\n```\n");
+        let start = std::time::Instant::now();
+        let result = execute_notebook_cancellable(&blocks, cancel);
+        h.join().unwrap();
+        assert!(result.is_none(), "infinite loop should have been cancelled");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "took too long");
     }
 
     /// Mermaid blocks pass through to `Rendered::Mermaid` with no

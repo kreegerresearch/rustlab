@@ -48,6 +48,14 @@ pub enum ScriptError {
     /// Treated as a clean exit by the CLI (exit code 0, no error message).
     #[error("interrupted")]
     Interrupted,
+    /// Cooperative cancellation: an external coordinator set the
+    /// evaluator's cancel flag (e.g. the notebook watch server preempting
+    /// a slow render because a newer save arrived). Not a user error —
+    /// the caller discards the partial result. See
+    /// [`crate::Evaluator::with_cancel`]. Default-off, so the REPL and
+    /// one-shot CLI never see it.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl ScriptError {

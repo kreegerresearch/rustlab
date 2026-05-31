@@ -39,3 +39,20 @@ tempfile                 = "3"
 notify                   = { version = "8", default-features = false, features = ["macos_fsevent"] }
 mermaid-rs-renderer      = { version = "0.2", optional = true, default-features = false }
 blake3                   = { version = "1",   optional = true }
+
+# Interactive `notebook watch` server (see dev/plans/notebook_interactive_server.md).
+# Feature set deliberately trimmed per the trade-off doc: HTTP/1.1 only (loopback),
+# current-thread tokio runtime, no compression / CORS / auth (loopback server).
+axum                     = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
+tokio                    = { version = "1",   default-features = false, features = ["rt", "macros", "net", "io-util", "time", "sync", "signal"] }
+tower-http               = { version = "0.6", default-features = false, features = ["fs"] }
+
+[dev-dependencies]
+# `tower::util::ServiceExt::oneshot` is the idiomatic way to drive a
+# Router from a unit/integration test. axum brings tower transitively
+# but we have to depend on it directly to import from it.
+tower                    = { version = "0.5", default-features = false, features = ["util"] }
+# WS client used by the server integration test. Loopback ws://
+# only — no TLS feature needed.
+tokio-tungstenite        = { version = "0.29", default-features = false, features = ["connect", "handshake"] }
+futures-util             = { version = "0.3", default-features = false, features = ["sink"] }

@@ -178,11 +178,141 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 
 ### Live preview with `notebook watch`
 
-`rustlab-notebook watch <dir>` is the long-running counterpart of
-`render`: it re-renders any notebook whose source changes, debouncing
-filesystem events so a single editor save produces one render pass.
-Pair it with `--obsidian` for a "edit in Editing view, see updates in
-Reading view" loop with no manual rerun.
+`rustlab-notebook watch` has two modes:
+
+1. **Interactive server (bare-input default, single file).** Spins
+   up a local web server, renders the notebook to an HTML page,
+   opens your browser, and **live-reloads on save** via a
+   WebSocket push. Source `.md` is never modified.
+2. **Re-render on save (with `--obsidian` or `--output`).** The
+   long-running counterpart of `render`: re-renders any notebook
+   whose source changes, debouncing filesystem events so a single
+   editor save produces one render pass. Pair with `--obsidian` for
+   the "edit in Editing view, see updates in Reading view" Obsidian
+   loop.
+
+#### Interactive server (bare input)
+
+```
+rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042
+rustlab-notebook watch notebooks/                        # whole directory → index page at /
+rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
+rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
+rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
+```
+
+Behaviour:
+
+- **A single `.md` serves one notebook; a directory serves every
+  `.md` under it** (recursive, `README.md` skipped) behind a
+  generated index page at `/`. Each notebook lives at `/n/<slug>`
+  where `<slug>` is its URL-safe file stem (collisions get a `-N`
+  suffix). Passing a directory *with* `--obsidian`/`--output` still
+  selects the re-render-on-save mode instead.
+- **Loopback bind on `127.0.0.1:8042` by default.** If 8042 is busy
+  the server tries 8043, 8044, … up to 10 attempts and logs the
+  actual bound URL. An explicit `--port <N>` skips auto-increment
+  and fails loud on collision.
+- **Embedded KaTeX + Plotly.** The page references local `/assets/`
+  paths, not jsdelivr/cdn.plot.ly. Works fully offline (e.g. tablet
+  over an SSH tunnel on a plane).
+- **Source `.md` is never modified** (unless you opt into
+  `--editable`, the in-browser editor — see below). No
+  `_attachments/` directory, no `<!-- Generated -->` header, no
+  in-place rewrite.
+- **Browser auto-opens** when stderr is a TTY and `CI` is unset;
+  `--no-browser` forces off. On Linux/WSL the server tries
+  `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
+  then `gio open` / `sensible-browser`, falling back to printing the
+  URL if none are present.
+- **Source pane (split view).** A "Source" button in the top-right
+  toolbar slides in a pane showing the raw `.md` (served from
+  `/raw/<slug>`). The toolbar and pane live outside the rendered
+  `<main>`, so live re-renders update only the rendered side and
+  leave the pane in place; an open read-only pane refreshes itself
+  when a save lands. With `--editable` this pane becomes an
+  in-browser editor (see below).
+- **Ctrl-C** stops the server. Plot artefacts live in a tempdir
+  that's cleaned up on exit.
+- **Live reload on save** with block-level diffing. The rendered
+  page includes a tiny WebSocket client that connects back to
+  `/n/<slug>/ws` (one channel per notebook, so a save to one
+  notebook in directory mode only reloads that page). On every
+  save of the watched `.md`, the server
+  re-renders (debounced 250 ms) and chooses the smallest payload
+  that does the job:
+  - `{"kind":"partial","blocks":[{"position":N,"html":"…"}]}` —
+    same block count, only some blocks' rendered HTML changed
+    (typical for small prose edits or a single code-block change).
+    The page swaps the specific `<section class="rl-block">`
+    elements in-place, re-executes inline `<script>`s in the new
+    content (re-runs Plotly), re-invokes KaTeX on the affected
+    nodes, and **preserves scroll position**.
+  - `{"kind":"reconcile","blocks":[{"id":"b-…","html":"…"?}]}` —
+    a **structural** edit (blocks inserted, removed, or reordered)
+    on a flat notebook. Each entry is keyed by its content-hash
+    `id`; entries with no `html` are reused in place (the existing
+    DOM node — and its live Plotly/KaTeX state — is kept and moved
+    if needed), and only new/changed blocks carry `html`. Leftover
+    blocks are removed. Because untouched nodes keep their DOM
+    identity, **scroll position survives** inserts and removes too.
+  - `{"kind":"full","html":"…"}` — a structural edit on a notebook
+    that nests blocks inside exercise/solution wrappers (not safe
+    to reconcile), or any edit where >50% of blocks are new. The
+    page swaps the rendered `<main>` (not the whole body, so the
+    toolbar / source pane survive), re-executes its inline
+    `<script>`s, and re-renders KaTeX. Scroll position snaps to
+    top.
+
+  If the server stops, the page shows a red "disconnected" banner
+  and retries with exponential backoff 500 ms → 5 s capped at 10
+  attempts; on a successful reconnect it hard-reloads to pick up
+  any state it might have missed (unless the `--editable` editor
+  has unsaved changes, in which case it keeps the page and shows a
+  "reload to refresh" banner).
+- **Render preemption.** A save during a slow render *cancels* the
+  in-flight execution and starts fresh on the new source. The
+  evaluator polls a cancel flag between statements and loop
+  iterations, so even a runaway code block (`while true; end;`)
+  stops promptly on the next save instead of pinning a CPU core. A
+  preempted render never publishes — only the latest render's output
+  reaches the page. (The one exception is the **initial** render at
+  startup, which has nothing to preempt: an infinite-loop notebook
+  will hang startup until you fix the source — the same as
+  `notebook render`.)
+
+For implementation status, the agent-handoff section, and
+forward-looking design, see
+`dev/plans/notebook_interactive_server.md`.
+
+#### In-browser editor (`--editable`)
+
+```
+rustlab-notebook watch analysis.md --editable
+rustlab-notebook watch notebooks/  --editable     # whole directory, every page editable
+```
+
+`--editable` turns the source pane into a [CodeMirror](https://codemirror.net/5/)
+editor (Markdown mode, line numbers) that **writes back to the
+`.md`**:
+
+- Click **Edit** to open the pane, change the source, then **Save**
+  (or `Ctrl`/`Cmd`-S). The buffer is `POST`ed to `/save/<slug>`, the
+  server writes the file, and the normal fs-watch → re-render → WS
+  push updates the rendered side. The edit loop is exactly the same
+  one your external editor would trigger — the browser just happens to
+  be the editor.
+- The editor buffer is never clobbered by a re-render: live updates
+  swap only the rendered `<main>`, while the editor lives outside it.
+- This is the **one** interactive mode that modifies your source
+  (parallel to the "only `--obsidian` modifies" rule), so it is
+  strictly opt-in. Without `--editable` the pane is read-only and the
+  `/save/<slug>` route is not even mounted.
+- CodeMirror is embedded in the binary and served from
+  `/assets/codemirror/…` (works offline like KaTeX/Plotly), but only
+  referenced on the page under `--editable`.
+
+#### Re-render on save (--obsidian / --output)
 
 ```
 rustlab-notebook watch notebooks/ --obsidian                       # vault-friendly in-place rewrite
@@ -192,19 +322,10 @@ rustlab-notebook watch notebooks/ --obsidian --debounce-ms 500     # quieter edi
 ```
 
 **Watch never modifies your source `.md` without explicit consent.**
-Bare `rustlab-notebook watch notebooks/` (or a single file) falls
-back to a read-only `notebook check` pass and prints a warning
-naming the three flag combinations that actually render. The intent
-is that a user trying watch for the first time can never
-accidentally rewrite their authored markdown — they have to opt in
-by name (`--obsidian`) or by pointing `-o` somewhere (even at the
-source dir, if that's genuinely what they want).
-
-The fallback is interim. The next iteration replaces it with an
-**interactive local web server** — same bare command, but the page
-opens in your browser and re-renders on save without touching the
-source. See `dev/plans/notebook_interactive_server.md` for the
-design.
+The bare command (no `--obsidian`, no `--output`) hits the
+interactive-server path described above and never touches the file;
+the re-render-on-save modes below require you to name a destination
+by flag.
 
 Two layouts work:
 

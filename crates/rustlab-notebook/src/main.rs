@@ -88,21 +88,42 @@ enum Command {
             dark   Catppuccin Mocha — dark background, light text (default)\n  \
             light  Catppuccin Latte — light background, dark text"
     )]
-    /// Watch a directory of notebooks and re-render on save (markdown only)
+    /// Watch a notebook (interactive server) or directory (re-render on save)
     #[command(
-        long_about = "Watch a directory of notebooks and re-render whenever a source file changes.\n\n\
-            Pairs naturally with --obsidian: edit notes in Obsidian's Editing view,\n\
-            switch to Reading view, see updated plots and text within ~500 ms.\n\n\
+        long_about = "Watch a notebook source and react to saves.\n\n\
+            Two modes — picked by what you pass:\n\n  \
+            Interactive server (a .md file or a directory, no --obsidian/--output):\n    \
+            Spins up a local web server on http://127.0.0.1:8042 (auto-bumps\n    \
+            up to +10 if busy), opens your browser, and live-reloads the\n    \
+            page on every save via a WebSocket push. A single .md serves one\n    \
+            notebook; a directory serves every .md under it behind an index\n    \
+            page (one URL per notebook). KaTeX + Plotly assets are embedded\n    \
+            in the binary so the page works fully offline. Small edits ship\n    \
+            as block-level partial diffs and preserve scroll position;\n    \
+            structural edits fall back to a full refresh. Source .md is never\n    \
+            modified — unless you pass --editable (in-browser editor).\n\n  \
+            Re-render on save (directory + --obsidian or --output):\n    \
+            Long-running counterpart of `render`. Re-renders any notebook\n    \
+            whose source changes, debouncing fs events. Pairs with\n    \
+            --obsidian for an Obsidian Editing/Reading view loop.\n\n\
             Examples:\n  \
-            rustlab-notebook watch notebooks/                              # → re-render to notebooks/<name>.md on save\n  \
-            rustlab-notebook watch notebooks/ -o vault/ --obsidian         # vault-native output to a separate dir\n  \
+            rustlab-notebook watch analysis.md                             # interactive server (one notebook)\n  \
+            rustlab-notebook watch notebooks/                              # interactive server (whole directory + index)\n  \
+            rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
+            rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
+            rustlab-notebook watch analysis.md --editable                  # edit the .md in the browser (writes back)\n  \
+            rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
+            rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
-            Currently --format markdown only."
+            Re-render-on-save is markdown-only currently."
     )]
     Watch {
-        /// Directory of .md files to watch
+        /// Notebook .md file (interactive server mode) or directory of .md
+        /// files (with --obsidian / --output).
         input: PathBuf,
-        /// Output directory (default: same as input)
+        /// Output directory (default: same as input). Setting --output or
+        /// --obsidian switches off the interactive server and runs the
+        /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Color theme: dark (default), light
@@ -120,6 +141,21 @@ enum Command {
         /// Debounce window for filesystem events (default 250 ms)
         #[arg(long, value_name = "MS", default_value = "250")]
         debounce_ms: u64,
+        /// (interactive server mode only) Port to bind on 127.0.0.1.
+        /// Default 8042 with auto-increment up to +10 if busy; setting
+        /// --port explicitly disables auto-increment (fails loud on
+        /// collision).
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+        /// (interactive server mode only) Do not auto-open the browser.
+        #[arg(long)]
+        no_browser: bool,
+        /// (interactive server mode only) Enable the in-browser editor:
+        /// a split-pane CodeMirror editor whose saves write back to the
+        /// source .md. This is the one interactive path that modifies
+        /// source (parallels --obsidian), so it is strictly opt-in.
+        #[arg(long)]
+        editable: bool,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -374,12 +410,50 @@ fn main() {
             attachments_dir,
             no_iframe,
             debounce_ms,
+            port,
+            no_browser,
+            editable,
         } => {
             let theme = match theme {
                 CliTheme::Dark => Theme::Dark,
                 CliTheme::Light => Theme::Light,
             };
             let colors = theme.colors();
+
+            // Bare `watch <input>` (no --obsidian, no --output) spins up
+            // the interactive server: a single .md file serves one
+            // notebook; a directory serves every notebook under it behind
+            // an index page. Any other combination falls through to the
+            // existing two-dir / obsidian render loop.
+            // Per dev/plans/notebook_interactive_server.md locked-in #1.
+            if !obsidian && output.is_none() {
+                if !input.exists() {
+                    eprintln!("error: {} does not exist", input.display());
+                    std::process::exit(2);
+                }
+                if attachments_dir.is_some() || no_iframe {
+                    eprintln!(
+                        "warning: --attachments-dir / --no-iframe only apply with --obsidian; ignored"
+                    );
+                }
+                let opts = rustlab_notebook::server::ServerOpts {
+                    port,
+                    no_browser,
+                    editable,
+                };
+                if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
+                    eprintln!("rustlab-notebook watch: {e:#}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            if port.is_some() || no_browser || editable {
+                eprintln!(
+                    "warning: --port / --no-browser / --editable only apply to the bare-input interactive server; ignored",
+                );
+            }
+
             let obsidian_opts = if obsidian {
                 let mut opts = rustlab_notebook::ObsidianOpts::default();
                 if let Some(dir) = attachments_dir {

@@ -62,37 +62,13 @@ pub fn cmd_watch(
         std::process::exit(1);
     }
 
-    // When the user invokes `watch` without `--obsidian` and without
-    // `--output`, they haven't named a target format or destination
-    // — the only safe action is read-only. We fall back to a
-    // one-shot `cmd_check` lint pass against the input and surface a
-    // clear "no target specified" warning explaining the three
-    // legitimate forms.
-    //
-    // This is the interim behaviour. The plan in
-    // `dev/plans/notebook_interactive_server.md` describes the
-    // intended next step: spin up a local web server, render the
-    // notebook to an interactive page, and re-render on save. Until
-    // that's built, validate-and-warn is the least surprising
-    // default that's still useful.
-    let is_obsidian = matches!(&format, Format::Markdown { obsidian: Some(_) });
-    if output.is_none() && !is_obsidian {
-        eprintln!(
-            "notebook watch: no target format specified — running read-only validation.\n\
-             \n\
-             Three ways to make this an actual render:\n  \
-             rustlab-notebook watch {input} --obsidian              (vault-friendly in-place)\n  \
-             rustlab-notebook watch {input} --output <DIR>          (separate destination)\n  \
-             rustlab-notebook watch {input} --output {input}        (explicit in-place, non-vault)\n\
-             \n\
-             For now, running `notebook check` against the input — the source files\n\
-             will NOT be modified.\n",
-            input = dir.display(),
-        );
-        let outcome = crate::cmd_check(dir.clone(), /* fix = */ false, /* strict = */ false);
-        let code = outcome.exit_code(/* strict = */ false);
-        std::process::exit(code);
-    }
+    // Bare-input mode (no --obsidian, no --output) is dispatched in
+    // main.rs to crate::server::start instead of this function — see
+    // dev/plans/notebook_interactive_server.md Phase 1. By the time
+    // cmd_watch runs the user has explicitly picked a destination
+    // (--obsidian or --output), so we proceed with the two-dir /
+    // in-place / obsidian render flow below.
+    let _ = matches!(&format, Format::Markdown { obsidian: Some(_) });
 
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
     let out_dir = output

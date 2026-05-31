@@ -9,6 +9,7 @@ pub mod render;
 pub mod render_json;
 pub mod render_latex;
 pub mod render_markdown;
+pub mod server;
 pub mod validate;
 pub mod watch;
 
@@ -479,7 +480,7 @@ pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize 
 
 /// Recursively walk `dir`, collecting every `.md` file. Skips `README.md`
 /// to match the renderer's "project metadata, not a notebook" rule.
-fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
+pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
