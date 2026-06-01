@@ -141,16 +141,38 @@ fn build_state(
     let mut order: Vec<String> = Vec::new();
     let mut used: HashSet<String> = HashSet::new();
 
+    // Pass 1: assign each notebook its slug and title so the *complete*
+    // listing order is known before any render. Per-page prev/next nav
+    // needs the whole set, so it can't be built in a single render pass
+    // (the first notebook wouldn't yet know its successor).
+    let mut entries: Vec<(String, PathBuf, String)> = Vec::with_capacity(sources.len());
     for path in &sources {
         let slug = unique_slug(path, &mut used);
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
-        let html = render_for_server(path, theme, plot_tempdir.path(), &slug, editable)
+        entries.push((slug, path.clone(), title));
+    }
+
+    // (slug, title) in listing order — the input to per-page nav.
+    let listing: Vec<(String, String)> = entries
+        .iter()
+        .map(|(slug, _, title)| (slug.clone(), title.clone()))
+        .collect();
+
+    // Pass 2: render each notebook with its cross-notebook nav baked in.
+    for (idx, (slug, path, title)) in entries.iter().enumerate() {
+        let nav = server_nav(&listing, idx, !is_dir);
+        let html = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref())
             .with_context(|| format!("rendering {} for server", path.display()))?;
-        let nb = Arc::new(http::Notebook::new(slug.clone(), path.clone(), title, html));
+        let nb = Arc::new(http::Notebook::new(
+            slug.clone(),
+            path.clone(),
+            title.clone(),
+            html,
+        ));
         notebooks.insert(slug.clone(), nb);
-        order.push(slug);
+        order.push(slug.clone());
     }
 
     let index_title = if is_dir {
@@ -197,6 +219,32 @@ fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// Build the cross-notebook navigation for the page at `idx` within
+/// `listing` (`(slug, title)` pairs in listing order). Mirrors what
+/// `cmd_render_dir` emits for static directory builds, so served pages
+/// get the same `← Index / Title` breadcrumb and prev/next footer.
+///
+/// Returns `None` in single-file mode (no siblings, no index) — which
+/// keeps `render_html` on its sidebar layout, matching `cmd_render` for
+/// a lone file.
+///
+/// Hrefs are *server* paths, not the static filenames `cmd_render_dir`
+/// uses: the index lives at `/` and each notebook at `/n/{slug}`.
+fn server_nav(listing: &[(String, String)], idx: usize, single: bool) -> Option<crate::NotebookNav> {
+    if single {
+        return None;
+    }
+    let link = |i: usize| {
+        let (slug, title) = &listing[i];
+        (title.clone(), format!("/n/{slug}"))
+    };
+    Some(crate::NotebookNav {
+        index_href: Some("/".to_string()),
+        prev: (idx > 0).then(|| link(idx - 1)),
+        next: (idx + 1 < listing.len()).then(|| link(idx + 1)),
+    })
+}
+
 /// Re-implementation of the render pipeline in `lib::cmd_render` minus
 /// the disk-output step: read input → strip artefacts → expand embeds
 /// → parse → execute → render to HTML → swap CDN URLs to local
@@ -216,11 +264,14 @@ pub(super) fn render_for_server(
     plot_root: &Path,
     slug: &str,
     editable: bool,
+    nav: Option<&crate::NotebookNav>,
 ) -> Result<String> {
     // A never-tripped flag → the cancellable path can't return `None`.
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    Ok(render_for_server_cancellable(input, theme, plot_root, slug, editable, never)?
-        .expect("render with a never-set cancel flag cannot be cancelled"))
+    Ok(
+        render_for_server_cancellable(input, theme, plot_root, slug, editable, nav, never)?
+            .expect("render with a never-set cancel flag cannot be cancelled"),
+    )
 }
 
 /// Cancellable form of [`render_for_server`]. Returns `Ok(None)` when
@@ -233,19 +284,38 @@ pub(super) fn render_for_server_cancellable(
     plot_root: &Path,
     slug: &str,
     editable: bool,
+    nav: Option<&crate::NotebookNav>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Option<String>> {
     use crate::{embed, execute, parse, render};
+
+    // Match `cmd_render`/`cmd_render_cached`: change the process cwd to the
+    // notebook's parent directory for the duration of execution so the
+    // script evaluator resolves `run`/`load` relative paths against the
+    // notebook's own directory, not wherever the server was launched. The
+    // guard serialises with the disk-render lock and restores cwd on drop
+    // (including the early `return Ok(None)` preempt path below). It must be
+    // acquired before the chdir but after `input` is read, since `input` may
+    // be relative to the original cwd.
+    let _cwd_guard = crate::CwdGuard::new();
 
     let source = std::fs::read_to_string(input)
         .with_context(|| format!("reading {}", input.display()))?;
     let source = crate::strip_render_artifacts(&source);
 
+    // Canonicalize the host directory before the chdir so the embed expander
+    // resolves siblings against the correct absolute location.
     let host_dir = input
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    if let Some(dir) = input.parent() {
+        if !dir.as_os_str().is_empty() {
+            let _ = std::env::set_current_dir(dir);
+        }
+    }
 
     let title = crate::extract_title(&source, &input.to_path_buf());
     let expanded = embed::expand_embeds(&source, &host_dir, &host_dir);
@@ -257,7 +327,7 @@ pub(super) fn render_for_server_cancellable(
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
-    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, None);
+    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, nav);
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
     let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
@@ -414,6 +484,23 @@ mod tests {
     use rustlab_plot::Theme;
     use tower::util::ServiceExt;
 
+    /// GET `uri` against `app`, assert 200, return the body as a string.
+    async fn get_body(app: &axum::Router, uri: &str) -> String {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK, "GET {uri}");
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
     #[test]
     fn default_opts_are_sensible() {
         let o = ServerOpts::default();
@@ -430,6 +517,76 @@ mod tests {
         let b = unique_slug(Path::new("/y/intro.md"), &mut used);
         assert_eq!(a, "intro");
         assert_eq!(b, "intro-2");
+    }
+
+    #[test]
+    fn server_nav_links_neighbours_and_index() {
+        let listing = vec![
+            ("a".to_string(), "Alpha".to_string()),
+            ("b".to_string(), "Beta".to_string()),
+            ("c".to_string(), "Gamma".to_string()),
+        ];
+        // Middle page: prev + next + index, all as server URLs.
+        let mid = server_nav(&listing, 1, false).unwrap();
+        assert_eq!(mid.index_href.as_deref(), Some("/"));
+        assert_eq!(mid.prev, Some(("Alpha".to_string(), "/n/a".to_string())));
+        assert_eq!(mid.next, Some(("Gamma".to_string(), "/n/c".to_string())));
+        // First page: no prev.
+        let first = server_nav(&listing, 0, false).unwrap();
+        assert!(first.prev.is_none());
+        assert_eq!(first.next, Some(("Beta".to_string(), "/n/b".to_string())));
+        // Last page: no next.
+        let last = server_nav(&listing, 2, false).unwrap();
+        assert!(last.next.is_none());
+        assert_eq!(last.prev, Some(("Beta".to_string(), "/n/b".to_string())));
+        // Single-file mode: no nav at all (keeps the sidebar layout).
+        assert!(server_nav(&listing, 0, true).is_none());
+    }
+
+    #[tokio::test]
+    async fn directory_mode_pages_carry_breadcrumb_and_prevnext() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        // Filenames sort alpha < beta < gamma, which is the listing order.
+        std::fs::write(dir.path().join("alpha.md"), "# Alpha\n\nfirst.\n").unwrap();
+        std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
+        std::fs::write(dir.path().join("gamma.md"), "# Gamma\n\nthird.\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let app = http::router(state);
+
+        // Middle page: breadcrumb topbar + footer prev/next to neighbours.
+        let beta = get_body(&app, "/n/beta").await;
+        assert!(beta.contains("class=\"topbar-layout\""), "beta missing topbar layout");
+        assert!(beta.contains("class=\"topbar\""), "beta missing breadcrumb topbar");
+        assert!(beta.contains("href=\"/\""), "beta breadcrumb missing index link");
+        assert!(beta.contains("class=\"page-nav\""), "beta missing footer nav");
+        assert!(beta.contains("href=\"/n/alpha\""), "beta missing prev link");
+        assert!(beta.contains("href=\"/n/gamma\""), "beta missing next link");
+        // The source/edit toolbar still coexists with the new nav.
+        assert!(beta.contains("rl-toolbar"), "beta lost the source toolbar");
+
+        // First page has a next but no prev (nothing precedes alpha).
+        let alpha = get_body(&app, "/n/alpha").await;
+        assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
+        assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+    }
+
+    #[tokio::test]
+    async fn single_file_mode_has_no_cross_notebook_nav() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let nb = dir.path().join("solo.md");
+        std::fs::write(&nb, "# Solo\n\nonly one.\n").unwrap();
+        let canon = std::fs::canonicalize(&nb).unwrap();
+        let state = build_state(&canon, false, theme, false).unwrap();
+        assert!(state.single, "single-file mode");
+        let slug = state.order[0].clone();
+        let app = http::router(state);
+
+        let page = get_body(&app, &format!("/n/{slug}")).await;
+        assert!(!page.contains("class=\"topbar\""), "single file should have no topbar");
+        assert!(!page.contains("class=\"page-nav\""), "single file should have no footer nav");
     }
 
     #[tokio::test]

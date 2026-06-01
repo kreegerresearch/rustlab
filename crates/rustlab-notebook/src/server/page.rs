@@ -69,6 +69,9 @@ fn chrome_style(c: &ThemeColors) -> String {
     position: fixed; top: 10px; right: 14px; z-index: 100000;
     display: flex; gap: 6px; align-items: center;
   }}
+  /* Directory-mode pages carry a sticky breadcrumb topbar; reserve room
+     on its right so the title doesn't slide under the fixed toolbar. */
+  body.topbar-layout .topbar {{ padding-right: 9rem; }}
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};
