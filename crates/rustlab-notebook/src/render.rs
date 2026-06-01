@@ -326,8 +326,8 @@ pub fn render_html(
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
   onload="renderMathInElement(document.body, {{
     delimiters: [
-      {{left: '$$', right: '$$', display: true}},
-      {{left: '$', right: '$', display: false}}
+      {{left: '\\[', right: '\\]', display: true}},
+      {{left: '\\(', right: '\\)', display: false}}
     ]
   }});"></script>
 <style>
@@ -1397,14 +1397,37 @@ fn protect_math(md: &str) -> (String, Vec<String>) {
     (out, stash)
 }
 
-/// Restore math placeholders in rendered HTML.
+/// Convert a stashed math span from its authored `$…$` / `$$…$$` form to
+/// the `\(…\)` / `\[…\]` delimiters the client-side KaTeX auto-render is
+/// configured to recognize. Keeping bare `$` *out* of the emitted HTML is
+/// what stops prose dollar amounts (e.g. "$260 … $65") from being
+/// re-parsed as inline math in the browser: the server already decides
+/// what is and isn't math (see [`protect_math`]), so the client must not
+/// second-guess it with a naive `$…$` scan.
+///
+/// `$$` is matched before `$` so display spans aren't mis-split. Anything
+/// that doesn't look delimited is returned unchanged (defensive — every
+/// real stash entry carries its delimiters).
+fn to_katex_delimiters(original: &str) -> String {
+    if original.len() >= 4 && original.starts_with("$$") && original.ends_with("$$") {
+        format!("\\[{}\\]", &original[2..original.len() - 2])
+    } else if original.len() >= 2 && original.starts_with('$') && original.ends_with('$') {
+        format!("\\({}\\)", &original[1..original.len() - 1])
+    } else {
+        original.to_string()
+    }
+}
+
+/// Restore math placeholders in rendered HTML, rewriting each span's
+/// delimiters to the currency-safe `\(…\)` / `\[…\]` form (see
+/// [`to_katex_delimiters`]).
 fn restore_math(html: &str, stash: &[String]) -> String {
     if stash.is_empty() {
         return html.to_string();
     }
     let mut out = html.to_string();
     for (idx, original) in stash.iter().enumerate() {
-        out = out.replace(&math_placeholder(idx), original);
+        out = out.replace(&math_placeholder(idx), &to_katex_delimiters(original));
     }
     out
 }
@@ -2129,11 +2152,47 @@ mod tests {
     }
 
     #[test]
-    fn restore_math_round_trip() {
+    fn restore_math_rewrites_display_delimiters() {
+        // `$$…$$` round-trips through the placeholder back to math, but with
+        // the delimiters rewritten to `\[…\]` (currency-safe client form).
+        // The inner content — including the `\\` row separator — is verbatim.
         let src = r"$$a \\ b$$";
         let (rewritten, stash) = protect_math(src);
         let restored = restore_math(&rewritten, &stash);
+        assert_eq!(restored, r"\[a \\ b\]");
+    }
+
+    #[test]
+    fn restore_math_rewrites_inline_delimiters() {
+        let src = r"see $x^2$ here";
+        let (rewritten, stash) = protect_math(src);
+        let restored = restore_math(&rewritten, &stash);
+        assert_eq!(restored, r"see \(x^2\) here");
+        assert!(!restored.contains('$'), "no bare $ may survive into HTML");
+    }
+
+    #[test]
+    fn restore_math_leaves_currency_prose_untouched() {
+        // protect_math doesn't treat unpaired/price `$` as math, so it never
+        // reaches the stash; the prose passes through with literal `$` and no
+        // `\(`/`\[` delimiters — the browser's auto-render (which only knows
+        // `\(`/`\[`) will leave it alone. This is the currency-katex bug fix.
+        let src = "Safe harbor target: $260,876 for the year ($65,219 / quarter).";
+        let (rewritten, stash) = protect_math(src);
+        assert!(stash.is_empty(), "currency must not be stashed as math");
+        let restored = restore_math(&rewritten, &stash);
         assert_eq!(restored, src);
+        assert!(!restored.contains(r"\("), "no inline math delimiter injected");
+    }
+
+    #[test]
+    fn to_katex_delimiters_handles_both_forms() {
+        assert_eq!(to_katex_delimiters("$x$"), r"\(x\)");
+        assert_eq!(to_katex_delimiters("$$x$$"), r"\[x\]");
+        // Degenerate empty display span.
+        assert_eq!(to_katex_delimiters("$$$$"), r"\[\]");
+        // Not delimited → unchanged.
+        assert_eq!(to_katex_delimiters("plain"), "plain");
     }
 
     #[test]
@@ -2214,7 +2273,7 @@ mod tests {
         let src = "before $$$$ after";
         let (rewritten, stash) = protect_math(src);
         let restored = restore_math(&rewritten, &stash);
-        assert_eq!(restored, src);
+        assert_eq!(restored, r"before \[\] after");
     }
 
     // ── Cross-notebook navigation (Option B) ──
