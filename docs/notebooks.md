@@ -209,6 +209,17 @@ Behaviour:
   where `<slug>` is its URL-safe file stem (collisions get a `-N`
   suffix). Passing a directory *with* `--obsidian`/`--output` still
   selects the re-render-on-save mode instead.
+- **Directory pages get the same navigation as `render`.** In
+  directory mode each served page drops the sidebar for a sticky
+  `← Index / <Page Title>` breadcrumb and a `Previous · Index · Next`
+  footer wired to the adjacent notebooks (the index lives at `/`,
+  siblings at `/n/<slug>`). A single-file `watch` keeps the classic
+  sidebar + TOC layout — there's no sibling set to navigate. (See
+  [Page navigation](#page-navigation).)
+- **Relative `run`/`load` paths resolve against the notebook's own
+  directory**, not wherever you launched the server — so
+  `run setup.rlab` finds the sibling next to the notebook, matching
+  `render`.
 - **Loopback bind on `127.0.0.1:8042` by default.** If 8042 is busy
   the server tries 8043, 8044, … up to 10 attempts and logs the
   actual bound URL. An explicit `--port <N>` skips auto-increment

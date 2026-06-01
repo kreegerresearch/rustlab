@@ -221,8 +221,29 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
         let editable = state.editable;
         let cancel = my_cancel.clone();
 
+        // Recompute this page's cross-notebook nav from the current
+        // listing so the re-rendered HTML keeps its breadcrumb and
+        // prev/next footer (build_state seeds the same nav at startup).
+        let listing: Vec<(String, String)> = state
+            .order
+            .iter()
+            .filter_map(|s| state.notebooks.get(s).map(|n| (s.clone(), n.title.clone())))
+            .collect();
+        let nav = listing
+            .iter()
+            .position(|(s, _)| *s == slug)
+            .and_then(|idx| super::server_nav(&listing, idx, state.single));
+
         let render_result = tokio::task::spawn_blocking(move || {
-            super::render_for_server_cancellable(&input, theme, &plot_root, &slug, editable, cancel)
+            super::render_for_server_cancellable(
+                &input,
+                theme,
+                &plot_root,
+                &slug,
+                editable,
+                nav.as_ref(),
+                cancel,
+            )
         })
         .await;
 
@@ -384,7 +405,7 @@ mod tests {
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false).unwrap();
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None).unwrap();
         let (state, nb) = single_state(&nb_path, html0);
 
         let mut sub = nb.broadcast.subscribe();
@@ -425,7 +446,7 @@ mod tests {
         std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false).unwrap();
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None).unwrap();
         let (state, nb) = single_state(&nb_path, html0);
 
         // Now make the source a runaway and kick off a render; it spins on
