@@ -530,6 +530,12 @@ $$H(z) = \sum_{k=0}^{N-1} h[k]\,z^{-k}$$
 In HTML output, formulas are rendered client-side by KaTeX. In LaTeX/PDF
 output, they pass through as native LaTeX.
 
+Dollar amounts in prose are safe — write them normally (`$260,876 for the
+year ($65,219 / quarter)`). The renderer decides what is math while parsing
+your source, then emits the actual math with `\(…\)` / `\[…\]` delimiters;
+the in-browser KaTeX pass only ever looks for those, so it never re-pairs
+stray `$` signs in prose. No `\$` escaping is needed in HTML output.
+
 ### Tables
 
 Markdown tables render as styled HTML tables or LaTeX `tabular` with

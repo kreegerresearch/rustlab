@@ -176,8 +176,8 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (window.renderMathInElement) {
       window.renderMathInElement(root, {
         delimiters: [
-          {left: '$$', right: '$$', display: true},
-          {left: '$',  right: '$',  display: false}
+          {left: '\\[', right: '\\]', display: true},
+          {left: '\\(', right: '\\)', display: false}
         ]
       });
     }
