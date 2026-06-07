@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use rustlab_notebook::server::{
     http::{router, Notebook, ServerState},
     render_loop,
@@ -42,6 +42,7 @@ fn single_state(
         single: true,
         theme: Theme::Dark.colors(),
         index_title: slug.to_string(),
+        render_tx: std::sync::OnceLock::new(),
     })
 }
 
@@ -381,6 +382,198 @@ async fn ws_receives_reconcile_envelope_when_blocks_are_inserted() {
     );
     // Every entry carries a stable id.
     assert!(blocks.iter().all(|b| b["id"].as_str().is_some_and(|s| s.starts_with("b-"))));
+
+    drop(ws);
+    server.abort();
+}
+
+/// Source for the widget round-trip test: one slider plus a code block
+/// that multiplies its value, so a `widget_update` produces observably
+/// different output.
+const WIDGET_NB: &str = "\
+# Widget WS
+
+```rustlab-widget
+name = \"gain\"
+type = \"slider\"
+min = 0
+max = 10
+step = 1
+default = 2
+```
+
+```rustlab
+disp(widget(\"gain\") * 100)
+```
+";
+
+/// Interactive widgets (Phase 1): a client-sent
+/// `{"kind":"widget_update",…}` updates the live value and the server
+/// pushes back a re-render reflecting it — in both the control and the
+/// dependent code output. Unlike the file-save tests this drives the
+/// coordinator through the render-request channel, so it needs only a
+/// bound socket (no filesystem-watch event).
+#[tokio::test(flavor = "current_thread")]
+async fn ws_widget_update_triggers_rerender_with_new_value() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    // Fixture.
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("widget.md");
+    std::fs::write(&nb_path, WIDGET_NB).unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Initial render at defaults (gain = 2 → 200), mirroring server::start.
+    let plot_dir = TempDir::new().unwrap();
+    let initial_html = {
+        let source = std::fs::read_to_string(&nb_path).unwrap();
+        let source = rustlab_notebook::strip_render_artifacts(&source);
+        let title = rustlab_notebook::extract_title(&source, &nb_path);
+        let blocks = rustlab_notebook::parse::parse_notebook(&source);
+        let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
+        let html = rustlab_notebook::render::render_html(
+            &title,
+            &rendered,
+            plot_dir.path(),
+            "/plots",
+            theme,
+            None,
+        );
+        let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
+        rustlab_notebook::server::ws::inject_ws_client(&html)
+    };
+    assert!(initial_html.contains("200"), "fixture: default output should be 200");
+    let state = single_state("widget", &nb_path, initial_html, plot_dir);
+
+    // Bind, spawn coordinator (publishes the render-request channel), serve.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/widget/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    // Drag the slider to 7 → expect 7 * 100 = 700 on the re-render.
+    ws.send(Message::Text(
+        r#"{"kind":"widget_update","name":"gain","value":7}"#.into(),
+    ))
+    .await
+    .expect("ws send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("widget re-render did not arrive in time")
+        .expect("ws stream closed")
+        .expect("ws read error");
+    let payload = match msg {
+        Message::Text(s) => s.to_string(),
+        other => panic!("expected text frame, got {other:?}"),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    // Phase 1: a widget change re-runs the whole notebook → full envelope.
+    assert_eq!(parsed["kind"], "full", "expected full envelope; got {parsed}");
+    let html = parsed["html"].as_str().expect("html field missing");
+    assert!(html.contains("700"), "output didn't follow the slider:\n{html}");
+    assert!(
+        html.contains("value=\"7\""),
+        "slider control not re-rendered at the new value"
+    );
+
+    drop(ws);
+    server.abort();
+}
+
+
+/// Source for the option round-trip test: one option widget plus a code
+/// block that echoes its string value.
+const OPTION_NB: &str = "\
+# Option WS
+
+```rustlab-widget
+name = \"window\"
+type = \"option\"
+choices = [\"hamming\", \"hann\", \"blackman\"]
+default = \"hamming\"
+```
+
+```rustlab
+disp(widget(\"window\"))
+```
+";
+
+/// Phase 2: a string-valued `widget_update` for an `option` widget round
+/// trips — the server validates the choice, re-renders, and the new value
+/// shows in both the radio selection and the code output.
+#[tokio::test(flavor = "current_thread")]
+async fn ws_option_update_selects_choice_and_drives_output() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("opt.md");
+    std::fs::write(&nb_path, OPTION_NB).unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    let plot_dir = TempDir::new().unwrap();
+    let initial_html = {
+        let source = std::fs::read_to_string(&nb_path).unwrap();
+        let source = rustlab_notebook::strip_render_artifacts(&source);
+        let title = rustlab_notebook::extract_title(&source, &nb_path);
+        let blocks = rustlab_notebook::parse::parse_notebook(&source);
+        let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
+        let html = rustlab_notebook::render::render_html(
+            &title, &rendered, plot_dir.path(), "/plots", theme, None,
+        );
+        let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
+        rustlab_notebook::server::ws::inject_ws_client(&html)
+    };
+    let state = single_state("opt", &nb_path, initial_html, plot_dir);
+    // Seed the widget declarations the WS handler validates against
+    // (server::start does this from render_for_server; the test mirrors it).
+    {
+        let blocks = rustlab_notebook::parse::parse_notebook(OPTION_NB);
+        let decls: Vec<_> = blocks
+            .into_iter()
+            .filter_map(|b| match b {
+                rustlab_notebook::parse::Block::Widget { decl, .. } => Some(decl),
+                _ => None,
+            })
+            .collect();
+        *state.notebook("opt").unwrap().widget_decls.lock().unwrap() = decls;
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/opt/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    ws.send(Message::Text(
+        r#"{"kind":"widget_update","name":"window","value":"blackman"}"#.into(),
+    ))
+    .await
+    .expect("ws send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("widget re-render did not arrive in time")
+        .expect("ws stream closed")
+        .expect("ws read error");
+    let payload = match msg {
+        Message::Text(s) => s.to_string(),
+        other => panic!("expected text frame, got {other:?}"),
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    assert_eq!(parsed["kind"], "full", "expected full envelope; got {parsed}");
+    let html = parsed["html"].as_str().expect("html field missing");
+    assert!(html.contains("value=\"blackman\" checked"), "choice not selected:\n{html}");
+    assert!(html.contains("blackman"), "output didn't follow the choice");
 
     drop(ws);
     server.abort();

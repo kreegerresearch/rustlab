@@ -163,14 +163,17 @@ fn build_state(
     // Pass 2: render each notebook with its cross-notebook nav baked in.
     for (idx, (slug, path, title)) in entries.iter().enumerate() {
         let nav = server_nav(&listing, idx, !is_dir);
-        let html = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref())
+        let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref())
             .with_context(|| format!("rendering {} for server", path.display()))?;
         let nb = Arc::new(http::Notebook::new(
             slug.clone(),
             path.clone(),
             title.clone(),
-            html,
+            render.html,
         ));
+        // Seed widget declarations so the WS handler can validate updates
+        // before the first re-render refreshes them.
+        *nb.widget_decls.lock().unwrap() = render.widget_decls;
         notebooks.insert(slug.clone(), nb);
         order.push(slug.clone());
     }
@@ -195,6 +198,7 @@ fn build_state(
         single: !is_dir,
         theme,
         index_title,
+        render_tx: std::sync::OnceLock::new(),
     }))
 }
 
@@ -258,6 +262,14 @@ fn server_nav(listing: &[(String, String)], idx: usize, single: bool) -> Option<
 /// `plot_root` is the shared tempdir; plot artefacts for this notebook
 /// land in `plot_root/<slug>/` and are served at `/plots/<slug>/…`, so
 /// directory mode keeps each notebook's plots separate.
+/// Result of a server render: the HTML plus the widget declarations found
+/// in the notebook (so the caller can seed/refresh `Notebook::widget_decls`
+/// for WS validation).
+pub(super) struct ServerRender {
+    pub html: String,
+    pub widget_decls: Vec<crate::widget::WidgetDecl>,
+}
+
 pub(super) fn render_for_server(
     input: &Path,
     theme: &'static ThemeColors,
@@ -265,12 +277,14 @@ pub(super) fn render_for_server(
     slug: &str,
     editable: bool,
     nav: Option<&crate::NotebookNav>,
-) -> Result<String> {
+) -> Result<ServerRender> {
     // A never-tripped flag → the cancellable path can't return `None`.
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
     Ok(
-        render_for_server_cancellable(input, theme, plot_root, slug, editable, nav, never)?
-            .expect("render with a never-set cancel flag cannot be cancelled"),
+        render_for_server_cancellable(
+            input, theme, plot_root, slug, editable, nav, never, None, None,
+        )?
+        .expect("render with a never-set cancel flag cannot be cancelled"),
     )
 }
 
@@ -286,7 +300,9 @@ pub(super) fn render_for_server_cancellable(
     editable: bool,
     nav: Option<&crate::NotebookNav>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<Option<String>> {
+    widget_overrides: Option<&std::collections::BTreeMap<String, rustlab_script::WidgetValue>>,
+    cache: Option<&mut crate::cache::NotebookCache>,
+) -> Result<Option<ServerRender>> {
     use crate::{embed, execute, parse, render};
 
     // Match `cmd_render`/`cmd_render_cached`: change the process cwd to the
@@ -320,9 +336,28 @@ pub(super) fn render_for_server_cancellable(
     let title = crate::extract_title(&source, &input.to_path_buf());
     let expanded = embed::expand_embeds(&source, &host_dir, &host_dir);
     let blocks = parse::parse_notebook(&expanded);
-    let rendered = match execute::execute_notebook_cancellable(&blocks, cancel) {
-        Some(r) => r,
-        None => return Ok(None), // preempted
+    // Widget declarations for WS validation + carry-over reconciliation.
+    let widget_decls: Vec<crate::widget::WidgetDecl> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            parse::Block::Widget { decl, .. } => Some(decl.clone()),
+            _ => None,
+        })
+        .collect();
+    // With a cache, use the scoped path (reuses unchanged blocks); without,
+    // fall back to a cache-free cancellable run. Both return `None` on
+    // preemption.
+    let rendered = match cache {
+        Some(cache) => {
+            match execute::execute_notebook_scoped(&blocks, cache, cancel, widget_overrides) {
+                Some(outcome) => outcome.rendered,
+                None => return Ok(None), // preempted
+            }
+        }
+        None => match execute::execute_notebook_cancellable(&blocks, cancel, widget_overrides) {
+            Some(r) => r,
+            None => return Ok(None), // preempted
+        },
     };
 
     let plot_dir = plot_root.join(slug);
@@ -331,7 +366,7 @@ pub(super) fn render_for_server_cancellable(
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
     let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
-    Ok(Some(html))
+    Ok(Some(ServerRender { html, widget_decls }))
 }
 
 /// Bind 127.0.0.1 on either the explicit user port (fail loud) or

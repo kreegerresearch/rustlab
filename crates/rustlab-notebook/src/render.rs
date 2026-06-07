@@ -1,6 +1,8 @@
 use crate::execute::Rendered;
 use crate::parse::CalloutKind;
+use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
+use rustlab_script::WidgetValue;
 use pulldown_cmark::{html::push_html, Options, Parser};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
@@ -221,6 +223,11 @@ pub fn render_html(
                 if details.is_some() {
                     body.push_str("</details>\n");
                 }
+                finalize_block(&mut body, mark, &mut block_id_counter);
+            }
+            Rendered::Widget { decl, value } => {
+                let mark = body.len();
+                body.push_str(&render_widget_html(decl, value));
                 finalize_block(&mut body, mark, &mut block_id_counter);
             }
             Rendered::Callout {
@@ -642,6 +649,51 @@ pub fn render_html(
     background: {bg_secondary};
   }}
   .callout-caution .callout-title {{ color: {error_text}; }}
+  /* ── Interactive widgets ── */
+  .rl-widget {{
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid {border};
+    border-radius: 6px;
+    background: {bg_secondary};
+  }}
+  .rl-widget-label {{
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }}
+  .rl-widget-input {{
+    flex: 1;
+    accent-color: {accent_primary};
+  }}
+  .rl-widget-value {{
+    font-variant-numeric: tabular-nums;
+    min-width: 4ch;
+    text-align: right;
+    color: {accent_primary};
+  }}
+  .rl-widget-options {{
+    flex-wrap: wrap;
+  }}
+  .rl-widget-choice {{
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }}
+  .rl-widget input[type="number"] {{
+    flex: 0 0 auto;
+    width: 7rem;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid {border};
+    border-radius: 4px;
+    background: {bg};
+    color: {text};
+  }}
   /* ── Exercise / solution blocks ── */
   .exercise {{
     border: 1px solid {border};
@@ -1555,6 +1607,69 @@ fn find_inline_close(s: &[u8], start: usize) -> Option<usize> {
 ///
 /// Looks at the bytes pushed to `body` since `mark`, treats them
 /// as the rendered chunk for one block, wraps them in
+/// Render a `rustlab-widget` declaration as an interactive HTML control.
+/// The page's WS client (`server/ws.rs`) delegates `input` events on
+/// `.rl-widget` controls to a `{"kind":"widget_update",…}` message; the
+/// server re-renders and pushes the result back. The `value`/`<output>`
+/// reflect the control's current value so a full re-render is consistent.
+fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
+    let name_attr = escape_html(&decl.name);
+    let id = format!("rlw-{}", escape_html(&decl.name));
+    let label = escape_html(decl.label.as_deref().unwrap_or(&decl.name));
+    match &decl.kind {
+        WidgetKind::Slider {
+            min,
+            max,
+            step,
+            default,
+        } => {
+            let cur = value.as_number().unwrap_or(*default);
+            let step_attr = step.map(|s| format!(" step=\"{s}\"")).unwrap_or_default();
+            format!(
+                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"slider\">\n\
+                 <label class=\"rl-widget-label\" for=\"{id}\">{label}</label>\n\
+                 <input class=\"rl-widget-input\" type=\"range\" id=\"{id}\" name=\"{name_attr}\" min=\"{min}\" max=\"{max}\"{step_attr} value=\"{cur}\">\n\
+                 <output class=\"rl-widget-value\" for=\"{id}\">{cur}</output>\n\
+                 </form>\n"
+            )
+        }
+        WidgetKind::Number {
+            min,
+            max,
+            step,
+            default,
+        } => {
+            let cur = value.as_number().unwrap_or(*default);
+            let min_attr = min.map(|m| format!(" min=\"{m}\"")).unwrap_or_default();
+            let max_attr = max.map(|m| format!(" max=\"{m}\"")).unwrap_or_default();
+            let step_attr = step.map(|s| format!(" step=\"{s}\"")).unwrap_or_default();
+            format!(
+                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"number\">\n\
+                 <label class=\"rl-widget-label\" for=\"{id}\">{label}</label>\n\
+                 <input class=\"rl-widget-input\" type=\"number\" id=\"{id}\" name=\"{name_attr}\"{min_attr}{max_attr}{step_attr} value=\"{cur}\">\n\
+                 </form>\n"
+            )
+        }
+        WidgetKind::Option { choices, default } => {
+            let cur = value.as_text().unwrap_or_else(|| default.clone());
+            let mut radios = String::new();
+            for (i, choice) in choices.iter().enumerate() {
+                let choice_attr = escape_html(choice);
+                let rid = format!("{id}-{i}");
+                let checked = if choice == &cur { " checked" } else { "" };
+                radios.push_str(&format!(
+                    "<label class=\"rl-widget-choice\"><input class=\"rl-widget-input\" type=\"radio\" id=\"{rid}\" name=\"{name_attr}\" value=\"{choice_attr}\"{checked}> {choice_attr}</label>\n"
+                ));
+            }
+            format!(
+                "<form class=\"rl-widget rl-widget-options\" data-widget-name=\"{name_attr}\" data-widget-type=\"option\">\n\
+                 <span class=\"rl-widget-label\">{label}</span>\n\
+                 {radios}</form>\n"
+            )
+        }
+    }
+}
+
 /// `<section class="rl-block" id="b-<hash>">…</section>`, and
 /// replaces the chunk in `body`. ID is the low 32 bits of the
 /// chunk's `DefaultHasher` digest rendered as 8 hex chars; if

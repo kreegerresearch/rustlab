@@ -131,6 +131,19 @@ pub fn render_latex(
                     caption.as_deref(),
                 );
             }
+            Rendered::Widget { decl, value } => {
+                // Static export: render the widget's label and current value.
+                let label = decl.label.as_deref().unwrap_or(&decl.name);
+                let val = match value {
+                    rustlab_script::WidgetValue::Number(n) => format!("{n}"),
+                    rustlab_script::WidgetValue::Text(s) => s.clone(),
+                };
+                body.push_str(&format!(
+                    "\\textbf{{{}:}} \\texttt{{{}}}\n\n",
+                    escape_latex(label),
+                    escape_latex(&val),
+                ));
+            }
             Rendered::Callout {
                 kind,
                 title,

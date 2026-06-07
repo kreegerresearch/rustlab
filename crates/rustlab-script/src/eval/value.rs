@@ -114,6 +114,34 @@ pub struct WaterfallStreamState {
     pub labels_set: bool,
 }
 
+/// The current value of a notebook widget, read by the `widget(name)`
+/// builtin. Populated out-of-band by the notebook executor before each
+/// render (see `dev/plans/notebook_interactive_widgets.md`). `Number`
+/// backs `slider` / `number` widgets, `Text` backs `option`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WidgetValue {
+    Number(f64),
+    Text(String),
+}
+
+impl WidgetValue {
+    /// The numeric payload, or `None` for a `Text` value.
+    pub fn as_number(&self) -> Option<f64> {
+        match self {
+            WidgetValue::Number(n) => Some(*n),
+            WidgetValue::Text(_) => None,
+        }
+    }
+
+    /// The string payload, or `None` for a `Number` value.
+    pub fn as_text(&self) -> Option<String> {
+        match self {
+            WidgetValue::Text(s) => Some(s.clone()),
+            WidgetValue::Number(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Scalar(f64),

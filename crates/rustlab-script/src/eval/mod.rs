@@ -17,12 +17,13 @@ use ndarray::{Array1, Array2};
 use num_complex::Complex;
 pub use profile::FnStats;
 use rustlab_core::C64;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use value::NumberFormat;
 pub use value::Value;
+pub use value::WidgetValue;
 
 #[derive(Clone)]
 struct UserFn {
@@ -66,6 +67,23 @@ pub struct Evaluator {
     /// unaffected; only the notebook watch server's preemptible renders
     /// install a flag (via [`Evaluator::with_cancel`]).
     cancel: Option<Arc<AtomicBool>>,
+    /// Current notebook widget values, read by the `widget(name)` builtin.
+    /// `None` outside a notebook (REPL / one-shot CLI) — `widget()` then
+    /// errors. The notebook executor installs a table (via
+    /// [`Evaluator::with_widgets`]) seeded with each widget's declared
+    /// default; the interactive server overlays live values on top. So
+    /// batch `notebook render` resolves `widget()` to declared defaults
+    /// while the watch server resolves it to the live slider position.
+    /// `Arc` so snapshots in the prefix cache share the table cheaply,
+    /// exactly like `cancel`.
+    widget_values: Option<Arc<BTreeMap<String, WidgetValue>>>,
+    /// Names of widgets read via `widget(name)` since the last
+    /// [`Evaluator::take_widget_reads`]. The notebook executor clears this
+    /// before each code block and harvests it after, so it learns which
+    /// widgets a block depends on — the basis for scoped re-render (only
+    /// re-run blocks whose widget read-set changed). Transient per block;
+    /// not part of cached state.
+    widget_reads: BTreeSet<String>,
 }
 
 impl Evaluator {
@@ -99,6 +117,11 @@ impl Evaluator {
             // Share the same cancel flag — a snapshot restored mid-render
             // should still observe a preemption signal.
             cancel: self.cancel.clone(),
+            // Widget table is immutable per render; an `Arc` clone shares it.
+            widget_values: self.widget_values.clone(),
+            // Read-set is transient per block; snapshots needn't carry it,
+            // but cloning keeps `deep_clone` a faithful copy.
+            widget_reads: self.widget_reads.clone(),
         }
     }
 
@@ -135,6 +158,8 @@ impl Evaluator {
             cache_registry: CacheRegistry::new(),
             cached_entry_ids: HashMap::new(),
             cancel: None,
+            widget_values: None,
+            widget_reads: BTreeSet::new(),
         }
     }
 
@@ -152,6 +177,29 @@ impl Evaluator {
     /// Install (or replace) the cooperative cancellation flag in place.
     pub fn set_cancel(&mut self, flag: Arc<AtomicBool>) {
         self.cancel = Some(flag);
+    }
+
+    /// Install the notebook widget value table (builder form). After this,
+    /// `widget(name)` resolves against `table`. The notebook executor seeds
+    /// `table` with each widget's declared default; the interactive server
+    /// overlays live slider/option values before calling. A fresh
+    /// `Evaluator` has no table and `widget()` errors — that's the REPL /
+    /// one-shot CLI case where widgets are meaningless.
+    pub fn with_widgets(mut self, table: Arc<BTreeMap<String, WidgetValue>>) -> Self {
+        self.widget_values = Some(table);
+        self
+    }
+
+    /// Install (or replace) the widget value table in place.
+    pub fn set_widgets(&mut self, table: Arc<BTreeMap<String, WidgetValue>>) {
+        self.widget_values = Some(table);
+    }
+
+    /// Take and clear the set of widget names read since the last call.
+    /// The notebook executor calls this around each code block to record
+    /// that block's widget read-set for scoped re-render.
+    pub fn take_widget_reads(&mut self) -> BTreeSet<String> {
+        std::mem::take(&mut self.widget_reads)
     }
 
     /// Return `Err(Cancelled)` if a cancel flag is installed and set.
@@ -1574,6 +1622,40 @@ impl Evaluator {
                     let rows = self.profiler.take_report();
                     profile::print_report(&rows);
                     return Ok(Value::None);
+                }
+
+                // ── Notebook widget read ──────────────────────────────────
+                // `widget("name")` returns the current value of a notebook
+                // widget. Resolves against the value table installed by the
+                // notebook executor (seeded with declared defaults, overlaid
+                // with live values by the interactive server). Outside a
+                // notebook the table is absent and this is a hard error;
+                // an unknown widget name is likewise a hard error (a silent
+                // default would mask a renamed/forgotten widget reference).
+                if name == "widget" {
+                    if args.len() != 1 {
+                        return Err(ScriptError::runtime(
+                            "widget(name): expected exactly one string argument".to_string(),
+                        ));
+                    }
+                    let key = self.eval_expr(&args[0])?.to_str().map_err(|_| {
+                        ScriptError::runtime(
+                            "widget(name): argument must be a string widget name".to_string(),
+                        )
+                    })?;
+                    // Record the read so the executor can scope re-renders to
+                    // blocks that actually depend on this widget.
+                    self.widget_reads.insert(key.clone());
+                    let table = self.widget_values.as_ref().ok_or_else(|| {
+                        ScriptError::runtime(
+                            "widget() is only available when rendering a notebook".to_string(),
+                        )
+                    })?;
+                    return match table.get(&key) {
+                        Some(WidgetValue::Number(n)) => Ok(Value::Scalar(*n)),
+                        Some(WidgetValue::Text(s)) => Ok(Value::Str(s.clone())),
+                        None => Err(ScriptError::runtime(format!("unknown widget '{key}'"))),
+                    };
                 }
 
                 // ── Evaluator-level higher-order functions ────────────────

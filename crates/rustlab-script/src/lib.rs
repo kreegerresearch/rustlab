@@ -46,6 +46,7 @@ pub use error::ScriptError;
 pub use eval::output::{capturing, start_capture, stop_capture};
 pub use eval::Evaluator;
 pub use eval::Value;
+pub use eval::WidgetValue;
 
 /// Parse a `.rlab` source file into a statement list. Thin convenience
 /// over `read_to_string` + `lexer::tokenize` + `parser::parse`; mirrors

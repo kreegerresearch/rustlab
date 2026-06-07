@@ -271,6 +271,16 @@ pub fn render_markdown(
                     body.push_str("</details>\n\n");
                 }
             }
+            Rendered::Widget { decl, value } => {
+                // Static export: a widget can't be interactive in committed
+                // Markdown, so emit its label and current (default) value.
+                let label = decl.label.as_deref().unwrap_or(&decl.name);
+                let val = match value {
+                    rustlab_script::WidgetValue::Number(n) => format!("{n}"),
+                    rustlab_script::WidgetValue::Text(s) => s.clone(),
+                };
+                body.push_str(&format!("**{label}:** `{val}`\n\n"));
+            }
             Rendered::Callout {
                 kind,
                 title,

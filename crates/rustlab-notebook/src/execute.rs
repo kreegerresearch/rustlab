@@ -1,9 +1,52 @@
 use crate::parse::{Block, CalloutKind, MermaidDirectives};
+use crate::widget::WidgetDecl;
 use rustlab_plot::{
     clear_notebook_animations, clear_notebook_figures, set_plot_context, take_notebook_animations,
     take_notebook_figures, FigureState, NotebookAnimation, PlotContext, FIGURE,
 };
-use rustlab_script::Evaluator;
+use rustlab_script::{Evaluator, WidgetValue};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// Build the widget value table for one render: every declared widget's
+/// default, with live `overrides` (slider drags from the interactive server)
+/// applied on top. Only declared names are kept — an override for an
+/// unknown/removed widget is ignored. Shared by every execution path so
+/// `widget(name)` resolves identically whether batch or live.
+fn build_widget_table(
+    blocks: &[Block],
+    overrides: Option<&BTreeMap<String, WidgetValue>>,
+) -> BTreeMap<String, WidgetValue> {
+    let mut table = BTreeMap::new();
+    for block in blocks {
+        if let Block::Widget { decl, .. } = block {
+            // An override is applied only if it coerces against the *current*
+            // declaration. That filters unknown/removed widgets and, on a
+            // `.md` reload that changed a widget's type or range, resets a
+            // now-invalid carried-over value to the declared default
+            // (locked-in carry-over rule).
+            let value = overrides
+                .and_then(|ov| ov.get(&decl.name))
+                .and_then(|v| decl.coerce(v))
+                .unwrap_or_else(|| decl.default_value());
+            table.insert(decl.name.clone(), value);
+        }
+    }
+    table
+}
+
+/// Map a `Block::Widget` to its `Rendered::Widget`, resolving the control's
+/// current value from the live table (falling back to the declared default).
+fn render_widget_block(decl: &WidgetDecl, table: &BTreeMap<String, WidgetValue>) -> Rendered {
+    let value = table
+        .get(&decl.name)
+        .cloned()
+        .unwrap_or_else(|| decl.default_value());
+    Rendered::Widget {
+        decl: decl.clone(),
+        value,
+    }
+}
 
 /// A rendered block ready for HTML output.
 #[derive(Debug, Clone)]
@@ -37,6 +80,13 @@ pub enum Rendered {
         hidden: bool,
         details: Option<String>,
         caption: Option<String>,
+    },
+    /// An interactive widget control. `value` is the current value (declared
+    /// default in batch render, or the live value under the interactive
+    /// server) so a full re-render emits the control at its current position.
+    Widget {
+        decl: crate::widget::WidgetDecl,
+        value: rustlab_script::WidgetValue,
     },
     /// A callout box. `title` overrides the default kind label when set.
     Callout {
@@ -99,11 +149,51 @@ impl ExecutionOutcome {
 /// and `Block::Mermaid`.
 pub fn execute_notebook_with_cache(
     blocks: &[Block],
-    mut cache: Option<&mut crate::cache::NotebookCache>,
+    cache: Option<&mut crate::cache::NotebookCache>,
 ) -> ExecutionOutcome {
+    // No cancel flag → `execute_core` can never return `None`.
+    execute_core(blocks, cache, None, None)
+        .expect("execute_core without a cancel flag cannot be cancelled")
+}
+
+/// Cancellable, widget-override-aware, cached execution — the path the
+/// interactive server uses. Reuses `cache` (the notebook's in-memory prefix
+/// cache) so a widget change re-runs only from the first block that reads
+/// the changed widget (scoped re-render); returns `None` if `cancel` trips
+/// mid-render (a newer save/drag preempted this one).
+pub fn execute_notebook_scoped(
+    blocks: &[Block],
+    cache: &mut crate::cache::NotebookCache,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
+) -> Option<ExecutionOutcome> {
+    execute_core(blocks, Some(cache), Some(cancel), widget_overrides)
+}
+
+/// Unified notebook execution. Walks the block list once, serving cached
+/// executable blocks from `cache` (a widget-aware prefix cache) and
+/// executing the divergent tail. The prefix is valid while each block's
+/// source hash *and* its recorded `widget(name)` reads still match — so a
+/// source edit or a widget change re-runs only from the first affected
+/// block onward. With `cancel` installed, returns `None` when the flag
+/// trips between or within blocks (the coordinator discards the partial
+/// result). Without `cache`, every block executes; without `cancel`, it
+/// never returns `None`.
+fn execute_core(
+    blocks: &[Block],
+    mut cache: Option<&mut crate::cache::NotebookCache>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
+) -> Option<ExecutionOutcome> {
     use crate::cache::{hash_block_source, CacheEntry, ExecState};
+    use std::sync::atomic::Ordering;
 
     set_plot_context(PlotContext::Notebook);
+
+    // Widget value table for this render: declared defaults overlaid with
+    // any live overrides. Drives both `widget(name)` resolution and the
+    // cache's widget-aware validity check.
+    let widgets = Arc::new(build_widget_table(blocks, widget_overrides));
 
     // Per-executable-block hashes for prefix-match against the cache.
     let exec_hashes: Vec<u64> = blocks
@@ -116,18 +206,31 @@ pub fn execute_notebook_with_cache(
         .collect();
     let total_blocks = exec_hashes.len();
 
-    // Determine how many leading entries we can keep, then truncate the
-    // tail so subsequent `push` calls extend the kept prefix cleanly.
-    let valid_k = cache.as_ref().map_or(0, |c| c.valid_prefix(&exec_hashes));
+    // Longest prefix still valid by source hash AND widget reads, then
+    // truncate the tail so subsequent `push` calls extend cleanly.
+    let valid_k = cache
+        .as_ref()
+        .map_or(0, |c| c.valid_prefix_widget_aware(&exec_hashes, &widgets));
     if let Some(c) = cache.as_deref_mut() {
         c.truncate(valid_k);
     }
 
-    // Start with a fresh evaluator + fresh thread-locals. As we walk
-    // blocks, the live state is brought to the right point either by
-    // restoring a cached snapshot (cache-hit position) or by actually
-    // executing a block (cache-miss position).
-    let mut ev = Evaluator::new();
+    // Helper: bring a (possibly restored) evaluator's out-of-band state in
+    // line with *this* render — the current widget table and cancel flag.
+    // Restored snapshots otherwise carry the table/flag from when they were
+    // captured (a prior render), which would make the executed tail read
+    // stale widgets or poll a dead cancel flag.
+    let refresh = |ev: &mut Evaluator| {
+        ev.set_widgets(widgets.clone());
+        if let Some(c) = &cancel {
+            ev.set_cancel(c.clone());
+        }
+    };
+
+    let mut ev = Evaluator::new().with_widgets(widgets.clone());
+    if let Some(c) = &cancel {
+        ev.set_cancel(c.clone());
+    }
     if valid_k == 0 {
         // No cached prefix to restore from — make sure thread-locals
         // start clean so a fresh execution doesn't see stale state
@@ -137,12 +240,17 @@ pub fn execute_notebook_with_cache(
         clear_notebook_animations();
     }
 
+    let cancelled = || cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
+
     let mut rendered: Vec<Rendered> = Vec::with_capacity(blocks.len());
     let mut exec_idx = 0usize; // counts Code+Mermaid blocks
     let mut exercise_counter = 0usize;
     let mut cached_blocks = 0usize;
 
     for block in blocks {
+        if cancelled() {
+            return None;
+        }
         match block {
             Block::Markdown(text) => {
                 rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
@@ -160,16 +268,27 @@ pub fn execute_notebook_with_cache(
                         .expect("valid_k bounded by cache.len()");
                     rendered.push(entry.output.clone());
                     ev = entry.snapshot.restore();
+                    refresh(&mut ev);
                     cached_blocks += 1;
                 } else {
-                    // Cache miss. Actually run the block.
+                    // Cache miss. Actually run the block, recording which
+                    // widgets it reads so the entry can be invalidated when
+                    // those values change.
+                    let _ = ev.take_widget_reads(); // clear stray reads
                     let output = run_code_block_capturing(&mut ev, source, directives);
+                    // A block that hit the cancel flag mid-execution
+                    // surfaces here — abandon the (now-partial) render.
+                    if cancelled() {
+                        return None;
+                    }
+                    let reads = ev.take_widget_reads();
                     rendered.push(output.clone());
                     if let Some(c) = cache.as_deref_mut() {
                         c.push(CacheEntry {
                             block_hash: exec_hashes[exec_idx],
                             output,
                             snapshot: ExecState::capture(&ev),
+                            widget_reads: widget_reads_with_values(&reads, &widgets),
                         });
                     }
                 }
@@ -188,6 +307,7 @@ pub fn execute_notebook_with_cache(
                     // state alone — but we restore anyway for uniform
                     // semantics with code-block restoration.
                     ev = entry.snapshot.restore();
+                    refresh(&mut ev);
                     cached_blocks += 1;
                 } else {
                     let MermaidDirectives { hidden, details, caption } = directives.clone();
@@ -203,6 +323,8 @@ pub fn execute_notebook_with_cache(
                             block_hash: exec_hashes[exec_idx],
                             output,
                             snapshot: ExecState::capture(&ev),
+                            // Mermaid runs no rlab, so it reads no widgets.
+                            widget_reads: BTreeMap::new(),
                         });
                     }
                 }
@@ -214,6 +336,9 @@ pub fn execute_notebook_with_cache(
                     title: title.clone(),
                     content: interpolate_markdown(content, &mut ev),
                 });
+            }
+            Block::Widget { decl, .. } => {
+                rendered.push(render_widget_block(decl, &widgets));
             }
             Block::ExerciseStart => {
                 exercise_counter += 1;
@@ -227,11 +352,24 @@ pub fn execute_notebook_with_cache(
         }
     }
 
-    ExecutionOutcome {
+    Some(ExecutionOutcome {
         rendered,
         cached_blocks,
         total_blocks,
-    }
+    })
+}
+
+/// Pair each read widget name with the value it resolved to this render —
+/// the snapshot a cache entry compares against next time to decide whether
+/// the block's widget dependencies are unchanged.
+fn widget_reads_with_values(
+    reads: &std::collections::BTreeSet<String>,
+    table: &BTreeMap<String, WidgetValue>,
+) -> BTreeMap<String, WidgetValue> {
+    reads
+        .iter()
+        .filter_map(|name| table.get(name).map(|v| (name.clone(), v.clone())))
+        .collect()
 }
 
 /// Execute one rustlab code block against an existing evaluator,
@@ -299,77 +437,18 @@ pub fn execute_notebook(blocks: &[Block]) -> Vec<Rendered> {
     execute_notebook_internal(blocks).0
 }
 
-/// Like [`execute_notebook`] but cooperatively cancellable. The
-/// evaluator is built with `cancel` (see
-/// [`rustlab_script::Evaluator::with_cancel`]); during a long
-/// script-level loop it returns early, and this function also checks
-/// `cancel` between blocks. Returns `None` if cancellation tripped
-/// mid-render — the caller (the notebook watch coordinator preempting a
-/// stale render) discards the partial result. Used only by the
-/// interactive server; the persistent cache is intentionally not
-/// involved (server renders don't touch `.rustlab/cache.db`).
+/// Like [`execute_notebook`] but cooperatively cancellable and
+/// widget-override aware, with **no** prefix cache — every block executes.
+/// Returns `None` if `cancel` trips mid-render. Thin wrapper over
+/// [`execute_core`]; kept for callers/tests that want a cache-free
+/// cancellable run. The interactive server uses [`execute_notebook_scoped`]
+/// instead so renders are scoped to changed blocks.
 pub fn execute_notebook_cancellable(
     blocks: &[Block],
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
 ) -> Option<Vec<Rendered>> {
-    use std::sync::atomic::Ordering;
-
-    set_plot_context(PlotContext::Notebook);
-    // Fresh thread-locals (this runs on a dedicated render thread).
-    FIGURE.with(|f| f.borrow_mut().reset());
-    clear_notebook_figures();
-    clear_notebook_animations();
-
-    let mut ev = Evaluator::new().with_cancel(cancel.clone());
-    let mut rendered = Vec::with_capacity(blocks.len());
-    let mut exercise_counter = 0usize;
-
-    for block in blocks {
-        if cancel.load(Ordering::Relaxed) {
-            return None;
-        }
-        match block {
-            Block::Markdown(text) => {
-                rendered.push(Rendered::Markdown(interpolate_markdown(text, &mut ev)));
-            }
-            Block::Code { source, directives } => {
-                let output = run_code_block_capturing(&mut ev, source, directives);
-                // A code block that hit the cancel flag mid-execution
-                // surfaces as a "cancelled" error — abandon the render.
-                if cancel.load(Ordering::Relaxed) {
-                    return None;
-                }
-                rendered.push(output);
-            }
-            Block::Mermaid { source, directives } => {
-                let MermaidDirectives { hidden, details, caption } = directives.clone();
-                rendered.push(Rendered::Mermaid {
-                    source: source.clone(),
-                    hidden,
-                    details,
-                    caption,
-                });
-            }
-            Block::Callout { kind, title, content } => {
-                rendered.push(Rendered::Callout {
-                    kind: *kind,
-                    title: title.clone(),
-                    content: interpolate_markdown(content, &mut ev),
-                });
-            }
-            Block::ExerciseStart => {
-                exercise_counter += 1;
-                rendered.push(Rendered::ExerciseStart {
-                    number: exercise_counter,
-                });
-            }
-            Block::SolutionStart => {
-                rendered.push(Rendered::SolutionStart);
-            }
-        }
-    }
-
-    Some(rendered)
+    execute_core(blocks, None, Some(cancel), widget_overrides).map(|o| o.rendered)
 }
 
 /// Same as `execute_notebook` but also returns the final evaluator so
@@ -381,7 +460,8 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
     // PlotContext::Notebook is sticky: figure() calls cannot override it.
     set_plot_context(PlotContext::Notebook);
 
-    let mut ev = Evaluator::new();
+    let widgets = Arc::new(build_widget_table(blocks, None));
+    let mut ev = Evaluator::new().with_widgets(widgets.clone());
     let mut rendered = Vec::with_capacity(blocks.len());
     let mut exercise_counter = 0usize;
 
@@ -460,6 +540,9 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                     title: title.clone(),
                     content: interpolated,
                 });
+            }
+            Block::Widget { decl, .. } => {
+                rendered.push(render_widget_block(decl, &widgets));
             }
             Block::ExerciseStart => {
                 exercise_counter += 1;
@@ -1131,7 +1214,7 @@ mod tests {
         use std::sync::Arc;
         let cancel = Arc::new(AtomicBool::new(true));
         let blocks = crate::parse::parse_notebook("# Title\n\n```rustlab\n1+1\n```\n");
-        assert!(execute_notebook_cancellable(&blocks, cancel).is_none());
+        assert!(execute_notebook_cancellable(&blocks, cancel, None).is_none());
     }
 
     /// Without cancellation the cancellable path renders normally.
@@ -1141,7 +1224,7 @@ mod tests {
         use std::sync::Arc;
         let cancel = Arc::new(AtomicBool::new(false));
         let blocks = crate::parse::parse_notebook("# Title\n\nprose\n\n```rustlab\n2+3\n```\n");
-        let rendered = execute_notebook_cancellable(&blocks, cancel).expect("not cancelled");
+        let rendered = execute_notebook_cancellable(&blocks, cancel, None).expect("not cancelled");
         // Markdown + code block present.
         assert!(rendered.iter().any(|r| matches!(r, Rendered::Markdown(_))));
         assert!(rendered.iter().any(|r| matches!(r, Rendered::Code { .. })));
@@ -1162,7 +1245,7 @@ mod tests {
         });
         let blocks = crate::parse::parse_notebook("```rustlab\nwhile true; end;\n```\n");
         let start = std::time::Instant::now();
-        let result = execute_notebook_cancellable(&blocks, cancel);
+        let result = execute_notebook_cancellable(&blocks, cancel, None);
         h.join().unwrap();
         assert!(result.is_none(), "infinite loop should have been cancelled");
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "took too long");

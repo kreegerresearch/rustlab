@@ -40,8 +40,9 @@
 use crate::execute::Rendered;
 use rustlab_plot::PlotSnapshot;
 use rustlab_script::eval::rng::RngSnapshot;
-use rustlab_script::Evaluator;
+use rustlab_script::{Evaluator, WidgetValue};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 /// One cache slot. Indexed by document-order position among executable
@@ -57,6 +58,13 @@ pub struct CacheEntry {
     /// when the cache hits this block, so any subsequent markdown
     /// interpolation sees the same values it did originally.
     pub snapshot: ExecState,
+    /// Widgets this block read via `widget(name)` last time it ran, with
+    /// the values it saw. The cached entry stays valid only while every
+    /// one of these still matches the current widget table — that's how a
+    /// slider drag re-runs from the first block that reads the changed
+    /// widget, not from block zero. Empty for blocks that read no widget
+    /// (they're invalidated only by a source edit).
+    pub widget_reads: BTreeMap<String, WidgetValue>,
 }
 
 /// Bundle of every runtime state we need to roll back to a prior
@@ -105,6 +113,30 @@ impl NotebookCache {
             .iter()
             .zip(new_block_hashes.iter())
             .take_while(|(entry, h)| entry.block_hash == **h)
+            .count()
+    }
+
+    /// Like [`valid_prefix`], but also breaks the prefix at the first block
+    /// whose recorded `widget(name)` reads no longer match `widget_table`.
+    /// This scopes a widget change to "from the first block that reads the
+    /// changed widget onward" — blocks before it (and blocks that read no
+    /// changed widget) stay cached. A block with an empty read-set is
+    /// invalidated only by a source edit, exactly like `valid_prefix`.
+    pub fn valid_prefix_widget_aware(
+        &self,
+        new_block_hashes: &[u64],
+        widget_table: &BTreeMap<String, WidgetValue>,
+    ) -> usize {
+        self.entries
+            .iter()
+            .zip(new_block_hashes.iter())
+            .take_while(|(entry, h)| {
+                entry.block_hash == **h
+                    && entry
+                        .widget_reads
+                        .iter()
+                        .all(|(name, val)| widget_table.get(name) == Some(val))
+            })
             .count()
     }
 
@@ -179,6 +211,7 @@ mod tests {
                     plot: rustlab_plot::capture_thread_state(),
                     rng: rustlab_script::eval::rng::capture(),
                 },
+                widget_reads: BTreeMap::new(),
             });
         }
 
@@ -192,6 +225,48 @@ mod tests {
         assert_eq!(cache.valid_prefix(&[10, 20, 30, 40, 50]), 4);
         // Shorter than cache → match limited by new length.
         assert_eq!(cache.valid_prefix(&[10, 20]), 2);
+    }
+
+    #[test]
+    fn valid_prefix_widget_aware_breaks_at_first_changed_read() {
+        let mut cache = NotebookCache::default();
+        let reads = |pairs: &[(&str, f64)]| -> BTreeMap<String, WidgetValue> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), WidgetValue::Number(*v)))
+                .collect()
+        };
+        let entry = |hash: u64, reads: BTreeMap<String, WidgetValue>| CacheEntry {
+            block_hash: hash,
+            output: Rendered::SolutionStart,
+            snapshot: ExecState {
+                evaluator: Evaluator::new(),
+                plot: rustlab_plot::capture_thread_state(),
+                rng: rustlab_script::eval::rng::capture(),
+            },
+            widget_reads: reads,
+        };
+        // Block 0 reads nothing, block 1 reads gain=2, block 2 reads nothing.
+        cache.push(entry(10, reads(&[])));
+        cache.push(entry(20, reads(&[("gain", 2.0)])));
+        cache.push(entry(30, reads(&[])));
+
+        let hashes = [10, 20, 30];
+        // gain unchanged → full prefix valid.
+        assert_eq!(
+            cache.valid_prefix_widget_aware(&hashes, &reads(&[("gain", 2.0)])),
+            3
+        );
+        // gain changed → break at block 1 (the first reader); block 0 kept.
+        assert_eq!(
+            cache.valid_prefix_widget_aware(&hashes, &reads(&[("gain", 7.0)])),
+            1
+        );
+        // A source edit at block 0 still wins even if widgets are unchanged.
+        assert_eq!(
+            cache.valid_prefix_widget_aware(&[99, 20, 30], &reads(&[("gain", 2.0)])),
+            0
+        );
     }
 
     // ── Integration: execute_notebook_with_cache prefix behaviour ─────────

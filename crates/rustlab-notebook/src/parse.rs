@@ -63,6 +63,14 @@ pub enum Block {
         source: String,
         directives: MermaidDirectives,
     },
+    /// A ```rustlab-widget fenced block declaring an interactive control.
+    /// `source` is the raw TOML body (kept for block hashing / re-render
+    /// stability); `decl` is the parsed declaration the renderer and server
+    /// consume. Malformed declarations become a `Callout` instead.
+    Widget {
+        decl: crate::widget::WidgetDecl,
+        source: String,
+    },
     /// A callout box. `title` is the optional override on `> [!TIP] My title`;
     /// when `None`, the renderer uses the default kind label.
     Callout {
@@ -88,6 +96,7 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
     let mut code_buf = String::new();
     let mut in_rustlab = false;
     let mut in_mermaid = false;
+    let mut in_widget = false;
     let mut code_directives = CodeDirectives::default();
     let mut mermaid_directives = MermaidDirectives::default();
 
@@ -134,6 +143,39 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
                 }
                 code_buf.push_str(line);
             }
+            i += 1;
+        } else if in_widget {
+            if trimmed == "```" {
+                // End of widget block — parse the TOML body. A malformed
+                // declaration becomes a Caution callout (the page still
+                // renders; downstream `widget("name")` calls then error).
+                match crate::widget::parse_widget(&code_buf) {
+                    Ok(decl) => blocks.push(Block::Widget {
+                        decl,
+                        source: code_buf.clone(),
+                    }),
+                    Err(msg) => blocks.push(Block::Callout {
+                        kind: CalloutKind::Caution,
+                        title: Some("Widget error".to_string()),
+                        content: msg,
+                    }),
+                }
+                code_buf.clear();
+                in_widget = false;
+            } else {
+                if !code_buf.is_empty() {
+                    code_buf.push('\n');
+                }
+                code_buf.push_str(line);
+            }
+            i += 1;
+        } else if trimmed == "```rustlab-widget" || trimmed.starts_with("```rustlab-widget ") {
+            // Flush any pending markdown before the widget declaration.
+            if !markdown_buf.is_empty() {
+                blocks.push(Block::Markdown(markdown_buf.clone()));
+                markdown_buf.clear();
+            }
+            in_widget = true;
             i += 1;
         } else if trimmed == "```rustlab" || trimmed.starts_with("```rustlab ") {
             // Extract stacked code-block directives from the tail of the markdown buffer
@@ -284,6 +326,19 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
             source: code_buf,
             directives: mermaid_directives,
         });
+    } else if in_widget && !code_buf.is_empty() {
+        // Unclosed widget fence — parse what we have; errors become a callout.
+        match crate::widget::parse_widget(&code_buf) {
+            Ok(decl) => blocks.push(Block::Widget {
+                decl,
+                source: code_buf,
+            }),
+            Err(msg) => blocks.push(Block::Callout {
+                kind: CalloutKind::Caution,
+                title: Some("Widget error".to_string()),
+                content: msg,
+            }),
+        }
     }
     if !markdown_buf.is_empty() {
         blocks.push(Block::Markdown(markdown_buf));

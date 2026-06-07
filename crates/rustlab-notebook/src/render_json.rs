@@ -61,6 +61,13 @@ pub enum JsonBlock {
         title: Option<String>,
         html: String,
     },
+    Widget {
+        name: String,
+        widget_type: &'static str,
+        label: Option<String>,
+        /// Current value: a JSON number (slider/number) or string (option).
+        value: serde_json::Value,
+    },
     ExerciseStart {
         number: usize,
     },
@@ -170,6 +177,24 @@ pub fn render_json(title: &str, blocks: &[Rendered], theme: &ThemeColors) -> Doc
                     callout_type: callout_tag(kind),
                     title: title.clone(),
                     html,
+                });
+            }
+            Rendered::Widget { decl, value } => {
+                use crate::widget::WidgetKind;
+                let widget_type = match decl.kind {
+                    WidgetKind::Slider { .. } => "slider",
+                    WidgetKind::Number { .. } => "number",
+                    WidgetKind::Option { .. } => "option",
+                };
+                let value = match value {
+                    rustlab_script::WidgetValue::Number(n) => serde_json::json!(n),
+                    rustlab_script::WidgetValue::Text(s) => serde_json::json!(s),
+                };
+                json_blocks.push(JsonBlock::Widget {
+                    name: decl.name.clone(),
+                    widget_type,
+                    label: decl.label.clone(),
+                    value,
                 });
             }
             Rendered::ExerciseStart { number } => {
