@@ -39,7 +39,7 @@ Open Question §1 below.
 | 2 — All three widget types | **complete (2026-06-07)** | `option` + `number`, validation, value carry-over on `.md` reload | Phase 1 |
 | 3 — Scoped re-render | **complete (2026-06-07)** | per-block `widget()` read-set instrumentation, narrow cache invalidation | Phase 2 |
 | 4 — Docs + REPL help | **complete (2026-06-07)** | `docs/notebooks.md` section, `examples/notebooks/widgets_demo.md`, AGENTS.md close-out | Phase 2 |
-| 5 — Polish (optional) | not started | `checkbox`/`text`/`dropdown`/`color`, URL-state permalinks, animation | Phase 4 |
+| 5 — Polish (optional) | not started | **Tier-1 batch scoped:** `checkbox`/`dropdown`/`text`/`color`/`log-slider` (fit existing value model); then URL-state permalinks, animation, Tier-2 multi-value widgets | Phase 4 |
 
 **Next concrete action:** start Phase 0. Deliver in order:
 
@@ -393,13 +393,62 @@ stale table or polls a dead cancel flag.
 
 ### Phase 5 — Polish / optional  **Status:** not started
 
-- [ ] `checkbox`, `text`, `dropdown`, `color` widget types
+**Tier-1 widget batch (cheap — fit the existing `WidgetValue::{Number,
+Text}` model; only a new `WidgetKind` arm + HTML control + `coerce` arm
+each, no value-type change, no new WS/cache plumbing).** Each follows the
+exact pattern v1 established: extend `WidgetKind`, `parse_widget`,
+`default_value`, `coerce`, `render_widget_html`, the `render_json`
+`widget_type` map, and the static-emitter arms; add `widget.rs` unit
+tests + a `tests/widgets.rs` round trip. The client JS already handles
+number-or-string values on `input`+`change`, so most need no JS change
+(checkbox needs the checked→bool→0/1 mapping).
+
+- [ ] **`checkbox` / toggle** → `WidgetValue::Number` `0.0`/`1.0` (works
+      with `if widget("x")` truthiness; no new value type). Keys:
+      `name`, `default` (bool), `label`. Renders `<input type="checkbox">`;
+      client sends `1`/`0` (or `true`/`false` coerced to a number).
+      `coerce`: any finite number → `0`/`1` by `!= 0`.
+- [ ] **`dropdown`** → `WidgetValue::Text`, identical semantics to
+      `option` (declared `choices`, default ∈ choices) but rendered as a
+      `<select>` for long lists. `coerce` reuses the option logic. Could
+      share a code path with `option` (DRY) — decide whether to fold both
+      into one `WidgetKind::Choice { style: Radio | Dropdown }`.
+- [ ] **`text`** → `WidgetValue::Text`, free-form string. Keys: `name`,
+      `default`, optional `label`, optional `placeholder`, optional
+      `maxlen`. `coerce`: accept any string (optionally truncate to
+      `maxlen`); reject a number. Renders `<input type="text">`; client
+      already sends strings. Note: debounce matters (per-keystroke
+      `input`) — reuse the 50 ms timer.
+- [ ] **`color`** → `WidgetValue::Text` hex string (`#rrggbb`). Keys:
+      `name`, `default`, optional `label`. `coerce`: validate `#` + 3/6
+      hex digits, else reject (→ default). Renders `<input type="color">`.
+- [ ] **`log-slider`** (or `slider` with `scale = "log"`) →
+      `WidgetValue::Number`. *High value for DSP* — decade-spanning
+      frequencies/gains. The HTML range input stays linear over
+      `[log10(min), log10(max)]`; the client maps handle↔value (send
+      `10**handle`); the readout shows the real value. `coerce` clamps to
+      `[min, max]` as today. Requires `min > 0`. This one **does** need a
+      small JS change (log mapping on the slider) — the only Tier-1 item
+      that touches the client beyond the checkbox bool mapping.
+
+Verify the batch end-to-end the same way v1 was: `notebook render` a demo
+with one of each, then live-drive under `notebook watch`
+(see the manual-test checklist). Extend `examples/notebooks/widgets_demo.md`
+and the `docs/notebooks.md` widget-types table when they land.
+
+**Remaining polish (unchanged):**
+
 - [ ] URL-encoded widget state for shareable permalinks
        (`/notebook.html?w.cutoff=2.5`)
 - [ ] Multi-tab semantics decision: keep "last write wins" or
       switch to per-tab state
 - [ ] Animation: a `play` button on a slider that sweeps through
       its range at a chosen rate
+- [ ] Tier-2 widgets (range/interval slider, xy-pad / complex, multi-
+      select, vector editor) — gated on adding a multi-value
+      `WidgetValue` variant (e.g. `Vector(Vec<f64>)`); `widget_reads`
+      comparison already works via `PartialEq`. Tracked separately when
+      Tier-1 lands.
 
 ## Open questions
 
@@ -469,6 +518,13 @@ but Phase 1 is shippable without it.
 One dated line per meaningful change. Newest at the top. Keep
 this in sync with the Phase checkboxes and the AGENTS.md row.
 
+- 2026-06-07 — Scoped Phase 5's Tier-1 widget batch
+  (`checkbox`/`dropdown`/`text`/`color`/`log-slider`): all fit the
+  existing `WidgetValue::{Number,Text}` model, so each is just a new
+  `WidgetKind` arm + control + `coerce` arm following the v1 pattern
+  (no new value type / WS / cache work; only `checkbox` and
+  `log-slider` touch the client JS). Tier-2 multi-value widgets noted
+  as gated on a `WidgetValue::Vector` variant. Not started.
 - 2026-06-07 — Phase 4 complete; **plan fully delivered (v1).**
   Added the "Interactive widgets" section to `docs/notebooks.md`, a
   `examples/notebooks/widgets_demo.md` (slider+number+option → one
