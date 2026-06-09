@@ -12,6 +12,7 @@ pub mod render_markdown;
 pub mod server;
 pub mod validate;
 pub mod watch;
+pub mod widget;
 
 use rustlab_plot::theme::ThemeColors;
 use std::path::{Path, PathBuf};

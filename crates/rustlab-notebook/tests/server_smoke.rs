@@ -75,6 +75,7 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         single: true,
         theme,
         index_title: "smoke".to_string(),
+        render_tx: std::sync::OnceLock::new(),
     });
     (state, src_dir, plot_dir)
 }

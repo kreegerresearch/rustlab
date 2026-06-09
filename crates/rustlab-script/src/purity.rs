@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 /// - Plotting (every call mutates plot thread-locals): `bar`, `figure`,
 ///   `grid`, `hold`, `legend`, `plot`, `scatter`, `stem`, `subplot`,
 ///   `title`, `xlabel`, `ylabel`
+/// - Notebook widget read (out-of-band server state): `widget`
 pub const IMPURE_BUILTINS: &[&str] = &[
     "audio_play",
     "audio_read",
@@ -81,6 +82,7 @@ pub const IMPURE_BUILTINS: &[&str] = &[
     "tic",
     "title",
     "toc",
+    "widget",
     "xlabel",
     "ylabel",
 ];

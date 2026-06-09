@@ -722,6 +722,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "[i, j, kk] = k2ijk(k, ny, nx)  — inverse of ijk2k. 1-based.\n\nExample:\n  [i, j, kk] = k2ijk(102, 5, 6)  → i = 2, j = 3, kk = 4" },
     HelpEntry { name: "plot_limits", brief: "Set axis limits for a live figure panel",
         detail: "plot_limits(fig, panel, xmin, xmax, ymin, ymax)  — fix axes for one panel\n\nExample:\n  plot_limits(fig, 1, 0, 1000, -100, 0)" },
+    HelpEntry { name: "widget", brief: "Read an interactive notebook widget's current value",
+        detail: "widget(name)  — return the current value of a notebook widget\n  Notebook-only: a ```rustlab-widget``` fence declares a control\n  (slider / number → number, option → string); widget(\"name\") reads\n  its live value. Under `notebook watch`, moving the control re-runs\n  the blocks that read it. In batch `notebook render` it returns the\n  declared default. Errors outside a notebook, or on an unknown name.\n\nExample (in a notebook):\n  ```rustlab-widget\n  name = \"cutoff\"\n  type = \"slider\"\n  min = 0.1\n  max = 10\n  default = 1\n  ```\n  fc = widget(\"cutoff\");   % current slider value" },
 ];
 
 fn whos_type(v: &rustlab_script::Value) -> &'static str {
@@ -1088,6 +1090,8 @@ pub static CATEGORIES: &[CategoryRow] = &[
         names: &["cache"] },
     CategoryRow { toolbox: "language", subcategory: "Parallelism",
         names: &["parmap", "nproc"] },
+    CategoryRow { toolbox: "language", subcategory: "Notebook",
+        names: &["widget"] },
     CategoryRow { toolbox: "language", subcategory: "Structs",
         names: &["struct", "isstruct", "fieldnames", "isfield", "rmfield"] },
     CategoryRow { toolbox: "language", subcategory: "Cell arrays",

@@ -10,7 +10,9 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use rustlab_script::WidgetValue;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::http::{Notebook, ServerState};
 
@@ -25,7 +27,10 @@ pub async fn ws_upgrade(
     match state.notebook(&slug) {
         Some(nb) => {
             let nb = nb.clone();
-            ws.on_upgrade(move |socket| handle_socket(socket, nb))
+            // Clone the render-request sender so the widget_update handler
+            // can ask the coordinator to re-render this notebook.
+            let render_tx = state.render_tx.get().cloned();
+            ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx))
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
@@ -39,13 +44,17 @@ pub async fn ws_upgrade(
 /// client triggers a hard `location.reload()` instead, which is the
 /// honest "I may have missed something" recovery path.
 ///
-/// Inbound messages are logged and dropped — Phase 2 has no
-/// client→server kinds. The inbound match arm is the future
-/// widget-update extension site per
-/// `dev/plans/notebook_interactive_server.md` locked-in #14; see
-/// `dev/plans/notebook_interactive_widgets.md` for the planned
-/// `{"kind":"widget_update",…}` payload that would land here.
-async fn handle_socket(mut socket: WebSocket, nb: Arc<Notebook>) {
+/// Inbound `{"kind":"widget_update","name":…,"value":…}` messages update
+/// this notebook's live widget values (server-side, ephemeral) and ping the
+/// render coordinator, which re-renders with the new values as overrides and
+/// pushes the result back over this same channel. Other inbound text is
+/// logged and dropped. See `dev/plans/notebook_interactive_widgets.md`.
+async fn handle_socket(
+    mut socket: WebSocket,
+    nb: Arc<Notebook>,
+    slug: String,
+    render_tx: Option<UnboundedSender<String>>,
+) {
     let mut rx = nb.broadcast.subscribe();
 
     loop {
@@ -56,14 +65,41 @@ async fn handle_socket(mut socket: WebSocket, nb: Arc<Notebook>) {
                     None => return, // socket closed
                     Some(Ok(Message::Close(_))) => return,
                     Some(Ok(Message::Text(payload))) => {
-                        // ── Widget integration extension site ──────
-                        // Future: parse {"kind":"widget_update",…}
-                        // and forward to the render coordinator.
-                        // See dev/plans/notebook_interactive_widgets.md.
-                        eprintln!(
-                            "[watch] ws: unexpected text message (Phase 2 has no client→server kinds): {}",
-                            truncate_for_log(&payload),
-                        );
+                        match parse_widget_update(&payload) {
+                            Some((name, value)) => {
+                                // Validate against the widget's declaration:
+                                // unknown name or out-of-range / unknown-choice
+                                // value is logged and ignored (never crashes the
+                                // render loop). A valid value is clamped/accepted
+                                // by `coerce` and stored as the live value.
+                                let coerced = nb
+                                    .widget_decls
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .find(|d| d.name == name)
+                                    .map(|d| d.coerce(&value));
+                                match coerced {
+                                    Some(Some(v)) => {
+                                        nb.widget_values.lock().unwrap().insert(name, v);
+                                        // Ask the coordinator to re-render.
+                                        if let Some(tx) = &render_tx {
+                                            let _ = tx.send(slug.clone());
+                                        }
+                                    }
+                                    Some(None) => eprintln!(
+                                        "[watch] ws: rejecting invalid value for widget '{name}': {value:?}"
+                                    ),
+                                    None => eprintln!(
+                                        "[watch] ws: ignoring update for unknown widget '{name}'"
+                                    ),
+                                }
+                            }
+                            None => eprintln!(
+                                "[watch] ws: ignoring unrecognised text message: {}",
+                                truncate_for_log(&payload),
+                            ),
+                        }
                     }
                     Some(Ok(Message::Binary(_))) => {
                         eprintln!("[watch] ws: ignoring binary message");
@@ -111,6 +147,36 @@ async fn handle_socket(mut socket: WebSocket, nb: Arc<Notebook>) {
 /// and broadcast the resulting `Arc<str>` to every receiver.
 pub fn full_envelope(html: &str) -> String {
     serde_json::json!({ "kind": "full", "html": html }).to_string()
+}
+
+/// Parse an inbound `{"kind":"widget_update","name":"…","value":…}` frame
+/// into `(name, value)`. The value is a JSON number (slider / number) or
+/// string (option) → [`WidgetValue`]. Returns `None` for any other message
+/// kind, a missing/blank name, a non-finite number, or a value that is
+/// neither a number nor a string — so garbage never reaches the render
+/// loop. Range / choice validation against the declaration happens in the
+/// handler (see [`Notebook::widget_decls`]).
+fn parse_widget_update(payload: &str) -> Option<(String, WidgetValue)> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if v.get("kind")?.as_str()? != "widget_update" {
+        return None;
+    }
+    let name = v.get("name")?.as_str()?.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let value = match v.get("value")? {
+        serde_json::Value::Number(n) => {
+            let f = n.as_f64()?;
+            if !f.is_finite() {
+                return None;
+            }
+            WidgetValue::Number(f)
+        }
+        serde_json::Value::String(s) => WidgetValue::Text(s.clone()),
+        _ => return None,
+    };
+    Some((name, value))
 }
 
 /// Client-side JavaScript injected into `<head>` of every render
@@ -322,6 +388,46 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     ws.onerror = () => { /* onclose will fire next; let it handle retry. */ };
   }
 
+  // ── Interactive widgets ────────────────────────────────────────
+  // Delegate `input` events from widget controls to a debounced
+  // widget_update message. A single listener on `document` survives the
+  // DOM swaps that re-renders perform (the controls live inside <main>,
+  // which gets replaced, but this script in <head> does not re-run). The
+  // <output> readout updates immediately for responsiveness; the server
+  // round-trip re-renders the dependent plots. See
+  // dev/plans/notebook_interactive_widgets.md.
+  const widgetTimers = {};
+  function sendWidget(name, value) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ kind: 'widget_update', name, value }));
+    }
+  }
+  function onWidgetEvent(ev) {
+    const input = ev.target;
+    if (!input || !input.classList || !input.classList.contains('rl-widget-input')) return;
+    const form = input.closest('.rl-widget');
+    if (!form) return;
+    const name = form.getAttribute('data-widget-name');
+    if (!name) return;
+    const type = form.getAttribute('data-widget-type');
+    let value;
+    if (type === 'option') {
+      value = input.value; // string choice
+    } else {
+      value = parseFloat(input.value); // slider / number
+      if (!isFinite(value)) return;
+    }
+    // Immediate local readout (sliders carry an <output>).
+    const out = form.querySelector('.rl-widget-value');
+    if (out) out.textContent = input.value;
+    clearTimeout(widgetTimers[name]);
+    widgetTimers[name] = setTimeout(() => sendWidget(name, value), 50);
+  }
+  // `input` covers slider drags / number typing; `change` covers radio
+  // selection (and number commit). The debounce collapses any overlap.
+  document.addEventListener('input', onWidgetEvent);
+  document.addEventListener('change', onWidgetEvent);
+
   connect();
 })();
 </script>
@@ -358,6 +464,33 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&env).unwrap();
         assert_eq!(parsed["kind"], "full");
         assert_eq!(parsed["html"], "<h1>hi</h1>");
+    }
+
+    #[test]
+    fn parse_widget_update_accepts_number_and_string() {
+        assert_eq!(
+            parse_widget_update(r#"{"kind":"widget_update","name":"gain","value":2.5}"#),
+            Some(("gain".to_string(), WidgetValue::Number(2.5))),
+        );
+        assert_eq!(
+            parse_widget_update(r#"{"kind":"widget_update","name":"win","value":"hann"}"#),
+            Some(("win".to_string(), WidgetValue::Text("hann".into()))),
+        );
+    }
+
+    #[test]
+    fn parse_widget_update_rejects_garbage() {
+        // Wrong kind, missing fields, non-finite, blank name, bad value type.
+        assert!(parse_widget_update(r#"{"kind":"full","html":"x"}"#).is_none());
+        assert!(parse_widget_update(r#"{"kind":"widget_update","name":"a"}"#).is_none());
+        assert!(parse_widget_update(r#"{"kind":"widget_update","value":1}"#).is_none());
+        assert!(
+            parse_widget_update(r#"{"kind":"widget_update","name":" ","value":1}"#).is_none()
+        );
+        assert!(
+            parse_widget_update(r#"{"kind":"widget_update","name":"a","value":null}"#).is_none()
+        );
+        assert!(parse_widget_update("not json").is_none());
     }
 
     #[test]

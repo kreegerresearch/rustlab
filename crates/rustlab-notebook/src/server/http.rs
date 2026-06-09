@@ -19,9 +19,13 @@
 //! (static plots are inline Plotly JS); each notebook gets its own
 //! `plot_dir/<slug>/` subdir so directory mode keeps them separate.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::cache::NotebookCache;
+use crate::widget::WidgetDecl;
+use rustlab_script::WidgetValue;
 
 use axum::{
     body::Body,
@@ -69,6 +73,22 @@ pub struct Notebook {
     /// (if any). A newer save sets it to preempt the slow render. See
     /// `render_loop::schedule_render`.
     pub cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// Live widget values for this notebook, keyed by widget name. Updated
+    /// by the WS `widget_update` handler (slider drags) and read as render
+    /// overrides by `render_loop::schedule_render`. Server-side, ephemeral,
+    /// per-server-process (locked-in: not persisted to `.md`, shared across
+    /// tabs). Empty means every widget renders at its declared default.
+    pub widget_values: Mutex<BTreeMap<String, WidgetValue>>,
+    /// Widget declarations from the most recent render, used by the WS
+    /// handler to validate incoming `widget_update` values (range / choice)
+    /// before storing them. Refreshed on every render so a `.md` edit that
+    /// changes a widget is reflected in validation.
+    pub widget_decls: Mutex<Vec<WidgetDecl>>,
+    /// In-memory widget-aware prefix cache for this notebook's renders
+    /// (server-session-scoped). Lets a slider drag or a source edit re-run
+    /// only from the first affected block onward (scoped re-render). Held
+    /// for the duration of a render by `render_loop::schedule_render`.
+    pub render_cache: Mutex<NotebookCache>,
 }
 
 impl Notebook {
@@ -87,6 +107,9 @@ impl Notebook {
             broadcast,
             render_gen: std::sync::atomic::AtomicU64::new(0),
             cancel: Mutex::new(None),
+            widget_values: Mutex::new(BTreeMap::new()),
+            widget_decls: Mutex::new(Vec::new()),
+            render_cache: Mutex::new(NotebookCache::default()),
         }
     }
 }
@@ -111,6 +134,11 @@ pub struct ServerState {
     pub theme: &'static ThemeColors,
     /// Index-page heading (directory name, or the lone notebook's title).
     pub index_title: String,
+    /// Render-request channel into the coordinator. Set once by
+    /// `render_loop::spawn` after it creates the coordinator channel; the
+    /// WS `widget_update` handler sends a slug here to request a re-render
+    /// (reusing the same debounce + preemption path as a file save).
+    pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl ServerState {
@@ -340,6 +368,7 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            render_tx: std::sync::OnceLock::new(),
         })
     }
 
@@ -458,6 +487,7 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            render_tx: std::sync::OnceLock::new(),
         });
         let app = router(editable_state);
         let res = app

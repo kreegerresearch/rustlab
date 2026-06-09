@@ -845,6 +845,84 @@ has changed. Delete `.cache/` to force a full rebuild.
 drop the renderer (and its `resvg`/`usvg`/`fontdb` dep tree). Mermaid
 blocks then emit verbatim source plus a one-time warning.
 
+### Interactive widgets: ```` ```rustlab-widget ```` blocks
+
+Under [`notebook watch`](#live-preview-with-notebook-watch) you can embed
+live controls — a slider, a number input, or a set of option buttons —
+whose values feed into code blocks. Drag the control and the notebook
+re-runs the blocks that depend on it, in place. This turns a static
+report into a "what does this filter look like at every cutoff?" explorer
+without editing the source.
+
+A widget is declared with a fenced block tagged `rustlab-widget` whose
+body is TOML. Code reads the current value with the `widget("name")`
+builtin:
+
+````markdown
+```rustlab-widget
+name = "cutoff"
+type = "slider"
+min = 0.1
+max = 10.0
+step = 0.05
+default = 1.0
+label = "Cutoff (Hz)"
+```
+
+```rustlab
+fc = widget("cutoff");
+t = linspace(0, 1, 500);
+plot(t, sin(2 * pi * fc * t));
+```
+````
+
+**Widget types (v1):**
+
+| `type` | Required keys | Optional keys | `widget()` returns |
+|---|---|---|---|
+| `slider` | `name`, `min`, `max`, `default` | `step`, `label` | number |
+| `number` | `name`, `default` | `min`, `max`, `step`, `label` | number |
+| `option` | `name`, `choices`, `default` | `label` | string |
+
+An `option` widget renders as a set of radio buttons:
+
+````markdown
+```rustlab-widget
+name = "window"
+type = "option"
+choices = ["hamming", "hann", "blackman"]
+default = "hann"
+label = "Window"
+```
+````
+
+**How it behaves:**
+
+- **Live re-render.** Moving a control sends its value to the watch
+  server, which re-runs the affected blocks and pushes the new output to
+  the page. Re-render is *scoped*: only the first block that reads the
+  changed widget and everything downstream re-run — earlier blocks are
+  served from cache, so large notebooks stay responsive.
+- **State is server-side and ephemeral.** Values are not written back to
+  the `.md` and do not survive a server restart. Reloading the source
+  keeps a control's current value as long as its declaration is
+  unchanged; if you change a widget's type or range (or remove it), it
+  resets to the declared default.
+- **Validation.** Out-of-range numbers clamp to the declared bounds and
+  an `option` accepts only a declared choice; invalid updates are ignored.
+- **Outside the watch server** — i.e. batch `notebook render` to HTML,
+  Markdown, LaTeX, PDF, or JSON — `widget("name")` returns the declared
+  **default**, so the rendered artifact is a snapshot at default values.
+  Static formats show the control's label and value rather than an
+  interactive element.
+- A malformed `rustlab-widget` block renders as a `[!CAUTION]` callout and
+  is skipped; `widget("name")` for an undeclared name is a hard error in
+  that code block (a renamed widget surfaces immediately rather than
+  silently using a default).
+
+Widgets are opt-in per notebook: a notebook with no `rustlab-widget`
+fences renders exactly as before.
+
 ### Callouts: `> [!NOTE]` (preferred), `<!-- note -->` (legacy)
 
 The renderer accepts the GitHub / Obsidian-native blockquote callout

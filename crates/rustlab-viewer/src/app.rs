@@ -191,6 +191,15 @@ impl eframe::App for ViewerApp {
         // When idle this costs almost nothing on modern GPUs.
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
+        self.render_ui(ctx);
+    }
+}
+
+impl ViewerApp {
+    /// Paint the current figure set. Split out of `eframe::App::update` so a
+    /// headless test can drive the real render path through `Context::run`
+    /// without constructing an `eframe::Frame`.
+    fn render_ui(&mut self, ctx: &egui::Context) {
         // Dark theme
         ctx.set_visuals(egui::Visuals::dark());
 
@@ -269,5 +278,202 @@ mod tests {
     fn fallback_without_pid_is_still_counter() {
         // Tests run with no PID encoding still work (counter = id).
         assert_eq!(display_figure_title(3, ""), "Figure 3");
+    }
+
+    use rustlab_proto::{
+        WireColor, WireHeatmap, WireLineStyle, WirePlotKind, WireSeries, WireSurface,
+    };
+
+    fn line_series() -> WireSeries {
+        WireSeries {
+            label: "s".into(),
+            x: vec![0.0, 1.0, 2.0],
+            y: vec![0.0, 1.0, 0.5],
+            color: WireColor::Named("cyan".into()),
+            style: WireLineStyle::Solid,
+            kind: WirePlotKind::Line,
+            x_labels: None,
+        }
+    }
+
+    /// Drive `n` real (headless) egui frames over the app, each draining the
+    /// channel and painting. Mirrors `eframe::App::update`.
+    fn run_frames(app: &mut ViewerApp, n: usize) {
+        run_frames_sized(app, n, egui::Vec2::new(1024.0, 768.0));
+    }
+
+    /// Like [`run_frames`] but forces a specific window size, so we can
+    /// reproduce the cramped-layout case two REPLs hit (multiple figure
+    /// windows competing for a small screen).
+    fn run_frames_sized(app: &mut ViewerApp, n: usize, size: egui::Vec2) {
+        let ctx = egui::Context::default();
+        // eframe enables AccessKit; it validates that every widget has a
+        // unique Id and panics on duplicates. A bare Context doesn't, so
+        // turn it on here to mirror the real app.
+        ctx.enable_accesskit();
+        for _ in 0..n {
+            let mut input = egui::RawInput::default();
+            input.screen_rect =
+                Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            let output = ctx.run(input, |ctx| {
+                app.process_messages(ctx);
+                app.render_ui(ctx);
+            });
+            // `Context::run` only produces shapes; the real backend then
+            // tessellates them. Run the tessellator too so a NaN/degenerate
+            // mesh (a GUI-only crash) surfaces in the test.
+            let _ = ctx.tessellate(output.shapes, output.pixels_per_point);
+        }
+    }
+
+    /// "Connect twice": two rustlab processes (distinct PID prefixes) each
+    /// open a figure, so the viewer enters the multi-window render path with
+    /// a heatmap figure and a surface figure live at once. Must not panic.
+    #[test]
+    fn two_connections_two_figures_render_without_panic() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+
+        // Connection A — first rustlab session, a heatmap figure.
+        let id_a = (111u32 << 16) | 0; // local counter 0, like the first figure
+        tx.send(ViewerMsg::FigureOpen {
+            id: id_a,
+            rows: 1,
+            cols: 1,
+            title: String::new(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelHeatmap {
+            fig_id: id_a,
+            panel: 0,
+            heatmap: WireHeatmap {
+                width: 2,
+                height: 2,
+                rgba: vec![0u8; 2 * 2 * 4],
+                smooth: false,
+                x_extent: None,
+                y_extent: None,
+                value_min: Some(-1.0),
+                value_max: Some(1.0),
+                colorscale: "viridis".into(),
+            },
+        })
+        .unwrap();
+        tx.send(ViewerMsg::Redraw { fig_id: id_a }).unwrap();
+
+        // Connection B — a second rustlab session connects (same local
+        // counter 0, different PID prefix) and opens a surface figure.
+        let id_b = (222u32 << 16) | 0;
+        tx.send(ViewerMsg::FigureOpen {
+            id: id_b,
+            rows: 1,
+            cols: 1,
+            title: String::new(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelSurface {
+            fig_id: id_b,
+            panel: 0,
+            surface: WireSurface {
+                nrows: 2,
+                ncols: 2,
+                x: vec![0.0, 1.0],
+                y: vec![0.0, 1.0],
+                z: vec![0.0, 1.0, 1.0, 0.0],
+                colorscale: "viridis".into(),
+            },
+        })
+        .unwrap();
+        tx.send(ViewerMsg::Redraw { fig_id: id_b }).unwrap();
+
+        run_frames(&mut app, 3);
+        assert_eq!(app.figures.len(), 2, "both sessions' figures should be live");
+    }
+
+    /// A second connection's `Reset` (sent by `connect_viewer` on every new
+    /// `viewer on`) followed by its own figure. Confirms the global reset
+    /// path is panic-free and observe what it does to an existing figure.
+    #[test]
+    fn second_connection_reset_then_open() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+
+        let id_a = (111u32 << 16) | 0;
+        tx.send(ViewerMsg::FigureOpen {
+            id: id_a,
+            rows: 1,
+            cols: 1,
+            title: "A".into(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelUpdate {
+            fig_id: id_a,
+            panel: 0,
+            series: vec![line_series()],
+        })
+        .unwrap();
+        run_frames(&mut app, 1);
+        assert_eq!(app.figures.len(), 1);
+
+        // New session connects: Reset wipes everything, then opens its own.
+        let id_b = (222u32 << 16) | 0;
+        tx.send(ViewerMsg::Reset).unwrap();
+        tx.send(ViewerMsg::FigureOpen {
+            id: id_b,
+            rows: 1,
+            cols: 1,
+            title: "B".into(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelUpdate {
+            fig_id: id_b,
+            panel: 0,
+            series: vec![line_series()],
+        })
+        .unwrap();
+        run_frames(&mut app, 1);
+        assert!(app.figures.contains_key(&id_b));
+    }
+
+    /// Two REPLs both `viewer on` and each plot a multi-panel, titled figure,
+    /// landing in the multi-window path on a *small* screen so per-panel
+    /// dimensions get squeezed. Probes for an unclamped negative/zero plot
+    /// size panicking in the real layout. Must not panic.
+    #[test]
+    fn two_figures_cramped_layout_render_without_panic() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+
+        for (i, pid) in [111u32, 222u32].into_iter().enumerate() {
+            let id = (pid << 16) | i as u32;
+            tx.send(ViewerMsg::FigureOpen {
+                id,
+                rows: 2,
+                cols: 2,
+                title: String::new(),
+            })
+            .unwrap();
+            for panel in 0..4u16 {
+                tx.send(ViewerMsg::PanelLabels {
+                    fig_id: id,
+                    panel,
+                    title: format!("panel {panel}"),
+                    xlabel: "x".into(),
+                    ylabel: "y".into(),
+                })
+                .unwrap();
+                tx.send(ViewerMsg::PanelUpdate {
+                    fig_id: id,
+                    panel,
+                    series: vec![line_series()],
+                })
+                .unwrap();
+            }
+            tx.send(ViewerMsg::Redraw { fig_id: id }).unwrap();
+        }
+
+        // Tiny window → two windows each subdivided into 2×2 titled panels.
+        run_frames_sized(&mut app, 3, egui::Vec2::new(120.0, 90.0));
+        assert_eq!(app.figures.len(), 2);
     }
 }

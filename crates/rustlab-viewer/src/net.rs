@@ -188,3 +188,129 @@ impl Drop for SocketCleanup {
         let _ = std::fs::remove_file(&self.0);
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    fn open_fig(id: u32) -> ViewerMsg {
+        ViewerMsg::FigureOpen {
+            id,
+            rows: 1,
+            cols: 1,
+            title: String::new(),
+        }
+    }
+
+    /// Mirror `connect_viewer_impl` + a plot: Ping(read Pong), Reset(read Ok),
+    /// FigureOpen(read Ok), PanelUpdate(no read), Redraw(read Ok). A reply
+    /// imbalance would hang here, so we put a read timeout on the stream.
+    fn client_session(path: &std::path::Path, id: u32) {
+        let mut s = UnixStream::connect(path).expect("connect");
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+        write_msg(&mut s, &ViewerMsg::Ping).unwrap();
+        assert!(matches!(
+            read_msg::<_, ViewerReply>(&mut s).unwrap(),
+            Some(ViewerReply::Pong)
+        ));
+
+        write_msg(&mut s, &ViewerMsg::Reset).unwrap();
+        assert!(matches!(
+            read_msg::<_, ViewerReply>(&mut s).unwrap(),
+            Some(ViewerReply::Ok)
+        ));
+
+        write_msg(&mut s, &open_fig(id)).unwrap();
+        assert!(matches!(
+            read_msg::<_, ViewerReply>(&mut s).unwrap(),
+            Some(ViewerReply::Ok)
+        ));
+
+        // fire-and-forget — server must NOT reply
+        write_msg(
+            &mut s,
+            &ViewerMsg::PanelUpdate {
+                fig_id: id,
+                panel: 0,
+                series: vec![],
+            },
+        )
+        .unwrap();
+
+        write_msg(&mut s, &ViewerMsg::Redraw { fig_id: id }).unwrap();
+        assert!(matches!(
+            read_msg::<_, ViewerReply>(&mut s).unwrap(),
+            Some(ViewerReply::Ok)
+        ));
+        s.flush().ok();
+    }
+
+    /// "Connect twice" / "new session while the viewer is running": two
+    /// clients drive a full session against one live listener. The app-side
+    /// receiver keeps draining so backpressure can't wedge the listener.
+    fn unique_sock(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "rustlab-viewer-test-{}-{}.sock",
+            std::process::id(),
+            tag
+        ))
+    }
+
+    #[test]
+    fn two_sequential_client_sessions_against_one_listener() {
+        let sock = unique_sock("seq");
+        let _ = std::fs::remove_file(&sock);
+        std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);
+
+        let rx = start_listener();
+        // Drain in the background so tx.send never blocks the conn threads.
+        std::thread::spawn(move || while rx.recv().is_ok() {});
+
+        // Wait for the listener to bind.
+        let mut tries = 0;
+        while !sock.exists() && tries < 200 {
+            std::thread::sleep(Duration::from_millis(10));
+            tries += 1;
+        }
+        assert!(sock.exists(), "listener never bound the socket");
+
+        client_session(&sock, (111u32 << 16) | 0);
+        client_session(&sock, (222u32 << 16) | 0);
+
+        std::env::remove_var("RUSTLAB_VIEWER_SOCK");
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// Two clients connected *simultaneously*, interleaving traffic — closest
+    /// to two rustlab REPLs both holding `viewer on`.
+    #[test]
+    fn two_concurrent_client_sessions() {
+        let sock = unique_sock("conc");
+        let _ = std::fs::remove_file(&sock);
+        std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);
+
+        let rx = start_listener();
+        std::thread::spawn(move || while rx.recv().is_ok() {});
+
+        let mut tries = 0;
+        while !sock.exists() && tries < 200 {
+            std::thread::sleep(Duration::from_millis(10));
+            tries += 1;
+        }
+        assert!(sock.exists());
+
+        let p1 = sock.clone();
+        let p2 = sock.clone();
+        let a = std::thread::spawn(move || client_session(&p1, (111u32 << 16) | 0));
+        let b = std::thread::spawn(move || client_session(&p2, (222u32 << 16) | 0));
+        a.join().unwrap();
+        b.join().unwrap();
+
+        std::env::remove_var("RUSTLAB_VIEWER_SOCK");
+        let _ = std::fs::remove_file(&sock);
+    }
+}

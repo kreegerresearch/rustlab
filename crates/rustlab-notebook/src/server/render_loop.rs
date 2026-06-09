@@ -102,6 +102,9 @@ pub fn spawn(
     // Bridge: std mpsc (notify thread) → tokio mpsc (coordinator task).
     // Forwards the slug of whichever watched notebook changed.
     let (tx, rx) = mpsc::unbounded_channel::<String>();
+    // Publish the sender so the WS `widget_update` handler can request a
+    // render through the same debounce + preemption path as a file save.
+    let _ = state.render_tx.set(tx.clone());
     std::thread::spawn(move || {
         while let Ok(res) = raw_rx.recv() {
             let event = match res {
@@ -234,7 +237,19 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
             .position(|(s, _)| *s == slug)
             .and_then(|idx| super::server_nav(&listing, idx, state.single));
 
+        // Snapshot the current live widget values to feed this render as
+        // overrides. A slider drag updates this map (via the WS handler)
+        // just before pinging the coordinator; a file save reuses whatever
+        // values are current, so the slider position survives source edits.
+        let widget_overrides = nb.widget_values.lock().unwrap().clone();
+
+        // The render holds this notebook's prefix cache for its duration so
+        // it can reuse unchanged blocks (scoped re-render). Serialising on
+        // the lock is fine: a newer render preempts the in-flight one (via
+        // the cancel flag set above), which then drops the lock promptly.
+        let nb_cache = nb.clone();
         let render_result = tokio::task::spawn_blocking(move || {
+            let mut cache = nb_cache.render_cache.lock().unwrap();
             super::render_for_server_cancellable(
                 &input,
                 theme,
@@ -243,6 +258,8 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
                 editable,
                 nav.as_ref(),
                 cancel,
+                Some(&widget_overrides),
+                Some(&mut cache),
             )
         })
         .await;
@@ -255,8 +272,8 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
             }
         }
 
-        let new_html = match render_result {
-            Ok(Ok(Some(html))) => html,
+        let (new_html, new_decls) = match render_result {
+            Ok(Ok(Some(render))) => (render.html, render.widget_decls),
             Ok(Ok(None)) => {
                 // Preempted mid-render (a newer save tripped our flag).
                 eprintln!("[watch] render preempted ({})", nb.slug);
@@ -279,6 +296,12 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
         if nb.render_gen.load(Ordering::SeqCst) != my_gen {
             return;
         }
+
+        // Refresh widget declarations so the WS handler validates incoming
+        // updates against the current source (a `.md` edit may have added,
+        // removed, or changed a widget). Live values are reconciled against
+        // these at the next render via `build_widget_table`'s coercion.
+        *nb.widget_decls.lock().unwrap() = new_decls;
 
         // Diff against this notebook's previous block list before publishing.
         // `is_flat` gates the scroll-preserving structural reconcile: only
@@ -392,6 +415,7 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            render_tx: std::sync::OnceLock::new(),
         });
         (state, nb)
     }
@@ -405,7 +429,9 @@ mod tests {
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None).unwrap();
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+                .unwrap()
+                .html;
         let (state, nb) = single_state(&nb_path, html0);
 
         let mut sub = nb.broadcast.subscribe();
@@ -446,7 +472,9 @@ mod tests {
         std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None).unwrap();
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+                .unwrap()
+                .html;
         let (state, nb) = single_state(&nb_path, html0);
 
         // Now make the source a runaway and kick off a render; it spins on
