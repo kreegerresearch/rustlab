@@ -444,6 +444,19 @@ async fn ws_widget_update_triggers_rerender_with_new_value() {
     };
     assert!(initial_html.contains("200"), "fixture: default output should be 200");
     let state = single_state("widget", &nb_path, initial_html, plot_dir);
+    // Seed the widget declarations the WS handler validates against
+    // (server::start does this from render_for_server; the test mirrors it).
+    {
+        let blocks = rustlab_notebook::parse::parse_notebook(WIDGET_NB);
+        let decls: Vec<_> = blocks
+            .into_iter()
+            .filter_map(|b| match b {
+                rustlab_notebook::parse::Block::Widget { decl, .. } => Some(decl),
+                _ => None,
+            })
+            .collect();
+        *state.notebook("widget").unwrap().widget_decls.lock().unwrap() = decls;
+    }
 
     // Bind, spawn coordinator (publishes the render-request channel), serve.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

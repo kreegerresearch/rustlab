@@ -1067,4 +1067,91 @@ mod tests {
         assert!(div.contains(r#"type: "heatmap""#), "heatmap missing");
         assert!(div.contains(r#"type: "contour""#), "contour missing");
     }
+
+    fn line_series(n: usize) -> Series {
+        Series {
+            label: "s".to_string(),
+            x_data: (0..n).map(|i| i as f64).collect(),
+            y_data: (0..n).map(|i| (i as f64).sin()).collect(),
+            color: SeriesColor::Cyan,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        }
+    }
+
+    #[test]
+    fn series_over_10k_points_uses_webgl_scattergl_trace() {
+        // Traces beyond 10k points must switch to Plotly's WebGL backend
+        // (type "scattergl") to stay responsive in the browser.
+        let mut fig = FigureState::new();
+        fig.current_mut().series.push(line_series(10_001));
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert!(
+            div.contains(r#"type: "scattergl""#),
+            "10_001-point series should emit a scattergl trace; got:\n{}",
+            &div[..div.len().min(600)]
+        );
+    }
+
+    #[test]
+    fn series_at_or_below_10k_points_uses_dom_scatter_trace() {
+        // At exactly the threshold (10k points) the DOM renderer is kept.
+        let mut fig = FigureState::new();
+        fig.current_mut().series.push(line_series(10_000));
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        assert!(div.contains(r#"type: "scatter""#), "scatter trace missing");
+        assert!(
+            !div.contains("scattergl"),
+            "a 10_000-point series must NOT fall back to WebGL"
+        );
+    }
+
+    #[test]
+    fn json_f64_array_formats_values_and_maps_nonfinite_to_null() {
+        assert_eq!(json_f64_array(&[]), "[]");
+        assert_eq!(json_f64_array(&[1.5, 2.0, -0.25]), "[1.5,2,-0.25]");
+        // NaN and infinities are not valid JSON numbers; they become null so
+        // Plotly renders a gap instead of throwing a parse error.
+        assert_eq!(
+            json_f64_array(&[f64::NAN, 3.0, f64::INFINITY, f64::NEG_INFINITY]),
+            "[null,3,null,null]"
+        );
+    }
+
+    #[test]
+    fn arrows_to_polyline_emits_tail_tip_barbs_with_null_separators() {
+        use crate::quiver::Arrow;
+        assert_eq!(arrows_to_polyline(&[]), ("[]".to_string(), "[]".to_string()));
+
+        let arrows = [
+            Arrow {
+                shaft: ((0.0, 0.0), (1.0, 0.0)),
+                head: [(0.8, 0.1), (1.0, 0.0), (0.8, -0.1)],
+            },
+            Arrow {
+                shaft: ((2.0, 1.0), (3.0, 1.0)),
+                head: [(2.8, 1.1), (3.0, 1.0), (2.8, 0.9)],
+            },
+        ];
+        let (xs, ys) = arrows_to_polyline(&arrows);
+        // Per arrow: tail, tip, head[0], head[1], head[2]; arrows separated
+        // by a null so Plotly draws disconnected glyphs in one trace.
+        assert_eq!(xs, "[0,1,0.8,1,0.8,null,2,3,2.8,3,2.8]");
+        assert_eq!(ys, "[0,0,0.1,0,-0.1,null,1,1,1.1,1,0.9]");
+    }
+
+    #[test]
+    fn paths_to_polyline_separates_paths_with_null_and_skips_empty() {
+        assert_eq!(paths_to_polyline(&[]), ("[]".to_string(), "[]".to_string()));
+
+        let paths = vec![
+            vec![],                            // empty: skipped, no leading null
+            vec![(0.0, 0.0), (1.0, 2.0)],
+            vec![],                            // empty in the middle: skipped
+            vec![(3.0, 4.5)],
+        ];
+        let (xs, ys) = paths_to_polyline(&paths);
+        assert_eq!(xs, "[0,1,null,3]");
+        assert_eq!(ys, "[0,2,null,4.5]");
+    }
 }

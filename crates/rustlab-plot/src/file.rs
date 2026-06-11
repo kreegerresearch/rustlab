@@ -3248,4 +3248,82 @@ mod tests {
         );
         let _ = std::fs::remove_file(&path);
     }
+
+    // ─── Color parsing ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_color_solid_accepts_hex_rrggbb() {
+        assert_eq!(parse_color_solid("#1a2b3c"), Some(RGBColor(0x1a, 0x2b, 0x3c)));
+        // Case-insensitive hex digits, surrounding whitespace trimmed.
+        assert_eq!(parse_color_solid("  #FFffFF  "), Some(RGBColor(255, 255, 255)));
+        assert_eq!(parse_color_solid("#000000"), Some(RGBColor(0, 0, 0)));
+    }
+
+    #[test]
+    fn parse_color_solid_falls_back_to_rgba_forms_dropping_alpha() {
+        // Non-6-digit hex and functional forms route through parse_color_rgba;
+        // the alpha channel is discarded for the solid variant.
+        assert_eq!(parse_color_solid("#11223380"), Some(RGBColor(0x11, 0x22, 0x33)));
+        assert_eq!(parse_color_solid("rgb(10,20,30)"), Some(RGBColor(10, 20, 30)));
+        assert_eq!(parse_color_solid("rgba(40, 50, 60, 0.25)"), Some(RGBColor(40, 50, 60)));
+    }
+
+    #[test]
+    fn parse_color_rgba_accepts_hex_with_and_without_alpha() {
+        assert_eq!(parse_color_rgba("#112233"), Some(RGBAColor(0x11, 0x22, 0x33, 1.0)));
+        let c = parse_color_rgba("#00010280").expect("8-digit hex");
+        assert_eq!((c.0, c.1, c.2), (0, 1, 2));
+        assert!((c.3 - 128.0 / 255.0).abs() < 1e-12, "alpha should be 0x80/255, got {}", c.3);
+    }
+
+    #[test]
+    fn parse_color_rgba_accepts_functional_forms_and_clamps_channels() {
+        assert_eq!(parse_color_rgba("rgba(1, 2, 3, 0.5)"), Some(RGBAColor(1, 2, 3, 0.5)));
+        // rgb() defaults alpha to 1.0; prefix match is case-insensitive.
+        assert_eq!(parse_color_rgba("RGB(4,5,6)"), Some(RGBAColor(4, 5, 6, 1.0)));
+        // Out-of-range channels saturate at 255 rather than failing.
+        assert_eq!(parse_color_rgba("rgb(300, 200, 100)"), Some(RGBAColor(255, 200, 100, 1.0)));
+    }
+
+    #[test]
+    fn parse_color_malformed_inputs_return_none_without_panicking() {
+        // Named colors are NOT supported by these parsers; callers fall back
+        // via unwrap_or (see ThemePalette::from).
+        for bad in [
+            "", "blue", "#", "#12345", "#1234567", "#GGHHII", "#11223344FF",
+            "rgb(1,2)", "rgb(a,b,c)", "rgba(1,2,3", "rgb 1,2,3", "hsl(10,20,30)",
+            "rgb(-1,0,0)",
+        ] {
+            assert_eq!(parse_color_solid(bad), None, "parse_color_solid({bad:?})");
+            assert_eq!(parse_color_rgba(bad), None, "parse_color_rgba({bad:?})");
+        }
+    }
+
+    #[test]
+    fn theme_palettes_parse_for_both_built_in_themes() {
+        // Every shipped theme's plot colors must round-trip through the
+        // parsers — otherwise ThemePalette silently falls back to defaults
+        // and the SVG/PNG backend renders off-theme.
+        for theme in [crate::Theme::Dark, crate::Theme::Light] {
+            let colors = theme.colors();
+            assert!(
+                parse_color_solid(colors.plot_bg).is_some(),
+                "{theme:?} plot_bg {:?} must parse",
+                colors.plot_bg
+            );
+            assert!(
+                parse_color_rgba(colors.text).is_some(),
+                "{theme:?} text {:?} must parse",
+                colors.text
+            );
+            assert!(
+                parse_color_rgba(colors.plot_grid).is_some(),
+                "{theme:?} plot_grid {:?} must parse",
+                colors.plot_grid
+            );
+        }
+        // Spot-check one concrete value end-to-end.
+        let p = ThemePalette::from(crate::Theme::Dark.colors());
+        assert_eq!(p.bg, RGBColor(0x1e, 0x1e, 0x2e));
+    }
 }

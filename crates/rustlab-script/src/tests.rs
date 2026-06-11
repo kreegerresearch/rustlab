@@ -15101,3 +15101,908 @@ mod sparameters_phase6_tests {
         assert!(err.contains("4-port"), "{err}");
     }
 }
+
+#[cfg(test)]
+mod builtin_coverage_tests {
+    //! Correctness tests for previously-untested builtins: complex
+    //! decomposition (conj/real/angle), scalar math (log2/tanh), FFT helpers
+    //! (fftshift/fftfreq/ifft/spectrum), filter design and analysis (freqz,
+    //! filtfilt, windowed/Kaiser/equiripple FIR families), vector calculus on
+    //! 2-D and 3-D grids, array tiling, fixed-point quantization, histograms,
+    //! and misc utilities.
+
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error from: {src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn get_scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    /// Real parts of a vector value.
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected vector for '{name}', got {other:?}"),
+        }
+    }
+
+    fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    // ── Complex decomposition ────────────────────────────────────────────
+
+    #[test]
+    fn conj_complex_scalar() {
+        let ev = run("z = conj(3 + j*4);");
+        match ev.get("z").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 3.0));
+                assert!(close(c.im, -4.0));
+            }
+            other => panic!("expected complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conj_vector_negates_imaginary_parts() {
+        let ev = run("v = conj([1 + j*2, 3 - j*5]);");
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                assert!(close(v[0].re, 1.0) && close(v[0].im, -2.0));
+                assert!(close(v[1].re, 3.0) && close(v[1].im, 5.0));
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_angle_abs_recompose_complex() {
+        // z = m*exp(j*a) decomposition identity: re = m*cos(a), im = m*sin(a).
+        let ev = run(
+            "z = 3 + j*4;
+             r = real(z);
+             a = angle(z);
+             m = abs(z);
+             rc = m * cos(a);
+             ic = m * sin(a);",
+        );
+        assert!(close(get_scalar(&ev, "r"), 3.0));
+        assert!(close(get_scalar(&ev, "m"), 5.0));
+        assert!(close(get_scalar(&ev, "a"), (4.0f64).atan2(3.0)));
+        assert!(close(get_scalar(&ev, "rc"), 3.0));
+        assert!(close(get_scalar(&ev, "ic"), 4.0));
+    }
+
+    #[test]
+    fn angle_of_pure_imaginary_and_negative_real() {
+        let ev = run("a1 = angle(j*2);\na2 = angle(-1);");
+        assert!(close(get_scalar(&ev, "a1"), std::f64::consts::FRAC_PI_2));
+        assert!(close(get_scalar(&ev, "a2"), std::f64::consts::PI));
+    }
+
+    // ── Scalar math ──────────────────────────────────────────────────────
+
+    #[test]
+    fn log2_scalar_and_vector() {
+        let ev = run("a = log2(8);\nb = log2(1);\nv = log2([2, 4, 1024]);");
+        assert!(close(get_scalar(&ev, "a"), 3.0));
+        assert!(close(get_scalar(&ev, "b"), 0.0));
+        assert_eq!(get_vec(&ev, "v"), vec![1.0, 2.0, 10.0]);
+    }
+
+    #[test]
+    fn tanh_scalar_values() {
+        let ev = run("a = tanh(0);\nb = tanh(20);\nc = tanh(-1) + tanh(1);");
+        assert!(close(get_scalar(&ev, "a"), 0.0));
+        assert!(close(get_scalar(&ev, "b"), 1.0));
+        // tanh is odd, so tanh(-1) + tanh(1) = 0.
+        assert!(close(get_scalar(&ev, "c"), 0.0));
+    }
+
+    // ── FFT helpers ──────────────────────────────────────────────────────
+
+    #[test]
+    fn fftshift_even_length() {
+        let ev = run("v = fftshift([0, 1, 2, 3, 4, 5, 6, 7]);");
+        assert_eq!(
+            get_vec(&ev, "v"),
+            vec![4.0, 5.0, 6.0, 7.0, 0.0, 1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn fftshift_odd_length() {
+        let ev = run("v = fftshift([0, 1, 2, 3, 4]);");
+        assert_eq!(get_vec(&ev, "v"), vec![3.0, 4.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn fftfreq_axis_values() {
+        let ev = run("f = fftfreq(8, 800);");
+        assert_eq!(
+            get_vec(&ev, "f"),
+            vec![0.0, 100.0, 200.0, 300.0, -400.0, -300.0, -200.0, -100.0]
+        );
+    }
+
+    #[test]
+    fn ifft_inverts_fft() {
+        // Power-of-two length avoids zero-padding, so the round-trip is exact
+        // up to floating-point noise.
+        let ev = run(
+            "x = [1, 2, 3, 4, 5, 6, 7, 8];
+             y = real(ifft(fft(x)));",
+        );
+        let y = get_vec(&ev, "y");
+        assert_eq!(y.len(), 8);
+        for (k, &v) in y.iter().enumerate() {
+            assert!(
+                (v - (k as f64 + 1.0)).abs() < 1e-9,
+                "round-trip mismatch at {k}: {v}"
+            );
+        }
+    }
+
+    #[test]
+    fn spectrum_shape_and_dc_bin() {
+        // fft(ones(8)) = [8, 0, ..., 0]; spectrum() centers DC, so the DC
+        // bin lands at column n/2 + 1 with frequency 0.
+        let ev = run(
+            "x = ones(8);
+             X = fft(x);
+             H = spectrum(X, 800);",
+        );
+        let h = get_matrix(&ev, "H");
+        assert_eq!(h.dim(), (2, 8));
+        assert!(close(h[[0, 0]].re, -400.0), "leftmost bin is -fs/2");
+        assert!(close(h[[0, 4]].re, 0.0), "DC frequency at center");
+        assert!(close(h[[1, 4]].re, 8.0), "DC bin holds sum of samples");
+        assert!(close(h[[1, 0]].norm(), 0.0), "non-DC bins are zero");
+    }
+
+    // ── Filter analysis ──────────────────────────────────────────────────
+
+    #[test]
+    fn freqz_lowpass_dc_gain_is_one() {
+        let ev = run(
+            "h = fir_lowpass(31, 100, 1000, \"hamming\");
+             H = freqz(h, 64, 1000);
+             f0 = real(H(1, 1));
+             dc = abs(H(2, 1));",
+        );
+        assert!(close(get_scalar(&ev, "f0"), 0.0), "first bin is DC");
+        // Windowed-sinc lowpass is normalized to unity DC gain.
+        assert!(
+            (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,
+            "DC gain of normalized lowpass"
+        );
+    }
+
+    #[test]
+    fn filtfilt_zero_phase_impulse_is_symmetric() {
+        // FIR path (a = [1]): forward-backward filtering of a centered
+        // impulse yields conv(b, reverse(b)), symmetric about the impulse.
+        let ev = run(
+            "b = [0.25, 0.5, 0.25];
+             a = [1];
+             x = zeros(15);
+             x(8) = 1;
+             y = filtfilt(b, a, x);",
+        );
+        let y = get_vec(&ev, "y");
+        assert_eq!(y.len(), 15);
+        assert!(close(y[7], 0.375), "peak = sum(b.^2) at the impulse");
+        assert!(close(y[6], 0.25) && close(y[8], 0.25));
+        assert!(close(y[5], 0.0625) && close(y[9], 0.0625));
+        for k in 1..=7 {
+            assert!(
+                (y[7 - k] - y[7 + k]).abs() < 1e-12,
+                "zero-phase symmetry broken at offset {k}"
+            );
+        }
+    }
+
+    // ── Windowed-sinc FIR families ──────────────────────────────────────
+    //
+    // Gains are probed directly from the taps:
+    //   DC gain       = |sum(h)|
+    //   Nyquist gain  = |sum(h .* (-1)^n)|  (via cos(pi*n))
+    //   gain at f0    = |sum(h .* exp(-j*2*pi*f0/fs*n))|
+
+    #[test]
+    fn fir_highpass_dc_and_nyquist_gains() {
+        let ev = run(
+            "h = fir_highpass(31, 200, 1000, \"hamming\");
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
+        // Spectral inversion of a unity-DC lowpass → exactly zero DC gain.
+        assert!(get_scalar(&ev, "dc") < 1e-9, "highpass blocks DC");
+        assert!(
+            (get_scalar(&ev, "nyq") - 1.0).abs() < 0.02,
+            "highpass passes Nyquist"
+        );
+    }
+
+    #[test]
+    fn fir_bandpass_dc_center_and_nyquist_gains() {
+        let ev = run(
+            "h = fir_bandpass(63, 150, 250, 1000, \"hamming\");
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));
+             w = 2*pi*200/1000;
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
+        // Difference of two unity-DC lowpasses → exactly zero DC gain.
+        assert!(get_scalar(&ev, "dc") < 1e-9, "bandpass blocks DC");
+        assert!(get_scalar(&ev, "nyq") < 0.05, "bandpass blocks Nyquist");
+        assert!(
+            (get_scalar(&ev, "g0") - 1.0).abs() < 0.05,
+            "bandpass passes center frequency"
+        );
+    }
+
+    #[test]
+    fn fir_lowpass_kaiser_gains() {
+        let ev = run(
+            "h = fir_lowpass_kaiser(100, 40, 60, 1000);
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
+        assert!(
+            (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,
+            "normalized unity DC gain"
+        );
+        assert!(get_scalar(&ev, "nyq") < 0.01, "60 dB stopband at Nyquist");
+    }
+
+    #[test]
+    fn fir_highpass_kaiser_gains() {
+        let ev = run(
+            "h = fir_highpass_kaiser(200, 40, 60, 1000);
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
+        assert!(get_scalar(&ev, "dc") < 1e-9, "highpass blocks DC");
+        assert!(
+            (get_scalar(&ev, "nyq") - 1.0).abs() < 0.01,
+            "highpass passes Nyquist"
+        );
+    }
+
+    #[test]
+    fn fir_bandpass_kaiser_gains() {
+        let ev = run(
+            "h = fir_bandpass_kaiser(150, 250, 40, 60, 1000);
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));
+             w = 2*pi*200/1000;
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
+        assert!(get_scalar(&ev, "dc") < 1e-9, "bandpass blocks DC");
+        assert!(get_scalar(&ev, "nyq") < 0.01, "bandpass blocks Nyquist");
+        assert!(
+            (get_scalar(&ev, "g0") - 1.0).abs() < 0.01,
+            "bandpass passes center frequency"
+        );
+    }
+
+    #[test]
+    fn fir_notch_gains() {
+        let ev = run(
+            "h = fir_notch(200, 100, 1000, 151, \"hamming\");
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             w = 2*pi*200/1000;
+             g0 = abs(sum(h .* exp(0 - j*w*k)));",
+        );
+        // Spectral inversion of a zero-DC bandpass → exactly unity DC gain.
+        assert!(
+            (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,
+            "notch passes DC"
+        );
+        assert!(get_scalar(&ev, "g0") < 0.05, "notch rejects center frequency");
+    }
+
+    // ── Parks-McClellan equiripple FIR ──────────────────────────────────
+
+    #[test]
+    fn firpm_lowpass_band_gains() {
+        let ev = run(
+            "h = firpm(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0], [1, 1]);
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));",
+        );
+        assert_eq!(get_vec(&ev, "h").len(), 31);
+        assert!(
+            (get_scalar(&ev, "dc") - 1.0).abs() < 0.05,
+            "passband gain near 1, got {}",
+            get_scalar(&ev, "dc")
+        );
+        assert!(
+            get_scalar(&ev, "nyq") < 0.05,
+            "stopband gain near 0, got {}",
+            get_scalar(&ev, "nyq")
+        );
+    }
+
+    #[test]
+    fn firpmq_returns_integer_taps_with_small_relative_stopband() {
+        // firpmq scales the design so the largest tap maps exactly to
+        // 2^(bits-1) - 1 (32767 for the default 16 bits); a unit-gain
+        // response is recovered by dividing by sum(h), not by 2^15 - 1.
+        let ev = run(
+            "h = firpmq(31, [0, 0.4, 0.5, 1], [1, 1, 0, 0]);
+             frac = sum(abs(h - round(h)));
+             pk = max(abs(h));
+             n = length(h);
+             k = 0:(n - 1);
+             dc = abs(sum(h));
+             nyq = abs(sum(h .* cos(pi * k)));
+             rel = nyq / dc;",
+        );
+        assert!(
+            close(get_scalar(&ev, "frac"), 0.0),
+            "all coefficients are integers"
+        );
+        assert!(
+            close(get_scalar(&ev, "pk"), 32767.0),
+            "peak tap saturates the 16-bit range, got {}",
+            get_scalar(&ev, "pk")
+        );
+        assert!(
+            get_scalar(&ev, "rel") < 0.05,
+            "Nyquist gain relative to DC gain near 0, got {}",
+            get_scalar(&ev, "rel")
+        );
+    }
+
+    // ── Vector calculus on 2-D grids ────────────────────────────────────
+
+    #[test]
+    fn gradient_of_linear_field() {
+        // F = X (value equals column coordinate): dF/dx = 1, dF/dy = 0,
+        // exact everywhere for the 2nd-order stencil.
+        let ev = run("[X, Y] = meshgrid(0:4, 0:3);\n[Fx, Fy] = gradient(X);");
+        let fx = get_matrix(&ev, "Fx");
+        let fy = get_matrix(&ev, "Fy");
+        assert_eq!(fx.dim(), (4, 5));
+        for c in fx.iter() {
+            assert!(close(c.re, 1.0), "dX/dx = 1, got {}", c.re);
+        }
+        for c in fy.iter() {
+            assert!(close(c.re, 0.0), "dX/dy = 0, got {}", c.re);
+        }
+    }
+
+    #[test]
+    fn gradient_respects_grid_spacing() {
+        // Halving dx doubles the reported derivative.
+        let ev = run("[X, Y] = meshgrid(0:4, 0:3);\n[Gx, Gy] = gradient(X, 0.5, 1.0);");
+        let gx = get_matrix(&ev, "Gx");
+        for c in gx.iter() {
+            assert!(close(c.re, 2.0), "dX/dx with dx=0.5, got {}", c.re);
+        }
+    }
+
+    #[test]
+    fn divergence_of_linear_field() {
+        // F = (X, Y): div F = dX/dx + dY/dy = 2 everywhere.
+        let ev = run("[X, Y] = meshgrid(0:4, 0:3);\nD = divergence(X, Y);");
+        let d = get_matrix(&ev, "D");
+        assert_eq!(d.dim(), (4, 5));
+        for c in d.iter() {
+            assert!(close(c.re, 2.0), "div = 2, got {}", c.re);
+        }
+    }
+
+    #[test]
+    fn curl_of_rotational_field() {
+        // Rigid rotation F = (-Y, X): curl_z = dFy/dx - dFx/dy = 2 everywhere.
+        let ev = run(
+            "[X, Y] = meshgrid(0:4, 0:3);
+             N = 0 - Y;
+             C = curl(N, X);",
+        );
+        let c = get_matrix(&ev, "C");
+        for z in c.iter() {
+            assert!(close(z.re, 2.0), "curl = 2, got {}", z.re);
+        }
+    }
+
+    // ── Vector calculus on 3-D grids ────────────────────────────────────
+
+    const LINEAR_FIELD_3D: &str = "F = zeros3(3, 3, 3);
+        for ii = 1:3
+          for jj = 1:3
+            for kk = 1:3
+              F(ii, jj, kk) = 2*jj + 3*ii + 4*kk;
+            end
+          end
+        end";
+
+    #[test]
+    fn gradient3_of_linear_field() {
+        // F = 2x + 3y + 4z (x = cols, y = rows, z = pages): the gradient is
+        // (2, 3, 4) exactly, including the one-sided boundary stencils.
+        let src = format!(
+            "{LINEAR_FIELD_3D}
+             [Fx, Fy, Fz] = gradient3(F);
+             gx = Fx(2, 2, 2); gy = Fy(2, 2, 2); gz = Fz(2, 2, 2);
+             cx = Fx(1, 1, 1); cy = Fy(3, 3, 3); cz = Fz(1, 3, 2);"
+        );
+        let ev = run(&src);
+        assert!(close(get_scalar(&ev, "gx"), 2.0));
+        assert!(close(get_scalar(&ev, "gy"), 3.0));
+        assert!(close(get_scalar(&ev, "gz"), 4.0));
+        assert!(close(get_scalar(&ev, "cx"), 2.0), "exact at corners too");
+        assert!(close(get_scalar(&ev, "cy"), 3.0));
+        assert!(close(get_scalar(&ev, "cz"), 4.0));
+    }
+
+    #[test]
+    fn divergence3_of_linear_field() {
+        // div(F, F, F) = dF/dx + dF/dy + dF/dz = 2 + 3 + 4 = 9 everywhere.
+        let src = format!(
+            "{LINEAR_FIELD_3D}
+             D = divergence3(F, F, F);
+             d1 = D(2, 2, 2); d2 = D(1, 1, 1); d3 = D(3, 3, 3);"
+        );
+        let ev = run(&src);
+        assert!(close(get_scalar(&ev, "d1"), 9.0));
+        assert!(close(get_scalar(&ev, "d2"), 9.0));
+        assert!(close(get_scalar(&ev, "d3"), 9.0));
+    }
+
+    #[test]
+    fn curl3_of_linear_field() {
+        // curl(F, F, F) with F = 2x + 3y + 4z:
+        //   Cx = dFz/dy - dFy/dz = 3 - 4 = -1
+        //   Cy = dFx/dz - dFz/dx = 4 - 2 =  2
+        //   Cz = dFy/dx - dFx/dy = 2 - 3 = -1
+        let src = format!(
+            "{LINEAR_FIELD_3D}
+             [Cx, Cy, Cz] = curl3(F, F, F);
+             vx = Cx(2, 2, 2); vy = Cy(2, 2, 2); vz = Cz(2, 2, 2);"
+        );
+        let ev = run(&src);
+        assert!(close(get_scalar(&ev, "vx"), -1.0));
+        assert!(close(get_scalar(&ev, "vy"), 2.0));
+        assert!(close(get_scalar(&ev, "vz"), -1.0));
+    }
+
+    // ── repmat ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn repmat_tiles_matrix() {
+        let ev = run("R = repmat([1, 2; 3, 4], 2, 3);");
+        let r = get_matrix(&ev, "R");
+        assert_eq!(r.dim(), (4, 6));
+        // Every 2x2 block repeats the source.
+        for bi in 0..2 {
+            for bj in 0..3 {
+                assert!(close(r[[2 * bi, 2 * bj]].re, 1.0));
+                assert!(close(r[[2 * bi, 2 * bj + 1]].re, 2.0));
+                assert!(close(r[[2 * bi + 1, 2 * bj]].re, 3.0));
+                assert!(close(r[[2 * bi + 1, 2 * bj + 1]].re, 4.0));
+            }
+        }
+    }
+
+    #[test]
+    fn repmat_scalar_and_row_vector() {
+        let ev = run("A = repmat(7, 2, 2);\nB = repmat([1, 2], 2, 2);");
+        let a = get_matrix(&ev, "A");
+        assert_eq!(a.dim(), (2, 2));
+        assert!(a.iter().all(|c| c.re == 7.0));
+        let b = get_matrix(&ev, "B");
+        assert_eq!(b.dim(), (2, 4));
+        assert_eq!(
+            b.row(1).iter().map(|c| c.re).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 1.0, 2.0]
+        );
+    }
+
+    // ── Output / introspection builtins ─────────────────────────────────
+
+    #[test]
+    fn fieldnames_disp_print_run_clean() {
+        // These builtins write to the script output stream and return None;
+        // the assertion is that they execute without error and leave
+        // surrounding state intact.
+        let ev = run(
+            "s = struct(\"beta\", 1, \"alpha\", 2);
+             fieldnames(s);
+             disp(42);
+             disp(\"hello\");
+             print(\"x =\", 1, [1, 2]);
+             after = 99;",
+        );
+        assert!(close(get_scalar(&ev, "after"), 99.0));
+    }
+
+    #[test]
+    fn fieldnames_requires_struct() {
+        let err = run_err("fieldnames(3);");
+        assert!(err.contains("requires a struct"), "{err}");
+    }
+
+    // ── Fixed-point quantization ────────────────────────────────────────
+
+    #[test]
+    fn quantize_snaps_to_q8_4_grid() {
+        // Q8.4, default floor rounding: step = 1/16.
+        let ev = run(
+            "f = qfmt(8, 4);
+             a = quantize(0.3, f);
+             b = quantize(-0.3, f);
+             c = quantize(100, f);",
+        );
+        assert!(close(get_scalar(&ev, "a"), 0.25), "floor(4.8)/16");
+        assert!(close(get_scalar(&ev, "b"), -0.3125), "floor(-4.8)/16");
+        // Saturation at the top of the 8-bit range: 127/16.
+        assert!(close(get_scalar(&ev, "c"), 7.9375), "saturates at max");
+    }
+
+    #[test]
+    fn quantize_vector_elementwise() {
+        let ev = run("v = quantize([0.3, -0.3, 1.0], qfmt(8, 4));");
+        assert_eq!(get_vec(&ev, "v"), vec![0.25, -0.3125, 1.0]);
+    }
+
+    #[test]
+    fn qconv_exact_on_grid_values() {
+        // All inputs and the exact convolution [0.5, 0.75, 0.25] are
+        // representable in Q8.4, so quantization is the identity here.
+        let ev = run("y = qconv([1, 1], [0.5, 0.25], qfmt(8, 4));");
+        assert_eq!(get_vec(&ev, "y"), vec![0.5, 0.75, 0.25]);
+    }
+
+    #[test]
+    fn snr_of_identical_signals_is_infinite() {
+        let ev = run("x = [1, 2, 3, 4];\ns = snr(x, x);");
+        assert!(get_scalar(&ev, "s").is_infinite());
+        assert!(get_scalar(&ev, "s") > 0.0);
+    }
+
+    #[test]
+    fn snr_known_ratio() {
+        // Signal power 1, noise power 0.25^2/4 = 1/64 → 10*log10(64).
+        let ev = run("s = snr([1, 1, 1, 1], [1, 1, 1, 0.75]);");
+        assert!(
+            (get_scalar(&ev, "s") - 10.0 * 64.0f64.log10()).abs() < 1e-9,
+            "snr = {}",
+            get_scalar(&ev, "s")
+        );
+    }
+
+    // ── Histogram ───────────────────────────────────────────────────────
+
+    #[test]
+    fn hist_bin_centers_and_counts() {
+        // Range [1, 3] split into two width-1 bins: centers 1.5 and 2.5.
+        // {1, 1} fall in the first bin; {2, 3} in the second (the last bin
+        // is closed on the right so the maximum lands inside it).
+        let ev = run("H = hist([1, 1, 2, 3], 2);");
+        let h = get_matrix(&ev, "H");
+        assert_eq!(h.dim(), (2, 2));
+        assert!(close(h[[0, 0]].re, 1.5) && close(h[[0, 1]].re, 2.5));
+        assert!(close(h[[1, 0]].re + h[[1, 1]].re, 4.0), "counts sum to n");
+        assert!(close(h[[1, 0]].re, 2.0), "1 and 1 in first bin");
+        assert!(close(h[[1, 1]].re, 2.0), "2 and 3 in second bin");
+    }
+
+    // ── nproc ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn nproc_reports_at_least_one_core() {
+        let ev = run("n = nproc();");
+        let n = get_scalar(&ev, "n");
+        assert!(n >= 1.0, "nproc = {n}");
+        assert!(close(n, n.round()), "core count is integral");
+    }
+
+    #[test]
+    fn nproc_rejects_arguments() {
+        let err = run_err("nproc(2);");
+        assert!(err.contains("no arguments"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod eval_edge_semantics_tests {
+    //! Edge-case and error-path semantics of the evaluator: reshape size
+    //! checking, 1-based indexing violations, axis reductions, multi-output
+    //! find, string indexing, empty-vector reductions, complex extremum
+    //! comparison, and matrix region writes.
+
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error from: {src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn get_scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("expected scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected vector for '{name}', got {other:?}"),
+        }
+    }
+
+    fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m.clone(),
+            other => panic!("expected matrix for '{name}', got {other:?}"),
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    // ── reshape ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn reshape_element_count_mismatch_errors() {
+        let err = run_err("reshape([1, 2, 3, 4, 5], 2, 3);");
+        assert!(err.contains("reshape"), "{err}");
+        assert!(err.contains("5") && err.contains("6"), "{err}");
+    }
+
+    #[test]
+    fn reshape_fills_column_major() {
+        let ev = run("R = reshape(1:6, 2, 3);");
+        let r = get_matrix(&ev, "R");
+        assert_eq!(r.dim(), (2, 3));
+        // Column-major fill: columns are [1;2], [3;4], [5;6].
+        assert!(close(r[[0, 0]].re, 1.0) && close(r[[1, 0]].re, 2.0));
+        assert!(close(r[[0, 1]].re, 3.0) && close(r[[1, 1]].re, 4.0));
+        assert!(close(r[[0, 2]].re, 5.0) && close(r[[1, 2]].re, 6.0));
+    }
+
+    // ── 1-based indexing violations ─────────────────────────────────────
+
+    #[test]
+    fn vector_index_zero_errors() {
+        let err = run_err("v = [1, 2, 3];\nx = v(0);");
+        assert!(err.contains("1-based"), "{err}");
+    }
+
+    #[test]
+    fn vector_index_negative_errors() {
+        let err = run_err("v = [1, 2, 3];\nx = v(-1);");
+        assert!(err.contains("1-based"), "{err}");
+    }
+
+    #[test]
+    fn vector_index_past_end_errors() {
+        let err = run_err("v = [1, 2, 3];\nx = v(4);");
+        assert!(err.contains("out of bounds"), "{err}");
+    }
+
+    #[test]
+    fn vector_index_fractional_truncates() {
+        // Current behavior: a fractional index is truncated toward zero, so
+        // v(1.5) silently reads v(1) instead of raising an error. This test
+        // pins the current semantics; see the coverage report for discussion.
+        let ev = run("v = [10, 20, 30];\nx = v(1.5);");
+        assert!(close(get_scalar(&ev, "x"), 10.0));
+    }
+
+    // ── Axis reductions with dim = 2 ────────────────────────────────────
+
+    #[test]
+    fn sum_mean_std_along_rows() {
+        let ev = run(
+            "M = [1, 2, 3; 4, 5, 6];
+             s = sum(M, 2);
+             m = mean(M, 2);
+             d = std(M, 2);",
+        );
+        let s = get_matrix(&ev, "s");
+        assert_eq!(s.dim(), (2, 1));
+        assert!(close(s[[0, 0]].re, 6.0) && close(s[[1, 0]].re, 15.0));
+        let m = get_matrix(&ev, "m");
+        assert_eq!(m.dim(), (2, 1));
+        assert!(close(m[[0, 0]].re, 2.0) && close(m[[1, 0]].re, 5.0));
+        let d = get_matrix(&ev, "d");
+        assert_eq!(d.dim(), (2, 1));
+        // Sample standard deviation of [1,2,3] (and [4,5,6]) is 1.
+        assert!(close(d[[0, 0]].re, 1.0) && close(d[[1, 0]].re, 1.0));
+    }
+
+    // ── Multi-output find ───────────────────────────────────────────────
+
+    #[test]
+    fn find_matrix_returns_row_col_value_triples() {
+        // Column-major scan: (2,1)=3 is found before (1,2)=2.
+        let ev = run("M = [0, 2; 3, 0];\n[I, J, V] = find(M);");
+        assert_eq!(get_vec(&ev, "I"), vec![2.0, 1.0]);
+        assert_eq!(get_vec(&ev, "J"), vec![1.0, 2.0]);
+        assert_eq!(get_vec(&ev, "V"), vec![3.0, 2.0]);
+    }
+
+    #[test]
+    fn find_vector_returns_index_value_pairs() {
+        let ev = run("[idx, vals] = find([0, 5, 0, 7]);");
+        assert_eq!(get_vec(&ev, "idx"), vec![2.0, 4.0]);
+        assert_eq!(get_vec(&ev, "vals"), vec![5.0, 7.0]);
+    }
+
+    // ── String indexing ─────────────────────────────────────────────────
+
+    #[test]
+    fn string_index_returns_character() {
+        let ev = run("s = \"hello\";\nc = s(2);");
+        match ev.get("c").unwrap() {
+            Value::Str(c) => assert_eq!(c, "e"),
+            other => panic!("expected string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_index_out_of_bounds_errors() {
+        let err = run_err("s = \"hello\";\nc = s(7);");
+        assert!(err.contains("string index 7 out of bounds"), "{err}");
+        assert!(err.contains("length 5"), "{err}");
+    }
+
+    #[test]
+    fn string_index_zero_errors() {
+        let err = run_err("s = \"hello\";\nc = s(0);");
+        assert!(err.contains("1-based"), "{err}");
+    }
+
+    // ── Empty-vector literals and reductions ────────────────────────────
+
+    #[test]
+    fn empty_literal_is_zero_length_vector() {
+        let ev = run("x = [];\nn = length(x);");
+        match ev.get("x").unwrap() {
+            Value::Vector(v) => assert!(v.is_empty()),
+            other => panic!("expected empty vector, got {other:?}"),
+        }
+        assert!(close(get_scalar(&ev, "n"), 0.0));
+    }
+
+    #[test]
+    fn sum_and_std_of_empty_vector() {
+        // sum of nothing is the additive identity; std of nothing is 0.
+        let ev = run("s = sum([]);\nd = std([]);");
+        assert!(close(get_scalar(&ev, "s"), 0.0));
+        assert!(close(get_scalar(&ev, "d"), 0.0));
+    }
+
+    #[test]
+    fn mean_of_empty_vector_errors() {
+        let err = run_err("m = mean([]);");
+        assert!(err.contains("non-empty"), "{err}");
+    }
+
+    // ── Complex extremum comparison ─────────────────────────────────────
+
+    #[test]
+    fn max_of_complex_vector_compares_by_magnitude() {
+        // Magnitudes: |1| = 1, |2 + 2i| = 2.83, |-2| = 2 → the complex
+        // element wins even though its real part is not the largest.
+        let ev = run("v = [1, 2 + j*2, -2];\n[mv, mi] = max(v);\nam = abs(mv);");
+        assert!(close(get_scalar(&ev, "mi"), 2.0));
+        assert!(close(get_scalar(&ev, "am"), 8.0f64.sqrt()));
+        match ev.get("mv").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 2.0) && close(c.im, 2.0));
+            }
+            other => panic!("expected the complex element back, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn min_of_complex_vector_compares_by_magnitude() {
+        let ev = run("v = [1, 2 + j*2, -2];\n[mv, mi] = min(v);\nam = abs(mv);");
+        assert!(close(get_scalar(&ev, "mi"), 1.0));
+        assert!(close(get_scalar(&ev, "am"), 1.0));
+    }
+
+    // ── Matrix region writes ────────────────────────────────────────────
+
+    #[test]
+    fn region_write_vector_rhs_size_mismatch_errors() {
+        let err = run_err(
+            "M = [1, 2, 3; 4, 5, 6; 7, 8, 9];
+             M(1:2, 1:2) = [1, 2, 3];",
+        );
+        assert!(err.contains("target region"), "{err}");
+    }
+
+    #[test]
+    fn region_write_matrix_rhs_shape_mismatch_errors() {
+        let err = run_err(
+            "M = [1, 2, 3; 4, 5, 6; 7, 8, 9];
+             M(1:2, 1:2) = [1, 2; 3, 4; 5, 6];",
+        );
+        assert!(err.contains("target region"), "{err}");
+        assert!(err.contains("3×2") || err.contains("3x2"), "{err}");
+    }
+
+    #[test]
+    fn region_write_matching_shape_succeeds() {
+        let ev = run(
+            "M = [1, 2, 3; 4, 5, 6; 7, 8, 9];
+             M(1:2, 1:2) = [10, 20; 30, 40];",
+        );
+        let m = get_matrix(&ev, "M");
+        assert!(close(m[[0, 0]].re, 10.0) && close(m[[0, 1]].re, 20.0));
+        assert!(close(m[[1, 0]].re, 30.0) && close(m[[1, 1]].re, 40.0));
+        // Cells outside the region are untouched.
+        assert!(close(m[[0, 2]].re, 3.0));
+        assert!(close(m[[2, 2]].re, 9.0));
+    }
+}

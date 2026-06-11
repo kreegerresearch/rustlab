@@ -208,3 +208,183 @@ fn eigs_rejects_too_many() {
     let r = eigs(&a, 100, Which::SmallestMagnitude, None);
     assert!(r.is_err());
 }
+
+// ── Krylov-iteration internals: basis orthonormality + reduced-matrix
+//    structure (Lanczos tridiagonal, Arnoldi upper-Hessenberg) ─────────
+
+#[test]
+fn lanczos_basis_orthonormal_and_tridiagonal() {
+    use crate::sparse_eig::Lanczos;
+    use crate::sparse_solve::SparseCsc;
+
+    // Symmetric tridiagonal SPD test matrix: diag 2, off-diag -1 (n = 8).
+    let n = 8usize;
+    let mut entries = Vec::new();
+    for i in 0..n {
+        entries.push((i, i, Complex::new(2.0, 0.0)));
+        if i + 1 < n {
+            entries.push((i, i + 1, Complex::new(-1.0, 0.0)));
+            entries.push((i + 1, i, Complex::new(-1.0, 0.0)));
+        }
+    }
+    let a = SparseMat::new(n, n, entries);
+    let csc: SparseCsc<f64> = a.to_csc().unwrap();
+
+    let m = 6usize;
+    let mut lanczos = Lanczos::new(n);
+    lanczos.run(|v| csc.spmv(v), m, 1e-12).unwrap();
+    let (alpha, beta, basis) = lanczos.finish();
+    assert_eq!(alpha.len(), m);
+    assert_eq!(beta.len(), m - 1);
+    assert_eq!(basis.len(), m);
+
+    let dot = |a: &[f64], b: &[f64]| -> f64 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
+
+    // V^T V ≈ I — full reorthogonalization must hold this to ~machine eps.
+    for i in 0..m {
+        for j in 0..m {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            let g = dot(&basis[i], &basis[j]);
+            assert!(
+                (g - expected).abs() < 1e-12,
+                "V^T V at ({i},{j}): {g}"
+            );
+        }
+    }
+
+    // T = V^T A V must be tridiagonal with diag = alpha, sub/super = beta.
+    for j in 0..m {
+        let av = csc.spmv(&basis[j]);
+        for i in 0..m {
+            let t_ij = dot(&basis[i], &av);
+            let expected = if i == j {
+                alpha[j]
+            } else if i + 1 == j {
+                beta[i]
+            } else if j + 1 == i {
+                beta[j]
+            } else {
+                0.0
+            };
+            assert!(
+                (t_ij - expected).abs() < 1e-10,
+                "T({i},{j}) = {t_ij}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn arnoldi_basis_orthonormal_and_hessenberg() {
+    use crate::sparse_eig::Arnoldi;
+    use crate::sparse_solve::SparseCsc;
+    use crate::types::C64;
+
+    // Non-symmetric test matrix (n = 7): diag 1..7, superdiag +1,
+    // subdiag -0.5 — clearly not Hermitian.
+    let n = 7usize;
+    let mut entries = Vec::new();
+    for i in 0..n {
+        entries.push((i, i, Complex::new((i + 1) as f64, 0.0)));
+        if i + 1 < n {
+            entries.push((i, i + 1, Complex::new(1.0, 0.0)));
+            entries.push((i + 1, i, Complex::new(-0.5, 0.0)));
+        }
+    }
+    let a = SparseMat::new(n, n, entries);
+    assert!(!a.is_hermitian(1e-10));
+    let csc: SparseCsc<C64> = a.to_csc().unwrap();
+
+    let m = 5usize;
+    let mut arnoldi = Arnoldi::new(n);
+    arnoldi.run(|v| csc.spmv(v), m, 1e-12).unwrap();
+    let (h, basis) = arnoldi.finish();
+    assert_eq!(h.nrows(), m);
+    assert_eq!(h.ncols(), m);
+    assert_eq!(basis.len(), m);
+
+    let inner = |a: &[C64], b: &[C64]| -> C64 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| Complex::new(x.re, -x.im) * y)
+            .sum()
+    };
+
+    // V^H V ≈ I.
+    for i in 0..m {
+        for j in 0..m {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            let g = inner(&basis[i], &basis[j]);
+            assert!(
+                (g - Complex::new(expected, 0.0)).norm() < 1e-12,
+                "V^H V at ({i},{j}): {g}"
+            );
+        }
+    }
+
+    // H is upper-Hessenberg: every entry below the first subdiagonal is 0.
+    for i in 0..m {
+        for j in 0..m {
+            if i > j + 1 {
+                assert!(
+                    h[[i, j]].norm() < 1e-14,
+                    "H({i},{j}) below subdiagonal: {}",
+                    h[[i, j]]
+                );
+            }
+        }
+    }
+
+    // H must equal the projection V^H A V entry-for-entry.
+    for j in 0..m {
+        let av = csc.spmv(&basis[j]);
+        for i in 0..m {
+            let proj = inner(&basis[i], &av);
+            assert!(
+                (proj - h[[i, j]]).norm() < 1e-10,
+                "V^H A V vs H at ({i},{j}): {proj} vs {}",
+                h[[i, j]]
+            );
+        }
+    }
+}
+
+#[test]
+fn eigs_nonsymmetric_arnoldi_residuals_small() {
+    // Upper-triangular matrix: eigenvalues are exactly the diagonal
+    // 1..6. With a full Krylov basis (max_dim = n) the Arnoldi path
+    // must resolve the largest-magnitude pairs to near machine eps.
+    let n = 6usize;
+    let mut entries = Vec::new();
+    for i in 0..n {
+        entries.push((i, i, Complex::new((i + 1) as f64, 0.0)));
+        if i + 1 < n {
+            entries.push((i, i + 1, Complex::new(0.5, 0.0)));
+        }
+    }
+    let a = SparseMat::new(n, n, entries);
+    assert!(!a.is_hermitian(1e-10));
+
+    let pairs = eigs(&a, 2, Which::LargestMagnitude, Some(n)).unwrap();
+    assert!(pairs.residual < 1e-8, "residual = {}", pairs.residual);
+
+    // Largest two eigenvalues are 6 and 5 (real).
+    let mut mags: Vec<f64> = pairs.values.iter().map(|v| v.norm()).collect();
+    mags.sort_by(|x, y| y.partial_cmp(x).unwrap());
+    assert!(close(mags[0], 6.0, 1e-8), "lambda_max = {}", mags[0]);
+    assert!(close(mags[1], 5.0, 1e-8), "lambda_2 = {}", mags[1]);
+
+    // Independent residual check ||A v − λ v|| per returned pair.
+    for k in 0..2 {
+        let lambda = pairs.values[k];
+        let v = pairs.vectors.column(k).to_owned();
+        let av = a.spmv(&v).unwrap();
+        let res: f64 = av
+            .iter()
+            .zip(v.iter())
+            .map(|(avi, vi)| (avi - lambda * vi).norm_sqr())
+            .sum::<f64>()
+            .sqrt();
+        assert!(res < 1e-8, "pair {k}: ||A v - lambda v|| = {res}");
+    }
+}

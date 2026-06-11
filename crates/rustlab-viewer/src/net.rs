@@ -260,8 +260,14 @@ mod tests {
         ))
     }
 
+    /// `RUSTLAB_VIEWER_SOCK` is process-global; the two session tests
+    /// below each set/remove it, so they must not run concurrently or
+    /// one test's listener can bind the other's (or a missing) path.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn two_sequential_client_sessions_against_one_listener() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sock = unique_sock("seq");
         let _ = std::fs::remove_file(&sock);
         std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);
@@ -289,6 +295,7 @@ mod tests {
     /// to two rustlab REPLs both holding `viewer on`.
     #[test]
     fn two_concurrent_client_sessions() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sock = unique_sock("conc");
         let _ = std::fs::remove_file(&sock);
         std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);

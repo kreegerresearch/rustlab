@@ -2787,3 +2787,293 @@ mod cwt_stream_tests {
         assert_eq!(w.ncols(), n_window);
     }
 }
+
+#[cfg(test)]
+mod laplacian_numerics_tests {
+    use crate::laplacian::{laplacian_1d, laplacian_2d_bc, BoundaryCondition};
+    use rustlab_core::SparseMat;
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-12
+    }
+
+    /// Sum the real parts of one row of a sparse matrix.
+    fn row_sum(m: &SparseMat, row: usize) -> f64 {
+        m.entries
+            .iter()
+            .filter(|(r, _, _)| *r == row)
+            .map(|(_, _, v)| v.re)
+            .sum()
+    }
+
+    // The builders approximate +d²/dx², so the interior stencil is
+    // [+1, -2, +1] / dx² (NOT the negative-definite [-1, 2, -1] form).
+    #[test]
+    fn lap_1d_interior_stencil_values() {
+        let dx = 0.5;
+        let inv_dx2 = 1.0 / (dx * dx); // 4.0
+        let l = laplacian_1d(5, dx, BoundaryCondition::Dirichlet).unwrap();
+        // Interior row i = 2: entries at cols 1, 2, 3.
+        let i = 2usize;
+        assert!(close(l.get(i, i - 1).re, inv_dx2), "left neighbour");
+        assert!(close(l.get(i, i).re, -2.0 * inv_dx2), "diagonal");
+        assert!(close(l.get(i, i + 1).re, inv_dx2), "right neighbour");
+        // Exactly three entries in this row.
+        let nnz_row = l.entries.iter().filter(|(r, _, _)| *r == i).count();
+        assert_eq!(nnz_row, 3);
+    }
+
+    #[test]
+    fn lap_2d_five_point_row_structure_3x3() {
+        // 3x3 grid, dx=dy=1, column-major flat index k = j*ny + i.
+        let l = laplacian_2d_bc(3, 3, 1.0, 1.0, BoundaryCondition::Dirichlet).unwrap();
+        // Centre cell (i=1, j=1) -> k = 4: exactly 5 entries, at columns
+        // {3 (i-1), 5 (i+1), 1 (j-1), 7 (j+1), 4 (diag)}.
+        let row4: Vec<(usize, f64)> = l
+            .entries
+            .iter()
+            .filter(|(r, _, _)| *r == 4)
+            .map(|(_, c, v)| (*c, v.re))
+            .collect();
+        assert_eq!(row4.len(), 5);
+        let cols: Vec<usize> = row4.iter().map(|&(c, _)| c).collect();
+        assert_eq!(cols, vec![1, 3, 4, 5, 7], "sorted column structure");
+        for &(c, v) in &row4 {
+            if c == 4 {
+                assert!(close(v, -4.0), "diag = -2(1/dx² + 1/dy²)");
+            } else {
+                assert!(close(v, 1.0), "off-diag at col {c}");
+            }
+        }
+        // Corner cell k = 0 under Dirichlet: two faces dropped -> 3 entries.
+        let nnz_row0 = l.entries.iter().filter(|(r, _, _)| *r == 0).count();
+        assert_eq!(nnz_row0, 3);
+    }
+
+    #[test]
+    fn lap_1d_row_sums_distinguish_boundary_conditions() {
+        let n = 5;
+        let dx = 0.5;
+        let inv_dx2 = 1.0 / (dx * dx);
+
+        // Dirichlet: boundary rows lose one +1/dx² coefficient, so they
+        // sum to -1/dx²; interior rows sum to 0.
+        let ld = laplacian_1d(n, dx, BoundaryCondition::Dirichlet).unwrap();
+        assert!(close(row_sum(&ld, 0), -inv_dx2));
+        assert!(close(row_sum(&ld, n - 1), -inv_dx2));
+        for i in 1..n - 1 {
+            assert!(close(row_sum(&ld, i), 0.0), "Dirichlet interior row {i}");
+        }
+
+        // Neumann: the missing coefficient is absorbed into the diagonal,
+        // so every row sums to 0 (constants in the null space).
+        let ln = laplacian_1d(n, dx, BoundaryCondition::Neumann).unwrap();
+        for i in 0..n {
+            assert!(close(row_sum(&ln, i), 0.0), "Neumann row {i}");
+        }
+
+        // Periodic: wrap entries complete every row, all rows sum to 0.
+        let lp = laplacian_1d(n, dx, BoundaryCondition::Periodic).unwrap();
+        for i in 0..n {
+            assert!(close(row_sum(&lp, i), 0.0), "Periodic row {i}");
+        }
+
+        // The three operators are genuinely different at the boundary row.
+        assert!(!close(ld.get(0, 0).re, ln.get(0, 0).re));
+        assert!(close(lp.get(0, n - 1).re, inv_dx2)); // wrap entry only in periodic
+        assert!(close(ld.get(0, n - 1).re, 0.0));
+        assert!(close(ln.get(0, n - 1).re, 0.0));
+    }
+
+    #[test]
+    fn lap_invalid_sizes_and_spacings_error() {
+        // n below the minimum of 2.
+        assert!(laplacian_1d(1, 1.0, BoundaryCondition::Dirichlet).is_err());
+        assert!(laplacian_1d(0, 1.0, BoundaryCondition::Dirichlet).is_err());
+        // Non-positive / non-finite spacing.
+        assert!(laplacian_1d(4, 0.0, BoundaryCondition::Dirichlet).is_err());
+        assert!(laplacian_1d(4, -0.5, BoundaryCondition::Neumann).is_err());
+        assert!(laplacian_1d(4, f64::NAN, BoundaryCondition::Periodic).is_err());
+        assert!(laplacian_1d(4, f64::INFINITY, BoundaryCondition::Dirichlet).is_err());
+        // 2-D variants.
+        assert!(laplacian_2d_bc(1, 3, 1.0, 1.0, BoundaryCondition::Dirichlet).is_err());
+        assert!(laplacian_2d_bc(3, 1, 1.0, 1.0, BoundaryCondition::Dirichlet).is_err());
+        assert!(laplacian_2d_bc(3, 3, 1.0, 0.0, BoundaryCondition::Dirichlet).is_err());
+        assert!(laplacian_2d_bc(3, 3, -1.0, 1.0, BoundaryCondition::Dirichlet).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fixed_point_numerics_tests {
+    use crate::fixed::{qconv, quantize_scalar, quantize_vec, snr_db, QFmtSpec};
+    use rustlab_core::{OverflowMode, RoundMode};
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-12
+    }
+
+    #[test]
+    fn quantize_is_idempotent() {
+        // q(q(x)) == q(x) bit-for-bit: a quantized value lies exactly on
+        // the representable grid, so re-quantizing is the identity.
+        let specs = [
+            QFmtSpec::new(16, 15, RoundMode::Round, OverflowMode::Saturate).unwrap(),
+            QFmtSpec::new(8, 4, RoundMode::Floor, OverflowMode::Wrap).unwrap(),
+            QFmtSpec::new(6, 3, RoundMode::RoundEven, OverflowMode::Saturate).unwrap(),
+            QFmtSpec::new(12, 0, RoundMode::Ceil, OverflowMode::Wrap).unwrap(),
+        ];
+        // Deterministic sweep over [-4, 4] hitting on- and off-grid points.
+        let values: Vec<f64> = (-43..=43).map(|k| k as f64 * 0.0937).collect();
+        for spec in &specs {
+            for &x in &values {
+                let q1 = quantize_scalar(x, spec);
+                let q2 = quantize_scalar(q1, spec);
+                assert_eq!(
+                    q1, q2,
+                    "idempotence failed for x={x} with spec word={} frac={}",
+                    spec.word, spec.frac
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_mode_negative_underflow() {
+        // Q4.0: integer range [-8, 7], two's-complement wrap.
+        let spec = QFmtSpec::new(4, 0, RoundMode::Floor, OverflowMode::Wrap).unwrap();
+        assert!(close(quantize_scalar(-9.0, &spec), 7.0), "-9 wraps to 7");
+        assert!(close(quantize_scalar(-10.0, &spec), 6.0), "-10 wraps to 6");
+        assert!(close(quantize_scalar(-8.0, &spec), -8.0), "-8 is in range");
+        // With fractional bits: Q4.2 has scale 4, value range [-2, 1.75].
+        // -2.25 scales to int -9, which wraps to +7 -> 1.75.
+        let spec_f = QFmtSpec::new(4, 2, RoundMode::Floor, OverflowMode::Wrap).unwrap();
+        assert!(
+            close(quantize_scalar(-2.25, &spec_f), 1.75),
+            "-2.25 underflows to +1.75 in Q4.2 wrap"
+        );
+    }
+
+    #[test]
+    fn saturate_clamps_at_format_limits() {
+        // Q6.3: scale 8, max = 31/8 = 3.875, min = -32/8 = -4.0.
+        let spec = QFmtSpec::new(6, 3, RoundMode::Round, OverflowMode::Saturate).unwrap();
+        assert!(close(quantize_scalar(100.0, &spec), 3.875), "clamp high");
+        assert!(close(quantize_scalar(-100.0, &spec), -4.0), "clamp low");
+        // Exactly representable extremes pass through unchanged.
+        assert!(close(quantize_scalar(3.875, &spec), 3.875));
+        assert!(close(quantize_scalar(-4.0, &spec), -4.0));
+        // One LSB above max saturates back down to max.
+        assert!(close(quantize_scalar(4.0, &spec), 3.875));
+    }
+
+    #[test]
+    fn qconv_accumulates_at_full_precision_before_output_quantize() {
+        // Q16.2 (LSB = 0.25), Round. Each input 0.1 quantizes to 0 on its
+        // own, but qconv accumulates products at full precision, so the
+        // middle output sample 0.1 + 0.1 = 0.2 rounds to 0.25 — proof
+        // that quantization happens only at the accumulator output.
+        let spec = QFmtSpec::new(16, 2, RoundMode::Round, OverflowMode::Saturate).unwrap();
+        let x = [0.1, 0.1];
+        let h = [1.0, 1.0];
+        let y = qconv(&x, &h, &spec);
+        assert_eq!(y.len(), 3);
+        assert!(close(y[0], 0.0), "0.1 alone rounds to 0, got {}", y[0]);
+        assert!(close(y[1], 0.25), "0.2 rounds to 0.25, got {}", y[1]);
+        assert!(close(y[2], 0.0));
+        // Quantize-inputs-first would have produced an all-zero result.
+        let xq = quantize_vec(&x, &spec);
+        let y_narrow = qconv(&xq, &h, &spec);
+        assert!(y_narrow.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn snr_of_identical_and_near_identical_signals() {
+        let x: Vec<f64> = vec![1.0; 64];
+        // Identical signals: zero noise power -> +inf.
+        assert_eq!(snr_db(&x, &x).unwrap(), f64::INFINITY);
+        // One sample off by a Q15 LSB: SNR = 10·log10(1 / ((2^-15)²/64))
+        // ≈ 108 dB — very large but finite.
+        let mut y = x.clone();
+        y[10] += 1.0 / 32768.0;
+        let snr = snr_db(&x, &y).unwrap();
+        assert!(snr.is_finite());
+        assert!(snr > 100.0, "expected > 100 dB, got {snr:.1}");
+    }
+}
+
+#[cfg(test)]
+mod window_numerics_tests {
+    use crate::window::WindowFunction;
+
+    // Hann: w[i] = 0.5·(1 − cos(2πi/(n−1))). For n >= 3 the cosine terms
+    // over i = 0..n−2 sample one full period uniformly and sum to 0; the
+    // i = n−1 term contributes cos(2π) = 1. Hence
+    // sum(w) = n/2 − 1/2 = (n−1)/2. (n = 2 is the degenerate taper
+    // [0, 0] where the full-period argument needs >= 2 samples, so the
+    // identity starts at n = 3.)
+    #[test]
+    fn hann_sum_equals_half_n_minus_one() {
+        for n in [3usize, 8, 9, 16, 33, 128] {
+            let w = WindowFunction::Hann.generate(n);
+            let sum: f64 = w.iter().sum();
+            let expected = (n as f64 - 1.0) / 2.0;
+            assert!(
+                (sum - expected).abs() < 1e-9,
+                "n={n}: sum {sum} != {expected}"
+            );
+            // Endpoints are exactly the i=0 / i=n−1 evaluations: 0.
+            assert!(w[0].abs() < 1e-12, "n={n}: w[0]");
+            assert!(w[n - 1].abs() < 1e-12, "n={n}: w[n-1]");
+        }
+        // n = 2: both samples are endpoints, w = [0, 0].
+        let w2 = WindowFunction::Hann.generate(2);
+        assert!(w2[0].abs() < 1e-12 && w2[1].abs() < 1e-12);
+        // Degenerate length-1 case bypasses the formula and returns [1.0].
+        let w1 = WindowFunction::Hann.generate(1);
+        assert_eq!(w1.len(), 1);
+        assert_eq!(w1[0], 1.0);
+    }
+
+    #[test]
+    fn window_energy_positive_and_below_n() {
+        // For any taper with 0 <= w[i] <= 1 and at least one w[i] < 1,
+        // the energy sum(w²) is strictly between 0 and n.
+        let n = 32usize;
+        for wf in [
+            WindowFunction::Hann,
+            WindowFunction::Hamming,
+            WindowFunction::Blackman,
+            WindowFunction::Kaiser { beta: 8.6 },
+        ] {
+            let w = wf.generate(n);
+            let energy: f64 = w.iter().map(|&x| x * x).sum();
+            assert!(energy > 0.0, "{wf:?}: energy must be positive");
+            assert!(
+                energy < n as f64,
+                "{wf:?}: energy {energy} must be < n = {n}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod upfirdn_numerics_tests {
+    use crate::upfirdn::upfirdn;
+    use ndarray::Array1;
+    use num_complex::Complex;
+
+    // p == q == 2 with h = [1]: every output index m maps to virtual
+    // time t = 2m, phase r = 0, x_pos = m, so y[m] = h[0]·x[m] = x[m].
+    // Output length = ((n−1)·2 + 1 − 1)/2 + 1 = n. Exact identity.
+    #[test]
+    fn p_equals_q_with_unit_filter_is_identity() {
+        let x_vals = [1.0, -2.0, 3.5, 0.25, -0.125];
+        let x = Array1::from_iter(x_vals.iter().map(|&v| Complex::new(v, 0.0)));
+        let y = upfirdn(&x, &[1.0], 2, 2).unwrap();
+        assert_eq!(y.len(), x_vals.len());
+        for (i, &expected) in x_vals.iter().enumerate() {
+            assert_eq!(y[i].re, expected, "sample {i}");
+            assert_eq!(y[i].im, 0.0);
+        }
+    }
+}
