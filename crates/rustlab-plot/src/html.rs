@@ -2,6 +2,7 @@
 //! Plotly.js (loaded from CDN).
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 
 use crate::error::PlotError;
 use crate::figure::{FigureState, LineStyle, PlotKind, SeriesColor, FIGURE};
@@ -134,17 +135,24 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         // Categorical x-axis: switch Plotly into category mode and preserve
         // the user-provided label order. Traces below emit their x values as
         // the label strings directly, so tickvals/ticktext are not needed.
-        let xtick_extra = if let Some(labels) = &panel.x_labels {
-            let category_array: Vec<String> = labels
-                .iter()
-                .map(|l| format!("\"{}\"", escape_js(l)))
-                .collect();
-            format!(
-                r#", type: "category", categoryorder: "array", categoryarray: [{}]"#,
-                category_array.join(","),
-            )
-        } else {
-            String::new()
+        // The quoted/escaped label list is built once per panel and reused by
+        // every label-matched Line/Bar series.
+        let x_label_items: Option<(usize, String)> = panel
+            .x_labels
+            .as_ref()
+            .map(|labels| (labels.len(), json_label_items(labels)));
+        let xtick_extra = match &x_label_items {
+            Some((_, items)) => format!(
+                r#", type: "category", categoryorder: "array", categoryarray: [{items}]"#
+            ),
+            None => String::new(),
+        };
+        // Categorical x for a series: when the panel has x_labels that match
+        // the series 1:1, Plotly's category axis wants the label strings as
+        // the x values.
+        let series_x_json = |x_data: &[f64]| match &x_label_items {
+            Some((n, items)) if *n == x_data.len() => format!("[{items}]"),
+            _ => json_f64_array(x_data),
         };
         // Square aspect ratio for all heatmap kinds. The y-axis is
         // reversed (autorange: "reversed") so row 0 lands at the TOP of
@@ -304,23 +312,13 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                     };
                     let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
                     let z_json = format!("[{}]", z_rows.join(","));
-                    let x_field = if let Some(labels) = &hm.x_labels {
-                        let parts: Vec<String> = labels
-                            .iter()
-                            .map(|l| format!("\"{}\"", escape_js(l)))
-                            .collect();
-                        format!(", x: [{}]", parts.join(","))
-                    } else {
-                        String::new()
+                    let x_field = match &hm.x_labels {
+                        Some(labels) => format!(", x: [{}]", json_label_items(labels)),
+                        None => String::new(),
                     };
-                    let y_field = if let Some(labels) = &hm.y_labels {
-                        let parts: Vec<String> = labels
-                            .iter()
-                            .map(|l| format!("\"{}\"", escape_js(l)))
-                            .collect();
-                        format!(", y: [{}]", parts.join(","))
-                    } else {
-                        String::new()
+                    let y_field = match &hm.y_labels {
+                        Some(labels) => format!(", y: [{}]", json_label_items(labels)),
+                        None => String::new(),
                     };
                     traces.push_str(&format!(
                         r#"{{ z: {z}{xfield}{yfield}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
@@ -521,16 +519,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                     // Categorical line: when the subplot has x_labels that
                     // match this series 1:1, feed the labels in as x so
                     // Plotly's type="category" axis renders them correctly.
-                    let x_json = match &panel.x_labels {
-                        Some(labels) if labels.len() == series.x_data.len() => {
-                            let items: Vec<String> = labels
-                                .iter()
-                                .map(|l| format!("\"{}\"", escape_js(l)))
-                                .collect();
-                            format!("[{}]", items.join(","))
-                        }
-                        _ => json_f64_array(&series.x_data),
-                    };
+                    let x_json = series_x_json(&series.x_data);
                     let legend_attr = if series.label.is_empty() {
                         ", showlegend: false"
                     } else {
@@ -573,16 +562,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                     // Categorical bar: when the subplot has x_labels that
                     // match this series 1:1, feed the labels in as x so
                     // Plotly's type="category" axis renders them correctly.
-                    let x_json = match &panel.x_labels {
-                        Some(labels) if labels.len() == series.x_data.len() => {
-                            let items: Vec<String> = labels
-                                .iter()
-                                .map(|l| format!("\"{}\"", escape_js(l)))
-                                .collect();
-                            format!("[{}]", items.join(","))
-                        }
-                        _ => json_f64_array(&series.x_data),
-                    };
+                    let x_json = series_x_json(&series.x_data);
                     traces.push_str(&format!(
                         r#"{{ x: {x}, y: {y}, type: "bar", name: "{name}", marker: {{ color: "{color}" }}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
@@ -596,23 +576,25 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                 }
                 PlotKind::Stem => {
                     // Stems: vertical lines from y=0 to each point
-                    let mut sx = Vec::new();
-                    let mut sy = Vec::new();
-                    for (&xi, &yi) in series.x_data.iter().zip(series.y_data.iter()) {
-                        sx.push(format!("{}", xi));
-                        sx.push(format!("{}", xi));
-                        sx.push("null".to_string());
-                        sy.push("0".to_string());
-                        sy.push(format!("{}", yi));
-                        sy.push("null".to_string());
+                    let mut sx = String::with_capacity(series.x_data.len() * 16);
+                    let mut sy = String::with_capacity(series.y_data.len() * 16);
+                    for (i, (&xi, &yi)) in
+                        series.x_data.iter().zip(series.y_data.iter()).enumerate()
+                    {
+                        if i > 0 {
+                            sx.push(',');
+                            sy.push(',');
+                        }
+                        let _ = write!(sx, "{xi},{xi},null");
+                        let _ = write!(sy, "0,{yi},null");
                     }
                     // Stem lines
                     traces.push_str(&format!(
                         r#"{{ x: [{sx}], y: [{sy}], type: "{stype}", mode: "lines", name: "{name}", line: {{ color: "{color}" }}, xaxis: "{xa}", yaxis: "{ya}", showlegend: false }},
 "#,
                         stype = scatter_type,
-                        sx = sx.join(","),
-                        sy = sy.join(","),
+                        sx = sx,
+                        sy = sy,
                         name = escape_js(&series.label),
                         color = color_str,
                         xa = xaxis_ref,
@@ -711,8 +693,8 @@ fn arrows_to_polyline(arrows: &[crate::quiver::Arrow]) -> (String, String) {
                 out_x.push(',');
                 out_y.push(',');
             }
-            out_x.push_str(&format!("{}", p.0));
-            out_y.push_str(&format!("{}", p.1));
+            let _ = write!(out_x, "{}", p.0);
+            let _ = write!(out_y, "{}", p.1);
         }
         first = false;
     }
@@ -738,8 +720,8 @@ fn paths_to_polyline(paths: &[Vec<(f64, f64)>]) -> (String, String) {
                 out_x.push(',');
                 out_y.push(',');
             }
-            out_x.push_str(&format!("{}", p.0));
-            out_y.push_str(&format!("{}", p.1));
+            let _ = write!(out_x, "{}", p.0);
+            let _ = write!(out_y, "{}", p.1);
         }
         first = false;
     }
@@ -756,12 +738,26 @@ fn json_f64_array(data: &[f64]) -> String {
             s.push(',');
         }
         if v.is_finite() {
-            s.push_str(&format!("{}", v));
+            let _ = write!(s, "{v}");
         } else {
             s.push_str("null");
         }
     }
     s.push(']');
+    s
+}
+
+/// Comma-joined list of quoted, JS-escaped label strings: `"a","b","c"`.
+fn json_label_items(labels: &[String]) -> String {
+    let mut s = String::with_capacity(labels.len() * 12);
+    for (i, l) in labels.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('"');
+        s.push_str(&escape_js(l));
+        s.push('"');
+    }
     s
 }
 

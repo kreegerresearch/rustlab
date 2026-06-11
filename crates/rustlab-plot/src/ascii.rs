@@ -127,33 +127,12 @@ pub(crate) fn draw_subplots(
             let sp = &subplots[idx];
             let cell = col_areas[c];
 
-            let all_x: Vec<f64> = sp
-                .series
-                .iter()
-                .flat_map(|s| s.x_data.iter().copied())
-                .collect();
-            let all_y: Vec<f64> = sp
-                .series
-                .iter()
-                .flat_map(|s| s.y_data.iter().copied())
-                .collect();
-            if all_x.is_empty() || all_y.is_empty() {
+            // Axis bounds shared with the file backend.
+            let Some((mut x_min, mut x_max, mut y_min, mut y_max)) =
+                crate::figure::compute_axis_bounds(sp)
+            else {
                 continue;
-            }
-
-            let mut x_min = sp
-                .xlim
-                .0
-                .unwrap_or_else(|| all_x.iter().copied().fold(f64::INFINITY, f64::min));
-            let mut x_max = sp
-                .xlim
-                .1
-                .unwrap_or_else(|| all_x.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-            let y_min_raw = all_y.iter().copied().fold(f64::INFINITY, f64::min);
-            let y_max_raw = all_y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let y_margin = ((y_max_raw - y_min_raw).abs() * 0.1).max(1e-6);
-            let mut y_min = sp.ylim.0.unwrap_or(y_min_raw - y_margin);
-            let mut y_max = sp.ylim.1.unwrap_or(y_max_raw + y_margin);
+            };
 
             // axis("equal"): pad the visually-shorter axis so one data unit on
             // x equals one data unit on y. Skip when both limits were user-set.

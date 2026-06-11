@@ -62,7 +62,7 @@ fn compute_eigenvalues(h_in: &Array2<C64>) -> Result<Vec<C64>, SparseEigError> {
         return Ok(vec![h_in[[0, 0]]]);
     }
     if n == 2 {
-        return Ok(quadratic_roots(h_in));
+        return Ok(quadratic_roots(h_in, 0));
     }
 
     let mut h = h_in.to_owned();
@@ -76,7 +76,7 @@ fn compute_eigenvalues(h_in: &Array2<C64>) -> Result<Vec<C64>, SparseEigError> {
             break;
         }
         if p == 2 {
-            for &v in quadratic_roots_view(&h, p).iter() {
+            for &v in quadratic_roots(&h, p - 2).iter() {
                 eigs.push(v);
             }
             break;
@@ -101,7 +101,7 @@ fn compute_eigenvalues(h_in: &Array2<C64>) -> Result<Vec<C64>, SparseEigError> {
                     converged = true;
                     break;
                 } else if s == p - 2 {
-                    for &v in quadratic_roots_view(&h, p).iter() {
+                    for &v in quadratic_roots(&h, p - 2).iter() {
                         eigs.push(v);
                     }
                     p -= 2;
@@ -144,26 +144,14 @@ fn compute_eigenvalues(h_in: &Array2<C64>) -> Result<Vec<C64>, SparseEigError> {
     Ok(eigs)
 }
 
-fn quadratic_roots(h: &Array2<C64>) -> Vec<C64> {
-    let a = h[[0, 0]];
-    let b = h[[0, 1]];
-    let c = h[[1, 0]];
-    let d = h[[1, 1]];
-    let tr = a + d;
-    let det = a * d - b * c;
-    let disc = (tr * tr - Complex::new(4.0, 0.0) * det).sqrt();
-    vec![
-        (tr + disc) / Complex::new(2.0, 0.0),
-        (tr - disc) / Complex::new(2.0, 0.0),
-    ]
-}
-
-fn quadratic_roots_view(h: &Array2<C64>, p: usize) -> Vec<C64> {
-    let q = p - 1;
-    let a = h[[q - 1, q - 1]];
-    let b = h[[q - 1, q]];
-    let c = h[[q, q - 1]];
-    let d = h[[q, q]];
+/// Eigenvalues of the 2×2 submatrix of `h` whose top-left corner is at
+/// `(start, start)`, via the quadratic formula on its characteristic
+/// polynomial.
+fn quadratic_roots(h: &Array2<C64>, start: usize) -> Vec<C64> {
+    let a = h[[start, start]];
+    let b = h[[start, start + 1]];
+    let c = h[[start + 1, start]];
+    let d = h[[start + 1, start + 1]];
     let tr = a + d;
     let det = a * d - b * c;
     let disc = (tr * tr - Complex::new(4.0, 0.0) * det).sqrt();

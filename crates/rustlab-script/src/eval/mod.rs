@@ -1858,7 +1858,15 @@ impl Evaluator {
                         "range step cannot be zero".to_string(),
                     ));
                 }
-                let mut vals: Vec<C64> = Vec::new();
+                // Reserve the exact element count up front (large ranges like
+                // 1:1e7 otherwise pay ~24 doubling reallocations).
+                let expected = ((e - s) / inc).floor();
+                let capacity = if expected.is_finite() && expected >= 0.0 {
+                    expected as usize + 1
+                } else {
+                    0
+                };
+                let mut vals: Vec<C64> = Vec::with_capacity(capacity);
                 let mut cur = s;
                 // Use a small epsilon to avoid float boundary issues
                 let eps = inc.abs() * 1e-10;
@@ -1972,9 +1980,12 @@ impl Evaluator {
         result
     }
 
-    fn eval_arrayfun_inner(&mut self, func: Value, input: Value) -> Result<Value, ScriptError> {
-        let elements: Vec<Value> = match &input {
-            Value::Vector(v) => v
+    /// Convert a 1-D iterable argument (vector, scalar, or complex scalar)
+    /// into per-element `Value`s — the shared shape contract of `arrayfun`
+    /// and `parmap`. `caller` names the builtin in the error message.
+    fn iterable_elements(caller: &str, input: &Value) -> Result<Vec<Value>, ScriptError> {
+        match input {
+            Value::Vector(v) => Ok(v
                 .iter()
                 .map(|&c| {
                     if c.im == 0.0 {
@@ -1983,16 +1994,18 @@ impl Evaluator {
                         Value::Complex(c)
                     }
                 })
-                .collect(),
-            Value::Scalar(n) => vec![Value::Scalar(*n)],
-            Value::Complex(c) => vec![Value::Complex(*c)],
-            other => {
-                return Err(ScriptError::runtime(format!(
-                    "arrayfun: second argument must be a vector or scalar, got {}",
-                    other.type_name()
-                )))
-            }
-        };
+                .collect()),
+            Value::Scalar(n) => Ok(vec![Value::Scalar(*n)]),
+            Value::Complex(c) => Ok(vec![Value::Complex(*c)]),
+            other => Err(ScriptError::runtime(format!(
+                "{caller}: second argument must be a vector or scalar, got {}",
+                other.type_name()
+            ))),
+        }
+    }
+
+    fn eval_arrayfun_inner(&mut self, func: Value, input: Value) -> Result<Value, ScriptError> {
+        let elements: Vec<Value> = Self::iterable_elements("arrayfun", &input)?;
 
         let mut results: Vec<Value> = Vec::with_capacity(elements.len());
         for elem in elements {
@@ -2075,28 +2088,8 @@ impl Evaluator {
         // the per-task error).
         parmap::validate_callable(&func)?;
 
-        // Extract iterable elements. Reuses the same shape rules as
-        // arrayfun: vectors, scalars, and complex scalars.
-        let elements: Vec<Value> = match &input {
-            Value::Vector(v) => v
-                .iter()
-                .map(|&c| {
-                    if c.im == 0.0 {
-                        Value::Scalar(c.re)
-                    } else {
-                        Value::Complex(c)
-                    }
-                })
-                .collect(),
-            Value::Scalar(n) => vec![Value::Scalar(*n)],
-            Value::Complex(c) => vec![Value::Complex(*c)],
-            other => {
-                return Err(ScriptError::runtime(format!(
-                    "parmap: second argument must be a vector or scalar, got {}",
-                    other.type_name()
-                )))
-            }
-        };
+        // Extract iterable elements — same shape rules as arrayfun.
+        let elements: Vec<Value> = Self::iterable_elements("parmap", &input)?;
 
         // Profiler: track total parmap time; inner per-task calls are
         // suppressed (the lambda body's higher-order callback machinery

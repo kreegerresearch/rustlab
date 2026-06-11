@@ -85,25 +85,27 @@ pub fn overlap_add(x: &CVector, h: &CVector, block_size: usize) -> Result<CVecto
     let out_len = nx + nh - 1;
     let mut output: Vec<C64> = vec![Complex::new(0.0, 0.0); out_len];
 
-    // Process each block
+    // Process each block; the zero-padded block and frequency-product
+    // buffers are reused across iterations instead of reallocated.
+    let zero = Complex::new(0.0, 0.0);
+    let mut block: Vec<C64> = vec![zero; fft_size];
+    let mut product: Vec<C64> = vec![zero; fft_size];
     let mut pos = 0;
     while pos < nx {
         let end = (pos + block_size).min(nx);
         let block_len = end - pos;
 
-        // Build zero-padded block of length fft_size
-        let mut block = vec![Complex::new(0.0, 0.0); fft_size];
+        // Refill the zero-padded block of length fft_size
         for i in 0..block_len {
             block[i] = x[pos + i];
         }
+        block[block_len..].fill(zero);
 
         // Frequency-domain multiply
         let block_freq = fft_raw(&block);
-        let product: Vec<C64> = block_freq
-            .iter()
-            .zip(h_freq.iter())
-            .map(|(a, b)| a * b)
-            .collect();
+        for (p, (a, b)) in product.iter_mut().zip(block_freq.iter().zip(h_freq.iter())) {
+            *p = a * b;
+        }
 
         // IFFT back to time domain
         let conv_block = ifft_raw(&product);
