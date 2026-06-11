@@ -1367,61 +1367,49 @@ impl Value {
 
             // ── Tensor3 element-wise arithmetic ───────────────────────────────
 
-            // Scalar/Complex broadcast onto Tensor3
-            (Value::Scalar(_), Value::Tensor3(_)) | (Value::Complex(_), Value::Tensor3(_)) => {
-                let scalar = Self::promote_to_complex(lhs)?;
-                let t = match rhs {
-                    Value::Tensor3(t) => t,
-                    _ => unreachable!(),
+            // Scalar/Complex broadcast with Tensor3 (either operand order).
+            // Both orders share one map; non-commutative ops pick operands
+            // by which side the scalar sat on.
+            (Value::Scalar(_) | Value::Complex(_), Value::Tensor3(_))
+            | (Value::Tensor3(_), Value::Scalar(_) | Value::Complex(_)) => {
+                let scalar_on_left = !matches!(lhs, Value::Tensor3(_));
+                let (scalar, t) = if scalar_on_left {
+                    let t = match rhs {
+                        Value::Tensor3(t) => t,
+                        _ => unreachable!(),
+                    };
+                    (Self::promote_to_complex(lhs)?, t)
+                } else {
+                    let t = match lhs {
+                        Value::Tensor3(t) => t,
+                        _ => unreachable!(),
+                    };
+                    (Self::promote_to_complex(rhs)?, t)
                 };
                 match op {
                     Mul | ElemMul | Div | ElemDiv | Add | Sub | Pow | ElemPow => {
-                        let mapped = t.mapv(|x| match op {
-                            Add => scalar + x,
-                            Sub => scalar - x,
-                            Mul | ElemMul => scalar * x,
-                            Div | ElemDiv => scalar / x,
-                            Pow | ElemPow => {
-                                let ln_s = Complex::new(scalar.norm().ln(), scalar.arg());
-                                (x * ln_s).exp()
+                        let mapped = t.mapv(|x| {
+                            let (a, b) = if scalar_on_left { (scalar, x) } else { (x, scalar) };
+                            match op {
+                                Add => a + b,
+                                Sub => a - b,
+                                Mul | ElemMul => a * b,
+                                Div | ElemDiv => a / b,
+                                // a^b = exp(b·ln a)
+                                Pow | ElemPow => {
+                                    let ln_a = Complex::new(a.norm().ln(), a.arg());
+                                    (b * ln_a).exp()
+                                }
+                                _ => unreachable!(),
                             }
-                            _ => unreachable!(),
                         });
                         Ok(Value::Tensor3(mapped))
                     }
-                    _ => Err(format!(
-                        "operator {:?} not defined between scalar and tensor3",
-                        op
-                    )),
-                }
-            }
-
-            // Tensor3 broadcast with Scalar/Complex
-            (Value::Tensor3(_), Value::Scalar(_)) | (Value::Tensor3(_), Value::Complex(_)) => {
-                let t = match lhs {
-                    Value::Tensor3(t) => t,
-                    _ => unreachable!(),
-                };
-                let scalar = Self::promote_to_complex(rhs)?;
-                match op {
-                    Mul | ElemMul | Div | ElemDiv | Add | Sub | Pow | ElemPow => {
-                        let mapped = t.mapv(|x| match op {
-                            Add => x + scalar,
-                            Sub => x - scalar,
-                            Mul | ElemMul => x * scalar,
-                            Div | ElemDiv => x / scalar,
-                            Pow | ElemPow => {
-                                let ln_x = Complex::new(x.norm().ln(), x.arg());
-                                (scalar * ln_x).exp()
-                            }
-                            _ => unreachable!(),
-                        });
-                        Ok(Value::Tensor3(mapped))
-                    }
-                    _ => Err(format!(
-                        "operator {:?} not defined between tensor3 and scalar",
-                        op
-                    )),
+                    _ => Err(if scalar_on_left {
+                        format!("operator {:?} not defined between scalar and tensor3", op)
+                    } else {
+                        format!("operator {:?} not defined between tensor3 and scalar", op)
+                    }),
                 }
             }
 

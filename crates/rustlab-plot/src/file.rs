@@ -348,56 +348,13 @@ where
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
 
-    // Compute axis bounds
-    let all_x: Vec<f64> = sp
-        .series
-        .iter()
-        .flat_map(|s| s.x_data.iter().copied())
-        .collect();
-    let all_y: Vec<f64> = sp
-        .series
-        .iter()
-        .flat_map(|s| s.y_data.iter().copied())
-        .collect();
-    if all_x.is_empty() || all_y.is_empty() {
+    // Compute axis bounds (shared with the terminal backend), then ensure a
+    // non-degenerate range for plotters' cartesian mapping.
+    let Some((x_min, x_max, y_min, y_max)) = crate::figure::compute_axis_bounds(sp) else {
         return Ok(());
-    }
-
-    let x_min = sp
-        .xlim
-        .0
-        .unwrap_or_else(|| all_x.iter().copied().fold(f64::INFINITY, f64::min));
-    let x_max = sp
-        .xlim
-        .1
-        .unwrap_or_else(|| all_x.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-    let y_min_raw = all_y.iter().copied().fold(f64::INFINITY, f64::min);
-    let y_max_raw = all_y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let y_margin = ((y_max_raw - y_min_raw).abs() * 0.1).max(1e-6);
-    let y_min = sp.ylim.0.unwrap_or(y_min_raw - y_margin);
-    let y_max = sp.ylim.1.unwrap_or(y_max_raw + y_margin);
-
-    // Ensure non-degenerate range
-    let x_lo = if (x_max - x_min).abs() < 1e-12 {
-        x_min - 1.0
-    } else {
-        x_min
     };
-    let x_hi = if (x_max - x_min).abs() < 1e-12 {
-        x_max + 1.0
-    } else {
-        x_max
-    };
-    let y_lo = if (y_max - y_min).abs() < 1e-12 {
-        y_min - 1.0
-    } else {
-        y_min
-    };
-    let y_hi = if (y_max - y_min).abs() < 1e-12 {
-        y_max + 1.0
-    } else {
-        y_max
-    };
+    let (x_lo, x_hi) = crate::figure::ensure_range(x_min, x_max);
+    let (y_lo, y_hi) = crate::figure::ensure_range(y_min, y_max);
 
     let title_str = sp.title.as_str();
     // Pass labels through verbatim. An empty string causes plotters to skip

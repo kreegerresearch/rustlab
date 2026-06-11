@@ -795,13 +795,14 @@ fn plot_container_height(rows: usize) -> usize {
 
 /// CSS class suffix and default-title label for each callout kind.
 pub(crate) fn callout_style(kind: CalloutKind) -> (&'static str, &'static str) {
-    match kind {
-        CalloutKind::Note => ("note", "Note"),
-        CalloutKind::Tip => ("tip", "Tip"),
-        CalloutKind::Important => ("important", "Important"),
-        CalloutKind::Warning => ("warning", "Warning"),
-        CalloutKind::Caution => ("caution", "Caution"),
-    }
+    let class = match kind {
+        CalloutKind::Note => "note",
+        CalloutKind::Tip => "tip",
+        CalloutKind::Important => "important",
+        CalloutKind::Warning => "warning",
+        CalloutKind::Caution => "caution",
+    };
+    (class, kind.default_label())
 }
 
 /// Pulldown-cmark feature set used by every notebook markdown parse —

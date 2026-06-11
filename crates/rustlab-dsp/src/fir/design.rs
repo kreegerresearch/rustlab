@@ -73,6 +73,24 @@ fn validate_fir(num_taps: usize, cutoff_hz: f64, sample_rate: f64) -> Result<(),
     Ok(())
 }
 
+/// Validate FIR design parameters for a two-cutoff (band) design: both edges
+/// must individually satisfy [`validate_fir`], and `low_hz < high_hz`.
+fn validate_fir_range(
+    num_taps: usize,
+    low_hz: f64,
+    high_hz: f64,
+    sample_rate: f64,
+) -> Result<(), DspError> {
+    validate_fir(num_taps, low_hz, sample_rate)?;
+    validate_fir(num_taps, high_hz, sample_rate)?;
+    if low_hz >= high_hz {
+        return Err(DspError::Core(rustlab_core::CoreError::InvalidParameter(
+            format!("low_hz ({low_hz}) must be less than high_hz ({high_hz})"),
+        )));
+    }
+    Ok(())
+}
+
 /// Design a windowed-sinc FIR lowpass filter.
 ///
 /// Uses the *windowed-sinc* method: the ideal (infinite-length) lowpass impulse
@@ -194,27 +212,7 @@ pub fn fir_bandpass(
     sample_rate: f64,
     window: WindowFunction,
 ) -> Result<FirFilter, DspError> {
-    let nyquist = sample_rate / 2.0;
-    if num_taps == 0 {
-        return Err(DspError::InvalidOrder(num_taps));
-    }
-    if low_hz <= 0.0 || low_hz >= nyquist {
-        return Err(DspError::InvalidCutoff {
-            cutoff: low_hz,
-            nyquist,
-        });
-    }
-    if high_hz <= 0.0 || high_hz >= nyquist {
-        return Err(DspError::InvalidCutoff {
-            cutoff: high_hz,
-            nyquist,
-        });
-    }
-    if low_hz >= high_hz {
-        return Err(DspError::Core(rustlab_core::CoreError::InvalidParameter(
-            format!("low_hz ({low_hz}) must be less than high_hz ({high_hz})"),
-        )));
-    }
+    validate_fir_range(num_taps, low_hz, high_hz, sample_rate)?;
 
     let lp_high = fir_lowpass(num_taps, high_hz, sample_rate, window.clone())?;
     let lp_low = fir_lowpass(num_taps, low_hz, sample_rate, window)?;

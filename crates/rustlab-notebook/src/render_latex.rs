@@ -1,5 +1,4 @@
 use crate::execute::Rendered;
-use crate::parse::CalloutKind;
 use crate::render::{notebook_md_options, transform_wikilinks};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rustlab_plot::theme::{Theme, ThemeColors};
@@ -149,14 +148,7 @@ pub fn render_latex(
                 title,
                 content,
             } => {
-                let default_label = match kind {
-                    CalloutKind::Note => "Note",
-                    CalloutKind::Tip => "Tip",
-                    CalloutKind::Important => "Important",
-                    CalloutKind::Warning => "Warning",
-                    CalloutKind::Caution => "Caution",
-                };
-                let label = title.as_deref().unwrap_or(default_label);
+                let label = title.as_deref().unwrap_or(kind.default_label());
                 body.push_str(&format!("\\begin{{quote}}\n\\textbf{{{label}:}} "));
                 body.push_str(&markdown_to_latex(content));
                 body.push_str("\\end{quote}\n\n");
