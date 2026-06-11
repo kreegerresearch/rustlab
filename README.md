@@ -396,10 +396,11 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 ```
 
 > **Full language reference:** See [`docs/quickref.md`](docs/quickref.md) for a concise cheat sheet of all syntax and functions.
+> **AI agents:** start at [`docs/agent-guide.md`](docs/agent-guide.md) — a super-user guide to the language, builtins, plotting, and notebooks (with `llms.txt` as the doc map).
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 180+ builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 320+ builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|

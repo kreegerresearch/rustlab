@@ -1,17 +1,45 @@
-# rustlab — AI reference
+# rustlab
 
-  docs/quickref.md    — concise language + function cheat sheet (start here)
-  docs/functions.md   — full signatures, constants, and all toolboxes
-  docs/examples.md    — annotated example walkthroughs
-  README.md           — quickstart and CLI usage
+> Rust-native matrix algebra + DSP toolkit with a scriptable language (`.rlab`),
+> an interactive REPL, a Markdown notebook renderer, and terminal/file/HTML plotting.
+> Numerics are complex-by-default, indexing is 1-based, ~327 builtins across
+> math, linear algebra (dense + sparse), statistics, FFT/spectral, FIR/IIR filter
+> design, fixed-point, control systems, RF S-parameters, and vector calculus.
 
-Script extension: .rlab   Run: rustlab run script.rlab   REPL: rustlab
+Run a script: `rustlab run script.rlab --plot none`   REPL: `rustlab`
+Render a notebook: `rustlab-notebook render note.md`
+Note: runtime errors print `error: line N: ...` to stderr but the exit code
+stays 0 — check stderr, not the exit code.
 
-Builtin docs from the shell:
-  rustlab docs              list every builtin grouped by category
-  rustlab docs <name>       detail for one builtin (e.g. rustlab docs eig)
-  rustlab docs <category>   list one category (e.g. rustlab docs Plotting)
-  rustlab docs --search <q> substring match over names and briefs
-  rustlab docs --json       complete index as JSON (~250 entries with name,
-                            category, brief, detail) — recommended for AI
-                            tooling that wants a one-call authoritative dump
+## Docs
+
+- [docs/agent-guide.md](docs/agent-guide.md): START HERE — how to use rustlab as an
+  agent: execution model, the language in 20 rules, pitfalls, plotting/output
+  recipes, notebook authoring, toolbox map, verification workflow
+- [docs/quickref.md](docs/quickref.md): canonical capability index — every builtin
+  with one-line description; if a function is not listed here it does not exist
+- [docs/functions.md](docs/functions.md): full signatures, semantics, and a usage
+  example for every builtin, grouped by toolbox
+- [docs/notebooks.md](docs/notebooks.md): complete notebook reference — directives,
+  widgets, embeds, template interpolation, render/watch/check/clean CLI
+- [docs/examples.md](docs/examples.md): annotated walkthroughs of the example scripts
+- [README.md](README.md): install, quickstart, CLI usage
+
+## Examples
+
+- [examples/](examples/): 81 runnable .rlab scripts, one directory per toolbox
+  (language, math, linalg, stats, sparse, dsp, spectral, controls, rf, pde,
+  plot, audio, notebooks)
+- [gallery/](gallery/): 38 rendered notebooks with inline plots, browsable on GitHub
+
+## Programmatic discovery
+
+- `rustlab docs --json`: complete builtin index as JSON
+  ({name, toolbox, subcategory, brief, detail}) — one call gives the whole API
+- `rustlab docs <name>`: detail for one builtin; `rustlab docs --search <q>`: search
+
+## Optional
+
+- [AGENTS.md](AGENTS.md): for agents modifying the rustlab codebase itself
+  (crate layout, workflow rules, test strategy) — not needed to use the tool
+- [docs/sparse_solve.md](docs/sparse_solve.md): sparse direct-solver design notes

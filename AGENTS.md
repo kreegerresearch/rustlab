@@ -3,6 +3,10 @@
 This file is the authoritative guide for AI coding tools working on this codebase.
 Read it before making any changes.
 
+> **Using rustlab rather than modifying it?** Read [`docs/agent-guide.md`](docs/agent-guide.md)
+> instead — it covers the scripting language, builtins, plotting, and notebooks from a
+> user's perspective. `llms.txt` at the repo root is the machine-readable doc map.
+
 ---
 
 ## Project Overview
@@ -62,6 +66,7 @@ rustlab/
 │   │   └── test_filter.sh    # CI-friendly end-to-end test (no mic/speakers)
 │   └── notebooks/          # source `.md` notebooks rendered by `rustlab-notebook`
 └── docs/
+    ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
     └── quickref.md         # concise capability index kept in sync with actual builtins
@@ -231,7 +236,7 @@ Do not run `git commit` or `git push` automatically, even when work is complete 
 - **New language construct** — add syntax and example to the Language section.
 - **New toolbox feature** (controls, DSP, etc.) — add it to the relevant toolbox section.
 
-`llms.txt` at the repo root is a short pointer to the four main docs files (`docs/quickref.md`, `docs/functions.md`, `docs/examples.md`, `README.md`); it does not need content updates. Do not treat docs updates as optional cleanup.
+`llms.txt` at the repo root is the machine-readable doc map for AI agents (entry point: `docs/agent-guide.md`); it only needs updating when docs files are added, removed, or repurposed. `docs/agent-guide.md` documents user-facing behaviour (execution model, language rules, pitfalls) — update it when a change alters behaviour it describes (e.g. exit codes, plot backends, path resolution, notebook CLI flags). Do not treat docs updates as optional cleanup.
 
 ### 6. Keep `docs/quickref.md` current
 
