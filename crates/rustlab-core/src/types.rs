@@ -671,4 +671,36 @@ mod tests {
             assert_eq!(OverflowMode::from_str(mode.as_str()), Some(mode));
         }
     }
+
+    // ── SparseMat error paths ───────────────────────────────────────────────
+
+    #[test]
+    fn spmv_spmm_dimension_mismatch_errors() {
+        // 2x3 matrix.
+        let a = SparseMat::new(
+            2,
+            3,
+            vec![
+                (0, 0, Complex::new(1.0, 0.0)),
+                (1, 2, Complex::new(2.0, 0.0)),
+            ],
+        );
+
+        // spmv requires a length-3 vector; lengths 2 and 4 must error.
+        let x_bad2 = Array1::from_elem(2, Complex::new(1.0, 0.0));
+        let x_bad4 = Array1::from_elem(4, Complex::new(1.0, 0.0));
+        assert!(a.spmv(&x_bad2).is_err());
+        assert!(a.spmv(&x_bad4).is_err());
+        // Correct length succeeds and yields a length-rows result.
+        let x_ok = Array1::from_elem(3, Complex::new(1.0, 0.0));
+        let y = a.spmv(&x_ok).unwrap();
+        assert_eq!(y.len(), 2);
+
+        // spmm requires rhs with 3 rows.
+        let b_bad = Array2::from_elem((2, 2), Complex::new(1.0, 0.0));
+        assert!(a.spmm(&b_bad).is_err());
+        let b_ok = Array2::from_elem((3, 2), Complex::new(1.0, 0.0));
+        let c = a.spmm(&b_ok).unwrap();
+        assert_eq!(c.dim(), (2, 2));
+    }
 }

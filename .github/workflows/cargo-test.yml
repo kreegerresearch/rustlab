@@ -1,0 +1,50 @@
+name: cargo-test
+
+# Full workspace test suite. The validate-notebooks workflow checks
+# rendered notebook artefacts; this one runs every Rust unit and
+# integration test (`cargo test --workspace`), which CI previously
+# never executed — a red test on main went unnoticed for two days
+# because only notebook validation gated merges.
+#
+# chktex + tidy are required by rustlab-notebook's validate::tests
+# (linter-wrapper self-tests); the font/pkg-config packages are
+# build-time deps of rustlab-plot's SVG/PNG backends.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            pkg-config \
+            chktex \
+            tidy
+
+      - name: Cache cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-test-${{ runner.os }}-
+
+      - name: Run workspace tests
+        run: cargo test --workspace

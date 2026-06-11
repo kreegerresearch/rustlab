@@ -40,7 +40,7 @@ rustlab run script.rlab --profile      # print per-function timing report to std
 
 Facts an agent must know (all verified against the current binary):
 
-- **Exit code is 0 even when the script hits a runtime error.** The error is printed to **stderr** as `error: line N: runtime error: <message>` and execution halts, but the process still exits 0. (Lex/parse errors *do* exit non-zero.) To detect failure reliably, capture stderr and check for a line starting with `error:` — do not rely on the exit code alone.
+- **Exit code is 0 even when the script fails.** Runtime errors *and* parse errors print to **stderr** as `error: ...` (runtime ones as `error: line N: runtime error: <message>`) and halt execution, but the process still exits 0; only lex errors and pre-execution failures (e.g. missing file) exit non-zero. To detect failure reliably, capture stderr and check for a line starting with `error:` — do not rely on the exit code.
 - **Plots do not block in non-TTY runs.** The interactive TUI pager is skipped automatically when stdout is not a terminal, and `--plot none` suppresses it explicitly. `savefig()` still writes files in both cases. An agent piping output can safely run scripts containing `plot(...)`.
 - **Relative paths in `savefig`, `save`, and `load` resolve against the script's directory**, not the process working directory.
 - A bare expression or assignment without `;` echoes its value to stdout; a trailing `;` suppresses the echo.
