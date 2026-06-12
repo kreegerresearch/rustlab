@@ -46,6 +46,18 @@ impl CalloutKind {
             _ => None,
         }
     }
+
+    /// Default human-readable title shown when a callout has no explicit
+    /// title (e.g. "Note", "Warning").
+    pub(crate) fn default_label(&self) -> &'static str {
+        match self {
+            CalloutKind::Note => "Note",
+            CalloutKind::Tip => "Tip",
+            CalloutKind::Important => "Important",
+            CalloutKind::Warning => "Warning",
+            CalloutKind::Caution => "Caution",
+        }
+    }
 }
 
 /// A block in a parsed notebook.

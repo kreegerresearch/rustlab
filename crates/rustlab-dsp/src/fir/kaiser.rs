@@ -56,15 +56,8 @@ pub fn fir_lowpass_kaiser(
     stopband_attn_db: f64,
     sample_rate: f64,
 ) -> Result<FirFilter, DspError> {
-    validate_kaiser(trans_bw_hz, stopband_attn_db)?;
-    let beta = kaiser_beta(stopband_attn_db);
-    let num_taps = kaiser_num_taps(trans_bw_hz, stopband_attn_db, sample_rate);
-    fir_lowpass(
-        num_taps,
-        cutoff_hz,
-        sample_rate,
-        WindowFunction::Kaiser { beta },
-    )
+    let (num_taps, window) = kaiser_design_params(trans_bw_hz, stopband_attn_db, sample_rate)?;
+    fir_lowpass(num_taps, cutoff_hz, sample_rate, window)
 }
 
 /// Design a Kaiser-windowed FIR highpass filter.
@@ -74,15 +67,8 @@ pub fn fir_highpass_kaiser(
     stopband_attn_db: f64,
     sample_rate: f64,
 ) -> Result<FirFilter, DspError> {
-    validate_kaiser(trans_bw_hz, stopband_attn_db)?;
-    let beta = kaiser_beta(stopband_attn_db);
-    let num_taps = kaiser_num_taps(trans_bw_hz, stopband_attn_db, sample_rate);
-    fir_highpass(
-        num_taps,
-        cutoff_hz,
-        sample_rate,
-        WindowFunction::Kaiser { beta },
-    )
+    let (num_taps, window) = kaiser_design_params(trans_bw_hz, stopband_attn_db, sample_rate)?;
+    fir_highpass(num_taps, cutoff_hz, sample_rate, window)
 }
 
 /// Design a Kaiser-windowed FIR bandpass filter.
@@ -93,16 +79,22 @@ pub fn fir_bandpass_kaiser(
     stopband_attn_db: f64,
     sample_rate: f64,
 ) -> Result<FirFilter, DspError> {
+    let (num_taps, window) = kaiser_design_params(trans_bw_hz, stopband_attn_db, sample_rate)?;
+    fir_bandpass(num_taps, low_hz, high_hz, sample_rate, window)
+}
+
+/// Shared prologue for the Kaiser design functions: validate the spec, then
+/// derive the tap count and Kaiser window (β) from the transition bandwidth
+/// and stopband attenuation.
+fn kaiser_design_params(
+    trans_bw_hz: f64,
+    stopband_attn_db: f64,
+    sample_rate: f64,
+) -> Result<(usize, WindowFunction), DspError> {
     validate_kaiser(trans_bw_hz, stopband_attn_db)?;
     let beta = kaiser_beta(stopband_attn_db);
     let num_taps = kaiser_num_taps(trans_bw_hz, stopband_attn_db, sample_rate);
-    fir_bandpass(
-        num_taps,
-        low_hz,
-        high_hz,
-        sample_rate,
-        WindowFunction::Kaiser { beta },
-    )
+    Ok((num_taps, WindowFunction::Kaiser { beta }))
 }
 
 /// Design a FIR notch filter via spectral inversion of a bandpass.

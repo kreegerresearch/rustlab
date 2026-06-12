@@ -944,6 +944,52 @@ mod close_tests {
     }
 }
 
+// ─── Axis bounds ───────────────────────────────────────────────────────────
+
+/// Data-driven 2D axis bounds for a series panel, shared by the file
+/// (SVG/PNG) and terminal backends: x from data unless overridden by `xlim`;
+/// y from data with a 10% margin unless overridden by `ylim`.
+/// Returns `None` when the panel has no series points on either axis.
+pub(crate) fn compute_axis_bounds(sp: &SubplotState) -> Option<(f64, f64, f64, f64)> {
+    let mut x_data_min = f64::INFINITY;
+    let mut x_data_max = f64::NEG_INFINITY;
+    let mut y_data_min = f64::INFINITY;
+    let mut y_data_max = f64::NEG_INFINITY;
+    let mut any_x = false;
+    let mut any_y = false;
+    for s in &sp.series {
+        for &v in &s.x_data {
+            any_x = true;
+            x_data_min = x_data_min.min(v);
+            x_data_max = x_data_max.max(v);
+        }
+        for &v in &s.y_data {
+            any_y = true;
+            y_data_min = y_data_min.min(v);
+            y_data_max = y_data_max.max(v);
+        }
+    }
+    if !any_x || !any_y {
+        return None;
+    }
+    let x_min = sp.xlim.0.unwrap_or(x_data_min);
+    let x_max = sp.xlim.1.unwrap_or(x_data_max);
+    let y_margin = ((y_data_max - y_data_min).abs() * 0.1).max(1e-6);
+    let y_min = sp.ylim.0.unwrap_or(y_data_min - y_margin);
+    let y_max = sp.ylim.1.unwrap_or(y_data_max + y_margin);
+    Some((x_min, x_max, y_min, y_max))
+}
+
+/// Expand a degenerate (zero-width) range to ±1.0 so the backend has a
+/// non-empty coordinate span to map into.
+pub(crate) fn ensure_range(lo: f64, hi: f64) -> (f64, f64) {
+    if (hi - lo).abs() < 1e-12 {
+        (lo - 1.0, hi + 1.0)
+    } else {
+        (lo, hi)
+    }
+}
+
 // ─── Colormap ──────────────────────────────────────────────────────────────
 
 /// Interpolate a colormap at normalised position t ∈ [0,1].
