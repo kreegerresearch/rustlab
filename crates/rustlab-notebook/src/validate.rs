@@ -903,6 +903,16 @@ mod tests {
     // script, set the +x bit, then drop the writer by converting to
     // `TempPath` — the file persists (TempPath cleans up on drop) and
     // is no longer open, so the kernel will let us exec it.
+    //
+    // Dropping the writer is necessary but not sufficient: a fork in a
+    // *sibling* test thread inherits this writer's fd until its own exec
+    // (CLOEXEC closes at exec, not at fork), so exec'ing the script in
+    // that window still hits ETXTBSY — flaked in CI on 2026-06-11.
+    // Every test in this module that forks (writes-and-execs a fake
+    // script, or runs `which`) therefore serializes on EXEC_LOCK.
+    #[cfg(unix)]
+    static EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[cfg(unix)]
     fn fake_executable(prefix: &str, body: &str) -> tempfile::TempPath {
         use std::os::unix::fs::PermissionsExt;
@@ -923,6 +933,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_accepts_ubuntu_5_6_banner() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Ubuntu 24.04 (noble) ships tidy 5.6.0 with this exact banner —
         // notice it has no "HTML5" substring, which is why the original
         // check skipped tidy on every Linux CI run.
@@ -933,6 +944,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_accepts_brew_html5_banner() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_tidy("HTML Tidy for HTML5 (Mac OS X 64-bit) version 5.8.0");
         assert!(is_html5_tidy(&fake));
     }
@@ -940,6 +952,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_rejects_macos_2006_banner() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // /usr/bin/tidy on every macOS install — HTML4 era, rejects <nav>,
         // <main>, <footer>, etc. Must NOT be detected as html5-capable.
         let fake = fake_tidy(
@@ -951,6 +964,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn is_html5_tidy_rejects_unrelated_binary() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_tidy("some other tool v1.2.3");
         assert!(!is_html5_tidy(&fake));
     }
@@ -965,6 +979,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn lint_latex_warnings_only_returns_ok_with_ignored_detail() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // chktex's exit code is 0 even on findings, so we count
         // Warning/Error lines. Warnings-only must yield OK (with a
         // detail noting the warning count for visibility) — matching
@@ -983,6 +998,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn lint_latex_errors_still_fail() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_chktex("cat <<'EOF'\nError 1 in foo.tex line 1: Unmatched brace\nEOF");
         let mut opts = opts_default();
         opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
@@ -994,6 +1010,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn lint_latex_clean_run_returns_ok_no_detail() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let fake = fake_chktex(":"); // no-op, no output
         let mut opts = opts_default();
         opts.linter_overrides.insert("chktex".into(), fake.to_path_buf());
@@ -1014,6 +1031,7 @@ mod tests {
 
     #[test]
     fn locate_falls_back_to_path() {
+        let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let opts = opts_default();
         // `which` itself should always be on PATH on Unix.
         let found = locate("which", &opts);
