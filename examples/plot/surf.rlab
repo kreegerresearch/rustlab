@@ -45,11 +45,15 @@ title("Separable 2-D Hann window")
 savefig("surf_hann2d.svg")
 savefig("surf_hann2d.html")
 
-# ── Saddle + HTML export ──────────────────────────────────────────────────────
+# ── Saddle + SVG/HTML export ──────────────────────────────────────────────────
+# The saddle has both up-slopes (along x) and down-slopes (along y), so the
+# static wireframe shows two lobes rising and two dropping below the base — a
+# good check that a surface keeps its sign instead of folding the troughs up.
 # .html output emits a Plotly 3D surface — drag to rotate in the browser.
 figure()
 Zs = X.^2 - Y.^2
 surf(X, Y, Zs, "viridis")
 title("Saddle: x^2 - y^2")
 xlabel("x"); ylabel("y")
+savefig("surf_saddle.svg")
 savefig("surf_saddle.html")
