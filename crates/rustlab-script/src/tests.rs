@@ -754,6 +754,36 @@ mod value_tests {
     }
 
     #[test]
+    fn pow_scalar_negative_base_fractional_exponent_promotes_to_complex() {
+        // (-8) ^ (1/3) on plain scalars → principal complex cube root, not NaN.
+        match Value::binop(BinOp::Pow, scalar(-8.0), scalar(1.0 / 3.0)).unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 1.0));
+                assert!(close(c.im, 3.0_f64.sqrt()));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pow_scalar_negative_base_integer_exponent_stays_real() {
+        // (-2) ^ 3 = -8: integer exponent is well-defined, stays a real scalar.
+        match Value::binop(BinOp::Pow, scalar(-2.0), scalar(3.0)).unwrap() {
+            Value::Scalar(n) => assert_eq!(n, -8.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pow_scalar_positive_base_fractional_exponent_stays_real() {
+        // 9 ^ 0.5 = 3: non-negative base stays a real scalar.
+        match Value::binop(BinOp::Pow, scalar(9.0), scalar(0.5)).unwrap() {
+            Value::Scalar(n) => assert!(close(n, 3.0)),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn add_complex_values() {
         match Value::binop(BinOp::Add, complex(1.0, 2.0), complex(3.0, 4.0)).unwrap() {
             Value::Complex(c) => {

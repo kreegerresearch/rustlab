@@ -1112,6 +1112,15 @@ impl Value {
             // ── Scalar op Scalar ──────────────────────────────────────────────
             (Value::Scalar(a), Value::Scalar(b)) => {
                 let (a, b) = (*a, *b);
+                // A negative base with a non-integer exponent has no real value;
+                // promote to the principal complex root (matching MATLAB/Octave
+                // and `.^` on vectors/matrices) rather than returning NaN.
+                if matches!(op, Pow | ElemPow) && a < 0.0 && b.fract() != 0.0 {
+                    return Ok(Value::Complex(Self::pow_c64(
+                        C64::new(a, 0.0),
+                        C64::new(b, 0.0),
+                    )));
+                }
                 let result = match op {
                     Add => a + b,
                     Sub => a - b,
