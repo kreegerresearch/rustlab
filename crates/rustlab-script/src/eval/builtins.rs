@@ -5370,10 +5370,14 @@ fn builtin_surf(args: Vec<Value>) -> Result<Value, ScriptError> {
     if nrows == 0 || ncols == 0 {
         return Err(ScriptError::type_err("surf: Z is empty".to_string()));
     }
-    // Convert Z matrix (C64) to Vec<Vec<f64>> using magnitudes so complex
-    // inputs degrade sensibly (matches imagesc's convention).
+    // Convert Z matrix (C64) to Vec<Vec<f64>> using the real part: a surface
+    // height is a signed quantity, so magnitude would mirror negative regions
+    // upward (e.g. the saddle x^2 - y^2 would render as |x^2 - y^2|). This
+    // matches MATLAB/Octave `surf`, which plots the real component of complex
+    // data. (imagesc colours by magnitude, which is correct for a heatmap but
+    // wrong for a 3-D surface.)
     let z_rows: Vec<Vec<f64>> = (0..nrows)
-        .map(|r| (0..ncols).map(|c| z_mat[[r, c]].norm()).collect())
+        .map(|r| (0..ncols).map(|c| z_mat[[r, c]].re).collect())
         .collect();
 
     surf_terminal(z_rows, x, y, "", &colormap).map_err(|e| ScriptError::runtime(e.to_string()))?;
