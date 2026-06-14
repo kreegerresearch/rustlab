@@ -675,6 +675,84 @@ mod value_tests {
         }
     }
 
+    // ── `.^` realness: real inputs stay *exactly* real ─────────────────────────
+    // `.^` once routed every base through `exp(exp·ln base)`. For a negative
+    // base that `ln` carries an `iπ` argument, so `X.^2` lost precision
+    // (`9 → 9.000000000000002`) and leaked a ~1e-15 imaginary part, silently
+    // promoting real matrices/vectors to complex. These tests pin `im == 0.0`
+    // exactly (not just `close`) to catch any regression, while still returning
+    // genuine complex values for negative-base/non-integer-exponent roots.
+
+    fn mat_val(rows: usize, cols: usize, data: &[f64]) -> Value {
+        let v: Vec<C64> = data.iter().map(|&x| C64::new(x, 0.0)).collect();
+        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap())
+    }
+
+    #[test]
+    fn elempow_matrix_scalar_negative_base_stays_exactly_real() {
+        // [-3, 2] .^ 2 → [9, 4], exact, with zero imaginary part.
+        match Value::binop(BinOp::ElemPow, mat_val(1, 2, &[-3.0, 2.0]), scalar(2.0)).unwrap() {
+            Value::Matrix(r) => {
+                assert_eq!(r[[0, 0]].re, 9.0, "exact, not 9.000000000000002");
+                assert_eq!(r[[0, 0]].im, 0.0, "no imaginary contamination");
+                assert_eq!(r[[0, 1]].re, 4.0);
+                assert_eq!(r[[0, 1]].im, 0.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_scalar_base_matrix_exponent_stays_real() {
+        // 2 .^ [1, 2, 10] → [2, 4, 1024], exact real.
+        match Value::binop(BinOp::ElemPow, scalar(2.0), mat_val(1, 3, &[1.0, 2.0, 10.0])).unwrap() {
+            Value::Matrix(r) => {
+                for (k, want) in [2.0, 4.0, 1024.0].into_iter().enumerate() {
+                    assert_eq!(r[[0, k]].re, want);
+                    assert_eq!(r[[0, k]].im, 0.0);
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_vector_negative_base_stays_real() {
+        match Value::binop(BinOp::ElemPow, vec_val(&[-3.0, -1.0, 2.0]), scalar(2.0)).unwrap() {
+            Value::Vector(r) => {
+                assert_eq!(r[0].re, 9.0);
+                assert_eq!(r[1].re, 1.0);
+                assert_eq!(r[2].re, 4.0);
+                assert!(r.iter().all(|c| c.im == 0.0), "no imaginary contamination");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_negative_base_integer_exponent_exact() {
+        // (-2) .^ 3 = -8 exactly, real (integer exponent is well-defined).
+        match Value::binop(BinOp::ElemPow, vec_val(&[-2.0]), scalar(3.0)).unwrap() {
+            Value::Vector(r) => {
+                assert_eq!(r[0].re, -8.0);
+                assert_eq!(r[0].im, 0.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_negative_base_fractional_exponent_is_complex() {
+        // (-8) .^ (1/3) → principal complex cube root 1 + i√3 (matches MATLAB).
+        match Value::binop(BinOp::ElemPow, vec_val(&[-8.0]), scalar(1.0 / 3.0)).unwrap() {
+            Value::Vector(r) => {
+                assert!(close(r[0].re, 1.0));
+                assert!(close(r[0].im, 3.0_f64.sqrt()));
+            }
+            _ => panic!(),
+        }
+    }
+
     #[test]
     fn add_complex_values() {
         match Value::binop(BinOp::Add, complex(1.0, 2.0), complex(3.0, 4.0)).unwrap() {
