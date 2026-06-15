@@ -342,6 +342,35 @@ impl Value {
         m
     }
 
+    /// Power `base ^ exp` for two complex operands, preserving realness.
+    ///
+    /// When both operands are real (zero imaginary part) the result is computed
+    /// with real `powi`/`powf` so it is exact and stays real: `(-3) ^ 2` is
+    /// `9`, not `9.000000000000002` carrying a ~1e-15 imaginary residue. The
+    /// generic `exp(exp · ln base)` form takes `ln` of the base, and for a
+    /// negative base that `ln` has argument `±π`, so `exp(2 · iπ)` leaves
+    /// floating-point noise in both the real and imaginary parts — which then
+    /// promotes an otherwise-real matrix/vector to complex (e.g. `X.^2` after
+    /// `meshgrid`). A negative base with a non-integer exponent has no real
+    /// value, so it falls through to the complex branch, matching MATLAB/Octave
+    /// (`(-8).^(1/3)` is complex).
+    fn pow_c64(base: C64, exp: C64) -> C64 {
+        if base.im == 0.0 && exp.im == 0.0 {
+            let (b, e) = (base.re, exp.re);
+            if e.fract() == 0.0 && e.abs() <= i32::MAX as f64 {
+                // Integer exponent: exact, and well-defined for negative bases.
+                return C64::new(b.powi(e as i32), 0.0);
+            }
+            if b >= 0.0 {
+                // Non-integer exponent on a non-negative base stays real.
+                return C64::new(b.powf(e), 0.0);
+            }
+            // Negative base, non-integer exponent → genuinely complex below.
+        }
+        let ln_base = Complex::new(base.norm().ln(), base.arg());
+        (exp * ln_base).exp()
+    }
+
     /// Octave/matlab implicit expansion: broadcast two matrices to a common
     /// shape. Each dimension must be equal between the two, or one of them
     /// must be 1 (the singleton dimension is repeated to fill the other).
@@ -407,10 +436,7 @@ impl Value {
                 let data: Vec<C64> = a_exp
                     .iter()
                     .zip(b_exp.iter())
-                    .map(|(&x, &y)| {
-                        let ln_x = Complex::new(x.norm().ln(), x.arg());
-                        (y * ln_x).exp()
-                    })
+                    .map(|(&x, &y)| Self::pow_c64(x, y))
                     .collect();
                 Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?
             }
@@ -1086,6 +1112,15 @@ impl Value {
             // ── Scalar op Scalar ──────────────────────────────────────────────
             (Value::Scalar(a), Value::Scalar(b)) => {
                 let (a, b) = (*a, *b);
+                // A negative base with a non-integer exponent has no real value;
+                // promote to the principal complex root (matching MATLAB/Octave
+                // and `.^` on vectors/matrices) rather than returning NaN.
+                if matches!(op, Pow | ElemPow) && a < 0.0 && b.fract() != 0.0 {
+                    return Ok(Value::Complex(Self::pow_c64(
+                        C64::new(a, 0.0),
+                        C64::new(b, 0.0),
+                    )));
+                }
                 let result = match op {
                     Add => a + b,
                     Sub => a - b,
@@ -1108,10 +1143,7 @@ impl Value {
                     Sub => a - b,
                     Mul | ElemMul => a * b,
                     Div | ElemDiv => a / b,
-                    Pow | ElemPow => {
-                        let ln_a = Complex::new(a.norm().ln(), a.arg());
-                        (b * ln_a).exp()
-                    }
+                    Pow | ElemPow => Self::pow_c64(a, b),
                     _ => unreachable!(),
                 };
                 Ok(Value::Complex(result))
@@ -1142,10 +1174,9 @@ impl Value {
                             Sub => a - b,
                             ElemMul => a * b,
                             ElemDiv => a / b,
-                            ElemPow => Array1::from_iter(a.iter().zip(b.iter()).map(|(&x, &y)| {
-                                let ln_x = Complex::new(x.norm().ln(), x.arg());
-                                (y * ln_x).exp()
-                            })),
+                            ElemPow => Array1::from_iter(
+                                a.iter().zip(b.iter()).map(|(&x, &y)| Self::pow_c64(x, y)),
+                            ),
                             _ => unreachable!(),
                         };
                         // §4 Option A: real-input → real-output for elem-ops.
@@ -1183,10 +1214,9 @@ impl Value {
                     Sub => Array1::from_iter(vec.iter().map(|&x| scalar - x)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| scalar * x)),
                     Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| scalar / x)),
-                    Pow | ElemPow => Array1::from_iter(vec.iter().map(|&x| {
-                        let ln_s = Complex::new(scalar.norm().ln(), scalar.arg());
-                        (x * ln_s).exp()
-                    })),
+                    Pow | ElemPow => {
+                        Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(scalar, x)))
+                    }
                     _ => unreachable!(),
                 };
                 Ok(Value::Vector(result))
@@ -1204,10 +1234,9 @@ impl Value {
                     Sub => Array1::from_iter(vec.iter().map(|&x| x - scalar)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| x * scalar)),
                     Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| x / scalar)),
-                    Pow | ElemPow => Array1::from_iter(vec.iter().map(|&x| {
-                        let ln_x = Complex::new(x.norm().ln(), x.arg());
-                        (scalar * ln_x).exp()
-                    })),
+                    Pow | ElemPow => {
+                        Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(x, scalar)))
+                    }
                     _ => unreachable!(),
                 };
                 Ok(Value::Vector(result))
@@ -1325,10 +1354,7 @@ impl Value {
                         Sub => scalar - x,
                         Mul | ElemMul => scalar * x,
                         Div | ElemDiv => scalar / x,
-                        Pow | ElemPow => {
-                            let ln_s = Complex::new(scalar.norm().ln(), scalar.arg());
-                            (x * ln_s).exp()
-                        }
+                        Pow | ElemPow => Self::pow_c64(scalar, x),
                         _ => unreachable!(),
                     })
                     .collect();
@@ -1353,10 +1379,7 @@ impl Value {
                         Sub => x - scalar,
                         Mul | ElemMul => x * scalar,
                         Div | ElemDiv => x / scalar,
-                        Pow | ElemPow => {
-                            let ln_x = Complex::new(x.norm().ln(), x.arg());
-                            (scalar * ln_x).exp()
-                        }
+                        Pow | ElemPow => Self::pow_c64(x, scalar),
                         _ => unreachable!(),
                     })
                     .collect();
@@ -1395,11 +1418,7 @@ impl Value {
                                 Sub => a - b,
                                 Mul | ElemMul => a * b,
                                 Div | ElemDiv => a / b,
-                                // a^b = exp(b·ln a)
-                                Pow | ElemPow => {
-                                    let ln_a = Complex::new(a.norm().ln(), a.arg());
-                                    (b * ln_a).exp()
-                                }
+                                Pow | ElemPow => Self::pow_c64(a, b),
                                 _ => unreachable!(),
                             }
                         });
@@ -1431,10 +1450,7 @@ impl Value {
                         let data = a
                             .iter()
                             .zip(b.iter())
-                            .map(|(&x, &y)| {
-                                let ln_x = Complex::new(x.norm().ln(), x.arg());
-                                (y * ln_x).exp()
-                            })
+                            .map(|(&x, &y)| Self::pow_c64(x, y))
                             .collect::<Vec<_>>();
                         Ok(Value::Tensor3(
                             ndarray::Array3::from_shape_vec(

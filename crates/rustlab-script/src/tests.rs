@@ -675,6 +675,114 @@ mod value_tests {
         }
     }
 
+    // ── `.^` realness: real inputs stay *exactly* real ─────────────────────────
+    // `.^` once routed every base through `exp(exp·ln base)`. For a negative
+    // base that `ln` carries an `iπ` argument, so `X.^2` lost precision
+    // (`9 → 9.000000000000002`) and leaked a ~1e-15 imaginary part, silently
+    // promoting real matrices/vectors to complex. These tests pin `im == 0.0`
+    // exactly (not just `close`) to catch any regression, while still returning
+    // genuine complex values for negative-base/non-integer-exponent roots.
+
+    fn mat_val(rows: usize, cols: usize, data: &[f64]) -> Value {
+        let v: Vec<C64> = data.iter().map(|&x| C64::new(x, 0.0)).collect();
+        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap())
+    }
+
+    #[test]
+    fn elempow_matrix_scalar_negative_base_stays_exactly_real() {
+        // [-3, 2] .^ 2 → [9, 4], exact, with zero imaginary part.
+        match Value::binop(BinOp::ElemPow, mat_val(1, 2, &[-3.0, 2.0]), scalar(2.0)).unwrap() {
+            Value::Matrix(r) => {
+                assert_eq!(r[[0, 0]].re, 9.0, "exact, not 9.000000000000002");
+                assert_eq!(r[[0, 0]].im, 0.0, "no imaginary contamination");
+                assert_eq!(r[[0, 1]].re, 4.0);
+                assert_eq!(r[[0, 1]].im, 0.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_scalar_base_matrix_exponent_stays_real() {
+        // 2 .^ [1, 2, 10] → [2, 4, 1024], exact real.
+        match Value::binop(BinOp::ElemPow, scalar(2.0), mat_val(1, 3, &[1.0, 2.0, 10.0])).unwrap() {
+            Value::Matrix(r) => {
+                for (k, want) in [2.0, 4.0, 1024.0].into_iter().enumerate() {
+                    assert_eq!(r[[0, k]].re, want);
+                    assert_eq!(r[[0, k]].im, 0.0);
+                }
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_vector_negative_base_stays_real() {
+        match Value::binop(BinOp::ElemPow, vec_val(&[-3.0, -1.0, 2.0]), scalar(2.0)).unwrap() {
+            Value::Vector(r) => {
+                assert_eq!(r[0].re, 9.0);
+                assert_eq!(r[1].re, 1.0);
+                assert_eq!(r[2].re, 4.0);
+                assert!(r.iter().all(|c| c.im == 0.0), "no imaginary contamination");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_negative_base_integer_exponent_exact() {
+        // (-2) .^ 3 = -8 exactly, real (integer exponent is well-defined).
+        match Value::binop(BinOp::ElemPow, vec_val(&[-2.0]), scalar(3.0)).unwrap() {
+            Value::Vector(r) => {
+                assert_eq!(r[0].re, -8.0);
+                assert_eq!(r[0].im, 0.0);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn elempow_negative_base_fractional_exponent_is_complex() {
+        // (-8) .^ (1/3) → principal complex cube root 1 + i√3 (matches MATLAB).
+        match Value::binop(BinOp::ElemPow, vec_val(&[-8.0]), scalar(1.0 / 3.0)).unwrap() {
+            Value::Vector(r) => {
+                assert!(close(r[0].re, 1.0));
+                assert!(close(r[0].im, 3.0_f64.sqrt()));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn pow_scalar_negative_base_fractional_exponent_promotes_to_complex() {
+        // (-8) ^ (1/3) on plain scalars → principal complex cube root, not NaN.
+        match Value::binop(BinOp::Pow, scalar(-8.0), scalar(1.0 / 3.0)).unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 1.0));
+                assert!(close(c.im, 3.0_f64.sqrt()));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pow_scalar_negative_base_integer_exponent_stays_real() {
+        // (-2) ^ 3 = -8: integer exponent is well-defined, stays a real scalar.
+        match Value::binop(BinOp::Pow, scalar(-2.0), scalar(3.0)).unwrap() {
+            Value::Scalar(n) => assert_eq!(n, -8.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pow_scalar_positive_base_fractional_exponent_stays_real() {
+        // 9 ^ 0.5 = 3: non-negative base stays a real scalar.
+        match Value::binop(BinOp::Pow, scalar(9.0), scalar(0.5)).unwrap() {
+            Value::Scalar(n) => assert!(close(n, 3.0)),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
     #[test]
     fn add_complex_values() {
         match Value::binop(BinOp::Add, complex(1.0, 2.0), complex(3.0, 4.0)).unwrap() {
@@ -888,6 +996,106 @@ mod evaluator_tests {
     fn builtin_sqrt() {
         let ev = eval_str("y = sqrt(9)");
         assert!(close(get_scalar(&ev, "y"), 3.0));
+    }
+
+    #[test]
+    fn builtin_sqrt_negative_real_promotes_to_complex() {
+        // sqrt(-4) → 2i, not NaN — consistent with (-4)^0.5.
+        match eval_str("y = sqrt(-4)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, 2.0));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_sqrt_mixed_sign_vector_is_complex_with_exact_real_parts() {
+        // sqrt([-4, 9, -1]) → [2i, 3, i]: negatives promote, positives stay exact real.
+        match eval_str("v = sqrt([-4.0, 9.0, -1.0])").get("v").unwrap() {
+            Value::Vector(v) => {
+                assert!(close(v[0].re, 0.0) && close(v[0].im, 2.0));
+                assert_eq!(v[1].re, 3.0);
+                assert_eq!(v[1].im, 0.0, "positive element stays exactly real");
+                assert!(close(v[2].re, 0.0) && close(v[2].im, 1.0));
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_sqrt_nonnegative_stays_real_scalar() {
+        // sqrt(0) and sqrt(9) keep their real-scalar type.
+        match eval_str("y = sqrt(0)").get("y").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 0.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_log_negative_real_promotes_to_complex() {
+        // log(-1) → iπ, not NaN.
+        match eval_str("y = log(-1)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, std::f64::consts::PI));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_log_zero_stays_real_neg_infinity() {
+        // log(0) = -inf stays a real scalar (0 is on the real-domain boundary).
+        match eval_str("y = log(0)").get("y").unwrap() {
+            Value::Scalar(n) => assert!(n.is_infinite() && *n < 0.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_acos_outside_domain_promotes_to_complex() {
+        // acos(2) → 0 + 1.31696i; acos(-2) → π − 1.31696i.
+        match eval_str("y = acos(2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, 1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+        match eval_str("y = acos(-2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, std::f64::consts::PI));
+                assert!(close(c.im, -1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_asin_outside_domain_promotes_to_complex() {
+        // asin(2) → π/2 − 1.31696i.
+        match eval_str("y = asin(2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, std::f64::consts::FRAC_PI_2));
+                assert!(close(c.im, -1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_acos_asin_in_domain_stay_real() {
+        // Values in [-1, 1] (incl. the boundary) keep their real-scalar type.
+        match eval_str("y = acos(1)").get("y").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 0.0),
+            other => panic!("expected Scalar acos(1), got {other:?}"),
+        }
+        match eval_str("y = asin(0.5)").get("y").unwrap() {
+            Value::Scalar(n) => assert!(close(*n, std::f64::consts::FRAC_PI_6)),
+            other => panic!("expected Scalar asin(0.5), got {other:?}"),
+        }
     }
 
     #[test]
