@@ -1055,6 +1055,50 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn builtin_acos_outside_domain_promotes_to_complex() {
+        // acos(2) → 0 + 1.31696i; acos(-2) → π − 1.31696i.
+        match eval_str("y = acos(2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, 1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+        match eval_str("y = acos(-2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, std::f64::consts::PI));
+                assert!(close(c.im, -1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_asin_outside_domain_promotes_to_complex() {
+        // asin(2) → π/2 − 1.31696i.
+        match eval_str("y = asin(2)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, std::f64::consts::FRAC_PI_2));
+                assert!(close(c.im, -1.316957896924817));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_acos_asin_in_domain_stay_real() {
+        // Values in [-1, 1] (incl. the boundary) keep their real-scalar type.
+        match eval_str("y = acos(1)").get("y").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 0.0),
+            other => panic!("expected Scalar acos(1), got {other:?}"),
+        }
+        match eval_str("y = asin(0.5)").get("y").unwrap() {
+            Value::Scalar(n) => assert!(close(*n, std::f64::consts::FRAC_PI_6)),
+            other => panic!("expected Scalar asin(0.5), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn builtin_zeros() {
         let ev = eval_str("v = zeros(5)");
         match ev.get("v").unwrap() {

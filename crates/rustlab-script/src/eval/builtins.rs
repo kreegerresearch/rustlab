@@ -759,11 +759,27 @@ fn builtin_sin(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_acos(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("acos", args, f64::acos, |c: Complex<f64>| c.acos())
+    // Real domain is [-1, 1]; |x| > 1 has no real arccosine, so promote it to
+    // the principal complex value (acos(2) → 1.317i) instead of NaN.
+    apply_scalar_fn_promoting(
+        "acos",
+        args,
+        f64::acos,
+        |c: Complex<f64>| c.acos(),
+        |x| x.abs() > 1.0,
+    )
 }
 
 fn builtin_asin(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("asin", args, f64::asin, |c: Complex<f64>| c.asin())
+    // Real domain is [-1, 1]; |x| > 1 has no real arcsine, so promote it to the
+    // principal complex value (asin(2) → π/2 − 1.317i) instead of NaN.
+    apply_scalar_fn_promoting(
+        "asin",
+        args,
+        f64::asin,
+        |c: Complex<f64>| c.asin(),
+        |x| x.abs() > 1.0,
+    )
 }
 
 fn builtin_atan(args: Vec<Value>) -> Result<Value, ScriptError> {
