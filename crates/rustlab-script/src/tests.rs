@@ -999,6 +999,62 @@ mod evaluator_tests {
     }
 
     #[test]
+    fn builtin_sqrt_negative_real_promotes_to_complex() {
+        // sqrt(-4) → 2i, not NaN — consistent with (-4)^0.5.
+        match eval_str("y = sqrt(-4)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, 2.0));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_sqrt_mixed_sign_vector_is_complex_with_exact_real_parts() {
+        // sqrt([-4, 9, -1]) → [2i, 3, i]: negatives promote, positives stay exact real.
+        match eval_str("v = sqrt([-4.0, 9.0, -1.0])").get("v").unwrap() {
+            Value::Vector(v) => {
+                assert!(close(v[0].re, 0.0) && close(v[0].im, 2.0));
+                assert_eq!(v[1].re, 3.0);
+                assert_eq!(v[1].im, 0.0, "positive element stays exactly real");
+                assert!(close(v[2].re, 0.0) && close(v[2].im, 1.0));
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_sqrt_nonnegative_stays_real_scalar() {
+        // sqrt(0) and sqrt(9) keep their real-scalar type.
+        match eval_str("y = sqrt(0)").get("y").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 0.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_log_negative_real_promotes_to_complex() {
+        // log(-1) → iπ, not NaN.
+        match eval_str("y = log(-1)").get("y").unwrap() {
+            Value::Complex(c) => {
+                assert!(close(c.re, 0.0));
+                assert!(close(c.im, std::f64::consts::PI));
+            }
+            other => panic!("expected Complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builtin_log_zero_stays_real_neg_infinity() {
+        // log(0) = -inf stays a real scalar (0 is on the real-domain boundary).
+        match eval_str("y = log(0)").get("y").unwrap() {
+            Value::Scalar(n) => assert!(n.is_infinite() && *n < 0.0),
+            other => panic!("expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn builtin_zeros() {
         let ev = eval_str("v = zeros(5)");
         match ev.get("v").unwrap() {

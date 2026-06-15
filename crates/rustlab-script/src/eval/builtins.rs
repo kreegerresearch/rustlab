@@ -693,21 +693,52 @@ fn apply_scalar_fn_to_value(
     f: impl Fn(f64) -> f64,
     fc: impl Fn(Complex<f64>) -> Complex<f64>,
 ) -> Result<Value, ScriptError> {
+    // No real value needs promotion: real input → real output everywhere.
+    apply_scalar_fn_promoting(name, args, f, fc, |_| false)
+}
+
+/// Like [`apply_scalar_fn_to_value`], but a real input element whose value
+/// satisfies `needs_complex` is promoted to the complex branch (`fc`) so the
+/// result is complex rather than `NaN`. Used by `sqrt`/`log`, whose real
+/// domain excludes negatives: `sqrt(-4)` → `2i`, `log(-1)` → `iπ`, matching
+/// the `.^`/`^` operators (`(-4)^0.5` → `2i`). Non-negative elements still go
+/// through the real `f`, so they stay exactly real (e.g. `sqrt(9)` → `3`).
+fn apply_scalar_fn_promoting(
+    name: &str,
+    args: Vec<Value>,
+    f: impl Fn(f64) -> f64,
+    fc: impl Fn(Complex<f64>) -> Complex<f64>,
+    needs_complex: impl Fn(f64) -> bool,
+) -> Result<Value, ScriptError> {
     check_args(name, &args, 1)?;
+    // Promote one real element via the complex branch, else stay real.
+    let elem = |x: f64| {
+        if needs_complex(x) {
+            fc(Complex::new(x, 0.0))
+        } else {
+            Complex::new(f(x), 0.0)
+        }
+    };
     match &args[0] {
-        Value::Scalar(n) => Ok(Value::Scalar(f(*n))),
+        Value::Scalar(n) => {
+            if needs_complex(*n) {
+                Ok(Value::Complex(fc(Complex::new(*n, 0.0))))
+            } else {
+                Ok(Value::Scalar(f(*n)))
+            }
+        }
         Value::Complex(c) => Ok(Value::Complex(fc(*c))),
         Value::Vector(v) => {
             // Fast path: avoid complex-number formula overhead for purely real vectors.
             if is_real_vector(v) {
-                Ok(Value::Vector(v.mapv(|c| Complex::new(f(c.re), 0.0))))
+                Ok(Value::Vector(v.mapv(|c| elem(c.re))))
             } else {
                 Ok(Value::Vector(v.mapv(|c| fc(c))))
             }
         }
         Value::Matrix(m) => {
             if m.iter().all(|c| c.im == 0.0) {
-                Ok(Value::Matrix(m.mapv(|c| Complex::new(f(c.re), 0.0))))
+                Ok(Value::Matrix(m.mapv(|c| elem(c.re))))
             } else {
                 Ok(Value::Matrix(m.mapv(|c| fc(c))))
             }
@@ -822,7 +853,15 @@ fn builtin_mod(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_sqrt(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("sqrt", args, f64::sqrt, |c: Complex<f64>| c.sqrt())
+    // A negative real has no real square root; promote it to the principal
+    // complex root (sqrt(-4) → 2i) instead of NaN.
+    apply_scalar_fn_promoting(
+        "sqrt",
+        args,
+        f64::sqrt,
+        |c: Complex<f64>| c.sqrt(),
+        |x| x < 0.0,
+    )
 }
 
 fn builtin_exp(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -830,7 +869,9 @@ fn builtin_exp(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_log(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("log", args, f64::ln, |c: Complex<f64>| c.ln())
+    // A negative real has no real logarithm; promote it to the principal
+    // complex branch (log(-1) → iπ) instead of NaN. log(0) stays real -inf.
+    apply_scalar_fn_promoting("log", args, f64::ln, |c: Complex<f64>| c.ln(), |x| x < 0.0)
 }
 
 fn builtin_log10(args: Vec<Value>) -> Result<Value, ScriptError> {
