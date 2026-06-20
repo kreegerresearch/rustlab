@@ -56,7 +56,7 @@ print(D)              % four smallest eigenvalues, sorted by |λ|
 <!-- rustlab:output-start -->
 ```text
 4
-[1×4]  71.492449  139.881083  210.411322  249.661367
+[1×4]  71.492449  139.881083  210.410992  249.437305
 ```
 
 <!-- rustlab:output-end -->
@@ -78,7 +78,7 @@ title("Mode 1 — fundamental drumhead");
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/eigs/plot-1-92c08a3b.svg)
+![plot 1](plots/eigs/plot-1-d041ce35.svg)
 
 <!-- rustlab:output-end -->
 
@@ -95,7 +95,7 @@ title("Mode 2 — first lateral mode");
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/eigs/plot-2-65092cba.svg)
+![plot 2](plots/eigs/plot-2-1caec07b.svg)
 
 <!-- rustlab:output-end -->
 
@@ -111,7 +111,7 @@ title("Mode 3");
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/eigs/plot-3-1db812d4.svg)
+![plot 3](plots/eigs/plot-3-6222dd93.svg)
 
 <!-- rustlab:output-end -->
 
@@ -155,7 +155,7 @@ print(Dg(1))               % smallest λ ≈ smallest eigs(L) / 2
 
 <!-- rustlab:output-start -->
 ```text
-69.94033793580886
+35.74622472905614
 ```
 
 <!-- rustlab:output-end -->

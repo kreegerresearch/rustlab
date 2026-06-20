@@ -111,7 +111,7 @@ title("Mandelbrot set — 800×600, 100 iterations")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/mandelbrot/plot-1-dc5ca6b4.svg)
+![plot 1](plots/mandelbrot/plot-1-2bf2b076.svg)
 
 <!-- rustlab:output-end -->
 
@@ -148,7 +148,7 @@ title("Seahorse Valley — 250 iterations")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/mandelbrot/plot-2-cf20e994.svg)
+![plot 2](plots/mandelbrot/plot-2-97489679.svg)
 
 <!-- rustlab:output-end -->
 
@@ -185,7 +185,7 @@ title("Elephant Valley — 300 iterations")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/mandelbrot/plot-3-cf835624.svg)
+![plot 3](plots/mandelbrot/plot-3-8b88f4c4.svg)
 
 <!-- rustlab:output-end -->
 

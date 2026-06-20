@@ -61,12 +61,12 @@ Code blocks and diagrams compose:
 ```rustlab
 N = 64;
 M = N / 4;
-print("Decimation: ${N} samples → ${M} samples")
+fprintf("Decimation: %g samples → %g samples\n", N, M)
 ```
 
 <!-- rustlab:output-start -->
 ```text
-Decimation: ${N} samples → ${M} samples
+Decimation: 64 samples → 16 samples
 ```
 
 <!-- rustlab:output-end -->

@@ -142,7 +142,7 @@ ylabel("AMD time / Identity time")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/sparse_scaling/plot-4-e84e06d7.svg)
+![plot 4](plots/sparse_scaling/plot-4-fa97deb5.svg)
 
 <!-- rustlab:output-end -->
 

@@ -20,7 +20,7 @@ title("randn(2000) — different every render")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/seed/plot-1-6fa5c735.svg)
+![plot 1](plots/seed/plot-1-7dc7c7c4.svg)
 
 <!-- rustlab:output-end -->
 
@@ -52,9 +52,22 @@ sparse, rank-3:
 
 ```rustlab
 seed(7);
-M = rand(3, 4)
-v = randi(100, 5)
+M = rand(3, 4);
+v = randi(100, 5);
+disp(M)
+disp(v)
 ```
+
+<!-- rustlab:output-start -->
+```text
+Matrix(3x4)
+  [0.030317, 0.307086, 0.142642, 0.542517]
+  [0.272497, 0.951131, 0.175462, 0.256766]
+  [0.125221, 0.723452, 0.638876, 0.020627]
+[1×5]  9.000000  38.000000  89.000000  57.000000  51.000000
+```
+
+<!-- rustlab:output-end -->
 
 Both `M` and `v` come out the same on every run.
 
@@ -66,10 +79,19 @@ after a deterministic warm-up:
 
 ```rustlab
 seed(123);
-calibration = rand(4)        % reproducible: same numbers every render
+calibration = rand(4);       % reproducible: same numbers every render
+disp(calibration)
 seed();
-sample = randn(4)            % freshly random: different every render
+sample = randn(4);           % freshly random — not displayed, as it would
+                             % churn the committed .md on every render
 ```
+
+<!-- rustlab:output-start -->
+```text
+[1×4]  0.173255  0.152296  0.930658  0.414397
+```
+
+<!-- rustlab:output-end -->
 
 ## When to seed
 

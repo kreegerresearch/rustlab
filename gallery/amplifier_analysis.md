@@ -131,7 +131,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-1a72a5ce.svg)
+![plot 5](plots/amplifier_analysis/plot-5-a7a6bc7a.svg)
 
 <!-- rustlab:output-end -->
 
@@ -461,7 +461,7 @@ end
 
 <!-- rustlab:output-start -->
 ```text
-has_noise(s_clean): no (this synthesised network has no noise block)
+error: line 12: runtime error: touchstone write: Operation not permitted (os error 1)
 ```
 
 <!-- rustlab:output-end -->

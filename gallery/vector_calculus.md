@@ -43,15 +43,15 @@ F = X .^ 2 + Y .^ 2;
 print(Fx(21, 21))         % ≈ 0
 print(Fy(21, 21))         % ≈ 0
 
-% Top-right corner (x = y = 1): gradient ≈ (2, 2)
-print(Fx(41, 41))         % ≈ 2
-print(Fy(41, 41))         % ≈ 2
+% Top-right corner (x = y = 2): ∇F = (2x, 2y) = (4, 4)
+print(Fx(41, 41))         % ≈ 4
+print(Fy(41, 41))         % ≈ 4
 ```
 
 <!-- rustlab:output-start -->
 ```text
-0.0000000000000002255140518769849
-0.0000000000000002255140518769849
+0.00000000000000021684043449710089
+0.00000000000000021684043449710089
 3.9999999999999813
 3.9999999999999813
 ```
@@ -115,7 +115,7 @@ print(laplV(21, 21))      % ≈ 4
 
 <!-- rustlab:output-start -->
 ```text
-4.0000000000000036
+4.000000000000003
 ```
 
 <!-- rustlab:output-end -->
@@ -134,7 +134,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/vector_calculus/plot-1-c24e872e.svg)
+![plot 1](plots/vector_calculus/plot-1-c8c249d6.svg)
 
 <!-- rustlab:output-end -->
 
