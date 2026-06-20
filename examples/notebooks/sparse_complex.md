@@ -126,7 +126,7 @@ H = [3,    1+j,  0;
 b = [1; 2-j; 0.5];
 x = spsolve(sparse(H), b, "cholesky");   % force Cholesky to confirm
 print(x);
-print(norm(H * x' - b))                   % residual
+print(norm(H * transpose(x) - b))         % residual (transpose, not ')
 ```
 
 ## Cheat sheet

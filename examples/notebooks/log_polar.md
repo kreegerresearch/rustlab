@@ -57,14 +57,16 @@ with `freqz` and `mag2db` to get a Bode plot.
 
 `polar(theta, r)` plots the curve in polar coordinates by transforming
 to Cartesian: `(r·cos θ, r·sin θ)`. The classic textbook rose curve
-`r = 1 + 0.3·cos(3θ)` has three lobes:
+`r = cos(3θ)` has three petals — for odd `k`, `cos(kθ)` traces exactly
+`k` petals, and the negative-`r` lobes reflect through the origin (which
+the Cartesian pre-transform handles directly):
 
 ```rustlab
 clf
 theta = linspace(0, 2*pi, 360);
-r = 1 + 0.3 * cos(3 * theta);
+r = cos(3 * theta);
 polar(theta, r);
-title("Three-petal rose: r = 1 + 0.3 cos(3θ)");
+title("Three-petal rose: r = cos(3θ)");
 ```
 
 ## Hertzian dipole radiation pattern

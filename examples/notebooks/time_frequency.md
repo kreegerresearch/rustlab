@@ -53,9 +53,10 @@ form auto-renders the magnitude spectrogram.
 size(S)
 ```
 
-For a 20 000-sample chirp with a 512-sample Hann window and a hop of
-128, this produces a $513 \times 153$ matrix — 513 one-sided frequency
-bins (`nfft/2 + 1`) by 153 time frames.
+For a 20 000-sample chirp with a 512-sample Hann window and a
+384-sample overlap (the 4th argument; hop = 512 − 384 = 128 samples),
+this produces a $513 \times 153$ matrix — 513 one-sided frequency bins
+(`nfft/2 + 1`) by 153 time frames.
 
 ## Spectrogram visualisation
 
@@ -167,11 +168,14 @@ straight into `plot_update_heatmap` for a scrolling spectrogram.
 state = stft_stream_init(fs, window("hann", 512), 384, 1024);
 n_freqs = 513;        % nfft/2 + 1
 n_cols_total = 0;
-% Run the chirp through stft_stream in 1024-sample chunks.
+% Run the whole chirp through stft_stream in 1024-sample chunks,
+% including a short final chunk so no samples are dropped.
 chunk = 1024;
-for i = 0:floor(n/chunk) - 1
-    frame = x(i*chunk + 1 : (i+1)*chunk);
-    [S_new, state] = stft_stream(frame, state);
+n_chunks = ceil(n / chunk);
+for i = 0:n_chunks - 1
+    lo = i*chunk + 1;
+    hi = min((i+1)*chunk, n);
+    [S_new, state] = stft_stream(x(lo:hi), state);
     n_cols_total = n_cols_total + size(S_new, 2);
 end
 n_cols_total

@@ -34,7 +34,7 @@ fps)` flushes the buffer.
 ```rustlab
 [X, Y] = meshgrid(linspace(-3, 3, 80), linspace(-3, 3, 80));
 
-figure()
+figure();
 n_frames = 40;
 for k = 1:n_frames
   c = -2 + 4 * (k - 1) / (n_frames - 1);
@@ -49,7 +49,7 @@ saveanim("wave.html", 30)
 ### Same loop, animated GIF
 
 ```rustlab
-figure()
+figure();
 for k = 1:n_frames
   c = -2 + 4 * (k - 1) / (n_frames - 1);
   Z = exp(-((X - c).^2 + Y.^2));
@@ -72,7 +72,7 @@ extension to pick the format. When you run the same script standalone
 plotting builtin. To get a per-frame title, set it **after** `imagesc()`:
 
 ```rustlab
-figure()
+figure();
 [X, Y] = meshgrid(linspace(0, 1, 60), linspace(0, 1, 60));
 omega = 2 * pi;
 for k = 1:24

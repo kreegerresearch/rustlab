@@ -128,9 +128,10 @@ g = make_adder(10);
 cache status
 ```
 
-`make_adder` produces a `Value::Lambda` — non-cacheable. You'll see
-no cached row for it; the function name doesn't appear in the
-per-function table.
+`make_adder` produces a `Value::Lambda` — non-cacheable. It still appears
+in the per-function table (here `0 hits, 1 misses`) because the dispatcher
+routes the call and counts the attempt, but nothing is ever written to the
+store: a lambda result can't be serialised, so every call is a miss.
 
 ## 7. Limitation — mutual recursion's name fallback
 

@@ -36,7 +36,7 @@ regions = {"North", "South", "East", "West"};
 q1 = [45, 32, 58, 41];
 q2 = [52, 38, 61, 47];
 
-figure()
+figure();
 subplot(1,2,1)
 bar(regions, q1, "Q1 Revenue")
 subplot(1,2,2)

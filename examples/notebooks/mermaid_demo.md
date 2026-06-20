@@ -58,7 +58,7 @@ Code blocks and diagrams compose:
 ```rustlab
 N = 64;
 M = N / 4;
-print("Decimation: ${N} samples → ${M} samples")
+fprintf("Decimation: %g samples → %g samples\n", N, M)
 ```
 
 ```mermaid
