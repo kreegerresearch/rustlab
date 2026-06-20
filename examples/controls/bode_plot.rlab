@@ -5,5 +5,5 @@ G = 10 / (s^2 + 2*s + 10)
 
 # Return magnitude (dB), phase (deg), and frequency (rad/s) vectors
 [mag, phase, w] = bode(G)
-plot(mag, "Bode Magnitude |G(jw)| (dB)")
-plot(phase, "Bode Phase /G(jw) (deg)")
+semilogx(w, mag, "Bode Magnitude |G(jw)| (dB)")
+semilogx(w, phase, "Bode Phase /G(jw) (deg)")

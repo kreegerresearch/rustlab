@@ -28,7 +28,8 @@ clean = cos(t * 2.0 * pi * 5.0)
 noise = randn(1000) * 0.3
 noisy = clean + noise
 
-plot(real(noisy), "Noisy 5 Hz Sinusoid (SNR ≈ 10 dB)")
+# SNR = signal power / noise power = 0.5 / 0.3^2 ≈ 5.6 → 7.4 dB.
+plot(real(noisy), "Noisy 5 Hz Sinusoid (SNR ≈ 7.4 dB)")
 
 # Spectrum of the noisy signal
 X = fft(real(noisy))

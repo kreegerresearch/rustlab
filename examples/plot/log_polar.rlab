@@ -27,11 +27,14 @@ title("Exponential decay e^{-t} on semilogy");
 savefig("/tmp/rustlab_semilogy.html");
 
 # ── 3. Polar: three-petal rose ──────────────────────────────────
+% r = cos(3θ) is the textbook rhodonea: for odd k, cos(kθ) traces
+% exactly k petals (negative r reflects through the origin, which the
+% Cartesian pre-transform in polar() handles directly).
 theta = linspace(0, 2*pi, 360);
-r_rose = 1 + 0.3 * cos(3 * theta);
+r_rose = cos(3 * theta);
 figure();
 polar(theta, r_rose);
-title("Three-petal rose: r = 1 + 0.3 cos(3θ)");
+title("Three-petal rose: r = cos(3θ)");
 savefig("/tmp/rustlab_polar_rose.html");
 
 # ── 4. Polar: Hertzian-dipole-style pattern ─────────────────────

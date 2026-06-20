@@ -22,7 +22,7 @@ print(length(h_lp))
 Hz_lp = freqz(h_lp, 512, fs)
 plotdb(Hz_lp, "PM Low-pass Frequency Response")
 
-# -- 2. Band-pass: 79-tap, pass-band 0.30-0.50 Nyquist (2.4-4 kHz)
+# -- 2. Band-pass: 79-tap, pass-band 0.30-0.50 Nyquist (1.2-2 kHz at fs=8 kHz)
 h_bp = firpm(79,
              [0.0, 0.25, 0.30, 0.50, 0.55, 1.0],
              [0.0, 0.0,  1.0,  1.0,  0.0,  0.0])
@@ -54,7 +54,8 @@ print(length(h_kai))
 
 # -- 5. Integer-coefficient low-pass: 8-bit and 16-bit comparison
 #    firpmq iterates Remez with quantized coefs so rounding error is absorbed.
-#    The returned coefficients are integer-valued (e.g. 127, -256).
+#    The returned coefficients are integer-valued and fit the chosen word
+#    length (within ±127 for 8-bit, ±32767 for 16-bit).
 #    To normalize for freqz: for a unit-gain passband, sum(h_int) == scale,
 #    so divide by sum(h_int) to recover the unit-gain float response.
 

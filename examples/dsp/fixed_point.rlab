@@ -26,6 +26,7 @@ print(length(h_float));
 #    quantization shifts the filter phase, causing the phasor difference to
 #    dominate.  White noise exercises the full passband uniformly.
 #    Scale to 0.3 sigma so samples stay inside the Q1.14 range (-2 to ~2).
+seed(7);                 % deterministic SNR sweep across bitwidths
 x    = randn(n) * 0.3;
 
 # Float reference output
@@ -62,8 +63,8 @@ y12 = qconv(xq, real(hq12), fmt_data);
 y14 = qconv(xq, real(hq14), fmt_data);
 y16 = qconv(xq, real(hq16), fmt_data);
 
-# Trim reference to match qconv output length (len(x) + len(h) - 1)
-n_out = length(h_float) + n - 1;
+# convolve() and qconv() return equal-length outputs (len(x)+len(h)-1),
+# so snr() compares y_ref against y8..y16 directly — no trimming needed.
 
 # -- 5. Compute SNR for each bitwidth -----------------------------------------
 print("--- Coefficient bitwidth sweep ---");

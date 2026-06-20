@@ -12,7 +12,7 @@ B = ones3(2, 3, 4)
 C = rand3(2, 3, 4)
 D = randn3(2, 3, 4)
 
-# Build a known tensor with encoded values A(i, j, k) = 100*i + 10*j + k
+# Build a known tensor filled 1..24 so each element's value is predictable
 T = reshape(1:24, 2, 3, 4)    # column-major walk (Octave convention)
 
 # ── Indexing ─────────────────────────────────────────────────────

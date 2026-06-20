@@ -11,7 +11,7 @@ f_fine = linspace(1e9, 6e9, 26)         % 26 points × 200 MHz spacing
 s_fine = interp_freq(s, f_fine)
 fprintf("Original sweep: %d points\n", len(freqs(s)))
 fprintf("Interpolated:   %d points\n", len(freqs(s_fine)))
-fprintf("|S21| at 2.5 GHz (interpolated, dB): %.2f\n", ...
+fprintf("|S21| at 2.4 GHz (interpolated, dB): %.2f\n", ...
         mag2db(abs(s21(s_fine)(8))))
 
 # ─── 2. Noise parameters — pulled automatically from the Touchstone block ──
@@ -57,9 +57,9 @@ fprintf("\nSingle-ended type: %s   Mixed-mode type: %s\n", ...
         parameter_type(s4), parameter_type(smm))
 % Mixed-mode result: port order [d1, d2, c1, c2]; block matrix [Sdd | Sdc; Scd | Scc].
 % A near-ideal differential pair should have Sdc and Scd blocks small (low mode conversion)
-% and Sdd21 (diff → diff transmission) close to 1.
+% and a strong Sdd21 (diff → diff transmission).
 P = smm.parameters
-fprintf("Sdd21 at 1 GHz: %.3f∠%.1f°   (close to 1 → strong diff transmission)\n", ...
+fprintf("Sdd21 at 1 GHz: %.3f∠%.1f°   (higher → stronger diff transmission)\n", ...
         abs(P(1, 2, 1)), angle(P(1, 2, 1))*180/pi)
 fprintf("Scd21 at 1 GHz: %.3f         (small → low common→diff conversion)\n", ...
         abs(P(1, 4, 1)))

@@ -31,7 +31,7 @@ profile(fft, abs)
 X   = fft(x);
 mag = abs(X);
 
-disp("Peak magnitude (should be ~512 for a 1-sample-per-cycle sinusoid):")
+disp("Peak magnitude (~472; below N/2=512 because 1000 Hz is off-bin at fs=44100, so energy leaks):")
 max(mag)
 
 disp("Selective profile — only fft and abs appear:")
