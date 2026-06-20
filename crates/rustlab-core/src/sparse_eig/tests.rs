@@ -149,6 +149,37 @@ fn eigs_largest_matches_analytic() {
 }
 
 #[test]
+fn eigs_smallest_shift_invert_on_larger_grid() {
+    // Regression for the "sm" shift-invert fix (E4): on a 1-D Laplacian large
+    // enough that direct Lanczos selects wrong Ritz values (smallest λ used to
+    // come back ~6× too large), shift-and-invert recovers the true smallest.
+    // Tridiagonal [2, -1] of size 100; analytic λ_k = 4 sin²(kπ/(2(N+1))).
+    let n = 100;
+    let mut entries = Vec::new();
+    for i in 0..n {
+        entries.push((i, i, Complex::new(2.0, 0.0)));
+        if i + 1 < n {
+            entries.push((i, i + 1, Complex::new(-1.0, 0.0)));
+            entries.push((i + 1, i, Complex::new(-1.0, 0.0)));
+        }
+    }
+    let a = SparseMat::new(n, n, entries);
+    let result = eigs(&a, 3, Which::SmallestMagnitude, None).unwrap();
+
+    let mut got: Vec<f64> = result.values.iter().map(|c| c.re).collect();
+    got.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    for k in 0..3 {
+        let kk = (k + 1) as f64;
+        let analytic =
+            4.0 * (kk * std::f64::consts::PI / (2.0 * (n as f64 + 1.0))).sin().powi(2);
+        let rel = (got[k] - analytic).abs() / analytic;
+        assert!(rel < 1e-3, "eig {k}: got {} expected {} (rel {rel})", got[k], analytic);
+    }
+    // The residual is now small (and computed against A, not discarded).
+    assert!(result.residual < 1e-6, "residual {} too large", result.residual);
+}
+
+#[test]
 fn eigs_gen_with_a_equals_b_returns_one() {
     // For non-singular A, A x = λ A x has all eigenvalues 1. Since
     // B^{-1} A = I in that case the Krylov subspace collapses after
@@ -192,6 +223,37 @@ fn eigs_gen_with_diagonal_b_scales_eigenvalues() {
         expected,
         lambda_gen,
         rel
+    );
+}
+
+#[test]
+fn eigs_gen_smallest_resolves_on_larger_grid() {
+    // Regression for the generalized "sm" Krylov-sizing bug: on a grid
+    // large enough that the old max(2n, 20) = 20 basis was too small, the
+    // generalized smallest eigenvalue converged to a *larger* (wrong)
+    // eigenvalue (~69.94 instead of the correct ~35.75 here). Sizing the
+    // basis like the standard path resolves it. Mirrors the 12x8 grid in
+    // examples/sparse/eigs.rlab (n = 96).
+    let nx = 12;
+    let ny = 8;
+    let n = nx * ny;
+    let a = negated_laplacian(nx, ny);
+    let b_entries: Vec<_> = (0..n).map(|i| (i, i, Complex::new(2.0, 0.0))).collect();
+    let b = SparseMat::new(n, n, b_entries);
+
+    let lambda_gen = eigs_gen(&a, &b, 1, Which::SmallestMagnitude, None)
+        .unwrap()
+        .values[0]
+        .re;
+    let mu_std = eigs(&a, 1, Which::SmallestMagnitude, None)
+        .unwrap()
+        .values[0]
+        .re;
+    let expected = mu_std / 2.0;
+    let rel = (lambda_gen - expected).abs() / expected.abs();
+    assert!(
+        rel < 1e-2,
+        "generalized smallest λ should be ≈ {expected} (= {mu_std}/2), got {lambda_gen} (rel err {rel})"
     );
 }
 
