@@ -238,6 +238,45 @@ fn array_to_value(arr: Vec<Toml>) -> Value {
         return Value::Vector(cvec);
     }
 
+    // Array of equal-length, all-numeric sub-arrays → Matrix (one per row).
+    // This mirrors how value_to_toml serializes a Matrix; without it a saved
+    // Matrix would round-trip back as a Tuple of row vectors.
+    let row_lens: Option<Vec<usize>> = arr
+        .iter()
+        .map(|v| match v {
+            Toml::Array(row)
+                if !row.is_empty()
+                    && row
+                        .iter()
+                        .all(|e| matches!(e, Toml::Integer(_) | Toml::Float(_))) =>
+            {
+                Some(row.len())
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(lens) = row_lens {
+        if lens.iter().all(|&l| l == lens[0]) {
+            let (nrows, ncols) = (arr.len(), lens[0]);
+            let mut data = Vec::with_capacity(nrows * ncols);
+            for v in &arr {
+                if let Toml::Array(row) = v {
+                    for e in row {
+                        let f = match e {
+                            Toml::Integer(i) => *i as f64,
+                            Toml::Float(f) => *f,
+                            _ => unreachable!(),
+                        };
+                        data.push(Complex::new(f, 0.0));
+                    }
+                }
+            }
+            if let Ok(mat) = ndarray::Array2::from_shape_vec((nrows, ncols), data) {
+                return Value::Matrix(mat);
+            }
+        }
+    }
+
     // Mixed or non-numeric array → Tuple
     Value::Tuple(arr.into_iter().map(toml_to_value).collect())
 }

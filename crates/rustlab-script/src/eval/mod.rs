@@ -1700,8 +1700,22 @@ impl Evaluator {
                         | Some(Value::Tuple(_))
                         | Some(Value::Str(_))
                         | Some(Value::StringArray(_))
+                        | Some(Value::Scalar(_))
+                        | Some(Value::Complex(_))
+                        | Some(Value::Bool(_))
                 ) {
-                    let container = self.env[name.as_str()].clone();
+                    // A scalar / complex / bool is a 1×1 value; promote it to a
+                    // 1-element vector so `s(1)` indexes like MATLAB instead of
+                    // falling through and reporting `s` as an undefined function.
+                    let container = match self.env[name.as_str()].clone() {
+                        Value::Scalar(x) => Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0))),
+                        Value::Complex(c) => Value::Vector(Array1::from_elem(1, c)),
+                        Value::Bool(b) => Value::Vector(Array1::from_elem(
+                            1,
+                            Complex::new(if b { 1.0 } else { 0.0 }, 0.0),
+                        )),
+                        other => other,
+                    };
 
                     // For 3-argument tensor3 indexing, bind `end` per-dimension.
                     let idx_vals: Vec<Value> = if args.len() == 3 {
@@ -1861,7 +1875,18 @@ impl Evaluator {
                 // Reserve the exact element count up front (large ranges like
                 // 1:1e7 otherwise pay ~24 doubling reallocations).
                 let expected = ((e - s) / inc).floor();
-                let capacity = if expected.is_finite() && expected >= 0.0 {
+                // Guard against absurd ranges (e.g. a typo like `1:1e12`) that
+                // would exhaust memory or loop effectively forever.
+                const MAX_RANGE_LEN: f64 = 1e8;
+                if !expected.is_finite() || expected > MAX_RANGE_LEN {
+                    return Err(ScriptError::runtime(format!(
+                        "range produces too many elements ({:.3e}); the limit is {:.0e}. \
+                         Use a larger step or smaller bounds.",
+                        expected.max(0.0),
+                        MAX_RANGE_LEN
+                    )));
+                }
+                let capacity = if expected >= 0.0 {
                     expected as usize + 1
                 } else {
                     0

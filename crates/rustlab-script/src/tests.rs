@@ -11475,27 +11475,17 @@ x = 30
              t = load(\"{path}\");\n\
              d = t.data;"
         ));
-        // Matrix becomes array of arrays in TOML; loads back as Tuple of Vectors
+        // A Matrix is serialized as a TOML array-of-arrays and now round-trips
+        // back as a Matrix (was bug IO3: it used to load as a Tuple of vectors).
         match ev.get("d").unwrap() {
-            Value::Tuple(rows) => {
-                assert_eq!(rows.len(), 2);
-                match &rows[0] {
-                    Value::Vector(v) => {
-                        assert_eq!(v.len(), 2);
-                        assert!(close(v[0].re, 1.0));
-                        assert!(close(v[1].re, 2.0));
-                    }
-                    other => panic!("expected vector row, got {other:?}"),
-                }
-                match &rows[1] {
-                    Value::Vector(v) => {
-                        assert!(close(v[0].re, 3.0));
-                        assert!(close(v[1].re, 4.0));
-                    }
-                    other => panic!("expected vector row, got {other:?}"),
-                }
+            Value::Matrix(m) => {
+                assert_eq!(m.dim(), (2, 2));
+                assert!(close(m[[0, 0]].re, 1.0));
+                assert!(close(m[[0, 1]].re, 2.0));
+                assert!(close(m[[1, 0]].re, 3.0));
+                assert!(close(m[[1, 1]].re, 4.0));
             }
-            other => panic!("expected tuple of vectors, got {other:?}"),
+            other => panic!("expected matrix, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -16057,12 +16047,14 @@ mod eval_edge_semantics_tests {
     }
 
     #[test]
-    fn vector_index_fractional_truncates() {
-        // Current behavior: a fractional index is truncated toward zero, so
-        // v(1.5) silently reads v(1) instead of raising an error. This test
-        // pins the current semantics; see the coverage report for discussion.
-        let ev = run("v = [10, 20, 30];\nx = v(1.5);");
-        assert!(close(get_scalar(&ev, "x"), 10.0));
+    fn vector_index_fractional_errors() {
+        // A fractional index is rejected rather than silently truncated toward
+        // zero (was bug E14: v(1.5) used to read v(1)). Integer-valued indices,
+        // including integer-valued floats, still work.
+        let err = run_err("v = [10, 20, 30];\nx = v(1.5);");
+        assert!(err.contains("positive integer"), "{err}");
+        let ev = run("v = [10, 20, 30];\nx = v(2.0);");
+        assert!(close(get_scalar(&ev, "x"), 20.0));
     }
 
     // ── Axis reductions with dim = 2 ────────────────────────────────────
@@ -16212,5 +16204,376 @@ mod eval_edge_semantics_tests {
         // Cells outside the region are untouched.
         assert!(close(m[[0, 2]].re, 3.0));
         assert!(close(m[[2, 2]].re, 9.0));
+    }
+}
+
+// ── Round-2 implementation-bug regressions (see dev/plans/examples_notebooks_bug_hunt.md) ──
+#[cfg(test)]
+mod round2_regressions {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn eval(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn eval_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            if let Err(e) = ev.exec_stmt(stmt) {
+                return e.to_string();
+            }
+        }
+        panic!("expected an error, got none");
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(x) => *x,
+            Value::Complex(c) => c.re,
+            other => panic!("expected scalar for {name}, got {other:?}"),
+        }
+    }
+
+    // E13 — rank of the zero vector / scalar is 0, not 1.
+    #[test]
+    fn rank_of_zero_vector_is_zero() {
+        assert_eq!(scalar(&eval("r = rank([0,0,0])"), "r"), 0.0);
+        assert_eq!(scalar(&eval("r = rank([0,1,0])"), "r"), 1.0);
+        assert_eq!(scalar(&eval("r = rank(0)"), "r"), 0.0);
+    }
+
+    // E12 — dense matrix p-norms honor p (1, 2, Inf), default stays Frobenius.
+    #[test]
+    fn norm_matrix_honors_p() {
+        let ev = eval(
+            "a = norm([1,-2;-3,4], 1)\nb = norm([1,-2;-3,4], Inf)\n\
+             c = norm([1,-2;-3,4], 2)\nd = norm([1,-2;-3,4])",
+        );
+        assert!((scalar(&ev, "a") - 6.0).abs() < 1e-9);
+        assert!((scalar(&ev, "b") - 7.0).abs() < 1e-9);
+        assert!((scalar(&ev, "c") - 5.464985704219043).abs() < 1e-6);
+        assert!((scalar(&ev, "d") - 30.0_f64.sqrt()).abs() < 1e-9); // Frobenius
+    }
+
+    // E14 — fractional indices are rejected, not truncated.
+    #[test]
+    fn fractional_index_is_rejected() {
+        let e = eval_err("v = [10,20,30]\nx = v(1.5)");
+        assert!(e.contains("positive integer"), "got: {e}");
+        // integer-valued floats still index fine
+        assert_eq!(scalar(&eval("v = [10,20,30]\nx = v(2)"), "x"), 20.0);
+    }
+
+    // E10 — a scalar is a 1×1 and indexes like MATLAB instead of erroring.
+    #[test]
+    fn scalar_indexing_returns_value() {
+        assert_eq!(scalar(&eval("s = 42\nx = s(1)"), "x"), 42.0);
+    }
+
+    // E11 — an absurd range errors cleanly instead of OOM; legit large ranges work.
+    #[test]
+    fn huge_range_is_guarded() {
+        let e = eval_err("x = 1:1e12");
+        assert!(e.contains("too many elements"), "got: {e}");
+        assert_eq!(scalar(&eval("n = length(1:1000000)"), "n"), 1_000_000.0);
+    }
+
+    // E8 — associated Legendre (m≥1) is nonzero for |x|>1 (was collapsing to 0).
+    #[test]
+    fn legendre_associated_outside_unit_disk_is_nonzero() {
+        let v = scalar(&eval("y = legendre(2,1,1.5)"), "y");
+        assert!(v.abs() > 5.0 && v.abs() < 5.1, "got {v}");
+        // |x| ≤ 1 control still correct.
+        let c = scalar(&eval("y = legendre(2,1,0.5)"), "y");
+        assert!((c.abs() - 1.299038).abs() < 1e-5, "got {c}");
+    }
+
+    // E9 — unilateral (S12=0) max gain includes the mismatch factors.
+    #[test]
+    fn gainmax_unilateral_includes_mismatch_factors() {
+        let ev = eval(
+            "S = zeros3(1,2,2)\nS(1,1,1)=0.6\nS(1,2,1)=2.0\nS(1,2,2)=0.5\n\
+             s = sparameters(S,[1e9],50)\ng = gainmax(s)",
+        );
+        let g = match ev.get("g").unwrap() {
+            Value::Vector(v) => v[0].re,
+            Value::Scalar(x) => *x,
+            other => panic!("got {other:?}"),
+        };
+        assert!((g - 9.208188).abs() < 1e-3, "got {g}");
+    }
+
+    // E3 — element-wise comparison for vector/vector and matrix/scalar.
+    #[test]
+    fn elementwise_comparison_on_arrays() {
+        assert_eq!(scalar(&eval("a = sum([1,2,3] == [1,0,3])"), "a"), 2.0);
+        assert_eq!(scalar(&eval("a = sum([1,2,3] > [3,2,1])"), "a"), 1.0);
+        assert_eq!(scalar(&eval("a = sum(sum([1,2;3,4] > 2))"), "a"), 2.0);
+    }
+
+    // E2 — logical mask indexing (read + assign) on vectors and matrices.
+    #[test]
+    fn logical_mask_indexing() {
+        assert_eq!(scalar(&eval("v=[1,2,3,4,5]\ns = sum(v(v>2))"), "s"), 12.0);
+        // all-true mask returns every element
+        assert_eq!(scalar(&eval("v=[1,2,3]\ns = sum(v(v>0))"), "s"), 6.0);
+        // matrix mask M(M>2) → 3 + 4
+        assert_eq!(scalar(&eval("M=[1,2;3,4]\ns = sum(M(M>2))"), "s"), 7.0);
+        // masked assignment
+        assert_eq!(scalar(&eval("v=[1,2,3,4,5]\nv(v>3)=0\ns = sum(v)"), "s"), 6.0);
+        // explicit position indexing is unaffected
+        assert_eq!(scalar(&eval("v=[10,20,30]\ns = sum(v([1,3]))"), "s"), 40.0);
+    }
+
+    // E16 — bool coerces to numeric in arithmetic.
+    #[test]
+    fn bool_coerces_to_numeric_in_arithmetic() {
+        assert_eq!(scalar(&eval("x = true + 1"), "x"), 2.0);
+        assert_eq!(scalar(&eval("x = false * 5"), "x"), 0.0);
+    }
+
+    // E1 — eig/roots of xⁿ−c (zero-trace, equal-modulus spectra) no longer
+    // collapse to all zeros once the QR iteration uses an exceptional shift.
+    #[test]
+    fn eig_roots_of_unity_not_all_zero() {
+        // 3-cycle permutation: eigenvalues are the cube roots of unity, each of
+        // modulus 1 → Σ|λ| = 3 (was 0 before the exceptional-shift fix).
+        let ev = eval("d = eig([0,0,1; 1,0,0; 0,1,0])");
+        let sum_mod = match ev.get("d").unwrap() {
+            Value::Matrix(m) => m.iter().map(|c| c.norm()).sum::<f64>(),
+            Value::Vector(v) => v.iter().map(|c| c.norm()).sum::<f64>(),
+            other => panic!("got {other:?}"),
+        };
+        assert!((sum_mod - 3.0).abs() < 1e-6, "Σ|λ| = {sum_mod}");
+        // trace = Σλ = 0 for this matrix.
+        let tr = match ev.get("d").unwrap() {
+            Value::Matrix(m) => m.iter().copied().sum::<num_complex::Complex<f64>>(),
+            Value::Vector(v) => v.iter().copied().sum::<num_complex::Complex<f64>>(),
+            other => panic!("got {other:?}"),
+        };
+        assert!(tr.norm() < 1e-6, "Σλ = {tr}");
+        // roots(x³ − 8): three roots each of modulus 2 → Π|r| = 8.
+        let ev2 = eval("r = roots([1,0,0,-8])");
+        let prod_mod = match ev2.get("r").unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.norm()).product::<f64>(),
+            other => panic!("got {other:?}"),
+        };
+        assert!((prod_mod - 8.0).abs() < 1e-5, "Π|r| = {prod_mod}");
+    }
+
+    // E5 — SVD of a complex matrix uses AᴴA (not just the real part); A = U Σ Vᴴ.
+    #[test]
+    fn svd_of_complex_matrix_is_correct() {
+        let ev = eval(
+            "A = [1, i; -i, 1]\n[U,S,V] = svd(A)\n\
+             s = sum(S)\nr = norm(U*diag(S)*V' - A)",
+        );
+        // singular values are 2 and 0 → sum 2; reconstruction is exact.
+        assert!((scalar(&ev, "s") - 2.0).abs() < 1e-9, "sum(S) = {}", scalar(&ev, "s"));
+        assert!(scalar(&ev, "r") < 1e-9, "reconstruction residual = {}", scalar(&ev, "r"));
+    }
+
+    // E6 — eigs on a complex Hermitian sparse matrix computes (no internal error).
+    #[test]
+    fn eigs_complex_hermitian_computes() {
+        let ev = eval(
+            "A = sparse([1,1,2,2],[1,2,1,2],[2, i, -i, 2], 2, 2)\n\
+             [V,D] = eigs(A, 2, \"lm\")\ns = real(D(1)) + real(D(2))",
+        );
+        // eigenvalues of [[2,i],[-i,2]] are 1 and 3 → sum 4.
+        assert!((scalar(&ev, "s") - 4.0).abs() < 1e-6, "sum = {}", scalar(&ev, "s"));
+    }
+
+    // E7 — fixed-point quantize propagates NaN instead of turning it into 0.
+    #[test]
+    fn quantize_propagates_nan() {
+        let ev = eval("y = quantize([1.0, NaN, 2.0], qfmt(8,4))");
+        match ev.get("y").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v[0].re, 1.0);
+                assert!(v[1].re.is_nan());
+                assert_eq!(v[2].re, 2.0);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    // Heatmap SVG export stays bounded for a long scalogram. Round 2b capped
+    // the heatmap *in the figure* (decimating to ≤1500 cols); Round 3 reverted
+    // that and instead coarsens at SVG-export time to a fixed cell budget
+    // (HEATMAP_CELL_BUDGET in rustlab-plot::file). So the figure now keeps the
+    // full-resolution heatmap, while the rendered SVG draws far fewer than one
+    // <rect> per cell — a 64×20000 grid would otherwise emit ~1.3M rects /
+    // ~100 MB of unrenderable SVG (the time_frequency gallery wavelet plots
+    // were missing for exactly this reason). The CWT matrix is also full-res.
+    #[test]
+    fn scalogram_svg_export_cell_count_is_bounded() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let _ = eval("n = 0:19999\nx = sin(2*pi*0.05*n)\nscalogram(x, 1000)");
+        // The figure keeps full time resolution (no in-figure decimation).
+        let (rows, cols) = rustlab_plot::figure::FIGURE
+            .with(|f| {
+                f.borrow()
+                    .current()
+                    .heatmap
+                    .as_ref()
+                    .map(|h| (h.z.len(), h.z.first().map(|row| row.len()).unwrap_or(0)))
+            })
+            .expect("scalogram should push a heatmap");
+        assert_eq!(cols, 20000, "figure should keep full time resolution, got {cols}");
+        let full_cells = rows * cols;
+
+        // Render to an SVG; export-time coarsening must keep the <rect> count
+        // well under one per data cell (HEATMAP_CELL_BUDGET = 120k).
+        let tmp = std::env::temp_dir().join("rustlab_scalogram_export.svg");
+        let tmp_str = tmp.to_string_lossy().replace('\\', "/");
+        let _ = eval(&format!(
+            "n = 0:19999\nx = sin(2*pi*0.05*n)\nscalogram(x, 1000)\nsavefig(\"{tmp_str}\")"
+        ));
+        let svg = std::fs::read_to_string(&tmp).unwrap();
+        let rects = svg.matches("<rect").count();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(
+            rects > 0 && rects <= 130_000,
+            "scalogram SVG drew {rects} <rect>s (cell budget 120k; full grid = {full_cells})"
+        );
+        assert!(
+            rects < full_cells / 4,
+            "export coarsening ineffective: {rects} rects vs {full_cells} full cells"
+        );
+
+        // The CWT matrix the caller receives keeps full time resolution.
+        let ev = eval("n = 0:19999\nx = sin(2*pi*0.05*n)\n[W,fr,t] = cwt(x, 1000)\nsz = size(W)\nc = sz(2)");
+        assert_eq!(scalar(&ev, "c"), 20000.0);
+    }
+}
+
+// ── Round-3 I/O round-trip regressions (see dev/plans/examples_notebooks_bug_hunt.md) ──
+#[cfg(test)]
+mod round3_io_regressions {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn eval(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("rustlab_io_{name}"))
+    }
+
+    /// Minimal NPY v1.0 writer for tests (lets us forge Fortran-order and
+    /// big-endian files the real writer never emits).
+    fn write_npy(path: &std::path::Path, descr: &str, fortran: bool, shape: &[usize], data: &[u8]) {
+        let shape_str = if shape.len() == 1 {
+            format!("{},", shape[0])
+        } else {
+            shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+        };
+        let hdr = format!(
+            "{{'descr': '{}', 'fortran_order': {}, 'shape': ({}), }}",
+            descr,
+            if fortran { "True" } else { "False" },
+            shape_str
+        );
+        let n = 10 + hdr.len() + 1;
+        let pad = ((n + 63) / 64) * 64 - n;
+        let full = format!("{hdr}{}\n", " ".repeat(pad));
+        let mut bytes = vec![0x93u8];
+        bytes.extend_from_slice(b"NUMPY");
+        bytes.push(1);
+        bytes.push(0);
+        bytes.extend_from_slice(&(full.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(full.as_bytes());
+        bytes.extend_from_slice(data);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn matrix(ev: &Evaluator, name: &str) -> Vec<Vec<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (0..m.nrows())
+                .map(|r| (0..m.ncols()).map(|c| m[[r, c]].re).collect())
+                .collect(),
+            other => panic!("expected matrix for {name}, got {other:?}"),
+        }
+    }
+
+    // IO1 — a Fortran-order NPY loads without transposing.
+    #[test]
+    fn npy_fortran_order_not_transposed() {
+        let p = tmp("fortran.npy");
+        // [[1,2],[3,4]] in column-major: 1,3,2,4 (little-endian f64)
+        let mut data = Vec::new();
+        for v in [1.0_f64, 3.0, 2.0, 4.0] {
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        write_npy(&p, "<f8", true, &[2, 2], &data);
+        let ev = eval(&format!("A = load(\"{}\")", p.display()));
+        assert_eq!(matrix(&ev, "A"), vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+    }
+
+    // IO2 — a big-endian NPY decodes correctly (not as garbage).
+    #[test]
+    fn npy_big_endian_decoded() {
+        let p = tmp("bigendian.npy");
+        let mut data = Vec::new();
+        for v in [1.0_f64, 2.0, 256.0] {
+            data.extend_from_slice(&v.to_be_bytes());
+        }
+        write_npy(&p, ">f8", false, &[3], &data);
+        let ev = eval(&format!("v = load(\"{}\")", p.display()));
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                let got: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert_eq!(got, vec![1.0, 2.0, 256.0]);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    // IO3 — a Matrix round-trips through TOML as a Matrix (not a Tuple).
+    #[test]
+    fn toml_matrix_round_trip() {
+        let p = tmp("mat.toml");
+        let ev = eval(&format!(
+            "M = [1,2,3; 4,5,6]\ns = struct(\"m\", M)\nsave(\"{0}\", s)\n\
+             t = load(\"{0}\")\nA = t.m",
+            p.display()
+        ));
+        assert_eq!(matrix(&ev, "A"), vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]);
+    }
+
+    // IO4 — CSV cells with scientific-notation complex parse correctly.
+    #[test]
+    fn csv_scientific_notation_complex() {
+        let p = tmp("sci.csv");
+        std::fs::write(&p, "1.5e-3+2.5e-4i\n1e-3i\n2e3-5i\n").unwrap();
+        let ev = eval(&format!("v = load(\"{}\")", p.display()));
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                assert!((v[0].re - 1.5e-3).abs() < 1e-12 && (v[0].im - 2.5e-4).abs() < 1e-12);
+                assert!(v[1].re.abs() < 1e-12 && (v[1].im - 1e-3).abs() < 1e-12);
+                assert!((v[2].re - 2e3).abs() < 1e-9 && (v[2].im + 5.0).abs() < 1e-12);
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 }

@@ -110,6 +110,12 @@ fn apply_overflow(val: i64, spec: &QFmtSpec) -> i64 {
 
 /// Core scalar quantise: float → integer grid → float.
 fn quantize_f64(x: f64, spec: &QFmtSpec) -> f64 {
+    // NaN has no fixed-point representation; propagate it rather than letting
+    // the `f64 as i64` saturating cast silently turn it into 0. (±Inf still
+    // saturate to the format's max/min, which is the documented behaviour.)
+    if x.is_nan() {
+        return f64::NAN;
+    }
     let scaled = x * spec.scale();
     let int_val = apply_round(scaled, &spec.round);
     let bounded = apply_overflow(int_val, spec);

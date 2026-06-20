@@ -2649,7 +2649,7 @@ fn resolve_window_arg(
         let wf = WindowFunction::from_str(&name, None).map_err(ScriptError::Dsp)?;
         return Ok(wf.generate(default_len));
     }
-    // Scalar integer → Hamming window of that length (MATLAB convention).
+    // Scalar integer → Hamming window of that length.
     if let Value::Scalar(n) = arg {
         if *n > 0.0 && n.fract() == 0.0 {
             return Ok(WindowFunction::Hamming.generate(*n as usize));
@@ -2772,7 +2772,7 @@ fn resolve_stft_args(
     let fs = args[1]
         .to_scalar()
         .map_err(|e| ScriptError::type_err(e))?;
-    // MATLAB stft default segment length: 128.
+    // Default stft segment length: 128.
     let default_len = 128usize.min(x.len().max(1));
     let window = if args.len() >= 3 {
         resolve_window_arg(&args[2], default_len, fn_name)?
@@ -2815,6 +2815,9 @@ fn push_db_heatmap(
     if nrows == 0 || ncols == 0 {
         return Err(ScriptError::runtime("spectrogram: empty matrix".to_string()));
     }
+    // Full resolution: the SVG backend rasterizes heatmaps to a single embedded
+    // PNG <image> sized to the plot area, so even a 64×20000 scalogram stays a
+    // small file — no need to decimate the data here.
     let z_nested: Vec<Vec<f64>> = (0..nrows)
         .map(|r| (0..ncols).map(|c| z[(r, c)]).collect())
         .collect();
@@ -2823,7 +2826,7 @@ fn push_db_heatmap(
         let mut fig = fig.borrow_mut();
         if !fig.hold {
             let sp = fig.current_mut();
-            sp.series.clear();
+            sp.clear_2d_overlays();
             sp.title.clear();
         }
         let sp = fig.current_mut();
@@ -2864,8 +2867,8 @@ fn push_db_heatmap(
 /// complex matrix (rows = frequency bins, cols = time frames). When
 /// called bare, also auto-renders the magnitude spectrogram.
 ///
-/// Defaults: Hann window of length 128 (MATLAB stft default), 50%
-/// overlap, `nfft = window length`, `sided = "auto"`.
+/// Defaults: Hann window of length 128, 50% overlap,
+/// `nfft = window length`, `sided = "auto"`.
 fn builtin_stft(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("stft", &args, 2, 6)?;
     let (x, fs, window, noverlap, nfft, sided) = resolve_stft_args(&args, "stft")?;
@@ -3900,7 +3903,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 FIGURE.with(|fig| {
                     let mut fig = fig.borrow_mut();
                     if !fig.hold {
-                        fig.current_mut().series.clear();
+                        fig.current_mut().clear_2d_overlays();
                     }
                     let sp = fig.current_mut();
                     if !title.is_empty() && sp.title.is_empty() {
@@ -4177,7 +4180,7 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
     FIGURE.with(|fig| {
         let mut fig = fig.borrow_mut();
         if !fig.hold {
-            fig.current_mut().series.clear();
+            fig.current_mut().clear_2d_overlays();
             fig.current_mut().title.clear();
         }
         for &y in &y_vals {
@@ -4749,7 +4752,7 @@ fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         let mut fig = fig.borrow_mut();
         if !fig.hold {
             let sp = fig.current_mut();
-            sp.series.clear();
+            sp.clear_2d_overlays();
             sp.title.clear();
         }
         let sp = fig.current_mut();
@@ -4880,7 +4883,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         let mut fig = fig.borrow_mut();
         if !fig.hold {
             let sp = fig.current_mut();
-            sp.series.clear();
+            sp.clear_2d_overlays();
             sp.title.clear();
         }
         let sp = fig.current_mut();
@@ -5666,7 +5669,12 @@ fn parse_npy_shape(header: &str) -> Result<Vec<usize>, String> {
 }
 
 /// Reconstruct a Value from a flat array + shape.
-fn array_to_value(values: Vec<Complex<f64>>, shape: &[usize]) -> Result<Value, String> {
+fn array_to_value(
+    values: Vec<Complex<f64>>,
+    shape: &[usize],
+    fortran: bool,
+) -> Result<Value, String> {
+    use ndarray::ShapeBuilder;
     match shape {
         [] | [1] => {
             let c = *values.first().ok_or("NPY: empty array")?;
@@ -5676,14 +5684,24 @@ fn array_to_value(values: Vec<Complex<f64>>, shape: &[usize]) -> Result<Value, S
                 Ok(Value::Complex(c))
             }
         }
+        // 1-D layout is identical in C and Fortran order.
         [_n] => Ok(Value::Vector(Array1::from_vec(values))),
         [nrows, ncols] => {
-            let mat =
-                Array2::from_shape_vec((*nrows, *ncols), values).map_err(|e| e.to_string())?;
+            // `fortran_order: True` means the flat buffer is column-major;
+            // `.f()` interprets it as such (otherwise the matrix transposes).
+            let mat = if fortran {
+                Array2::from_shape_vec((*nrows, *ncols).f(), values).map_err(|e| e.to_string())?
+            } else {
+                Array2::from_shape_vec((*nrows, *ncols), values).map_err(|e| e.to_string())?
+            };
             Ok(Value::Matrix(mat))
         }
         [m, n, p] => {
-            let t = Array3::from_shape_vec((*m, *n, *p), values).map_err(|e| e.to_string())?;
+            let t = if fortran {
+                Array3::from_shape_vec((*m, *n, *p).f(), values).map_err(|e| e.to_string())?
+            } else {
+                Array3::from_shape_vec((*m, *n, *p), values).map_err(|e| e.to_string())?
+            };
             Ok(Value::Tensor3(t))
         }
         other => Err(format!("NPY: unsupported shape rank {}", other.len())),
@@ -5695,43 +5713,61 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
     if bytes.len() < 10 || &bytes[0..6] != b"\x93NUMPY" {
         return Err("not a valid NPY file".to_string());
     }
-    let hlen = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
-    let hend = 10 + hlen;
+    // Header length is u16 in v1.0, u32 in v2.0+ (major version byte at [6]).
+    let (hlen, hstart) = if bytes[6] >= 2 {
+        if bytes.len() < 12 {
+            return Err("NPY file truncated in header".to_string());
+        }
+        (
+            u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+            12,
+        )
+    } else {
+        (u16::from_le_bytes([bytes[8], bytes[9]]) as usize, 10)
+    };
+    let hend = hstart + hlen;
     if bytes.len() < hend {
         return Err("NPY file truncated in header".to_string());
     }
-    let header = std::str::from_utf8(&bytes[10..hend]).map_err(|e| e.to_string())?;
-    let is_c16 = header.contains("<c16") || header.contains(">c16");
-    let is_f8 = header.contains("<f8") || header.contains(">f8");
+    let header = std::str::from_utf8(&bytes[hstart..hend]).map_err(|e| e.to_string())?;
+    let is_c16 = header.contains("c16");
+    let is_f8 = header.contains("f8");
+    // Honor the byte-order and storage-order flags rather than assuming
+    // little-endian C-order (numpy emits big-endian and Fortran-order freely).
+    let big_endian = header.contains(">c16") || header.contains(">f8");
+    let fortran =
+        header.contains("'fortran_order': True") || header.contains("'fortran_order':True");
     let shape = parse_npy_shape(header)?;
     let data = &bytes[hend..];
+
+    let rd = |b: &[u8]| -> f64 {
+        let a: [u8; 8] = b.try_into().unwrap();
+        if big_endian {
+            f64::from_be_bytes(a)
+        } else {
+            f64::from_le_bytes(a)
+        }
+    };
 
     if is_c16 {
         if data.len() % 16 != 0 {
             return Err("NPY complex128: data length is not a multiple of 16".to_string());
         }
         let values: Vec<Complex<f64>> = (0..data.len() / 16)
-            .map(|i| {
-                let re = f64::from_le_bytes(data[i * 16..i * 16 + 8].try_into().unwrap());
-                let im = f64::from_le_bytes(data[i * 16 + 8..i * 16 + 16].try_into().unwrap());
-                Complex::new(re, im)
-            })
+            .map(|i| Complex::new(rd(&data[i * 16..i * 16 + 8]), rd(&data[i * 16 + 8..i * 16 + 16])))
             .collect();
-        array_to_value(values, &shape)
+        array_to_value(values, &shape, fortran)
     } else if is_f8 {
         if data.len() % 8 != 0 {
             return Err("NPY float64: data length is not a multiple of 8".to_string());
         }
         let values: Vec<Complex<f64>> = (0..data.len() / 8)
-            .map(|i| {
-                let f = f64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
-                Complex::new(f, 0.0)
-            })
+            .map(|i| Complex::new(rd(&data[i * 8..i * 8 + 8]), 0.0))
             .collect();
-        array_to_value(values, &shape)
+        array_to_value(values, &shape, fortran)
     } else {
         Err(format!(
-            "unsupported NPY dtype (only <f8 and <c16 are supported): {}",
+            "unsupported NPY dtype (only f8 and c16 are supported): {}",
             header.chars().take(100).collect::<String>()
         ))
     }
@@ -5762,10 +5798,12 @@ fn parse_csv_cell(s: &str) -> Result<Complex<f64>, String> {
     // Strip 'i'/'j' suffix and find the split between re and im parts.
     let body = &s[..s.len() - 1];
     let bytes = body.as_bytes();
-    // Scan right-to-left for + or - that is not the very first character
+    // Scan right-to-left for the +/- that splits real from imaginary — but
+    // skip a sign that is part of an exponent (`e+`/`e-`), otherwise
+    // "1.5e-3+2.5e-4i" splits inside the exponent and fails to parse.
     let split = (1..bytes.len())
         .rev()
-        .find(|&i| bytes[i] == b'+' || bytes[i] == b'-');
+        .find(|&i| (bytes[i] == b'+' || bytes[i] == b'-') && !matches!(bytes[i - 1], b'e' | b'E'));
     if let Some(i) = split {
         let re: f64 = body[..i]
             .parse()
@@ -6636,8 +6674,35 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::Matrix(m) => {
-            // Frobenius norm by default
-            let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+            // No second argument → Frobenius (this library's default).
+            if args.len() < 2 {
+                let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+                return Ok(Value::Scalar(n));
+            }
+            let p: f64 = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+            let n = if p == 1.0 {
+                // Maximum absolute column sum.
+                (0..m.ncols())
+                    .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+                    .fold(0.0_f64, f64::max)
+            } else if p == f64::INFINITY {
+                // Maximum absolute row sum.
+                (0..m.nrows())
+                    .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+                    .fold(0.0_f64, f64::max)
+            } else if p == 2.0 {
+                // Spectral norm = largest singular value.
+                let (rows, cols) = (m.nrows(), m.ncols());
+                let ar: Vec<Vec<f64>> = (0..rows)
+                    .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
+                    .collect();
+                let (_, sv, _) = svd_via_ata(&ar, rows, cols);
+                sv.first().copied().unwrap_or(0.0)
+            } else {
+                return Err(ScriptError::type_err(format!(
+                    "norm: matrix p-norm supports p = 1, 2, or Inf (got {p})"
+                )));
+            };
             Ok(Value::Scalar(n))
         }
         Value::Scalar(n) => Ok(Value::Scalar(n.abs())),
@@ -7149,8 +7214,12 @@ fn builtin_legendre(args: Vec<Value>) -> Result<Value, ScriptError> {
             (l, m, 1.0_f64)
         };
 
-        // Seed: P_{m_use}^{m_use}
-        let sin_th = (1.0 - x * x).max(0.0).sqrt();
+        // Seed: P_{m_use}^{m_use}.
+        // For |x| > 1 the (1 - x^2) factor is negative; use |1 - x^2| so the
+        // |x|>1 branch yields the real associated-Legendre magnitude (carrying
+        // the same Condon-Shortley sign as the |x|<=1 case) instead of
+        // collapsing the seed — and the whole function — to 0.
+        let sin_th = (1.0 - x * x).abs().sqrt();
         let mut pmm = 1.0_f64;
         // (2k-1)!! * sin^m: build iteratively
         for k in 1..=m_use {
@@ -7335,7 +7404,7 @@ fn eig_hessenberg(h_in: &CMatrix) -> Result<Vec<C64>, String> {
         }
 
         let mut converged = false;
-        for _iter in 0..max_iter_per {
+        for iter in 0..max_iter_per {
             let q = p - 1;
 
             // ── Deflation check ────────────────────────────────────────────
@@ -7380,21 +7449,34 @@ fn eig_hessenberg(h_in: &CMatrix) -> Result<Vec<C64>, String> {
                 break;
             }
 
-            // ── Wilkinson shift: eigenvalue of bottom 2×2 closest to h[q,q] ──
-            let a = h[[q - 1, q - 1]];
-            let b = h[[q - 1, q]];
-            let c = h[[q, q - 1]];
-            let d = h[[q, q]];
-            let tr2 = a + d;
-            let det2 = a * d - b * c;
-            let disc = (tr2 * tr2 - 4.0 * det2).sqrt();
-            let e1 = (tr2 + disc) / 2.0;
-            let e2 = (tr2 - disc) / 2.0;
-            // Pick the eigenvalue of the 2×2 closest to h[q,q]
-            let shift = if (e1 - d).norm() <= (e2 - d).norm() {
-                e1
+            // ── Shift selection ────────────────────────────────────────────
+            let shift = if iter > 0 && iter % 10 == 0 {
+                // Exceptional (ad-hoc) shift to escape a stall. The Wilkinson
+                // shift is identically 0 for zero-trace, equal-modulus spectra
+                // — e.g. the companion matrix of xⁿ − c (roots of unity), where
+                // a 0 shift never breaks the rotational symmetry and the
+                // iteration would otherwise force-deflate every eigenvalue to 0.
+                // EISPACK-style: perturb the trailing diagonal by 0.75·(sum of
+                // the last two subdiagonal magnitudes).
+                let s = h[[q, q - 1]].norm()
+                    + if q >= 2 { h[[q - 1, q - 2]].norm() } else { 0.0 };
+                h[[q, q]] + Complex::new(0.75 * s, 0.0)
             } else {
-                e2
+                // Wilkinson shift: eigenvalue of the bottom 2×2 closest to h[q,q].
+                let a = h[[q - 1, q - 1]];
+                let b = h[[q - 1, q]];
+                let c = h[[q, q - 1]];
+                let d = h[[q, q]];
+                let tr2 = a + d;
+                let det2 = a * d - b * c;
+                let disc = (tr2 * tr2 - 4.0 * det2).sqrt();
+                let e1 = (tr2 + disc) / 2.0;
+                let e2 = (tr2 - disc) / 2.0;
+                if (e1 - d).norm() <= (e2 - d).norm() {
+                    e1
+                } else {
+                    e2
+                }
             };
 
             // ── Single-shift QR step using Givens rotations ────────────────
@@ -8085,8 +8167,13 @@ fn builtin_rank(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("rank", &args, 1)?;
     let m = match &args[0] {
         Value::Matrix(m) => m.clone(),
-        Value::Scalar(_) => return Ok(Value::Scalar(1.0)),
-        Value::Vector(v) if !v.is_empty() => return Ok(Value::Scalar(1.0)),
+        // A scalar / vector has rank 1 unless it is (numerically) the zero
+        // scalar / zero vector, in which case the rank is 0.
+        Value::Scalar(s) => return Ok(Value::Scalar(if s.abs() > 1e-12 { 1.0 } else { 0.0 })),
+        Value::Vector(v) if !v.is_empty() => {
+            let mx = v.iter().map(|c| c.norm()).fold(0.0_f64, f64::max);
+            return Ok(Value::Scalar(if mx > 1e-12 { 1.0 } else { 0.0 }));
+        }
         other => {
             return Err(ScriptError::type_err(format!(
                 "rank: expected matrix, got {}",
@@ -9997,7 +10084,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
         FIGURE.with(|fig| {
             let mut fig = fig.borrow_mut();
             if !fig.hold {
-                fig.current_mut().series.clear();
+                fig.current_mut().clear_2d_overlays();
                 fig.current_mut().title.clear();
             }
             let color = fig.next_color();
@@ -10040,7 +10127,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
         FIGURE.with(|fig| {
             let mut fig = fig.borrow_mut();
             if !fig.hold {
-                fig.current_mut().series.clear();
+                fig.current_mut().clear_2d_overlays();
                 fig.current_mut().title.clear();
             }
             for col in 0..m.ncols() {
@@ -10505,14 +10592,21 @@ fn builtin_svd(args: Vec<Value>) -> Result<Value, ScriptError> {
     let m = to_cmatrix_arg(&args[0], "svd", "A")?;
     let max_im: f64 = m.iter().map(|c| c.im.abs()).fold(0.0_f64, f64::max);
     let max_re: f64 = m.iter().map(|c| c.re.abs()).fold(0.0_f64, f64::max);
-    if max_im > 1e-10 * max_re.max(1e-300) {
-        eprintln!(
-            "svd: warning: imaginary part discarded (max |im|={:.3e})",
-            max_im
-        );
-    }
     let rows = m.nrows();
     let cols = m.ncols();
+    // Complex input: compute the true SVD via the Hermitian eigendecomposition
+    // of AᴴA (the real-part-only path below would return the SVD of Re(A)).
+    if max_im > 1e-10 * max_re.max(1e-300) {
+        let (u, sigma, v) = svd_complex(&m);
+        let ns = rows.min(cols);
+        return Ok(Value::Tuple(vec![
+            Value::Matrix(u),
+            Value::Vector(Array1::from_iter(
+                sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
+            )),
+            Value::Matrix(v),
+        ]));
+    }
     let ar: Vec<Vec<f64>> = (0..rows)
         .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
         .collect();
@@ -10529,6 +10623,111 @@ fn builtin_svd(args: Vec<Value>) -> Result<Value, ScriptError> {
             Complex::new(v_r[i][j], 0.0)
         })),
     ]))
+}
+
+/// SVD of a complex matrix `A` via the Hermitian eigendecomposition of
+/// `S = AᴴA`. The complex Hermitian `S` is embedded in a real `2c×2c`
+/// symmetric matrix `[[Re S, -Im S], [Im S, Re S]]` so the existing real
+/// Jacobi eigensolver can be reused (each eigenvalue of `S` appears twice;
+/// a real eigenvector `[x; y]` maps to the complex eigenvector `x + i·y`).
+/// Returns `(U, sigma, V)` with `A ≈ U · diag(sigma) · Vᴴ`; `U` columns beyond
+/// the numerical rank are completed to an orthonormal basis.
+fn svd_complex(a: &CMatrix) -> (CMatrix, Vec<f64>, CMatrix) {
+    let rows = a.nrows();
+    let cols = a.ncols();
+
+    // S = AᴴA (cols×cols, Hermitian positive semidefinite).
+    let mut s = Array2::<C64>::zeros((cols, cols));
+    for i in 0..cols {
+        for j in 0..cols {
+            let mut acc = Complex::new(0.0, 0.0);
+            for k in 0..rows {
+                acc += a[[k, i]].conj() * a[[k, j]];
+            }
+            s[[i, j]] = acc;
+        }
+    }
+
+    // Real symmetric embedding (2c×2c).
+    let c2 = 2 * cols;
+    let mut emb = Array2::<f64>::zeros((c2, c2));
+    for i in 0..cols {
+        for j in 0..cols {
+            let (re, im) = (s[[i, j]].re, s[[i, j]].im);
+            emb[[i, j]] = re;
+            emb[[i + cols, j + cols]] = re;
+            emb[[i, j + cols]] = -im;
+            emb[[i + cols, j]] = im;
+        }
+    }
+
+    let (evals, evecs) = rustlab_core::sparse_eig::sym_eig_jacobi(&emb);
+    // Sort eigenvalues descending; take every other (the doubled values).
+    let mut order: Vec<usize> = (0..c2).collect();
+    order.sort_by(|&p, &q| evals[q].partial_cmp(&evals[p]).unwrap());
+
+    let mut sigma = Vec::with_capacity(cols);
+    let mut vmat = Array2::<C64>::zeros((cols, cols));
+    for c in 0..cols {
+        let ci = order[2 * c];
+        sigma.push(evals[ci].max(0.0).sqrt());
+        let mut nrm = 0.0_f64;
+        for r in 0..cols {
+            let z = Complex::new(evecs[[r, ci]], evecs[[r + cols, ci]]);
+            vmat[[r, c]] = z;
+            nrm += z.norm_sqr();
+        }
+        let nrm = nrm.sqrt();
+        if nrm > 0.0 {
+            for r in 0..cols {
+                vmat[[r, c]] /= nrm;
+            }
+        }
+    }
+
+    // Left singular vectors: u_i = A v_i / sigma_i for sigma_i > tol.
+    let mut umat = Array2::<C64>::zeros((rows, rows));
+    let tol = 1e-12 * sigma.first().copied().unwrap_or(0.0).max(1e-300);
+    let mut filled = 0usize;
+    for c in 0..cols.min(rows) {
+        if sigma[c] > tol {
+            for r in 0..rows {
+                let mut acc = Complex::new(0.0, 0.0);
+                for k in 0..cols {
+                    acc += a[[r, k]] * vmat[[k, c]];
+                }
+                umat[[r, c]] = acc / sigma[c];
+            }
+            filled += 1;
+        }
+    }
+    // Complete U to an orthonormal basis via modified Gram-Schmidt over e_k.
+    let mut next_col = filled;
+    let mut basis = 0usize;
+    while next_col < rows && basis < rows {
+        let mut v: Vec<C64> = (0..rows)
+            .map(|r| Complex::new(if r == basis { 1.0 } else { 0.0 }, 0.0))
+            .collect();
+        for c in 0..next_col {
+            let mut dot = Complex::new(0.0, 0.0);
+            for r in 0..rows {
+                dot += umat[[r, c]].conj() * v[r];
+            }
+            for r in 0..rows {
+                v[r] -= dot * umat[[r, c]];
+            }
+        }
+        let nrm: f64 = v.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+        if nrm > 1e-10 {
+            for r in 0..rows {
+                umat[[r, next_col]] = v[r] / nrm;
+            }
+            next_col += 1;
+        }
+        basis += 1;
+    }
+
+    (umat, sigma, vmat)
 }
 
 /// SVD via symmetric Jacobi eigendecomposition of A'A.
@@ -13277,7 +13476,7 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
     FIGURE.with(|fig| {
         let mut fig = fig.borrow_mut();
         fig.hold = false;
-        fig.current_mut().series.clear();
+        fig.current_mut().clear_2d_overlays();
     });
     push_smith_grid(grid_mode);
 
