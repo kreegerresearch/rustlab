@@ -41,7 +41,7 @@ pub use hessenberg_eig::hessenberg_eig;
 pub use lanczos::Lanczos;
 pub use sym_eig::sym_eig_jacobi;
 
-use crate::sparse_solve::{SparseChol, SparseCsc, SparseSolveError};
+use crate::sparse_solve::{SparseChol, SparseCsc, SparseLU, SparseSolveError};
 use crate::types::{CMatrix, CVector, SparseMat, C64};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -158,21 +158,104 @@ pub fn eigs(
         .unwrap_or_else(|| n.saturating_mul(6).saturating_add(10).max(40))
         .min(a.rows);
 
-    // Decide path: Hermitian → Lanczos; otherwise → Arnoldi.
+    // Smallest-magnitude eigenpairs via shift-and-invert at σ = 0: build the
+    // Krylov space of A⁻¹ (whose *largest* eigenvalues are the reciprocals of
+    // A's smallest). Plain Lanczos/Arnoldi converges to extremal Ritz values,
+    // so selecting the smallest Ritz values of A directly is unreliable once
+    // m << n. If A is complex or singular the factorization fails and we fall
+    // through to the direct path below.
+    if which == Which::SmallestMagnitude {
+        if let Ok(pairs) = run_shift_invert_sm(a, n, m) {
+            return Ok(pairs);
+        }
+    }
+
+    // Decide path: a Hermitian matrix with essentially-real entries takes the
+    // fast real-Lanczos path. Everything else — including a *truly complex*
+    // Hermitian matrix — goes through the general complex Arnoldi path below.
+    // (A complex Hermitian matrix has real eigenvalues, which Arnoldi resolves;
+    // a dedicated complex Hermitian Lanczos is not yet implemented, but routing
+    // to Arnoldi is correct, not an error.)
     if a.is_hermitian(1e-10) {
-        // Detect "essentially real" entries to skip the complex path.
         let all_real = a.entries.iter().all(|(_, _, v)| v.im.abs() < 1e-12);
         if all_real {
             let csc: SparseCsc<f64> = a.to_csc()?;
             return run_lanczos_real(&csc, n, which, m);
         }
-        let csc: SparseCsc<C64> = a.to_csc()?;
-        return run_lanczos_complex(&csc, n, which, m);
     }
 
-    // General (non-Hermitian) path: Arnoldi over complex storage.
+    // General (non-Hermitian or complex-Hermitian) path: Arnoldi over complex storage.
     let csc: SparseCsc<C64> = a.to_csc()?;
     run_arnoldi(&csc, n, which, m)
+}
+
+/// Smallest-magnitude eigenpairs of `A` via shift-and-invert at σ = 0.
+///
+/// Factors `A` (real LU) and runs Arnoldi on the operator `A⁻¹`, whose
+/// *largest*-magnitude eigenvalues are the reciprocals of `A`'s smallest. The
+/// eigenvectors are shared; eigenvalues are inverted (`λ = 1/μ`) and the
+/// residual is recomputed against the original `A`. Returns `Err` (so the
+/// caller falls back to the direct path) when `A` is complex or singular.
+fn run_shift_invert_sm(a: &SparseMat, n: usize, m: usize) -> Result<EigPairs, SparseEigError> {
+    // Complex shift-invert is not implemented; let the caller fall back.
+    if a.entries.iter().any(|(_, _, v)| v.im.abs() >= 1e-12) {
+        return Err(SparseEigError::Internal("shift-invert: complex A unsupported".into()));
+    }
+    let n_size = a.rows;
+    let a_csc: SparseCsc<f64> = a.to_csc()?;
+    let lu = SparseLU::factor(&a_csc, &crate::sparse_solve::AmdOrdering, 0.1)
+        .map_err(|e| SparseEigError::Internal(format!("shift-invert factorization failed: {e}")))?;
+
+    // matvec applies A⁻¹ to a complex vector. A⁻¹ is real-linear, so solve the
+    // real and imaginary parts independently against the LU factors.
+    let lu_ref = &lu;
+    let matvec = |v: &[C64]| -> Vec<C64> {
+        let vr: Vec<f64> = v.iter().map(|c| c.re).collect();
+        let vi: Vec<f64> = v.iter().map(|c| c.im).collect();
+        let yr = lu_ref
+            .solve(&vr)
+            .expect("LU solve cannot fail on a factored matrix");
+        let yi = lu_ref
+            .solve(&vi)
+            .expect("LU solve cannot fail on a factored matrix");
+        yr.into_iter()
+            .zip(yi)
+            .map(|(r, i)| Complex::new(r, i))
+            .collect()
+    };
+
+    // The n largest-magnitude eigenpairs of A⁻¹ ↔ the n smallest of A.
+    let inv = run_arnoldi_with_matvec(n_size, &matvec, n, Which::LargestMagnitude, m)?;
+
+    // Transform back: λ = 1/μ, recomputing the residual ‖A v − λ v‖ against A.
+    let mut values = Array1::<C64>::zeros(n);
+    let mut max_residual = 0.0_f64;
+    for k in 0..n {
+        let mu = inv.values[k];
+        let lambda = Complex::new(1.0, 0.0) / mu;
+        values[k] = lambda;
+
+        let v: Vec<C64> = inv.vectors.column(k).to_vec();
+        let vr: Vec<f64> = v.iter().map(|c| c.re).collect();
+        let vi: Vec<f64> = v.iter().map(|c| c.im).collect();
+        let avr = a_csc.spmv(&vr);
+        let avi = a_csc.spmv(&vi);
+        let mut num = 0.0_f64;
+        let mut den = 0.0_f64;
+        for i in 0..n_size {
+            let av = Complex::new(avr[i], avi[i]);
+            num += (av - lambda * v[i]).norm_sqr();
+            den += v[i].norm_sqr();
+        }
+        max_residual = max_residual.max((num / den.max(1e-300)).sqrt());
+    }
+
+    Ok(EigPairs {
+        values,
+        vectors: inv.vectors,
+        iterations: inv.iterations,
+        residual: max_residual,
+    })
 }
 
 /// Solve the generalized sparse eigenproblem `A x = λ B x` for the `n`
@@ -218,7 +301,14 @@ pub fn eigs_gen(
     // matvecs of `Ã` as: y = L^{-T} v; w = A y; z = L^{-1} w.
     let a_csc: SparseCsc<f64> = a.to_csc()?;
     let n_size = a.rows;
-    let m = max_dim.unwrap_or_else(|| n.saturating_mul(2).max(20).min(n_size));
+    // Size the Krylov basis the same way the standard `eigs` path does
+    // (6n+10, min 40). A smaller basis such as max(2n, 20) cannot resolve
+    // the *smallest*-magnitude Ritz value of B⁻¹A on anything but tiny
+    // grids, so generalized "sm" would silently converge to a larger
+    // (wrong) eigenvalue. Capped at the matrix dimension.
+    let m = max_dim
+        .unwrap_or_else(|| n.saturating_mul(6).saturating_add(10).max(40))
+        .min(n_size);
 
     // Build a closure that performs `Ã v` for the Lanczos iteration.
     // We use the same Lanczos implementation but via a custom matvec.
@@ -357,24 +447,6 @@ fn sym_eig_from_tridiag(alpha: &[f64], beta: &[f64]) -> (Vec<f64>, Array2<f64>) 
         t[[i + 1, i]] = beta[i];
     }
     sym_eig_jacobi(&t)
-}
-
-fn run_lanczos_complex(
-    _a: &SparseCsc<C64>,
-    _n: usize,
-    _which: Which,
-    _m: usize,
-) -> Result<EigPairs, SparseEigError> {
-    // For v1 we don't have a complex Hermitian Lanczos. The script-side
-    // dispatch will route complex Hermitian inputs here; in practice
-    // every "essentially real" Hermitian matrix routes to the f64 path
-    // above. Truly complex Hermitian inputs (rare in the curriculum)
-    // fall back to Arnoldi via `SparseEigError::Internal` for now.
-    Err(SparseEigError::Internal(
-        "complex Hermitian Lanczos is not yet implemented; \
-         route through the general (Arnoldi) path"
-            .into(),
-    ))
 }
 
 fn run_arnoldi(

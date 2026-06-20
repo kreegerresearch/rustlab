@@ -55,9 +55,9 @@ print(se)
 
 ```text
 mean estimate of pi:
-3.141833333333334
+3.140941666666667
 standard error:
-0.0008005412957773572
+0.0007083998263760792
 ```
 
 With 24 trials of 200 000 samples each, the mean lands on

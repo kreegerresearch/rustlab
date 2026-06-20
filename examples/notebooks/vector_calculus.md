@@ -34,9 +34,9 @@ F = X .^ 2 + Y .^ 2;
 print(Fx(21, 21))         % ≈ 0
 print(Fy(21, 21))         % ≈ 0
 
-% Top-right corner (x = y = 1): gradient ≈ (2, 2)
-print(Fx(41, 41))         % ≈ 2
-print(Fy(41, 41))         % ≈ 2
+% Top-right corner (x = y = 2): ∇F = (2x, 2y) = (4, 4)
+print(Fx(41, 41))         % ≈ 4
+print(Fy(41, 41))         % ≈ 4
 ```
 
 `gradient(F)` without `dx`, `dy` defaults both to 1. The result is a tuple

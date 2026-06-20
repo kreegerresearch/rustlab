@@ -42,7 +42,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/surface_plots/plot-1-f7f99760.svg)
+![plot 1](plots/surface_plots/plot-1-6421dd63.svg)
 
 <!-- rustlab:output-end -->
 
@@ -64,7 +64,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/surface_plots/plot-2-f700546d.svg)
+![plot 2](plots/surface_plots/plot-2-5092318a.svg)
 
 <!-- rustlab:output-end -->
 
@@ -85,7 +85,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/surface_plots/plot-3-c7a45992.svg)
+![plot 3](plots/surface_plots/plot-3-5122e397.svg)
 
 <!-- rustlab:output-end -->
 

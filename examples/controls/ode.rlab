@@ -87,5 +87,5 @@ f_pend = @(x, t) [x(2); -(g/L)*sin(x(1)) - b*x(2)];
 t5 = linspace(0, 6, 3000);
 X5 = rk4(f_pend, [pi/4; 0], t5);   # 45° initial angle
 
-disp("Pendulum: final angle (rad) — should approach 0:")
+disp("Pendulum: angle (rad) at t=6 s — lightly damped (b=0.5), still ringing down toward 0:")
 X5(1, length(t5))

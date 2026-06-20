@@ -2,9 +2,8 @@
 //!
 //! `pwelch_psd` segments the signal into overlapping windows, computes a
 //! periodogram for each, and averages them. Trades frequency resolution
-//! for variance reduction. Matches MATLAB pwelch conventions: no
-//! detrending, one-sided default for real input, two-sided default for
-//! complex.
+//! for variance reduction. Conventions: no detrending, one-sided
+//! default for real input, two-sided default for complex.
 //!
 //! `segment_iter` is the crate-private helper shared by `pwelch_psd` and
 //! `stft` (Phase 2).
@@ -56,8 +55,8 @@ pub(crate) fn segment_iter(
 
 /// Welch's power spectral density estimator.
 ///
-/// Returns `(Pxx, f)`. No detrending is applied (matches MATLAB pwelch);
-/// callers wanting detrending should pass `x - mean(x)`.
+/// Returns `(Pxx, f)`. No detrending is applied; callers wanting
+/// detrending should pass `x - mean(x)`.
 ///
 /// `nfft` is the requested FFT size; if not a power of two it is
 /// rounded up internally. The output length follows the effective FFT
@@ -166,7 +165,7 @@ pub fn pwelch_psd(
     Ok((Array1::from_vec(out), Array1::from_vec(f1)))
 }
 
-/// MATLAB-compatible default segment length: 8 segments at 50% overlap.
+/// Default segment length: 8 segments at 50% overlap.
 /// Algebra: `N = L + 7·L/2 = 9L/2` ⇒ `L = 2N/9`.
 pub fn default_segment_len(n: usize) -> usize {
     let l = (2 * n) / 9;

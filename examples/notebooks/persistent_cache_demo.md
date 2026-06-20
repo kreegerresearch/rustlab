@@ -87,7 +87,7 @@ the per-function table. `a` and `b` are bit-identical.
 single-threaded interpreted rustlab — didn't happen on the second
 call. The dispatcher fingerprinted the argument `50000`, looked up
 the matching row in `.rustlab/cache.db`, deserialised the stored
-`Value::Tuple([Scalar(1.886e6)])`, and returned. From your
+`Value::Tuple([Scalar(2.0327e4)])`, and returned. From your
 perspective: the result was already there.
 
 ## A different argument is a different key

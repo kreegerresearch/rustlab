@@ -253,8 +253,17 @@ pub fn gain_max_db(s: &Array3<C64>) -> Vec<f64> {
         let s12_mag = t.s12.norm();
         let s21_mag = t.s21.norm();
         let ratio = if s12_mag < 1e-15 {
-            // Unilateral limit: S12 = 0 → MAG = |S21|² (terminated in conjugate matches).
-            s21_mag * s21_mag
+            // Unilateral limit (S12 = 0): maximum unilateral transducer gain
+            // with both ports conjugate-matched,
+            //   G_TU,max = |S21|² / ((1 − |S11|²)(1 − |S22|²)),
+            // which is the K→∞ continuation of the bilateral MAG (omitting the
+            // input/output mismatch factors here would jump ~3 dB at S12 = 0).
+            let denom = (1.0 - t.s11.norm_sqr()) * (1.0 - t.s22.norm_sqr());
+            if denom > 1e-15 {
+                s21_mag * s21_mag / denom
+            } else {
+                s21_mag * s21_mag
+            }
         } else if k_vec[kk] > 1.0 {
             let k = k_vec[kk];
             (s21_mag / s12_mag) * (k - (k * k - 1.0).sqrt())

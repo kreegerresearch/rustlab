@@ -68,8 +68,8 @@ image(G, "viridis");
 savefig("/tmp/rustlab_image_colormap.svg");
 
 # ── 6. True-colour RGB from three real matrices ──────────────────
-# Build a smooth procedural pattern: red rises with x, green rises with y,
-# blue rises with x+y. The result is a familiar RGB-corner gradient.
+# Build a smooth procedural pattern: red rises with x, blue rises with y,
+# green rises with x+y. The result is a familiar RGB-corner gradient.
 R = II * 8;                      # 0 .. 248 along columns
 B = JJ * 8;                      # 0 .. 248 along rows
 Gc = (II + JJ) * 4;              # 0 .. 248 along the diagonal

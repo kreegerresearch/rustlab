@@ -39,7 +39,10 @@ print(nnz(A))              % → ~50k
 # ── 3. Source: a positive point charge in the vacuum half ───────
 rho = zeros(ny, nx);
 rho(50, 25) = 1.0;             % point charge in the vacuum half
-b = -1 * rho(:)' / eps0;       % RHS for ∇·(ε∇V) = -ρ/eps0
+% Multiply Poisson ∇·(ε∇V) = -ρ/eps0 through by -1 so the operator
+% A = -∇·(ε∇) is SPD; the RHS then becomes +ρ/eps0 (a positive charge
+% must give a positive potential — see electrostatics.rlab).
+b = rho(:)' / eps0;            % RHS for -∇·(ε∇V) = +ρ/eps0
 
 # ── 4. Solve. Auto detects SPD and routes to sparse Cholesky. ───
 v = spsolve(A, b);

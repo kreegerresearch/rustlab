@@ -45,8 +45,10 @@ grid on
 
 <!-- rustlab:output-end -->
 
-The symmetric shape confirms this is a linear-phase Type I FIR filter,
-guaranteeing constant group delay $\tau = (N-1)/2 = 31.5$ samples.
+The symmetric shape confirms this is a linear-phase Type II FIR filter
+(even length, $N = 64$), guaranteeing constant group delay
+$\tau = (N-1)/2 = 31.5$ samples — the half-integer delay is the Type II
+signature.
 
 ## Filtering a Noisy Signal
 

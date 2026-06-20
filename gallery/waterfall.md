@@ -148,7 +148,7 @@ ylabel("Time row (newest = top)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/waterfall/plot-4-41e7c3fb.svg)
+![plot 4](plots/waterfall/plot-4-3b32a648.svg)
 
 <!-- rustlab:output-end -->
 
@@ -217,7 +217,7 @@ test signal via `--chirp` / `--steps`) in `rustlab-viewer`.
 | Comparing instantaneous spectrum against recent history | `waterfall` |
 | Burst / transient detection in a live SDR / audio stream | `waterfall_stream` |
 | Reading a stepwise frequency change as a top-down sequence | `waterfall` |
-| Matching MATLAB / Octave plotting conventions       | `spectrogram` |
+| A conventional dB spectrogram heatmap               | `spectrogram` |
 
 Mechanically they are the same data; the choice is about which axis
 deserves which screen direction for your task.

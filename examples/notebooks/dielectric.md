@@ -56,7 +56,7 @@ negate to get an SPD operator that auto-routes to sparse Cholesky.
 ```rustlab
 rho = zeros(ny, nx);
 rho(50, 25) = 1.0;             % point charge at (50, 25)
-b = -1 * rho(:)' / eps0;
+b = rho(:)' / eps0;            % matches the negated (SPD) operator A
 v = spsolve(A, b);
 V = reshape(v, ny, nx);
 
@@ -105,6 +105,9 @@ the dielectric "screening" the charge as expected.
 ## Sanity check — `eps_map ≡ 1` reproduces `laplacian_2d`
 
 ```rustlab
+clf                                            % text-only cell: clear the
+                                               % carried-over figure so no
+                                               % stale plot is emitted here
 eps_unit = ones(ny, nx);
 A_eps_unit = laplacian_eps_2d(eps_unit, dx, dy);
 A_lap     = laplacian_2d(nx, ny, dx, dy);

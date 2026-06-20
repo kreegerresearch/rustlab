@@ -11,6 +11,6 @@ if any(v > 8)
 end
 
 # Results as values
-print(all(v > 0))    # 1  (true)
-print(any(v > 10))   # 0  (false)
+print(all(v > 0))    # true   (scalar reductions print as booleans)
+print(any(v > 10))   # false
 print(v > 5)         # [0, 1, 0, 1, 0]

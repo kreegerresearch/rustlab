@@ -43,7 +43,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/contour_plots/plot-1-0b3b202b.svg)
+![plot 1](plots/contour_plots/plot-1-f0ee18c4.svg)
 
 <!-- rustlab:output-end -->
 
@@ -63,7 +63,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/contour_plots/plot-2-927ba680.svg)
+![plot 2](plots/contour_plots/plot-2-2ce7fc5d.svg)
 
 <!-- rustlab:output-end -->
 
@@ -108,7 +108,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/contour_plots/plot-4-ec5bd068.svg)
+![plot 4](plots/contour_plots/plot-4-b4c2b718.svg)
 
 <!-- rustlab:output-end -->
 
@@ -132,7 +132,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/contour_plots/plot-5-5815fb5b.svg)
+![plot 5](plots/contour_plots/plot-5-17b3c71c.svg)
 
 <!-- rustlab:output-end -->
 
@@ -150,7 +150,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/contour_plots/plot-6-881fd4b5.svg)
+![plot 6](plots/contour_plots/plot-6-9531655e.svg)
 
 <!-- rustlab:output-end -->
 

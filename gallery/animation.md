@@ -31,7 +31,7 @@ fps)` flushes the buffer.
 ```rustlab
 [X, Y] = meshgrid(linspace(-3, 3, 80), linspace(-3, 3, 80));
 
-figure()
+figure();
 n_frames = 40;
 for k = 1:n_frames
   c = -2 + 4 * (k - 1) / (n_frames - 1);
@@ -44,10 +44,6 @@ saveanim("wave.html", 30)
 ```
 
 <!-- rustlab:output-start -->
-```text
-2
-```
-
 > ▶ **Animation: 40 frames at 30 fps** — open the HTML version of this notebook to view.
 
 <!-- rustlab:output-end -->
@@ -55,7 +51,7 @@ saveanim("wave.html", 30)
 ### Same loop, animated GIF
 
 ```rustlab
-figure()
+figure();
 for k = 1:n_frames
   c = -2 + 4 * (k - 1) / (n_frames - 1);
   Z = exp(-((X - c).^2 + Y.^2));
@@ -67,10 +63,6 @@ saveanim("wave.gif", 30)
 ```
 
 <!-- rustlab:output-start -->
-```text
-3
-```
-
 ![animation 2](plots/animation/anim-2-25179a24.gif)
 
 <!-- rustlab:output-end -->
@@ -87,7 +79,7 @@ extension to pick the format. When you run the same script standalone
 plotting builtin. To get a per-frame title, set it **after** `imagesc()`:
 
 ```rustlab
-figure()
+figure();
 [X, Y] = meshgrid(linspace(0, 1, 60), linspace(0, 1, 60));
 omega = 2 * pi;
 for k = 1:24
@@ -101,10 +93,6 @@ saveanim("standing_wave.html", 24)
 ```
 
 <!-- rustlab:output-start -->
-```text
-4
-```
-
 > ▶ **Animation: 24 frames at 24 fps** — open the HTML version of this notebook to view.
 
 <!-- rustlab:output-end -->

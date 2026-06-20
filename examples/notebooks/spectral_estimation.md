@@ -89,7 +89,7 @@ ylabel("dB/Hz")
 grid on
 ```
 
-Defaults match MATLAB's `pwelch`: a **Hamming** window of length
+Default settings: a **Hamming** window of length
 $\lfloor 2N/9 \rfloor$ (so the signal divides into eight segments at
 50 % overlap), `nfft` equal to the segment length, no detrending, and
 one-sided output for real input. Calling `pwelch(x, fs)` without

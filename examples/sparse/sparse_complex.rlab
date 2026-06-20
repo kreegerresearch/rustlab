@@ -22,7 +22,7 @@ alpha = 0.5;          % bulk-loss term
 shift = -1 * (k0 * k0) + j * alpha;
 A = L_neg + shift * speye(n);
 print(issparse(A))    % → 1
-print(nnz(A))         % → ~14k
+print(nnz(A))         % → 17760
 
 # ── 2. A point source in the middle of the grid ──────────────────
 % Lay the source out on a 2-D (ny, nx) grid and flatten column-major

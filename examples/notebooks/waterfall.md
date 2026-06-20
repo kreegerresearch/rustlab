@@ -183,7 +183,7 @@ test signal via `--chirp` / `--steps`) in `rustlab-viewer`.
 | Comparing instantaneous spectrum against recent history | `waterfall` |
 | Burst / transient detection in a live SDR / audio stream | `waterfall_stream` |
 | Reading a stepwise frequency change as a top-down sequence | `waterfall` |
-| Matching MATLAB / Octave plotting conventions       | `spectrogram` |
+| A conventional dB spectrogram heatmap               | `spectrogram` |
 
 Mechanically they are the same data; the choice is about which axis
 deserves which screen direction for your task.

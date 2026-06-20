@@ -105,15 +105,20 @@ eig(A - B * K_place)
 
 w = logspace(-1, 2, 200);   # 0.1 to 100 rad/s
 
-# Open-loop: A, B, C, D (double integrator — will have ω^{-2} rolloff)
-H_ol = freqresp(A, B, C, D, w);
+# Open-loop: A, B, C, D (double integrator — has ω^{-2} rolloff)
+H_ol = freqresp(A, B, C, D, w);   # full sweep for context
+# |H(jω)| = 1/ω² for a double integrator, so it is exactly 1.0 at ω = 1 rad/s.
+# No point on logspace(-1,2,200) lands on ω=1, so evaluate there directly.
+H_ol_1 = freqresp(A, B, C, D, [1.0]);
 disp("Open-loop |H(jω)| at ω=1 rad/s (should be 1.0 for double integrator):")
-abs(H_ol(100))   # ω=1 is roughly the middle of logspace(-1,2,200)
+abs(H_ol_1(1))
 
 # Closed-loop with LQR gain
 A_cl = A - B * K_care;
 H_cl = freqresp(A_cl, B, C, D, w);
-disp("Closed-loop |H(jω)| at ω=0.1 rad/s (DC-like, should be ≈ 1):")
+# Closed-loop DC gain = C·(−A_cl)⁻¹·B = 1/K₁ ≈ 1/√10 ≈ 0.316. State feedback
+# shifts the poles but does not pre-scale the reference, so it is not unity.
+disp("Closed-loop |H(jω)| at ω=0.1 rad/s (DC-like, ≈ 1/K₁ ≈ 0.316):")
 abs(H_cl(1))
 
 disp("Closed-loop magnitude at several frequencies (dB):")

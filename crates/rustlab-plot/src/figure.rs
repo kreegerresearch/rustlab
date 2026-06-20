@@ -335,6 +335,15 @@ pub struct SubplotState {
     pub streamlines: Vec<StreamlineData>,
 }
 impl SubplotState {
+    /// Clear the line/scatter series for a fresh 2-D plot, and also drop any
+    /// stale 3-D `surface` — otherwise a prior `surf()` keeps shadowing every
+    /// later 2-D plot on the same subplot (the backends render `surface` first
+    /// and early-return).
+    pub fn clear_2d_overlays(&mut self) {
+        self.series.clear();
+        self.surface = None;
+    }
+
     pub fn new() -> Self {
         Self {
             title: String::new(),
@@ -974,7 +983,14 @@ pub(crate) fn compute_axis_bounds(sp: &SubplotState) -> Option<(f64, f64, f64, f
     }
     let x_min = sp.xlim.0.unwrap_or(x_data_min);
     let x_max = sp.xlim.1.unwrap_or(x_data_max);
-    let y_margin = ((y_data_max - y_data_min).abs() * 0.1).max(1e-6);
+    let y_range = (y_data_max - y_data_min).abs();
+    let y_margin = if y_range < 1e-12 {
+        // Constant Y data: open a window proportional to the magnitude so the
+        // axis ticks aren't all identical (e.g. plot([1,2,3],[5,5,5])).
+        (y_data_max.abs() * 0.05).max(0.5)
+    } else {
+        y_range * 0.1
+    };
     let y_min = sp.ylim.0.unwrap_or(y_data_min - y_margin);
     let y_max = sp.ylim.1.unwrap_or(y_data_max + y_margin);
     Some((x_min, x_max, y_min, y_max))

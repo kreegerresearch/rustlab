@@ -27,7 +27,7 @@ print("logical CPUs")
 <!-- rustlab:output-start -->
 ```text
 running parmap on
-10
+14
 logical CPUs
 ```
 

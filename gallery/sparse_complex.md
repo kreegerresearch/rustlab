@@ -165,13 +165,13 @@ H = [3,    1+j,  0;
 b = [1; 2-j; 0.5];
 x = spsolve(sparse(H), b, "cholesky");   % force Cholesky to confirm
 print(x);
-print(norm(H * x' - b))                   % residual
+print(norm(H * transpose(x) - b))         % residual (transpose, not ')
 ```
 
 <!-- rustlab:output-start -->
 ```text
 [1×3]  0.042857-0.128571j  0.628571-0.242857j  -0.200000-0.028571j
-3.0145226717965663
+0.000000000000000720518184067364
 ```
 
 <!-- rustlab:output-end -->

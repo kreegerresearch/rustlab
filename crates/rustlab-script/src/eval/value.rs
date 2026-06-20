@@ -516,13 +516,41 @@ impl Value {
         }
     }
 
-    /// Convert a 1-based index to 0-based, returning an error if the index is < 1.
+    /// Convert a 1-based index to 0-based, returning an error if the index is
+    /// not a finite positive integer (non-integers are rejected rather than
+    /// silently truncated).
     fn one_based_to_zero(n: f64) -> Result<usize, String> {
+        if !n.is_finite() || n.fract() != 0.0 {
+            return Err(format!("index {} is invalid (must be a positive integer)", n));
+        }
         let i = n as usize;
         if i < 1 {
             return Err(format!("index {} is invalid (1-based indexing)", n));
         }
         Ok(i - 1)
+    }
+
+    /// If `v` is a logical mask for a dimension of length `dim_len` — exactly
+    /// `dim_len` real entries, each 0 or 1 — return the 0-based positions where
+    /// it is 1. Otherwise `None` (the caller treats `v` as a list of explicit
+    /// positions). This is how `v(v > 2)` / `M(M > 2)` select by predicate.
+    fn as_logical_mask(v: &CVector, dim_len: usize) -> Option<Vec<usize>> {
+        if v.len() != dim_len {
+            return None;
+        }
+        if v
+            .iter()
+            .any(|c| c.im.abs() > 1e-12 || (c.re != 0.0 && c.re != 1.0))
+        {
+            return None;
+        }
+        Some(
+            v.iter()
+                .enumerate()
+                .filter(|(_, c)| c.re == 1.0)
+                .map(|(i, _)| i)
+                .collect(),
+        )
     }
 
     /// Resolve an index value to a list of 0-based indices for a dimension of `dim_len`.
@@ -542,20 +570,24 @@ impl Value {
                 }
                 Ok(vec![i])
             }
-            Value::Vector(v) => v
-                .iter()
-                .map(|c| {
-                    let i = Self::one_based_to_zero(c.re)?;
-                    if i >= dim_len {
-                        Err(format!(
-                            "index {} out of bounds (size {})",
-                            c.re as usize, dim_len
-                        ))
-                    } else {
-                        Ok(i)
-                    }
-                })
-                .collect(),
+            Value::Vector(v) => {
+                if let Some(positions) = Self::as_logical_mask(v, dim_len) {
+                    return Ok(positions);
+                }
+                v.iter()
+                    .map(|c| {
+                        let i = Self::one_based_to_zero(c.re)?;
+                        if i >= dim_len {
+                            Err(format!(
+                                "index {} out of bounds (size {})",
+                                c.re as usize, dim_len
+                            ))
+                        } else {
+                            Ok(i)
+                        }
+                    })
+                    .collect()
+            }
             other => Err(format!("invalid index type: {}", other.type_name())),
         }
     }
@@ -600,6 +632,12 @@ impl Value {
                     }
                 }
                 Value::Vector(idx_v) => {
+                    // Logical-mask indexing: a same-length 0/1 vector selects
+                    // the positions where it is 1 (e.g. v(v > 2)).
+                    if let Some(positions) = Self::as_logical_mask(idx_v, v.len()) {
+                        let data: Vec<C64> = positions.iter().map(|&i| v[i]).collect();
+                        return Ok(Value::Vector(Array1::from_vec(data)));
+                    }
                     let result: Result<Vec<_>, _> = idx_v
                         .iter()
                         .map(|c| {
@@ -651,9 +689,36 @@ impl Value {
                         }
                     }
                     Value::Vector(idx_v) => {
+                        // Column-major linear logical indexing: M(M > 2).
+                        let total = m.nrows() * m.ncols();
+                        if let Some(positions) = Self::as_logical_mask(idx_v, total) {
+                            let data: Vec<C64> = positions
+                                .iter()
+                                .map(|&k0| m[[k0 % m.nrows(), k0 / m.nrows()]])
+                                .collect();
+                            return Ok(Value::Vector(Array1::from_vec(data)));
+                        }
                         let picks: Result<Vec<C64>, _> =
                             idx_v.iter().map(|c| pick(c.re)).collect();
                         Ok(Value::Vector(Array1::from_vec(picks?)))
+                    }
+                    // Same-shape 0/1 matrix → logical mask: M(M > 2) selects the
+                    // matching elements in column-major order as a vector.
+                    Value::Matrix(idx_m)
+                        if idx_m.dim() == m.dim()
+                            && idx_m
+                                .iter()
+                                .all(|c| c.im.abs() <= 1e-12 && (c.re == 0.0 || c.re == 1.0)) =>
+                    {
+                        let mut data: Vec<C64> = Vec::new();
+                        for col in 0..m.ncols() {
+                            for row in 0..m.nrows() {
+                                if idx_m[[row, col]].re == 1.0 {
+                                    data.push(m[[row, col]]);
+                                }
+                            }
+                        }
+                        Ok(Value::Vector(Array1::from_vec(data)))
                     }
                     // 1-D-shaped matrix (1×N or N×1) used as an index list —
                     // treat its entries as the linear indices.
@@ -1032,6 +1097,23 @@ impl Value {
 
         // Comparison operators: compare scalar/complex values, return Bool
         if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+            // Element-wise real comparison → 1.0 / 0.0 (used by the array arms).
+            let cmp = |a: f64, b: f64| -> f64 {
+                let flag = match op {
+                    Eq => a == b,
+                    Ne => a != b,
+                    Lt => a < b,
+                    Le => a <= b,
+                    Gt => a > b,
+                    Ge => a >= b,
+                    _ => unreachable!(),
+                };
+                if flag {
+                    1.0
+                } else {
+                    0.0
+                }
+            };
             return match (&lhs, &rhs) {
                 (Value::Scalar(a), Value::Scalar(b)) => Ok(Value::Bool(match op {
                     Eq => a == b,
@@ -1093,13 +1175,64 @@ impl Value {
                         .collect();
                     Ok(Value::Vector(Array1::from_vec(data)))
                 }
+                // Element-wise Vector op Vector (equal length) → 0/1 vector.
+                (Value::Vector(x), Value::Vector(y)) => {
+                    if x.len() != y.len() {
+                        return Err(format!(
+                            "comparison length mismatch: {} vs {}",
+                            x.len(),
+                            y.len()
+                        ));
+                    }
+                    let data: Vec<C64> = x
+                        .iter()
+                        .zip(y.iter())
+                        .map(|(a, b)| Complex::new(cmp(a.re, b.re), 0.0))
+                        .collect();
+                    Ok(Value::Vector(Array1::from_vec(data)))
+                }
+                // Matrix op Scalar / Scalar op Matrix → 0/1 matrix.
+                (Value::Matrix(m), Value::Scalar(b)) => {
+                    let b = *b;
+                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(c.re, b), 0.0))))
+                }
+                (Value::Scalar(a), Value::Matrix(m)) => {
+                    let a = *a;
+                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(a, c.re), 0.0))))
+                }
+                // Element-wise Matrix op Matrix (equal shape) → 0/1 matrix.
+                (Value::Matrix(x), Value::Matrix(y)) => {
+                    if x.dim() != y.dim() {
+                        return Err(format!(
+                            "comparison shape mismatch: {:?} vs {:?}",
+                            x.dim(),
+                            y.dim()
+                        ));
+                    }
+                    let data = Array2::from_shape_fn(x.dim(), |(i, j)| {
+                        Complex::new(cmp(x[[i, j]].re, y[[i, j]].re), 0.0)
+                    });
+                    Ok(Value::Matrix(data))
+                }
                 _ => Err(format!(
-                    "comparison requires two scalars (or vector op scalar), got {} and {}",
+                    "comparison requires compatible operands, got {} and {}",
                     lhs.type_name(),
                     rhs.type_name()
                 )),
             };
         }
+
+        // Coerce bool operands to numeric 0.0 / 1.0 for the remaining
+        // (arithmetic) operators — `true + 1`, counting with `sum(a == b)`, etc.
+        // (And/Or and comparison operators above already consumed any bools.)
+        let lhs = match lhs {
+            Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            other => other,
+        };
+        let rhs = match rhs {
+            Value::Bool(b) => Value::Scalar(if b { 1.0 } else { 0.0 }),
+            other => other,
+        };
 
         // String concatenation
         if let (Value::Str(a), Value::Str(b)) = (&lhs, &rhs) {
