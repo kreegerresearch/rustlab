@@ -198,17 +198,26 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
     let (min_v, max_v) = match (hm.value_min, hm.value_max) {
         (Some(a), Some(b)) if a < b => (a, b),
         _ => {
+            // Auto-range over FINITE values only: a stray NaN/±Inf would
+            // otherwise poison the min/max and collapse the whole colour scale.
             let mut lo = f64::INFINITY;
             let mut hi = f64::NEG_INFINITY;
             for row in &hm.z {
                 for &v in row {
-                    if v < lo {
-                        lo = v;
-                    }
-                    if v > hi {
-                        hi = v;
+                    if v.is_finite() {
+                        if v < lo {
+                            lo = v;
+                        }
+                        if v > hi {
+                            hi = v;
+                        }
                     }
                 }
+            }
+            if !lo.is_finite() || !hi.is_finite() {
+                // No finite data at all.
+                lo = 0.0;
+                hi = 1.0;
             }
             (lo, hi)
         }
@@ -233,13 +242,23 @@ pub fn render_heatmap_cells_to_rgba(hm: &crate::figure::HeatmapData) -> Vec<u8> 
         };
         for c in 0..ncols {
             let v = hm.z[src_row][c];
+            let off = (r * ncols + c) * 4;
+            if v.is_nan() {
+                // NaN → fully transparent "no data" gap, not the colormap-max
+                // colour (which would be indistinguishable from a real maximum).
+                rgba[off] = 0;
+                rgba[off + 1] = 0;
+                rgba[off + 2] = 0;
+                rgba[off + 3] = 0;
+                continue;
+            }
+            // ±Inf saturates to the colour-scale extremes (range is finite now).
             let t = if degenerate {
                 0.5
             } else {
                 ((v - min_v) / range).clamp(0.0, 1.0)
             };
             let (rr, gg, bb) = crate::figure::colormap_rgb(t, &hm.colorscale);
-            let off = (r * ncols + c) * 4;
             rgba[off] = rr;
             rgba[off + 1] = gg;
             rgba[off + 2] = bb;
@@ -1177,45 +1196,87 @@ where
                     // by zero would otherwise yield NaN.
                     let (min_v, max_v) = match (hm.value_min, hm.value_max) {
                         (Some(a), Some(b)) if a < b => (a, b),
-                        _ => (
-                            vals.iter().copied().fold(f64::INFINITY, f64::min),
-                            vals.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-                        ),
+                        // Auto-range over FINITE values only: a stray ±Inf would
+                        // otherwise poison the scale (NaN is already skipped by
+                        // f64::min/max, but Inf propagates).
+                        _ => {
+                            let mut lo = f64::INFINITY;
+                            let mut hi = f64::NEG_INFINITY;
+                            for &v in &vals {
+                                if v.is_finite() {
+                                    if v < lo {
+                                        lo = v;
+                                    }
+                                    if v > hi {
+                                        hi = v;
+                                    }
+                                }
+                            }
+                            if lo.is_finite() && hi.is_finite() {
+                                (lo, hi)
+                            } else {
+                                (0.0, 1.0)
+                            }
+                        }
                     };
                     let raw_range = max_v - min_v;
                     let degenerate = raw_range == 0.0;
                     let range = if degenerate { 1.0 } else { raw_range };
+                    // Bound the SVG size for dense heatmaps. Drawing one <rect>
+                    // per cell is O(nrows·ncols), so a 64×20000 scalogram would
+                    // emit ~1.3M rects / ~100 MB of unrenderable SVG. plotters'
+                    // SVG backend can't embed a raster <image> (BitMapElement
+                    // falls back to one rect per *pixel*, which is worse), so we
+                    // coarsen the grid in BOTH dimensions — capping the rendered
+                    // cell count while preserving orientation and full coverage
+                    // (each drawn rect spans a stride×stride block). The matrix
+                    // returned to the caller is never touched.
+                    const HEATMAP_CELL_BUDGET: usize = 120_000;
+                    let total_cells = nrows.saturating_mul(ncols);
+                    let stride = if total_cells > HEATMAP_CELL_BUDGET {
+                        ((total_cells as f64 / HEATMAP_CELL_BUDGET as f64).sqrt().ceil() as usize)
+                            .max(1)
+                    } else {
+                        1
+                    };
                     let cell_w = (x_hi - x_lo) / ncols as f64;
                     let cell_h = (y_hi - y_lo) / nrows as f64;
-                    // Row 0 → data y in [y_lo, y_lo + cell_h]. With the
-                    // chart's y axis reversed (descending range built
-                    // higher up), data y = y_lo lands at the TOP of the
-                    // chart, so row 0 visually appears at the top —
-                    // image convention. No additional flip is needed
-                    // here; the axis reversal does the work.
-                    for r in 0..nrows {
-                        for c in 0..ncols {
+                    let mut r = 0;
+                    while r < nrows {
+                        let block_r = stride.min(nrows - r);
+                        let mut c = 0;
+                        while c < ncols {
+                            let block_c = stride.min(ncols - c);
                             let v = vals[r * ncols + c];
-                            // With a fixed range, clamp samples outside
-                            // [min_v, max_v] to the endpoints so they
-                            // saturate to the colormap's extremes rather
-                            // than producing out-of-range `t` values.
-                            let t = if degenerate {
-                                0.5
+                            // ±Inf saturates to the colour-scale extremes (range
+                            // is finite); NaN → neutral gray.
+                            let (rr, gg, bb) = if v.is_nan() {
+                                (128, 128, 128)
                             } else {
-                                ((v - min_v) / range).clamp(0.0, 1.0)
+                                let t = if degenerate {
+                                    0.5
+                                } else {
+                                    ((v - min_v) / range).clamp(0.0, 1.0)
+                                };
+                                colormap_rgb(t, &hm.colorscale)
                             };
-                            let (rr, gg, bb) = colormap_rgb(t, &hm.colorscale);
                             let color = RGBColor(rr, gg, bb);
+                            // Row 0 sits at data y_lo (the TOP when the y-axis is
+                            // reversed, as heatmaps are); the axis handles the flip.
                             let x0 = x_lo + c as f64 * cell_w;
                             let y0 = y_lo + r as f64 * cell_h;
                             chart
                                 .draw_series(std::iter::once(Rectangle::new(
-                                    [(x0, y0), (x0 + cell_w, y0 + cell_h)],
+                                    [
+                                        (x0, y0),
+                                        (x0 + block_c as f64 * cell_w, y0 + block_r as f64 * cell_h),
+                                    ],
                                     color.filled(),
                                 )))
                                 .map_err(err)?;
+                            c += stride;
                         }
+                        r += stride;
                     }
                     heatmap_meta = Some((min_v, max_v, hm.colorscale.clone()));
                 }
@@ -1615,6 +1676,74 @@ mod tests {
     fn rgba_at(rgba: &[u8], ncols: usize, row: usize, col: usize) -> (u8, u8, u8) {
         let off = (row * ncols + col) * 4;
         (rgba[off], rgba[off + 1], rgba[off + 2])
+    }
+
+    // PL3 — NaN cells render transparent and a stray Inf doesn't collapse the
+    // colour scale (auto-range is finite-only).
+    #[test]
+    fn heatmap_rgba_nan_transparent_inf_does_not_poison_range() {
+        use crate::figure::{HeatmapData, HeatmapKind, HeatmapOrigin};
+        let hm = HeatmapData {
+            z: vec![vec![1.0, f64::NAN], vec![3.0, f64::INFINITY]],
+            colorscale: "viridis".to_string(),
+            kind: HeatmapKind::Imagesc,
+            x_labels: None,
+            y_labels: None,
+            rgba: None,
+            rgba_width: 0,
+            rgba_height: 0,
+            value_min: None,
+            value_max: None,
+            origin: HeatmapOrigin::Upper, // no flip: source row r → pixel row r
+        };
+        let rgba = render_heatmap_cells_to_rgba(&hm);
+        let alpha = |row: usize, col: usize| rgba[(row * 2 + col) * 4 + 3];
+        assert_eq!(alpha(0, 1), 0, "NaN cell must be transparent");
+        assert_eq!(alpha(1, 1), 255, "Inf cell must be opaque (saturated)");
+        // The finite cells keep distinct real colours — the Inf didn't blow up
+        // the auto-range and collapse everything to one end.
+        let lo = rgba_at(&rgba, 2, 0, 0); // value 1 (min)
+        let hi = rgba_at(&rgba, 2, 1, 0); // value 3 (max of the finite data)
+        assert_ne!(lo, hi, "finite cells should map to different colours");
+    }
+
+    // PL1 — a dense heatmap is rendered with a bounded number of <rect>s
+    // (coarsened in both dimensions), not one per cell.
+    #[test]
+    fn dense_heatmap_svg_rect_count_is_bounded() {
+        use crate::figure::{
+            AxisYDirection, FigureState, HeatmapData, HeatmapKind, HeatmapOrigin,
+        };
+        let (nrows, ncols) = (200usize, 3000usize); // 600k cells ≫ budget
+        let z: Vec<Vec<f64>> = (0..nrows)
+            .map(|r| (0..ncols).map(|c| ((r + c) as f64).sin()).collect())
+            .collect();
+        let mut fig = FigureState::new();
+        {
+            let sp = fig.current_mut();
+            sp.y_axis_direction = AxisYDirection::Xy;
+            sp.heatmap = Some(HeatmapData {
+                z,
+                colorscale: "viridis".to_string(),
+                kind: HeatmapKind::Imagesc,
+                x_labels: None,
+                y_labels: None,
+                rgba: None,
+                rgba_width: 0,
+                rgba_height: 0,
+                value_min: None,
+                value_max: None,
+                origin: HeatmapOrigin::Lower,
+            });
+        }
+        let path = std::env::temp_dir().join("rustlab_dense_heatmap_bound.svg");
+        render_figure_state_to_file(&fig, path.to_str().unwrap()).unwrap();
+        let svg = std::fs::read_to_string(&path).unwrap();
+        let rects = svg.matches("<rect").count();
+        // 600k cells → 600k rects without the cap; bounded near the cell budget.
+        assert!(rects < 200_000, "rect count not bounded: {rects}");
+        assert!(svg.len() < 20_000_000, "SVG not bounded: {} bytes", svg.len());
+        let _ = std::fs::remove_file(&path);
     }
 
     /// HeatmapOrigin::Lower flips vertically (source row 0 → bottom pixel

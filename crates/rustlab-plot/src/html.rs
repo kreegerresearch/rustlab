@@ -765,6 +765,12 @@ fn escape_js(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+        // Escape `<` so a literal "</script>" in a user-supplied
+        // title/label/legend can't terminate the inline <script> block (which
+        // would break the chart and is a stored-injection vector). `>`/`&`
+        // aren't special inside a <script> JS string, so leave them alone to
+        // avoid churning legitimate labels (e.g. the "|00>" ket strings).
+        .replace('<', "\\u003c")
 }
 
 fn format_range(lim: (Option<f64>, Option<f64>)) -> String {
@@ -880,9 +886,12 @@ mod tests {
             div.contains(r#"categoryorder: "array""#),
             "category order should be 'array' to preserve user order"
         );
+        // `>` is left un-escaped (only `<` is, to block "</script>"), so the
+        // ket labels round-trip verbatim.
         assert!(
             div.contains(r#"categoryarray: ["|00>","|01>","|10>","|11>"]"#),
-            "categoryarray should list labels in order"
+            "categoryarray should list labels in order; got:\n{}",
+            div
         );
         // Trace x should carry the label strings, not numeric indices.
         assert!(
