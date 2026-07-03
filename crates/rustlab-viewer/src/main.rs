@@ -14,7 +14,24 @@ mod net;
 mod render;
 mod surface;
 
+use std::time::{Duration, Instant};
+
+/// Set on the re-exec'd retry process so a persistent GUI failure exits with
+/// an error message instead of retrying forever.
+const RETRY_ENV: &str = "RUSTLAB_VIEWER_RETRIED";
+
+/// Failures this soon after launch are treated as startup races (display
+/// server not ready yet — seen on WSLg first launch after boot) and retried
+/// once. Later failures mean an established session died; relaunching an
+/// empty viewer window would be more confusing than an error message.
+const STARTUP_RETRY_WINDOW: Duration = Duration::from_secs(10);
+
 fn main() {
+    // eframe/winit report GUI failures through `log`; without a logger the
+    // real error is discarded and only a generic exit surfaces. Defaults to
+    // the `error` level; RUST_LOG=debug shows the full startup trace.
+    env_logger::init();
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -65,14 +82,93 @@ fn main() {
         ..Default::default()
     };
 
-    eframe::run_native(
+    let started = Instant::now();
+    if let Err(err) = eframe::run_native(
         &title,
         options,
         Box::new(move |_cc| Ok(Box::new(app::ViewerApp::new(rx)))),
-    )
-    .expect("failed to run eframe");
+    ) {
+        handle_run_error(&err, started.elapsed());
+    }
 
     // Clean up socket on exit
     let sock = rustlab_proto::default_socket_path();
     let _ = std::fs::remove_file(&sock);
+}
+
+/// A GUI failure right after launch is often transient (the display server
+/// still coming up), so it gets one automatic relaunch before giving up
+/// with troubleshooting hints.
+fn handle_run_error(err: &eframe::Error, uptime: Duration) -> ! {
+    eprintln!("rustlab-viewer: failed to run GUI: {err}");
+
+    if should_retry(std::env::var_os(RETRY_ENV).is_some(), uptime) {
+        eprintln!("rustlab-viewer: retrying once (the display server may not be ready yet)...");
+        std::thread::sleep(Duration::from_secs(1));
+        retry_exec();
+    }
+
+    eprintln!();
+    eprintln!("The GUI could not start. Things to try:");
+    eprintln!("  - run rustlab-viewer again; the first launch after boot can race the display server (common under WSLg)");
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("  - force X11 instead of Wayland: WAYLAND_DISPLAY= rustlab-viewer");
+        eprintln!("  - make sure GL/X libraries are installed (Debian/Ubuntu: libgl1 libegl1 libxkbcommon-x11-0)");
+    }
+    eprintln!("  - show the underlying error: RUST_LOG=debug rustlab-viewer");
+    std::process::exit(1);
+}
+
+fn should_retry(already_retried: bool, uptime: Duration) -> bool {
+    !already_retried && uptime <= STARTUP_RETRY_WINDOW
+}
+
+/// Re-exec the viewer with the same arguments, marking the child via
+/// `RETRY_ENV` so it doesn't retry again. The stale socket file left behind
+/// is handled by the listener's liveness check. Only returns if the
+/// relaunch itself failed.
+#[cfg(unix)]
+fn retry_exec() {
+    use std::os::unix::process::CommandExt;
+    if let Ok(exe) = std::env::current_exe() {
+        let err = std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(RETRY_ENV, "1")
+            .exec();
+        eprintln!("rustlab-viewer: relaunch failed: {err}");
+    }
+}
+
+#[cfg(not(unix))]
+fn retry_exec() {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(status) = std::process::Command::new(exe)
+            .args(std::env::args_os().skip(1))
+            .env(RETRY_ENV, "1")
+            .status()
+        {
+            std::process::exit(status.code().unwrap_or(1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_once_within_startup_window_only() {
+        // Fresh process failing fast → treated as a startup race, retry.
+        assert!(should_retry(false, Duration::from_secs(1)));
+        // Boundary: exactly at the window edge still counts as startup.
+        assert!(should_retry(false, STARTUP_RETRY_WINDOW));
+        // Already the retry process → give up with hints instead of looping.
+        assert!(!should_retry(true, Duration::from_secs(1)));
+        // Failure long after startup is a dead session, not a race → no relaunch.
+        assert!(!should_retry(
+            false,
+            STARTUP_RETRY_WINDOW + Duration::from_secs(1)
+        ));
+    }
 }

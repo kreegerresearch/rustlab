@@ -936,7 +936,7 @@ rustlab-viewer --socket PATH    # custom socket path
 ```
 
 **Key files:**
-- `src/main.rs` — CLI arg parsing, eframe GUI launch, `--name`/`--socket` support
+- `src/main.rs` — CLI arg parsing, eframe GUI launch, `--name`/`--socket` support, startup resilience (below)
 - `src/app.rs` — `ViewerApp` eframe application, drains messages from socket, renders figures in egui windows
 - `src/figure.rs` — `FigureWindow` and `PanelState`, subplot grid rendering with `egui_plot`, categorical x-axis label support
 - `src/net.rs` — Unix socket listener, spawns per-connection threads, liveness check prevents clobbering an active viewer's socket
@@ -946,6 +946,15 @@ rustlab-viewer --socket PATH    # custom socket path
 - Multiple viewers can run simultaneously using `--name` (each gets its own socket)
 - Multiple rustlab processes can connect to the same viewer — PID-based figure IDs prevent collisions
 - Starting a second viewer on the same socket is blocked with a liveness ping check
+
+**Startup resilience:**
+- `env_logger` is installed at startup (default `error` level) so eframe/winit GUI
+  failures print their real cause instead of being discarded; `RUST_LOG=debug` for the full trace
+- If `eframe::run_native` fails within 10 s of launch, the viewer re-execs itself once
+  (guarded by the `RUSTLAB_VIEWER_RETRIED` env var) — display-server startup races,
+  e.g. WSLg's compositor coming up lazily on the first GUI launch after boot, resolve on retry
+- A persistent failure prints troubleshooting hints (rerun, `WAYLAND_DISPLAY=` to force
+  X11, missing GL/X libraries) and exits 1 instead of panicking
 
 ---
 
