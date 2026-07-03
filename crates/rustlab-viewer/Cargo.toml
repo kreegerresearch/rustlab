@@ -16,5 +16,8 @@ rustlab-proto = { workspace = true }
 eframe        = "0.31"
 egui          = "0.31"
 egui_plot     = "0.31"
+# eframe/winit report GUI failures via `log`; without a logger installed the
+# real error text is discarded. Default features off — no color/regex needed.
+env_logger    = { version = "0.11", default-features = false }
 rmp-serde     = { workspace = true }
 serde         = { workspace = true }
