@@ -10,6 +10,8 @@ Complete reference for all built-in functions and constants available in the rus
 |------|-------|-------------|
 | `i`  | `0 + 1i` | Imaginary unit. Use in expressions: `z = 3 + i*4` |
 | `j`  | `0 + 1i` | Alias for `i`. Both are always available: `z = 3 + j*4` |
+
+Numeric literals also accept an imaginary suffix: `2j`, `1.5i`, and `3e8j` are imaginary constants, so `z = 1 + 2j` parses directly (and printed complex values like `1+2j` paste back as input). The suffix binds to the literal itself — it still works when a variable named `i` or `j` shadows the constant.
 | `pi` | 3.14159… | π |
 | `e`  | 2.71828… | Euler's number |
 | `true` | `Bool(true)` | Boolean true — can be used directly in `if` / `while` conditions |
@@ -288,21 +290,24 @@ Smallest value, with an optional second output for the 1-based index of the firs
 ```
 min([3.0, 1.0, 4.0, 1.5])         # → 1.0
 [m, i] = min([3.0, 1.0, 4.0, 1.5])    # m = 1.0, i = 2 (first occurrence)
-min(5, 3)                          # → 3.0  (elementwise two-scalar form)
+min(5, 3)                          # → 3.0  (elementwise two-argument form)
+min([3, 1, 4], 2)                  # → [2, 1, 2]  (scalar broadcasts)
 min([1, 5, 3; 4, 2, 6])           # → [1, 2, 3]   (column mins, 1×N row)
 [M, I] = min(A, [], 2)             # row mins; M and I are nrows×1
 ```
+- **Elementwise two-argument form.** `min(a, b)` compares element against element over any mix of scalars, vectors, and matrices, with the same implicit-expansion (broadcast) rules as `+` — a scalar pairs with every element, and singleton dimensions expand (`min([1;2;3], [0, 5])` is 3×2). Per element, a `NaN` loses to any non-`NaN` partner (both `NaN` → `NaN`).
 - **Multi-return** is valid for the 1-arg vector/matrix form and the 3-arg axis form. Calling `[m, i] = min(a, b)` on the elementwise two-argument form errors — the index has no defined meaning there.
 - **Comparison key.** Purely-real input compares by real value (so `max([-3, 1, -5])` is `1`, not `-5`). If any element has a nonzero imaginary part the comparison switches to magnitude `|z|`. **This diverges from MATLAB on equal magnitudes**: rustlab returns the first occurrence, MATLAB falls back to phase angle.
 - **NaN handling.** `NaN` entries are skipped during the fold (MATLAB-compatible). All-NaN input errors explicitly rather than silently returning `NaN` at index 1.
 - **Tie-breaking.** First occurrence wins, both real and complex paths.
 
 ### `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` / `[m, i] = max(...)`
-Largest value, with an optional second output for the 1-based index of the first occurrence. Same rules as `min` (comparison key, NaN handling, tie-breaking, multi-return restrictions).
+Largest value, with an optional second output for the 1-based index of the first occurrence. Same rules as `min` (elementwise two-argument form, comparison key, NaN handling, tie-breaking, multi-return restrictions).
 ```
 max([3.0, 1.0, 4.0, 1.5])             # → 4.0
 [m, i] = max([3, 1, 4, 1, 5, 9, 2])  # m = 9, i = 6
 max(0, -5)                             # → 0.0
+max(M1, M2)                            # elementwise — union of two 0/1 masks
 [M, I] = max([1, 5, 3; 4, 2, 6])     # M = [4, 5, 6], I = [2, 1, 2]
 ```
 
@@ -1338,6 +1343,7 @@ Non-conjugate transpose — swaps rows and columns without conjugating imaginary
 transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 ```
 - Use `conj(transpose(A))` or `A'` notation for Hermitian (conjugate) transpose.
+- ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
 
 ### `diag(v)` / `diag(M)`
 - `diag(v)` — creates an n×n diagonal matrix from vector `v`.
@@ -1661,6 +1667,8 @@ The sparse paths are the scaling fix for grid-style assemblies. A 100×100 Lesso
 
 **Real-vs-complex auto-routing.** When every entry of `A` and `b` has imaginary part below $10^{-12}$, the solve uses the real-only (`f64`) factorization, which is roughly 4× faster than the complex (`Complex<f64>`) path. Otherwise the complex path runs.
 
+⚠️ **Shaping a complex RHS:** `'` is a *conjugating* transpose. `b = src(:)'` silently conjugates a complex source — the solve succeeds and the answer is quietly wrong. Reshape with `b = src(:).'` (non-conjugate) instead.
+
 ```
 x = spsolve(A, b)                       # auto-detect
 x = spsolve(A, b, "cholesky")           # force SPD path
@@ -1774,7 +1782,7 @@ Variable-coefficient Laplacian `∇·(ε∇V)` on a 2-D uniform grid via flux-co
 
 $$\varepsilon_{i,j+1/2} = \frac{2\,\varepsilon(i,j)\,\varepsilon(i,j+1)}{\varepsilon(i,j) + \varepsilon(i,j+1)}$$
 
-The harmonic mean is the physically correct face-coefficient choice for piecewise-uniform media — it preserves flux continuity across material interfaces (where arithmetic-mean discretizations introduce artificial sources).
+The harmonic mean is the physically correct face-coefficient choice for piecewise-uniform media. Between two adjacent nodes the flux crosses the two half-cells in series, and the harmonic mean is the exact series composition of the two half-cell coefficients — when a material interface lies on a cell face, the scheme reproduces the piecewise-linear interface solution exactly. An arithmetic mean is equally flux-conservative but mis-weights the interface cell, leaving an O(h) accuracy error in quantities like capacitance and voltage division.
 
 `eps_map` is shape `(ny, nx)` matching `meshgrid` / `imagesc`. Real or complex entries (lossy materials are common in FDFD-style problems). Setting `eps_map ≡ 1` reduces this to the constant-coefficient `laplacian_2d`. The same `bc` selector is supported.
 

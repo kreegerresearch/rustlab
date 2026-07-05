@@ -1568,6 +1568,7 @@ impl Evaluator {
     fn eval_expr(&mut self, expr: &Expr) -> Result<Value, ScriptError> {
         match expr {
             Expr::Number(n) => Ok(Value::Scalar(*n)),
+            Expr::Imag(n) => Ok(Value::Complex(Complex::new(0.0, *n))),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Var(name) => self
                 .env

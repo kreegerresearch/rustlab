@@ -16577,3 +16577,249 @@ mod round3_io_regressions {
         }
     }
 }
+
+// ─── Imaginary literals (2j / 2i) and elementwise max/min ───────────────────
+
+#[cfg(test)]
+mod imag_literal_tests {
+    use crate::eval::value::Value;
+    use crate::lexer::{self, Token};
+    use crate::{parser, Evaluator};
+
+    fn eval_ok(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for s in &stmts {
+            ev.exec_stmt(s).unwrap();
+        }
+        ev
+    }
+
+    fn assert_complex(ev: &Evaluator, name: &str, re: f64, im: f64) {
+        match ev.get(name).unwrap() {
+            Value::Complex(c) => {
+                assert!(
+                    (c.re - re).abs() < 1e-12 && (c.im - im).abs() < 1e-12,
+                    "{name}: expected {re}+{im}j, got {c}"
+                );
+            }
+            other => panic!("{name}: expected complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn j_suffix_lexes_as_imaginary_token() {
+        let toks = lexer::tokenize("2j\n").unwrap();
+        assert!(matches!(toks[0].token, Token::Imaginary(v) if v == 2.0));
+    }
+
+    #[test]
+    fn i_suffix_and_exponent_forms_lex() {
+        let toks = lexer::tokenize("2.5i 3e2j .5j\n").unwrap();
+        assert!(matches!(toks[0].token, Token::Imaginary(v) if v == 2.5));
+        assert!(matches!(toks[1].token, Token::Imaginary(v) if v == 300.0));
+        assert!(matches!(toks[2].token, Token::Imaginary(v) if v == 0.5));
+    }
+
+    #[test]
+    fn suffix_followed_by_ident_char_is_not_imaginary() {
+        // `2jx` must stay Number(2) + Ident("jx"), not Imaginary(2) + Ident("x").
+        let toks = lexer::tokenize("2jx\n").unwrap();
+        assert!(matches!(toks[0].token, Token::Number(v) if v == 2.0));
+        assert!(matches!(&toks[1].token, Token::Ident(s) if s == "jx"));
+    }
+
+    #[test]
+    fn imag_literal_evaluates_to_complex() {
+        let ev = eval_ok("x = 2j");
+        assert_complex(&ev, "x", 0.0, 2.0);
+    }
+
+    #[test]
+    fn imag_literal_in_arithmetic_and_matrix() {
+        let ev = eval_ok("z = 1 + 2j\nM = [1+2j, 3-4i]");
+        assert_complex(&ev, "z", 1.0, 2.0);
+        match ev.get("M").unwrap() {
+            Value::Vector(v) => {
+                assert_eq!(v.len(), 2);
+                assert!((v[0].re - 1.0).abs() < 1e-12 && (v[0].im - 2.0).abs() < 1e-12);
+                assert!((v[1].re - 3.0).abs() < 1e-12 && (v[1].im + 4.0).abs() < 1e-12);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn imag_literal_survives_shadowed_j() {
+        // A literal suffix must not resolve through the (shadowed) builtin j.
+        let ev = eval_ok("j = 5\nx = 2j");
+        assert_complex(&ev, "x", 0.0, 2.0);
+    }
+
+    #[test]
+    fn conjugate_transpose_applies_to_imag_literal() {
+        let ev = eval_ok("x = (3+4j)'\ny = 2i'");
+        assert_complex(&ev, "x", 3.0, -4.0);
+        assert_complex(&ev, "y", 0.0, -2.0);
+    }
+
+    #[test]
+    fn display_round_trips_as_input() {
+        // The printer renders 1+2*j as `1+2j`; that form must parse back
+        // to the same value.
+        let ev = eval_ok("a = 1 + 2*j\nb = 1+2j");
+        match (ev.get("a").unwrap(), ev.get("b").unwrap()) {
+            (Value::Complex(a), Value::Complex(b)) => {
+                assert_eq!((a.re, a.im), (b.re, b.im), "1+2j should equal 1 + 2*j");
+            }
+            other => panic!("expected two complex values, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod elementwise_extremum_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn eval_ok(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for s in &stmts {
+            ev.exec_stmt(s).unwrap();
+        }
+        ev
+    }
+
+    fn eval_err(src: &str) -> String {
+        let src = format!("{}\n", src);
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for s in &stmts {
+            if let Err(e) = ev.exec_stmt(s) {
+                return e.to_string();
+            }
+        }
+        panic!("expected error but script succeeded");
+    }
+
+    fn matrix_rows(ev: &Evaluator, name: &str) -> Vec<Vec<f64>> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m
+                .rows()
+                .into_iter()
+                .map(|r| r.iter().map(|c| c.re).collect())
+                .collect(),
+            other => panic!("{name}: expected matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_scalar_form_still_works() {
+        let ev = eval_ok("a = max(0, -5)\nb = min(5, 3)");
+        assert!(matches!(ev.get("a").unwrap(), Value::Scalar(v) if *v == 0.0));
+        assert!(matches!(ev.get("b").unwrap(), Value::Scalar(v) if *v == 3.0));
+    }
+
+    #[test]
+    fn matrix_matrix_union() {
+        // The mask-union idiom from the polygon_mask docs.
+        let ev = eval_ok("U = max([1,0;0,0], [0,0;0,1])");
+        assert_eq!(matrix_rows(&ev, "U"), vec![vec![1.0, 0.0], vec![0.0, 1.0]]);
+    }
+
+    #[test]
+    fn scalar_broadcasts_over_vector_and_matrix() {
+        let ev = eval_ok("v = min([3, 1, 4], 2)\nM = max(0, [-1, 2; 3, -4])");
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                let got: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert_eq!(got, vec![2.0, 1.0, 2.0]);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+        assert_eq!(matrix_rows(&ev, "M"), vec![vec![0.0, 2.0], vec![3.0, 0.0]]);
+    }
+
+    #[test]
+    fn implicit_expansion_column_vs_row() {
+        // 3×1 column against 1×2 row expands to 3×2, as with `+`.
+        let ev = eval_ok("M = max([1;2;3], [0, 5])");
+        assert_eq!(
+            matrix_rows(&ev, "M"),
+            vec![vec![1.0, 5.0], vec![2.0, 5.0], vec![3.0, 5.0]]
+        );
+    }
+
+    #[test]
+    fn nan_loses_to_non_nan() {
+        let ev = eval_ok("v = max(2, [1, NaN, 3])\nw = min([NaN, NaN], [NaN, 1])");
+        match ev.get("v").unwrap() {
+            Value::Vector(v) => {
+                let got: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert_eq!(got, vec![2.0, 2.0, 3.0]);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+        match ev.get("w").unwrap() {
+            Value::Vector(v) => {
+                assert!(v[0].re.is_nan(), "both-NaN element should stay NaN");
+                assert_eq!(v[1].re, 1.0);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complex_compares_by_magnitude_first_occurrence_tie() {
+        let ev = eval_ok("a = max(1+2j, 3+4j)\nb = max(1+2j, 2+1j)");
+        match ev.get("a").unwrap() {
+            Value::Complex(c) => {
+                assert!((c.re - 3.0).abs() < 1e-12 && (c.im - 4.0).abs() < 1e-12)
+            }
+            other => panic!("expected complex, got {other:?}"),
+        }
+        // Equal magnitudes: the first argument wins.
+        match ev.get("b").unwrap() {
+            Value::Complex(c) => {
+                assert!((c.re - 1.0).abs() < 1e-12 && (c.im - 2.0).abs() < 1e-12)
+            }
+            other => panic!("expected complex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incompatible_shapes_error() {
+        let e = eval_err("max([1, 2, 3], [1, 2])");
+        assert!(e.contains("max"), "error should mention max: {e}");
+    }
+
+    #[test]
+    fn multi_return_on_elementwise_form_errors() {
+        let e = eval_err("[m, i] = max([1, 2], [3, 0])");
+        assert!(
+            e.contains("multi-return"),
+            "error should mention multi-return: {e}"
+        );
+    }
+
+    #[test]
+    fn axis_form_unchanged() {
+        let ev = eval_ok("r = max([1, 5; 4, 2], [], 2)");
+        assert_eq!(matrix_rows(&ev, "r"), vec![vec![5.0], vec![4.0]]);
+    }
+
+    #[test]
+    fn fractional_index_error_hints_at_floor() {
+        let e = eval_err("v = [10, 20, 30]\nx = v(2.5)");
+        assert!(
+            e.contains("floor()"),
+            "fractional-index error should hint at floor(): {e}"
+        );
+    }
+}

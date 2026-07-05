@@ -454,6 +454,86 @@ impl Value {
         }
     }
 
+    /// Zip two numeric values element-wise through `f`, with the same
+    /// implicit-expansion rules as the elementwise arithmetic operators:
+    /// scalar∘scalar → scalar, scalar∘vector → vector, vector∘vector
+    /// (equal length) → vector, and any matrix operand broadcasts via
+    /// `broadcast_pair` (vectors promote to 1×N rows).
+    pub(crate) fn zip_broadcast(
+        lhs: &Value,
+        rhs: &Value,
+        f: impl Fn(C64, C64) -> C64,
+    ) -> Result<Value, String> {
+        fn zip_mm(
+            a: &CMatrix,
+            b: &CMatrix,
+            f: &dyn Fn(C64, C64) -> C64,
+        ) -> Result<CMatrix, String> {
+            let (a_exp, b_exp) = Value::broadcast_pair(a, b)?;
+            let data: Vec<C64> = a_exp
+                .iter()
+                .zip(b_exp.iter())
+                .map(|(&x, &y)| f(x, y))
+                .collect();
+            Array2::from_shape_vec(a_exp.dim(), data).map_err(|e| e.to_string())
+        }
+        match (lhs, rhs) {
+            (Value::Scalar(_) | Value::Complex(_), Value::Scalar(_) | Value::Complex(_)) => {
+                let c = f(
+                    Self::promote_to_complex(lhs.clone())?,
+                    Self::promote_to_complex(rhs.clone())?,
+                );
+                Ok(if c.im == 0.0 {
+                    Value::Scalar(c.re)
+                } else {
+                    Value::Complex(c)
+                })
+            }
+            (Value::Scalar(_) | Value::Complex(_), Value::Vector(v)) => {
+                let a = Self::promote_to_complex(lhs.clone())?;
+                Ok(Value::Vector(v.mapv(|x| f(a, x))))
+            }
+            (Value::Vector(v), Value::Scalar(_) | Value::Complex(_)) => {
+                let b = Self::promote_to_complex(rhs.clone())?;
+                Ok(Value::Vector(v.mapv(|x| f(x, b))))
+            }
+            (Value::Vector(a), Value::Vector(b)) => {
+                if a.len() != b.len() {
+                    return Err(format!(
+                        "vector length mismatch: {} vs {}",
+                        a.len(),
+                        b.len()
+                    ));
+                }
+                Ok(Value::Vector(Array1::from_iter(
+                    a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)),
+                )))
+            }
+            (Value::Matrix(a), Value::Matrix(b)) => Ok(Value::Matrix(zip_mm(a, b, &f)?)),
+            (Value::Matrix(m), Value::Scalar(_) | Value::Complex(_)) => {
+                let b = Self::promote_to_complex(rhs.clone())?;
+                Ok(Value::Matrix(m.mapv(|x| f(x, b))))
+            }
+            (Value::Scalar(_) | Value::Complex(_), Value::Matrix(m)) => {
+                let a = Self::promote_to_complex(lhs.clone())?;
+                Ok(Value::Matrix(m.mapv(|x| f(a, x))))
+            }
+            (Value::Matrix(m), Value::Vector(v)) => {
+                let v_row = Self::vector_to_row_matrix(v);
+                Ok(Value::Matrix(zip_mm(m, &v_row, &f)?))
+            }
+            (Value::Vector(v), Value::Matrix(m)) => {
+                let v_row = Self::vector_to_row_matrix(v);
+                Ok(Value::Matrix(zip_mm(&v_row, m, &f)?))
+            }
+            _ => Err(format!(
+                "expected numeric (scalar/vector/matrix) operands, got {} and {}",
+                lhs.type_name(),
+                rhs.type_name()
+            )),
+        }
+    }
+
     /// Promote a `Value::Vector` to a `1×N` row matrix, leaving the
     /// existing matrix layout convention (vector → row by default).
     fn vector_to_row_matrix(v: &CVector) -> CMatrix {
@@ -520,8 +600,14 @@ impl Value {
     /// not a finite positive integer (non-integers are rejected rather than
     /// silently truncated).
     fn one_based_to_zero(n: f64) -> Result<usize, String> {
-        if !n.is_finite() || n.fract() != 0.0 {
+        if !n.is_finite() {
             return Err(format!("index {} is invalid (must be a positive integer)", n));
+        }
+        if n.fract() != 0.0 {
+            return Err(format!(
+                "index {} is invalid (must be a positive integer; round a computed index explicitly with floor()/round(), or use integer arithmetic)",
+                n
+            ));
         }
         let i = n as usize;
         if i < 1 {

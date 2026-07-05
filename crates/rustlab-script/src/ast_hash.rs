@@ -316,6 +316,10 @@ fn feed_expr(h: &mut blake3::Hasher, e: &Expr) {
             // is structural ("the user typed `nan`"), not invalid data.
             h.update(&n.to_le_bytes());
         }
+        Expr::Imag(n) => {
+            h.update(&[0x31]);
+            h.update(&n.to_le_bytes());
+        }
         Expr::Str(s) => {
             h.update(&[0x21]);
             feed_str(h, s);
@@ -924,6 +928,10 @@ fn feed_expr_canonical(
     match e {
         Expr::Number(n) => {
             h.update(&[0x20]);
+            h.update(&n.to_le_bytes());
+        }
+        Expr::Imag(n) => {
+            h.update(&[0x31]);
             h.update(&n.to_le_bytes());
         }
         Expr::Str(s) => {
