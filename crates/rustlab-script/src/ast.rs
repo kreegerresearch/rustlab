@@ -142,6 +142,8 @@ pub enum CacheStmt {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Expr {
     Number(f64),
+    /// Imaginary literal `2j` / `2i` — the stored value is the imaginary part.
+    Imag(f64),
     Str(String),
     Var(String),
     BinOp {

@@ -1747,6 +1747,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Number(n))
             }
+            Token::Imaginary(n) => {
+                self.advance();
+                Ok(Expr::Imag(n))
+            }
             Token::Str(s) => {
                 self.advance();
                 Ok(Expr::Str(s))

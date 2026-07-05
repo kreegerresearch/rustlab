@@ -4,6 +4,8 @@ use crate::error::ScriptError;
 pub enum Token {
     // Literals
     Number(f64),
+    /// Imaginary literal `2j` / `2i` — the value is the imaginary part.
+    Imaginary(f64),
     Str(String),
     Ident(String),
     // Operators
@@ -111,6 +113,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                     let prev_is_operand = matches!(
                         tokens.last().map(|t| &t.token),
                         Some(Token::Number(_))
+                            | Some(Token::Imaginary(_))
                             | Some(Token::Ident(_))
                             | Some(Token::Str(_))
                             | Some(Token::RParen)
@@ -254,6 +257,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                         | Some(Token::RBracket)
                         | Some(Token::Ident(_))
                         | Some(Token::Number(_))
+                        | Some(Token::Imaginary(_))
                         | Some(Token::Apostrophe)
                         | Some(Token::DotApostrophe)
                 );
@@ -510,16 +514,33 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                         pos += 1;
                     }
                 }
+                // Optional imaginary suffix: `2j`, `1.5i`, `3e8j`. The suffix
+                // must end the literal — a following identifier character
+                // means `j`/`i` starts an identifier instead (`2jx` stays
+                // Number(2) + Ident("jx")).
+                let is_imag = pos < chars.len()
+                    && (chars[pos] == 'i' || chars[pos] == 'j')
+                    && chars
+                        .get(pos + 1)
+                        .map_or(true, |c| !c.is_alphanumeric() && *c != '_');
                 // Strip underscores before parsing
                 let num_str: String = chars[start..pos].iter().filter(|c| **c != '_').collect();
                 let val: f64 = num_str.parse().map_err(|_| ScriptError::Lex {
                     line,
                     msg: format!("invalid number: {}", num_str),
                 })?;
-                tokens.push(Spanned {
-                    token: Token::Number(val),
-                    line,
-                });
+                if is_imag {
+                    pos += 1; // consume the i/j suffix
+                    tokens.push(Spanned {
+                        token: Token::Imaginary(val),
+                        line,
+                    });
+                } else {
+                    tokens.push(Spanned {
+                        token: Token::Number(val),
+                        line,
+                    });
+                }
             }
             c if c.is_alphabetic() || c == '_' => {
                 // Identifier or keyword

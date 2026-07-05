@@ -28,6 +28,7 @@ Key properties:
 rustlab/
 ├── Cargo.toml              # workspace root — shared deps, resolver = "2"
 ├── AGENTS.md               # this file
+├── CHANGELOG.md            # user-facing changes; breaking changes carry migration notes
 ├── PLAN.md                 # original architecture plan
 ├── README.md               # user-facing documentation
 ├── llms.txt                # AI reference — pointers to docs files
@@ -222,6 +223,8 @@ Any commit that adds or changes a builtin function, scripting construct, or CLI 
 3. **Toolbox assignment** — add the function name to exactly one `CategoryRow` in `CATEGORIES` (same file). The 12 toolboxes are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio` (see `TOOLBOXES` for display order). Pick the existing subcategory that fits, or add a new `CategoryRow` with a new subcategory string. The `help_coverage_tests` unit tests fail the build if a `HELP` entry has no toolbox or appears in more than one.
 
 A feature is not done until a user can type `help foo` in the REPL and get a useful answer. Do not treat documentation as optional cleanup.
+
+Additionally, record the change in **`CHANGELOG.md`** (repo root) under `## Unreleased`: new builtins/syntax under *Added*, anything that alters the behavior of existing scripts under *Breaking / behavior changes* with migration guidance. Downstream projects rely on that file to know when a re-validation sweep is needed.
 
 ### 4. Never commit or push without explicit approval
 
@@ -1142,13 +1145,14 @@ primary     = NUMBER | STRING | IDENT
 | Dynamic call | `feval("name", args...)` | Call function by string name |
 | Profile | `profile(fn1, fn2)` / `profile()` | Track named functions (or all); `profile_report()` prints mid-script |
 | Concatenation | `[v1, v2]` | Vectors inside `[...]` are flattened |
-| Transpose | `v'` | Conjugate transpose |
+| Transpose | `v'` | Conjugate transpose — conjugates complex values; use `.'` to reshape complex data |
 | Element-wise | `.*` `./` `.^` | Always element-wise on vectors/matrices |
 | Matrix literal | `[1,2; 3,4]` | `;` separates rows |
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
 | Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
 | String array | `{"a", "b", "c"}` | `Value::StringArray`; all elements must be strings; 1-based indexing |
 | Underscore literals | `1_000_000`, `3.141_592` | Digit separators stripped at lex time; like Rust/Python/C++ |
+| Imaginary literals | `2j`, `1.5i`, `3e8j` | `Token::Imaginary` at lex time → `Expr::Imag` → `Value::Complex`; binds to the literal (immune to a shadowed `i`/`j` variable); printed complex values (`1+2j`) round-trip as input |
 | Format mode | `format commas` / `format default` | Bare command; toggles thousands separators in auto-print output |
 
 ### All builtin functions
@@ -1303,7 +1307,7 @@ primary     = NUMBER | STRING | IDENT
 | `commas` | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns Str |
 | `error` | `error(msg)` | Halt script execution with a runtime error message |
 | `sleep` | `sleep(seconds)` | Pause execution for a non-negative scalar duration; fractional seconds OK |
-| `min` | `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)` | Vector or 1-D matrix → scalar. Matrix → row of column mins (default dim 1). Two-scalar form is elementwise. 3-arg empty-placeholder form selects axis. **Multi-return** `[m, i]` available for the 1-arg vector/matrix and 3-arg axis forms; index is the 1-based first-occurrence position. Multi-return on the two-argument elementwise form errors. **Comparison key:** real value for purely-real input; magnitude `|z|` for complex input (diverges from MATLAB on equal magnitudes — rustlab uses first-occurrence, MATLAB uses phase-angle tie-break). NaN entries are skipped; all-NaN input errors. |
+| `min` | `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)` | Vector or 1-D matrix → scalar. Matrix → row of column mins (default dim 1). Two-argument form is elementwise over any mix of scalars/vectors/matrices with `+`-style implicit expansion (per element, NaN loses to non-NaN). 3-arg empty-placeholder form selects axis. **Multi-return** `[m, i]` available for the 1-arg vector/matrix and 3-arg axis forms; index is the 1-based first-occurrence position. Multi-return on the two-argument elementwise form errors. **Comparison key:** real value for purely-real input; magnitude `|z|` for complex input (diverges from MATLAB on equal magnitudes — rustlab uses first-occurrence, MATLAB uses phase-angle tie-break). NaN entries are skipped; all-NaN input errors. |
 | `max` | `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` / `[m, i] = max(...)` | Same shape and semantic rules as `min`. |
 | `argmin` | `argmin(v)` / `argmin(M)` / `argmin(M, dim)` | Vector → scalar 1-based index. Matrix → row of per-column argmins (default dim 1); `dim=2` → column of per-row argmins. Comparison key and NaN/tie-break rules match `min` exactly, so `[~, i] = min(v)` and `argmin(v)` always agree. |
 | `argmax` | `argmax(v)` / `argmax(M)` / `argmax(M, dim)` | Same shape and semantic rules as `argmin`. |

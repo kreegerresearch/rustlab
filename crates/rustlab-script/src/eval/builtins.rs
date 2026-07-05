@@ -1543,6 +1543,18 @@ fn extremum_key(c: C64, all_real: bool) -> f64 {
     }
 }
 
+/// True when every element of a numeric value is purely real. Used to pick
+/// the real-vs-magnitude comparison key across *both* operands of the
+/// elementwise `max(a, b)` / `min(a, b)` form.
+fn value_all_real(v: &Value) -> bool {
+    match v {
+        Value::Complex(c) => c.im == 0.0,
+        Value::Vector(x) => x.iter().all(|c| c.im == 0.0),
+        Value::Matrix(m) => m.iter().all(|c| c.im == 0.0),
+        _ => true,
+    }
+}
+
 /// Vector / 1-D-matrix fold for `max` / `min` returning `(value, 1-based idx)`.
 /// Skips NaN keys (treated as missing, MATLAB-compatible). Returns the
 /// first-occurrence on ties. Errors if every key is NaN.
@@ -1679,6 +1691,10 @@ fn builtin_max_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, Script
 /// NaN entries are skipped during the fold (MATLAB-compatible). All-NaN
 /// inputs error explicitly.
 ///
+/// The two-argument form (`max(a, b)`) is elementwise over any mix of
+/// scalars, vectors, and matrices with `+`-style implicit expansion; per
+/// element, a NaN loses to any non-NaN partner.
+///
 /// Multi-return (`nargout >= 2`) is only valid for the single-vector / matrix
 /// forms and the 3-arg axis form. The two-argument elementwise form
 /// (`max(a, b)`) errors on multi-return; index has no defined meaning there.
@@ -1761,8 +1777,10 @@ fn builtin_extremum_nargout(
         };
     }
 
-    // Two-argument elementwise form: only the two-scalar case is supported;
-    // multi-return is undefined for elementwise comparison and errors below.
+    // Two-argument elementwise form: max(a, b) / min(a, b) on any mix of
+    // scalars, vectors, and matrices, with the same implicit-expansion
+    // (broadcast) rules as `+`. Multi-return is undefined for elementwise
+    // comparison and errors below.
     if args.len() == 2 {
         if nargout >= 2 {
             return Err(ScriptError::type_err(format!(
@@ -1770,16 +1788,26 @@ fn builtin_extremum_nargout(
                 fn_name
             )));
         }
-        if matches!(args[0], Value::Scalar(_)) && matches!(args[1], Value::Scalar(_)) {
-            let a = args[0].to_scalar().unwrap();
-            let b = args[1].to_scalar().unwrap();
-            let r = if is_max { a.max(b) } else { a.min(b) };
-            return Ok(Value::Scalar(r));
-        }
-        return Err(ScriptError::type_err(format!(
-            "{}: two-argument form is only defined for two scalars; for an axis reduction use {}(M, [], dim)",
-            fn_name, fn_name
-        )));
+        let all_real = value_all_real(&args[0]) && value_all_real(&args[1]);
+        let pick = |x: C64, y: C64| -> C64 {
+            let kx = extremum_key(x, all_real);
+            let ky = extremum_key(y, all_real);
+            // NaN entries lose to any non-NaN partner (both NaN → NaN).
+            if kx.is_nan() {
+                return y;
+            }
+            if ky.is_nan() {
+                return x;
+            }
+            let take_y = if is_max { ky > kx } else { ky < kx };
+            if take_y {
+                y
+            } else {
+                x
+            }
+        };
+        return Value::zip_broadcast(&args[0], &args[1], pick)
+            .map_err(|e| ScriptError::type_err(format!("{}: {}", fn_name, e)));
     }
 
     // Single-argument form: vector, matrix, or scalar.
