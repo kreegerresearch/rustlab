@@ -7,7 +7,8 @@
 //!     │   (raw events on the watched file / directory tree)
 //!     ▼
 //! filter & map path → slug (same std thread)
-//!     │   (tokio::sync::mpsc — carries the slug that changed)
+//!     │   (tokio::sync::mpsc — carries a RenderRequest: the slug that
+//!     │    changed, plus an optional force-run block index)
 //!     ▼
 //! coordinator task (tokio)
 //!     │  debounce 250ms → for each changed slug: spawn_blocking(render)
@@ -35,7 +36,7 @@
 //! code block (`while true; end;`) therefore stops promptly on the next
 //! save instead of pinning a core forever.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -54,6 +55,37 @@ use super::ws;
 /// `watch.rs` default (`watch::DEFAULT_DEBOUNCE_MS`) so a single
 /// editor save collapses to one render pass.
 const DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// One "please re-render" request flowing into the coordinator — from the
+/// fs watcher (file saved), the WS widget handler (slider moved), or the
+/// WS cell handler (▶ Run clicked).
+#[derive(Debug, Clone)]
+pub struct RenderRequest {
+    /// Which notebook to re-render.
+    pub slug: String,
+    /// `Some(k)`: force executable block `k` and everything after it to
+    /// re-execute even if unchanged (browser "run from this block").
+    /// `None`: normal hash-scoped render.
+    pub force_from: Option<usize>,
+}
+
+impl RenderRequest {
+    /// Plain hash-scoped render request (file save / widget change).
+    pub fn rerender(slug: String) -> Self {
+        Self { slug, force_from: None }
+    }
+}
+
+/// Merge two force-run scopes for the same debounce window: forcing from
+/// the earlier block subsumes forcing from the later one, and any force
+/// beats a plain render (hash invalidation is independent, so keeping the
+/// force alongside a file save is harmless).
+fn merge_force(a: Option<usize>, b: Option<usize>) -> Option<usize> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (f, None) | (None, f) => f,
+    }
+}
 
 /// Spawn the render coordinator. `watch_root` is the directory (dir
 /// mode) or the single notebook file (file mode); `is_dir` selects
@@ -100,10 +132,11 @@ pub fn spawn(
         .with_context(|| format!("watching {}", watch_target.display()))?;
 
     // Bridge: std mpsc (notify thread) → tokio mpsc (coordinator task).
-    // Forwards the slug of whichever watched notebook changed.
-    let (tx, rx) = mpsc::unbounded_channel::<String>();
-    // Publish the sender so the WS `widget_update` handler can request a
-    // render through the same debounce + preemption path as a file save.
+    // Forwards a plain render request for whichever notebook changed.
+    let (tx, rx) = mpsc::unbounded_channel::<RenderRequest>();
+    // Publish the sender so the WS `widget_update` / `run_block` handlers
+    // can request renders through the same debounce + preemption path as a
+    // file save.
     let _ = state.render_tx.set(tx.clone());
     std::thread::spawn(move || {
         while let Ok(res) = raw_rx.recv() {
@@ -119,7 +152,7 @@ pub fn spawn(
             }
             for path in &event.paths {
                 if let Some(slug) = match_slug(&by_path, path) {
-                    if tx.send(slug).is_err() {
+                    if tx.send(RenderRequest::rerender(slug)).is_err() {
                         return; // coordinator gone
                     }
                 }
@@ -163,29 +196,36 @@ fn is_relevant_event(event: &notify::Event) -> bool {
     )
 }
 
-/// Coordinator task: receives debounced "slug X changed" pings and
-/// produces one re-render per changed notebook per debounce cycle.
-/// Loops until the channel closes (server shutdown).
+/// Coordinator task: receives debounced render requests and produces one
+/// re-render per changed notebook per debounce cycle (force-run scopes
+/// arriving in the same window merge via [`merge_force`]). Loops until
+/// the channel closes (server shutdown).
 async fn coordinator(
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
-    mut rx: mpsc::UnboundedReceiver<String>,
+    mut rx: mpsc::UnboundedReceiver<RenderRequest>,
 ) {
     loop {
-        // Wait for at least one event, capturing the first slug.
+        // Wait for at least one event, capturing the first request.
         let first = match rx.recv().await {
-            Some(s) => s,
+            Some(r) => r,
             None => return,
         };
-        let mut pending: HashSet<String> = HashSet::new();
-        pending.insert(first);
+        let mut pending: HashMap<String, Option<usize>> = HashMap::new();
+        pending.insert(first.slug, first.force_from);
 
-        // Debounce: keep draining slugs until quiet for `DEBOUNCE`.
+        // Debounce: keep draining requests until quiet for `DEBOUNCE`.
         loop {
             tokio::select! {
                 evt = rx.recv() => {
                     match evt {
-                        Some(s) => { pending.insert(s); }
+                        Some(r) => {
+                            let merged = merge_force(
+                                pending.get(&r.slug).copied().flatten(),
+                                r.force_from,
+                            );
+                            pending.insert(r.slug, merged);
+                        }
                         None => return,
                     }
                 }
@@ -193,11 +233,11 @@ async fn coordinator(
             }
         }
 
-        for slug in pending {
+        for (slug, force_from) in pending {
             let Some(nb) = state.notebook(&slug).cloned() else {
                 continue;
             };
-            schedule_render(theme, state.clone(), nb);
+            schedule_render(theme, state.clone(), nb, force_from);
         }
     }
 }
@@ -205,8 +245,15 @@ async fn coordinator(
 /// Schedule a (preemptible) re-render of `nb`. Non-blocking: the render
 /// runs in its own task, so the coordinator stays responsive and a
 /// follow-up save can preempt this render. Any render already in flight
-/// for this notebook is cancelled first.
-fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc<Notebook>) {
+/// for this notebook is cancelled first. `force_from` is one-shot: it
+/// applies to this render only, and if this render is preempted the
+/// force is dropped with it (the user just clicks ▶ Run again).
+fn schedule_render(
+    theme: &'static ThemeColors,
+    state: Arc<ServerState>,
+    nb: Arc<Notebook>,
+    force_from: Option<usize>,
+) {
     // Bump generation and preempt any in-flight render for this notebook.
     let my_gen = nb.render_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let my_cancel = Arc::new(AtomicBool::new(false));
@@ -260,6 +307,7 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
                 cancel,
                 Some(&widget_overrides),
                 Some(&mut cache),
+                force_from,
             )
         })
         .await;
@@ -276,15 +324,21 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
             Ok(Ok(Some(render))) => (render.html, render.widget_decls),
             Ok(Ok(None)) => {
                 // Preempted mid-render (a newer save tripped our flag).
+                // No `cell_status done` here: the preempting render is
+                // already in flight and will emit the terminal status.
                 eprintln!("[watch] render preempted ({})", nb.slug);
                 return;
             }
             Ok(Err(e)) => {
+                // A failed render still terminates the run — clear any
+                // ▶ Run spinners so they don't hang on an error.
                 eprintln!("[watch] render error ({}): {e:#}", nb.slug);
+                let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
                 return;
             }
             Err(e) => {
                 eprintln!("[watch] render task panicked ({}): {e}", nb.slug);
+                let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
                 return;
             }
         };
@@ -355,6 +409,12 @@ fn schedule_render(theme: &'static ThemeColors, state: Arc<ServerState>, nb: Arc
                 eprintln!("[watch] re-rendered {} (full)", nb.slug);
             }
         }
+
+        // Terminal status *after* the content envelope, so clients clear
+        // ▶ Run spinners once the new output is already applied. Sent on
+        // every completed latest-generation render (a forced run merged
+        // with a save still ends exactly once).
+        let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
     });
 }
 
@@ -435,12 +495,12 @@ mod tests {
         let (state, nb) = single_state(&nb_path, html0);
 
         let mut sub = nb.broadcast.subscribe();
-        let (tx, rx) = mpsc::unbounded_channel::<String>();
+        let (tx, rx) = mpsc::unbounded_channel::<RenderRequest>();
         let coord = tokio::spawn(coordinator(theme, state.clone(), rx));
 
         // Edit the file and ping the coordinator with the slug.
         std::fs::write(&nb_path, "# Initial\n\nbody B with marker XYZ.\n").unwrap();
-        tx.send("nb".to_string()).unwrap();
+        tx.send(RenderRequest::rerender("nb".to_string())).unwrap();
 
         let msg = tokio::time::timeout(Duration::from_secs(5), sub.recv())
             .await
@@ -480,13 +540,13 @@ mod tests {
         // Now make the source a runaway and kick off a render; it spins on
         // a blocking thread until preempted.
         std::fs::write(&nb_path, "```rustlab\nwhile true; end;\n```\n").unwrap();
-        schedule_render(theme, state.clone(), nb.clone());
+        schedule_render(theme, state.clone(), nb.clone(), None);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Now edit to fast content and subscribe before re-scheduling.
         std::fs::write(&nb_path, "# Fast\n\nPREEMPT_MARKER body.\n").unwrap();
         let mut sub = nb.broadcast.subscribe();
-        schedule_render(theme, state.clone(), nb.clone());
+        schedule_render(theme, state.clone(), nb.clone(), None);
 
         // The second render preempts the first and broadcasts.
         let msg = tokio::time::timeout(Duration::from_secs(8), sub.recv())

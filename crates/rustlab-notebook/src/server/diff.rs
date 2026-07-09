@@ -60,13 +60,18 @@ pub fn split_blocks(html: &str) -> Vec<Block> {
 
     while let Some(rel) = html[cursor..].find(SECTION_OPEN_PREFIX) {
         let open_at = cursor + rel;
-        // Parse the id between `id="` and the next `">`.
+        // Parse the id between `id="` and its closing quote. The open tag
+        // may carry further attributes after the id (e.g. `data-code-idx`),
+        // so the tag ends at the first `>` after that quote — not at `">`.
         let id_start = open_at + SECTION_OPEN_PREFIX.len();
-        let Some(id_end_rel) = html[id_start..].find("\">") else {
+        let Some(id_end_rel) = html[id_start..].find('"') else {
             break;
         };
         let id = html[id_start..id_start + id_end_rel].to_string();
-        let after_open_tag = id_start + id_end_rel + 2; // past `">`
+        let Some(gt_rel) = html[id_start + id_end_rel..].find('>') else {
+            break;
+        };
+        let after_open_tag = id_start + id_end_rel + gt_rel + 1; // past `>`
 
         // Walk forward, tracking nesting of `<section`. We started
         // depth=1 (the open we just consumed). Find the matching
@@ -142,10 +147,17 @@ pub struct BlockDiff {
 /// Blocks present before but absent from this sequence are removed.
 /// Because untouched nodes keep their DOM identity, scroll position
 /// survives inserts / removes / reorders — the win over a full refresh.
+///
+/// `code_idx` is the block's executable ordinal (`data-code-idx`) in the
+/// *new* render, when it is a code section. Reused nodes keep their DOM
+/// identity — and would keep a stale ordinal after blocks are inserted or
+/// removed above them — so the client re-stamps the attribute from this
+/// field on every reconcile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconcileItem {
     pub id: String,
     pub html: Option<String>,
+    pub code_idx: Option<usize>,
 }
 
 /// Compare two block lists *pairwise by position*. Returns:
@@ -190,8 +202,20 @@ pub fn reconcile_items(prev: &[Block], new: &[Block]) -> Vec<ReconcileItem> {
             } else {
                 Some(b.html.clone())
             },
+            code_idx: code_idx_of(&b.html),
         })
         .collect()
+}
+
+/// Extract the `data-code-idx` ordinal from a block's own `<section>`
+/// open tag, if present. Scans only up to the tag's closing `>` so a
+/// nested section inside the block content can't be misread.
+fn code_idx_of(block_html: &str) -> Option<usize> {
+    let open_tag = &block_html[..block_html.find('>')?];
+    let at = open_tag.find("data-code-idx=\"")? + "data-code-idx=\"".len();
+    let rest = &open_tag[at..];
+    let end = rest.find('"')?;
+    rest[..end].parse().ok()
 }
 
 /// Whether a rendered document is "flat" — i.e. every `rl-block`
@@ -259,13 +283,21 @@ pub fn partial_envelope(diffs: &[BlockDiff]) -> String {
 
 /// Wrap a reconcile sequence in the item-5 `{"kind":"reconcile",…}`
 /// envelope. Each entry carries an `id` and, for fresh blocks, the
-/// `html` to create them from; reusable blocks omit `html`.
+/// `html` to create them from; reusable blocks omit `html`. Code
+/// sections additionally carry `codeIdx` so the client can re-stamp
+/// reused nodes with their current executable ordinal.
 pub fn reconcile_envelope(items: &[ReconcileItem]) -> String {
     let payload: Vec<serde_json::Value> = items
         .iter()
-        .map(|i| match &i.html {
-            Some(h) => serde_json::json!({ "id": i.id, "html": h }),
-            None => serde_json::json!({ "id": i.id }),
+        .map(|i| {
+            let mut obj = serde_json::json!({ "id": i.id });
+            if let Some(h) = &i.html {
+                obj["html"] = serde_json::json!(h);
+            }
+            if let Some(k) = i.code_idx {
+                obj["codeIdx"] = serde_json::json!(k);
+            }
+            obj
         })
         .collect();
     serde_json::json!({ "kind": "reconcile", "blocks": payload }).to_string()
@@ -469,8 +501,12 @@ mod tests {
     #[test]
     fn reconcile_envelope_omits_html_for_reusable_blocks() {
         let items = vec![
-            ReconcileItem { id: "b-a".into(), html: None },
-            ReconcileItem { id: "b-new".into(), html: Some("<section>NEW</section>".into()) },
+            ReconcileItem { id: "b-a".into(), html: None, code_idx: None },
+            ReconcileItem {
+                id: "b-new".into(),
+                html: Some("<section>NEW</section>".into()),
+                code_idx: None,
+            },
         ];
         let env = reconcile_envelope(&items);
         let parsed: serde_json::Value = serde_json::from_str(&env).unwrap();
@@ -478,8 +514,52 @@ mod tests {
         let arr = parsed["blocks"].as_array().unwrap();
         assert_eq!(arr[0]["id"], "b-a");
         assert!(arr[0].get("html").is_none(), "reusable block omits html");
+        assert!(arr[0].get("codeIdx").is_none(), "prose block omits codeIdx");
         assert_eq!(arr[1]["id"], "b-new");
         assert_eq!(arr[1]["html"], "<section>NEW</section>");
+    }
+
+    #[test]
+    fn split_blocks_parses_id_with_trailing_attributes() {
+        let doc = "<section class=\"rl-block\" id=\"b-code0000\" data-code-idx=\"2\">\n\
+                   <div class=\"code-block\">x</div>\n</section>\n";
+        let blocks = split_blocks(doc);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].id, "b-code0000", "id must stop at its closing quote");
+        assert!(blocks[0].html.ends_with("</section>"));
+    }
+
+    #[test]
+    fn code_idx_extraction_reads_own_open_tag_only() {
+        assert_eq!(
+            code_idx_of("<section class=\"rl-block\" id=\"b-a\" data-code-idx=\"7\">body</section>"),
+            Some(7)
+        );
+        // No attribute on the outer tag → None, even when a nested
+        // section carries one.
+        assert_eq!(
+            code_idx_of(
+                "<section class=\"rl-block\" id=\"b-a\">\
+                 <section data-code-idx=\"3\">inner</section></section>"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reconcile_items_carry_code_idx_for_reused_code_blocks() {
+        let code_html = "<section class=\"rl-block\" id=\"b-c\" data-code-idx=\"1\">c</section>";
+        let prev = vec![
+            block("b-p", "<section class=\"rl-block\" id=\"b-p\">p</section>"),
+            block("b-c", code_html),
+        ];
+        // Same blocks reordered: both reusable, code block keeps ordinal.
+        let new = vec![block("b-c", code_html), block("b-p", "<section class=\"rl-block\" id=\"b-p\">p</section>")];
+        let items = reconcile_items(&prev, &new);
+        assert_eq!(items[0].id, "b-c");
+        assert!(items[0].html.is_none(), "reused");
+        assert_eq!(items[0].code_idx, Some(1), "reused code node still reports its ordinal");
+        assert_eq!(items[1].code_idx, None);
     }
 
     #[test]

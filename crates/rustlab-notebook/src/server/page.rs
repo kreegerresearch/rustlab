@@ -236,6 +236,14 @@ fn body_extra(opts: PageOpts) -> String {
   }}
 
   async function setOpen(v) {{
+    // Mutual exclusion with the inline cell editor (see cell.rs): both
+    // write the same file, so refuse to open over unsaved cell edits.
+    if (v && window.__rlCellDirty && window.__rlCellDirty()) {{
+      const orig = toggle.textContent;
+      toggle.textContent = 'unsaved cell edits!';
+      setTimeout(() => {{ toggle.textContent = orig; }}, 1800);
+      return;
+    }}
     open = v;
     document.body.classList.toggle('rl-source-open', open);
     toggle.classList.toggle('active', open);

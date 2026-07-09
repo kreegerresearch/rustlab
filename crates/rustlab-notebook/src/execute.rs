@@ -152,7 +152,7 @@ pub fn execute_notebook_with_cache(
     cache: Option<&mut crate::cache::NotebookCache>,
 ) -> ExecutionOutcome {
     // No cancel flag → `execute_core` can never return `None`.
-    execute_core(blocks, cache, None, None)
+    execute_core(blocks, cache, None, None, None)
         .expect("execute_core without a cancel flag cannot be cancelled")
 }
 
@@ -160,14 +160,18 @@ pub fn execute_notebook_with_cache(
 /// interactive server uses. Reuses `cache` (the notebook's in-memory prefix
 /// cache) so a widget change re-runs only from the first block that reads
 /// the changed widget (scoped re-render); returns `None` if `cancel` trips
-/// mid-render (a newer save/drag preempted this one).
+/// mid-render (a newer save/drag preempted this one). `force_from` clamps
+/// the reusable cache prefix: `Some(k)` re-executes executable block `k`
+/// and everything after it even when nothing changed — the browser's
+/// "run from this block" action.
 pub fn execute_notebook_scoped(
     blocks: &[Block],
     cache: &mut crate::cache::NotebookCache,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
+    force_from: Option<usize>,
 ) -> Option<ExecutionOutcome> {
-    execute_core(blocks, Some(cache), Some(cancel), widget_overrides)
+    execute_core(blocks, Some(cache), Some(cancel), widget_overrides, force_from)
 }
 
 /// Unified notebook execution. Walks the block list once, serving cached
@@ -184,6 +188,7 @@ fn execute_core(
     mut cache: Option<&mut crate::cache::NotebookCache>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
+    force_from: Option<usize>,
 ) -> Option<ExecutionOutcome> {
     use crate::cache::{hash_block_source, CacheEntry, ExecState};
     use std::sync::atomic::Ordering;
@@ -211,6 +216,9 @@ fn execute_core(
     let valid_k = cache
         .as_ref()
         .map_or(0, |c| c.valid_prefix_widget_aware(&exec_hashes, &widgets));
+    // "Run from here" clamps the prefix: block k and the tail re-execute
+    // even when their hashes still match. An out-of-range k is a no-op.
+    let valid_k = force_from.map_or(valid_k, |k| valid_k.min(k));
     if let Some(c) = cache.as_deref_mut() {
         c.truncate(valid_k);
     }
@@ -448,7 +456,7 @@ pub fn execute_notebook_cancellable(
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
 ) -> Option<Vec<Rendered>> {
-    execute_core(blocks, None, Some(cancel), widget_overrides).map(|o| o.rendered)
+    execute_core(blocks, None, Some(cancel), widget_overrides, None).map(|o| o.rendered)
 }
 
 /// Same as `execute_notebook` but also returns the final evaluator so
@@ -1249,6 +1257,112 @@ mod tests {
         h.join().unwrap();
         assert!(result.is_none(), "infinite loop should have been cancelled");
         assert!(start.elapsed() < std::time::Duration::from_secs(5), "took too long");
+    }
+
+    /// Drive the scoped (server) path with a cache and an optional
+    /// force-run index.
+    fn drive_scoped(
+        source: &str,
+        cache: &mut crate::cache::NotebookCache,
+        force_from: Option<usize>,
+    ) -> ExecutionOutcome {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let blocks = crate::parse::parse_notebook(source);
+        let never = Arc::new(AtomicBool::new(false));
+        execute_notebook_scoped(&blocks, cache, never, None, force_from)
+            .expect("not cancelled")
+    }
+
+    /// Overwrite every cached code output with a sentinel so a replayed
+    /// entry is distinguishable from a re-executed one.
+    fn tamper_cache(cache: &mut crate::cache::NotebookCache) {
+        for entry in cache.entries.iter_mut() {
+            if let Rendered::Code { text_output, .. } = &mut entry.output {
+                *text_output = "SENTINEL_TAMPERED".to_string();
+            }
+        }
+    }
+
+    fn code_outputs(outcome: &ExecutionOutcome) -> Vec<String> {
+        outcome
+            .rendered
+            .iter()
+            .filter_map(|r| match r {
+                Rendered::Code { text_output, .. } => Some(text_output.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const FORCE_SRC: &str =
+        "```rustlab\nprint(10)\n```\n\n```rustlab\nprint(20)\n```\n";
+
+    /// `force_from: Some(k)` re-executes block k and the tail even when
+    /// nothing changed; blocks before k still replay from cache.
+    #[test]
+    fn force_from_reexecutes_unchanged_tail_only() {
+        let mut cache = crate::cache::NotebookCache::default();
+        drive_scoped(FORCE_SRC, &mut cache, None);
+        tamper_cache(&mut cache);
+
+        let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(1));
+        assert_eq!(outcome.cached_blocks, 1, "block 0 replays, block 1 forced");
+        let outs = code_outputs(&outcome);
+        assert_eq!(outs[0], "SENTINEL_TAMPERED", "block 0 must come from cache");
+        assert!(
+            outs[1].contains("20"),
+            "block 1 must have re-executed, got {:?}",
+            outs[1]
+        );
+    }
+
+    /// `force_from: Some(0)` re-runs the whole notebook.
+    #[test]
+    fn force_from_zero_reruns_everything() {
+        let mut cache = crate::cache::NotebookCache::default();
+        drive_scoped(FORCE_SRC, &mut cache, None);
+        tamper_cache(&mut cache);
+
+        let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(0));
+        assert_eq!(outcome.cached_blocks, 0, "everything re-executes");
+        assert!(
+            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            "no cached output may survive a force-from-0"
+        );
+    }
+
+    /// An out-of-range force index clamps to the valid prefix — i.e. a
+    /// full cache hit, identical to a plain re-render.
+    #[test]
+    fn force_from_out_of_range_is_a_noop() {
+        let mut cache = crate::cache::NotebookCache::default();
+        drive_scoped(FORCE_SRC, &mut cache, None);
+        tamper_cache(&mut cache);
+
+        let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(99));
+        assert_eq!(outcome.cached_blocks, 2, "full hit — force index past the end");
+        assert!(
+            code_outputs(&outcome).iter().all(|o| o == "SENTINEL_TAMPERED"),
+            "every block must replay from cache"
+        );
+    }
+
+    /// The forced tail re-caches: a follow-up plain render is a full hit
+    /// against the *new* entries.
+    #[test]
+    fn force_from_recaches_the_tail() {
+        let mut cache = crate::cache::NotebookCache::default();
+        drive_scoped(FORCE_SRC, &mut cache, None);
+        tamper_cache(&mut cache);
+        drive_scoped(FORCE_SRC, &mut cache, Some(0));
+
+        let outcome = drive_scoped(FORCE_SRC, &mut cache, None);
+        assert_eq!(outcome.cached_blocks, 2);
+        assert!(
+            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            "forced run must have replaced the tampered entries"
+        );
     }
 
     /// Mermaid blocks pass through to `Rendered::Mermaid` with no

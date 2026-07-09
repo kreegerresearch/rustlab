@@ -89,6 +89,12 @@ pub struct Notebook {
     /// only from the first affected block onward (scoped re-render). Held
     /// for the duration of a render by `render_loop::schedule_render`.
     pub render_cache: Mutex<NotebookCache>,
+    /// Serialises every write to `source_path` — the whole-doc
+    /// `POST /save/{slug}` and the WS cell editor's read-splice-write —
+    /// so two concurrent saves can't tear the file. Async (tokio) because
+    /// both holders await file IO while holding it; never nested with any
+    /// other lock on this struct.
+    pub save_lock: tokio::sync::Mutex<()>,
 }
 
 impl Notebook {
@@ -110,6 +116,7 @@ impl Notebook {
             widget_values: Mutex::new(BTreeMap::new()),
             widget_decls: Mutex::new(Vec::new()),
             render_cache: Mutex::new(NotebookCache::default()),
+            save_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -136,9 +143,9 @@ pub struct ServerState {
     pub index_title: String,
     /// Render-request channel into the coordinator. Set once by
     /// `render_loop::spawn` after it creates the coordinator channel; the
-    /// WS `widget_update` handler sends a slug here to request a re-render
+    /// WS `widget_update` / `run_block` handlers send requests here
     /// (reusing the same debounce + preemption path as a file save).
-    pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<super::render_loop::RenderRequest>>,
 }
 
 impl ServerState {
@@ -275,6 +282,9 @@ async fn save_source(
     let Some(nb) = state.notebook(&slug) else {
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
+    // Serialise with the WS cell editor's read-splice-write so a
+    // concurrent cell save can't interleave with this whole-doc write.
+    let _guard = nb.save_lock.lock().await;
     match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
         Ok(()) => (StatusCode::OK, "saved").into_response(),
         Err(e) => (

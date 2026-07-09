@@ -281,6 +281,24 @@ Behaviour:
   any state it might have missed (unless the `--editable` editor
   has unsaved changes, in which case it keeps the page and shows a
   "reload to refresh" banner).
+- **Run any code block from the page (▶ Run).** Hovering a code
+  block reveals a small ▶ Run button. Clicking it force-re-executes
+  that block **and everything below it** ("run from here"); blocks
+  above replay instantly from the render cache. The page therefore
+  always shows one consistent state — there is no stale-output
+  bookkeeping to reason about. While the run is in flight the block
+  pulses and a `{"kind":"cell_status"}` message keeps every
+  connected tab's indicator in sync; the updated outputs arrive as a
+  normal partial/full push. Run never modifies the `.md`, so it is
+  available in read-only mode too. Two things worth knowing:
+  - Re-running an *unchanged* block reproduces its previous state
+    exactly — including `rand()` draws, because the cache restores
+    the RNG alongside the interpreter. If you want fresh draws,
+    reseed (or edit the block, which invalidates it anyway).
+  - A ▶ Run that races a file save merges into one render (the
+    earlier of the two "run from" points wins); if a newer save
+    preempts the run mid-execution, the run is simply dropped —
+    click ▶ again.
 - **Render preemption.** A save during a slow render *cancels* the
   in-flight execution and starts fresh on the new source. The
   evaluator polls a cancel flag between statements and loop
@@ -294,7 +312,8 @@ Behaviour:
 
 For implementation status, the agent-handoff section, and
 forward-looking design, see
-`dev/plans/notebook_interactive_server.md`.
+`dev/plans/notebook_interactive_server.md` and
+`dev/plans/notebook_cell_execution.md`.
 
 #### In-browser editor (`--editable`)
 
@@ -322,6 +341,30 @@ editor (Markdown mode, line numbers) that **writes back to the
 - CodeMirror is embedded in the binary and served from
   `/assets/codemirror/…` (works offline like KaTeX/Plotly), but only
   referenced on the page under `--editable`.
+
+**Inline cell editing** — with `--editable`, each code block also
+gets a ✎ Edit button next to its ▶ Run:
+
+- Click **✎ Edit** (the rendered source swaps for an editor),
+  change the code, then **Shift+Enter** (or ▶ Run): the block is
+  **written back into the `.md` in place** — every other byte of
+  the file is untouched — and executed from that block downstream,
+  Jupyter-style. `Esc` cancels and restores the rendered view.
+- Saves are guarded two ways: a compare-and-swap (if the block
+  changed on disk since you opened the editor — another tab, your
+  external editor — the save is refused with "reload the page"
+  rather than overwriting), and a round-trip check (an edit that
+  would restructure the notebook, e.g. a stray ``` ``` ``` line
+  that closes the fence early, is rejected before it reaches disk).
+- While a cell has unsaved changes, incoming live updates leave that
+  block alone (other blocks keep updating; a structural change
+  defers with a banner until you save or close). The whole-document
+  Edit pane and inline cells are mutually exclusive — each refuses
+  to open while the other has unsaved work.
+- Notebooks that transclude other files via `![[embeds]]` are
+  **run-only**: rendered blocks may come from other files, so
+  splicing an edit back by position would be unsound. The whole-doc
+  editor still works there.
 
 #### Re-render on save (--obsidian / --output)
 

@@ -602,6 +602,47 @@ pub(crate) fn is_markdown_target(target: &str) -> bool {
     }
 }
 
+/// Whether `src` contains any markdown-transcluding `![[…]]` embed —
+/// i.e. an embed whose expansion splices *another file's* blocks into
+/// this notebook. Image embeds (`![[plot.svg]]`) don't count: they pass
+/// through as inline images and never introduce foreign code blocks.
+///
+/// The interactive server uses this to disable per-cell editing: a
+/// browser cell edit is spliced back into the *host* `.md` by executable
+/// ordinal, which would corrupt the mapping if some rendered blocks came
+/// from embedded sources. Fence-aware — an embed shown inside a code
+/// fence is an example, not an embed (mirrors `expand_recursive`).
+pub fn has_markdown_embeds(src: &str) -> bool {
+    let (_, body) = extract_frontmatter(src);
+    let mut fence_marker: Option<char> = None;
+    for line in body.split('\n') {
+        let trimmed = line.trim_start();
+        if let Some(c) = fence_marker {
+            if (c == '`' && trimmed.starts_with("```"))
+                || (c == '~' && trimmed.starts_with("~~~"))
+            {
+                fence_marker = None;
+            }
+            continue;
+        }
+        if trimmed.starts_with("```") {
+            fence_marker = Some('`');
+            continue;
+        }
+        if trimmed.starts_with("~~~") {
+            fence_marker = Some('~');
+            continue;
+        }
+        if find_embed_refs_in_line(line)
+            .iter()
+            .any(|(_, _, r)| is_markdown_target(&r.target))
+        {
+            return true;
+        }
+    }
+    false
+}
+
 // ─────────────────────────── Recursive expander ────────────────────────
 
 /// Public entry point. Resolve every `![[...]]` reference in `src`,
@@ -849,6 +890,42 @@ mod tests {
         let refs = find_embed_refs_in_line("Literal `![[X]]` and a real ![[Y]].");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].2.target, "Y");
+    }
+
+    // ── has_markdown_embeds ──
+
+    #[test]
+    fn detects_markdown_embeds() {
+        assert!(has_markdown_embeds("intro\n\n![[chapter]]\n"));
+        assert!(has_markdown_embeds("![[doc#Heading]]"));
+        assert!(has_markdown_embeds("![[notes.md]]"));
+    }
+
+    #[test]
+    fn image_embeds_do_not_count() {
+        assert!(!has_markdown_embeds("![[plot.svg]]\n\n![[photo.png]]"));
+    }
+
+    #[test]
+    fn embeds_inside_fences_are_examples_not_embeds() {
+        assert!(!has_markdown_embeds(
+            "prose\n\n```markdown\n![[doc]]\n```\n\nmore prose\n"
+        ));
+        assert!(!has_markdown_embeds("~~~\n![[doc]]\n~~~\n"));
+        // …but one after the fence closes still counts.
+        assert!(has_markdown_embeds("```\n![[x]]\n```\n\n![[real]]\n"));
+    }
+
+    #[test]
+    fn wikilinks_and_inline_code_do_not_count() {
+        assert!(!has_markdown_embeds("a [[wikilink]] is not an embed"));
+        assert!(!has_markdown_embeds("literal `![[doc]]` in code span"));
+        assert!(!has_markdown_embeds("no embeds at all"));
+    }
+
+    #[test]
+    fn frontmatter_is_ignored_for_embed_detection() {
+        assert!(!has_markdown_embeds("---\ntitle: \"![[x]]\"\n---\n\nbody\n"));
     }
 
     #[test]

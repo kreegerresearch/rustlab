@@ -14,6 +14,7 @@
 //! yet. Source `.md` is never modified.
 
 pub mod assets;
+pub mod cell;
 pub mod diff;
 pub mod http;
 pub mod page;
@@ -282,7 +283,7 @@ pub(super) fn render_for_server(
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
     Ok(
         render_for_server_cancellable(
-            input, theme, plot_root, slug, editable, nav, never, None, None,
+            input, theme, plot_root, slug, editable, nav, never, None, None, None,
         )?
         .expect("render with a never-set cancel flag cannot be cancelled"),
     )
@@ -302,6 +303,7 @@ pub(super) fn render_for_server_cancellable(
     cancel: Arc<std::sync::atomic::AtomicBool>,
     widget_overrides: Option<&std::collections::BTreeMap<String, rustlab_script::WidgetValue>>,
     cache: Option<&mut crate::cache::NotebookCache>,
+    force_from: Option<usize>,
 ) -> Result<Option<ServerRender>> {
     use crate::{embed, execute, parse, render};
 
@@ -349,11 +351,18 @@ pub(super) fn render_for_server_cancellable(
     // preemption.
     let rendered = match cache {
         Some(cache) => {
-            match execute::execute_notebook_scoped(&blocks, cache, cancel, widget_overrides) {
+            match execute::execute_notebook_scoped(
+                &blocks,
+                cache,
+                cancel,
+                widget_overrides,
+                force_from,
+            ) {
                 Some(outcome) => outcome.rendered,
                 None => return Ok(None), // preempted
             }
         }
+        // No cache → every block executes anyway; `force_from` is moot.
         None => match execute::execute_notebook_cancellable(&blocks, cancel, widget_overrides) {
             Some(r) => r,
             None => return Ok(None), // preempted
@@ -366,6 +375,13 @@ pub(super) fn render_for_server_cancellable(
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
     let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
+    // Inline cell editing needs --editable AND an embed-free notebook:
+    // cell saves splice the host `.md` by executable ordinal, which is
+    // only sound when every rendered block comes from that file. The
+    // check runs on the *host* source (pre-expansion), each render, so
+    // an embed added mid-session revokes editing on the next push.
+    let cell_edit = editable && !embed::has_markdown_embeds(&source);
+    let html = cell::inject_cell_client(&html, theme, cell_edit);
     Ok(Some(ServerRender { html, widget_decls }))
 }
 

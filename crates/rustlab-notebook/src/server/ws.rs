@@ -15,6 +15,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::http::{Notebook, ServerState};
+use super::render_loop::RenderRequest;
 
 /// Axum upgrade handler for `/n/{slug}/ws`. Resolves the notebook by
 /// slug, then hands the socket to [`handle_socket`] bound to that
@@ -30,7 +31,8 @@ pub async fn ws_upgrade(
             // Clone the render-request sender so the widget_update handler
             // can ask the coordinator to re-render this notebook.
             let render_tx = state.render_tx.get().cloned();
-            ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx))
+            let editable = state.editable;
+            ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx, editable))
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
@@ -53,7 +55,8 @@ async fn handle_socket(
     mut socket: WebSocket,
     nb: Arc<Notebook>,
     slug: String,
-    render_tx: Option<UnboundedSender<String>>,
+    render_tx: Option<UnboundedSender<RenderRequest>>,
+    editable: bool,
 ) {
     let mut rx = nb.broadcast.subscribe();
 
@@ -65,40 +68,88 @@ async fn handle_socket(
                     None => return, // socket closed
                     Some(Ok(Message::Close(_))) => return,
                     Some(Ok(Message::Text(payload))) => {
-                        match parse_widget_update(&payload) {
-                            Some((name, value)) => {
-                                // Validate against the widget's declaration:
-                                // unknown name or out-of-range / unknown-choice
-                                // value is logged and ignored (never crashes the
-                                // render loop). A valid value is clamped/accepted
-                                // by `coerce` and stored as the live value.
-                                let coerced = nb
-                                    .widget_decls
-                                    .lock()
-                                    .unwrap()
-                                    .iter()
-                                    .find(|d| d.name == name)
-                                    .map(|d| d.coerce(&value));
-                                match coerced {
-                                    Some(Some(v)) => {
-                                        nb.widget_values.lock().unwrap().insert(name, v);
-                                        // Ask the coordinator to re-render.
-                                        if let Some(tx) = &render_tx {
-                                            let _ = tx.send(slug.clone());
-                                        }
+                        if let Some((name, value)) = parse_widget_update(&payload) {
+                            // Validate against the widget's declaration:
+                            // unknown name or out-of-range / unknown-choice
+                            // value is logged and ignored (never crashes the
+                            // render loop). A valid value is clamped/accepted
+                            // by `coerce` and stored as the live value.
+                            let coerced = nb
+                                .widget_decls
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .find(|d| d.name == name)
+                                .map(|d| d.coerce(&value));
+                            match coerced {
+                                Some(Some(v)) => {
+                                    nb.widget_values.lock().unwrap().insert(name, v);
+                                    // Ask the coordinator to re-render.
+                                    if let Some(tx) = &render_tx {
+                                        let _ = tx.send(RenderRequest::rerender(slug.clone()));
                                     }
-                                    Some(None) => eprintln!(
-                                        "[watch] ws: rejecting invalid value for widget '{name}': {value:?}"
-                                    ),
-                                    None => eprintln!(
-                                        "[watch] ws: ignoring update for unknown widget '{name}'"
-                                    ),
+                                }
+                                Some(None) => eprintln!(
+                                    "[watch] ws: rejecting invalid value for widget '{name}': {value:?}"
+                                ),
+                                None => eprintln!(
+                                    "[watch] ws: ignoring update for unknown widget '{name}'"
+                                ),
+                            }
+                        } else if let Some(idx) = parse_run_block(&payload) {
+                            // ▶ Run: broadcast the running status so every
+                            // tab shows the spinner, then request a forced
+                            // render through the coordinator (same debounce
+                            // + preemption path as a save). The index is
+                            // advisory — the executor clamps it, so a stale
+                            // ordinal can widen the re-run scope but never
+                            // corrupt state.
+                            let env: Arc<str> = Arc::from(cell_status_running_envelope(idx));
+                            let _ = nb.broadcast.send(env);
+                            if let Some(tx) = &render_tx {
+                                let _ = tx.send(RenderRequest {
+                                    slug: slug.clone(),
+                                    force_from: Some(idx),
+                                });
+                            }
+                        } else if let Some(req) = parse_save_run_block(&payload) {
+                            // Shift+Enter on an inline cell: splice the new
+                            // block body into the .md (guarded by CAS +
+                            // post-splice validation), then run from it.
+                            // The per-request verdict goes back on THIS
+                            // socket only; the running status broadcasts.
+                            let idx = req.idx;
+                            match handle_cell_save(&nb, editable, req).await {
+                                Ok(()) => {
+                                    let ok = cell_saved_envelope(idx, Ok(()));
+                                    if socket.send(Message::Text(ok.into())).await.is_err() {
+                                        return;
+                                    }
+                                    let env: Arc<str> =
+                                        Arc::from(cell_status_running_envelope(idx));
+                                    let _ = nb.broadcast.send(env);
+                                    if let Some(tx) = &render_tx {
+                                        let _ = tx.send(RenderRequest {
+                                            slug: slug.clone(),
+                                            force_from: Some(idx),
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[watch] ws: cell save rejected ({slug}#{idx}): {e}"
+                                    );
+                                    let err = cell_saved_envelope(idx, Err(&e));
+                                    if socket.send(Message::Text(err.into())).await.is_err() {
+                                        return;
+                                    }
                                 }
                             }
-                            None => eprintln!(
+                        } else {
+                            eprintln!(
                                 "[watch] ws: ignoring unrecognised text message: {}",
                                 truncate_for_log(&payload),
-                            ),
+                            );
                         }
                     }
                     Some(Ok(Message::Binary(_))) => {
@@ -179,6 +230,175 @@ fn parse_widget_update(payload: &str) -> Option<(String, WidgetValue)> {
     Some((name, value))
 }
 
+/// Parse an inbound `{"kind":"run_block","idx":N}` frame into the
+/// executable-block ordinal. Same defensive posture as
+/// [`parse_widget_update`]: anything malformed (wrong kind, missing /
+/// negative / fractional / non-numeric idx) returns `None` and is
+/// logged-and-dropped by the caller.
+fn parse_run_block(payload: &str) -> Option<usize> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if v.get("kind")?.as_str()? != "run_block" {
+        return None;
+    }
+    usize::try_from(v.get("idx")?.as_u64()?).ok()
+}
+
+/// An inbound `{"kind":"save_run_block",…}` request: replace executable
+/// block `idx`'s source with `source`, provided the on-disk block still
+/// reads `prev_source` (compare-and-swap against two-tab / external
+/// edits), then force-run from it.
+#[derive(Debug, PartialEq, Eq)]
+struct SaveRunBlock {
+    idx: usize,
+    source: String,
+    prev_source: String,
+}
+
+/// Parse an inbound save-and-run frame. Defensive like the other
+/// parsers: wrong kind or any missing/mistyped field → `None`.
+fn parse_save_run_block(payload: &str) -> Option<SaveRunBlock> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    if v.get("kind")?.as_str()? != "save_run_block" {
+        return None;
+    }
+    Some(SaveRunBlock {
+        idx: usize::try_from(v.get("idx")?.as_u64()?).ok()?,
+        source: v.get("source")?.as_str()?.to_string(),
+        prev_source: v.get("prev_source")?.as_str()?.to_string(),
+    })
+}
+
+/// `{"kind":"cell_saved","idx":N,"ok":…}` — the per-request verdict for a
+/// save-and-run, sent only to the requesting socket. Failures carry a
+/// human-readable `error`.
+fn cell_saved_envelope(idx: usize, result: Result<(), &str>) -> String {
+    match result {
+        Ok(()) => serde_json::json!({ "kind": "cell_saved", "idx": idx, "ok": true }),
+        Err(e) => {
+            serde_json::json!({ "kind": "cell_saved", "idx": idx, "ok": false, "error": e })
+        }
+    }
+    .to_string()
+}
+
+/// Locate executable block `exec_idx` (Code + Mermaid ordinal — the
+/// cache-slot / `data-code-idx` numbering) in a parsed block list.
+/// Returns the block's ```rustlab-fence ordinal (counting Code blocks
+/// only — what `replace_code_block_source` addresses) and its source.
+fn locate_code_block(
+    blocks: &[crate::parse::Block],
+    exec_idx: usize,
+) -> Result<(usize, String), String> {
+    use crate::parse::Block;
+    let mut code_ordinal = 0usize;
+    let mut seen_exec = 0usize;
+    for b in blocks {
+        match b {
+            Block::Code { source, .. } => {
+                if seen_exec == exec_idx {
+                    return Ok((code_ordinal, source.clone()));
+                }
+                code_ordinal += 1;
+                seen_exec += 1;
+            }
+            Block::Mermaid { .. } => {
+                if seen_exec == exec_idx {
+                    return Err("that block is a mermaid diagram — not editable".to_string());
+                }
+                seen_exec += 1;
+            }
+            _ => {}
+        }
+    }
+    Err("block index out of range — reload the page".to_string())
+}
+
+/// The read-splice-write core of a cell save. Holds the notebook's
+/// `save_lock` across the whole read-modify-write so concurrent cell
+/// saves (another tab) and whole-doc `POST /save` writes serialise.
+/// Every rejection path leaves the file untouched.
+async fn handle_cell_save(
+    nb: &Notebook,
+    editable: bool,
+    req: SaveRunBlock,
+) -> Result<(), String> {
+    if !editable {
+        return Err("cell editing requires --editable".to_string());
+    }
+
+    let _guard = nb.save_lock.lock().await;
+
+    let on_disk = tokio::fs::read_to_string(&nb.source_path)
+        .await
+        .map_err(|e| format!("could not read notebook: {e}"))?;
+
+    // The render pipeline parses `strip_render_artifacts(source)`. A file
+    // that still carries baked render artifacts would make the fence
+    // ordinals of the raw file diverge from what the browser saw — refuse
+    // rather than splice at the wrong offset. (Live notebooks don't have
+    // artifacts; `--output`-rendered copies do.)
+    let stripped = crate::strip_render_artifacts(&on_disk);
+    if stripped != on_disk {
+        return Err(
+            "notebook contains render artifacts — edit via the Edit pane or run `notebook clean`"
+                .to_string(),
+        );
+    }
+
+    // Embeds arrived since the page was rendered (or the page predates
+    // the check): the ordinal maps to the *expanded* document, not this
+    // file. The server is authoritative even if the page shows ✎ Edit.
+    if crate::embed::has_markdown_embeds(&on_disk) {
+        return Err("notebook uses ![[embeds]] — cell editing is disabled".to_string());
+    }
+
+    // CAS: the block the browser edited must still be on disk unchanged.
+    let blocks = crate::parse::parse_notebook(&on_disk);
+    let (code_ordinal, current) = locate_code_block(&blocks, req.idx)?;
+    if current != req.prev_source {
+        return Err("block changed on disk — reload the page".to_string());
+    }
+
+    let spliced = crate::parse::replace_code_block_source(&on_disk, code_ordinal, &req.source)
+        .ok_or_else(|| "could not locate the block in the file — reload the page".to_string())?;
+
+    // Post-splice validation (fail-safe): re-parse and require the target
+    // block to read back exactly as the new source, with every other
+    // executable block untouched. Any divergence between the splice
+    // scanner and the parser becomes a rejected save, never a corrupted
+    // file — e.g. a new body containing a bare ``` line closes the fence
+    // early and fails here.
+    let new_blocks = crate::parse::parse_notebook(&spliced);
+    let (_, roundtrip) = locate_code_block(&new_blocks, req.idx)
+        .map_err(|_| "edited source restructures the notebook — save rejected".to_string())?;
+    if roundtrip != req.source || new_blocks.len() != blocks.len() {
+        return Err(
+            "edited source would not round-trip (does it contain a ``` line?) — save rejected"
+                .to_string(),
+        );
+    }
+
+    tokio::fs::write(&nb.source_path, spliced.as_bytes())
+        .await
+        .map_err(|e| format!("could not write notebook: {e}"))
+}
+
+/// `{"kind":"cell_status","state":"running","idx":N}` — broadcast when a
+/// run/save-and-run is accepted so every connected tab shows the block's
+/// spinner.
+pub fn cell_status_running_envelope(idx: usize) -> String {
+    serde_json::json!({ "kind": "cell_status", "state": "running", "idx": idx }).to_string()
+}
+
+/// `{"kind":"cell_status","state":"done"}` — broadcast when a
+/// latest-generation render completes (any outcome, including
+/// no-change and render-error). Renders are whole-document, so it
+/// carries no idx: the client clears every spinner. A preempted or
+/// stale render stays silent — its successor emits the terminal `done`.
+pub fn cell_status_done_envelope() -> String {
+    serde_json::json!({ "kind": "cell_status", "state": "done" }).to_string()
+}
+
 /// Client-side JavaScript injected into `<head>` of every render
 /// (initial GET *and* every WS update). Lives in head so a body
 /// replacement on `kind:"full"` doesn't re-execute it (which would
@@ -248,13 +468,21 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       });
     }
   }
-  // Page chrome registers a hook here to react to re-renders (e.g.
-  // refresh an open read-only source pane). Best-effort.
+  // Page chrome and the cell script register hooks here to react to
+  // re-renders (refresh an open source pane, re-decorate Run buttons).
+  // Best-effort.
   function afterUpdate() {
     if (window.__rlAfterUpdate) { try { window.__rlAfterUpdate(); } catch (e) {} }
+    if (window.__rlCellDecorate) { try { window.__rlCellDecorate(); } catch (e) {} }
+  }
+  // A dirty inline cell editor vetoes structural swaps (full/reconcile)
+  // — they would destroy the buffer. Best-effort; undefined → no veto.
+  function cellVetoStructural() {
+    return !!(window.__rlCellVetoStructural && window.__rlCellVetoStructural());
   }
 
   function applyFull(html) {
+    if (cellVetoStructural()) return;
     const parsed = new DOMParser().parseFromString(html, 'text/html');
     const newMain = parsed.querySelector('main');
     const tgt = mainEl();
@@ -280,6 +508,12 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       const el = targets[b.position];
       if (!el) {
         console.warn('rustlab-notebook ws: partial position out of range', b.position);
+        continue;
+      }
+      // A section holding a dirty open cell editor is skipped (marked
+      // stale) rather than clobbered; the cell script reconciles on close.
+      if (window.__rlCellVetoSection && window.__rlCellVetoSection(el)) {
+        el.classList.add('rl-cell-stale');
         continue;
       }
       // outerHTML triggers a parse but DOMParser is *not* needed
@@ -309,6 +543,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   // ones from their html, and drop leftovers. Untouched nodes keep their
   // DOM identity → Plotly/KaTeX state and scroll position are preserved.
   function applyReconcile(blocks) {
+    if (cellVetoStructural()) return;
     const main = mainEl();
     if (!main) return;
     const byId = new Map();
@@ -330,6 +565,14 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       } else if (anchor.nextElementSibling !== node) {
         anchor.after(node);
       }
+      // Reused nodes keep their DOM identity — re-stamp the executable
+      // ordinal, which shifts when code blocks are inserted/removed
+      // above them (fresh nodes carry it in their html already).
+      if (typeof b.codeIdx === 'number') {
+        node.setAttribute('data-code-idx', String(b.codeIdx));
+      } else if (!b.html) {
+        node.removeAttribute('data-code-idx');
+      }
       // Only fresh (created or changed) blocks carry html and need
       // their scripts/KaTeX (re-)run; reused nodes keep their state.
       if (b.html) { rerunScripts(node); rerunKaTeX(node); }
@@ -350,10 +593,13 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       if (!firstConnect) {
         // Reconnect path: a save we missed during the gap could mean
         // the document is stale, so hard-reload to get the latest —
-        // UNLESS the page chrome vetoes it (e.g. the --editable editor
-        // has unsaved changes a reload would discard). In that case keep
-        // the page and let the user reload manually.
-        if (window.__rlBlockReload && window.__rlBlockReload()) {
+        // UNLESS the page chrome vetoes it (the --editable editor or an
+        // inline cell editor has unsaved changes a reload would
+        // discard). In that case keep the page and let the user reload
+        // manually.
+        const dirtyDoc = window.__rlBlockReload && window.__rlBlockReload();
+        const dirtyCell = window.__rlCellDirty && window.__rlCellDirty();
+        if (dirtyDoc || dirtyCell) {
           showBanner('rustlab-notebook: reconnected — unsaved edits kept; reload to refresh');
         } else {
           location.reload();
@@ -370,6 +616,10 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
           applyPartial(msg.blocks);
         } else if (msg.kind === 'reconcile' && Array.isArray(msg.blocks)) {
           applyReconcile(msg.blocks);
+        } else if (window.__rlCellMessage) {
+          // Cell-level kinds (cell_status, cell_saved) are handled by
+          // the cell script when it's injected. Best-effort.
+          try { window.__rlCellMessage(msg); } catch (e) {}
         }
       } catch (e) {
         console.error('rustlab-notebook ws: bad message', e);
@@ -402,6 +652,12 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       ws.send(JSON.stringify({ kind: 'widget_update', name, value }));
     }
   }
+  // Shared outbound path for the cell script (run_block /
+  // save_run_block). Silently drops when the socket isn't open — the
+  // reconnect banner already tells the user the server is unreachable.
+  window.__rlSend = (obj) => {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  };
   function onWidgetEvent(ev) {
     const input = ev.target;
     if (!input || !input.classList || !input.classList.contains('rl-widget-input')) return;
@@ -494,6 +750,195 @@ mod tests {
     }
 
     #[test]
+    fn parse_run_block_accepts_plain_index() {
+        assert_eq!(parse_run_block(r#"{"kind":"run_block","idx":0}"#), Some(0));
+        assert_eq!(parse_run_block(r#"{"kind":"run_block","idx":42}"#), Some(42));
+    }
+
+    #[test]
+    fn parse_run_block_rejects_garbage() {
+        // Wrong kind, missing idx, negative, fractional, non-numeric, not json.
+        assert!(parse_run_block(r#"{"kind":"widget_update","idx":1}"#).is_none());
+        assert!(parse_run_block(r#"{"kind":"run_block"}"#).is_none());
+        assert!(parse_run_block(r#"{"kind":"run_block","idx":-1}"#).is_none());
+        assert!(parse_run_block(r#"{"kind":"run_block","idx":1.5}"#).is_none());
+        assert!(parse_run_block(r#"{"kind":"run_block","idx":"2"}"#).is_none());
+        assert!(parse_run_block("not json").is_none());
+    }
+
+    #[test]
+    fn parse_save_run_block_accepts_full_frame() {
+        let req = parse_save_run_block(
+            r#"{"kind":"save_run_block","idx":2,"source":"b = 3;","prev_source":"b = 2;"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req,
+            SaveRunBlock {
+                idx: 2,
+                source: "b = 3;".to_string(),
+                prev_source: "b = 2;".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_save_run_block_rejects_garbage() {
+        assert!(parse_save_run_block(r#"{"kind":"run_block","idx":1}"#).is_none());
+        assert!(parse_save_run_block(r#"{"kind":"save_run_block","idx":1}"#).is_none());
+        assert!(parse_save_run_block(
+            r#"{"kind":"save_run_block","idx":1,"source":"x"}"#
+        )
+        .is_none());
+        assert!(parse_save_run_block(
+            r#"{"kind":"save_run_block","idx":-1,"source":"x","prev_source":"y"}"#
+        )
+        .is_none());
+        assert!(parse_save_run_block(
+            r#"{"kind":"save_run_block","idx":1,"source":5,"prev_source":"y"}"#
+        )
+        .is_none());
+        assert!(parse_save_run_block("not json").is_none());
+    }
+
+    #[test]
+    fn cell_saved_envelope_shapes() {
+        let ok: serde_json::Value =
+            serde_json::from_str(&cell_saved_envelope(4, Ok(()))).unwrap();
+        assert_eq!(ok["kind"], "cell_saved");
+        assert_eq!(ok["idx"], 4);
+        assert_eq!(ok["ok"], true);
+        assert!(ok.get("error").is_none());
+
+        let err: serde_json::Value =
+            serde_json::from_str(&cell_saved_envelope(4, Err("nope"))).unwrap();
+        assert_eq!(err["ok"], false);
+        assert_eq!(err["error"], "nope");
+    }
+
+    #[test]
+    fn locate_code_block_maps_executable_ordinals() {
+        // markdown, code, mermaid, code — exec ordinals: code=0, mermaid=1, code=2.
+        let blocks = crate::parse::parse_notebook(
+            "prose\n\n```rustlab\na = 1;\n```\n\n```mermaid\nA-->B\n```\n\n```rustlab\nb = 2;\n```\n",
+        );
+        assert_eq!(
+            locate_code_block(&blocks, 0).unwrap(),
+            (0, "a = 1;".to_string())
+        );
+        assert!(
+            locate_code_block(&blocks, 1).unwrap_err().contains("mermaid"),
+            "exec slot 1 is the diagram"
+        );
+        assert_eq!(
+            locate_code_block(&blocks, 2).unwrap(),
+            (1, "b = 2;".to_string()),
+            "second code block is fence ordinal 1"
+        );
+        assert!(locate_code_block(&blocks, 3).unwrap_err().contains("out of range"));
+    }
+
+    /// Async save-path units: every rejection leaves the file untouched;
+    /// the happy path splices exactly the target block.
+    mod cell_save {
+        use super::super::*;
+        use tempfile::TempDir;
+
+        const SRC: &str = "# T\n\n```rustlab\na = 1;\n```\n\n```rustlab\nb = 2;\n```\n";
+
+        fn notebook_at(dir: &TempDir, source: &str) -> Notebook {
+            let path = dir.path().join("nb.md");
+            std::fs::write(&path, source).unwrap();
+            Notebook::new("nb".into(), path, "nb".into(), "<main></main>".into())
+        }
+
+        fn req(idx: usize, source: &str, prev: &str) -> SaveRunBlock {
+            SaveRunBlock {
+                idx,
+                source: source.into(),
+                prev_source: prev.into(),
+            }
+        }
+
+        #[tokio::test]
+        async fn rejects_without_editable() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, SRC);
+            let err = handle_cell_save(&nb, false, req(0, "a = 9;", "a = 1;"))
+                .await
+                .unwrap_err();
+            assert!(err.contains("--editable"));
+            assert_eq!(std::fs::read_to_string(&nb.source_path).unwrap(), SRC);
+        }
+
+        #[tokio::test]
+        async fn rejects_on_cas_mismatch() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, SRC);
+            // Browser thinks the block still reads "a = 0;" — stale.
+            let err = handle_cell_save(&nb, true, req(0, "a = 9;", "a = 0;"))
+                .await
+                .unwrap_err();
+            assert!(err.contains("changed on disk"), "{err}");
+            assert_eq!(std::fs::read_to_string(&nb.source_path).unwrap(), SRC);
+        }
+
+        #[tokio::test]
+        async fn rejects_embedded_notebooks() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, "![[other]]\n\n```rustlab\na = 1;\n```\n");
+            let err = handle_cell_save(&nb, true, req(0, "a = 9;", "a = 1;"))
+                .await
+                .unwrap_err();
+            assert!(err.contains("embed"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn rejects_body_that_breaks_the_fence() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, SRC);
+            let err = handle_cell_save(&nb, true, req(0, "x = 1;\n```\nescape!", "a = 1;"))
+                .await
+                .unwrap_err();
+            assert!(err.contains("rejected"), "{err}");
+            assert_eq!(
+                std::fs::read_to_string(&nb.source_path).unwrap(),
+                SRC,
+                "a fence-breaking body must never reach disk"
+            );
+        }
+
+        #[tokio::test]
+        async fn happy_path_splices_only_the_target() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, SRC);
+            handle_cell_save(&nb, true, req(1, "b = 99;", "b = 2;"))
+                .await
+                .unwrap();
+            let on_disk = std::fs::read_to_string(&nb.source_path).unwrap();
+            assert!(on_disk.contains("b = 99;"));
+            assert!(!on_disk.contains("b = 2;"));
+            assert!(on_disk.contains("a = 1;"), "sibling block untouched");
+            assert!(on_disk.contains("# T"), "prose untouched");
+        }
+    }
+
+    #[test]
+    fn cell_status_envelopes_have_expected_shape() {
+        let running: serde_json::Value =
+            serde_json::from_str(&cell_status_running_envelope(3)).unwrap();
+        assert_eq!(running["kind"], "cell_status");
+        assert_eq!(running["state"], "running");
+        assert_eq!(running["idx"], 3);
+
+        let done: serde_json::Value =
+            serde_json::from_str(&cell_status_done_envelope()).unwrap();
+        assert_eq!(done["kind"], "cell_status");
+        assert_eq!(done["state"], "done");
+        assert!(done.get("idx").is_none(), "done is whole-document, no idx");
+    }
+
+    #[test]
     fn full_envelope_escapes_html_with_quotes_and_scripts() {
         let html = r#"<script>alert("xss")</script>"#;
         let env = full_envelope(html);
@@ -520,5 +965,30 @@ mod tests {
         let out = inject_ws_client(html);
         assert!(out.contains("__rustlab_ws_banner"));
         assert!(out.contains("<p>no head</p>"));
+    }
+
+    /// The transport script must be syntactically valid JS. Uses
+    /// `node --check` when node is available; skips otherwise so the
+    /// suite doesn't hard-depend on node.
+    #[test]
+    fn ws_client_script_passes_node_check() {
+        let js = WS_CLIENT_SCRIPT
+            .trim_start()
+            .strip_prefix("<script>")
+            .unwrap()
+            .trim_end()
+            .strip_suffix("</script>")
+            .expect("script wrapper shape changed");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws.js");
+        std::fs::write(&path, js).unwrap();
+        match std::process::Command::new("node").arg("--check").arg(&path).output() {
+            Ok(out) => assert!(
+                out.status.success(),
+                "node --check failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            Err(_) => eprintln!("node not available — skipping JS syntax check"),
+        }
     }
 }
