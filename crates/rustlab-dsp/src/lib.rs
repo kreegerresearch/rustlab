@@ -18,7 +18,7 @@ pub mod window;
 #[cfg(test)]
 mod tests;
 
-pub use fft::{fft, fftfreq, fftshift, ifft, FftTransform};
+pub use fft::{fft, fft_n, fftfreq, fftshift, ifft, ifft_n, FftTransform};
 pub use fir::design::{fir_bandpass, fir_highpass, fir_lowpass, FirFilter};
 pub use fir::kaiser::{
     fir_bandpass_kaiser, fir_highpass_kaiser, fir_lowpass_kaiser, fir_notch, freqz, kaiser_beta,

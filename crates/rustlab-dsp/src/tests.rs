@@ -509,11 +509,166 @@ mod fft_tests {
         (a - b).abs() < eps
     }
 
+    /// Naive O(n²) textbook DFT — the oracle every fast path is checked
+    /// against (this simultaneously cross-checks Bluestein and radix-2,
+    /// since the sizes below span both dispatch paths).
+    fn dft_naive(x: &[Complex<f64>], inverse: bool) -> Vec<Complex<f64>> {
+        let n = x.len();
+        let sign = if inverse { 1.0 } else { -1.0 };
+        let mut out = vec![Complex::new(0.0, 0.0); n];
+        for (k, o) in out.iter_mut().enumerate() {
+            for (j, &v) in x.iter().enumerate() {
+                let angle = sign * 2.0 * std::f64::consts::PI * (j * k) as f64 / n as f64;
+                *o += v * Complex::new(angle.cos(), angle.sin());
+            }
+            if inverse {
+                *o /= n as f64;
+            }
+        }
+        out
+    }
+
     #[test]
-    fn fft_length_is_next_pow2() {
+    fn fft_length_is_preserved() {
         let x = Array1::from_iter((0..5).map(|i| Complex::new(i as f64, 0.0)));
         let y = fft(&x).unwrap();
-        assert_eq!(y.len(), 8, "5 elements → next pow2 = 8");
+        assert_eq!(y.len(), 5, "fft is length-preserving — no silent padding");
+    }
+
+    #[test]
+    fn fft_matches_naive_dft_across_dispatch_paths() {
+        for n in [2usize, 3, 4, 5, 6, 7, 8, 9, 12, 16, 17, 97] {
+            let x: Vec<Complex<f64>> = (0..n)
+                .map(|i| Complex::new((i as f64 * 0.7).sin() + 0.3, (i as f64 * 1.3).cos()))
+                .collect();
+            let expect = dft_naive(&x, false);
+            let got = fft(&Array1::from_vec(x)).unwrap();
+            assert_eq!(got.len(), n);
+            for k in 0..n {
+                assert!(
+                    (got[k] - expect[k]).norm() < 1e-9,
+                    "n={n} bin {k}: got {}, expected {}",
+                    got[k],
+                    expect[k]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fft_known_values_length_three() {
+        // fft([1,2,3]) = [6, −1.5 + (√3/2)i, −1.5 − (√3/2)i]
+        let x = Array1::from_vec(vec![
+            Complex::new(1.0, 0.0),
+            Complex::new(2.0, 0.0),
+            Complex::new(3.0, 0.0),
+        ]);
+        let y = fft(&x).unwrap();
+        let r3h = 3.0_f64.sqrt() / 2.0;
+        assert!(close(y[0].re, 6.0) && close(y[0].im, 0.0));
+        assert!(close(y[1].re, -1.5) && close(y[1].im, r3h), "got {}", y[1]);
+        assert!(close(y[2].re, -1.5) && close(y[2].im, -r3h), "got {}", y[2]);
+    }
+
+    #[test]
+    fn fft_delta_and_constant_non_pow2() {
+        // Delta of length 5 → flat magnitude 1 in every bin.
+        let mut d = Array1::zeros(5);
+        d[0] = Complex::new(1.0, 0.0);
+        let yd = fft(&d).unwrap();
+        for k in 0..5 {
+            assert!(close(yd[k].norm(), 1.0), "delta bin {k}: {}", yd[k].norm());
+        }
+        // Constant of length 7 → DC = 7c, other bins ≈ 0.
+        let c = Array1::from_elem(7, Complex::new(2.5, 0.0));
+        let yc = fft(&c).unwrap();
+        assert!(close(yc[0].re, 17.5));
+        for k in 1..7 {
+            assert!(yc[k].norm() < 1e-9, "constant bin {k}: {}", yc[k].norm());
+        }
+    }
+
+    #[test]
+    fn fft_ifft_round_trip_on_primes() {
+        for (n, eps) in [(97usize, 1e-9), (1009, 1e-9), (10007, 1e-8)] {
+            let x: Vec<Complex<f64>> = (0..n)
+                .map(|i| Complex::new((i as f64 * 0.11).sin(), (i as f64 * 0.07).cos()))
+                .collect();
+            let x = Array1::from_vec(x);
+            let back = ifft(&fft(&x).unwrap()).unwrap();
+            assert_eq!(back.len(), n);
+            let max_err = (0..n).map(|i| (back[i] - x[i]).norm()).fold(0.0, f64::max);
+            assert!(max_err < eps, "n={n}: max round-trip error {max_err}");
+        }
+    }
+
+    #[test]
+    fn fft_parseval_non_pow2() {
+        let n = 21usize;
+        let x: Vec<Complex<f64>> = (0..n)
+            .map(|i| Complex::new((i as f64).sin(), (i as f64 * 0.5).cos()))
+            .collect();
+        let time_energy: f64 = x.iter().map(|v| v.norm_sqr()).sum();
+        let y = fft(&Array1::from_vec(x)).unwrap();
+        let freq_energy: f64 = y.iter().map(|v| v.norm_sqr()).sum::<f64>() / n as f64;
+        assert!(
+            close_eps(time_energy, freq_energy, 1e-9),
+            "Parseval: {time_energy} vs {freq_energy}"
+        );
+    }
+
+    #[test]
+    fn fft_n_pads_and_truncates() {
+        use crate::fft::{fft_n, ifft_n};
+        let x = Array1::from_vec(vec![
+            Complex::new(1.0, 0.0),
+            Complex::new(2.0, 0.0),
+            Complex::new(3.0, 0.0),
+        ]);
+        // Pad: fft_n(x, 8) == fft of hand-padded x.
+        let mut padded = Array1::zeros(8);
+        for i in 0..3 {
+            padded[i] = x[i];
+        }
+        let a = fft_n(&x, 8).unwrap();
+        let b = fft(&padded).unwrap();
+        assert_eq!(a.len(), 8);
+        for k in 0..8 {
+            assert!((a[k] - b[k]).norm() < 1e-12);
+        }
+        // Truncate: fft_n(x, 2) == fft(x[..2]).
+        let t = fft_n(&x, 2).unwrap();
+        let head = fft(&Array1::from_vec(vec![x[0], x[1]])).unwrap();
+        assert_eq!(t.len(), 2);
+        for k in 0..2 {
+            assert!((t[k] - head[k]).norm() < 1e-12);
+        }
+        // n == 0 errors on both directions.
+        assert!(fft_n(&x, 0).is_err());
+        assert!(ifft_n(&x, 0).is_err());
+        // Padding an empty input yields n zeros' spectrum (all zeros).
+        let e: Array1<Complex<f64>> = Array1::zeros(0);
+        let z = fft_n(&e, 4).unwrap();
+        assert_eq!(z.len(), 4);
+        assert!(z.iter().all(|v| v.norm() == 0.0));
+    }
+
+    #[test]
+    fn fft_ifft_edges() {
+        // Empty in → empty out, both directions.
+        let e: Array1<Complex<f64>> = Array1::zeros(0);
+        assert_eq!(fft(&e).unwrap().len(), 0);
+        assert_eq!(ifft(&e).unwrap().len(), 0);
+        // Length 1 is the identity.
+        let one = Array1::from_vec(vec![Complex::new(3.5, -1.0)]);
+        let y = fft(&one).unwrap();
+        assert!(close(y[0].re, 3.5) && close(y[0].im, -1.0));
+        // ifft on a non-power-of-two length now succeeds.
+        let six = Array1::from_iter((0..6).map(|i| Complex::new(i as f64, 0.0)));
+        let back = ifft(&fft(&six).unwrap()).unwrap();
+        for i in 0..6 {
+            assert!(close_eps(back[i].re, i as f64, 1e-10));
+        }
     }
 
     #[test]
@@ -657,15 +812,17 @@ mod fft_tests {
     }
 
     #[test]
-    fn fft_pads_non_power_of_two() {
-        // Input of length 5 should be zero-padded to length 8 (next power of 2)
+    fn fft_non_pow2_ifft_round_trip() {
+        // Non-power-of-two lengths flow through Bluestein in both
+        // directions and round-trip exactly.
         let x = Array1::from_iter((0..5).map(|i| Complex::new(i as f64, 0.0)));
         let y = fft(&x).unwrap();
-        assert_eq!(
-            y.len(),
-            8,
-            "FFT of 5-element input should have length 8 (next power of 2)"
-        );
+        assert_eq!(y.len(), 5);
+        let back = ifft(&y).unwrap();
+        for i in 0..5 {
+            assert!(close_eps(back[i].re, i as f64, 1e-10));
+            assert!(close_eps(back[i].im, 0.0, 1e-10));
+        }
     }
 }
 

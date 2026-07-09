@@ -419,7 +419,7 @@ fprintf("Round-trip |S21| diff at 1 GHz: %.2e\n", ...
 
 <!-- rustlab:output-start -->
 ```text
-error: line 6: runtime error: touchstone write: Operation not permitted (os error 1)
+Round-trip |S21| diff at 1 GHz: 4.97e-16
 ```
 
 <!-- rustlab:output-end -->

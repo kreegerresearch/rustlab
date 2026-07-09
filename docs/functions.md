@@ -589,16 +589,27 @@ The seed is process-global; calling it from one script affects every subsequent 
 
 ## FFT
 
-### `fft(v)`
-Forward FFT using the Cooley-Tukey radix-2 algorithm. Input is zero-padded to the next power of two if necessary.
+### `fft(v)` / `fft(v, n)`
+Forward DFT. **Length-preserving**: the output has exactly `length(v)` bins, so a frequency axis built from the input length is always correct. Power-of-two lengths use the Cooley-Tukey radix-2 fast path; every other length uses the Bluestein (chirp-z) transform — same O(n log n) scaling, a modest constant factor slower.
+
+The optional second argument zero-pads or **truncates** the input to exactly `n` samples before transforming (any positive integer).
+
 ```
-X = fft(x)          # len(X) is next power of two >= len(x)
+X = fft(x)                        # len(X) == len(x), always
+f = fftfreq(length(X), fs)        # matching frequency axis
+X = fft(x, 1024)                  # explicit 1024-bin transform (pad or truncate)
 ```
 
-### `ifft(X)`
-Inverse FFT. Input length must be a power of two (as returned by `fft`).
+> **Changed behavior:** `fft(v)` previously zero-padded to the next power
+> of two, so `length(fft(v))` could exceed `length(v)` and frequency axes
+> built from `length(v)` were silently wrong. It is now length-preserving;
+> request padding explicitly with `fft(v, n)`. `ifft` now accepts any
+> length. See the CHANGELOG for migration notes.
+
+### `ifft(X)` / `ifft(X, n)`
+Inverse DFT with 1/n scaling. Accepts **any** input length and returns exactly that many samples; `ifft(fft(x))` is an exact-length round trip. The optional `n` pads or truncates before inverting.
 ```
-x_rec = real(ifft(X))   # round-trip reconstruction
+x_rec = real(ifft(X))   # round-trip reconstruction, len(x_rec) == len(X)
 ```
 
 ### `fftshift(X)`

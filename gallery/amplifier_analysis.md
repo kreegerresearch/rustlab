@@ -461,7 +461,7 @@ end
 
 <!-- rustlab:output-start -->
 ```text
-error: line 12: runtime error: touchstone write: Operation not permitted (os error 1)
+has_noise(s_clean): no (this synthesised network has no noise block)
 ```
 
 <!-- rustlab:output-end -->
