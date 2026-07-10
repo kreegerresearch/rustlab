@@ -974,7 +974,7 @@ source displays correctly on GitHub, in Obsidian, and through rustlab.
 
 ```markdown
 > [!NOTE]
-> The window length must be a power of two for the radix-2 FFT path.
+> The `nfft` you pass to `stft` is rounded up to the next power of two.
 
 > [!TIP] Heads up
 > Optional title after the type tag.

@@ -126,7 +126,7 @@ Ordered roughly by how often they matter:
 | No `~` placeholder in destructuring (`[~, i] = ...` is a lex error) | Bind unwanted outputs to a dummy variable, or use `argmin`/`argmax` |
 | `*` vs `.*` on same-shaped matrices | `*` is matrix product; use `.*` for element-wise |
 | `'` conjugates | On complex data use `.'` if you only want a transpose |
-| `fft(v)` zero-pads to the next power of 2 | Output length may exceed `length(v)`; use `fftfreq(n, sr)` or `spectrum(x, sr)` for matching axes |
+| `fft(v)` is length-preserving (`length(fft(v)) == length(v)`) | Build axes with `fftfreq(length(X), sr)` — always correct; use `fft(v, n)` when you want explicit zero-padding or truncation |
 | `min`/`max`/`sort` on complex data compare by magnitude (real part for `sort`/`median`) | Take `abs()`/`real()` explicitly if you mean it |
 | All-NaN input to `min`/`max`/`argmin`/`argmax` is an error, not NaN | Filter NaNs first |
 | `length(M)` is `max(size(M))`, not the element count | Use `numel(M)` for total elements |

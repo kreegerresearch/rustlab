@@ -17,6 +17,21 @@ Xc = fft(xc);
 csvwrite('ref_fft_complex_re.csv', real(Xc));
 csvwrite('ref_fft_complex_im.csv', imag(Xc));
 
+% ── 3b. FFT (odd length — length-preserving semantics) ────────────────────────
+x7 = [1, 2, 3, 4, 5, 6, 7];
+X7 = fft(x7);
+csvwrite('ref_fft7_re.csv', real(X7));
+csvwrite('ref_fft7_im.csv', imag(X7));
+csvwrite('ref_ifft7.csv', real(ifft(X7)));
+
+% ── 3c. Explicit-size FFT: fft(x, n) pads (12) and truncates (4) ──────────────
+X12 = fft(x7, 12);
+csvwrite('ref_fftn12_re.csv', real(X12));
+csvwrite('ref_fftn12_im.csv', imag(X12));
+X4t = fft(x7, 4);
+csvwrite('ref_fftn4_re.csv', real(X4t));
+csvwrite('ref_fftn4_im.csv', imag(X4t));
+
 % ── 4. fftshift ───────────────────────────────────────────────────────────────
 csvwrite('ref_fftshift_8.csv', fftshift(0:7));
 csvwrite('ref_fftshift_7.csv', fftshift(0:6));

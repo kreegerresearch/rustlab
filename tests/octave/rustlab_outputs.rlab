@@ -15,6 +15,21 @@ Xc = fft(xc)
 save("out_fft_complex_re.csv", real(Xc))
 save("out_fft_complex_im.csv", imag(Xc))
 
+# ── 3b. FFT (odd length — length-preserving semantics) ────────────────────────
+x7 = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+X7 = fft(x7)
+save("out_fft7_re.csv", real(X7))
+save("out_fft7_im.csv", imag(X7))
+save("out_ifft7.csv", real(ifft(X7)))
+
+# ── 3c. Explicit-size FFT: fft(x, n) pads (12) and truncates (4) ──────────────
+X12 = fft(x7, 12)
+save("out_fftn12_re.csv", real(X12))
+save("out_fftn12_im.csv", imag(X12))
+X4t = fft(x7, 4)
+save("out_fftn4_re.csv", real(X4t))
+save("out_fftn4_im.csv", imag(X4t))
+
 # ── 4. fftshift ───────────────────────────────────────────────────────────────
 v8 = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 save("out_fftshift_8.csv", real(fftshift(v8)))

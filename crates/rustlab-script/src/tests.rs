@@ -15456,8 +15456,8 @@ mod builtin_coverage_tests {
 
     #[test]
     fn ifft_inverts_fft() {
-        // Power-of-two length avoids zero-padding, so the round-trip is exact
-        // up to floating-point noise.
+        // fft/ifft are length-preserving, so the round-trip is exact up
+        // to floating-point noise at every length (radix-2 path here).
         let ev = run(
             "x = [1, 2, 3, 4, 5, 6, 7, 8];
              y = real(ifft(fft(x)));",
@@ -15469,6 +15469,79 @@ mod builtin_coverage_tests {
                 (v - (k as f64 + 1.0)).abs() < 1e-9,
                 "round-trip mismatch at {k}: {v}"
             );
+        }
+    }
+
+    #[test]
+    fn fft_preserves_length_non_pow2() {
+        // The old behavior silently padded to the next power of two —
+        // frequency axes built from length(x) were wrong. Now
+        // length(fft(x)) == length(x) always.
+        let ev = run(
+            "X = fft(ones(5));
+             n = length(X);
+             dc = real(X(1));",
+        );
+        assert_eq!(get_scalar(&ev, "n"), 5.0);
+        assert_eq!(get_scalar(&ev, "dc"), 5.0);
+    }
+
+    #[test]
+    fn fft_second_arg_pads_and_truncates() {
+        let ev = run(
+            "a = fft([1, 2, 3], 8);
+             b = fft([1, 2, 3, 0, 0, 0, 0, 0]);
+             d_pad = max(abs(a - b));
+             c = fft([1, 2, 3, 4], 2);
+             e = fft([1, 2]);
+             d_cut = max(abs(c - e));
+             na = length(a);
+             nc = length(c);",
+        );
+        assert_eq!(get_scalar(&ev, "na"), 8.0);
+        assert_eq!(get_scalar(&ev, "nc"), 2.0);
+        assert!(get_scalar(&ev, "d_pad") < 1e-12, "fft(x, n) pad mismatch");
+        assert!(get_scalar(&ev, "d_cut") < 1e-12, "fft(x, n) truncate mismatch");
+    }
+
+    #[test]
+    fn ifft_round_trip_any_length() {
+        let ev = run(
+            "x = [1, 2, 3, 4, 5, 6];
+             y = real(ifft(fft(x)));
+             err = max(abs(y - x));
+             n = length(y);",
+        );
+        assert_eq!(get_scalar(&ev, "n"), 6.0);
+        assert!(get_scalar(&ev, "err") < 1e-9, "non-pow2 round trip");
+    }
+
+    #[test]
+    fn fftfreq_axis_matches_fft_length() {
+        // The always-correct axis idiom: fftfreq(length(X), fs).
+        let ev = run(
+            "X = fft(ones(6));
+             f = fftfreq(length(X), 600);
+             n = length(f);",
+        );
+        assert_eq!(get_scalar(&ev, "n"), 6.0);
+        let f = get_vec(&ev, "f");
+        assert_eq!(f[1], 100.0, "bin spacing fs/n = 100 Hz");
+    }
+
+    #[test]
+    fn fft_size_arg_validation_errors() {
+        for bad in [
+            "fft()",
+            "fft([1,2], 4, 5)",
+            "fft([1,2], 0)",
+            "fft([1,2], 2.5)",
+            "fft([1,2], -3)",
+            "ifft([1,2], 0)",
+            "ifft([1,2], 1.5)",
+        ] {
+            let msg = run_err(bad); // panics if no error surfaced
+            assert!(!msg.is_empty(), "expected an error message for {bad:?}");
         }
     }
 

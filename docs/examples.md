@@ -325,7 +325,7 @@ savefig("fft_reconstructed.svg")
 
 3. **`plot(real(x), ...); savefig("fft_input.svg")`** — saves the input signal waveform to SVG.
 
-4. **`X = fft(x)`** — computes the forward FFT. Because `n = 256` is already a power of two, no zero-padding is needed and `len(X) == 256`. For non-power-of-two inputs, `fft` automatically pads to the next power of two.
+4. **`X = fft(x)`** — computes the forward DFT. `fft` is length-preserving, so `len(X) == 256` here — and would equal the input length for any size (power-of-two lengths take the radix-2 fast path; other lengths use the chirp-z transform). Pass an explicit size with `fft(x, n)` to zero-pad or truncate first.
 
 5. **`H = spectrum(X, sr)`** — the key step. `spectrum` applies `fftshift` to center DC, pairs the result with the Hz frequency axis, and returns a **2×n matrix** compatible with `plotdb`. This is the standard way to display FFT output with a correct frequency axis. Internally it is equivalent to:
    ```

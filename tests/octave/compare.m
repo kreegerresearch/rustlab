@@ -46,6 +46,13 @@ T_FIRPM   = 1e-4;   % Parks-McClellan: different implementations may vary slight
 [p,f]=check('IFFT round-trip',  'ref_ifft.csv',           'out_ifft.csv',          T_EXACT);  pass_count+=p; fail_count+=f;
 [p,f]=check('FFT complex (re)', 'ref_fft_complex_re.csv', 'out_fft_complex_re.csv',T_EXACT);  pass_count+=p; fail_count+=f;
 [p,f]=check('FFT complex (im)', 'ref_fft_complex_im.csv', 'out_fft_complex_im.csv',T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('FFT odd N=7 (re)', 'ref_fft7_re.csv',        'out_fft7_re.csv',       T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('FFT odd N=7 (im)', 'ref_fft7_im.csv',        'out_fft7_im.csv',       T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('IFFT odd N=7',     'ref_ifft7.csv',          'out_ifft7.csv',         T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('fft(x,12) pad (re)','ref_fftn12_re.csv',     'out_fftn12_re.csv',     T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('fft(x,12) pad (im)','ref_fftn12_im.csv',     'out_fftn12_im.csv',     T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('fft(x,4) trunc (re)','ref_fftn4_re.csv',     'out_fftn4_re.csv',      T_EXACT);  pass_count+=p; fail_count+=f;
+[p,f]=check('fft(x,4) trunc (im)','ref_fftn4_im.csv',     'out_fftn4_im.csv',      T_EXACT);  pass_count+=p; fail_count+=f;
 [p,f]=check('fftshift N=8',     'ref_fftshift_8.csv',     'out_fftshift_8.csv',    T_EXACT);  pass_count+=p; fail_count+=f;
 [p,f]=check('fftshift N=7',     'ref_fftshift_7.csv',     'out_fftshift_7.csv',    T_EXACT);  pass_count+=p; fail_count+=f;
 [p,f]=check('convolve',         'ref_conv.csv',           'out_conv.csv',          T_EXACT);  pass_count+=p; fail_count+=f;

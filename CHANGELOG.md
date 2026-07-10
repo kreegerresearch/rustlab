@@ -8,6 +8,20 @@ should re-validate against those entries when upgrading.
 
 ## Unreleased
 
+### Breaking / behavior changes
+- **`fft(x)` is now length-preserving.** It returns exactly `length(x)`
+  bins instead of silently zero-padding to the next power of two;
+  non-power-of-two lengths use a hand-rolled Bluestein (chirp-z) transform
+  over the existing radix-2 kernel, and `ifft(X)` now accepts any length
+  (previously a hard error off powers of two). New optional size argument:
+  `fft(x, n)` / `ifft(X, n)` zero-pad or truncate to exactly `n` first.
+  Migration: the axis idiom `f = fftfreq(length(X), fs)` is now always
+  correct; scripts that relied on the implicit padding must request it
+  explicitly, e.g. `fft(x, 1024)`. Windowed-frame estimators (`pwelch`,
+  `stft`, `spectrogram`, `waterfall`, and their streaming forms)
+  intentionally keep rounding their explicit `nfft` argument up to a power
+  of two, as documented.
+
 ### Added
 - `max(a, b)` / `min(a, b)` are now elementwise over any mix of scalars,
   vectors, and matrices, with the same implicit-expansion (broadcast) rules

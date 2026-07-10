@@ -241,8 +241,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
-| `fft(v)` | Discrete Fourier transform (zero-pads to next power of 2) |
-| `ifft(V)` | Inverse DFT |
+| `fft(v)` / `fft(v, n)` | DFT with exactly `length(v)` bins; optional `n` zero-pads or truncates first (any positive n) |
+| `ifft(V)` / `ifft(V, n)` | Inverse DFT (1/n scaling); any length |
 | `fftshift(V)` | Shift zero-frequency to center |
 | `fftfreq(n, sr)` | Frequency axis for n-point DFT at sample rate sr |
 | `spectrum(v, sr)` | Returns 2×n matrix: row 1 = Hz (DC-centered), row 2 = complex spectrum |

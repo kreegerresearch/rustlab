@@ -2633,17 +2633,45 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── FFT builtins ──────────────────────────────────────────────────────────
 
+/// Validate the optional explicit transform size shared by fft/ifft:
+/// a positive integer scalar.
+fn fft_size_arg(name: &str, v: &Value) -> Result<usize, ScriptError> {
+    let n = v
+        .to_usize()
+        .map_err(|e| ScriptError::type_err(format!("{name}: n — {e}")))?;
+    if n == 0 {
+        return Err(ScriptError::type_err(format!(
+            "{name}: n must be a positive integer"
+        )));
+    }
+    Ok(n)
+}
+
 fn builtin_fft(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("fft", &args, 1)?;
+    check_args_range("fft", &args, 1, 2)?;
     let v = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let result = fft(&v).map_err(ScriptError::Dsp)?;
+    let result = if args.len() == 2 {
+        // fft(x, n): zero-pad or truncate to exactly n, then transform.
+        let n = fft_size_arg("fft", &args[1])?;
+        rustlab_dsp::fft_n(&v, n)
+    } else {
+        // fft(x): length-preserving — exactly length(x) bins.
+        fft(&v)
+    }
+    .map_err(ScriptError::Dsp)?;
     Ok(Value::Vector(result))
 }
 
 fn builtin_ifft(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args("ifft", &args, 1)?;
+    check_args_range("ifft", &args, 1, 2)?;
     let v = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let result = ifft(&v).map_err(ScriptError::Dsp)?;
+    let result = if args.len() == 2 {
+        let n = fft_size_arg("ifft", &args[1])?;
+        rustlab_dsp::ifft_n(&v, n)
+    } else {
+        ifft(&v)
+    }
+    .map_err(ScriptError::Dsp)?;
     Ok(Value::Vector(result))
 }
 
@@ -13300,10 +13328,11 @@ fn builtin_s2td(args: Vec<Value>) -> Result<Value, ScriptError> {
     //   X[1..N]   = sij[1..N]
     //   X[N..L-N+1] = 0 + 0j (Nyquist + zero-padding for length round-up)
     //   X[L-N+1..L] = conj(sij[1..N]) reversed
-    // Rustlab's `ifft` requires a power-of-two length, so round 2N up to
-    // the next power of two — the zero-padding doesn't change which
-    // frequencies are represented, it just gives the time signal finer
-    // time resolution.
+    // `ifft` accepts any length these days, but we still round 2N up to
+    // the next power of two: it keeps the radix-2 fast path, and the
+    // zero-padding doesn't change which frequencies are represented — it
+    // just gives the time signal finer time resolution. Output length
+    // and dt below depend on this padded size.
     let min_len = 2 * n;
     let big_n = min_len.next_power_of_two();
     let mut spectrum = vec![Complex::new(0.0, 0.0); big_n];

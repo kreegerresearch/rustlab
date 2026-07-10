@@ -26,4 +26,19 @@ X3 = fft(x3);
 x3r = ifft(X3);
 print("  round-trip length: ", len(x3r))
 
+# ── Non-power-of-two (Bluestein chirp-z path) ────────────────────────────────
+n4 = 44100
+x4 = randn(n4);
+print("FFT/IFFT n=44100 (non-pow2)")
+X4 = fft(x4);
+x4r = ifft(X4);
+print("  round-trip length: ", len(x4r))
+
+n5 = 100003
+x5 = randn(n5);
+print("FFT/IFFT n=100003 (prime)")
+X5 = fft(x5);
+x5r = ifft(X5);
+print("  round-trip length: ", len(x5r))
+
 print("done")

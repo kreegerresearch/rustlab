@@ -1,11 +1,15 @@
-use crate::convolution::next_power_of_two;
 use crate::error::DspError;
 use ndarray::Array1;
 use num_complex::Complex;
 use rustlab_core::{CVector, CoreError, RVector, Transform, C64};
 use std::f64::consts::PI;
 
+mod bluestein;
+
 /// FFT transform implementing the [`Transform`] trait.
+///
+/// `inverse(forward(x))` is an exact-length round trip for every input
+/// length (both directions are length-preserving).
 pub struct FftTransform;
 
 impl Transform for FftTransform {
@@ -17,41 +21,73 @@ impl Transform for FftTransform {
     }
 }
 
-/// Compute the FFT of a complex vector.
-///
-/// The input is zero-padded to the next power of two. Returns a vector of that
-/// padded length.
-pub fn fft(x: &CVector) -> Result<CVector, DspError> {
-    if x.is_empty() {
-        return Ok(Array1::zeros(0));
+/// n-point DFT of `buf` in place (`n == buf.len()`). Powers of two take
+/// the radix-2 fast path; every other length uses the Bluestein chirp-z
+/// transform. A 0- or 1-point DFT is the identity.
+pub(crate) fn dft_any_len(buf: &mut Vec<C64>, inverse: bool) {
+    let n = buf.len();
+    if n <= 1 {
+        return;
     }
-    let n = next_power_of_two(x.len());
+    if n.is_power_of_two() {
+        fft_inplace(buf, inverse);
+    } else {
+        *buf = bluestein::bluestein(buf, inverse);
+    }
+}
+
+/// Zero-pad or truncate `x` to exactly `n`, then run the n-point DFT.
+fn transform(x: &CVector, n: usize, inverse: bool) -> CVector {
     let mut buf: Vec<C64> = x
         .iter()
         .copied()
         .chain(std::iter::repeat(Complex::new(0.0, 0.0)))
         .take(n)
         .collect();
-    fft_inplace(&mut buf, false);
-    Ok(Array1::from_vec(buf))
+    dft_any_len(&mut buf, inverse);
+    Array1::from_vec(buf)
 }
 
-/// Compute the inverse FFT of a complex vector.
+/// Compute the DFT of a complex vector.
 ///
-/// Input length must be a power of two (as produced by [`fft`]).
+/// Length-preserving: returns exactly `x.len()` bins, so a frequency axis
+/// built from the input length (`fftfreq(x.len(), fs)`) is always correct.
+/// Powers of two use the radix-2 fast path; any other length uses the
+/// Bluestein chirp-z transform.
+pub fn fft(x: &CVector) -> Result<CVector, DspError> {
+    Ok(transform(x, x.len(), false))
+}
+
+/// n-point DFT: zero-pad or truncate `x` to exactly `n`, then transform.
+///
+/// Errors if `n == 0`.
+pub fn fft_n(x: &CVector, n: usize) -> Result<CVector, DspError> {
+    if n == 0 {
+        return Err(DspError::InvalidParameter(
+            "fft: n must be a positive integer".to_string(),
+        ));
+    }
+    Ok(transform(x, n, false))
+}
+
+/// Compute the inverse DFT of a complex vector (1/n scaling).
+///
+/// Accepts any input length and returns exactly that many samples.
 pub fn ifft(x: &CVector) -> Result<CVector, DspError> {
-    if x.is_empty() {
-        return Ok(Array1::zeros(0));
+    Ok(transform(x, x.len(), true))
+}
+
+/// n-point inverse DFT: zero-pad or truncate `x` to exactly `n`, then
+/// invert.
+///
+/// Errors if `n == 0`.
+pub fn ifft_n(x: &CVector, n: usize) -> Result<CVector, DspError> {
+    if n == 0 {
+        return Err(DspError::InvalidParameter(
+            "ifft: n must be a positive integer".to_string(),
+        ));
     }
-    let n = x.len();
-    if n & (n.wrapping_sub(1)) != 0 {
-        return Err(DspError::InvalidParameter(format!(
-            "ifft: input length {n} is not a power of two"
-        )));
-    }
-    let mut buf: Vec<C64> = x.iter().copied().collect();
-    fft_inplace(&mut buf, true);
-    Ok(Array1::from_vec(buf))
+    Ok(transform(x, n, true))
 }
 
 /// Shift the zero-frequency component to the center of the spectrum.
