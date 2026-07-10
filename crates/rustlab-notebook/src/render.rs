@@ -42,6 +42,11 @@ pub fn render_html(
     // different positions get unique IDs (collision → "-N" suffix).
     // See dev/plans/notebook_interactive_server.md Phase 3.
     let mut block_id_counter: HashMap<u64, usize> = HashMap::new();
+    // Executable-block ordinal (Code + Mermaid, hidden included) — must
+    // stay aligned with `execute_core`'s cache-slot indexing. Code
+    // sections are stamped with it (`data-code-idx`) so the interactive
+    // server's ▶ Run can address the block; inert in static output.
+    let mut exec_idx = 0usize;
 
     for block in blocks {
         // Auto-close solution/exercise when we hit a new exercise or solution marker
@@ -81,7 +86,7 @@ pub fn render_html(
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
                 body.push_str("</div>\n");
-                finalize_block(&mut body, mark, &mut block_id_counter);
+                finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::Code {
                 source,
@@ -195,7 +200,9 @@ pub fn render_html(
                 }
 
                 body.push_str("</div>\n");
-                finalize_block(&mut body, mark, &mut block_id_counter);
+                let attrs = format!(" data-code-idx=\"{exec_idx}\"");
+                finalize_block(&mut body, mark, &mut block_id_counter, &attrs);
+                exec_idx += 1;
             }
             Rendered::Mermaid {
                 source,
@@ -203,6 +210,9 @@ pub fn render_html(
                 details,
                 caption,
             } => {
+                // Mermaid occupies a cache slot even when hidden — advance
+                // the ordinal before the skip so code stamps stay aligned.
+                exec_idx += 1;
                 if *hidden {
                     continue;
                 }
@@ -223,12 +233,12 @@ pub fn render_html(
                 if details.is_some() {
                     body.push_str("</details>\n");
                 }
-                finalize_block(&mut body, mark, &mut block_id_counter);
+                finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::Widget { decl, value } => {
                 let mark = body.len();
                 body.push_str(&render_widget_html(decl, value));
-                finalize_block(&mut body, mark, &mut block_id_counter);
+                finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::Callout {
                 kind,
@@ -252,7 +262,7 @@ pub fn render_html(
                 let html = restore_math(&html, &math);
                 body.push_str(&html);
                 body.push_str("</div>\n");
-                finalize_block(&mut body, mark, &mut block_id_counter);
+                finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::ExerciseStart { number } => {
                 body.push_str(&format!(
@@ -1678,9 +1688,19 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
 /// `-N` disambiguates (per locked-in #14 of the plan, position
 /// is the collision tiebreaker).
 ///
+/// `extra_attrs` is spliced verbatim into the opening tag after the id
+/// (pass `""` for none; a leading space when non-empty). It is *not*
+/// hashed — the id stays a pure content hash, so stamping a section
+/// with e.g. `data-code-idx` never changes its identity.
+///
 /// Empty / whitespace-only chunks emit nothing (matches the
 /// existing renderer's behaviour for skipped blocks).
-fn finalize_block(body: &mut String, mark: usize, counter: &mut HashMap<u64, usize>) {
+fn finalize_block(
+    body: &mut String,
+    mark: usize,
+    counter: &mut HashMap<u64, usize>,
+    extra_attrs: &str,
+) {
     if body.len() <= mark {
         return;
     }
@@ -1705,7 +1725,7 @@ fn finalize_block(body: &mut String, mark: usize, counter: &mut HashMap<u64, usi
     // Splice: insert opening section tag at `mark`, append closing
     // tag. Using `String::insert_str` here means the chunk doesn't
     // need to be cloned out and back in.
-    let open = format!("<section class=\"rl-block\" id=\"{id}\">\n");
+    let open = format!("<section class=\"rl-block\" id=\"{id}\"{extra_attrs}>\n");
     body.insert_str(mark, &open);
     let _ = chunk_len; // (kept for debugging — closing tag goes at end)
     body.push_str("</section>\n");
@@ -1962,6 +1982,39 @@ mod tests {
         assert_eq!(highlight_rustlab(""), "");
     }
 
+    /// The inline cell editor seeds its buffer from the rendered
+    /// `<pre class="source">`'s textContent — i.e. the highlighted HTML
+    /// with tags stripped and entities unescaped. That round trip must
+    /// reproduce the block source byte-for-byte, or Shift+Enter would
+    /// save a silently mangled block. Pin it here: strip + unescape of
+    /// `highlight_rustlab(src)` == `src` for awkward inputs.
+    #[test]
+    fn highlight_round_trips_to_source_text() {
+        // Reverse of `escape_html`: &amp; must be restored LAST, since
+        // escape encodes it first.
+        fn unescape(s: &str) -> String {
+            s.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&amp;", "&")
+        }
+        let cases = [
+            "x = 1;",
+            "for k = 1:3\n  disp(k)\nend",
+            "s = \"quoted <html> & ampersand\";",
+            "a = b & c; d = a < b; % comment with 'quotes'\ny = sin(x)",
+            "m = [1, 2; 3, 4];\n\n% blank line above\nz = m';",
+        ];
+        for src in cases {
+            let highlighted = highlight_rustlab(src);
+            assert_eq!(
+                unescape(&strip_tags(&highlighted)),
+                src,
+                "highlight must preserve every source character"
+            );
+        }
+    }
+
     #[test]
     fn highlight_multiline() {
         let out = highlight_rustlab("for k = 1:3\n  disp(k)\nend");
@@ -2024,6 +2077,105 @@ mod tests {
         let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         assert_eq!(id1, id2, "block id changed between identical renders");
+    }
+
+    // ── data-code-idx stamping (cell execution) ──
+
+    fn code(source: &str) -> Rendered {
+        Rendered::Code {
+            source: source.to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }
+    }
+
+    #[test]
+    fn code_sections_stamped_with_executable_ordinal() {
+        let blocks = vec![
+            Rendered::Markdown("prose".to_string()),
+            code("a = 1"),
+            Rendered::Markdown("more prose".to_string()),
+            code("b = 2"),
+        ];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        assert!(html.contains("data-code-idx=\"0\""), "first code block is idx 0");
+        assert!(html.contains("data-code-idx=\"1\""), "second code block is idx 1");
+        // Prose sections carry no ordinal.
+        assert_eq!(html.matches("data-code-idx=").count(), 2);
+    }
+
+    #[test]
+    fn hidden_mermaid_advances_the_ordinal() {
+        // Hidden mermaid emits no section but occupies a cache slot — the
+        // following code block's stamp must skip its index.
+        let blocks = vec![
+            code("a = 1"),
+            Rendered::Mermaid {
+                source: "flowchart LR\nA-->B".to_string(),
+                hidden: true,
+                details: None,
+                caption: None,
+            },
+            code("b = 2"),
+        ];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        assert!(html.contains("data-code-idx=\"0\""));
+        assert!(
+            html.contains("data-code-idx=\"2\""),
+            "code after hidden mermaid must be idx 2, not 1:\n{html}"
+        );
+        assert!(!html.contains("data-code-idx=\"1\""), "slot 1 is the hidden mermaid");
+    }
+
+    #[test]
+    fn visible_mermaid_section_is_not_stamped() {
+        let blocks = vec![Rendered::Mermaid {
+            source: "flowchart LR\nA-->B".to_string(),
+            hidden: false,
+            details: None,
+            caption: None,
+        }];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        assert!(!html.contains("data-code-idx="), "mermaid gets no Run affordance");
+    }
+
+    #[test]
+    fn stamping_does_not_change_block_ids() {
+        // The ordinal attribute is spliced into the open tag only — the
+        // content-hash id must be identical to what an unstamped prose
+        // block with the same content would get. Compare a code block's
+        // id across two renders where its *ordinal* differs (an earlier
+        // code block was inserted): same content → same id.
+        // Identifiers survive `highlight_rustlab` verbatim; operators and
+        // numbers get wrapped in spans, so match on the bare name only.
+        let plot = std::path::PathBuf::from("/tmp/rustlab_test_plots");
+        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None);
+        let shifted = render_html(
+            "T",
+            &[code("unrelated = 2"), code("xyzzy = 1")],
+            &plot,
+            "plots",
+            test_theme(),
+            None,
+        );
+        let id_of = |html: &str, marker: &str| -> String {
+            // Find the section whose body contains `marker`, return its id.
+            html.split("<section class=\"rl-block\" id=\"")
+                .skip(1)
+                .find(|chunk| chunk.contains(marker))
+                .and_then(|chunk| chunk.split('"').next())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let a = id_of(&solo, "xyzzy");
+        let b = id_of(&shifted, "xyzzy");
+        assert!(!a.is_empty());
+        assert_eq!(a, b, "content-hash id must not depend on the ordinal stamp");
     }
 
     #[test]

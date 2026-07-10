@@ -1,5 +1,5 @@
 /// Directives that modify how a code block is displayed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CodeDirectives {
     /// Hide the source code (still executed).
     pub hidden: bool,
@@ -12,7 +12,7 @@ pub struct CodeDirectives {
 }
 
 /// Directives that modify how a Mermaid diagram is displayed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MermaidDirectives {
     /// Hide the diagram entirely (block is parsed but produces no output).
     pub hidden: bool,
@@ -61,7 +61,7 @@ impl CalloutKind {
 }
 
 /// A block in a parsed notebook.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Block {
     /// Raw markdown text (to be rendered as HTML).
     Markdown(String),
@@ -544,6 +544,106 @@ pub fn extract_frontmatter(src: &str) -> (Frontmatter, &str) {
 /// Strip optional YAML frontmatter delimited by `---` lines.
 fn strip_frontmatter(src: &str) -> &str {
     split_frontmatter(src).map(|(_, body)| body).unwrap_or(src)
+}
+
+/// Byte offset where the parseable body begins — i.e. everything the
+/// frontmatter scanner skips (leading whitespace + `---` block). The
+/// splice below preserves `src[..offset]` verbatim.
+fn body_offset(src: &str) -> usize {
+    let body = strip_frontmatter(src);
+    body.as_ptr() as usize - src.as_ptr() as usize
+}
+
+/// Replace the body of the `code_ordinal`-th ```` ```rustlab ```` fence
+/// (0-based, counting only rustlab fences) with `new_source`, leaving
+/// every other byte of `src` untouched — frontmatter, prose, other
+/// fences, directives, the fence's own opener/closer lines, and line
+/// endings all survive verbatim.
+///
+/// This is the write-back half of the interactive server's inline cell
+/// editor. It mirrors [`parse_notebook`]'s exact fence rules (including
+/// its quirks — e.g. no generic-fence tracking) so the ordinal maps to
+/// the same block the parser sees; callers must still re-parse the
+/// result and verify the target block equals `new_source` before writing
+/// to disk (a `new_source` containing e.g. a bare ``` ``` ``` line closes
+/// the fence early — the re-parse check turns that into a rejected save
+/// instead of a corrupted file).
+///
+/// Returns `None` when `src` has fewer than `code_ordinal + 1` rustlab
+/// fences.
+pub fn replace_code_block_source(
+    src: &str,
+    code_ordinal: usize,
+    new_source: &str,
+) -> Option<String> {
+    let split = body_offset(src);
+    let (front, body) = src.split_at(split);
+    let mut out = String::with_capacity(src.len() + new_source.len());
+    out.push_str(front);
+
+    let mut in_rustlab = false;
+    let mut in_mermaid = false;
+    let mut in_widget = false;
+    let mut seen = 0usize; // rustlab fences encountered so far
+    let mut replacing = false; // inside the target fence (old body dropped)
+    let mut replaced = false;
+
+    // Emit `new_source` with a trailing newline: re-parsing joins body
+    // lines with '\n', so `body + "\n"` round-trips both `"a"` and
+    // `"a\n"` (trailing blank line) back to the exact `new_source`.
+    let emit_new = |out: &mut String| {
+        out.push_str(new_source);
+        out.push('\n');
+    };
+
+    for line in body.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = content.trim();
+        if in_rustlab {
+            if trimmed == "```" {
+                in_rustlab = false;
+                if replacing {
+                    emit_new(&mut out);
+                    replacing = false;
+                    replaced = true;
+                }
+                out.push_str(line);
+            } else if !replacing {
+                out.push_str(line);
+            }
+            // (replacing → old body line dropped)
+        } else if in_mermaid || in_widget {
+            if trimmed == "```" {
+                in_mermaid = false;
+                in_widget = false;
+            }
+            out.push_str(line);
+        } else if trimmed == "```rustlab-widget" || trimmed.starts_with("```rustlab-widget ") {
+            in_widget = true;
+            out.push_str(line);
+        } else if trimmed == "```rustlab" || trimmed.starts_with("```rustlab ") {
+            in_rustlab = true;
+            if seen == code_ordinal {
+                replacing = true;
+            }
+            seen += 1;
+            out.push_str(line);
+        } else if trimmed == "```mermaid" || trimmed.starts_with("```mermaid ") {
+            in_mermaid = true;
+            out.push_str(line);
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    // Unclosed target fence at EOF: parse_notebook still yields it as a
+    // Code block, so emit the replacement there too.
+    if replacing {
+        emit_new(&mut out);
+        replaced = true;
+    }
+
+    replaced.then_some(out)
 }
 
 /// Locate a closed `---`-delimited frontmatter block at the start of `src`.
@@ -1166,5 +1266,180 @@ mod tests {
                 content,
             } if content == "Legacy still works."
         ));
+    }
+
+    // ── replace_code_block_source (inline cell write-back) ──
+
+    const SPLICE_SRC: &str = "\
+---
+title: fence ``` inside frontmatter
+---
+
+# Doc
+
+```rustlab
+a = 1;
+```
+
+prose between
+
+```rustlab
+b = 2;
+```
+
+```mermaid
+A-->B
+```
+
+tail prose
+";
+
+    #[test]
+    fn splice_replaces_only_the_target_block() {
+        let out = replace_code_block_source(SPLICE_SRC, 1, "b = 999;").unwrap();
+        // Target block replaced…
+        assert!(out.contains("b = 999;"));
+        assert!(!out.contains("b = 2;"));
+        // …and every other byte identical: frontmatter, first block,
+        // prose, mermaid, tail.
+        assert!(out.contains("title: fence ``` inside frontmatter"));
+        assert!(out.contains("a = 1;"));
+        assert!(out.contains("prose between"));
+        assert!(out.contains("A-->B"));
+        assert!(out.contains("tail prose"));
+        // Parse-equivalence: same block structure, target updated.
+        let before = parse_notebook(SPLICE_SRC);
+        let after = parse_notebook(&out);
+        assert_eq!(before.len(), after.len());
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            if i == 3 {
+                // markdown, code, markdown, code — target is index 3.
+                assert!(matches!(a, Block::Code { source, .. } if source == "b = 999;"));
+            } else {
+                assert_eq!(b, a, "non-target block {i} must be untouched");
+            }
+        }
+    }
+
+    #[test]
+    fn splice_identity_is_parse_equivalent() {
+        let before = parse_notebook(SPLICE_SRC);
+        let out = replace_code_block_source(SPLICE_SRC, 0, "a = 1;").unwrap();
+        assert_eq!(before, parse_notebook(&out), "same-source splice is a parse no-op");
+    }
+
+    #[test]
+    fn splice_out_of_range_returns_none() {
+        assert!(replace_code_block_source(SPLICE_SRC, 2, "x").is_none());
+        assert!(replace_code_block_source("no fences at all", 0, "x").is_none());
+    }
+
+    #[test]
+    fn splice_ignores_rustlab_lines_inside_other_fences() {
+        // The ```rustlab-looking lines inside widget fences are body
+        // text, not openers — the fence ordinal must skip them (mirrors
+        // parse_notebook, which is in in_widget state there).
+        let src = "\
+```rustlab-widget
+name = \"g\"
+type = \"slider\"
+min = 0
+max = 1
+default = 0.5
+```
+
+```rustlab
+real = 1;
+```
+";
+        let out = replace_code_block_source(src, 0, "real = 2;").unwrap();
+        assert!(out.contains("real = 2;"));
+        assert!(out.contains("name = \"g\""), "widget body untouched");
+        let after = parse_notebook(&out);
+        assert!(
+            after.iter().any(|b| matches!(b, Block::Code { source, .. } if source == "real = 2;")),
+        );
+        assert!(after.iter().any(|b| matches!(b, Block::Widget { .. })));
+    }
+
+    #[test]
+    fn splice_round_trips_trailing_newline_bodies() {
+        let src = "```rustlab\nold\n```\n";
+        // Body WITH a trailing blank line…
+        let out = replace_code_block_source(src, 0, "new\n").unwrap();
+        let blocks = parse_notebook(&out);
+        assert!(matches!(&blocks[0], Block::Code { source, .. } if source == "new\n"));
+        // …and without.
+        let out = replace_code_block_source(src, 0, "new").unwrap();
+        let blocks = parse_notebook(&out);
+        assert!(matches!(&blocks[0], Block::Code { source, .. } if source == "new"));
+    }
+
+    #[test]
+    fn splice_handles_unclosed_final_fence() {
+        let src = "# T\n\n```rustlab\nold body";
+        let out = replace_code_block_source(src, 0, "new body").unwrap();
+        let blocks = parse_notebook(&out);
+        assert!(
+            blocks
+                .iter()
+                .any(|b| matches!(b, Block::Code { source, .. } if source == "new body")),
+            "unclosed final fence must still be spliceable: {out:?}"
+        );
+    }
+
+    /// Property check over the real example notebooks: splicing a marker
+    /// into every code ordinal of every notebook leaves all other blocks
+    /// parse-identical and puts exactly the marker at the target.
+    #[test]
+    fn splice_round_trips_across_example_notebooks() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/notebooks");
+        let marker = "SPLICE_PROBE = 424242;";
+        let mut checked_blocks = 0usize;
+        for entry in std::fs::read_dir(dir).expect("examples/notebooks missing") {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "md") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&path).unwrap();
+            let before = parse_notebook(&src);
+            let code_count = before
+                .iter()
+                .filter(|b| matches!(b, Block::Code { .. }))
+                .count();
+            for j in 0..code_count {
+                let out = replace_code_block_source(&src, j, marker)
+                    .unwrap_or_else(|| panic!("splice failed: {} #{j}", path.display()));
+                let after = parse_notebook(&out);
+                assert_eq!(
+                    before.len(),
+                    after.len(),
+                    "block count changed: {} #{j}",
+                    path.display()
+                );
+                let mut code_seen = 0usize;
+                for (b, a) in before.iter().zip(after.iter()) {
+                    if matches!(b, Block::Code { .. }) {
+                        if code_seen == j {
+                            assert!(
+                                matches!(a, Block::Code { source, .. } if source == marker),
+                                "target not replaced: {} #{j}",
+                                path.display()
+                            );
+                        } else {
+                            assert_eq!(b, a, "other code block moved: {} #{j}", path.display());
+                        }
+                        code_seen += 1;
+                    } else {
+                        assert_eq!(b, a, "non-code block changed: {} #{j}", path.display());
+                    }
+                }
+                checked_blocks += 1;
+            }
+        }
+        assert!(
+            checked_blocks > 50,
+            "expected to exercise many example blocks, got {checked_blocks}"
+        );
     }
 }

@@ -269,7 +269,7 @@ fn scoped(
 ) -> rustlab_notebook::execute::ExecutionOutcome {
     let blocks = parse_notebook(NB_SCOPED);
     let never = Arc::new(AtomicBool::new(false));
-    execute_notebook_scoped(&blocks, cache, never, overrides).expect("not cancelled")
+    execute_notebook_scoped(&blocks, cache, never, overrides, None).expect("not cancelled")
 }
 
 #[test]

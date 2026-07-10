@@ -100,8 +100,12 @@ enum Command {
             page (one URL per notebook). KaTeX + Plotly assets are embedded\n    \
             in the binary so the page works fully offline. Small edits ship\n    \
             as block-level partial diffs and preserve scroll position;\n    \
-            structural edits fall back to a full refresh. Source .md is never\n    \
-            modified — unless you pass --editable (in-browser editor).\n\n  \
+            structural edits fall back to a full refresh. Every code block\n    \
+            has a ▶ Run button that force-re-executes it and everything\n    \
+            below it (upstream replays from cache). Source .md is never\n    \
+            modified — unless you pass --editable (in-browser editor +\n    \
+            inline cell editing: ✎ Edit a block, Shift+Enter writes it\n    \
+            back into the .md and runs it).\n\n  \
             Re-render on save (directory + --obsidian or --output):\n    \
             Long-running counterpart of `render`. Re-renders any notebook\n    \
             whose source changes, debouncing fs events. Pairs with\n    \
@@ -152,8 +156,10 @@ enum Command {
         no_browser: bool,
         /// (interactive server mode only) Enable the in-browser editor:
         /// a split-pane CodeMirror editor whose saves write back to the
-        /// source .md. This is the one interactive path that modifies
-        /// source (parallels --obsidian), so it is strictly opt-in.
+        /// source .md, plus inline cell editing (✎ Edit on each code
+        /// block; Shift+Enter saves the block into the .md and runs it).
+        /// This is the one interactive path that modifies source
+        /// (parallels --obsidian), so it is strictly opt-in.
         #[arg(long)]
         editable: bool,
     },

@@ -26,6 +26,18 @@ fn single_state(
     html: String,
     plot_dir: TempDir,
 ) -> Arc<ServerState> {
+    single_state_with(slug, source_path, html, plot_dir, false)
+}
+
+/// Like [`single_state`] but with an explicit `--editable` flag (the
+/// cell-save tests need a server that mounts the write paths).
+fn single_state_with(
+    slug: &str,
+    source_path: &Path,
+    html: String,
+    plot_dir: TempDir,
+    editable: bool,
+) -> Arc<ServerState> {
     let nb = Arc::new(Notebook::new(
         slug.to_string(),
         source_path.to_path_buf(),
@@ -38,7 +50,7 @@ fn single_state(
         notebooks,
         order: vec![slug.to_string()],
         plot_dir,
-        editable: false,
+        editable,
         single: true,
         theme: Theme::Dark.colors(),
         index_title: slug.to_string(),
@@ -587,6 +599,247 @@ async fn ws_option_update_selects_choice_and_drives_output() {
     let html = parsed["html"].as_str().expect("html field missing");
     assert!(html.contains("value=\"blackman\" checked"), "choice not selected:\n{html}");
     assert!(html.contains("blackman"), "output didn't follow the choice");
+
+    drop(ws);
+    server.abort();
+}
+
+// ─── Cell execution: ▶ Run forces re-execution of an unchanged block ───
+
+/// The code block reads a sidecar CSV. Editing the CSV never touches the
+/// watched `.md`, so the only way its new value can reach the page is a
+/// browser-triggered forced re-execution — which is exactly what
+/// `{"kind":"run_block"}` must produce even though the block's *source*
+/// hash is unchanged (a plain render would be a full cache hit).
+const RUN_BLOCK_SRC: &str = "# Run Smoke\n\n```rustlab\nv = load(\"probe.csv\");\nprint(v)\n```\n";
+
+/// Receive text frames until the terminal `cell_status done`, returning
+/// every parsed frame (including the `done`).
+async fn frames_until_done<S>(ws: &mut S) -> Vec<serde_json::Value>
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let mut out = Vec::new();
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+            .await
+            .expect("ws frame did not arrive in time")
+            .expect("ws stream closed")
+            .expect("ws read error");
+        let Message::Text(s) = msg else { continue };
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let done = v["kind"] == "cell_status" && v["state"] == "done";
+        out.push(v);
+        if done {
+            return out;
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_run_block_forces_reexecution_of_unchanged_block() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("run.md");
+    std::fs::write(&nb_path, RUN_BLOCK_SRC).unwrap();
+    std::fs::write(nb_dir.path().join("probe.csv"), "31415\n").unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    // Initial render via the public pipeline. It runs without the
+    // server's chdir, so `load("probe.csv")` may error here — irrelevant:
+    // it only seeds prev_blocks; the assertions ride the server renders.
+    let plot_dir = TempDir::new().unwrap();
+    let initial_html = {
+        let source = std::fs::read_to_string(&nb_path).unwrap();
+        let source = rustlab_notebook::strip_render_artifacts(&source);
+        let title = rustlab_notebook::extract_title(&source, &nb_path);
+        let expanded = rustlab_notebook::embed::expand_embeds(
+            &source,
+            nb_path.parent().unwrap(),
+            nb_path.parent().unwrap(),
+        );
+        let blocks = rustlab_notebook::parse::parse_notebook(&expanded);
+        let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
+        let html = rustlab_notebook::render::render_html(
+            &title,
+            &rendered,
+            plot_dir.path(),
+            "/plots",
+            theme,
+            None,
+        );
+        let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
+        rustlab_notebook::server::ws::inject_ws_client(&html)
+    };
+    let state = single_state("run", &nb_path, initial_html, plot_dir);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/run/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    // ── Round 1: warm the render cache through the server path ──────
+    ws.send(Message::Text(r#"{"kind":"run_block","idx":0}"#.into()))
+        .await
+        .expect("ws send failed");
+    let frames = frames_until_done(&mut ws).await;
+    assert_eq!(
+        (frames[0]["kind"].as_str(), frames[0]["state"].as_str(), frames[0]["idx"].as_u64()),
+        (Some("cell_status"), Some("running"), Some(0)),
+        "first frame after Run must be the running status: {:?}",
+        frames[0]
+    );
+    let round1 = serde_json::Value::Array(frames).to_string();
+    assert!(
+        round1.contains("31415"),
+        "round 1 render must show the CSV value:\n{round1:.512}"
+    );
+
+    // ── Round 2: change the sidecar (not the .md), Run again ─────────
+    // Without the force, this render would be a full cache hit
+    // (source hash unchanged) and no content frame could carry the new
+    // value — the assertion below is the end-to-end force proof.
+    std::fs::write(nb_dir.path().join("probe.csv"), "27182\n").unwrap();
+    ws.send(Message::Text(r#"{"kind":"run_block","idx":0}"#.into()))
+        .await
+        .expect("ws send failed");
+    let frames = frames_until_done(&mut ws).await;
+    let round2 = serde_json::Value::Array(frames).to_string();
+    assert!(
+        round2.contains("27182"),
+        "forced re-run must re-execute the unchanged block and pick up the new CSV value:\n{round2:.512}"
+    );
+
+    drop(ws);
+    server.abort();
+}
+
+// ─── Cell save: Shift+Enter writes the block through to the .md ────────
+
+const SAVE_BLOCK_SRC: &str = "# Save Smoke\n\n```rustlab\nc = 10;\nprint(c)\n```\n\ntail prose.\n";
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_save_run_block_writes_file_and_rerenders() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("save.md");
+    std::fs::write(&nb_path, SAVE_BLOCK_SRC).unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    let plot_dir = TempDir::new().unwrap();
+    let state = single_state_with("save", &nb_path, "<main></main>".into(), plot_dir, true);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/save/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    ws.send(Message::Text(
+        r#"{"kind":"save_run_block","idx":0,"source":"c = 77;\nprint(c)","prev_source":"c = 10;\nprint(c)"}"#.into(),
+    ))
+    .await
+    .expect("ws send failed");
+
+    let frames = frames_until_done(&mut ws).await;
+    assert_eq!(
+        (frames[0]["kind"].as_str(), frames[0]["ok"].as_bool(), frames[0]["idx"].as_u64()),
+        (Some("cell_saved"), Some(true), Some(0)),
+        "first frame must be the per-socket save verdict: {:?}",
+        frames[0]
+    );
+
+    // Write-through: the .md on disk carries the new body, siblings intact.
+    let on_disk = std::fs::read_to_string(&nb_path).unwrap();
+    assert!(on_disk.contains("c = 77;"), "disk not updated:\n{on_disk}");
+    assert!(!on_disk.contains("c = 10;"));
+    assert!(on_disk.contains("tail prose."), "prose untouched");
+
+    // The forced render pushed the new output.
+    let all = serde_json::Value::Array(frames).to_string();
+    assert!(all.contains("77"), "render output missing new value:\n{all:.512}");
+
+    // Watcher echo of our own write must not produce a second *content*
+    // broadcast: the echo render is a full cache hit → Broadcast::None.
+    // (A stray extra `cell_status done` from a late-arriving fs event is
+    // fine — status frames are idempotent.)
+    loop {
+        match tokio::time::timeout(Duration::from_millis(1500), ws.next()).await {
+            Err(_) => break, // quiet — no echo content
+            Ok(Some(Ok(Message::Text(s)))) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!(
+                    v["kind"], "cell_status",
+                    "watcher echo must not rebroadcast content: {v}"
+                );
+            }
+            Ok(other) => panic!("unexpected ws frame during quiet window: {other:?}"),
+        }
+    }
+
+    drop(ws);
+    server.abort();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ws_save_run_block_rejected_without_editable() {
+    let theme: &'static _ = Theme::Dark.colors();
+
+    let nb_dir = TempDir::new().unwrap();
+    let nb_path = nb_dir.path().join("ro.md");
+    std::fs::write(&nb_path, SAVE_BLOCK_SRC).unwrap();
+    let nb_path = std::fs::canonicalize(&nb_path).unwrap();
+
+    let plot_dir = TempDir::new().unwrap();
+    // editable: false — the save must be refused server-side even if a
+    // client hand-crafts the frame.
+    let state = single_state("ro", &nb_path, "<main></main>".into(), plot_dir);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
+    let app = router(state.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let ws_url = format!("ws://{}/n/ro/ws", addr);
+    let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
+
+    ws.send(Message::Text(
+        r#"{"kind":"save_run_block","idx":0,"source":"c = 77;\nprint(c)","prev_source":"c = 10;\nprint(c)"}"#.into(),
+    ))
+    .await
+    .expect("ws send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), ws.next())
+        .await
+        .expect("verdict did not arrive")
+        .expect("ws stream closed")
+        .expect("ws read error");
+    let Message::Text(s) = msg else { panic!("expected text frame") };
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v["kind"], "cell_saved");
+    assert_eq!(v["ok"], false);
+    assert!(
+        v["error"].as_str().unwrap().contains("--editable"),
+        "error should name the flag: {v}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&nb_path).unwrap(),
+        SAVE_BLOCK_SRC,
+        "read-only server must never write"
+    );
 
     drop(ws);
     server.abort();
