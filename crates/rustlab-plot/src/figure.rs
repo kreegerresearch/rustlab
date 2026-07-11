@@ -445,6 +445,14 @@ thread_local! {
     /// Snapshots captured by `savefig()` calls during a notebook code block.
     /// Drained by the notebook executor at end-of-block.
     static NOTEBOOK_FIGURES: RefCell<Vec<FigureState>> = RefCell::new(Vec::new());
+    /// Plot kinds (e.g. "quiver", "contour") drawn in Terminal context
+    /// without a terminal renderer. Pending until either a savefig /
+    /// saveanim consumes the figure (clearing the set) or an end-of-run
+    /// seam drains it into one combined stderr warning — so scripted
+    /// `quiver(...); savefig(...)` runs stay silent while a plot that
+    /// never reaches a file still warns.
+    static PENDING_TERMINAL_SKIPS: RefCell<std::collections::BTreeSet<&'static str>> =
+        RefCell::new(std::collections::BTreeSet::new());
 }
 
 /// Set the process-level plot context. Call once at startup.
@@ -455,6 +463,38 @@ pub fn set_plot_context(ctx: PlotContext) {
 /// Get the current plot context.
 pub fn plot_context() -> PlotContext {
     PLOT_CONTEXT.with(|c| c.get())
+}
+
+/// Record that a `kind` plot (e.g. "quiver") was drawn in Terminal
+/// context, where it has no renderer. Deferred rather than printed: a
+/// later `savefig`/`saveanim` clears the pending set, and the CLI drains
+/// leftovers into one warning at the end of the run / REPL line.
+pub fn note_terminal_skip(kind: &'static str) {
+    PENDING_TERMINAL_SKIPS.with(|s| {
+        s.borrow_mut().insert(kind);
+    });
+}
+
+/// The figure was consumed by savefig/saveanim — nothing to warn about.
+pub fn clear_terminal_skips() {
+    PENDING_TERMINAL_SKIPS.with(|s| s.borrow_mut().clear());
+}
+
+/// Drain the pending set; if any plot kinds are still unconsumed, print
+/// one combined warning to stderr. Called by the CLI at end-of-script
+/// and at each REPL statement boundary.
+pub fn emit_pending_terminal_skips() {
+    let kinds: Vec<&'static str> =
+        PENDING_TERMINAL_SKIPS.with(|s| std::mem::take(&mut *s.borrow_mut()).into_iter().collect());
+    if kinds.is_empty() {
+        return;
+    }
+    let list = kinds.join(", ");
+    let (verb, pron) = if kinds.len() == 1 { ("was", "it") } else { ("were", "them") };
+    eprintln!(
+        "rustlab: {list} {verb} not rendered to the terminal — \
+         use savefig(\"plot.svg\" or \"plot.html\") to view {pron}."
+    );
 }
 
 /// Push a snapshot of the current FIGURE state onto the notebook capture list.

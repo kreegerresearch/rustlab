@@ -58,15 +58,27 @@ pub fn execute(args: RunArgs) -> Result<()> {
     // Use run_script_source to support report directives in scripts.
     // Fall back to direct run for profiling mode (no report support needed).
     if args.profile {
-        match rustlab_script::run_profiled(&source) {
+        let result = match rustlab_script::run_profiled(&source) {
             Ok(()) => Ok(()),
             Err(rustlab_script::ScriptError::AudioEof) => Ok(()),
             Err(rustlab_script::ScriptError::Interrupted) => Ok(()),
             Err(e) => Err(anyhow::anyhow!("{}", e)),
-        }
+        };
+        rustlab_plot::emit_pending_terminal_skips();
+        result
     } else {
         let mut ev = rustlab_script::Evaluator::new();
-        super::repl::run_script_source(&source, &mut ev);
+        let ok = super::repl::run_script_source(&source, &mut ev);
+        // Scripted runs warn once, at the end, and only if no savefig /
+        // saveanim consumed the figures — `quiver(...); savefig(...)`
+        // scripts no longer emit stderr noise.
+        rustlab_plot::emit_pending_terminal_skips();
+        if !ok {
+            // The error text was already printed by run_script_source;
+            // exit nonzero so CI / make can gate on script failures
+            // (previously this path always exited 0).
+            std::process::exit(1);
+        }
         Ok(())
     }
 }

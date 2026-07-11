@@ -11937,6 +11937,573 @@ mod tensor3_tests {
 }
 
 #[cfg(test)]
+mod quiver_option_tests {
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    /// "normalized" turns every stored (u, v) into its unit vector at
+    /// push time (QuiverData itself is unchanged — backends see unit
+    /// fields). Inspect the thread-local figure store directly.
+    #[test]
+    fn normalized_option_stores_unit_vectors() {
+        let _ev = run("quiver([3, 0; 0, 0], [4, 0; 0, 5], \"normalized\");");
+        rustlab_plot::FIGURE.with(|fig| {
+            let fig = fig.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            let m00 = (q.u[0][0].powi(2) + q.v[0][0].powi(2)).sqrt();
+            assert!((m00 - 1.0).abs() < 1e-12, "3-4-5 cell → unit, got {m00}");
+            let m11 = (q.u[1][1].powi(2) + q.v[1][1].powi(2)).sqrt();
+            assert!((m11 - 1.0).abs() < 1e-12, "0-5 cell → unit, got {m11}");
+            // Zero cells stay zero (no 0/0).
+            assert_eq!(q.u[0][1], 0.0);
+            assert_eq!(q.v[0][1], 0.0);
+        });
+    }
+
+    /// Without the keyword the raw field is stored, and other string
+    /// options still parse (color + title + scale coexist).
+    #[test]
+    fn options_coexist_and_raw_field_is_default() {
+        let _ev = run("quiver([3, 0; 0, 0], [4, 0; 0, 5], 2.0, \"r\", \"My field\");");
+        rustlab_plot::FIGURE.with(|fig| {
+            let fig = fig.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.u[0][0], 3.0, "raw field stored without the keyword");
+            assert_eq!(q.scale, 2.0);
+            assert!(q.color.is_some());
+            assert_eq!(q.title.as_deref(), Some("My field"));
+        });
+    }
+}
+
+mod pin_dirichlet_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error from: {src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("Expected Scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    /// Mask form on a real operator: the pinned row becomes the identity
+    /// row, b gets the value, and everything else is untouched.
+    #[test]
+    fn mask_pins_row_to_identity() {
+        let ev = run(
+            "A = laplacian_2d(3, 3);
+             b = zeros(9);
+             mask = zeros(3, 3);
+             mask(2, 2) = 1;
+             [A2, b2] = pin_dirichlet(A, b, mask, 5.0);
+             k = ij2k(2, 2, 3);
+             D = full(A2);
+             diag_val = D(k, k);
+             off_sum = sum(abs(D(k, :))) - abs(D(k, k));
+             rhs = b2(k);
+             other = b2(1);
+             untouched = D(1, 1);",
+        );
+        assert_eq!(scalar(&ev, "diag_val"), 1.0, "pinned diagonal is 1");
+        assert_eq!(scalar(&ev, "off_sum"), 0.0, "pinned row has no off-diagonals");
+        assert_eq!(scalar(&ev, "rhs"), 5.0, "b carries the pinned value");
+        assert_eq!(scalar(&ev, "other"), 0.0, "unpinned b untouched");
+        assert!(
+            scalar(&ev, "untouched").abs() > 0.0,
+            "unpinned rows keep the operator"
+        );
+    }
+
+    /// End-to-end: pin the boundary of a 1-D Laplace problem and solve —
+    /// the interior is the linear interpolant between the pinned ends.
+    #[test]
+    fn spsolve_reproduces_pinned_potentials() {
+        let ev = run(
+            "n = 5;
+             A = laplacian_1d(n);
+             b = zeros(n);
+             [A2, b2] = pin_dirichlet(A, b, [1, 5], [1.0, 9.0]);
+             v = spsolve(A2, b2);
+             v1 = v(1); v3 = v(3); v5 = v(5);",
+        );
+        assert!((scalar(&ev, "v1") - 1.0).abs() < 1e-10);
+        assert!((scalar(&ev, "v5") - 9.0).abs() < 1e-10);
+        // Laplace in 1-D → straight line: midpoint = 5.
+        assert!((scalar(&ev, "v3") - 5.0).abs() < 1e-10);
+    }
+
+    /// Index-list form ≡ mask form.
+    #[test]
+    fn index_list_matches_mask() {
+        let ev = run(
+            "A = laplacian_2d(3, 3);
+             b = zeros(9);
+             mask = zeros(3, 3);
+             mask(1, 1) = 1;
+             mask(3, 3) = 1;
+             [Am, bm] = pin_dirichlet(A, b, mask, 2.0);
+             ks = [ij2k(1, 1, 3), ij2k(3, 3, 3)];
+             [Ai, bi] = pin_dirichlet(A, b, ks, 2.0);
+             d_a = nnz(Am - Ai);
+             d_b = sum(abs(bm - bi));",
+        );
+        assert_eq!(scalar(&ev, "d_a"), 0.0);
+        assert_eq!(scalar(&ev, "d_b"), 0.0);
+    }
+
+    /// Per-pin values follow mask column-major order.
+    #[test]
+    fn vector_values_align_with_mask_order() {
+        let ev = run(
+            "A = speye(4);
+             b = zeros(4);
+             mask = [1, 0; 0, 1];   % column-major nonzeros: k=1 then k=4
+             [A2, b2] = pin_dirichlet(A, b, mask, [7.0, 8.0]);
+             p1 = b2(1); p4 = b2(4);",
+        );
+        assert_eq!(scalar(&ev, "p1"), 7.0);
+        assert_eq!(scalar(&ev, "p4"), 8.0);
+    }
+
+    /// Tensor3 mask addresses a 3-D operator (ijk2k linearization).
+    #[test]
+    fn tensor3_mask_on_laplacian_3d() {
+        let ev = run(
+            "A = laplacian_3d(2, 2, 2);
+             b = zeros(8);
+             mask = zeros3(2, 2, 2);
+             mask(2, 1, 2) = 1;
+             [A2, b2] = pin_dirichlet(A, b, mask, 3.5);
+             k = ijk2k(2, 1, 2, 2, 2);
+             D = full(A2);
+             dv = D(k, k);
+             rhs = b2(k);",
+        );
+        assert_eq!(scalar(&ev, "dv"), 1.0);
+        assert_eq!(scalar(&ev, "rhs"), 3.5);
+    }
+
+    /// Dense A takes the same surgery.
+    #[test]
+    fn dense_matrix_path() {
+        let ev = run(
+            "A = [2, 1; 1, 2];
+             b = zeros(2);
+             [A2, b2] = pin_dirichlet(A, b, [1], 4.0);
+             a11 = A2(1, 1); a12 = A2(1, 2); a21 = A2(2, 1);
+             r = b2(1);",
+        );
+        assert_eq!(scalar(&ev, "a11"), 1.0);
+        assert_eq!(scalar(&ev, "a12"), 0.0);
+        assert_eq!(scalar(&ev, "a21"), 1.0, "other rows untouched");
+        assert_eq!(scalar(&ev, "r"), 4.0);
+    }
+
+    #[test]
+    fn error_matrix() {
+        // Single output is refused — dropping the modified b is a
+        // wrong-physics footgun.
+        let msg = run_err("A = speye(2); C = pin_dirichlet(A, zeros(2), [1], 1.0);");
+        assert!(msg.contains("[A, b]"), "got: {msg}");
+        // Values length mismatch.
+        let msg = run_err(
+            "A = speye(3); [X, y] = pin_dirichlet(A, zeros(3), [1, 2], [1.0, 2.0, 3.0]);",
+        );
+        assert!(msg.contains("values") || msg.contains("pinned cells"), "got: {msg}");
+        // Mask element-count mismatch.
+        let msg =
+            run_err("A = speye(4); [X, y] = pin_dirichlet(A, zeros(4), zeros(3, 3), 1.0);");
+        assert!(msg.contains("elements"), "got: {msg}");
+        // Non-square A.
+        let msg = run_err(
+            "A = sparse([1, 2], [1, 3], [1.0, 1.0], 2, 3); [X, y] = pin_dirichlet(A, zeros(2), [1], 1.0);",
+        );
+        assert!(msg.contains("square"), "got: {msg}");
+        // Out-of-range index.
+        let msg = run_err("A = speye(2); [X, y] = pin_dirichlet(A, zeros(2), [5], 1.0);");
+        assert!(msg.contains("out of range"), "got: {msg}");
+    }
+}
+
+mod ellipke_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error from: {src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("Expected Scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    const PI_2: f64 = std::f64::consts::FRAC_PI_2;
+
+    #[test]
+    fn ellipke_at_zero_is_half_pi() {
+        let ev = run("[K, E] = ellipke(0);");
+        assert!((scalar(&ev, "K") - PI_2).abs() < 1e-15);
+        assert!((scalar(&ev, "E") - PI_2).abs() < 1e-15);
+    }
+
+    #[test]
+    fn ellipke_known_values_at_half() {
+        // Reference values for m = 0.5 (Abramowitz & Stegun tables).
+        let ev = run("[K, E] = ellipke(0.5);");
+        assert!((scalar(&ev, "K") - 1.854_074_677_301_371_9).abs() < 1e-12);
+        assert!((scalar(&ev, "E") - 1.350_643_881_047_675_5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ellipke_at_one_is_infinite_k_unit_e() {
+        let ev = run("[K, E] = ellipke(1);");
+        assert!(scalar(&ev, "K").is_infinite() && scalar(&ev, "K") > 0.0);
+        assert_eq!(scalar(&ev, "E"), 1.0);
+    }
+
+    /// Legendre relation: E(m)K(1−m) + E(1−m)K(m) − K(m)K(1−m) = π/2.
+    #[test]
+    fn ellipke_satisfies_legendre_relation() {
+        for m in [0.1, 0.3, 0.5, 0.7, 0.9] {
+            let ev = run(&format!(
+                "[K1, E1] = ellipke({m});
+                 [K2, E2] = ellipke(1 - {m});
+                 lhs = E1*K2 + E2*K1 - K1*K2;"
+            ));
+            assert!(
+                (scalar(&ev, "lhs") - PI_2).abs() < 1e-12,
+                "Legendre relation failed at m={m}: {}",
+                scalar(&ev, "lhs")
+            );
+        }
+    }
+
+    #[test]
+    fn ellipke_single_output_is_k() {
+        let ev = run("K = ellipke(0.5); [K2, E2] = ellipke(0.5); d = K - K2;");
+        assert_eq!(scalar(&ev, "d"), 0.0);
+    }
+
+    #[test]
+    fn ellipke_is_elementwise_over_vectors() {
+        let ev = run(
+            "[K, E] = ellipke([0, 0.5]);
+             k1 = K(1); k2 = K(2); e1 = E(1); e2 = E(2);",
+        );
+        assert!((scalar(&ev, "k1") - PI_2).abs() < 1e-15);
+        assert!((scalar(&ev, "k2") - 1.854_074_677_301_371_9).abs() < 1e-12);
+        assert!((scalar(&ev, "e1") - PI_2).abs() < 1e-15);
+        assert!((scalar(&ev, "e2") - 1.350_643_881_047_675_5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ellipke_matrix_shape_preserved() {
+        let ev = run(
+            "[K, E] = ellipke([0, 0.5; 0.25, 0.75]);
+             n = numel(K);
+             probe = K(2, 2);
+             e_probe = E(1, 1);",
+        );
+        assert_eq!(scalar(&ev, "n"), 4.0);
+        assert!(scalar(&ev, "probe") > 0.0, "K(0.75) finite and positive");
+        assert!((scalar(&ev, "e_probe") - PI_2).abs() < 1e-15);
+    }
+
+    #[test]
+    fn ellipke_second_output_via_dummy_binding() {
+        // The language has no `~` placeholder — bind and ignore instead
+        // (see the agent-guide gotcha table).
+        let ev = run("[K_unused, E] = ellipke(0.5); e = E; k = K_unused;");
+        assert!((scalar(&ev, "e") - 1.350_643_881_047_675_5).abs() < 1e-12);
+        assert!((scalar(&ev, "k") - 1.854_074_677_301_371_9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ellipke_domain_errors() {
+        for bad in ["ellipke(-0.1)", "ellipke(1.1)"] {
+            let msg = run_err(bad);
+            assert!(msg.contains("[0, 1]"), "got: {msg}");
+        }
+    }
+}
+
+mod tic_toc_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("Expected Scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    /// toc before any tic is a runtime error (fresh thread ⇒ fresh
+    /// thread-local stopwatch).
+    #[test]
+    fn toc_without_tic_errors() {
+        let tokens = lexer::tokenize("t = toc();\n").unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let err = ev.run(&stmts).unwrap_err().to_string();
+        assert!(err.contains("tic"), "got: {err}");
+    }
+
+    #[test]
+    fn tic_toc_returns_nonnegative_seconds() {
+        let ev = run("tic(); t = toc();");
+        assert!(scalar(&ev, "t") >= 0.0);
+    }
+
+    /// The canonical bare-word idiom works: `tic; ...; t = toc;`.
+    #[test]
+    fn bare_tic_toc_idiom() {
+        let ev = run(
+            "tic;
+             s = 0;
+             for k = 1:1000
+               s = s + k;
+             end
+             t = toc;",
+        );
+        assert!(scalar(&ev, "t") >= 0.0);
+        assert_eq!(scalar(&ev, "s"), 500500.0);
+    }
+
+    /// toc doesn't clear: two tocs against one tic are monotonic.
+    #[test]
+    fn toc_is_repeatable_and_monotonic() {
+        let ev = run(
+            "tic;
+             a = toc;
+             s = 0;
+             for k = 1:2000
+               s = s + k;
+             end
+             b = toc;",
+        );
+        assert!(scalar(&ev, "b") >= scalar(&ev, "a"));
+    }
+
+    /// A user variable named tic/toc shadows the builtin fallback.
+    #[test]
+    fn user_variable_shadows_bare_toc() {
+        let ev = run("toc = 42; x = toc;");
+        assert_eq!(scalar(&ev, "x"), 42.0);
+    }
+
+    /// tic resets the stopwatch.
+    #[test]
+    fn second_tic_resets() {
+        let ev = run(
+            "tic;
+             s = 0;
+             for k = 1:5000
+               s = s + k;
+             end
+             a = toc;
+             tic;
+             b = toc;",
+        );
+        // b measures a nearly-empty window; a measured the loop.
+        assert!(scalar(&ev, "b") <= scalar(&ev, "a") + 1e-3);
+    }
+
+    /// Zero-arg contract: arguments are rejected.
+    #[test]
+    fn tic_toc_reject_arguments() {
+        for bad in ["tic(1);", "toc(1);"] {
+            let tokens = lexer::tokenize(&format!("{bad}\n")).unwrap();
+            let stmts = parser::parse(tokens).unwrap();
+            let mut ev = Evaluator::new();
+            assert!(ev.run(&stmts).is_err(), "expected error for {bad}");
+        }
+    }
+}
+
+mod tensor3_flatten_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn run_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error from: {src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("Expected Scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    /// Regression: `T(:)` on a Tensor3 used to panic the evaluator
+    /// (`unreachable!()` in the end-binding match, then a missing
+    /// index_1d arm). It must flatten column-major to a vector.
+    #[test]
+    fn tensor3_colon_flattens_without_panicking() {
+        let ev = run(
+            "T = zeros3(2, 3, 4);
+             v = T(:);
+             n = numel(v);",
+        );
+        assert_eq!(scalar(&ev, "n"), 24.0);
+    }
+
+    /// Ordering: the flat view must agree with ijk2k's column-major
+    /// linearization (i fastest, then j, then page k).
+    #[test]
+    fn tensor3_flatten_order_matches_ijk2k() {
+        let ev = run(
+            "T = zeros3(2, 3, 4);
+             T(2, 3, 4) = 7.5;
+             v = T(:);
+             k = ijk2k(2, 3, 4, 2, 3);
+             probe = v(k);",
+        );
+        assert_eq!(scalar(&ev, "probe"), 7.5);
+    }
+
+    /// Round-trip: reshape(T(:), m, n, p) reproduces T elementwise.
+    #[test]
+    fn tensor3_flatten_reshape_round_trip() {
+        let ev = run(
+            "T = zeros3(2, 2, 3);
+             T(1, 2, 2) = 3.0;
+             T(2, 1, 3) = -4.0;
+             R = reshape(T(:), 2, 2, 3);
+             a = R(1, 2, 2);
+             b = R(2, 1, 3);",
+        );
+        assert_eq!(scalar(&ev, "a"), 3.0);
+        assert_eq!(scalar(&ev, "b"), -4.0);
+    }
+
+    /// Scalar linear indexing (T(k)) and `end` bind to the flat view.
+    #[test]
+    fn tensor3_scalar_linear_index_and_end() {
+        let ev = run(
+            "T = zeros3(2, 2, 2);
+             T(2, 2, 2) = 9.0;
+             last = T(end);
+             first = T(1);",
+        );
+        assert_eq!(scalar(&ev, "last"), 9.0);
+        assert_eq!(scalar(&ev, "first"), 0.0);
+    }
+
+    /// Index-vector picks from the flat view.
+    #[test]
+    fn tensor3_index_vector_picks() {
+        let ev = run(
+            "T = zeros3(2, 2, 2);
+             T(1, 1, 1) = 1.0;
+             T(2, 2, 2) = 8.0;
+             v = T([1, 8]);
+             a = v(1);
+             b = v(2);",
+        );
+        assert_eq!(scalar(&ev, "a"), 1.0);
+        assert_eq!(scalar(&ev, "b"), 8.0);
+    }
+
+    #[test]
+    fn tensor3_linear_index_out_of_bounds_errors() {
+        let msg = run_err("T = zeros3(2, 2, 2); x = T(9);");
+        assert!(msg.contains("out of bounds"), "got: {msg}");
+    }
+}
+
 mod tensor3_constructor_tests {
     use crate::eval::value::Value;
     use crate::{lexer, parser, Evaluator};
@@ -15470,6 +16037,83 @@ mod builtin_coverage_tests {
                 "round-trip mismatch at {k}: {v}"
             );
         }
+    }
+
+    // ── trapz: vector + per-column matrix forms ─────────────────────────
+
+    #[test]
+    fn trapz_vector_unit_and_shared_axis() {
+        // Unit spacing: (1+2)/2 + (2+3)/2 = 4. Non-uniform axis
+        // x = [0, 1, 3]: 0.5*(1+2)*1 + 0.5*(2+3)*2 = 1.5 + 5 = 6.5.
+        let ev = run(
+            "a = trapz([1, 2, 3]);
+             b = trapz([0, 1, 3], [1, 2, 3]);",
+        );
+        assert_eq!(get_scalar(&ev, "a"), 4.0);
+        assert_eq!(get_scalar(&ev, "b"), 6.5);
+    }
+
+    #[test]
+    fn trapz_matrix_integrates_per_column() {
+        // Columns [1;3;5] and [2;4;6] at unit spacing:
+        // (1+3)/2 + (3+5)/2 = 6 and (2+4)/2 + (4+6)/2 = 8.
+        let ev = run(
+            "M = [1, 2; 3, 4; 5, 6];
+             r = trapz(M);
+             n = numel(r);
+             a = r(1);
+             b = r(2);",
+        );
+        assert_eq!(get_scalar(&ev, "n"), 2.0);
+        assert_eq!(get_scalar(&ev, "a"), 6.0);
+        assert_eq!(get_scalar(&ev, "b"), 8.0);
+    }
+
+    #[test]
+    fn trapz_matrix_with_shared_axis() {
+        // x = [0, 1, 3]: col1 = 0.5*(1+3)*1 + 0.5*(3+5)*2 = 10,
+        //                col2 = 0.5*(2+4)*1 + 0.5*(4+6)*2 = 13.
+        let ev = run(
+            "M = [1, 2; 3, 4; 5, 6];
+             r = trapz([0, 1, 3], M);
+             a = r(1);
+             b = r(2);",
+        );
+        assert_eq!(get_scalar(&ev, "a"), 10.0);
+        assert_eq!(get_scalar(&ev, "b"), 13.0);
+    }
+
+    #[test]
+    fn trapz_one_d_shaped_matrix_stays_scalar() {
+        // A 1-row slice of a matrix integrates like a vector → scalar,
+        // matching the sum/mean reduction convention for 1-D shapes.
+        let ev = run(
+            "M = [1, 2, 3; 1, 2, 3];
+             r1 = trapz(M(1, :));",
+        );
+        assert_eq!(get_scalar(&ev, "r1"), 4.0);
+    }
+
+    #[test]
+    fn trapz_axis_length_mismatch_errors() {
+        let msg = run_err("trapz([1, 2], [1, 2, 3])");
+        assert!(msg.contains("samples"), "got: {msg}");
+        let msg = run_err("M = [1, 2; 3, 4; 5, 6]; trapz([1, 2], M)");
+        assert!(msg.contains("samples"), "got: {msg}");
+    }
+
+    #[test]
+    fn trapz_two_dimensional_integral_idiom() {
+        // The downstream surface-integral idiom: integrate columns, then
+        // the resulting row — double integral of 1 over [0,2]x[0,3] = 6.
+        let ev = run(
+            "xs = [0, 1, 2];
+             ys = [0, 1.5, 3];
+             F = ones(3, 3);
+             row_int = trapz(xs, F);
+             total = trapz(ys, row_int);",
+        );
+        assert_eq!(get_scalar(&ev, "total"), 6.0);
     }
 
     #[test]

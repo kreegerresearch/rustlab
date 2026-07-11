@@ -196,7 +196,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `median(v)` | Median (real parts; average of two middles for even length) |
 | `std(v)` | Standard deviation (N-1 denominator) |
 | `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
-| `trapz(v)` / `trapz(x, v)` | Trapezoidal integration (unit or explicit spacing) |
+| `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `hist(v)` / `hist(v, n)` | Histogram; returns 2×n matrix (bin centers, counts). Alias: `histogram()` |
 | `histogram(v); savefig(file)` | Save histogram to PNG or SVG |
 | `all(v)` | True if all elements nonzero |
@@ -230,6 +230,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
+| `[K, E] = ellipke(m)` | Complete elliptic integrals (AGM); parameter m = k², domain [0, 1] |
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
@@ -458,6 +459,7 @@ Touchstone formats accepted: `RI` (real/imag), `MA` (mag/angle°), `DB` (dB/angl
 | `laplacian_2d(nx, ny [, dx, dy] [, bc])` | 5-point sparse Laplacian; column-major ordering `k = (j-1)*ny + i`. `bc` selects boundary (default `"dirichlet"`) |
 | `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` | 7-point sparse Laplacian on a `Tensor3` grid; flat index `k = ((kk-1)*nx + (j-1))*ny + i` |
 | `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` | Variable-coefficient `∇·(ε∇)` with harmonic-mean half-cell coefficients; `eps_map` is `(ny, nx)` real or complex |
+| `[A, b] = pin_dirichlet(A, b, mask, values)` | Pin Dirichlet values: pinned rows of A become identity rows, b gets the values; mask (column-major) or 1-based index vector |
 | `ij2k(i, j, ny)` | Column-major grid → flat index (1-based); third arg is `ny`, not `nx` |
 | `k2ij(k, ny)` | `[i, j] = k2ij(k, ny)` — inverse of `ij2k` |
 | `ijk2k(i, j, kk, ny, nx)` | 3-D version: `k = ((kk-1)*nx + (j-1))*ny + i` |
@@ -512,6 +514,8 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `whos` | List workspace variables with type and size |
 | `whos("file.npz")` | Inspect arrays stored in an NPZ file |
 | `sleep(seconds)` | Pause execution for a non-negative duration in seconds (fractional OK) |
+| `tic` | Start (or restart) the wall-clock stopwatch |
+| `toc` | Elapsed seconds since the last `tic` (scalar; doesn't clear the stopwatch) |
 
 ---
 
@@ -534,7 +538,7 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, cmap)` | 3D surface; interactive rotate/zoom in viewer, Plotly 3D in HTML |
 | `contour(Z)` / `contour(X, Y, Z [, n|levels [, "color"]])` | Line contours; honours `hold on` for overlay on `imagesc`. Terminal: not rendered. |
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
-| `quiver(X, Y, U, V [, scale | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; auto-scaled. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
+| `quiver(X, Y, U, V [, scale | "normalized" | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; 95th-percentile auto-scale with per-arrow clamp (outliers cannot blank the plot); `"normalized"` = unit-length arrows; decimate via stride indexing. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
 | `streamplot(X, Y, U, V [, density | seeds | "title" | "c"])` | RK4 streamlines from a default 10×10 seed grid or an explicit Nx2 seeds matrix; midpoint arrowhead per line. Same overlay/backend behaviour as `quiver`. |
 | `loglog(x, y [, opts])` | Log-log plot (x, y > 0); pre-transforms via log10 |
 | `semilogx(x, y [, opts])` | Log-x, linear-y plot (x > 0) |

@@ -28,9 +28,10 @@ pub use ascii::{
 };
 pub use error::PlotError;
 pub use figure::{
-    capture_thread_state, clear_notebook_figures, close_all_figures, close_figure, colormap_rgb,
-    current_figure_id, current_figure_output, default_axis_y_direction, figure_new,
-    figure_new_html, figure_switch, plot_context, push_notebook_figure_snapshot,
+    capture_thread_state, clear_notebook_figures, clear_terminal_skips, close_all_figures,
+    close_figure, colormap_rgb, current_figure_id, current_figure_output,
+    default_axis_y_direction, emit_pending_terminal_skips, figure_new, figure_new_html,
+    figure_switch, note_terminal_skip, plot_context, push_notebook_figure_snapshot,
     restore_thread_state, set_current_figure_output, set_default_axis_y_direction,
     set_plot_context, take_notebook_figures, AxisYDirection, ContourData, FigureOutput,
     FigureState, HeatmapData, HeatmapKind, HeatmapOrigin, LineStyle, PlotContext, PlotKind, PlotSnapshot,

@@ -87,8 +87,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "argmax(v)      — 1-based index of the max in a vector or 1-D matrix → scalar\nargmax(M)      — per-column argmax → 1×N row matrix\nargmax(M, 2)   — per-row argmax → N×1 column\n\n  Same comparison-key and NaN rules as `argmin`. Always agrees with\n  the index from [m, i] = max(...)." },
     HelpEntry { name: "sort",   brief: "Sort by real part",
         detail: "sort(v)               — ascending order (default)\nsort(v, \"ascend\")     — explicit ascending\nsort(v, \"descend\")    — descending order\n[s, idx] = sort(v)    — sorted values + 1-based permutation indices\n[s, idx] = sort(v, \"descend\")  — same with reversed order\n\n  Returns a vector or column-vector matrix matching the input shape;\n  imaginary components are preserved. Comparison uses the real part only.\n  sort([3,1,2])              → [1, 2, 3]\n  sort([3,1,2], \"descend\")   → [3, 2, 1]\n  v(idx) reproduces the sorted output." },
-    HelpEntry { name: "trapz",  brief: "Trapezoidal numerical integration",
-        detail: "trapz(v)      — integrate with unit spacing\ntrapz(x, v)   — integrate using x as sample positions\n  Returns a scalar (real or complex)." },
+    HelpEntry { name: "trapz",  brief: "Trapezoidal numerical integration (vectors and matrix columns)",
+        detail: "trapz(v)      — integrate with unit spacing → scalar\ntrapz(x, v)   — integrate using x as sample positions → scalar\ntrapz(M)      — integrate each column of a matrix → 1×ncols row\ntrapz(x, M)   — per-column with shared x (length(x) == rows(M))\n\n  Double integral idiom:\n    row_int = trapz(xs, F);        % integrate columns\n    total   = trapz(ys, row_int);  % then the resulting row" },
     HelpEntry { name: "hist", brief: "Histogram — plot and return bin counts",
         detail: "hist(v)        — 10 bins (default)\nhist(v, n)     — n bins\nReturns 2×n matrix: row 1 = bin centers, row 2 = counts\n\nAlias: histogram()" },
     HelpEntry { name: "len",      brief: "Length of vector/string  (alias: length)",
@@ -156,6 +156,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "e = eig(A)                    — N×1 column vector of eigenvalues\n[V, D] = eig(A)               — V eigenvector matrix (column k ↔ D(k,k))\n                                D diagonal matrix of eigenvalues (matlab default)\ne = eig(A, B)                 — generalized: A·v = λ·B·v\n[V, D] = eig(A, B)            — generalized eigenvectors and eigenvalues\n\nOutput-form flag (matlab convention) — overrides the default D shape:\n  eig(A, \"vector\")              — D as N×1 column vector\n  eig(A, \"matrix\")              — D as N×N diagonal matrix\n  [V, D] = eig(A, \"vector\")     — D vector even with two outputs\n  [V, D] = eig(A, B, \"matrix\")  — generalized form, explicit diagonal\n\n  Standard form algorithm: hand-rolled Hessenberg reduction +\n  shifted QR for the eigenvalues, then shifted inverse iteration\n  on A (or inv(B)·A for the generalized form) for each eigenvector.\n  Defective matrices may produce an ill-conditioned V; the eigenvalues\n  remain accurate.\n  Generalized form requires B invertible (Cholesky-route for SPD B is\n  a future optimization; QZ for non-invertible B is deferred).\n\nExample:\n  A = [3, 1; 1, 3]; B = [2, 0; 0, 1];\n  [V, D] = eig(A, B);\n  norm(A*V - B*V*D)         % ~ 1e-15" },
     HelpEntry { name: "eigs",     brief: "Sparse partial eigensolver — Lanczos / Arnoldi",
         detail: "[V, D] = eigs(A, n)\n[V, D] = eigs(A, n, which)         — \"sm\" (default) | \"lm\"\n[V, D] = eigs(A, B, n)            — generalized A x = λ B x; B SPD\n[V, D] = eigs(A, B, n, which)\n\n  A (and B) must be sparse — call sparse(A) first if dense.\n  Returns:\n    V — n_rows × n dense matrix of eigenvectors (column k ↔ D(k))\n    D — length-n vector of eigenvalues\n\nDispatch:\n  Hermitian / SPD A → hand-rolled Lanczos with full reorthogonalization.\n  General A         → hand-rolled Arnoldi with modified Gram-Schmidt.\n  Generalized form  → reduce via SparseChol(B), route through Arnoldi.\n\nDefault Krylov dimension is min(n_rows, max(6n+10, 40)). Implicit restart\nand shift-invert are deferred; if convergence stalls on a closely-spaced\nspectrum, increase the matrix size or wait for the next phase.\n\nExample:\n  L = -1 * laplacian_2d(20, 20);   % SPD form: -∇²\n  [V, D] = eigs(L, 4, \"sm\");        % four lowest eigenmodes" },
+    HelpEntry { name: "ellipke", brief: "Complete elliptic integrals K(m) and E(m)",
+        detail: "K = ellipke(m)\n[K, E] = ellipke(m)\n\n  Complete elliptic integrals of the first (K) and second (E) kind,\n  computed with the arithmetic-geometric mean (AGM).\n\n  PARAMETER CONVENTION: m is the *parameter* m = k² — pass the squared\n  modulus. For modulus k use ellipke(k^2).\n\n  Domain m in [0, 1]; m = 1 returns K = Inf, E = 1. Elementwise over\n  vectors and matrices.\n\n  Example (coaxial loop mutual inductance kernel):\n    k2 = 4*R1*R2 / ((R1+R2)^2 + d^2);\n    [K, E] = ellipke(k2);" },
     HelpEntry { name: "laguerre", brief: "Associated Laguerre polynomial  L_n^α(x)",
         detail: "laguerre(n, alpha, x)  — 3-term recurrence; x may be scalar/vector/matrix\n  Used for hydrogen radial wavefunctions." },
     HelpEntry { name: "legendre", brief: "Associated Legendre polynomial  P_l^m(x)",
@@ -279,13 +281,13 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "surf",     brief: "3D surface plot of a Z matrix",
         detail: "surf(Z)              — plot Z with x=1..cols, y=1..rows\nsurf(X, Y, Z)        — X, Y may be vectors or meshgrid matrices\nsurf(X, Y, Z, cmap)  — with colormap \"viridis\"|\"jet\"|\"hot\"|\"gray\"\n\nTerminal:  renders as a heatmap of Z.\nViewer:    interactive 3D surface — left-drag rotate, scroll zoom,\n           shift+scroll scale Z, right-drag pan, R resets.\nHTML:      Plotly 3D surface (draggable in browser).\nSVG/PNG:   static isometric wireframe.\n\nExample:\n  [X, Y] = meshgrid(linspace(-3, 3, 40), linspace(-3, 3, 40));\n  Z = sin(X.^2 + Y.^2); surf(X, Y, Z);" },
     HelpEntry { name: "contour",  brief: "Line contour plot of a 2-D scalar field",
-        detail: "contour(Z)\ncontour(X, Y, Z)\ncontour(X, Y, Z, nlevels)\ncontour(X, Y, Z, levels)         — explicit level vector\ncontour(X, Y, Z, [..], \"k\")     — single line colour (k/r/g/b/c/m/y/w)\ncontour(X, Y, Z, \"title\")\n\n  X, Y may be 1-D vectors or meshgrid matrices.\n  Default is 10 auto-spaced round-number levels.\n  Honours hold on so contour can overlay imagesc heatmaps and other contour layers.\n\n  Terminal: not rendered (issues a one-time warning) — use savefig to view.\n  HTML:     Plotly contour trace (exact).\n  SVG/PNG:  marching-squares line segments.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 41), linspace(-2, 2, 41));\n  Z = X .^ 2 + Y .^ 2;\n  contour(X, Y, Z);  savefig(\"contour.svg\");" },
+        detail: "contour(Z)\ncontour(X, Y, Z)\ncontour(X, Y, Z, nlevels)\ncontour(X, Y, Z, levels)         — explicit level vector\ncontour(X, Y, Z, [..], \"k\")     — single line colour (k/r/g/b/c/m/y/w)\ncontour(X, Y, Z, \"title\")\n\n  X, Y may be 1-D vectors or meshgrid matrices.\n  Default is 10 auto-spaced round-number levels.\n  Honours hold on so contour can overlay imagesc heatmaps and other contour layers.\n\n  Terminal: not rendered — a deferred warning prints at end of run\n            unless savefig/saveanim consumed the figure.\n  HTML:     Plotly contour trace (exact).\n  SVG/PNG:  marching-squares line segments.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 41), linspace(-2, 2, 41));\n  Z = X .^ 2 + Y .^ 2;\n  contour(X, Y, Z);  savefig(\"contour.svg\");" },
     HelpEntry { name: "contourf", brief: "Filled contour plot of a 2-D scalar field",
         detail: "contourf(Z)\ncontourf(X, Y, Z)\ncontourf(X, Y, Z, nlevels)\ncontourf(X, Y, Z, levels)         — explicit level vector\ncontourf(X, Y, Z, \"title\")\n\n  Default is 10 auto-spaced round-number levels.\n  Colormap follows the heatmap convention (currently always viridis).\n  Honours hold on for overlay with imagesc / contour.\n\n  HTML:     Plotly contour trace with coloring='fill' (exact polygon fill).\n  SVG/PNG:  per-cell discrete-band approximation (exact polygon fill is\n            HTML-only in v1).\n  Terminal: not rendered.\n\nExample:\n  contourf(X, Y, Z, 12);  savefig(\"fill.html\");" },
     HelpEntry { name: "quiver",   brief: "Arrow plot of a 2-D vector field",
-        detail: "quiver(X, Y, U, V)\nquiver(X, Y, U, V, scale)         — shaft-length multiplier (default 1)\nquiver(X, Y, U, V, \"title\")\nquiver(U, V)                      — X, Y default to 1..ncols / 1..nrows\n\n  X, Y may be 1-D vectors or meshgrid matrices. U and V are matrices of\n  the same shape; NaN entries are skipped. Arrows auto-scale so the\n  longest one equals the nearest-neighbour cell distance; the optional\n  `scale` multiplier is applied on top.\n  Honours hold on for overlay with imagesc / contour.\n\n  Terminal: not rendered (issues a one-time warning) — use savefig to view.\n  HTML:     scatter lines with arrowhead polylines.\n  SVG/PNG:  plotters line + polygon arrow per grid cell.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 16), linspace(-2, 2, 16));\n  U = -Y; V = X; quiver(X, Y, U, V);  savefig(\"vortex.svg\");" },
+        detail: "quiver(X, Y, U, V)\nquiver(X, Y, U, V, scale)         — shaft-length multiplier (default 1)\nquiver(X, Y, U, V, \"normalized\")  — unit-length arrows (direction only)\nquiver(X, Y, U, V, \"title\")\nquiver(U, V)                      — X, Y default to 1..ncols / 1..nrows\n\n  X, Y may be 1-D vectors or meshgrid matrices. U and V are matrices of\n  the same shape; NaN entries are skipped. Arrows auto-scale to the 95th\n  percentile of the field magnitudes (a typical arrow spans one cell);\n  outliers clamp to one cell, so a single singular sample cannot blank\n  the plot. The optional `scale` multiplier is applied on top.\n  \"normalized\" draws every arrow at unit length (checked before the\n  title fallback — a title literally named \"normalized\" needs title()).\n  Decimate dense grids with stride indexing, e.g. U(1:3:end, 1:3:end).\n  Honours hold on for overlay with imagesc / contour.\n\n  Terminal: not rendered — a deferred warning prints at end of run\n            unless savefig/saveanim consumed the figure.\n  HTML:     scatter lines with arrowhead polylines.\n  SVG/PNG:  plotters line + polygon arrow per grid cell.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 16), linspace(-2, 2, 16));\n  U = -Y; V = X; quiver(X, Y, U, V);  savefig(\"vortex.svg\");" },
     HelpEntry { name: "streamplot", brief: "Streamline plot of a 2-D vector field",
-        detail: "streamplot(X, Y, U, V)\nstreamplot(X, Y, U, V, density)    — seeds per grid cell (default 1)\nstreamplot(X, Y, U, V, \"title\")\nstreamplot(X, Y, U, V, seeds)      — explicit Nx2 seed matrix (x, y)\n\n  Integrates streamlines by RK4 forward and backward from each seed,\n  clipping at the domain boundary and terminating on NaN or near-zero\n  field magnitude. NaN entries in U or V end the trace locally.\n  Each streamline carries a midpoint arrowhead.\n  Honours hold on for overlay with imagesc / contour.\n\n  Terminal: not rendered (issues a one-time warning) — use savefig to view.\n  HTML:     scatter lines with null-separated polylines.\n  SVG/PNG:  plotters path per streamline.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 40), linspace(-2, 2, 40));\n  U = -Y; V = X; streamplot(X, Y, U, V);  savefig(\"stream.html\");" },
+        detail: "streamplot(X, Y, U, V)\nstreamplot(X, Y, U, V, density)    — seeds per grid cell (default 1)\nstreamplot(X, Y, U, V, \"title\")\nstreamplot(X, Y, U, V, seeds)      — explicit Nx2 seed matrix (x, y)\n\n  Integrates streamlines by RK4 forward and backward from each seed,\n  clipping at the domain boundary and terminating on NaN or near-zero\n  field magnitude. NaN entries in U or V end the trace locally.\n  Each streamline carries a midpoint arrowhead.\n  Honours hold on for overlay with imagesc / contour.\n\n  Terminal: not rendered — a deferred warning prints at end of run\n            unless savefig/saveanim consumed the figure.\n  HTML:     scatter lines with null-separated polylines.\n  SVG/PNG:  plotters path per streamline.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 40), linspace(-2, 2, 40));\n  U = -Y; V = X; streamplot(X, Y, U, V);  savefig(\"stream.html\");" },
     // Figure controls
     HelpEntry { name: "figure",   brief: "Create/switch figures (returns numeric handle)",
         detail: "fig = figure()              — new figure, returns handle (numeric ID)\nfig = figure(\"file.html\")   — new figure in HTML output mode\nfigure(N)                   — switch to figure N (creates if needed)\n\nMultiple figures can coexist. Each figure has its own plot data,\nlabels, and output mode (TUI, HTML, or viewer).\n\nExamples:\n  fig1 = figure()\n  plot(sin(linspace(0,10,100)))\n  fig2 = figure(\"temp.html\")\n  plot(cos(linspace(0,10,100)))\n  figure(fig1)  % switch back to fig1" },
@@ -516,6 +518,10 @@ pub const HELP: &[HelpEntry] = &[
         detail: "error('msg')  — stop the script and display the message\n  error('Invalid input')  → runtime error: Invalid input" },
     HelpEntry { name: "sleep", brief: "Pause execution for a duration in seconds",
         detail: "sleep(seconds)\n  sleep(0.01)   — pause for 10 ms\n  sleep(1.5)    — pause for 1.5 seconds\n\nUseful for real-time control loops and animation pacing." },
+    HelpEntry { name: "tic", brief: "Start (or restart) the wall-clock stopwatch",
+        detail: "tic          — start timing (bare form; tic() also works)\n\nPair with toc to measure elapsed wall-clock time:\n  tic; heavy_computation(); t = toc;   % seconds as a scalar\n\nA later tic resets the stopwatch. The stopwatch is per thread, so a\ntic inside a parallel worker times that worker only. For per-function\ncall profiling, see profile()." },
+    HelpEntry { name: "toc", brief: "Elapsed seconds since the last tic",
+        detail: "toc          — elapsed wall-clock seconds since the last tic\nt = toc;     — capture without printing (suppress echo with ;)\n\ntoc does not clear the stopwatch — call it repeatedly to take\nsplit times against the same tic. Errors if tic was never called." },
     // User-defined functions
     HelpEntry { name: "function", brief: "Define a named function",
         detail: "function y = foo(x)\n  y = x * 2\nend\n\nfunction bar(a, b)\n  print(a + b)\nend\n\nSyntax:\n  function retvar = name(param1, param2, ...)\n    body\n  end\n  function name(param, ...)   % no return value\n    body\n  end\n\nuse 'return' to exit early." },
@@ -704,6 +710,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "spdiags(V, D, m, n)  — place diagonals into an m×n sparse matrix\n  V — vector (single diag) or matrix (one column per diag)\n  D — scalar or vector of offsets (0=main, >0 super, <0 sub)\n\nExamples:\n  S = spdiags([1,2,3], 0, 3, 3)   — diagonal\n  T = spdiags([-ones(5,1), 2*ones(5,1), -ones(5,1)], [-1,0,1], 5, 5)" },
     HelpEntry { name: "sprand", brief: "Random sparse matrix with given density",
         detail: "sprand(m, n, density)  — m×n sparse matrix with ~density*m*n non-zeros\n  Values are uniform in [0, 1). Density must be in [0, 1].\n\nExample:\n  S = sprand(100, 100, 0.05)  → ~500 non-zeros" },
+    HelpEntry { name: "pin_dirichlet", brief: "Pin Dirichlet boundary values into a linear system",
+        detail: "[A, b] = pin_dirichlet(A, b, mask_or_indices, values)\n\n  For each pinned cell k: row k of A becomes the identity row\n  (diagonal 1, everything else 0) and b(k) is set to the pinned\n  value, so spsolve(A, b) reproduces the boundary potential exactly.\n  Replaces the hand-rolled per-cell pinning loop.\n\n  mask_or_indices — a matrix/tensor mask on the grid (nonzero = pin,\n    column-major linearization matching ij2k/ijk2k and the\n    laplacian_* builders), or a vector of 1-based linear indices.\n  values — scalar (broadcast) or vector aligned with the pins.\n\n  A may be sparse (laplacian_* output; ordering hint preserved) or\n  dense; b keeps its container and orientation. Both outputs must be\n  bound — dropping the modified b silently would be a footgun.\n\nExample (plate at 5 V on a 2-D grid):\n  A = laplacian_2d(nx, ny);  b = zeros(nx*ny);\n  [A, b] = pin_dirichlet(A, b, plate_mask, 5.0);\n  V = reshape(spsolve(A, b), ny, nx);" },
     HelpEntry { name: "laplacian_2d", brief: "5-point sparse Laplacian on a 2-D grid",
         detail: "laplacian_2d(nx, ny)                  — dx = dy = 1, Dirichlet\nlaplacian_2d(nx, ny, dx, dy)          — uniform spacing\nlaplacian_2d(nx, ny [, dx, dy], bc)   — bc = \"dirichlet\"|\"neumann\"|\"periodic\"\n\n  Returns an (nx*ny) × (nx*ny) sparse matrix L approximating +∇² on a\n  uniform grid. Sign: Poisson ∇²V = -rho/eps0 solves as V = spsolve(L, -rho/eps0).\n\n  Node ordering: column-major, V(i, j) → k = (j-1)*ny + i (1-based).\n  Use ij2k(i, j, ny) / k2ij(k, ny) for index sugar.\n\n  Boundary conditions:\n    \"dirichlet\" (default) — V = 0 outside grid; standard banded stencil.\n    \"neumann\"             — zero-flux; boundary cells absorb missing\n                            coefficient into diagonal. Constants in null space.\n    \"periodic\"            — wrap. Constants in null space.\n\nExample:\n  nx = 8; ny = 6;\n  L = laplacian_2d(nx, ny);\n  rho = zeros(ny, nx);  rho(ny/2, nx/2) = 1;\n  V = spsolve(L, -rho(:));  V_grid = reshape(V, ny, nx);" },
     HelpEntry { name: "laplacian_1d", brief: "Sparse tridiagonal Laplacian on a 1-D grid",
@@ -1008,10 +1016,18 @@ fn cmd_ls(path: &str) {
 }
 
 /// Run a script source string through the evaluator.
-pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
+///
+/// Returns `true` when the script completed cleanly (including the
+/// documented clean-exit signals below) and `false` when it failed to
+/// tokenize/parse or died on a runtime error — so `rustlab run` can
+/// surface a nonzero exit code. Errors are printed here, exactly once.
+pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) -> bool {
     use rustlab_script::ScriptError;
     match lexer::tokenize(src).and_then(|t| parser::parse(t)) {
-        Err(e) => eprintln!("error: {e}"),
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
         Ok(stmts) => {
             for stmt in &stmts {
                 if let Err(e) = ev.exec_stmt(stmt) {
@@ -1021,13 +1037,16 @@ pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) {
                     // --profile branch of `rustlab run` already treats
                     // them as exit-0; mirror that here so a finished sox /
                     // chirp pipe doesn't surface as "error: stdin closed".
-                    match e {
-                        ScriptError::AudioEof | ScriptError::Interrupted => {}
-                        _ => eprintln!("error: {e}"),
-                    }
-                    break;
+                    return match e {
+                        ScriptError::AudioEof | ScriptError::Interrupted => true,
+                        _ => {
+                            eprintln!("error: {e}");
+                            false
+                        }
+                    };
                 }
             }
+            true
         }
     }
 }
@@ -1079,7 +1098,9 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "language", subcategory: "Output",
         names: &["disp", "fprintf", "sprintf", "print", "commas", "format", "underscores"] },
     CategoryRow { toolbox: "language", subcategory: "Data I/O",
-        names: &["save", "load", "sleep"] },
+        names: &["save", "load"] },
+    CategoryRow { toolbox: "language", subcategory: "Timing",
+        names: &["tic", "toc", "sleep"] },
     CategoryRow { toolbox: "language", subcategory: "Filesystem",
         names: &["run", "ls", "cd", "pwd"] },
     CategoryRow { toolbox: "language", subcategory: "Higher-order",
@@ -1104,7 +1125,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "math", subcategory: "Trigonometry",
         names: &["cos", "sin", "acos", "asin", "atan", "atan2", "tanh", "sinh", "cosh"] },
     CategoryRow { toolbox: "math", subcategory: "Special functions",
-        names: &["laguerre", "legendre", "factor"] },
+        names: &["ellipke", "laguerre", "legendre", "factor"] },
     CategoryRow { toolbox: "math", subcategory: "Activations",
         names: &["softmax", "relu", "gelu", "layernorm"] },
 
@@ -1144,7 +1165,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "sparse", subcategory: "Solvers",
         names: &["spsolve", "chol", "lu", "solve"] },
     CategoryRow { toolbox: "sparse", subcategory: "Discrete Laplacians",
-        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d"] },
+        names: &["laplacian_1d", "laplacian_2d", "laplacian_3d", "laplacian_eps_2d", "pin_dirichlet"] },
     CategoryRow { toolbox: "sparse", subcategory: "Index helpers",
         names: &["ij2k", "k2ij", "ijk2k", "k2ijk"] },
 
@@ -1871,6 +1892,11 @@ pub fn execute() -> Result<()> {
                     }
                     Err(e) => eprintln!("{} {}", color::bold_red("error:"), e),
                 }
+                // Interactive users get plot-skip warnings promptly, per
+                // statement — but a `quiver(...); savefig(...)` line (or
+                // a `run file.rlab` whose script saves its figures) stays
+                // silent because savefig cleared the pending set.
+                rustlab_plot::emit_pending_terminal_skips();
             }
             Err(ReadlineError::Interrupted) => {
                 // Ctrl+C — clear current input, continue

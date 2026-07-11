@@ -1570,11 +1570,17 @@ impl Evaluator {
             Expr::Number(n) => Ok(Value::Scalar(*n)),
             Expr::Imag(n) => Ok(Value::Complex(Complex::new(0.0, *n))),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
-            Expr::Var(name) => self
-                .env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| ScriptError::undefined(name.clone())),
+            Expr::Var(name) => match self.env.get(name) {
+                Some(v) => Ok(v.clone()),
+                // Bare `tic` / `toc` (no parens) are the canonical timing
+                // idiom, so fall through to the zero-arg builtin on an env
+                // miss — a user variable named tic/toc still shadows it.
+                // (Same spirit as the bare `clear` / `clf` statements.)
+                None if name == "tic" || name == "toc" => {
+                    self.call_builtin_tracked(name, vec![])
+                }
+                None => Err(ScriptError::undefined(name.clone())),
+            },
             Expr::UnaryMinus(inner) => {
                 let v = self.eval_expr(inner)?;
                 v.negate().map_err(|e| ScriptError::type_err(e))
@@ -1775,6 +1781,10 @@ impl Evaluator {
                             Value::Matrix(m) => m.nrows(),
                             Value::SparseVector(sv) => sv.len,
                             Value::SparseMatrix(sm) => sm.rows,
+                            // Single-index tensor access is linear over the
+                            // column-major flat view, so `end` is the total
+                            // element count (matches T(:) / T(k) semantics).
+                            Value::Tensor3(t) => t.len(),
                             Value::Tuple(t) => t.len(),
                             Value::Str(s) => s.chars().count(),
                             Value::StringArray(v) => v.len(),

@@ -376,15 +376,20 @@ sort([3.0, -1.0, 0.5])        # → [-1.0, 0.5, 3.0]
 - Returns a scalar unchanged.
 - Useful for top-K sampling: sort logits descending, slice, apply softmax.
 
-### `trapz(v)` / `trapz(x, v)`
-Trapezoidal numerical integration. With one argument, assumes unit spacing between samples.
-With two arguments, uses `x` as the sample positions.
+### `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)`
+Trapezoidal numerical integration. With one argument, assumes unit spacing between samples; with two, uses `x` as the sample positions.
+
+Matrices integrate **per column** down the rows, returning a `1×ncols` row (1-D-shaped inputs behave like vectors and return a scalar, matching the `sum`/`mean` convention). For `trapz(x, M)`, `length(x)` must equal the number of rows.
 ```
 trapz([0.0, 1.0, 2.0, 1.0, 0.0])            # → 4.0  (unit spacing)
 trapz(linspace(0,1,5), [0,1,2,1,0] * 1.0)   # area under triangle
+
+# Double integral over a grid: columns first, then the resulting row
+row_int = trapz(xs, F);
+total   = trapz(ys, row_int);
 ```
-- Returns a scalar (real or complex).
-- Returns `0.0` for vectors with fewer than 2 elements.
+- Returns a scalar (real or complex) for vectors, a row matrix for matrices.
+- Returns `0.0` for strips with fewer than 2 samples.
 
 ### `prod(v)`
 Product of all elements. Accepts scalar, complex, vector, or matrix.
@@ -1284,6 +1289,22 @@ L = -1 * laplacian_2d(nx, ny);
 - Small dense symmetric eigenproblem at the centre of Lanczos via cyclic Jacobi rotations.
 - Small dense Hessenberg eigenproblem via shifted QR + inverse iteration (eigenvectors).
 
+### `ellipke(m)` / `[K, E] = ellipke(m)`
+Complete elliptic integrals of the first kind K(m) and second kind E(m), computed with the arithmetic-geometric mean (quadratic convergence; Abramowitz & Stegun §17.6).
+
+**Parameter convention:** the argument is the *parameter* `m = k²` — pass the squared modulus. For a modulus `k`, call `ellipke(k^2)`.
+
+Domain `0 ≤ m ≤ 1`; `m = 1` returns `K = Inf`, `E = 1` (the exact limits). Elementwise over vectors and matrices; the single-output form returns K alone.
+```
+[K, E] = ellipke(0.5)       # K ≈ 1.85407, E ≈ 1.35064
+K0 = ellipke(0)             # π/2 — both integrals equal π/2 at m = 0
+
+# Coaxial-loop mutual inductance kernel:
+k2 = 4*R1*R2 / ((R1 + R2)^2 + d^2);
+[K, E] = ellipke(k2);
+M = mu0 * sqrt(R1*R2) * ((2/sqrt(k2) - sqrt(k2))*K - 2/sqrt(k2)*E);
+```
+
 ### `laguerre(n, alpha, x)`
 Associated Laguerre polynomial L_n^α(x) computed via 3-term recurrence.
 ```
@@ -1811,6 +1832,24 @@ eps_lossy = 4.0 - 0.1 * j * ones(ny, nx);
 L = laplacian_eps_2d(eps_lossy, dx, dy);
 ```
 
+### `pin_dirichlet(A, b, mask_or_indices, values)`
+Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`, row `k` of `A` is replaced with the identity row (diagonal 1, all off-diagonals 0 — the whole row, so it is also correct for wide-row operators like `laplacian_eps_2d`) and `b(k)` is set to the pinned value. `spsolve(A, b)` then reproduces the boundary potential exactly while the operator acts everywhere else.
+
+- `mask_or_indices` — either a mask on the grid (matrix or 3-D tensor whose element count equals the operator size; nonzero = pin; linearized column-major, matching `ij2k`/`ijk2k` and the `laplacian_*` node ordering), or a vector of 1-based linear indices.
+- `values` — a scalar (broadcast to every pin) or a vector aligned with the mask's column-major nonzeros / the index list.
+- `A` — sparse (the `laplacian_*` ordering hint survives) or dense; must be square.
+- `b` — vector or 1×n / n×1 matrix; container and orientation are preserved.
+- Both outputs must be bound: `[A, b] = pin_dirichlet(...)`. A single-output call is an error — silently dropping the modified `b` would corrupt the physics.
+
+```
+# Parallel plates at ±5 V on an ny×nx grid:
+A = laplacian_2d(nx, ny);
+b = zeros(nx*ny);
+[A, b] = pin_dirichlet(A, b, top_plate, 5.0);
+[A, b] = pin_dirichlet(A, b, bot_plate, -5.0);
+V = reshape(spsolve(A, b), ny, nx);
+```
+
 ### `ij2k(i, j, ny)`
 
 Column-major grid-to-flat index conversion (1-based). Returns `(j-1)*ny + i`. The third argument is `ny` (row count), not `nx` — this matches the `laplacian_2d` ordering.
@@ -2156,7 +2195,7 @@ hold off;
 
 Per-backend behaviour:
 
-- **Terminal** — not rendered (a one-time warning is printed). Use `savefig("...svg")` or `savefig("...html")` to view.
+- **Terminal** — not rendered. A single combined warning prints at the end of the run (or REPL line) *unless* a `savefig`/`saveanim` consumed the figure — scripted `quiver(...); savefig(...)` runs are silent. Use `savefig("...svg")` or `savefig("...html")` to view.
 - **HTML** (`savefig("...html")`) — Plotly contour trace per `ContourData`. Exact level lines.
 - **SVG / PNG** — marching-squares line segments via plotters' `PathElement`.
 - **Notebook** — captured as a figure snapshot; output follows the renderer's HTML / SVG path.
@@ -2181,17 +2220,22 @@ Per-backend behaviour:
 
 Arrow plot of a 2-D vector field. `U` and `V` are same-shape matrices giving the field's x- and y-components on the grid `X × Y`. `X` and `Y` may be 1-D vectors (length = `ncols`, `nrows`) or `meshgrid` matrices. `quiver(U, V)` is a shortcut that defaults `X` and `Y` to `1..ncols`, `1..nrows`.
 
-Arrows auto-scale so the longest one equals the nearest-neighbour cell distance — dense fields never overlap. Trailing modifier arguments (in any order):
+Arrows auto-scale to the **95th percentile** of the field's nonzero magnitudes — a typical arrow spans up to one nearest-neighbour cell, and the few arrows above the reference **clamp** to one cell (direction preserved). A single near-singular sample (e.g. a field evaluated on top of its own source) therefore no longer shrinks every other arrow to invisibility. Trailing modifier arguments (in any order):
 
-- **Scalar** — a positive multiplier applied on top of the auto-scale.
+- **Scalar** — a positive multiplier applied on top of the auto-scale (the clamp scales with it).
+- **`"normalized"`** — draw every arrow at unit length (× scale): a direction-only view for fields with huge dynamic range. Checked before the title fallback, so a plot literally titled "normalized" must use `title()` instead.
 - **String** — a single-letter colour code (`"k"/"r"/"g"/"b"/"c"/"m"/"y"/"w"`) sets arrow colour; any other string is the subplot title.
 
 ```
 quiver(X, Y, U, V);
 quiver(X, Y, U, V, 0.5);            % half-length arrows
+quiver(X, Y, U, V, "normalized");   % direction-only field view
 quiver(X, Y, U, V, "Vortex field");
 quiver(X, Y, U, V, "k");            % black arrows
 quiver(U, V);                       % shortcut — indexed axes
+
+% Dense grids: decimate with stride indexing instead of a builtin option
+quiver(x(1:5:end), y(1:5:end), U(1:5:end, 1:5:end), V(1:5:end, 1:5:end));
 ```
 
 Under `hold on`, quiver overlays stack on top of `imagesc` heatmaps and `contour` traces. NaN entries in `U` or `V` skip that cell.
@@ -2200,7 +2244,7 @@ Per-backend behaviour:
 
 - **HTML** (`savefig("...html")`) — single Plotly scatter line trace with `null`-separated polylines per arrow (shaft + triangular head).
 - **SVG / PNG** — plotters line + head polyline per cell.
-- **Terminal** — not rendered (one-time warning).
+- **Terminal** — not rendered (deferred warning at end of run, silenced by `savefig`/`saveanim`).
 
 ### `streamplot(X, Y, U, V)` / `streamplot(X, Y, U, V, ...)`
 
@@ -3335,6 +3379,19 @@ sleep(0.01)    # pause for 10 ms
 sleep(1.5)     # pause for 1.5 seconds
 ```
 
+### `tic` / `toc`
+Wall-clock stopwatch. `tic` starts (or restarts) the timer; `toc` returns the elapsed seconds since the last `tic` as a scalar, without clearing the stopwatch — call it repeatedly for split times. `toc` before any `tic` is a runtime error. Both work bare or with parentheses.
+```
+tic
+heavy_computation();
+t = toc;                    # elapsed seconds, echo suppressed
+print("elapsed: ", t)
+
+tic; step_a(); ta = toc;    # restart per phase
+tic; step_b(); tb = toc;
+```
+The stopwatch is per thread — a `tic` inside a parallel worker times that worker only. For per-function call statistics, see `profile()`. Both names are on the cache-purity denylist, so a cached user function that calls `tic`/`toc` is automatically excluded from result caching.
+
 ### `clear`
 Remove all user-defined variables and functions from the workspace. Built-in constants (`j`, `pi`, `e`, etc.) are preserved. No parentheses needed.
 ```
@@ -3957,15 +4014,15 @@ three checkpoints:
   cache-routed) — `cache enable` also runs this scan over every
   pre-existing user function. `cache add function name` is the
   strictest: explicit ask → explicit error.
-- **Impure builtins**: `rand` / `randn` / `randi`, plotting (`plot`,
-  `figure`, `hold`, `subplot`, `title`, `xlabel`, `ylabel`, `legend`,
-  `bar`, `scatter`, `stem`), file I/O (`load`, `save`, `audio_read`,
-  `audio_write`), TTY output (`disp`, `fprintf`, `sprintf`). The
-  denylist also reserves names not currently shipped as builtins —
-  `tic`, `toc`, `now`, `clock`, `fopen`, `fclose`, `fread`, `fwrite`,
-  `input`, `keyboard`, `printf`, `randperm`, `audio_play` — so that
-  if/when those land they're already excluded. Same in-file / explicit
-  / inline policy as for free vars.
+- **Impure builtins**: `rand` / `randn` / `randi`, timing (`tic`,
+  `toc`), plotting (`plot`, `figure`, `hold`, `subplot`, `title`,
+  `xlabel`, `ylabel`, `legend`, `bar`, `scatter`, `stem`), file I/O
+  (`load`, `save`, `audio_read`, `audio_write`), TTY output (`disp`,
+  `fprintf`, `sprintf`). The denylist also reserves names not
+  currently shipped as builtins — `now`, `clock`, `fopen`, `fclose`,
+  `fread`, `fwrite`, `input`, `keyboard`, `printf`, `randperm`,
+  `audio_play` — so that if/when those land they're already excluded.
+  Same in-file / explicit / inline policy as for free vars.
 
 NaN arguments bypass the cache on a per-call basis (a NaN-bearing
 input can't fingerprint deterministically). The call still runs; only
