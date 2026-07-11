@@ -237,6 +237,7 @@ impl BuiltinRegistry {
         r.register("eigs", builtin_eigs);
         // Special functions
         r.register("laguerre", builtin_laguerre);
+        r.register_nargout("ellipke", builtin_ellipke_nargout);
         r.register("legendre", builtin_legendre);
         // Number theory
         r.register("factor", builtin_factor);
@@ -374,6 +375,7 @@ impl BuiltinRegistry {
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
         r.register("laplacian_2d", builtin_laplacian_2d);
+        r.register_nargout("pin_dirichlet", builtin_pin_dirichlet_nargout);
         r.register("laplacian_1d", builtin_laplacian_1d);
         r.register("laplacian_3d", builtin_laplacian_3d);
         r.register("laplacian_eps_2d", builtin_laplacian_eps_2d);
@@ -398,6 +400,8 @@ impl BuiltinRegistry {
         r.register("close", builtin_close);
         r.register("mag2db", builtin_mag2db);
         r.register("sleep", builtin_sleep);
+        r.register("tic", builtin_tic);
+        r.register("toc", builtin_toc);
 
         r
     }
@@ -1889,6 +1893,34 @@ fn builtin_sleep(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::Scalar(0.0))
 }
 
+thread_local! {
+    /// Wall-clock start set by the most recent `tic()`. A later `tic()`
+    /// resets it; `toc()` reads without clearing so it can be called
+    /// repeatedly against the same start. Thread-local, so a `tic` inside
+    /// a parallel worker times that worker only.
+    static TIC_START: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// tic() — start (or restart) the wall-clock stopwatch. Silent.
+fn builtin_tic(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("tic", &args, 0)?;
+    TIC_START.with(|t| t.set(Some(std::time::Instant::now())));
+    Ok(Value::None)
+}
+
+/// toc() — elapsed seconds since the last tic(). Does not clear the
+/// stopwatch; errors if tic() was never called.
+fn builtin_toc(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("toc", &args, 0)?;
+    match TIC_START.with(|t| t.get()) {
+        Some(start) => Ok(Value::Scalar(start.elapsed().as_secs_f64())),
+        None => Err(ScriptError::runtime(
+            "toc: no stopwatch running — call tic() first".to_string(),
+        )),
+    }
+}
+
 fn builtin_error(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("error", &args, 1)?;
     let msg = match &args[0] {
@@ -2456,54 +2488,88 @@ fn builtin_sort(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// trapz(x, v) — trapezoidal integration with x coordinates.
 fn builtin_trapz(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("trapz", &args, 1, 2)?;
-    let (x_opt, v) = if args.len() == 2 {
-        let x = match &args[0] {
-            Value::Vector(v) => v.iter().map(|c| c.re).collect::<Vec<f64>>(),
+
+    // Optional shared sample positions (2-arg form). A 1-D-shaped matrix
+    // (1×N or N×1) is accepted as the axis like a vector.
+    let x_opt: Option<Vec<f64>> = if args.len() == 2 {
+        Some(match &args[0] {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+                m.iter().map(|c| c.re).collect()
+            }
             other => {
                 return Err(ScriptError::type_err(format!(
                     "trapz: x must be a vector, got {}",
                     other.type_name()
                 )))
             }
-        };
-        let v = match &args[1] {
-            Value::Vector(v) => v.clone(),
-            other => {
-                return Err(ScriptError::type_err(format!(
-                    "trapz: v must be a vector, got {}",
-                    other.type_name()
-                )))
-            }
-        };
-        (Some(x), v)
-    } else {
-        let v = match &args[0] {
-            Value::Vector(v) => v.clone(),
-            other => {
-                return Err(ScriptError::type_err(format!(
-                    "trapz: argument must be a vector, got {}",
-                    other.type_name()
-                )))
-            }
-        };
-        (None, v)
-    };
-    if v.len() < 2 {
-        return Ok(Value::Scalar(0.0));
-    }
-    let s: C64 = (0..v.len() - 1)
-        .map(|i| {
-            let dx = match &x_opt {
-                Some(x) => x[i + 1] - x[i],
-                None => 1.0,
-            };
-            (v[i] + v[i + 1]) * 0.5 * dx
         })
-        .sum();
-    if s.im.abs() < 1e-12 {
-        Ok(Value::Scalar(s.re))
     } else {
-        Ok(Value::Complex(s))
+        None
+    };
+
+    // Trapezoid sum over one strip of samples against the shared axis
+    // (unit spacing when no axis is given).
+    let strip = |v: &[C64]| -> Result<C64, ScriptError> {
+        if let Some(x) = &x_opt {
+            if x.len() != v.len() {
+                return Err(ScriptError::type_err(format!(
+                    "trapz: x has {} samples but the data has {}",
+                    x.len(),
+                    v.len()
+                )));
+            }
+        }
+        if v.len() < 2 {
+            return Ok(Complex::new(0.0, 0.0));
+        }
+        Ok((0..v.len() - 1)
+            .map(|i| {
+                let dx = match &x_opt {
+                    Some(x) => x[i + 1] - x[i],
+                    None => 1.0,
+                };
+                (v[i] + v[i + 1]) * 0.5 * dx
+            })
+            .sum())
+    };
+
+    let scalar_result = |s: C64| {
+        if s.im.abs() < 1e-12 {
+            Value::Scalar(s.re)
+        } else {
+            Value::Complex(s)
+        }
+    };
+
+    let data = if args.len() == 2 { &args[1] } else { &args[0] };
+    match data {
+        Value::Vector(v) => {
+            let samples: Vec<C64> = v.iter().copied().collect();
+            Ok(scalar_result(strip(&samples)?))
+        }
+        // 1-D-shaped matrices integrate like vectors → scalar (matches
+        // the sum/mean reduction convention).
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            let samples: Vec<C64> = m.iter().copied().collect();
+            Ok(scalar_result(strip(&samples)?))
+        }
+        // True matrices integrate per column down the rows, returning a
+        // 1×ncols row: trapz(M) / trapz(x, M) with len(x) == nrows(M).
+        Value::Matrix(m) => {
+            let mut out: Vec<C64> = Vec::with_capacity(m.ncols());
+            for col in m.columns() {
+                let samples: Vec<C64> = col.iter().copied().collect();
+                out.push(strip(&samples)?);
+            }
+            let row = ndarray::Array2::from_shape_vec((1, out.len()), out)
+                .expect("1×ncols shape is consistent by construction");
+            Ok(Value::Matrix(row))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "trapz: argument must be a vector or matrix, got {}",
+            other.type_name()
+        ))),
     }
 }
 
@@ -4069,6 +4135,9 @@ fn builtin_savefig(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("savefig", &args, 1)?;
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
     render_figure_file(&path).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    // The figure reached a file — any pending "not rendered to the
+    // terminal" note is moot.
+    rustlab_plot::clear_terminal_skips();
     Ok(Value::None)
 }
 
@@ -4136,6 +4205,9 @@ fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
                 .map_err(|e| ScriptError::runtime(e.to_string()))?;
         }
     }
+    // Frames reached a file — pending terminal-skip notes (e.g. quiver
+    // frames captured for this animation) are moot.
+    rustlab_plot::clear_terminal_skips();
     Ok(Value::None)
 }
 
@@ -5082,17 +5154,6 @@ fn parse_xyz<'a>(
     }
 }
 
-fn warn_terminal_contour_once() {
-    use std::sync::Once;
-    static WARN: Once = Once::new();
-    WARN.call_once(|| {
-        eprintln!(
-            "rustlab: contour/contourf are not rendered to the terminal — \
-             use savefig(\"plot.svg\" or \"plot.html\") to view them."
-        );
-    });
-}
-
 fn push_contour_state(
     name: &str,
     x: Vec<f64>,
@@ -5147,7 +5208,7 @@ fn push_contour_state(
     });
 
     if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Terminal {
-        warn_terminal_contour_once();
+        rustlab_plot::note_terminal_skip("contour");
     }
     sync_figure_outputs();
     Ok(())
@@ -5256,28 +5317,6 @@ fn parse_xyuv<'a>(
     )))
 }
 
-fn warn_terminal_quiver_once() {
-    use std::sync::Once;
-    static WARN: Once = Once::new();
-    WARN.call_once(|| {
-        eprintln!(
-            "rustlab: quiver is not rendered to the terminal — \
-             use savefig(\"plot.svg\" or \"plot.html\") to view it."
-        );
-    });
-}
-
-fn warn_terminal_streamplot_once() {
-    use std::sync::Once;
-    static WARN: Once = Once::new();
-    WARN.call_once(|| {
-        eprintln!(
-            "rustlab: streamplot is not rendered to the terminal — \
-             use savefig(\"plot.svg\" or \"plot.html\") to view it."
-        );
-    });
-}
-
 /// `quiver(X, Y, U, V [, scale | "title"])` or `quiver(U, V [, ...])`.
 ///
 /// Draws an arrow glyph at each grid point. Arrows are auto-scaled so the
@@ -5291,6 +5330,7 @@ fn builtin_quiver(args: Vec<Value>) -> Result<Value, ScriptError> {
     let mut scale = 1.0f64;
     let mut title: Option<String> = None;
     let mut color: Option<rustlab_plot::SeriesColor> = None;
+    let mut normalized = false;
     for arg in rest {
         match arg {
             Value::Scalar(n) => {
@@ -5301,6 +5341,10 @@ fn builtin_quiver(args: Vec<Value>) -> Result<Value, ScriptError> {
                 }
                 scale = *n;
             }
+            // The keyword is checked before the color/title fallback, so
+            // a plot literally titled "normalized" must go through
+            // title() instead — accepted, documented collision policy.
+            Value::Str(s) if s == "normalized" => normalized = true,
             Value::Str(s) => {
                 if let Some(c) = rustlab_plot::SeriesColor::parse(s) {
                     color = Some(c);
@@ -5316,6 +5360,27 @@ fn builtin_quiver(args: Vec<Value>) -> Result<Value, ScriptError> {
             }
         }
     }
+
+    // "normalized": direction-only view — every finite nonzero (u, v)
+    // becomes its unit vector before storage, so all arrows draw at one
+    // cell × scale. Normalizing at push time keeps QuiverData and every
+    // backend/viewer round-trip unchanged.
+    let (u, v) = if normalized {
+        let mut un = u;
+        let mut vn = v;
+        for (ru, rv) in un.iter_mut().zip(vn.iter_mut()) {
+            for (a, b) in ru.iter_mut().zip(rv.iter_mut()) {
+                let m = (*a * *a + *b * *b).sqrt();
+                if m.is_finite() && m > 0.0 {
+                    *a /= m;
+                    *b /= m;
+                }
+            }
+        }
+        (un, vn)
+    } else {
+        (u, v)
+    };
 
     rustlab_plot::FIGURE.with(|fig| {
         let mut fig = fig.borrow_mut();
@@ -5337,7 +5402,7 @@ fn builtin_quiver(args: Vec<Value>) -> Result<Value, ScriptError> {
     });
 
     if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Terminal {
-        warn_terminal_quiver_once();
+        rustlab_plot::note_terminal_skip("quiver");
     }
     sync_figure_outputs();
     Ok(Value::None)
@@ -5419,7 +5484,7 @@ fn builtin_streamplot(args: Vec<Value>) -> Result<Value, ScriptError> {
     });
 
     if rustlab_plot::plot_context() == rustlab_plot::PlotContext::Terminal {
-        warn_terminal_streamplot_once();
+        rustlab_plot::note_terminal_skip("streamplot");
     }
     sync_figure_outputs();
     Ok(Value::None)
@@ -7179,6 +7244,100 @@ fn builtin_linsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// Uses the 3-term recurrence:
 ///   L_0 = 1,  L_1 = 1 + alpha - x
 ///   L_{k+1} = ((2k+1+alpha-x)*L_k - (k+alpha)*L_{k-1}) / (k+1)
+/// Complete elliptic integrals K(m) and E(m) for parameter m = k²
+/// (the *parameter* convention — pass k² for modulus k), computed with
+/// the arithmetic-geometric mean:
+///
+///   a₀ = 1, b₀ = √(1−m), c₀ = √m;  aₙ₊₁ = (aₙ+bₙ)/2, bₙ₊₁ = √(aₙbₙ),
+///   cₙ₊₁ = (aₙ−bₙ)/2;  K = π/(2a∞),  E = K·(1 − Σ 2ⁿ⁻¹cₙ²)
+///
+/// (Abramowitz & Stegun §17.6.) Quadratic convergence — 12 iterations
+/// is far past double-precision saturation on [0, 1).
+fn ellipke_scalar(m: f64) -> Result<(f64, f64), String> {
+    if !(0.0..=1.0).contains(&m) {
+        return Err(format!(
+            "ellipke: parameter m must be in [0, 1], got {m} (note: m = k² — pass the squared modulus)"
+        ));
+    }
+    if m == 1.0 {
+        // b₀ = 0 stalls the AGM (K diverges); the exact limit is
+        // K(1) = ∞, E(1) = 1.
+        return Ok((f64::INFINITY, 1.0));
+    }
+    let mut a = 1.0_f64;
+    let mut b = (1.0 - m).sqrt();
+    let c0 = m.sqrt();
+    let mut s = 0.5 * c0 * c0;
+    let mut pw = 1.0_f64;
+    for _ in 0..12 {
+        let an = 0.5 * (a + b);
+        let bn = (a * b).sqrt();
+        let cn = 0.5 * (a - b);
+        s += pw * cn * cn;
+        pw *= 2.0;
+        a = an;
+        b = bn;
+    }
+    let k = std::f64::consts::PI / (2.0 * a);
+    let e = k * (1.0 - s);
+    Ok((k, e))
+}
+
+/// ellipke(m) — elementwise over scalar/vector/matrix. Single output is
+/// K; `[K, E] = ellipke(m)` returns both.
+fn builtin_ellipke_nargout(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
+    check_args("ellipke", &args, 1)?;
+
+    // Map the input elementwise into (K, E) pairs, preserving shape.
+    let pair = |m: f64| ellipke_scalar(m).map_err(ScriptError::type_err);
+    let (k_val, e_val) = match &args[0] {
+        Value::Scalar(m) => {
+            let (k, e) = pair(*m)?;
+            (Value::Scalar(k), Value::Scalar(e))
+        }
+        Value::Complex(c) => {
+            // Mirror the other special functions: real part only.
+            let (k, e) = pair(c.re)?;
+            (Value::Scalar(k), Value::Scalar(e))
+        }
+        Value::Vector(v) => {
+            let mut ks = Vec::with_capacity(v.len());
+            let mut es = Vec::with_capacity(v.len());
+            for c in v.iter() {
+                let (k, e) = pair(c.re)?;
+                ks.push(Complex::new(k, 0.0));
+                es.push(Complex::new(e, 0.0));
+            }
+            (
+                Value::Vector(Array1::from_vec(ks)),
+                Value::Vector(Array1::from_vec(es)),
+            )
+        }
+        Value::Matrix(m) => {
+            let mut ks = m.clone();
+            let mut es = m.clone();
+            for (kc, ec) in ks.iter_mut().zip(es.iter_mut()) {
+                let (k, e) = pair(kc.re)?;
+                *kc = Complex::new(k, 0.0);
+                *ec = Complex::new(e, 0.0);
+            }
+            (Value::Matrix(ks), Value::Matrix(es))
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "ellipke: m must be scalar/vector/matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    if nargout >= 2 {
+        Ok(Value::Tuple(vec![k_val, e_val]))
+    } else {
+        Ok(k_val)
+    }
+}
+
 fn builtin_laguerre(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("laguerre", &args, 3)?;
     let n = args[0].to_scalar().map_err(|_| {
@@ -12395,6 +12554,234 @@ fn parse_bc_arg(name: &str, value: Option<&Value>) -> Result<rustlab_dsp::Bounda
 
 /// `laplacian_2d(nx, ny [, dx, dy] [, bc])` — sparse 5-point Laplacian on
 /// a uniform grid with the requested boundary condition.
+/// Resolve pin_dirichlet's third argument into 0-based linear indices.
+///
+/// A Matrix or Tensor3 whose element count equals the operator size is a
+/// *mask* (nonzero = pin), linearized column-major — the same i-fastest
+/// walk `ij2k` / `ijk2k` and the `laplacian_*` builders use, so a mask
+/// built on the grid lines up with the operator rows. A Vector (or
+/// single Scalar) is a list of 1-based linear indices.
+fn pin_indices(arg: &Value, n: usize) -> Result<Vec<usize>, ScriptError> {
+    let from_one_based = |x: f64| -> Result<usize, ScriptError> {
+        if x.fract() != 0.0 || x < 1.0 {
+            return Err(ScriptError::type_err(format!(
+                "pin_dirichlet: index {x} is not a positive integer"
+            )));
+        }
+        let k = (x as usize) - 1;
+        if k >= n {
+            return Err(ScriptError::type_err(format!(
+                "pin_dirichlet: index {x} out of range (operator has {n} rows)"
+            )));
+        }
+        Ok(k)
+    };
+    match arg {
+        Value::Scalar(x) => Ok(vec![from_one_based(*x)?]),
+        Value::Vector(v) => v.iter().map(|c| from_one_based(c.re)).collect(),
+        Value::Matrix(m) if m.len() == n => {
+            let mut ks = Vec::new();
+            let mut k = 0usize;
+            for j in 0..m.ncols() {
+                for i in 0..m.nrows() {
+                    if m[[i, j]].norm() != 0.0 {
+                        ks.push(k);
+                    }
+                    k += 1;
+                }
+            }
+            Ok(ks)
+        }
+        Value::Tensor3(t) if t.len() == n => {
+            let (sm, sn, sp) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+            let mut ks = Vec::new();
+            let mut k = 0usize;
+            for kk in 0..sp {
+                for j in 0..sn {
+                    for i in 0..sm {
+                        if t[[i, j, kk]].norm() != 0.0 {
+                            ks.push(k);
+                        }
+                        k += 1;
+                    }
+                }
+            }
+            Ok(ks)
+        }
+        Value::Matrix(m) => Err(ScriptError::type_err(format!(
+            "pin_dirichlet: mask has {} elements but the operator has {n} rows",
+            m.len()
+        ))),
+        Value::Tensor3(t) => Err(ScriptError::type_err(format!(
+            "pin_dirichlet: mask has {} elements but the operator has {n} rows",
+            t.len()
+        ))),
+        other => Err(ScriptError::type_err(format!(
+            "pin_dirichlet: expected a mask (matrix/tensor) or index vector, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// [A, b] = pin_dirichlet(A, b, mask_or_indices, values)
+///
+/// Enforce Dirichlet conditions on a linear system: for each pinned row
+/// k, replace row k of `A` with the identity row (diagonal 1, everything
+/// else 0) and set `b(k)` to the pinned value, so the solve reproduces
+/// the boundary potential exactly while the operator acts everywhere
+/// else. Replaces the hand-rolled "zero the stencil neighbours" loop —
+/// zeroing the whole row is equivalent for stencil operators and also
+/// correct for operators with wider rows (e.g. `laplacian_eps_2d`).
+///
+/// `values` is a scalar (same value at every pin) or a vector aligned
+/// with the mask's nonzero cells / the index list. Both outputs must be
+/// bound: the modified `b` is half the point.
+fn builtin_pin_dirichlet_nargout(
+    args: Vec<Value>,
+    nargout: usize,
+) -> Result<Value, ScriptError> {
+    check_args("pin_dirichlet", &args, 4)?;
+    if nargout < 2 {
+        return Err(ScriptError::type_err(
+            "pin_dirichlet: returns two outputs — use [A, b] = pin_dirichlet(A, b, mask, values)"
+                .to_string(),
+        ));
+    }
+
+    // Operator size (must be square: pinning is row = identity, which
+    // only makes sense when rows and unknowns coincide).
+    let n = match &args[0] {
+        Value::SparseMatrix(sm) => {
+            if sm.rows != sm.cols {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: A must be square, got {}×{}",
+                    sm.rows, sm.cols
+                )));
+            }
+            sm.rows
+        }
+        Value::Matrix(m) => {
+            if m.nrows() != m.ncols() {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: A must be square, got {}×{}",
+                    m.nrows(),
+                    m.ncols()
+                )));
+            }
+            m.nrows()
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "pin_dirichlet: A must be a sparse or dense matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    let ks = pin_indices(&args[2], n)?;
+
+    // Pin values: scalar broadcast or a vector aligned with the pins.
+    let vals: Vec<C64> = match &args[3] {
+        Value::Scalar(v) => vec![Complex::new(*v, 0.0); ks.len()],
+        Value::Complex(c) => vec![*c; ks.len()],
+        Value::Vector(v) => {
+            if v.len() != ks.len() {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: {} values for {} pinned cells",
+                    v.len(),
+                    ks.len()
+                )));
+            }
+            v.iter().copied().collect()
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "pin_dirichlet: values must be a scalar or vector, got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    let pinned: std::collections::BTreeSet<usize> = ks.iter().copied().collect();
+
+    // Rebuild A with the pinned rows replaced by identity rows.
+    let new_a = match &args[0] {
+        Value::SparseMatrix(sm) => {
+            let hint = sm.ordering_hint;
+            let mut entries: Vec<(usize, usize, C64)> = sm
+                .entries
+                .iter()
+                .filter(|(r, _, _)| !pinned.contains(r))
+                .copied()
+                .collect();
+            for &k in &pinned {
+                entries.push((k, k, Complex::new(1.0, 0.0)));
+            }
+            let mut rebuilt = SparseMat::new(sm.rows, sm.cols, entries);
+            // Identity rows don't change the grid structure — keep the
+            // builder's fill-reducing hint (SparseMat::new drops it).
+            if let Some(h) = hint {
+                rebuilt = rebuilt.with_ordering_hint(h);
+            }
+            Value::SparseMatrix(rebuilt)
+        }
+        Value::Matrix(m) => {
+            let mut dense = m.clone();
+            for &k in &pinned {
+                for j in 0..dense.ncols() {
+                    dense[[k, j]] = Complex::new(0.0, 0.0);
+                }
+                dense[[k, k]] = Complex::new(1.0, 0.0);
+            }
+            Value::Matrix(dense)
+        }
+        _ => unreachable!("validated above"),
+    };
+
+    // Write the pin values into b, preserving its container/orientation.
+    let new_b = match &args[1] {
+        Value::Vector(v) => {
+            if v.len() != n {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: b has {} entries but A has {n} rows",
+                    v.len()
+                )));
+            }
+            let mut b = v.clone();
+            for (&k, &val) in ks.iter().zip(vals.iter()) {
+                b[k] = val;
+            }
+            Value::Vector(b)
+        }
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            if m.len() != n {
+                return Err(ScriptError::type_err(format!(
+                    "pin_dirichlet: b has {} entries but A has {n} rows",
+                    m.len()
+                )));
+            }
+            let mut b = m.clone();
+            let row_shaped = m.nrows() == 1;
+            for (&k, &val) in ks.iter().zip(vals.iter()) {
+                if row_shaped {
+                    b[[0, k]] = val;
+                } else {
+                    b[[k, 0]] = val;
+                }
+            }
+            Value::Matrix(b)
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "pin_dirichlet: b must be a vector (or 1×n / n×1 matrix), got {}",
+                other.type_name()
+            )))
+        }
+    };
+
+    Ok(Value::Tuple(vec![new_a, new_b]))
+}
+
 fn builtin_laplacian_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("laplacian_2d", &args, 2, 5)?;
     let nx = args[0]

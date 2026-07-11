@@ -23,6 +23,50 @@ should re-validate against those entries when upgrading.
   of two, as documented.
 
 ### Added
+- `tic` / `toc` wall-clock stopwatch (bare or with parentheses): `tic`
+  starts/restarts, `toc` returns elapsed seconds without clearing so
+  repeated calls take split times; `toc` before any `tic` is an error.
+  Thread-local (a `tic` inside a `parmap` worker times that worker).
+- `ellipke(m)` — complete elliptic integrals K(m) and E(m) via the
+  arithmetic-geometric mean. Parameter convention `m = k²`; domain
+  [0, 1] with the exact limits `ellipke(1) → (Inf, 1)`; elementwise
+  over vectors/matrices; `[K, E] = ellipke(m)` returns both.
+- `pin_dirichlet(A, b, mask_or_indices, values) → [A, b]` — enforce
+  Dirichlet boundary values on a linear system: pinned rows of `A`
+  become identity rows and `b` gets the pinned values, so
+  `spsolve(A, b)` reproduces the boundary potential exactly. Accepts a
+  grid mask (column-major, matching `ij2k`/`ijk2k` and the
+  `laplacian_*` builders) or a 1-based index list; sparse or dense
+  square `A` (the sparse ordering hint survives).
+- `trapz(M)` / `trapz(x, M)` — trapezoidal integration now handles
+  matrices per column, returning a 1×ncols row (1-D-shaped inputs keep
+  returning a scalar). Double integrals are two calls:
+  `trapz(ys, trapz(xs, F))`.
+- `quiver(..., "normalized")` — direction-only arrow plots: every
+  vector is drawn at unit length × scale.
+
+### Changed (plotting)
+- **quiver auto-scaling is outlier-robust.** The auto-scale now keys on
+  the 95th percentile of the field's nonzero magnitudes (was: the single
+  longest arrow) and clamps outliers to one grid cell at draw time — a
+  near-singular sample (e.g. a Biot-Savart field evaluated on the wire)
+  no longer shrinks every other arrow to invisibility. Uniform fields
+  are unchanged. Decimate dense grids with stride indexing
+  (`U(1:5:end, 1:5:end)`), documented in `docs/functions.md`.
+- **"not rendered to the terminal" warnings are deferred and
+  savefig-aware.** Scripted runs that render vector plots and then save
+  them (`quiver(...); savefig(...)`) no longer emit stderr noise; a plot
+  that never reaches a file warns once, at the end of the run (or REPL
+  line), as one combined message naming the plot kinds.
+
+### Fixed
+- `T(:)` on a 3-D tensor no longer panics the interpreter — it flattens
+  column-major (the `reshape`/`ijk2k` order); linear indexing `T(k)`,
+  index vectors `T(I)`, and `T(end)` now work on tensors too.
+- `rustlab run` exits with code 1 when the script fails to parse or
+  dies on a runtime error (previously it printed the error but exited
+  0, silently passing CI gates). `AudioEof`/`Interrupted` remain
+  clean exits.
 - `max(a, b)` / `min(a, b)` are now elementwise over any mix of scalars,
   vectors, and matrices, with the same implicit-expansion (broadcast) rules
   as `+`. Previously the two-argument form accepted only two scalars. Per

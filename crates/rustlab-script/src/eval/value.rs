@@ -828,6 +828,60 @@ impl Value {
                     )),
                 }
             }
+            Value::Tensor3(t) => {
+                // Single-arg tensor indexing mirrors the matrix convention:
+                // the tensor is flattened column-major (i fastest, then j,
+                // then page k — the same walk `reshape` and `ijk2k` use) and
+                // the index/indices pick from that flat view.
+                //   T(:)  → full column-major flatten as a vector
+                //   T(k)  → scalar element at 1-based linear position k
+                //   T(I)  → vector of picks for each k in I
+                let (sm, sn, sp) = (t.shape()[0], t.shape()[1], t.shape()[2]);
+                let total = sm * sn * sp;
+                let pick = |k_one_based: f64| -> Result<C64, String> {
+                    let k0 = Self::one_based_to_zero(k_one_based)?;
+                    if k0 >= total {
+                        return Err(format!(
+                            "linear index {} out of bounds ({}×{}×{} = {} elements)",
+                            k_one_based as i64, sm, sn, sp, total
+                        ));
+                    }
+                    let i = k0 % sm;
+                    let j = (k0 / sm) % sn;
+                    let k = k0 / (sm * sn);
+                    Ok(t[[i, j, k]])
+                };
+                match &idx {
+                    Value::All => {
+                        let mut flat: Vec<C64> = Vec::with_capacity(total);
+                        for k in 0..sp {
+                            for j in 0..sn {
+                                for i in 0..sm {
+                                    flat.push(t[[i, j, k]]);
+                                }
+                            }
+                        }
+                        Ok(Value::Vector(Array1::from_vec(flat)))
+                    }
+                    Value::Scalar(k) => {
+                        let c = pick(*k)?;
+                        if c.im.abs() < 1e-12 {
+                            Ok(Value::Scalar(c.re))
+                        } else {
+                            Ok(Value::Complex(c))
+                        }
+                    }
+                    Value::Vector(idx_v) => {
+                        let picks: Result<Vec<C64>, _> =
+                            idx_v.iter().map(|c| pick(c.re)).collect();
+                        Ok(Value::Vector(Array1::from_vec(picks?)))
+                    }
+                    other => Err(format!(
+                        "tensor single-index with {} not supported; use T(i,j,k), T(linear), T(I), or T(:)",
+                        other.type_name()
+                    )),
+                }
+            }
             Value::SparseVector(sv) => match &idx {
                 Value::Scalar(n) => {
                     let i = Self::one_based_to_zero(*n)?;

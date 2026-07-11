@@ -25,11 +25,18 @@ pub fn cell_distance(x: &[f64], y: &[f64]) -> f64 {
     dx.min(dy)
 }
 
-/// Auto-scale factor such that the longest finite `(u, v)` pair is rescaled
-/// to `cell_distance(x, y)`. Returns `0.0` (causing zero-length arrows) when
-/// the field is identically zero or all-NaN.
+/// Auto-scale factor referencing the **95th percentile** of the nonzero
+/// finite `(u, v)` magnitudes: after scaling, a typical arrow spans up to
+/// `cell_distance(x, y)` and the top ~5% are clamped to one cell at draw
+/// time (see [`build_arrows`]). Keying on a percentile instead of the max
+/// means a few singular samples (e.g. a field evaluated on top of its own
+/// source) no longer crush every other arrow to invisibility — the
+/// failure mode that used to render physically-broken fields as one
+/// arrow on an empty plot. Uniform fields degenerate to the old
+/// longest-arrow behaviour (p95 == max). Returns `0.0` (causing
+/// zero-length arrows) when the field is identically zero or all-NaN.
 pub fn auto_scale(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64]) -> f64 {
-    let mut max_mag = 0.0f64;
+    let mut mags: Vec<f64> = Vec::new();
     for r in 0..u.len().min(v.len()) {
         let row_u = &u[r];
         let row_v = &v[r];
@@ -38,15 +45,16 @@ pub fn auto_scale(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64]) -> f64 {
             let b = row_v[c];
             if !a.is_finite() || !b.is_finite() { continue; }
             let m = (a * a + b * b).sqrt();
-            if m > max_mag { max_mag = m; }
+            if m > 0.0 { mags.push(m); }
         }
     }
     let ref_len = cell_distance(x, y);
-    if max_mag <= 0.0 || ref_len <= 0.0 {
-        0.0
-    } else {
-        ref_len / max_mag
+    if mags.is_empty() || ref_len <= 0.0 {
+        return 0.0;
     }
+    mags.sort_by(|a, b| a.partial_cmp(b).expect("finite by construction"));
+    let idx = ((mags.len() - 1) as f64 * 0.95).round() as usize;
+    ref_len / mags[idx]
 }
 
 /// Build the arrow glyph at base `(bx, by)` with world-space displacement
@@ -82,8 +90,11 @@ pub fn arrow_at(bx: f64, by: f64, dx: f64, dy: f64) -> Option<Arrow> {
 }
 
 /// Build arrows for the full `(u, v)` grid. Applies `auto_scale(u, v, x, y)`
-/// uniformly and then multiplies by the user-supplied `scale`. NaN entries
-/// and zero-magnitude cells are skipped.
+/// uniformly, multiplies by the user-supplied `scale`, and **clamps** each
+/// drawn arrow to `cell_distance × scale` (direction preserved) — outliers
+/// above the auto-scale's 95th-percentile reference render at exactly one
+/// cell instead of overshooting the grid. NaN entries and zero-magnitude
+/// cells are skipped.
 pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale: f64)
     -> Vec<Arrow>
 {
@@ -95,6 +106,7 @@ pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale:
     let base = auto_scale(u, v, x, y);
     let k = base * scale;
     if k == 0.0 { return Vec::new(); }
+    let max_len = cell_distance(x, y) * scale.abs();
 
     let mut arrows = Vec::with_capacity(nrows * ncols);
     for r in 0..nrows {
@@ -102,7 +114,15 @@ pub fn build_arrows(u: &[Vec<f64>], v: &[Vec<f64>], x: &[f64], y: &[f64], scale:
             let a = u[r][c];
             let b = v[r][c];
             if !a.is_finite() || !b.is_finite() { continue; }
-            if let Some(arr) = arrow_at(x[c], y[r], k * a, k * b) {
+            let mut dx = k * a;
+            let mut dy = k * b;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > max_len && len > 0.0 {
+                let f = max_len / len;
+                dx *= f;
+                dy *= f;
+            }
+            if let Some(arr) = arrow_at(x[c], y[r], dx, dy) {
                 arrows.push(arr);
             }
         }
@@ -192,5 +212,48 @@ mod tests {
         let u = vec![vec![0.0; 2]; 2];
         let v = vec![vec![0.0; 2]; 2];
         assert!(build_arrows(&u, &v, &x, &y, 1.0).is_empty());
+    }
+
+    fn shaft_len(a: &Arrow) -> f64 {
+        let ((x0, y0), (x1, y1)) = a.shaft;
+        ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt()
+    }
+
+    /// A single singular sample must not crush the rest of the field:
+    /// the percentile auto-scale keys on the typical magnitude, and the
+    /// outlier clamps to one cell instead of dictating the scale.
+    #[test]
+    fn auto_scale_ignores_singular_outlier() {
+        let x: Vec<f64> = (0..4).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..4).map(|i| i as f64).collect();
+        let mut u = vec![vec![1.0; 4]; 4]; // 16 samples of magnitude 1…
+        let v = vec![vec![0.0; 4]; 4];
+        u[2][2] = 1.0e24; // …plus one on-the-wire singularity
+        let k = auto_scale(&u, &v, &x, &y);
+        // p95 of {1 ×15, 1e24} is 1 → typical arrows scale to one cell.
+        assert!((k - 1.0).abs() < 1e-12, "k = {k}");
+
+        let arrows = build_arrows(&u, &v, &x, &y, 1.0);
+        assert_eq!(arrows.len(), 16);
+        let max = arrows.iter().map(shaft_len).fold(0.0, f64::max);
+        let min = arrows.iter().map(shaft_len).fold(f64::INFINITY, f64::min);
+        assert!(max <= 1.0 + 1e-9, "outlier must clamp to one cell, got {max}");
+        assert!(
+            min > 0.9,
+            "typical arrows must stay visible (≈ one cell), got {min}"
+        );
+    }
+
+    /// The clamp respects the user scale multiplier.
+    #[test]
+    fn clamp_respects_user_scale() {
+        let x: Vec<f64> = (0..4).map(|i| i as f64).collect();
+        let y: Vec<f64> = (0..4).map(|i| i as f64).collect();
+        let mut u = vec![vec![1.0; 4]; 4];
+        let v = vec![vec![0.0; 4]; 4];
+        u[0][0] = 1.0e6;
+        let arrows = build_arrows(&u, &v, &x, &y, 0.5);
+        let max = arrows.iter().map(shaft_len).fold(0.0, f64::max);
+        assert!(max <= 0.5 + 1e-9, "clamp is cell × scale, got {max}");
     }
 }

@@ -956,7 +956,7 @@ savefig("/tmp/rustlab_contour_overlay.html");
    - `.html` files render exact Plotly contour traces — interactive, with hover and zoom.
    - `.svg` files contain marching-squares line segments (line contours) or per-cell colour rectangles (filled contours).
    - `.png` files are rasterised versions of the same SVG content.
-   - The terminal does **not** render contour overlays — the script issues a one-time warning instead. Use `savefig` to view.
+   - The terminal does **not** render contour overlays — because the script saves its figures, no warning is emitted (a run that never called `savefig` would print one combined warning at the end). Use `savefig` to view.
 
 8. **One contour layer per call.** With `hold on`, multiple `contour` / `contourf` calls stack on the same subplot (and on top of any heatmap). With `hold off` (default), each call clears the subplot's contour list before adding the new one.
 
@@ -1022,7 +1022,7 @@ savefig("/tmp/rustlab_heatmap_quiver.html");
 
 6. **NaN masking.** NaN entries in `U` or `V` skip that cell in `quiver` and terminate a streamline locally, so you can mask out regions of a field without corrupting neighbouring arrows or traces.
 
-7. **Backends.** `.html` emits interactive Plotly line traces with null-separated arrow / streamline polylines; `.svg` uses plotters line + polygon strokes per cell. Terminal does **not** render either (one-time warning) — use `savefig` to view.
+7. **Backends.** `.html` emits interactive Plotly line traces with null-separated arrow / streamline polylines; `.svg` uses plotters line + polygon strokes per cell. Terminal does **not** render either (deferred end-of-run warning, silenced by `savefig`) — use `savefig` to view.
 
 ### Running
 
