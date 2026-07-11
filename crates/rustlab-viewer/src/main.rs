@@ -14,6 +14,7 @@ mod net;
 mod render;
 mod surface;
 
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Set on the re-exec'd retry process so a persistent GUI failure exits with
@@ -71,8 +72,19 @@ fn main() {
         "RustLab Viewer".to_string()
     };
 
-    // Start socket listener in background
-    let rx = net::start_listener();
+    // Start socket listener in background. The app does no repaint
+    // polling, so the listener wakes the GUI event loop whenever it queues
+    // a message. The context cell is filled once the GUI is up; before
+    // that, messages just wait in the channel for the first startup frame.
+    // (The listener starts before run_native on purpose: it must bind the
+    // socket and run its duplicate-viewer check before a window opens.)
+    let repaint_ctx: Arc<OnceLock<egui::Context>> = Arc::new(OnceLock::new());
+    let wake_ctx = Arc::clone(&repaint_ctx);
+    let rx = net::start_listener(Arc::new(move || {
+        if let Some(ctx) = wake_ctx.get() {
+            ctx.request_repaint();
+        }
+    }));
 
     // Launch eframe GUI
     let options = eframe::NativeOptions {
@@ -86,7 +98,12 @@ fn main() {
     if let Err(err) = eframe::run_native(
         &title,
         options,
-        Box::new(move |_cc| Ok(Box::new(app::ViewerApp::new(rx)))),
+        Box::new(move |cc| {
+            // Fixed dark theme regardless of system preference.
+            cc.egui_ctx.set_theme(egui::ThemePreference::Dark);
+            let _ = repaint_ctx.set(cc.egui_ctx.clone());
+            Ok(Box::new(app::ViewerApp::new(rx)))
+        }),
     ) {
         handle_run_error(&err, started.elapsed());
     }

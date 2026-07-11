@@ -3,6 +3,13 @@
 use rustlab_proto::{default_socket_path, read_msg, write_msg, ViewerMsg, ViewerReply};
 use std::io::BufWriter;
 use std::sync::mpsc;
+use std::sync::Arc;
+
+/// Wakes the GUI event loop after a message is queued. The app does no
+/// repaint polling (an idle viewer draws no frames), so without this call
+/// a queued message would sit in the channel until some input event
+/// happened to produce a frame.
+pub type WakeFn = Arc<dyn Fn() + Send + Sync>;
 
 /// Bound on the listener → app channel. A `PanelHeatmap` from a streaming
 /// builtin can carry ~1 MB of RGBA, so a small bound is enough to absorb a
@@ -20,13 +27,13 @@ const APP_CHANNEL_BOUND: usize = 64;
 /// the socket's kernel buffer fills, and the producer's `write` (and thus
 /// its `send` waiting for `Ok`) blocks. Without the bound a slow egui
 /// frame would let RGBA-heavy messages pile up in memory unboundedly.
-pub fn start_listener() -> mpsc::Receiver<ViewerMsg> {
+pub fn start_listener(wake: WakeFn) -> mpsc::Receiver<ViewerMsg> {
     let (tx, rx) = mpsc::sync_channel(APP_CHANNEL_BOUND);
 
     std::thread::Builder::new()
         .name("viewer-listener".into())
         .spawn(move || {
-            if let Err(e) = run_listener(tx) {
+            if let Err(e) = run_listener(tx, wake) {
                 eprintln!("rustlab-viewer: listener error: {}", e);
             }
         })
@@ -35,7 +42,7 @@ pub fn start_listener() -> mpsc::Receiver<ViewerMsg> {
     rx
 }
 
-fn run_listener(tx: mpsc::SyncSender<ViewerMsg>) -> std::io::Result<()> {
+fn run_listener(tx: mpsc::SyncSender<ViewerMsg>, wake: WakeFn) -> std::io::Result<()> {
     let path = default_socket_path();
 
     // Check for existing socket — if a live viewer is listening, refuse to start
@@ -76,9 +83,10 @@ fn run_listener(tx: mpsc::SyncSender<ViewerMsg>) -> std::io::Result<()> {
                 Ok(stream) => {
                     eprintln!("rustlab-viewer: client connected");
                     let tx = tx.clone();
+                    let wake = wake.clone();
                     std::thread::Builder::new()
                         .name("viewer-conn".into())
-                        .spawn(move || handle_connection(stream, tx))
+                        .spawn(move || handle_connection(stream, tx, wake))
                         .ok();
                 }
                 Err(e) => {
@@ -100,9 +108,10 @@ fn run_listener(tx: mpsc::SyncSender<ViewerMsg>) -> std::io::Result<()> {
                 Ok(stream) => {
                     eprintln!("rustlab-viewer: client connected");
                     let tx = tx.clone();
+                    let wake = wake.clone();
                     std::thread::Builder::new()
                         .name("viewer-conn".into())
-                        .spawn(move || handle_connection(stream, tx))
+                        .spawn(move || handle_connection(stream, tx, wake))
                         .ok();
                 }
                 Err(e) => {
@@ -118,6 +127,7 @@ fn run_listener(tx: mpsc::SyncSender<ViewerMsg>) -> std::io::Result<()> {
 fn handle_connection<S: std::io::Read + std::io::Write>(
     mut stream: S,
     tx: mpsc::SyncSender<ViewerMsg>,
+    wake: WakeFn,
 ) {
     loop {
         match read_msg::<_, ViewerMsg>(&mut stream) {
@@ -150,6 +160,7 @@ fn handle_connection<S: std::io::Read + std::io::Write>(
                     if tx.send(msg).is_err() {
                         return; // app shut down
                     }
+                    wake();
                 }
                 if let Some(reply) = reply {
                     let mut bw = BufWriter::new(&mut stream);
@@ -272,7 +283,7 @@ mod tests {
         let _ = std::fs::remove_file(&sock);
         std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);
 
-        let rx = start_listener();
+        let rx = start_listener(Arc::new(|| {}));
         // Drain in the background so tx.send never blocks the conn threads.
         std::thread::spawn(move || while rx.recv().is_ok() {});
 
@@ -300,7 +311,7 @@ mod tests {
         let _ = std::fs::remove_file(&sock);
         std::env::set_var("RUSTLAB_VIEWER_SOCK", &sock);
 
-        let rx = start_listener();
+        let rx = start_listener(Arc::new(|| {}));
         std::thread::spawn(move || while rx.recv().is_ok() {});
 
         let mut tries = 0;
@@ -319,5 +330,67 @@ mod tests {
 
         std::env::remove_var("RUSTLAB_VIEWER_SOCK");
         let _ = std::fs::remove_file(&sock);
+    }
+
+    /// In-memory stand-in for a client socket: replays a fixed byte stream,
+    /// discards replies. `handle_connection` is generic over Read + Write
+    /// precisely so it can be driven without a real socket.
+    struct MockStream {
+        input: std::io::Cursor<Vec<u8>>,
+        replies: Vec<u8>,
+    }
+
+    impl std::io::Read for MockStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::io::Read::read(&mut self.input, buf)
+        }
+    }
+
+    impl std::io::Write for MockStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.replies.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The GUI has no repaint polling, so every forwarded message must fire
+    /// the wake callback — and connection-level messages (Ping) must not,
+    /// or an idle client keepalive would keep repainting the window.
+    #[test]
+    fn wake_fires_per_forwarded_message_not_for_ping() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut input = Vec::new();
+        write_msg(&mut input, &ViewerMsg::Ping).unwrap();
+        write_msg(&mut input, &open_fig(7)).unwrap();
+        write_msg(
+            &mut input,
+            &ViewerMsg::PanelUpdate {
+                fig_id: 7,
+                panel: 0,
+                series: vec![],
+            },
+        )
+        .unwrap();
+        write_msg(&mut input, &ViewerMsg::Redraw { fig_id: 7 }).unwrap();
+
+        let (tx, rx) = mpsc::sync_channel(8);
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        let wake: WakeFn = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let stream = MockStream {
+            input: std::io::Cursor::new(input),
+            replies: Vec::new(),
+        };
+        handle_connection(stream, tx, wake);
+
+        assert_eq!(rx.try_iter().count(), 3, "Ping must not be forwarded");
+        assert_eq!(wakes.load(Ordering::SeqCst), 3);
     }
 }

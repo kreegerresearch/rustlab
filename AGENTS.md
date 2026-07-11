@@ -947,6 +947,16 @@ rustlab-viewer --socket PATH    # custom socket path
 - `src/net.rs` — Unix socket listener, spawns per-connection threads, liveness check prevents clobbering an active viewer's socket
 - `src/render.rs` — converts `WireSeries` to egui_plot items (Line, Points, BarChart, Stem)
 
+**Repaint model (event-driven, no polling):** the GUI never schedules
+periodic repaints — an idle viewer draws zero frames (continuous repaint
+burned ~10% of a core on WSLg). Each connection thread fires a `net::WakeFn`
+callback after queuing a message; `main.rs` wires that callback to
+`egui::Context::request_repaint()` through an `Arc<OnceLock<Context>>`
+filled when the GUI comes up (the listener must start before `run_native`
+so the socket binds and the duplicate-viewer check runs before a window
+opens). Do not reintroduce `request_repaint_after` polling in
+`ViewerApp::update`.
+
 **Multi-instance design:**
 - Multiple viewers can run simultaneously using `--name` (each gets its own socket)
 - Multiple rustlab processes can connect to the same viewer — PID-based figure IDs prevent collisions

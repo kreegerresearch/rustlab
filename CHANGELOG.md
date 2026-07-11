@@ -60,6 +60,12 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- `rustlab-viewer` no longer burns CPU while idle (~10% of a core on WSLg,
+  where every frame goes through RDP compositing or software GL). The GUI
+  previously repainted at ~60 fps around the clock to poll for socket
+  messages; repaints are now event-driven — the socket listener wakes the
+  GUI when a message arrives, so an idle viewer draws no frames and plots
+  appear with lower latency than the old 16 ms poll.
 - `T(:)` on a 3-D tensor no longer panics the interpreter — it flattens
   column-major (the `reshape`/`ijk2k` order); linear indexing `T(k)`,
   index vectors `T(I)`, and `T(end)` now work on tensors too.

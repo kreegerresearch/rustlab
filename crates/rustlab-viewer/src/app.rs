@@ -185,12 +185,12 @@ impl ViewerApp {
 
 impl eframe::App for ViewerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // No repaint polling: the socket listener requests a repaint
+        // whenever it queues a message (see net::WakeFn), so an idle
+        // viewer draws no frames. Don't add request_repaint_after here —
+        // continuous repaint costs real CPU under WSLg's RDP/software-GL
+        // pipeline even when nothing changes.
         self.process_messages(ctx);
-
-        // Request periodic repaint so we pick up new messages promptly.
-        // When idle this costs almost nothing on modern GPUs.
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
-
         self.render_ui(ctx);
     }
 }
@@ -200,9 +200,7 @@ impl ViewerApp {
     /// headless test can drive the real render path through `Context::run`
     /// without constructing an `eframe::Frame`.
     fn render_ui(&mut self, ctx: &egui::Context) {
-        // Dark theme
-        ctx.set_visuals(egui::Visuals::dark());
-
+        // Dark theme is fixed once at startup (main.rs).
         if self.figures.is_empty() {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
