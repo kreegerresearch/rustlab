@@ -17637,3 +17637,54 @@ end\n\
         assert!(!parses("cache lst"));
     }
 }
+
+// ── signed heatmap/imagesc/contour ingest ────────────────────────────────────
+// Complex plot data must collapse to real via `.re`, never `|v|`: with
+// magnitude ingest, B = [-2,-1;1,3] rendered -2 at MID-scale and -1/+1
+// identically — any signed matrix plotted as a heatmap was silently wrong.
+#[cfg(test)]
+mod signed_plot_ingest_tests {
+    use crate::Evaluator;
+
+    fn run(src: &str) {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+    }
+
+    #[test]
+    fn imagesc_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\nimagesc(B, \"viridis\");");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let hm = fig.current().heatmap.as_ref().expect("heatmap stored");
+            assert_eq!(hm.z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn heatmap_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\nheatmap({\"a\",\"b\"}, {\"c\",\"d\"}, B, \"t\", \"viridis\");");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let hm = fig.current().heatmap.as_ref().expect("heatmap stored");
+            assert_eq!(hm.z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn contour_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\ncontour(B);");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            assert!(!sp.contours.is_empty(), "contour stored");
+            assert_eq!(sp.contours[0].z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+}

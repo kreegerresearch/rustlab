@@ -4864,7 +4864,9 @@ fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         "viridis".to_string()
     };
 
-    let vals: Vec<f64> = matrix.iter().map(|c| c.norm()).collect();
+    // Convert complex -> real via `.re` (matches `plot_update_heatmap`);
+    // signed values must survive into the colormap normalization.
+    let vals: Vec<f64> = matrix.iter().map(|c| c.re).collect();
     let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
     let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = (max_v - min_v).max(1e-12);
@@ -4965,7 +4967,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         Mode::Grayscale => {
             for r in 0..nrows {
                 for c in 0..ncols {
-                    let v = m0[[r, c]].norm().clamp(0.0, 255.0) as u8;
+                    let v = m0[[r, c]].re.clamp(0.0, 255.0) as u8;
                     rgba.extend_from_slice(&[v, v, v, 255]);
                 }
             }
@@ -4973,7 +4975,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         Mode::Colormap(name) => {
             for r in 0..nrows {
                 for c in 0..ncols {
-                    let v = m0[[r, c]].norm().clamp(0.0, 255.0);
+                    let v = m0[[r, c]].re.clamp(0.0, 255.0);
                     let t = v / 255.0;
                     let (rr, gg, bb) = colormap_rgb(t, name);
                     rgba.extend_from_slice(&[rr, gg, bb, 255]);
@@ -5032,11 +5034,13 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── Contour plots ───────────────────────────────────────────────────────────
 
-/// Convert a Value::Matrix scalar field to `Vec<Vec<f64>>` of magnitudes.
+/// Convert a Value::Matrix scalar field to `Vec<Vec<f64>>` via `.re`.
+/// Signed values must survive — contour levels and fills on negative data
+/// are wrong if magnitudes are taken here.
 fn z_matrix_to_rows(m: &CMatrix) -> Vec<Vec<f64>> {
     let (nrows, ncols) = (m.nrows(), m.ncols());
     (0..nrows)
-        .map(|r| (0..ncols).map(|c| m[[r, c]].norm()).collect())
+        .map(|r| (0..ncols).map(|c| m[[r, c]].re).collect())
         .collect()
 }
 

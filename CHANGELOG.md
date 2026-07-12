@@ -60,6 +60,15 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- `heatmap`, `imagesc`, `contour`/`contourf`, and `image` (grayscale /
+  colormap modes) now color by **signed** value instead of magnitude.
+  Previously complex-to-real collapse used |v| at ingest, so any signed
+  matrix rendered wrong: `[-2, -1; 1, 3]` showed −2 at mid-scale and −1
+  identical to +1, and large-magnitude negatives rendered *hot*. All
+  static paths now match the live-viewer path (real part, `.re`). For
+  genuinely complex inputs this means the real part is displayed —
+  take `abs(Z)` explicitly to plot magnitudes. Spectrogram/scalogram dB
+  displays are unchanged (magnitude there is intentional).
 - Multi-panel `subplot` figures containing heatmaps (`heatmap`/`imagesc`)
   or 3-D surfaces (`surf`) now export **all** panels to SVG. Previously
   the file was finalized after the first heatmap/surface panel and every

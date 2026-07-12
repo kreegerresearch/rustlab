@@ -132,7 +132,10 @@ pub enum HeatmapOrigin {
 /// 2D heatmap data for a subplot (produced by `imagesc`, `heatmap`, `image`).
 #[derive(Debug, Clone)]
 pub struct HeatmapData {
-    /// Row-major matrix values (magnitudes). `z[row][col]`. Empty for `ImageRgba`.
+    /// Row-major matrix values, SIGNED (complex inputs are collapsed via
+    /// `.re` at ingest, never `|v|` — colormap normalization must see the
+    /// sign or negative data renders wrong). `z[row][col]`. Empty for
+    /// `ImageRgba`.
     pub z: Vec<Vec<f64>>,
     /// Colorscale name (rustlab convention: "viridis", "jet", "hot", "gray").
     /// Empty for `ImageRgba`.
