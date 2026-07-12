@@ -152,8 +152,8 @@ impl BuiltinRegistry {
         r.register("ones3", builtin_ones3);
         r.register("rand3", builtin_rand3);
         r.register("randn3", builtin_randn3);
-        r.register("histogram", builtin_histogram);
-        r.register("hist", builtin_histogram);
+        r.register_nargout("histogram", builtin_histogram);
+        r.register_nargout("hist", builtin_histogram);
         r.register("mean", builtin_mean);
         r.register("median", builtin_median);
         r.register("std", builtin_std);
@@ -180,7 +180,7 @@ impl BuiltinRegistry {
         r.register("frame", builtin_frame);
         r.register("saveanim", builtin_saveanim);
         // Figure state control
-        r.register("figure", builtin_figure);
+        r.register_nargout("figure", builtin_figure);
         r.register("hold", builtin_hold);
         r.register("grid", builtin_grid);
         r.register("axis", builtin_axis);
@@ -1507,7 +1507,7 @@ fn builtin_nproc(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::Scalar(n as f64))
 }
 
-fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_histogram(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     if args.is_empty() || args.len() > 2 {
         return Err(ScriptError::type_err(
             "histogram: expected histogram(v) or histogram(v, n_bins)".to_string(),
@@ -1520,6 +1520,12 @@ fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
         10
     };
     plot_histogram(&data, n_bins, "Histogram").map_err(|e| ScriptError::type_err(e.to_string()))?;
+    // Statement position (nargout == 0): stay silent — echoing the 2×n
+    // bin matrix into notebook/REPL output is noise. `h = histogram(v)`
+    // still returns bin centers (row 1) and counts (row 2).
+    if nargout == 0 {
+        return Ok(Value::None);
+    }
     let (centers, counts, _) = compute_histogram(&data, n_bins);
     Ok(Value::Matrix(histogram_matrix(&centers, &counts)))
 }
@@ -4216,26 +4222,36 @@ fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// figure()           — create a new figure, return its numeric handle.
 /// figure(N)          — switch to figure N (create if it doesn't exist).
 /// figure("file.html") — create a new figure in HTML output mode.
-fn builtin_figure(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_figure(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("figure", &args, 0, 1)?;
 
-    if args.len() == 1 {
+    let id = if args.len() == 1 {
         // Numeric arg → switch to existing figure (or create it)
         if let Value::Scalar(n) = &args[0] {
             let id = *n as u32;
             rustlab_plot::figure_switch(id).map_err(|e| ScriptError::runtime(e.to_string()))?;
-            return Ok(Value::Scalar(id as f64));
+            id
+        } else {
+            // String arg → new HTML figure
+            let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let id = rustlab_plot::figure_new_html(&path);
+            eprintln!("HTML figure active: {}", path);
+            id
         }
-        // String arg → new HTML figure
-        let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
-        let id = rustlab_plot::figure_new_html(&path);
-        eprintln!("HTML figure active: {}", path);
-        return Ok(Value::Scalar(id as f64));
-    }
+    } else {
+        // No args → new TUI/viewer figure
+        rustlab_plot::figure_new()
+    };
 
-    // No args → new TUI/viewer figure
-    let id = rustlab_plot::figure_new();
-    Ok(Value::Scalar(id as f64))
+    // Statement position (nargout == 0): stay silent. Echoing the handle
+    // put a meaningless bare integer above every plot in notebook output,
+    // and the value churns with global figure count across a directory
+    // render. `h = figure()` still returns the handle.
+    if nargout == 0 {
+        Ok(Value::None)
+    } else {
+        Ok(Value::Scalar(id as f64))
+    }
 }
 
 /// hold("on"|1) / hold("off"|0) — set hold on/off.

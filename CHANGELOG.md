@@ -60,6 +60,13 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- Bare `figure()` and `histogram(v)` / `hist(v)` statements no longer
+  echo their return values (a meaningless figure-handle integer above
+  every plot in notebook output — churning with global figure count
+  across a directory render — and a 2×n bin matrix, respectively).
+  Statement-position builtin calls now carry `nargout = 0`; assigned
+  forms (`h = figure()`, `b = histogram(v)`) still return their values.
+  Other builtins are unaffected.
 - `heatmap`, `imagesc`, `contour`/`contourf`, and `image` (grayscale /
   colormap modes) now color by **signed** value instead of magnitude.
   Previously complex-to-real collapse used |v| at ingest, so any signed

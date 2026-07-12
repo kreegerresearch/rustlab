@@ -42,6 +42,12 @@ pub struct Evaluator {
     user_fns: HashMap<String, UserFn>,
     /// True while executing a user-defined function body — suppresses auto-print of assignments.
     in_function: bool,
+    /// One-shot marker armed by [`eval_expr_stmt`](Self::eval_expr_stmt)
+    /// for a statement-position call and consumed at the `Expr::Call`
+    /// arm's entry: the outermost call of a bare expression statement
+    /// dispatches builtins with `nargout = 0` (silent `figure()` /
+    /// `histogram(v)`); everything nested runs with the usual 1.
+    stmt_call_nargout0: bool,
     profiler: profile::Profiler,
     /// When true, assignment output uses ANSI colour (green var name, dim `=`).
     pub color_output: bool,
@@ -102,6 +108,7 @@ impl Evaluator {
             builtins: self.builtins.clone(),
             user_fns: self.user_fns.clone(),
             in_function: self.in_function,
+            stmt_call_nargout0: self.stmt_call_nargout0,
             profiler: self.profiler.clone(),
             color_output: self.color_output,
             number_format: self.number_format,
@@ -151,6 +158,7 @@ impl Evaluator {
             builtins: BuiltinRegistry::with_defaults(),
             user_fns: HashMap::new(),
             in_function: false,
+            stmt_call_nargout0: false,
             profiler: profile::Profiler::default(),
             color_output: false,
             number_format: value::NumberFormat::Short,
@@ -1262,7 +1270,7 @@ impl Evaluator {
                     }
                 }
 
-                let val = self.eval_expr(expr)?;
+                let val = self.eval_expr_stmt(expr)?;
                 if !suppress && !self.in_function && !matches!(val, Value::None) {
                     output::script_println(&val.format_display(self.number_format));
                 }
@@ -1612,6 +1620,12 @@ impl Evaluator {
                 Value::binop(*op, l, r).map_err(|e| ScriptError::type_err(e))
             }
             Expr::Call { name, args } => {
+                // Consume the statement-position marker FIRST — before any
+                // special case or argument evaluation can recurse — so only
+                // this outermost call sees nargout 0; nested calls get 1.
+                let call_nargout =
+                    if std::mem::take(&mut self.stmt_call_nargout0) { 0 } else { 1 };
+
                 // ── In-script profiling control ───────────────────────────
                 if name == "profile" {
                     // profile(fft, myfun) or profile() — args are bare Var names or strings
@@ -1833,7 +1847,7 @@ impl Evaluator {
                                 .iter()
                                 .map(|a| self.eval_expr(a))
                                 .collect::<Result<_, _>>()?;
-                            self.call_builtin_tracked(name, vals)
+                            self.call_builtin_tracked_nargout(name, vals, call_nargout)
                         }
                     }
                 } else {
@@ -1841,7 +1855,7 @@ impl Evaluator {
                         .iter()
                         .map(|a| self.eval_expr(a))
                         .collect::<Result<_, _>>()?;
-                    self.call_builtin_tracked(name, vals)
+                    self.call_builtin_tracked_nargout(name, vals, call_nargout)
                 }
             }
             Expr::Matrix(rows) => {
@@ -2586,6 +2600,25 @@ impl Evaluator {
         }
 
         Ok(ret_val)
+    }
+
+    /// Evaluate a bare expression statement. When the statement is a
+    /// call, arm the one-shot `stmt_call_nargout0` flag: the `Expr::Call`
+    /// arm consumes it at entry (before any recursion, so nested calls
+    /// are unaffected) and passes `nargout = 0` to the builtin dispatch.
+    /// Nargout-aware builtins like `figure()` / `histogram(v)` use that
+    /// to stay silent at statement position (no handle / bin-matrix
+    /// echo) while still returning their value when assigned
+    /// (`h = figure()` passes 1). Special-cased calls (`profile`,
+    /// `widget`, `arrayfun`, …), variable indexing, lambdas, and user
+    /// functions are untouched — they ignore the consumed flag.
+    fn eval_expr_stmt(&mut self, expr: &Expr) -> Result<Value, ScriptError> {
+        if matches!(expr, Expr::Call { .. }) {
+            self.stmt_call_nargout0 = true;
+        }
+        let result = self.eval_expr(expr);
+        self.stmt_call_nargout0 = false;
+        result
     }
 
     /// Call a builtin, recording timing and IO bytes if profiling is active for this name.

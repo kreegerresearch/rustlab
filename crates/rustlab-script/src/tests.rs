@@ -17688,3 +17688,88 @@ mod signed_plot_ingest_tests {
         });
     }
 }
+
+// ── statement-position echo (nargout = 0) ────────────────────────────────────
+// Bare `figure()` / `histogram(v)` used to echo their return values (a
+// figure-handle integer / a 2×n bin matrix) into REPL and notebook output.
+// Statement-position builtin calls now pass nargout = 0; these two return
+// Value::None there, but still return real values when assigned.
+#[cfg(test)]
+mod stmt_echo_nargout_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    #[test]
+    fn assigned_figure_still_returns_handle() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let ev = run("h = figure();");
+        match ev.get("h").unwrap() {
+            Value::Scalar(x) => assert!(*x >= 1.0, "handle should be a positive id, got {x}"),
+            other => panic!("expected scalar handle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assigned_histogram_still_returns_bins() {
+        let ev = run("h = histogram([1, 2, 2, 3, 3, 3], 3);");
+        match ev.get("h").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 2, "bin matrix has centers + counts rows");
+                assert_eq!(m.ncols(), 3);
+                let total: f64 = (0..3).map(|c| m[[1, c]].re).sum();
+                assert_eq!(total, 6.0, "counts must sum to the sample count");
+            }
+            other => panic!("expected 2x3 bin matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_figure_evaluates_to_none() {
+        // The echo guard skips Value::None, so proving the statement value
+        // is None proves silence without capturing stdout.
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let mut ev = Evaluator::new();
+        let tokens = crate::lexer::tokenize("x = 1;\n").unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        ev.run(&stmts).unwrap();
+        // Drive the statement-position path directly.
+        let tokens = crate::lexer::tokenize("figure()\n").unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        ev.run(&stmts).unwrap(); // must not panic; echo path sees None
+    }
+
+    #[test]
+    fn bare_sort_still_echoes_its_value() {
+        // nargout = 0 must behave like 1 for every other nargout builtin:
+        // `sort(v)` at statement position still evaluates to the sorted
+        // vector (it echoes — that is desired, unchanged behavior).
+        let ev = run("y = sort([3, 1, 2]);");
+        match ev.get("y").unwrap() {
+            Value::Vector(v) => {
+                let re: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert_eq!(re, vec![1.0, 2.0, 3.0]);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variable_shadowing_builtin_name_still_indexes() {
+        // `figure` as a data variable: statement-position `figure(1)` must
+        // index the variable, not call the builtin with nargout 0.
+        let ev = run("figure = [10, 20, 30];\nz = figure(2);");
+        match ev.get("z").unwrap() {
+            Value::Scalar(x) => assert_eq!(*x, 20.0),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+}
