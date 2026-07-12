@@ -6,9 +6,21 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## Unreleased
+## 0.3.7
+
+All entries below shipped under no released version number before this
+one. Note for 0.3.6 pinners: the 2026-07-11 binaries reported 0.3.6 but
+already contained the `fft` change and others below; 0.3.7 is the first
+version where the number and the behavior match again (see AGENTS.md
+Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **Single-output `svd` returns the singular values.** `s = svd(A)`
+  now binds the singular-value vector (descending) — previously it
+  bound the entire `(U, σ, V)` tuple, which was unusable as a single
+  value (`size(s)` errored). `[U, S, V] = svd(A)` is unchanged.
+  Migration: code that relied on the tuple binding should destructure
+  explicitly.
 - **`fft(x)` is now length-preserving.** It returns exactly `length(x)`
   bins instead of silently zero-padding to the next power of two;
   non-power-of-two lengths use a hand-rolled Bluestein (chirp-z) transform
@@ -23,6 +35,16 @@ should re-validate against those entries when upgrading.
   of two, as documented.
 
 ### Added
+- Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
+  everywhere a color string is accepted (`plot(..., "color", c)`,
+  `hline`/`yline`, contour/quiver/streamplot color args).
+- Plot argument validation is no longer silent: an unrecognized color
+  name in a dedicated color slot (`hline(y, "dashed")`,
+  `plot(..., "color", "chartreuse")`) prints a one-line stderr warning
+  naming the accepted colors, and `heatmap`/`imagesc`/`bar` warn once
+  per call when NaN/Inf values flow into plot data (renderers already
+  handled them defensively, but silently — broken figures shipped with
+  no hint at render time).
 - `tic` / `toc` wall-clock stopwatch (bare or with parentheses): `tic`
   starts/restarts, `toc` returns elapsed seconds without clearing so
   repeated calls take split times; `toc` before any `tic` is an error.
@@ -60,6 +82,35 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- Bare `figure()` and `histogram(v)` / `hist(v)` statements no longer
+  echo their return values (a meaningless figure-handle integer above
+  every plot in notebook output — churning with global figure count
+  across a directory render — and a 2×n bin matrix, respectively).
+  Statement-position builtin calls now carry `nargout = 0`; assigned
+  forms (`h = figure()`, `b = histogram(v)`) still return their values.
+  Other builtins are unaffected.
+- `heatmap`, `imagesc`, `contour`/`contourf`, and `image` (grayscale /
+  colormap modes) now color by **signed** value instead of magnitude.
+  Previously complex-to-real collapse used |v| at ingest, so any signed
+  matrix rendered wrong: `[-2, -1; 1, 3]` showed −2 at mid-scale and −1
+  identical to +1, and large-magnitude negatives rendered *hot*. All
+  static paths now match the live-viewer path (real part, `.re`). For
+  genuinely complex inputs this means the real part is displayed —
+  take `abs(Z)` explicitly to plot magnitudes. Spectrogram/scalogram dB
+  displays are unchanged (magnitude there is intentional).
+- Multi-panel `subplot` figures containing heatmaps (`heatmap`/`imagesc`)
+  or 3-D surfaces (`surf`) now export **all** panels to SVG. Previously
+  the file was finalized after the first heatmap/surface panel and every
+  later panel was silently dropped (line-plot panels were unaffected;
+  PNG was unaffected). Captured notebook figures had the same defect.
+- `cache` is no longer a reserved word. The 0.3.6 cache statement had
+  silently reserved the lowercase identifier `cache`, breaking scripts
+  that use it as a variable (`cache = 5`, `function [y, cache] = f(x)`).
+  It is now a soft keyword: `cache <subcommand>` / `cache "path"` /
+  `cache path.rcache` still parse as cache statements, and every other
+  use is an ordinary identifier. One corner changed: a bare `cache` line
+  is now a variable reference (previously a parse error asking for a
+  subcommand).
 - `rustlab-viewer` no longer burns CPU while idle (~10% of a core on WSLg,
   where every frame goes through RDP compositing or software GL). The GUI
   previously repainted at ~60 fps around the clock to poll for socket

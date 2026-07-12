@@ -152,8 +152,8 @@ impl BuiltinRegistry {
         r.register("ones3", builtin_ones3);
         r.register("rand3", builtin_rand3);
         r.register("randn3", builtin_randn3);
-        r.register("histogram", builtin_histogram);
-        r.register("hist", builtin_histogram);
+        r.register_nargout("histogram", builtin_histogram);
+        r.register_nargout("hist", builtin_histogram);
         r.register("mean", builtin_mean);
         r.register("median", builtin_median);
         r.register("std", builtin_std);
@@ -180,7 +180,7 @@ impl BuiltinRegistry {
         r.register("frame", builtin_frame);
         r.register("saveanim", builtin_saveanim);
         // Figure state control
-        r.register("figure", builtin_figure);
+        r.register_nargout("figure", builtin_figure);
         r.register("hold", builtin_hold);
         r.register("grid", builtin_grid);
         r.register("axis", builtin_axis);
@@ -278,7 +278,7 @@ impl BuiltinRegistry {
         r.register("dare", builtin_dare);
         r.register("place", builtin_place);
         r.register("freqresp", builtin_freqresp);
-        r.register("svd", builtin_svd);
+        r.register_nargout("svd", builtin_svd);
         // S-parameters (RF Toolbox — Phase 1: type + Touchstone I/O + inspection)
         r.register("sparameters", builtin_sparameters);
         r.register("nports", builtin_nports);
@@ -1507,7 +1507,7 @@ fn builtin_nproc(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::Scalar(n as f64))
 }
 
-fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_histogram(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     if args.is_empty() || args.len() > 2 {
         return Err(ScriptError::type_err(
             "histogram: expected histogram(v) or histogram(v, n_bins)".to_string(),
@@ -1520,6 +1520,12 @@ fn builtin_histogram(args: Vec<Value>) -> Result<Value, ScriptError> {
         10
     };
     plot_histogram(&data, n_bins, "Histogram").map_err(|e| ScriptError::type_err(e.to_string()))?;
+    // Statement position (nargout == 0): stay silent — echoing the 2×n
+    // bin matrix into notebook/REPL output is noise. `h = histogram(v)`
+    // still returns bin centers (row 1) and counts (row 2).
+    if nargout == 0 {
+        return Ok(Value::None);
+    }
     let (centers, counts, _) = compute_histogram(&data, n_bins);
     Ok(Value::Matrix(histogram_matrix(&centers, &counts)))
 }
@@ -3873,6 +3879,26 @@ impl Default for PlotOpts {
     }
 }
 
+/// One-line stderr diagnostic when non-finite values (NaN/Inf) flow into a
+/// plot builtin. The renderers handle them defensively (gray cells,
+/// saturated scale, skipped points) but silently — figures have shipped as
+/// broken data with no hint at render time.
+fn warn_non_finite_plot_data(builtin: &str, args: &[Value]) {
+    let count_c = |c: &C64| !c.re.is_finite() || !c.im.is_finite();
+    let mut n = 0usize;
+    for a in args {
+        match a {
+            Value::Scalar(x) if !x.is_finite() => n += 1,
+            Value::Vector(v) => n += v.iter().filter(|c| count_c(c)).count(),
+            Value::Matrix(m) => n += m.iter().filter(|c| count_c(c)).count(),
+            _ => {}
+        }
+    }
+    if n > 0 {
+        eprintln!("{builtin}: warning: {n} non-finite value(s) (NaN/Inf) in plot data");
+    }
+}
+
 /// Parse trailing key-value string pairs from args slice.
 /// Returns (opts, number_of_args_consumed).
 fn parse_plot_opts(args: &[Value]) -> PlotOpts {
@@ -3883,6 +3909,13 @@ fn parse_plot_opts(args: &[Value]) -> PlotOpts {
             match k.to_lowercase().as_str() {
                 "color" | "colour" => {
                     opts.color = SeriesColor::parse(&v);
+                    if opts.color.is_none() {
+                        eprintln!(
+                            "plot: warning: unrecognized color '{v}' — using a palette \
+                             color. Known: {}",
+                            SeriesColor::KNOWN_NAMES
+                        );
+                    }
                     i += 2;
                 }
                 "label" => {
@@ -4216,26 +4249,36 @@ fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// figure()           — create a new figure, return its numeric handle.
 /// figure(N)          — switch to figure N (create if it doesn't exist).
 /// figure("file.html") — create a new figure in HTML output mode.
-fn builtin_figure(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_figure(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("figure", &args, 0, 1)?;
 
-    if args.len() == 1 {
+    let id = if args.len() == 1 {
         // Numeric arg → switch to existing figure (or create it)
         if let Value::Scalar(n) = &args[0] {
             let id = *n as u32;
             rustlab_plot::figure_switch(id).map_err(|e| ScriptError::runtime(e.to_string()))?;
-            return Ok(Value::Scalar(id as f64));
+            id
+        } else {
+            // String arg → new HTML figure
+            let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let id = rustlab_plot::figure_new_html(&path);
+            eprintln!("HTML figure active: {}", path);
+            id
         }
-        // String arg → new HTML figure
-        let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
-        let id = rustlab_plot::figure_new_html(&path);
-        eprintln!("HTML figure active: {}", path);
-        return Ok(Value::Scalar(id as f64));
-    }
+    } else {
+        // No args → new TUI/viewer figure
+        rustlab_plot::figure_new()
+    };
 
-    // No args → new TUI/viewer figure
-    let id = rustlab_plot::figure_new();
-    Ok(Value::Scalar(id as f64))
+    // Statement position (nargout == 0): stay silent. Echoing the handle
+    // put a meaningless bare integer above every plot in notebook output,
+    // and the value churns with global figure count across a directory
+    // render. `h = figure()` still returns the handle.
+    if nargout == 0 {
+        Ok(Value::None)
+    } else {
+        Ok(Value::Scalar(id as f64))
+    }
 }
 
 /// hold("on"|1) / hold("off"|0) — set hold on/off.
@@ -4273,7 +4316,18 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let color = if args.len() >= 2 {
         let s = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
-        SeriesColor::parse(&s)
+        let c = SeriesColor::parse(&s);
+        if c.is_none() {
+            // This slot is always a color; a silent palette fallback hid
+            // both typos ("gray" pre-support) and style-in-color-slot
+            // mistakes ("dashed") — the drawn line just came out wrong.
+            eprintln!(
+                "hline: warning: unrecognized color '{s}' — using a palette color. \
+                 Known: {}",
+                SeriesColor::KNOWN_NAMES
+            );
+        }
+        c
     } else {
         None
     };
@@ -4750,6 +4804,7 @@ fn builtin_legend(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// imagesc(M) / imagesc(M, colormap) — display matrix as heatmap.
 fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("imagesc", &args, 1, 2)?;
+    warn_non_finite_plot_data("imagesc", &args);
     let colormap = if args.len() == 2 {
         args[1].to_str().map_err(|e| ScriptError::type_err(e))?
     } else {
@@ -4776,6 +4831,7 @@ fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("heatmap", &args, 1, 5)?;
+    warn_non_finite_plot_data("heatmap", &args);
 
     let labeled = matches!(&args[0], Value::StringArray(_));
     let (xlabels, ylabels, matrix_idx) = if labeled {
@@ -4864,7 +4920,9 @@ fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         "viridis".to_string()
     };
 
-    let vals: Vec<f64> = matrix.iter().map(|c| c.norm()).collect();
+    // Convert complex -> real via `.re` (matches `plot_update_heatmap`);
+    // signed values must survive into the colormap normalization.
+    let vals: Vec<f64> = matrix.iter().map(|c| c.re).collect();
     let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
     let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = (max_v - min_v).max(1e-12);
@@ -4965,7 +5023,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         Mode::Grayscale => {
             for r in 0..nrows {
                 for c in 0..ncols {
-                    let v = m0[[r, c]].norm().clamp(0.0, 255.0) as u8;
+                    let v = m0[[r, c]].re.clamp(0.0, 255.0) as u8;
                     rgba.extend_from_slice(&[v, v, v, 255]);
                 }
             }
@@ -4973,7 +5031,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         Mode::Colormap(name) => {
             for r in 0..nrows {
                 for c in 0..ncols {
-                    let v = m0[[r, c]].norm().clamp(0.0, 255.0);
+                    let v = m0[[r, c]].re.clamp(0.0, 255.0);
                     let t = v / 255.0;
                     let (rr, gg, bb) = colormap_rgb(t, name);
                     rgba.extend_from_slice(&[rr, gg, bb, 255]);
@@ -5032,11 +5090,13 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── Contour plots ───────────────────────────────────────────────────────────
 
-/// Convert a Value::Matrix scalar field to `Vec<Vec<f64>>` of magnitudes.
+/// Convert a Value::Matrix scalar field to `Vec<Vec<f64>>` via `.re`.
+/// Signed values must survive — contour levels and fills on negative data
+/// are wrong if magnitudes are taken here.
 fn z_matrix_to_rows(m: &CMatrix) -> Vec<Vec<f64>> {
     let (nrows, ncols) = (m.nrows(), m.ncols());
     (0..nrows)
-        .map(|r| (0..ncols).map(|c| m[[r, c]].norm()).collect())
+        .map(|r| (0..ncols).map(|c| m[[r, c]].re).collect())
         .collect()
 }
 
@@ -10275,6 +10335,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let mut args = args;
     flatten_column_matrix_args(&mut args);
+    warn_non_finite_plot_data("bar", &args);
     // Categorical bar chart: bar({"A","B","C"}, [10,20,30]) or bar(labels, y, "title")
     if let Value::StringArray(labels) = &args[0] {
         if args.len() < 2 {
@@ -10800,43 +10861,47 @@ fn builtin_freqresp(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// svd(A) — SVD via symmetric eigendecomposition of A'A (real matrices only).
-/// Returns Tuple [U, sigma_vector, V] where A ≈ U * diag(sigma) * V'.
-fn builtin_svd(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// svd(A) — SVD via symmetric eigendecomposition of A'A.
+///   nargout <= 1: returns the singular-value vector (descending), so
+///                 `s = svd(A)` gives what a numerically-literate user
+///                 expects instead of an opaque 3-tuple.
+///   nargout >= 2: returns Tuple [U, sigma_vector, V] with
+///                 A ≈ U * diag(sigma) * V' (destructure with
+///                 `[U, S, V] = svd(A)`).
+fn builtin_svd(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("svd", &args, 1)?;
     let m = to_cmatrix_arg(&args[0], "svd", "A")?;
     let max_im: f64 = m.iter().map(|c| c.im.abs()).fold(0.0_f64, f64::max);
     let max_re: f64 = m.iter().map(|c| c.re.abs()).fold(0.0_f64, f64::max);
     let rows = m.nrows();
     let cols = m.ncols();
+    let ns = rows.min(cols);
     // Complex input: compute the true SVD via the Hermitian eigendecomposition
     // of AᴴA (the real-part-only path below would return the SVD of Re(A)).
-    if max_im > 1e-10 * max_re.max(1e-300) {
+    let (u, sigma, v) = if max_im > 1e-10 * max_re.max(1e-300) {
         let (u, sigma, v) = svd_complex(&m);
-        let ns = rows.min(cols);
-        return Ok(Value::Tuple(vec![
-            Value::Matrix(u),
-            Value::Vector(Array1::from_iter(
-                sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
-            )),
-            Value::Matrix(v),
-        ]));
+        (u, sigma, v)
+    } else {
+        let ar: Vec<Vec<f64>> = (0..rows)
+            .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
+            .collect();
+        let (u_r, sv, v_r) = svd_via_ata(&ar, rows, cols);
+        (
+            Array2::from_shape_fn((rows, rows), |(i, j)| Complex::new(u_r[i][j], 0.0)),
+            sv,
+            Array2::from_shape_fn((cols, cols), |(i, j)| Complex::new(v_r[i][j], 0.0)),
+        )
+    };
+    let sigma_vec = Value::Vector(Array1::from_iter(
+        sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
+    ));
+    if nargout < 2 {
+        return Ok(sigma_vec);
     }
-    let ar: Vec<Vec<f64>> = (0..rows)
-        .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
-        .collect();
-    let (u_r, sv, v_r) = svd_via_ata(&ar, rows, cols);
-    let ns = rows.min(cols);
     Ok(Value::Tuple(vec![
-        Value::Matrix(Array2::from_shape_fn((rows, rows), |(i, j)| {
-            Complex::new(u_r[i][j], 0.0)
-        })),
-        Value::Vector(Array1::from_iter(
-            sv[..ns].iter().map(|&s| Complex::new(s, 0.0)),
-        )),
-        Value::Matrix(Array2::from_shape_fn((cols, cols), |(i, j)| {
-            Complex::new(v_r[i][j], 0.0)
-        })),
+        Value::Matrix(u),
+        sigma_vec,
+        Value::Matrix(v),
     ]))
 }
 

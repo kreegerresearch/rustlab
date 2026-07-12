@@ -64,7 +64,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `feval("name", args...)` | Call function by string name |
 | `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all |
 | `profile_report()` | Print profiling table to stderr immediately |
-| `cache enable [path]` | Persistent function-result cache (~1 ms hit path; survives `notebook render`, REPL restart, CI). Defaults to `.rustlab/cache.db`. Full grammar: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache list [limit=N]`, `cache clear`, `cache prune older="30d" max_size=N`. Use this for slow pure functions whose results outlive a session. See `docs/functions.md` § "Persistent Function Cache". |
+| `cache enable [path]` | Persistent function-result cache (~1 ms hit path; survives `notebook render`, REPL restart, CI). Defaults to `.rustlab/cache.db`. Full grammar: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache list [limit=N]`, `cache clear`, `cache prune older="30d" max_size=N`. Use this for slow pure functions whose results outlive a session. See `docs/functions.md` § "Persistent Function Cache". `cache` is a soft keyword: it starts a cache statement only when followed by a subcommand or path, so `cache = 5` and `function [y, cache] = f(x)` still work. |
 | `logspace(a, b, n)` | n log-spaced points from 10^a to 10^b |
 | `rk4(f, x0, t)` | Fixed-step 4th-order Runge-Kutta; f(x,t)→x_dot |
 | `lyap(A, Q)` | Solve Lyapunov equation A*X + X*A' + Q = 0 |
@@ -73,7 +73,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `dare(A, B, Q, R)` | Discrete Algebraic Riccati Equation → P |
 | `place(A, B, poles)` | Ackermann pole placement (SISO) → K |
 | `freqresp(A, B, C, D, w)` | H(jω) from state-space at each frequency ω |
-| `svd(A)` | Jacobi SVD → Tuple [U, sigma_vector, V] |
+| `svd(A)` | Jacobi SVD. `s = svd(A)` → singular-value vector (descending); `[U, s, V] = svd(A)` → full decomposition |
 | `{"a", "b", "c"}` | String array literal (all elements must be strings) |
 | `sa(i)` | String array indexing (1-based); `end` supported |
 | `s.field` | Struct field access |

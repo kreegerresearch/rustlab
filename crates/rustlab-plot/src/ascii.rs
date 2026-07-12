@@ -416,8 +416,10 @@ pub fn imagesc_terminal(matrix: &CMatrix, title: &str, colormap: &str) -> Result
         return Err(PlotError::EmptyData);
     }
 
-    // Use magnitude (norm) of each element
-    let vals: Vec<f64> = matrix.iter().map(|c| c.norm()).collect();
+    // Convert complex -> real via `.re` (matches `plot_update_heatmap`).
+    // Signed values must survive: normalizing on |v| renders negative data
+    // wrong (-2 mid-scale, -1 and +1 identical).
+    let vals: Vec<f64> = matrix.iter().map(|c| c.re).collect();
     let min_v = vals.iter().copied().fold(f64::INFINITY, f64::min);
     let max_v = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let range = (max_v - min_v).max(1e-12);

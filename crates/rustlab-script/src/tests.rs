@@ -17540,3 +17540,291 @@ mod elementwise_extremum_tests {
         );
     }
 }
+
+// ── `cache` as a soft keyword ────────────────────────────────────────────────
+// `cache` must stay usable as an ordinary variable name (it is a natural
+// name in numerical code — forward-pass caches, memo tables); the cache
+// *statement* is recognized only by lookahead (`cache <subcommand>`,
+// `cache "path"`, `cache foo.rcache`).
+#[cfg(test)]
+mod cache_soft_keyword_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn parses(src: &str) -> bool {
+        let src = format!("{}\n", src);
+        match crate::lexer::tokenize(&src) {
+            Ok(tokens) => crate::parser::parse(tokens).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_assignment_and_expression_use() {
+        let ev = run("cache = 5;\nx = cache + 1;");
+        assert_eq!(scalar(&ev, "cache"), 5.0);
+        assert_eq!(scalar(&ev, "x"), 6.0);
+    }
+
+    #[test]
+    fn cache_bare_statement_echoes_variable() {
+        // A bare `cache` line is an expression statement on the variable,
+        // not a parse error.
+        let ev = run("cache = 7;\ncache");
+        assert_eq!(scalar(&ev, "cache"), 7.0);
+    }
+
+    #[test]
+    fn cache_indexed_assignment() {
+        let ev = run("cache = [1, 2, 3];\ncache(2) = 9;\ny = cache(2);");
+        assert_eq!(scalar(&ev, "y"), 9.0);
+    }
+
+    #[test]
+    fn cache_as_struct_field() {
+        let ev = run("s.cache = 3;\nz = s.cache * 2;");
+        assert_eq!(scalar(&ev, "z"), 6.0);
+    }
+
+    #[test]
+    fn cache_in_function_output_list() {
+        let src = "\
+function [y, cache] = f(x)\n\
+  y = x + 1\n\
+  cache = x * 10\n\
+end\n\
+[a, b] = f(4)";
+        let ev = run(src);
+        assert_eq!(scalar(&ev, "a"), 5.0);
+        assert_eq!(scalar(&ev, "b"), 40.0);
+    }
+
+    #[test]
+    fn cache_statement_forms_still_parse() {
+        assert!(parses("cache enable \"store.rcache\""));
+        assert!(parses("cache off"));
+        assert!(parses("cache status"));
+        assert!(parses("cache clear"));
+        assert!(parses("cache list"));
+        assert!(parses("cache prune older=7d"));
+        assert!(parses("cache \"store.rcache\""));
+        // bareword path sugar
+        assert!(parses("cache store.rcache"));
+        assert!(parses("cache add function foo"));
+        assert!(parses("cache remove function foo"));
+    }
+
+    #[test]
+    fn cache_unknown_subcommand_still_errors() {
+        // `cache <bareword>` with no path shape must stay a loud parse
+        // error (typo protection), not become an expression statement.
+        assert!(!parses("cache lst"));
+    }
+}
+
+// ── signed heatmap/imagesc/contour ingest ────────────────────────────────────
+// Complex plot data must collapse to real via `.re`, never `|v|`: with
+// magnitude ingest, B = [-2,-1;1,3] rendered -2 at MID-scale and -1/+1
+// identically — any signed matrix plotted as a heatmap was silently wrong.
+#[cfg(test)]
+mod signed_plot_ingest_tests {
+    use crate::Evaluator;
+
+    fn run(src: &str) {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+    }
+
+    #[test]
+    fn imagesc_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\nimagesc(B, \"viridis\");");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let hm = fig.current().heatmap.as_ref().expect("heatmap stored");
+            assert_eq!(hm.z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn heatmap_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\nheatmap({\"a\",\"b\"}, {\"c\",\"d\"}, B, \"t\", \"viridis\");");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let hm = fig.current().heatmap.as_ref().expect("heatmap stored");
+            assert_eq!(hm.z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn contour_preserves_sign() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        run("B = [-2, -1; 1, 3];\ncontour(B);");
+        rustlab_plot::figure::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let sp = fig.current();
+            assert!(!sp.contours.is_empty(), "contour stored");
+            assert_eq!(sp.contours[0].z, vec![vec![-2.0, -1.0], vec![1.0, 3.0]]);
+        });
+    }
+}
+
+// ── statement-position echo (nargout = 0) ────────────────────────────────────
+// Bare `figure()` / `histogram(v)` used to echo their return values (a
+// figure-handle integer / a 2×n bin matrix) into REPL and notebook output.
+// Statement-position builtin calls now pass nargout = 0; these two return
+// Value::None there, but still return real values when assigned.
+#[cfg(test)]
+mod stmt_echo_nargout_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    #[test]
+    fn assigned_figure_still_returns_handle() {
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let ev = run("h = figure();");
+        match ev.get("h").unwrap() {
+            Value::Scalar(x) => assert!(*x >= 1.0, "handle should be a positive id, got {x}"),
+            other => panic!("expected scalar handle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assigned_histogram_still_returns_bins() {
+        let ev = run("h = histogram([1, 2, 2, 3, 3, 3], 3);");
+        match ev.get("h").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 2, "bin matrix has centers + counts rows");
+                assert_eq!(m.ncols(), 3);
+                let total: f64 = (0..3).map(|c| m[[1, c]].re).sum();
+                assert_eq!(total, 6.0, "counts must sum to the sample count");
+            }
+            other => panic!("expected 2x3 bin matrix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_figure_evaluates_to_none() {
+        // The echo guard skips Value::None, so proving the statement value
+        // is None proves silence without capturing stdout.
+        rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
+        let mut ev = Evaluator::new();
+        let tokens = crate::lexer::tokenize("x = 1;\n").unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        ev.run(&stmts).unwrap();
+        // Drive the statement-position path directly.
+        let tokens = crate::lexer::tokenize("figure()\n").unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        ev.run(&stmts).unwrap(); // must not panic; echo path sees None
+    }
+
+    #[test]
+    fn bare_sort_still_echoes_its_value() {
+        // nargout = 0 must behave like 1 for every other nargout builtin:
+        // `sort(v)` at statement position still evaluates to the sorted
+        // vector (it echoes — that is desired, unchanged behavior).
+        let ev = run("y = sort([3, 1, 2]);");
+        match ev.get("y").unwrap() {
+            Value::Vector(v) => {
+                let re: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert_eq!(re, vec![1.0, 2.0, 3.0]);
+            }
+            other => panic!("expected vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn variable_shadowing_builtin_name_still_indexes() {
+        // `figure` as a data variable: statement-position `figure(1)` must
+        // index the variable, not call the builtin with nargout 0.
+        let ev = run("figure = [10, 20, 30];\nz = figure(2);");
+        match ev.get("z").unwrap() {
+            Value::Scalar(x) => assert_eq!(*x, 20.0),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+}
+
+// ── single-output svd ────────────────────────────────────────────────────────
+// `s = svd(W)` must bind the singular-value vector (descending), not the
+// whole (U, sigma, V) tuple — the tuple was unusable as a single value
+// (size(s) errored) and a silent footgun. `[U, S, V] = svd(W)` keeps the
+// full decomposition.
+#[cfg(test)]
+mod svd_single_output_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    #[test]
+    fn single_output_is_singular_value_vector() {
+        let ev = run("s = svd([3, 0; 0, 1]);");
+        match ev.get("s").unwrap() {
+            Value::Vector(v) => {
+                let re: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert!((re[0] - 3.0).abs() < 1e-9, "sigma_1 = 3, got {}", re[0]);
+                assert!((re[1] - 1.0).abs() < 1e-9, "sigma_2 = 1, got {}", re[1]);
+            }
+            other => panic!("expected singular-value vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_output_usable_in_expressions() {
+        // The motivating symptom: size(s) errored on the tuple binding.
+        let ev = run("s = svd([3, 0; 0, 1]);\nn = length(s);\nm = max(s);");
+        match ev.get("n").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 2.0),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+        match ev.get("m").unwrap() {
+            Value::Scalar(m) => assert!((m - 3.0).abs() < 1e-9),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_output_form_unchanged() {
+        let ev = run("[U, S, V] = svd([3, 0; 0, 1]);");
+        assert!(matches!(ev.get("U").unwrap(), Value::Matrix(_)));
+        assert!(matches!(ev.get("S").unwrap(), Value::Vector(_)));
+        assert!(matches!(ev.get("V").unwrap(), Value::Matrix(_)));
+    }
+}
