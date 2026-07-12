@@ -6,7 +6,13 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## Unreleased
+## 0.3.7
+
+All entries below shipped under no released version number before this
+one. Note for 0.3.6 pinners: the 2026-07-11 binaries reported 0.3.6 but
+already contained the `fft` change and others below; 0.3.7 is the first
+version where the number and the behavior match again (see AGENTS.md
+Workflow Rule 12).
 
 ### Breaking / behavior changes
 - **Single-output `svd` returns the singular values.** `s = svd(A)`

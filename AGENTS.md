@@ -192,7 +192,7 @@ together whenever a phase finishes.
 
 ## Workflow Rules
 
-These three rules apply to every task, no exceptions.
+These rules apply to every task, no exceptions.
 
 ### 1. Plan first, implement second
 
@@ -226,7 +226,7 @@ Any commit that adds or changes a builtin function, scripting construct, or CLI 
 
 A feature is not done until a user can type `help foo` in the REPL and get a useful answer. Do not treat documentation as optional cleanup.
 
-Additionally, record the change in **`CHANGELOG.md`** (repo root) under `## Unreleased`: new builtins/syntax under *Added*, anything that alters the behavior of existing scripts under *Breaking / behavior changes* with migration guidance. Downstream projects rely on that file to know when a re-validation sweep is needed.
+Additionally, record the change in **`CHANGELOG.md`** (repo root) under the current version's section (the topmost `## x.y.z`, matching the workspace version — see Rule 12): new builtins/syntax under *Added*, anything that alters the behavior of existing scripts under *Breaking / behavior changes* with migration guidance. Downstream projects rely on that file to know when a re-validation sweep is needed.
 
 ### 4. Never commit or push without explicit approval
 
@@ -413,6 +413,22 @@ red CI runs. A feature branch + PR would have kept main's history
 clean, confined the CI noise to the branch, and given the work a
 single PR-shaped review surface. Branch protection on `main` now
 enforces this mechanically.
+
+### 12. Any observable behavior change bumps the version
+
+If a change alters what a user can observe — parse acceptance, numeric
+results (even last-digit reduction-order changes), rendered plot output,
+echo/printing behavior, exit codes — the workspace version must be
+bumped in the same PR (or the PR must land on a version that has not
+shipped in any user-visible binary yet). "Same version number" must
+always imply "same observable behavior".
+
+**Why:** the 2026-07-11 rebuild still reported 0.3.6 but had changed
+parse behavior (`cache` reservation), reduction summation order, and
+heatmap NaN rendering versus the June 0.3.6 build. The downstream
+curriculum repo's CI drift guard (`make notebooks-check`) failed on a
+clean tree, and version-pin-based workflows couldn't function
+(2026-07-12 curriculum audit, issue #5).
 
 ---
 
