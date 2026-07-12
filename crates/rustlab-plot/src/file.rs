@@ -886,7 +886,11 @@ where
     label(&pc[3], format!("y={:.3}", y_max))?;
     label(&pc[4], format!("z={:.3}", max_z))?;
 
-    root.present().map_err(err)?;
+    // No present() here: this renders ONE panel of a possibly multi-panel
+    // figure, and SVGBackend::present() writes the file exactly once (all
+    // later calls are silent no-ops) — presenting per-panel froze the SVG
+    // at the first surface panel. The caller presents once after all
+    // panels are drawn.
     Ok(())
 }
 
@@ -1319,7 +1323,11 @@ where
         )?;
     }
 
-    root.present().map_err(err)?;
+    // No present() here: this renders ONE panel of a possibly multi-panel
+    // figure, and SVGBackend::present() writes the file exactly once (all
+    // later calls are silent no-ops) — presenting per-panel dropped every
+    // panel after the first heatmap from the exported SVG. The caller
+    // presents once after all panels are drawn.
     Ok(())
 }
 
@@ -2789,6 +2797,75 @@ mod tests {
         assert!(
             content.contains("y [m]"),
             "expected ylabel 'y [m]' in heatmap SVG axis text"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn subplot_heatmaps_export_all_panels_to_svg() {
+        // Regression: render_heatmap_and_contours_to_backend called
+        // root.present() per panel, and SVGBackend::present() writes the
+        // file exactly once — so a 1×2 heatmap grid exported an SVG
+        // containing only panel one. Both panel titles must appear.
+        let path = tmp_path("_two_heatmap_panels.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            for (idx, title) in [(1, "first heat panel"), (2, "second heat panel")] {
+                fig.set_subplot(1, 2, idx);
+                let sp = fig.current_mut();
+                sp.title = title.to_string();
+                sp.heatmap = Some(crate::figure::HeatmapData {
+                    z: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
+                    colorscale: "viridis".to_string(),
+                    ..Default::default()
+                });
+            }
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("first heat panel"),
+            "panel 1 title missing from multi-panel heatmap SVG"
+        );
+        assert!(
+            content.contains("second heat panel"),
+            "panel 2 title missing from multi-panel heatmap SVG — \
+             per-panel present() froze the file after panel 1"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn subplot_surfaces_export_all_panels_to_svg() {
+        // Same regression class as the heatmap case: render_surface_to_backend
+        // presented per panel, so multi-panel surf SVGs dropped panels 2..n.
+        let path = tmp_path("_two_surface_panels.svg");
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            fig.reset();
+            for (idx, title) in [(1, "first surf panel"), (2, "second surf panel")] {
+                fig.set_subplot(1, 2, idx);
+                let sp = fig.current_mut();
+                sp.title = title.to_string();
+                sp.surface = Some(crate::figure::SurfaceData {
+                    z: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
+                    x: vec![0.0, 1.0],
+                    y: vec![0.0, 1.0],
+                    colorscale: "viridis".to_string(),
+                });
+            }
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let content = std::fs::read_to_string(&path).expect("read SVG");
+        assert!(
+            content.contains("first surf panel"),
+            "panel 1 title missing from multi-panel surf SVG"
+        );
+        assert!(
+            content.contains("second surf panel"),
+            "panel 2 title missing from multi-panel surf SVG — \
+             per-panel present() froze the file after panel 1"
         );
         let _ = std::fs::remove_file(&path);
     }

@@ -60,6 +60,11 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- Multi-panel `subplot` figures containing heatmaps (`heatmap`/`imagesc`)
+  or 3-D surfaces (`surf`) now export **all** panels to SVG. Previously
+  the file was finalized after the first heatmap/surface panel and every
+  later panel was silently dropped (line-plot panels were unaffected;
+  PNG was unaffected). Captured notebook figures had the same defect.
 - `cache` is no longer a reserved word. The 0.3.6 cache statement had
   silently reserved the lowercase identifier `cache`, breaking scripts
   that use it as a variable (`cache = 5`, `function [y, cache] = f(x)`).
