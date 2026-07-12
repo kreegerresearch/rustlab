@@ -149,9 +149,6 @@ impl Parser {
                 Token::Close => {
                     stmts.push(self.parse_close_stmt()?);
                 }
-                Token::Cache => {
-                    stmts.push(self.parse_cache_stmt()?);
-                }
                 Token::Else | Token::ElseIf => {
                     return Err(ScriptError::Parse {
                         line: self.current_line(),
@@ -162,7 +159,9 @@ impl Parser {
                     stmts.push(self.parse_multi_assign()?);
                 }
                 Token::Ident(_) => {
-                    let stmt = if self.is_field_assignment() {
+                    let stmt = if self.is_cache_stmt_start() {
+                        self.parse_cache_stmt()?
+                    } else if self.is_field_assignment() {
                         self.parse_field_assignment()?
                     } else if self.is_index_assignment() {
                         self.parse_index_assign()?
@@ -179,6 +178,20 @@ impl Parser {
             }
         }
         Ok(stmts)
+    }
+
+    /// `cache` is a soft keyword: it introduces a cache statement only
+    /// when what follows could never start an expression continuing the
+    /// identifier `cache` — a string literal (`cache "my.rcache"`) or a
+    /// bareword (`cache enable`, `cache foo.rcache`). Everything else
+    /// (`=`, `(`, `.`, operators, end-of-statement) keeps `cache` usable
+    /// as an ordinary variable name.
+    fn is_cache_stmt_start(&self) -> bool {
+        matches!(self.peek_token(), Token::Ident(name) if name == "cache")
+            && matches!(
+                self.peek_token_at(1),
+                Some(Token::Str(_)) | Some(Token::Ident(_))
+            )
     }
 
     /// Peek ahead to decide if we have `IDENT ( ... ) =` (not `==`) — indexed assignment.
@@ -550,10 +563,11 @@ impl Parser {
             Token::Grid => self.parse_on_off_stmt("grid"),
             Token::Viewer => self.parse_on_off_stmt("viewer"),
             Token::Close => self.parse_close_stmt(),
-            Token::Cache => self.parse_cache_stmt(),
             Token::LBracket if self.is_multi_assign() => self.parse_multi_assign(),
             Token::Ident(_) => {
-                if self.is_field_assignment() {
+                if self.is_cache_stmt_start() {
+                    self.parse_cache_stmt()
+                } else if self.is_field_assignment() {
                     self.parse_field_assignment()
                 } else if self.is_index_assignment() {
                     self.parse_index_assign()
@@ -693,10 +707,13 @@ impl Parser {
         Ok(Stmt::new(StmtKind::Run { path }, line))
     }
 
-    /// Parse a `cache` statement. Dispatches on the first token after
-    /// `cache` to one of the subcommand sub-parsers. The bare-path
-    /// sugar (`cache "my.rcache"` / `cache foo.rcache`) maps to
-    /// `cache enable <path>`. See [`CacheStmt`] for the full grammar.
+    /// Parse a `cache` statement. Only reached when
+    /// [`is_cache_stmt_start`](Self::is_cache_stmt_start) matched (soft
+    /// keyword — `cache` is an ordinary identifier otherwise). Dispatches
+    /// on the first token after `cache` to one of the subcommand
+    /// sub-parsers. The bare-path sugar (`cache "my.rcache"` /
+    /// `cache foo.rcache`) maps to `cache enable <path>`. See
+    /// [`CacheStmt`] for the full grammar.
     fn parse_cache_stmt(&mut self) -> Result<Stmt, ScriptError> {
         let line = self.current_line();
         self.advance(); // consume 'cache'

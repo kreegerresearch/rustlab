@@ -292,9 +292,31 @@ fn quoted_path_sugar_is_unambiguous() {
 // ── general errors ──────────────────────────────────────────────────
 
 #[test]
-fn bare_cache_alone_errors() {
-    let err = parse_err("cache\n");
-    assert!(err.contains("subcommand") || err.contains("path"), "{err}");
+fn bare_cache_alone_is_a_variable_reference() {
+    // `cache` is a soft keyword: with nothing after it there is no
+    // subcommand to dispatch on, so it parses as an ordinary expression
+    // statement referencing a variable named `cache` (runtime decides
+    // whether it exists).
+    let stmts = parse(tokenize("cache\n").expect("tokenize")).expect("parse");
+    assert_eq!(stmts.len(), 1);
+    assert!(
+        matches!(stmts[0].kind, StmtKind::Expr(..)),
+        "expected expression statement, got {:?}",
+        stmts[0]
+    );
+}
+
+#[test]
+fn cache_assignment_is_not_a_cache_statement() {
+    // The motivating regression: `cache` must stay usable as a variable
+    // name, so `cache = 5` is an assignment, never a cache statement.
+    let stmts = parse(tokenize("cache = 5\n").expect("tokenize")).expect("parse");
+    assert_eq!(stmts.len(), 1);
+    assert!(
+        matches!(stmts[0].kind, StmtKind::Assign { .. }),
+        "expected assignment, got {:?}",
+        stmts[0]
+    );
 }
 
 // ── interaction with surrounding statements ─────────────────────────

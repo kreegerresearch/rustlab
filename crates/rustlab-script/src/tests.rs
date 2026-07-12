@@ -17540,3 +17540,100 @@ mod elementwise_extremum_tests {
         );
     }
 }
+
+// ── `cache` as a soft keyword ────────────────────────────────────────────────
+// `cache` must stay usable as an ordinary variable name (it is a natural
+// name in numerical code — forward-pass caches, memo tables); the cache
+// *statement* is recognized only by lookahead (`cache <subcommand>`,
+// `cache "path"`, `cache foo.rcache`).
+#[cfg(test)]
+mod cache_soft_keyword_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn parses(src: &str) -> bool {
+        let src = format!("{}\n", src);
+        match crate::lexer::tokenize(&src) {
+            Ok(tokens) => crate::parser::parse(tokens).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected scalar for '{name}', got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cache_assignment_and_expression_use() {
+        let ev = run("cache = 5;\nx = cache + 1;");
+        assert_eq!(scalar(&ev, "cache"), 5.0);
+        assert_eq!(scalar(&ev, "x"), 6.0);
+    }
+
+    #[test]
+    fn cache_bare_statement_echoes_variable() {
+        // A bare `cache` line is an expression statement on the variable,
+        // not a parse error.
+        let ev = run("cache = 7;\ncache");
+        assert_eq!(scalar(&ev, "cache"), 7.0);
+    }
+
+    #[test]
+    fn cache_indexed_assignment() {
+        let ev = run("cache = [1, 2, 3];\ncache(2) = 9;\ny = cache(2);");
+        assert_eq!(scalar(&ev, "y"), 9.0);
+    }
+
+    #[test]
+    fn cache_as_struct_field() {
+        let ev = run("s.cache = 3;\nz = s.cache * 2;");
+        assert_eq!(scalar(&ev, "z"), 6.0);
+    }
+
+    #[test]
+    fn cache_in_function_output_list() {
+        let src = "\
+function [y, cache] = f(x)\n\
+  y = x + 1\n\
+  cache = x * 10\n\
+end\n\
+[a, b] = f(4)";
+        let ev = run(src);
+        assert_eq!(scalar(&ev, "a"), 5.0);
+        assert_eq!(scalar(&ev, "b"), 40.0);
+    }
+
+    #[test]
+    fn cache_statement_forms_still_parse() {
+        assert!(parses("cache enable \"store.rcache\""));
+        assert!(parses("cache off"));
+        assert!(parses("cache status"));
+        assert!(parses("cache clear"));
+        assert!(parses("cache list"));
+        assert!(parses("cache prune older=7d"));
+        assert!(parses("cache \"store.rcache\""));
+        // bareword path sugar
+        assert!(parses("cache store.rcache"));
+        assert!(parses("cache add function foo"));
+        assert!(parses("cache remove function foo"));
+    }
+
+    #[test]
+    fn cache_unknown_subcommand_still_errors() {
+        // `cache <bareword>` with no path shape must stay a loud parse
+        // error (typo protection), not become an expression statement.
+        assert!(!parses("cache lst"));
+    }
+}

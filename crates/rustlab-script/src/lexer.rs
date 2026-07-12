@@ -65,7 +65,6 @@ pub enum Token {
     Grid,      // grid
     Viewer,    // viewer
     Close,     // close
-    Cache,     // cache (persistent function-result cache directive)
     Dot,       // . (field access)
     // Structure
     Newline,
@@ -567,7 +566,10 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                     "grid" => Token::Grid,
                     "viewer" => Token::Viewer,
                     "close" => Token::Close,
-                    "cache" => Token::Cache,
+                    // NOTE: `cache` is deliberately NOT a keyword. It is a
+                    // soft keyword: the parser dispatches `cache <subcmd>`
+                    // to the cache statement by lookahead, so `cache` stays
+                    // usable as an ordinary variable name (`cache = 5`).
                     _ => Token::Ident(ident),
                 };
                 tokens.push(Spanned { token: tok, line });

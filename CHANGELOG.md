@@ -60,6 +60,14 @@ should re-validate against those entries when upgrading.
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- `cache` is no longer a reserved word. The 0.3.6 cache statement had
+  silently reserved the lowercase identifier `cache`, breaking scripts
+  that use it as a variable (`cache = 5`, `function [y, cache] = f(x)`).
+  It is now a soft keyword: `cache <subcommand>` / `cache "path"` /
+  `cache path.rcache` still parse as cache statements, and every other
+  use is an ordinary identifier. One corner changed: a bare `cache` line
+  is now a variable reference (previously a parse error asking for a
+  subcommand).
 - `rustlab-viewer` no longer burns CPU while idle (~10% of a core on WSLg,
   where every frame goes through RDP compositing or software GL). The GUI
   previously repainted at ~60 fps around the clock to poll for socket
