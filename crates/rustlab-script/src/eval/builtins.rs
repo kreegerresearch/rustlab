@@ -3879,6 +3879,26 @@ impl Default for PlotOpts {
     }
 }
 
+/// One-line stderr diagnostic when non-finite values (NaN/Inf) flow into a
+/// plot builtin. The renderers handle them defensively (gray cells,
+/// saturated scale, skipped points) but silently — figures have shipped as
+/// broken data with no hint at render time.
+fn warn_non_finite_plot_data(builtin: &str, args: &[Value]) {
+    let count_c = |c: &C64| !c.re.is_finite() || !c.im.is_finite();
+    let mut n = 0usize;
+    for a in args {
+        match a {
+            Value::Scalar(x) if !x.is_finite() => n += 1,
+            Value::Vector(v) => n += v.iter().filter(|c| count_c(c)).count(),
+            Value::Matrix(m) => n += m.iter().filter(|c| count_c(c)).count(),
+            _ => {}
+        }
+    }
+    if n > 0 {
+        eprintln!("{builtin}: warning: {n} non-finite value(s) (NaN/Inf) in plot data");
+    }
+}
+
 /// Parse trailing key-value string pairs from args slice.
 /// Returns (opts, number_of_args_consumed).
 fn parse_plot_opts(args: &[Value]) -> PlotOpts {
@@ -3889,6 +3909,13 @@ fn parse_plot_opts(args: &[Value]) -> PlotOpts {
             match k.to_lowercase().as_str() {
                 "color" | "colour" => {
                     opts.color = SeriesColor::parse(&v);
+                    if opts.color.is_none() {
+                        eprintln!(
+                            "plot: warning: unrecognized color '{v}' — using a palette \
+                             color. Known: {}",
+                            SeriesColor::KNOWN_NAMES
+                        );
+                    }
                     i += 2;
                 }
                 "label" => {
@@ -4289,7 +4316,18 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let color = if args.len() >= 2 {
         let s = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
-        SeriesColor::parse(&s)
+        let c = SeriesColor::parse(&s);
+        if c.is_none() {
+            // This slot is always a color; a silent palette fallback hid
+            // both typos ("gray" pre-support) and style-in-color-slot
+            // mistakes ("dashed") — the drawn line just came out wrong.
+            eprintln!(
+                "hline: warning: unrecognized color '{s}' — using a palette color. \
+                 Known: {}",
+                SeriesColor::KNOWN_NAMES
+            );
+        }
+        c
     } else {
         None
     };
@@ -4766,6 +4804,7 @@ fn builtin_legend(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// imagesc(M) / imagesc(M, colormap) — display matrix as heatmap.
 fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("imagesc", &args, 1, 2)?;
+    warn_non_finite_plot_data("imagesc", &args);
     let colormap = if args.len() == 2 {
         args[1].to_str().map_err(|e| ScriptError::type_err(e))?
     } else {
@@ -4792,6 +4831,7 @@ fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("heatmap", &args, 1, 5)?;
+    warn_non_finite_plot_data("heatmap", &args);
 
     let labeled = matches!(&args[0], Value::StringArray(_));
     let (xlabels, ylabels, matrix_idx) = if labeled {
@@ -10295,6 +10335,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let mut args = args;
     flatten_column_matrix_args(&mut args);
+    warn_non_finite_plot_data("bar", &args);
     // Categorical bar chart: bar({"A","B","C"}, [10,20,30]) or bar(labels, y, "title")
     if let Value::StringArray(labels) = &args[0] {
         if args.len() < 2 {

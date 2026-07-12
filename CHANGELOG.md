@@ -29,6 +29,16 @@ should re-validate against those entries when upgrading.
   of two, as documented.
 
 ### Added
+- Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
+  everywhere a color string is accepted (`plot(..., "color", c)`,
+  `hline`/`yline`, contour/quiver/streamplot color args).
+- Plot argument validation is no longer silent: an unrecognized color
+  name in a dedicated color slot (`hline(y, "dashed")`,
+  `plot(..., "color", "chartreuse")`) prints a one-line stderr warning
+  naming the accepted colors, and `heatmap`/`imagesc`/`bar` warn once
+  per call when NaN/Inf values flow into plot data (renderers already
+  handled them defensively, but silently — broken figures shipped with
+  no hint at render time).
 - `tic` / `toc` wall-clock stopwatch (bare or with parentheses): `tic`
   starts/restarts, `toc` returns elapsed seconds without clearing so
   repeated calls take split times; `toc` before any `tic` is an error.

@@ -17,7 +17,17 @@ pub enum SeriesColor {
 
 impl SeriesColor {
     pub fn parse(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        let lower = s.to_lowercase();
+        // "#RRGGBB" hex form.
+        if let Some(hex) = lower.strip_prefix('#') {
+            if hex.len() == 6 {
+                if let Ok(v) = u32::from_str_radix(hex, 16) {
+                    return Some(Self::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
+                }
+            }
+            return None;
+        }
+        match lower.as_str() {
             "r" | "red" => Some(Self::Red),
             "g" | "green" => Some(Self::Green),
             "b" | "blue" => Some(Self::Blue),
@@ -26,9 +36,15 @@ impl SeriesColor {
             "y" | "yellow" => Some(Self::Yellow),
             "k" | "black" => Some(Self::Black),
             "w" | "white" => Some(Self::White),
+            "gray" | "grey" => Some(Self::Rgb(128, 128, 128)),
             _ => None,
         }
     }
+
+    /// The color names [`parse`](Self::parse) accepts — for "unrecognized
+    /// color" warnings, so the caller's message can't drift from the parser.
+    pub const KNOWN_NAMES: &'static str =
+        "r/red, g/green, b/blue, c/cyan, m/magenta, y/yellow, k/black, w/white, gray/grey, #RRGGBB";
     /// Default color cycle (matplotlib-like).
     pub fn cycle(idx: usize) -> Self {
         match idx % 6 {
@@ -1090,4 +1106,35 @@ pub fn colormap_rgb(t: f64, name: &str) -> (u8, u8, u8) {
         }
     }
     pts.last().map(|(_, c)| *c).unwrap_or((0, 0, 0))
+}
+
+#[cfg(test)]
+mod series_color_parse_tests {
+    use super::SeriesColor;
+
+    #[test]
+    fn gray_and_grey_parse() {
+        assert_eq!(SeriesColor::parse("gray"), Some(SeriesColor::Rgb(128, 128, 128)));
+        assert_eq!(SeriesColor::parse("GREY"), Some(SeriesColor::Rgb(128, 128, 128)));
+    }
+
+    #[test]
+    fn hex_rrggbb_parses() {
+        assert_eq!(SeriesColor::parse("#FF8000"), Some(SeriesColor::Rgb(255, 128, 0)));
+        assert_eq!(SeriesColor::parse("#000000"), Some(SeriesColor::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn bad_hex_and_unknown_names_are_none() {
+        assert_eq!(SeriesColor::parse("#FFF"), None); // short form unsupported
+        assert_eq!(SeriesColor::parse("#GGHHII"), None);
+        assert_eq!(SeriesColor::parse("dashed"), None); // style, not a color
+        assert_eq!(SeriesColor::parse("chartreuse"), None);
+    }
+
+    #[test]
+    fn existing_names_still_parse() {
+        assert_eq!(SeriesColor::parse("r"), Some(SeriesColor::Red));
+        assert_eq!(SeriesColor::parse("black"), Some(SeriesColor::Black));
+    }
 }
