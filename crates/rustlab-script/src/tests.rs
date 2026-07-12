@@ -17773,3 +17773,58 @@ mod stmt_echo_nargout_tests {
         }
     }
 }
+
+// ── single-output svd ────────────────────────────────────────────────────────
+// `s = svd(W)` must bind the singular-value vector (descending), not the
+// whole (U, sigma, V) tuple — the tuple was unusable as a single value
+// (size(s) errored) and a silent footgun. `[U, S, V] = svd(W)` keeps the
+// full decomposition.
+#[cfg(test)]
+mod svd_single_output_tests {
+    use crate::eval::value::Value;
+    use crate::Evaluator;
+
+    fn run(src: &str) -> Evaluator {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    #[test]
+    fn single_output_is_singular_value_vector() {
+        let ev = run("s = svd([3, 0; 0, 1]);");
+        match ev.get("s").unwrap() {
+            Value::Vector(v) => {
+                let re: Vec<f64> = v.iter().map(|c| c.re).collect();
+                assert!((re[0] - 3.0).abs() < 1e-9, "sigma_1 = 3, got {}", re[0]);
+                assert!((re[1] - 1.0).abs() < 1e-9, "sigma_2 = 1, got {}", re[1]);
+            }
+            other => panic!("expected singular-value vector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_output_usable_in_expressions() {
+        // The motivating symptom: size(s) errored on the tuple binding.
+        let ev = run("s = svd([3, 0; 0, 1]);\nn = length(s);\nm = max(s);");
+        match ev.get("n").unwrap() {
+            Value::Scalar(n) => assert_eq!(*n, 2.0),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+        match ev.get("m").unwrap() {
+            Value::Scalar(m) => assert!((m - 3.0).abs() < 1e-9),
+            other => panic!("expected scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_output_form_unchanged() {
+        let ev = run("[U, S, V] = svd([3, 0; 0, 1]);");
+        assert!(matches!(ev.get("U").unwrap(), Value::Matrix(_)));
+        assert!(matches!(ev.get("S").unwrap(), Value::Vector(_)));
+        assert!(matches!(ev.get("V").unwrap(), Value::Matrix(_)));
+    }
+}

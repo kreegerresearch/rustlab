@@ -278,7 +278,7 @@ impl BuiltinRegistry {
         r.register("dare", builtin_dare);
         r.register("place", builtin_place);
         r.register("freqresp", builtin_freqresp);
-        r.register("svd", builtin_svd);
+        r.register_nargout("svd", builtin_svd);
         // S-parameters (RF Toolbox — Phase 1: type + Touchstone I/O + inspection)
         r.register("sparameters", builtin_sparameters);
         r.register("nports", builtin_nports);
@@ -10820,43 +10820,47 @@ fn builtin_freqresp(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// svd(A) — SVD via symmetric eigendecomposition of A'A (real matrices only).
-/// Returns Tuple [U, sigma_vector, V] where A ≈ U * diag(sigma) * V'.
-fn builtin_svd(args: Vec<Value>) -> Result<Value, ScriptError> {
+/// svd(A) — SVD via symmetric eigendecomposition of A'A.
+///   nargout <= 1: returns the singular-value vector (descending), so
+///                 `s = svd(A)` gives what a numerically-literate user
+///                 expects instead of an opaque 3-tuple.
+///   nargout >= 2: returns Tuple [U, sigma_vector, V] with
+///                 A ≈ U * diag(sigma) * V' (destructure with
+///                 `[U, S, V] = svd(A)`).
+fn builtin_svd(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("svd", &args, 1)?;
     let m = to_cmatrix_arg(&args[0], "svd", "A")?;
     let max_im: f64 = m.iter().map(|c| c.im.abs()).fold(0.0_f64, f64::max);
     let max_re: f64 = m.iter().map(|c| c.re.abs()).fold(0.0_f64, f64::max);
     let rows = m.nrows();
     let cols = m.ncols();
+    let ns = rows.min(cols);
     // Complex input: compute the true SVD via the Hermitian eigendecomposition
     // of AᴴA (the real-part-only path below would return the SVD of Re(A)).
-    if max_im > 1e-10 * max_re.max(1e-300) {
+    let (u, sigma, v) = if max_im > 1e-10 * max_re.max(1e-300) {
         let (u, sigma, v) = svd_complex(&m);
-        let ns = rows.min(cols);
-        return Ok(Value::Tuple(vec![
-            Value::Matrix(u),
-            Value::Vector(Array1::from_iter(
-                sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
-            )),
-            Value::Matrix(v),
-        ]));
+        (u, sigma, v)
+    } else {
+        let ar: Vec<Vec<f64>> = (0..rows)
+            .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
+            .collect();
+        let (u_r, sv, v_r) = svd_via_ata(&ar, rows, cols);
+        (
+            Array2::from_shape_fn((rows, rows), |(i, j)| Complex::new(u_r[i][j], 0.0)),
+            sv,
+            Array2::from_shape_fn((cols, cols), |(i, j)| Complex::new(v_r[i][j], 0.0)),
+        )
+    };
+    let sigma_vec = Value::Vector(Array1::from_iter(
+        sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
+    ));
+    if nargout < 2 {
+        return Ok(sigma_vec);
     }
-    let ar: Vec<Vec<f64>> = (0..rows)
-        .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
-        .collect();
-    let (u_r, sv, v_r) = svd_via_ata(&ar, rows, cols);
-    let ns = rows.min(cols);
     Ok(Value::Tuple(vec![
-        Value::Matrix(Array2::from_shape_fn((rows, rows), |(i, j)| {
-            Complex::new(u_r[i][j], 0.0)
-        })),
-        Value::Vector(Array1::from_iter(
-            sv[..ns].iter().map(|&s| Complex::new(s, 0.0)),
-        )),
-        Value::Matrix(Array2::from_shape_fn((cols, cols), |(i, j)| {
-            Complex::new(v_r[i][j], 0.0)
-        })),
+        Value::Matrix(u),
+        sigma_vec,
+        Value::Matrix(v),
     ]))
 }
 

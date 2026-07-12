@@ -73,7 +73,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `dare(A, B, Q, R)` | Discrete Algebraic Riccati Equation → P |
 | `place(A, B, poles)` | Ackermann pole placement (SISO) → K |
 | `freqresp(A, B, C, D, w)` | H(jω) from state-space at each frequency ω |
-| `svd(A)` | Jacobi SVD → Tuple [U, sigma_vector, V] |
+| `svd(A)` | Jacobi SVD. `s = svd(A)` → singular-value vector (descending); `[U, s, V] = svd(A)` → full decomposition |
 | `{"a", "b", "c"}` | String array literal (all elements must be strings) |
 | `sa(i)` | String array indexing (1-based); `end` supported |
 | `s.field` | Struct field access |

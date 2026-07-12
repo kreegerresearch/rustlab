@@ -9,6 +9,12 @@ should re-validate against those entries when upgrading.
 ## Unreleased
 
 ### Breaking / behavior changes
+- **Single-output `svd` returns the singular values.** `s = svd(A)`
+  now binds the singular-value vector (descending) — previously it
+  bound the entire `(U, σ, V)` tuple, which was unusable as a single
+  value (`size(s)` errored). `[U, S, V] = svd(A)` is unchanged.
+  Migration: code that relied on the tuple binding should destructure
+  explicitly.
 - **`fft(x)` is now length-preserving.** It returns exactly `length(x)`
   bins instead of silently zero-padding to the next power of two;
   non-power-of-two lengths use a hand-rolled Bluestein (chirp-z) transform
