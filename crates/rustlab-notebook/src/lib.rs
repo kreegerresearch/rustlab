@@ -1051,9 +1051,12 @@ fn read_and_render_index_md(
     let mut opts = pulldown_cmark::Options::empty();
     opts.insert(pulldown_cmark::Options::ENABLE_TABLES);
     opts.insert(pulldown_cmark::Options::ENABLE_STRIKETHROUGH);
-    let parser = pulldown_cmark::Parser::new_ext(&body_without_h1, opts);
+    // Demote single-tilde `~word~` spans to literal text, same as the
+    // notebook HTML pipeline (the index page has no KaTeX, so no math
+    // protection is needed here).
+    let events = render::parse_single_tilde_safe(&body_without_h1, opts);
     let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, parser);
+    pulldown_cmark::html::push_html(&mut html, events.into_iter());
     (html, Some(title))
 }
 

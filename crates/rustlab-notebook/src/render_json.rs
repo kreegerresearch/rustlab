@@ -13,7 +13,6 @@
 
 use crate::execute::Rendered;
 use crate::parse::CalloutKind;
-use pulldown_cmark::{html::push_html, Options, Parser};
 use rustlab_plot::theme::ThemeColors;
 use serde::Serialize;
 
@@ -214,14 +213,12 @@ pub fn render_json(title: &str, blocks: &[Rendered], theme: &ThemeColors) -> Doc
     }
 }
 
+/// Markdown → HTML for the JSON `html` fields. Delegates to the HTML
+/// renderer's shared pipeline so math protection, single-tilde handling,
+/// and delimiter rewriting stay identical across targets: `$...$` spans
+/// come out as `\(...\)` (never bare `$`), exactly as in the HTML target.
 fn markdown_to_html(md: &str) -> String {
-    let mut opts = Options::empty();
-    opts.insert(Options::ENABLE_TABLES);
-    opts.insert(Options::ENABLE_STRIKETHROUGH);
-    let parser = Parser::new_ext(md, opts);
-    let mut html = String::new();
-    push_html(&mut html, parser);
-    html
+    crate::render::markdown_to_html(md)
 }
 
 fn figure_to_svg_string(
@@ -481,6 +478,57 @@ mod tests {
         assert_eq!(v["blocks"][0]["kind"], "exercise_start");
         assert_eq!(v["blocks"][0]["number"], 3);
         assert_eq!(v["blocks"][1]["kind"], "solution_start");
+    }
+
+    // ── markdown_to_html math protection (audit D1) ──
+
+    #[test]
+    fn json_html_preserves_math_backslashes() {
+        // Without math protection, CommonMark eats `\,` / `\;` and leaves
+        // bare `$` in the html field.
+        let blocks = vec![Rendered::Markdown(
+            r"spacing math $a \, b \; c$ end".to_string(),
+        )];
+        let doc = render_json("t", &blocks, theme());
+        let v = serde_json::to_value(&doc).unwrap();
+        let html = v["blocks"][0]["html"].as_str().unwrap();
+        assert!(html.contains(r"\(a \, b \; c\)"), "{html:?}");
+        assert!(!html.contains('$'), "bare $ leaked: {html:?}");
+    }
+
+    #[test]
+    fn json_html_leaves_currency_alone() {
+        let blocks = vec![Rendered::Markdown(
+            "prose $5 and $10 dollars".to_string(),
+        )];
+        let doc = render_json("t", &blocks, theme());
+        let v = serde_json::to_value(&doc).unwrap();
+        let html = v["blocks"][0]["html"].as_str().unwrap();
+        assert!(html.contains("prose $5 and $10 dollars"), "{html:?}");
+        assert!(!html.contains(r"\("), "currency became math: {html:?}");
+    }
+
+    #[test]
+    fn json_html_single_tilde_stays_literal() {
+        let blocks = vec![Rendered::Markdown("swap ~this~ out".to_string())];
+        let doc = render_json("t", &blocks, theme());
+        let v = serde_json::to_value(&doc).unwrap();
+        let html = v["blocks"][0]["html"].as_str().unwrap();
+        assert!(!html.contains("<del>"), "{html:?}");
+        assert!(html.contains("swap ~this~ out"), "{html:?}");
+    }
+
+    #[test]
+    fn json_callout_html_uses_protected_pipeline() {
+        let blocks = vec![Rendered::Callout {
+            kind: CalloutKind::Note,
+            title: None,
+            content: r"inline $\alpha$ math".to_string(),
+        }];
+        let doc = render_json("t", &blocks, theme());
+        let v = serde_json::to_value(&doc).unwrap();
+        let html = v["blocks"][0]["html"].as_str().unwrap();
+        assert!(html.contains(r"\(\alpha\)"), "{html:?}");
     }
 
     #[cfg(feature = "mermaid")]

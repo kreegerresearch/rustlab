@@ -1,6 +1,6 @@
 use crate::execute::Rendered;
-use crate::render::{notebook_md_options, transform_wikilinks};
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use crate::render::{notebook_md_options, parse_single_tilde_safe, transform_wikilinks};
+use pulldown_cmark::{Event, HeadingLevel, Options, Tag, TagEnd};
 use rustlab_plot::theme::{Theme, ThemeColors};
 use std::path::Path;
 
@@ -316,6 +316,7 @@ pub fn render_latex(
 \newunicodechar{{┼}}{{+}}
 \usepackage{{xcolor}}
 \usepackage{{booktabs}}
+\usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
 \hypersetup{{colorlinks=true,linkcolor=[HTML]{{{link_hex}}},urlcolor=[HTML]{{{link_hex}}}}}
 {dark_preamble}
@@ -340,7 +341,9 @@ fn markdown_to_latex(md: &str) -> String {
     let md = transform_wikilinks(md);
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
-    let parser = Parser::new_ext(&md, opts);
+    // Same single-tilde demotion as the HTML target: `~word~` stays literal
+    // prose; only `~~word~~` becomes strikethrough.
+    let events = parse_single_tilde_safe(&md, opts);
 
     let mut out = String::new();
     #[allow(unused_assignments)]
@@ -348,7 +351,7 @@ fn markdown_to_latex(md: &str) -> String {
     let mut table_cell_idx: usize = 0;
     let mut table_in_head = false;
 
-    for event in parser {
+    for event in events {
         match event {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => {
@@ -363,6 +366,7 @@ fn markdown_to_latex(md: &str) -> String {
                 Tag::Paragraph => {}
                 Tag::Emphasis => out.push_str("\\emph{"),
                 Tag::Strong => out.push_str("\\textbf{"),
+                Tag::Strikethrough => out.push_str("\\sout{"),
                 Tag::CodeBlock(_) => {
                     // Fenced code blocks in markdown (non-rustlab) treated as verbatim
                     out.push_str("\\begin{verbatim}\n");
@@ -409,6 +413,7 @@ fn markdown_to_latex(md: &str) -> String {
                 TagEnd::Paragraph => out.push_str("\n\n"),
                 TagEnd::Emphasis => out.push('}'),
                 TagEnd::Strong => out.push('}'),
+                TagEnd::Strikethrough => out.push('}'),
                 TagEnd::CodeBlock => out.push_str("\\end{verbatim}\n\n"),
                 TagEnd::BlockQuote(_) => out.push_str("\\end{quote}\n"),
                 TagEnd::List(true) => out.push_str("\\end{enumerate}\n\n"),
@@ -608,6 +613,25 @@ mod tests {
     }
 
     #[test]
+    fn md_to_latex_strikethrough() {
+        // Audit S3: double-tilde strikethrough must survive as \sout{…}.
+        let out = markdown_to_latex("this is ~~struck~~ text");
+        assert!(out.contains("\\sout{struck}"), "{out:?}");
+    }
+
+    #[test]
+    fn md_to_latex_single_tilde_stays_literal() {
+        // Audit S1 (LaTeX target): `~single~` is prose, and the tildes
+        // must not vanish — they come out escaped.
+        let out = markdown_to_latex("a ~single~ tilde");
+        assert!(!out.contains("\\sout"), "{out:?}");
+        assert!(
+            out.contains("\\textasciitilde{}single\\textasciitilde{}"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn md_to_latex_inline_code() {
         let out = markdown_to_latex("`x = 1`");
         assert!(out.contains("\\texttt{"));
@@ -733,6 +757,7 @@ mod tests {
         assert!(tex.contains("\\usepackage{svg}"));
         assert!(tex.contains("\\usepackage{amsmath,amssymb}"));
         assert!(tex.contains("\\usepackage{booktabs}"));
+        assert!(tex.contains("\\usepackage[normalem]{ulem}"));
         assert!(tex.contains("\\begin{document}"));
         assert!(tex.contains("\\end{document}"));
         assert!(tex.contains("\\maketitle"));
