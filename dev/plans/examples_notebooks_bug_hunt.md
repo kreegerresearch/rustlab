@@ -33,6 +33,16 @@
   Bonus regression found while sweeping examples: the Round-2 **E12** strict-p fix broke
   `norm(M, "fro")` (bench_parmap.rlab) — `norm` now accepts `"fro"`/`"inf"` strings on
   all value shapes.
+- **Resolved 2026-07-21** (same branch): **PLOT-XY** — `plot(X, Y)` with a full-matrix
+  `X` silently ignored `X` and plotted against row indices. Now does MATLAB column
+  pairing (Y(:,k) vs X(:,k), same-size required); vector `X` still broadcasts to every
+  Y column; a matrix `X` against a vector `Y`, or a size mismatch, errors clearly. This
+  surfaced the deeper **each-push-clears** quirk (documented but unfixed in
+  `plot_genuine_2d_matrix_not_collapsed_to_single_point`): `push_line_series` cleared the
+  subplot on every call, so multi-column `plot(M)` kept only the *last* column. New
+  `push_xy_lines` clears once then appends all columns, so every Y column is retained as
+  its own series (verified end-to-end through the SVG backend: distinct `col1`/`col2`
+  traces).
 
 ### Original findings (for reference; NOT yet fixed at time of writing)
 

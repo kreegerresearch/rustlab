@@ -4322,17 +4322,18 @@ mod phase4_tests {
     fn plot_genuine_2d_matrix_not_collapsed_to_single_point() {
         // Regression: a real 2×3 matrix is multi-row data; the Bug 6 fix
         // (1×N / N×1 → Vector) must NOT touch shapes outside that case.
-        // The figure may still produce just one final series due to the
-        // separate "each push clears" quirk in push_line_series, but the
-        // x-axis must contain row indices (length 2), not column indices
-        // (length 3) — proving the matrix arm took the multi-column
-        // path and not the flattener-as-vector path (which would have
-        // produced length-6 x-data).
+        // Each of the 3 columns is now its own series (the "each push
+        // clears" quirk was fixed via push_xy_lines), and every series'
+        // x-axis holds row indices (length 2), not column indices — proving
+        // the matrix arm took the multi-column path and not the
+        // flattener-as-vector path (which would give length-6 x-data).
         rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
         eval_str("plot(linspace(0, 1, 2), [1, 2, 3; 4, 5, 6]);");
-        let xlen = rustlab_plot::figure::FIGURE
-            .with(|f| f.borrow().current().series[0].x_data.len());
-        assert_eq!(xlen, 2, "matrix arm should use nrows for x; got len {xlen}");
+        let series = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.clone());
+        assert_eq!(series.len(), 3, "one series per column, all retained");
+        for s in &series {
+            assert_eq!(s.x_data.len(), 2, "matrix arm should use nrows for x");
+        }
     }
 
     // ── pwelch (Welch's PSD estimator) ────────────────────────────────────────
@@ -18131,5 +18132,63 @@ mod plot_arg_shape_tests {
     fn semilogx_propagates_mismatch_error() {
         let e = run_err("semilogx([1.0, 10.0, 100.0], [1.0, 2.0])");
         assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    // ── plot(X, Y) matrix column pairing (bug-hunt: matrix X was ignored) ──
+
+    #[test]
+    fn plot_matrix_x_pairs_columns() {
+        // Y(:,k) must plot against X(:,k), not against row indices.
+        run("plot([10, 100; 20, 200; 30, 300], [1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series.len(), 2, "one series per Y column");
+            assert_eq!(series[0].x_data, vec![10.0, 20.0, 30.0], "col1 x = X(:,1)");
+            assert_eq!(series[0].y_data, vec![1.0, 2.0, 3.0]);
+            assert_eq!(series[1].x_data, vec![100.0, 200.0, 300.0], "col2 x = X(:,2)");
+            assert_eq!(series[1].y_data, vec![4.0, 5.0, 6.0]);
+        });
+    }
+
+    #[test]
+    fn plot_vector_x_broadcasts_to_all_columns() {
+        run("plot([1, 2, 3], [1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series.len(), 2);
+            assert_eq!(series[0].x_data, vec![1.0, 2.0, 3.0]);
+            assert_eq!(series[1].x_data, vec![1.0, 2.0, 3.0], "same x reused");
+        });
+    }
+
+    #[test]
+    fn plot_no_x_uses_row_indices_per_column() {
+        run("plot([1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series[0].x_data, vec![0.0, 1.0, 2.0]);
+            assert_eq!(series[1].x_data, vec![0.0, 1.0, 2.0]);
+        });
+    }
+
+    #[test]
+    fn plot_rejects_matrix_x_matrix_y_size_mismatch() {
+        let e = run_err("plot([1, 2; 3, 4], [1, 2, 3; 4, 5, 6])");
+        assert!(e.to_string().contains("same size"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_matrix_x_vector_y() {
+        let e = run_err("plot([1, 2; 3, 4], [5, 6])");
+        assert!(e.to_string().contains("same size"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_vector_x_wrong_length_matrix_y() {
+        let e = run_err("plot([1, 2], [1, 4; 2, 5; 3, 6])");
+        assert!(e.to_string().contains("must match y rows"), "{e}");
     }
 }

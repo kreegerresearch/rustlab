@@ -23,7 +23,8 @@ use rustlab_dsp::{
 };
 use rustlab_plot::{
     colormap_rgb, compute_histogram, db_clip, histogram_matrix, imagesc_terminal, plot_db,
-    plot_histogram, push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem, render_figure_file,
+    plot_histogram, push_xy_bar, push_xy_line, push_xy_lines, push_xy_scatter, push_xy_stem,
+    render_figure_file,
     render_figure_terminal, render_heatmap_tui, render_image_tui, surf_terminal,
     sync_figure_outputs, HeatmapData, HeatmapKind, LineStyle, LiveFigure, LivePlot, SeriesColor,
     FIGURE,
@@ -4012,44 +4013,82 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     match y_val {
         Value::Matrix(m) => {
-            // Each column is a series
-            let x_data: Vec<f64> = if let Some(Value::Vector(xv)) = x_opt {
-                xv.iter().map(|c| c.re).collect()
-            } else {
-                (0..m.nrows()).map(|i| i as f64).collect()
+            // Each column of Y is a series. X resolves per column:
+            //   - no X      → 0-based row indices, shared by every column
+            //   - vector X  → same x for every column (broadcast), len == rows
+            //   - matrix X  → MATLAB column pairing: Y(:,k) vs X(:,k), same size
+            let (nrows, ncols) = (m.nrows(), m.ncols());
+            let x_cols: Option<Vec<Vec<f64>>> = match x_opt {
+                None => None,
+                Some(Value::Vector(xv)) => {
+                    if xv.len() != nrows {
+                        return Err(ScriptError::type_err(format!(
+                            "plot: x length ({}) must match y rows ({})",
+                            xv.len(),
+                            nrows
+                        )));
+                    }
+                    let x: Vec<f64> = xv.iter().map(|c| c.re).collect();
+                    Some(vec![x; ncols])
+                }
+                Some(Value::Matrix(xm)) => {
+                    if xm.nrows() != nrows || xm.ncols() != ncols {
+                        return Err(ScriptError::type_err(format!(
+                            "plot: X ({}\u{d7}{}) and Y ({}\u{d7}{}) must have the same size",
+                            xm.nrows(),
+                            xm.ncols(),
+                            nrows,
+                            ncols
+                        )));
+                    }
+                    Some(
+                        (0..ncols)
+                            .map(|j| xm.column(j).iter().map(|c| c.re).collect())
+                            .collect(),
+                    )
+                }
+                Some(other) => {
+                    return Err(ScriptError::type_err(format!(
+                        "plot: x must be a vector or matrix, got {}",
+                        other.type_name()
+                    )))
+                }
             };
-            if x_data.len() != m.nrows() {
-                return Err(ScriptError::type_err(format!(
-                    "plot: x length ({}) must match y rows ({})",
-                    x_data.len(),
-                    m.nrows()
-                )));
-            }
-            let ncols = m.ncols();
-            for col in 0..ncols {
-                let y_data: Vec<f64> = m.column(col).iter().map(|c| c.re).collect();
-                let col_label = if label.is_empty() {
-                    format!("col{}", col + 1)
-                } else {
-                    label.clone()
-                };
-                let col_color = opts.color; // all columns same color if specified, else cycle
-                push_xy_line(
-                    x_data.clone(),
-                    y_data,
-                    &col_label,
-                    &title,
-                    col_color,
-                    opts.style.clone(),
-                );
-            }
+            let columns: Vec<(Vec<f64>, Vec<f64>, String)> = (0..ncols)
+                .map(|col| {
+                    let x_data: Vec<f64> = match &x_cols {
+                        Some(cols) => cols[col].clone(),
+                        None => (0..nrows).map(|i| i as f64).collect(),
+                    };
+                    let y_data: Vec<f64> = m.column(col).iter().map(|c| c.re).collect();
+                    let col_label = if label.is_empty() {
+                        format!("col{}", col + 1)
+                    } else {
+                        label.clone()
+                    };
+                    (x_data, y_data, col_label)
+                })
+                .collect();
+            // One push for the whole matrix: a per-column loop would clear
+            // the subplot on each call and keep only the last column.
+            push_xy_lines(columns, &title, opts.color, opts.style.clone());
             render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
         }
         Value::Vector(v) => {
-            let x_data: Vec<f64> = if let Some(Value::Vector(xv)) = x_opt {
-                xv.iter().map(|c| c.re).collect()
-            } else {
-                (0..v.len()).map(|i| i as f64).collect()
+            let x_data: Vec<f64> = match x_opt {
+                Some(Value::Vector(xv)) => xv.iter().map(|c| c.re).collect(),
+                // A matrix X against a vector Y has no column to pair with;
+                // transpose Y to a matrix (or pass a vector X) instead of
+                // having X silently dropped for row indices.
+                Some(Value::Matrix(xm)) => {
+                    return Err(ScriptError::type_err(format!(
+                        "plot: X is a {}\u{d7}{} matrix but Y is a vector; \
+                         X and Y must have the same size, or X must be a vector",
+                        xm.nrows(),
+                        xm.ncols()
+                    )))
+                }
+                _ => (0..v.len()).map(|i| i as f64).collect(),
             };
             if x_data.len() != v.len() {
                 return Err(ScriptError::type_err(format!(

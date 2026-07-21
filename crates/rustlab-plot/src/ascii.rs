@@ -834,6 +834,44 @@ pub fn push_xy_line(
     push_line_series(x, y, label, title, color, style);
 }
 
+/// Push several line series as one plot: clears the subplot once (unless
+/// `hold` is on), then appends every `(x, y, label)` column. Using the
+/// per-column [`push_xy_line`] in a loop would clear the subplot on each
+/// call and leave only the last column; this is the multi-column path for
+/// `plot(M)` / `plot(X, Y)` where each Y column is its own series.
+/// With `color = None`, colours cycle per column; an explicit colour is
+/// reused for every column (matching the single-series convention).
+pub fn push_xy_lines(
+    columns: Vec<(Vec<f64>, Vec<f64>, String)>,
+    title: &str,
+    color: Option<SeriesColor>,
+    style: LineStyle,
+) {
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            let sp = fig.current_mut();
+            sp.series.clear();
+            sp.title.clear();
+        }
+        for (x, y, label) in columns {
+            let c = color.unwrap_or_else(|| fig.next_color());
+            let sp = fig.current_mut();
+            if !title.is_empty() && sp.title.is_empty() {
+                sp.title = title.to_string();
+            }
+            sp.series.push(crate::figure::Series {
+                label,
+                x_data: x,
+                y_data: y,
+                color: c,
+                style: style.clone(),
+                kind: PlotKind::Line,
+            });
+        }
+    });
+}
+
 /// Push a stem series with explicit x-data.
 pub fn push_xy_stem(
     x: Vec<f64>,
