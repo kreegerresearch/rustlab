@@ -4547,11 +4547,23 @@ fn builtin_ylabel(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ── Log-axis and polar plots (em_requests §2.7 — pretransform shims) ──
 
-fn vector_arg<'a>(args: &'a [Value], idx: usize, name: &str, role: &str) -> Result<&'a CVector, ScriptError> {
+/// Extract a vector-shaped argument. Accepts a `Vector` (borrowed) or a
+/// single-row / single-column `Matrix` (flattened) — expressions like
+/// `ones(1, n)` or `transpose(v)` produce 1×N / N×1 matrices that are
+/// vectors for plotting purposes.
+fn vector_arg<'a>(
+    args: &'a [Value],
+    idx: usize,
+    name: &str,
+    role: &str,
+) -> Result<std::borrow::Cow<'a, CVector>, ScriptError> {
     match args.get(idx) {
-        Some(Value::Vector(v)) => Ok(v),
+        Some(Value::Vector(v)) => Ok(std::borrow::Cow::Borrowed(v)),
+        Some(Value::Matrix(m)) if m.nrows() == 1 || m.ncols() == 1 => Ok(std::borrow::Cow::Owned(
+            m.iter().copied().collect::<Vec<_>>().into(),
+        )),
         Some(other) => Err(ScriptError::type_err(format!(
-            "{name}: {role} must be a vector, got {}",
+            "{name}: {role} must be a vector or 1\u{d7}N/N\u{d7}1 matrix, got {}",
             other.type_name()
         ))),
         None => Err(ScriptError::type_err(format!(
@@ -4604,10 +4616,10 @@ fn builtin_loglog(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("loglog", &args, 2, 8)?;
     let x = vector_arg(&args, 0, "loglog", "x")?;
     let y = vector_arg(&args, 1, "loglog", "y")?;
-    assert_strictly_positive("loglog", "x", x)?;
-    assert_strictly_positive("loglog", "y", y)?;
-    let lx = vector_transform("loglog", "x", x, |v| v.log10())?;
-    let ly = vector_transform("loglog", "y", y, |v| v.log10())?;
+    assert_strictly_positive("loglog", "x", &x)?;
+    assert_strictly_positive("loglog", "y", &y)?;
+    let lx = vector_transform("loglog", "x", &x, |v| v.log10())?;
+    let ly = vector_transform("loglog", "y", &y, |v| v.log10())?;
 
     let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(ly)];
     new_args.extend(args.into_iter().skip(2));
@@ -4632,10 +4644,10 @@ fn builtin_semilogx(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("semilogx", &args, 2, 8)?;
     let x = vector_arg(&args, 0, "semilogx", "x")?;
     let y = vector_arg(&args, 1, "semilogx", "y")?;
-    assert_strictly_positive("semilogx", "x", x)?;
-    let lx = vector_transform("semilogx", "x", x, |v| v.log10())?;
+    assert_strictly_positive("semilogx", "x", &x)?;
+    let lx = vector_transform("semilogx", "x", &x, |v| v.log10())?;
 
-    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(y.clone())];
+    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(y.into_owned())];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
 
@@ -4655,10 +4667,10 @@ fn builtin_semilogy(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("semilogy", &args, 2, 8)?;
     let x = vector_arg(&args, 0, "semilogy", "x")?;
     let y = vector_arg(&args, 1, "semilogy", "y")?;
-    assert_strictly_positive("semilogy", "y", y)?;
-    let ly = vector_transform("semilogy", "y", y, |v| v.log10())?;
+    assert_strictly_positive("semilogy", "y", &y)?;
+    let ly = vector_transform("semilogy", "y", &y, |v| v.log10())?;
 
-    let mut new_args: Vec<Value> = vec![Value::Vector(x.clone()), Value::Vector(ly)];
+    let mut new_args: Vec<Value> = vec![Value::Vector(x.into_owned()), Value::Vector(ly)];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
 
@@ -5344,37 +5356,79 @@ fn parse_xyuv<'a>(
     ScriptError,
 > {
     if args.len() >= 4 {
-        if let (Value::Matrix(um), Value::Matrix(vm)) = (&args[2], &args[3]) {
-            if um.shape() != vm.shape() {
+        if let (Some((nrows, ncols, u)), Some((vr, vc, v))) =
+            (field_rows(&args[2]), field_rows(&args[3]))
+        {
+            if (nrows, ncols) != (vr, vc) {
                 return Err(ScriptError::type_err(format!(
                     "{name}: U and V must have the same shape"
                 )));
             }
-            let (nrows, ncols) = (um.nrows(), um.ncols());
-            let x = axis_from_value(&args[0], name, "X", ncols, false)?;
-            let y = axis_from_value(&args[1], name, "Y", nrows, true)?;
-            let u = vector_field_matrix_to_rows(um);
-            let v = vector_field_matrix_to_rows(vm);
+            let x = axis_for_field(&args[0], name, "X", ncols, false)?;
+            let y = axis_for_field(&args[1], name, "Y", nrows, true)?;
             return Ok((x, y, u, v, &args[4..]));
         }
     }
     if args.len() >= 2 {
-        if let (Value::Matrix(um), Value::Matrix(vm)) = (&args[0], &args[1]) {
-            if um.shape() != vm.shape() {
+        if let (Some((nrows, ncols, u)), Some((vr, vc, v))) =
+            (field_rows(&args[0]), field_rows(&args[1]))
+        {
+            if (nrows, ncols) != (vr, vc) {
                 return Err(ScriptError::type_err(format!(
                     "{name}: U and V must have the same shape"
                 )));
             }
-            let (nrows, ncols) = (um.nrows(), um.ncols());
             let (x, y) = rustlab_plot::quiver::default_xy(nrows, ncols);
-            let u = vector_field_matrix_to_rows(um);
-            let v = vector_field_matrix_to_rows(vm);
             return Ok((x, y, u, v, &args[2..]));
         }
     }
     Err(ScriptError::type_err(format!(
-        "{name}: expected (X, Y, U, V) or (U, V) with matrix arguments"
+        "{name}: expected (X, Y, U, V) or (U, V) with matrix or vector arguments"
     )))
+}
+
+/// View a vector-field component as `(nrows, ncols, rows)`. A `Matrix` maps
+/// directly; a `Vector` is a single-row 1×N field — row slices (`A(1,:)`)
+/// and elementwise results (`cos(theta)`) come out of the evaluator as
+/// vectors, so requiring `Matrix` here would reject every 1×N field.
+fn field_rows(val: &Value) -> Option<(usize, usize, Vec<Vec<f64>>)> {
+    match val {
+        Value::Matrix(m) => Some((m.nrows(), m.ncols(), vector_field_matrix_to_rows(m))),
+        Value::Vector(v) => Some((1, v.len(), vec![v.iter().map(|c| c.re).collect()])),
+        _ => None,
+    }
+}
+
+/// Axis values for one grid dimension of a quiver/streamplot field.
+/// Delegates to [`axis_from_value`], except that when the field is a single
+/// row (or column) the cross axis may also be a scalar or a constant vector:
+/// MATLAB-style `quiver(x, ones(size(x)), u, v)` places one row of arrows at
+/// that constant coordinate. A non-constant vector is a genuine error —
+/// scattered arrow positions don't fit the grid model.
+fn axis_for_field(
+    val: &Value,
+    name: &str,
+    arg_name: &str,
+    expected: usize,
+    is_y: bool,
+) -> Result<Vec<f64>, ScriptError> {
+    if expected == 1 {
+        match val {
+            Value::Scalar(s) => return Ok(vec![*s]),
+            Value::Vector(v) if v.len() > 1 => {
+                let first = v[0];
+                if v.iter().all(|c| *c == first) {
+                    return Ok(vec![first.re]);
+                }
+                return Err(ScriptError::type_err(format!(
+                    "{name}: {arg_name} must be constant for a single-row/column field \
+                     (scattered arrow positions are not supported; pass matrix U/V for a grid)"
+                )));
+            }
+            _ => {}
+        }
+    }
+    axis_from_value(val, name, arg_name, expected, is_y)
 }
 
 /// `quiver(X, Y, U, V [, scale | "title"])` or `quiver(U, V [, ...])`.

@@ -17828,3 +17828,173 @@ mod svd_single_output_tests {
         assert!(matches!(ev.get("V").unwrap(), Value::Matrix(_)));
     }
 }
+
+/// 1×N / N×1 arrays are vectors for plotting purposes: the log-axis and
+/// polar builtins accept single-row/column matrices, and quiver/streamplot
+/// accept vector U/V as a single-row field. Regression tests for the
+/// bug where `ones(1, n)` (a Matrix) was rejected by semilog* and a row
+/// slice `A(1,:)` (a Vector) was rejected by quiver.
+mod plot_arg_shape_tests {
+    use crate::error::ScriptError;
+    use crate::{lexer, parser, Evaluator};
+
+    fn reset_figure() {
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+    }
+
+    fn run(src: &str) {
+        reset_figure();
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+    }
+
+    fn run_err(src: &str) -> ScriptError {
+        reset_figure();
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            if let Err(e) = ev.exec_stmt(stmt) {
+                return e;
+            }
+        }
+        panic!("script should have errored: {src}");
+    }
+
+    // ── semilog / loglog / polar accept 1×N and N×1 matrices ──
+
+    #[test]
+    fn semilogx_accepts_1xn_matrix() {
+        run("semilogx(ones(1, 3), [0.5, 1.0, 1.5])");
+    }
+
+    #[test]
+    fn semilogx_accepts_nx1_matrix_and_logs_values() {
+        run("semilogx(transpose([1.0, 10.0, 100.0]), [0.5, 1.0, 1.5])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let s = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.series.last())
+                .expect("series stored");
+            assert_eq!(s.x_data, vec![0.0, 1.0, 2.0], "x should be log10'd");
+        });
+    }
+
+    #[test]
+    fn semilogy_accepts_1xn_matrix() {
+        run("semilogy([1.0, 2.0, 3.0], ones(1, 3))");
+    }
+
+    #[test]
+    fn loglog_accepts_1xn_matrices() {
+        run("loglog(ones(1, 3), ones(1, 3))");
+    }
+
+    #[test]
+    fn polar_accepts_1xn_matrices() {
+        run("polar(ones(1, 100), ones(1, 100))");
+    }
+
+    #[test]
+    fn semilogx_still_rejects_full_matrix() {
+        let e = run_err("semilogx([1, 2; 3, 4], [1.0, 2.0])");
+        assert!(e.to_string().contains("must be a vector"), "{e}");
+    }
+
+    // ── quiver accepts vector U/V as a single-row field ──
+
+    #[test]
+    fn quiver_vector_uv_with_constant_y() {
+        run("theta = [0.0, 1.0, 2.0]\n\
+             quiver([1.0, 2.0, 3.0], [1.0, 1.0, 1.0], cos(theta), sin(theta))");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.x, vec![1.0, 2.0, 3.0]);
+            assert_eq!(q.y, vec![1.0], "constant Y collapses to one row");
+            assert_eq!(q.u.len(), 1);
+            assert!((q.u[0][1] - 1.0f64.cos()).abs() < 1e-12);
+            assert!((q.v[0][2] - 2.0f64.sin()).abs() < 1e-12);
+        });
+    }
+
+    #[test]
+    fn quiver_row_slices_with_scalar_y() {
+        run("A = [1, 2, 3; 4, 5, 6]\n\
+             quiver([1.0, 2.0, 3.0], 0.0, A(1,:), A(2,:))");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.y, vec![0.0]);
+            assert_eq!(q.u, vec![vec![1.0, 2.0, 3.0]]);
+            assert_eq!(q.v, vec![vec![4.0, 5.0, 6.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_two_arg_vector_form() {
+        run("quiver([1.0, 2.0, 3.0], [0.5, 0.5, 0.5])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.x.len(), 3, "default grid x from indices");
+            assert_eq!(q.y.len(), 1, "one row");
+            assert_eq!(q.u, vec![vec![1.0, 2.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_matrix_uv_unchanged() {
+        run("quiver([1.0, 2.0], [1.0, 2.0], [1, 2; 3, 4], [5, 6; 7, 8])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.u, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_rejects_scattered_y() {
+        let e = run_err(
+            "theta = [0.0, 1.0, 2.0]\n\
+             quiver([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], cos(theta), sin(theta))",
+        );
+        assert!(e.to_string().contains("must be constant"), "{e}");
+    }
+
+    #[test]
+    fn quiver_rejects_vector_uv_length_mismatch() {
+        let e = run_err("quiver([1.0, 2.0], [0.0, 0.0], [1.0, 2.0], [1.0, 2.0, 3.0])");
+        assert!(e.to_string().contains("same shape"), "{e}");
+    }
+
+    #[test]
+    fn streamplot_accepts_vector_uv() {
+        // parse_xyuv is shared; make sure streamplot takes the same shapes.
+        run("streamplot([1.0, 2.0, 3.0], 0.0, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0])");
+    }
+}
