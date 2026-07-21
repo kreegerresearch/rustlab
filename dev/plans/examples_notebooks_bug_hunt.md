@@ -22,10 +22,17 @@
   to ≤~8 MB (was: scalogram 109 MB, 256-scale 33 MB, mandelbrot 40 MB) while preserving
   orientation/coverage; the returned matrix is untouched. The Round-2b column-only
   decimation in `push_db_heatmap` was reverted in favour of this both-dimension cap.
-- **Deferred:** PL5b (sci-notation tick labels for 1e±300 data — exotic cosmetic), PL6
-  (error on x/y length mismatch — P2 behavior change), IO6 (TOML reserved-key). True
+- **Deferred:** PL5b (sci-notation tick labels for 1e±300 data — exotic cosmetic). True
   full-resolution heatmap rasters would need either a PNG figure-output path or manual
   SVG `<image>` injection (SVG-backend-specific) — a separate, larger effort.
+- **Resolved 2026-07-20** (branch `bug-run/1xn-plot-args`): **PL6** — plot/scatter/bar
+  now error on x/y length mismatch instead of silently zipping to the shorter length.
+  **IO6** — `save` refuses struct fields named `__tensor3_*`; `load` only rebuilds a
+  Tensor3 from a table containing *exactly* the two reserved keys (extra keys → plain
+  struct, nothing dropped; malformed payloads no longer lose the reserved fields).
+  Bonus regression found while sweeping examples: the Round-2 **E12** strict-p fix broke
+  `norm(M, "fro")` (bench_parmap.rlab) — `norm` now accepts `"fro"`/`"inf"` strings on
+  all value shapes.
 
 ### Original findings (for reference; NOT yet fixed at time of writing)
 

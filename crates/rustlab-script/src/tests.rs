@@ -11154,6 +11154,67 @@ mod toml_tests {
             .to_string()
     }
 
+    // ── reserved-key collision (bug-hunt IO6) ──
+
+    #[test]
+    fn save_rejects_reserved_tensor3_keys() {
+        let path = tmp_path("reserved_save");
+        let e = match try_run(&format!(
+            "s = struct(\"__tensor3_shape\", [1, 1, 1], \"note\", \"hi\");\n\
+             save(\"{path}\", s);"
+        )) {
+            Err(e) => e,
+            Ok(_) => panic!("save should refuse reserved field names"),
+        };
+        assert!(e.to_string().contains("reserved"), "{e}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_keeps_struct_with_reserved_keys_plus_extras() {
+        // Hand-written TOML: reserved keys alongside a user field must load
+        // as a struct with ALL fields intact — previously it became a bare
+        // Tensor3, silently dropping "note".
+        let path = tmp_path("reserved_extra");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            "__tensor3_shape = [1, 1, 1]\n__tensor3_data = [5]\nnote = \"hi\""
+        )
+        .unwrap();
+        drop(f);
+        let ev = run(&format!("t = load(\"{path}\");"));
+        match ev.get("t").unwrap() {
+            Value::Struct(fields) => {
+                assert!(matches!(fields.get("note"), Some(Value::Str(s)) if s == "hi"));
+                assert!(fields.contains_key("__tensor3_shape"));
+                assert!(fields.contains_key("__tensor3_data"));
+            }
+            other => panic!("expected struct, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_malformed_tensor3_table_keeps_reserved_keys() {
+        // Malformed payload (shape has 2 entries, not 3) → struct fallback
+        // must retain the reserved keys; the old code `remove`d them before
+        // validating, so the fallback struct lost fields.
+        let path = tmp_path("reserved_malformed");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "__tensor3_shape = [1, 1]\n__tensor3_data = [5]").unwrap();
+        drop(f);
+        let ev = run(&format!("t = load(\"{path}\");"));
+        match ev.get("t").unwrap() {
+            Value::Struct(fields) => {
+                assert!(fields.contains_key("__tensor3_shape"), "shape key lost");
+                assert!(fields.contains_key("__tensor3_data"), "data key lost");
+            }
+            other => panic!("expected struct, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn round_trip_flat_struct() {
         let path = tmp_path("flat");
@@ -16983,6 +17044,27 @@ mod round2_regressions {
         assert!((scalar(&ev, "d") - 30.0_f64.sqrt()).abs() < 1e-9); // Frobenius
     }
 
+    // E12 follow-up — the strict-p fix regressed `norm(M, "fro")` (used by
+    // bench_parmap.rlab), which had only worked while p was being ignored.
+    // The string forms "fro"/"inf" are accepted on every value shape.
+    #[test]
+    fn norm_accepts_fro_and_inf_strings() {
+        let ev = eval(
+            "a = norm([1,-2;-3,4], \"fro\")\nb = norm([1,-2;-3,4], \"inf\")\n\
+             c = norm([3, 4], \"fro\")\nd = norm([1, -2, 3], \"Inf\")",
+        );
+        assert!((scalar(&ev, "a") - 30.0_f64.sqrt()).abs() < 1e-9);
+        assert!((scalar(&ev, "b") - 7.0).abs() < 1e-9);
+        assert!((scalar(&ev, "c") - 5.0).abs() < 1e-9); // vector "fro" = 2-norm
+        assert!((scalar(&ev, "d") - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn norm_rejects_unknown_string() {
+        let e = eval_err("x = norm([1, 2], \"spectral\")");
+        assert!(e.contains("unknown norm type"), "got: {e}");
+    }
+
     // E14 — fractional indices are rejected, not truncated.
     #[test]
     fn fractional_index_is_rejected() {
@@ -17996,5 +18078,58 @@ mod plot_arg_shape_tests {
     fn streamplot_accepts_vector_uv() {
         // parse_xyuv is shared; make sure streamplot takes the same shapes.
         run("streamplot([1.0, 2.0, 3.0], 0.0, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0])");
+    }
+
+    // ── mismatched x/y is an error, not a silent zip (bug-hunt PL6) ──
+
+    #[test]
+    fn plot_rejects_mismatched_xy() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_mismatched_x_vs_matrix_rows() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1, 2; 3, 4])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_mismatched_xy_complex() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1+2i, 3+4i])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_matched_xy_still_works() {
+        run("plot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let s = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.series.last())
+                .expect("series stored");
+            assert_eq!(s.x_data.len(), 3);
+            assert_eq!(s.y_data.len(), 3);
+        });
+    }
+
+    #[test]
+    fn scatter_rejects_mismatched_xy() {
+        let e = run_err("scatter([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn bar_rejects_mismatched_xy() {
+        let e = run_err("bar([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn semilogx_propagates_mismatch_error() {
+        let e = run_err("semilogx([1.0, 10.0, 100.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
     }
 }

@@ -114,6 +114,13 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             let mut keys: Vec<&String> = fields.keys().collect();
             keys.sort();
             for key in keys {
+                // A struct carrying a reserved key would be rebuilt as a
+                // Tensor3 (or shadow one) on load — refuse the lossy save.
+                if key == TENSOR3_SHAPE_KEY || key == TENSOR3_DATA_KEY {
+                    return Err(format!(
+                        "save: struct field name '{key}' is reserved for the TOML Tensor3 encoding"
+                    ));
+                }
                 let val = &fields[key];
                 table.insert(key.clone(), value_to_toml(val)?);
             }
@@ -145,10 +152,16 @@ fn scalar_to_toml(f: f64) -> Toml {
 
 fn toml_to_value(tv: Toml) -> Value {
     match tv {
-        Toml::Table(mut map) => {
-            // Tensor3 encoding: if the table has our reserved keys, rebuild the tensor.
-            if map.contains_key(TENSOR3_SHAPE_KEY) && map.contains_key(TENSOR3_DATA_KEY) {
-                if let Some(t) = tensor3_from_table(&mut map) {
+        Toml::Table(map) => {
+            // Tensor3 encoding: rebuild the tensor only when the table is
+            // exactly the two reserved keys. A table with extra keys is a
+            // user struct that happens to contain the reserved names — it
+            // must load as a struct, not silently drop fields into a tensor.
+            if map.len() == 2
+                && map.contains_key(TENSOR3_SHAPE_KEY)
+                && map.contains_key(TENSOR3_DATA_KEY)
+            {
+                if let Some(t) = tensor3_from_table(&map) {
                     return t;
                 }
             }
@@ -169,13 +182,14 @@ fn toml_to_value(tv: Toml) -> Value {
 
 /// Attempt to reconstruct a Tensor3 from a table that carries our reserved keys.
 /// Returns `Some` on success; returns `None` if the payload is malformed so the
-/// caller falls back to treating it as a plain struct.
-fn tensor3_from_table(map: &mut toml::map::Map<String, Toml>) -> Option<Value> {
-    let shape = match map.remove(TENSOR3_SHAPE_KEY)? {
+/// caller falls back to treating it as a plain struct. Reads without consuming:
+/// the fallback must see the table intact, not stripped of the reserved keys.
+fn tensor3_from_table(map: &toml::map::Map<String, Toml>) -> Option<Value> {
+    let shape = match map.get(TENSOR3_SHAPE_KEY)? {
         Toml::Array(arr) if arr.len() == 3 => arr,
         _ => return None,
     };
-    let data = match map.remove(TENSOR3_DATA_KEY)? {
+    let data = match map.get(TENSOR3_DATA_KEY)? {
         Toml::Array(arr) => arr,
         _ => return None,
     };

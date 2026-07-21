@@ -4018,6 +4018,13 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else {
                 (0..m.nrows()).map(|i| i as f64).collect()
             };
+            if x_data.len() != m.nrows() {
+                return Err(ScriptError::type_err(format!(
+                    "plot: x length ({}) must match y rows ({})",
+                    x_data.len(),
+                    m.nrows()
+                )));
+            }
             let ncols = m.ncols();
             for col in 0..ncols {
                 let y_data: Vec<f64> = m.column(col).iter().map(|c| c.re).collect();
@@ -4044,6 +4051,13 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else {
                 (0..v.len()).map(|i| i as f64).collect()
             };
+            if x_data.len() != v.len() {
+                return Err(ScriptError::type_err(format!(
+                    "plot: x length ({}) must match y length ({})",
+                    x_data.len(),
+                    v.len()
+                )));
+            }
             if is_real_vector(v) {
                 let y_data: Vec<f64> = v.iter().map(|c| c.re).collect();
                 let lbl = if label.is_empty() {
@@ -6885,12 +6899,29 @@ fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// norm(v)    — Euclidean (L2) norm of a vector, or Frobenius norm of a matrix
 /// norm(v, p) — p-norm (p=1 or p=2 supported; p="fro" for Frobenius)
+/// Resolve `norm`'s second argument: a numeric p, or the strings
+/// `"fro"` / `"inf"` (case-insensitive, MATLAB/Octave convention).
+/// Returns `None` for `"fro"` — the caller picks its Frobenius path
+/// (which for vectors is just the 2-norm).
+fn norm_p_arg(v: &Value) -> Result<Option<f64>, ScriptError> {
+    if let Value::Str(s) = v {
+        return match s.to_ascii_lowercase().as_str() {
+            "fro" => Ok(None),
+            "inf" => Ok(Some(f64::INFINITY)),
+            other => Err(ScriptError::type_err(format!(
+                "norm: unknown norm type \"{other}\" (expected \"fro\", \"inf\", or a number)"
+            ))),
+        };
+    }
+    v.to_scalar().map(Some).map_err(ScriptError::type_err)
+}
+
 fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("norm", &args, 1, 2)?;
     match &args[0] {
         Value::Vector(v) => {
             let p: f64 = if args.len() == 2 {
-                args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?
+                norm_p_arg(&args[1])?.unwrap_or(2.0)
             } else {
                 2.0
             };
@@ -6909,12 +6940,19 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::Matrix(m) => {
-            // No second argument → Frobenius (this library's default).
-            if args.len() < 2 {
-                let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
-                return Ok(Value::Scalar(n));
-            }
-            let p: f64 = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+            // No second argument (or explicit "fro") → Frobenius
+            // (this library's default).
+            let p: f64 = match if args.len() < 2 {
+                None
+            } else {
+                norm_p_arg(&args[1])?
+            } {
+                Some(p) => p,
+                None => {
+                    let n = m.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+                    return Ok(Value::Scalar(n));
+                }
+            };
             let n = if p == 1.0 {
                 // Maximum absolute column sum.
                 (0..m.ncols())
@@ -6944,7 +6982,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Complex(c) => Ok(Value::Scalar(c.norm())),
         Value::SparseVector(sv) => {
             let p: f64 = if args.len() == 2 {
-                args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?
+                norm_p_arg(&args[1])?.unwrap_or(2.0)
             } else {
                 2.0
             };
@@ -6971,8 +7009,9 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::SparseMatrix(sm) => {
+            // "fro" maps to 2.0: the p==2 branch below is Frobenius.
             let p: f64 = if args.len() == 2 {
-                args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?
+                norm_p_arg(&args[1])?.unwrap_or(2.0)
             } else {
                 2.0
             };
@@ -10501,6 +10540,13 @@ fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
     flatten_column_matrix_args(&mut args);
     let xv = to_real_vector(&args[0])?;
     let yv = to_real_vector(&args[1])?;
+    if xv.len() != yv.len() {
+        return Err(ScriptError::type_err(format!(
+            "scatter: x length ({}) must match y length ({})",
+            xv.len(),
+            yv.len()
+        )));
+    }
     let title = if args.len() == 3 {
         args[2].to_str().map_err(|e| ScriptError::type_err(e))?
     } else {
@@ -10538,6 +10584,7 @@ fn extract_xy_with_title(
             } else {
                 let xv = to_real_vector(a)?;
                 let yv = to_real_vector(b)?;
+                check_xy_lengths(name, xv.len(), yv.len())?;
                 Ok((xv.to_vec(), yv.to_vec(), String::new()))
             }
         }
@@ -10545,6 +10592,7 @@ fn extract_xy_with_title(
         [x, y, t] => {
             let xv = to_real_vector(x)?;
             let yv = to_real_vector(y)?;
+            check_xy_lengths(name, xv.len(), yv.len())?;
             let title = t.to_str().map_err(|e| ScriptError::type_err(e))?;
             Ok((xv.to_vec(), yv.to_vec(), title))
         }
@@ -10552,6 +10600,17 @@ fn extract_xy_with_title(
             "{name}: wrong number of arguments"
         ))),
     }
+}
+
+/// Mismatched x/y used to be silently zipped to the shorter length,
+/// dropping data off the end of a chart with no warning.
+fn check_xy_lengths(name: &str, x_len: usize, y_len: usize) -> Result<(), ScriptError> {
+    if x_len != y_len {
+        return Err(ScriptError::type_err(format!(
+            "{name}: x length ({x_len}) must match y length ({y_len})"
+        )));
+    }
+    Ok(())
 }
 
 // ─── Controls Bootcamp builtins ───────────────────────────────────────────────
