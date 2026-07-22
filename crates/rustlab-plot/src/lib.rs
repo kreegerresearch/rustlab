@@ -23,6 +23,7 @@ pub use animation::{
 };
 pub use ascii::{
     imagesc_terminal, plot_complex, plot_db, plot_histogram, plot_real, push_xy_bar, push_xy_line,
+    push_xy_lines,
     push_xy_scatter, push_xy_stem, render_figure_terminal, render_heatmap_tui, render_image_tui,
     stem_real, surf_terminal,
 };

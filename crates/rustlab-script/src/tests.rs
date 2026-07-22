@@ -4322,17 +4322,18 @@ mod phase4_tests {
     fn plot_genuine_2d_matrix_not_collapsed_to_single_point() {
         // Regression: a real 2×3 matrix is multi-row data; the Bug 6 fix
         // (1×N / N×1 → Vector) must NOT touch shapes outside that case.
-        // The figure may still produce just one final series due to the
-        // separate "each push clears" quirk in push_line_series, but the
-        // x-axis must contain row indices (length 2), not column indices
-        // (length 3) — proving the matrix arm took the multi-column
-        // path and not the flattener-as-vector path (which would have
-        // produced length-6 x-data).
+        // Each of the 3 columns is now its own series (the "each push
+        // clears" quirk was fixed via push_xy_lines), and every series'
+        // x-axis holds row indices (length 2), not column indices — proving
+        // the matrix arm took the multi-column path and not the
+        // flattener-as-vector path (which would give length-6 x-data).
         rustlab_plot::figure::FIGURE.with(|f| f.borrow_mut().reset());
         eval_str("plot(linspace(0, 1, 2), [1, 2, 3; 4, 5, 6]);");
-        let xlen = rustlab_plot::figure::FIGURE
-            .with(|f| f.borrow().current().series[0].x_data.len());
-        assert_eq!(xlen, 2, "matrix arm should use nrows for x; got len {xlen}");
+        let series = rustlab_plot::figure::FIGURE.with(|f| f.borrow().current().series.clone());
+        assert_eq!(series.len(), 3, "one series per column, all retained");
+        for s in &series {
+            assert_eq!(s.x_data.len(), 2, "matrix arm should use nrows for x");
+        }
     }
 
     // ── pwelch (Welch's PSD estimator) ────────────────────────────────────────
@@ -11154,6 +11155,67 @@ mod toml_tests {
             .to_string()
     }
 
+    // ── reserved-key collision (bug-hunt IO6) ──
+
+    #[test]
+    fn save_rejects_reserved_tensor3_keys() {
+        let path = tmp_path("reserved_save");
+        let e = match try_run(&format!(
+            "s = struct(\"__tensor3_shape\", [1, 1, 1], \"note\", \"hi\");\n\
+             save(\"{path}\", s);"
+        )) {
+            Err(e) => e,
+            Ok(_) => panic!("save should refuse reserved field names"),
+        };
+        assert!(e.to_string().contains("reserved"), "{e}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_keeps_struct_with_reserved_keys_plus_extras() {
+        // Hand-written TOML: reserved keys alongside a user field must load
+        // as a struct with ALL fields intact — previously it became a bare
+        // Tensor3, silently dropping "note".
+        let path = tmp_path("reserved_extra");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            "__tensor3_shape = [1, 1, 1]\n__tensor3_data = [5]\nnote = \"hi\""
+        )
+        .unwrap();
+        drop(f);
+        let ev = run(&format!("t = load(\"{path}\");"));
+        match ev.get("t").unwrap() {
+            Value::Struct(fields) => {
+                assert!(matches!(fields.get("note"), Some(Value::Str(s)) if s == "hi"));
+                assert!(fields.contains_key("__tensor3_shape"));
+                assert!(fields.contains_key("__tensor3_data"));
+            }
+            other => panic!("expected struct, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_malformed_tensor3_table_keeps_reserved_keys() {
+        // Malformed payload (shape has 2 entries, not 3) → struct fallback
+        // must retain the reserved keys; the old code `remove`d them before
+        // validating, so the fallback struct lost fields.
+        let path = tmp_path("reserved_malformed");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "__tensor3_shape = [1, 1]\n__tensor3_data = [5]").unwrap();
+        drop(f);
+        let ev = run(&format!("t = load(\"{path}\");"));
+        match ev.get("t").unwrap() {
+            Value::Struct(fields) => {
+                assert!(fields.contains_key("__tensor3_shape"), "shape key lost");
+                assert!(fields.contains_key("__tensor3_data"), "data key lost");
+            }
+            other => panic!("expected struct, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn round_trip_flat_struct() {
         let path = tmp_path("flat");
@@ -16983,6 +17045,27 @@ mod round2_regressions {
         assert!((scalar(&ev, "d") - 30.0_f64.sqrt()).abs() < 1e-9); // Frobenius
     }
 
+    // E12 follow-up — the strict-p fix regressed `norm(M, "fro")` (used by
+    // bench_parmap.rlab), which had only worked while p was being ignored.
+    // The string forms "fro"/"inf" are accepted on every value shape.
+    #[test]
+    fn norm_accepts_fro_and_inf_strings() {
+        let ev = eval(
+            "a = norm([1,-2;-3,4], \"fro\")\nb = norm([1,-2;-3,4], \"inf\")\n\
+             c = norm([3, 4], \"fro\")\nd = norm([1, -2, 3], \"Inf\")",
+        );
+        assert!((scalar(&ev, "a") - 30.0_f64.sqrt()).abs() < 1e-9);
+        assert!((scalar(&ev, "b") - 7.0).abs() < 1e-9);
+        assert!((scalar(&ev, "c") - 5.0).abs() < 1e-9); // vector "fro" = 2-norm
+        assert!((scalar(&ev, "d") - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn norm_rejects_unknown_string() {
+        let e = eval_err("x = norm([1, 2], \"spectral\")");
+        assert!(e.contains("unknown norm type"), "got: {e}");
+    }
+
     // E14 — fractional indices are rejected, not truncated.
     #[test]
     fn fractional_index_is_rejected() {
@@ -17826,5 +17909,286 @@ mod svd_single_output_tests {
         assert!(matches!(ev.get("U").unwrap(), Value::Matrix(_)));
         assert!(matches!(ev.get("S").unwrap(), Value::Vector(_)));
         assert!(matches!(ev.get("V").unwrap(), Value::Matrix(_)));
+    }
+}
+
+/// 1×N / N×1 arrays are vectors for plotting purposes: the log-axis and
+/// polar builtins accept single-row/column matrices, and quiver/streamplot
+/// accept vector U/V as a single-row field. Regression tests for the
+/// bug where `ones(1, n)` (a Matrix) was rejected by semilog* and a row
+/// slice `A(1,:)` (a Vector) was rejected by quiver.
+mod plot_arg_shape_tests {
+    use crate::error::ScriptError;
+    use crate::{lexer, parser, Evaluator};
+
+    fn reset_figure() {
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+    }
+
+    fn run(src: &str) {
+        reset_figure();
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+    }
+
+    fn run_err(src: &str) -> ScriptError {
+        reset_figure();
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            if let Err(e) = ev.exec_stmt(stmt) {
+                return e;
+            }
+        }
+        panic!("script should have errored: {src}");
+    }
+
+    // ── semilog / loglog / polar accept 1×N and N×1 matrices ──
+
+    #[test]
+    fn semilogx_accepts_1xn_matrix() {
+        run("semilogx(ones(1, 3), [0.5, 1.0, 1.5])");
+    }
+
+    #[test]
+    fn semilogx_accepts_nx1_matrix_and_logs_values() {
+        run("semilogx(transpose([1.0, 10.0, 100.0]), [0.5, 1.0, 1.5])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let s = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.series.last())
+                .expect("series stored");
+            assert_eq!(s.x_data, vec![0.0, 1.0, 2.0], "x should be log10'd");
+        });
+    }
+
+    #[test]
+    fn semilogy_accepts_1xn_matrix() {
+        run("semilogy([1.0, 2.0, 3.0], ones(1, 3))");
+    }
+
+    #[test]
+    fn loglog_accepts_1xn_matrices() {
+        run("loglog(ones(1, 3), ones(1, 3))");
+    }
+
+    #[test]
+    fn polar_accepts_1xn_matrices() {
+        run("polar(ones(1, 100), ones(1, 100))");
+    }
+
+    #[test]
+    fn semilogx_still_rejects_full_matrix() {
+        let e = run_err("semilogx([1, 2; 3, 4], [1.0, 2.0])");
+        assert!(e.to_string().contains("must be a vector"), "{e}");
+    }
+
+    // ── quiver accepts vector U/V as a single-row field ──
+
+    #[test]
+    fn quiver_vector_uv_with_constant_y() {
+        run("theta = [0.0, 1.0, 2.0]\n\
+             quiver([1.0, 2.0, 3.0], [1.0, 1.0, 1.0], cos(theta), sin(theta))");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.x, vec![1.0, 2.0, 3.0]);
+            assert_eq!(q.y, vec![1.0], "constant Y collapses to one row");
+            assert_eq!(q.u.len(), 1);
+            assert!((q.u[0][1] - 1.0f64.cos()).abs() < 1e-12);
+            assert!((q.v[0][2] - 2.0f64.sin()).abs() < 1e-12);
+        });
+    }
+
+    #[test]
+    fn quiver_row_slices_with_scalar_y() {
+        run("A = [1, 2, 3; 4, 5, 6]\n\
+             quiver([1.0, 2.0, 3.0], 0.0, A(1,:), A(2,:))");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.y, vec![0.0]);
+            assert_eq!(q.u, vec![vec![1.0, 2.0, 3.0]]);
+            assert_eq!(q.v, vec![vec![4.0, 5.0, 6.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_two_arg_vector_form() {
+        run("quiver([1.0, 2.0, 3.0], [0.5, 0.5, 0.5])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.x.len(), 3, "default grid x from indices");
+            assert_eq!(q.y.len(), 1, "one row");
+            assert_eq!(q.u, vec![vec![1.0, 2.0, 3.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_matrix_uv_unchanged() {
+        run("quiver([1.0, 2.0], [1.0, 2.0], [1, 2; 3, 4], [5, 6; 7, 8])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let q = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.quivers.last())
+                .expect("quiver stored");
+            assert_eq!(q.u, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        });
+    }
+
+    #[test]
+    fn quiver_rejects_scattered_y() {
+        let e = run_err(
+            "theta = [0.0, 1.0, 2.0]\n\
+             quiver([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], cos(theta), sin(theta))",
+        );
+        assert!(e.to_string().contains("must be constant"), "{e}");
+    }
+
+    #[test]
+    fn quiver_rejects_vector_uv_length_mismatch() {
+        let e = run_err("quiver([1.0, 2.0], [0.0, 0.0], [1.0, 2.0], [1.0, 2.0, 3.0])");
+        assert!(e.to_string().contains("same shape"), "{e}");
+    }
+
+    #[test]
+    fn streamplot_accepts_vector_uv() {
+        // parse_xyuv is shared; make sure streamplot takes the same shapes.
+        run("streamplot([1.0, 2.0, 3.0], 0.0, [1.0, 1.0, 1.0], [0.0, 0.0, 0.0])");
+    }
+
+    // ── mismatched x/y is an error, not a silent zip (bug-hunt PL6) ──
+
+    #[test]
+    fn plot_rejects_mismatched_xy() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_mismatched_x_vs_matrix_rows() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1, 2; 3, 4])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_mismatched_xy_complex() {
+        let e = run_err("plot([1.0, 2.0, 3.0], [1+2i, 3+4i])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn plot_matched_xy_still_works() {
+        run("plot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let s = fig
+                .subplots
+                .first()
+                .and_then(|sp| sp.series.last())
+                .expect("series stored");
+            assert_eq!(s.x_data.len(), 3);
+            assert_eq!(s.y_data.len(), 3);
+        });
+    }
+
+    #[test]
+    fn scatter_rejects_mismatched_xy() {
+        let e = run_err("scatter([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn bar_rejects_mismatched_xy() {
+        let e = run_err("bar([1.0, 2.0, 3.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    #[test]
+    fn semilogx_propagates_mismatch_error() {
+        let e = run_err("semilogx([1.0, 10.0, 100.0], [1.0, 2.0])");
+        assert!(e.to_string().contains("must match"), "{e}");
+    }
+
+    // ── plot(X, Y) matrix column pairing (bug-hunt: matrix X was ignored) ──
+
+    #[test]
+    fn plot_matrix_x_pairs_columns() {
+        // Y(:,k) must plot against X(:,k), not against row indices.
+        run("plot([10, 100; 20, 200; 30, 300], [1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series.len(), 2, "one series per Y column");
+            assert_eq!(series[0].x_data, vec![10.0, 20.0, 30.0], "col1 x = X(:,1)");
+            assert_eq!(series[0].y_data, vec![1.0, 2.0, 3.0]);
+            assert_eq!(series[1].x_data, vec![100.0, 200.0, 300.0], "col2 x = X(:,2)");
+            assert_eq!(series[1].y_data, vec![4.0, 5.0, 6.0]);
+        });
+    }
+
+    #[test]
+    fn plot_vector_x_broadcasts_to_all_columns() {
+        run("plot([1, 2, 3], [1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series.len(), 2);
+            assert_eq!(series[0].x_data, vec![1.0, 2.0, 3.0]);
+            assert_eq!(series[1].x_data, vec![1.0, 2.0, 3.0], "same x reused");
+        });
+    }
+
+    #[test]
+    fn plot_no_x_uses_row_indices_per_column() {
+        run("plot([1, 4; 2, 5; 3, 6])");
+        rustlab_plot::FIGURE.with(|f| {
+            let fig = f.borrow();
+            let series = &fig.subplots.first().expect("subplot").series;
+            assert_eq!(series[0].x_data, vec![0.0, 1.0, 2.0]);
+            assert_eq!(series[1].x_data, vec![0.0, 1.0, 2.0]);
+        });
+    }
+
+    #[test]
+    fn plot_rejects_matrix_x_matrix_y_size_mismatch() {
+        let e = run_err("plot([1, 2; 3, 4], [1, 2, 3; 4, 5, 6])");
+        assert!(e.to_string().contains("same size"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_matrix_x_vector_y() {
+        let e = run_err("plot([1, 2; 3, 4], [5, 6])");
+        assert!(e.to_string().contains("same size"), "{e}");
+    }
+
+    #[test]
+    fn plot_rejects_vector_x_wrong_length_matrix_y() {
+        let e = run_err("plot([1, 2], [1, 4; 2, 5; 3, 6])");
+        assert!(e.to_string().contains("must match y rows"), "{e}");
     }
 }
