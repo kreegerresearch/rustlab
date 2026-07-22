@@ -3,7 +3,7 @@ use crate::parse::CalloutKind;
 use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
 use rustlab_script::WidgetValue;
-use pulldown_cmark::{html::push_html, Options, Parser};
+use pulldown_cmark::{html::push_html, Event, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
@@ -72,13 +72,8 @@ pub fn render_html(
                 let md = transform_wikilinks(md);
                 // Rewrite .md links to .html for cross-notebook references
                 let md = rewrite_md_links(&md);
-                // Stash math spans before CommonMark eats LaTeX backslashes
-                let (md, math) = protect_math(&md);
-                // Convert markdown to HTML
-                let parser = Parser::new_ext(&md, notebook_md_options());
-                let mut html = String::new();
-                push_html(&mut html, parser);
-                let html = restore_math(&html, &math);
+                // Convert markdown to HTML (math-protected shared pipeline)
+                let html = markdown_to_html(&md);
 
                 // Extract headings for nav and inject IDs
                 let html = inject_heading_ids(&html, &mut nav_items, &mut heading_idx);
@@ -255,11 +250,7 @@ pub fn render_html(
                 ));
                 let md = transform_wikilinks(content);
                 let md = rewrite_md_links(&md);
-                let (md, math) = protect_math(&md);
-                let parser = Parser::new_ext(&md, notebook_md_options());
-                let mut html = String::new();
-                push_html(&mut html, parser);
-                let html = restore_math(&html, &math);
+                let html = markdown_to_html(&md);
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -826,6 +817,60 @@ pub(crate) fn notebook_md_options() -> Options {
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
     opts
+}
+
+/// Parse `md` with `opts`, demoting GFM strikethrough spans delimited by a
+/// *single* tilde back to literal `~` text events.
+///
+/// pulldown-cmark's `ENABLE_STRIKETHROUGH` accepts one-tilde runs (`~word~`)
+/// as well as `~~word~~`, so prose like "swap ~this~ out" renders struck
+/// through. Only double-tilde spans should be strikethrough; the parser has
+/// no option for that, so the delimiter width is checked against each span's
+/// source range instead.
+pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Event<'a>> {
+    let bytes = md.as_bytes();
+    let mut events = Vec::new();
+    // Parallel to the parser's open-strikethrough nesting: `true` entries are
+    // single-tilde spans being demoted to literal text.
+    let mut demoted: Vec<bool> = Vec::new();
+    for (event, range) in Parser::new_ext(md, opts).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Strikethrough) => {
+                // The range covers the whole span, delimiters included.
+                let single = range.end > range.start + 1
+                    && bytes[range.start] == b'~'
+                    && bytes[range.start + 1] != b'~';
+                demoted.push(single);
+                if single {
+                    events.push(Event::Text("~".into()));
+                } else {
+                    events.push(event);
+                }
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                if demoted.pop().unwrap_or(false) {
+                    events.push(Event::Text("~".into()));
+                } else {
+                    events.push(event);
+                }
+            }
+            other => events.push(other),
+        }
+    }
+    events
+}
+
+/// Shared markdown → HTML pipeline used for HTML prose, callouts, and the
+/// JSON target's `html` fields: math spans are stashed before CommonMark can
+/// eat their backslashes (see [`protect_math`]), single-tilde strikethrough
+/// is demoted to literal text, and math is restored with the currency-safe
+/// `\(…\)` / `\[…\]` delimiters.
+pub(crate) fn markdown_to_html(md: &str) -> String {
+    let (protected, math) = protect_math(md);
+    let events = parse_single_tilde_safe(&protected, notebook_md_options());
+    let mut html = String::new();
+    push_html(&mut html, events.into_iter());
+    restore_math(&html, &math)
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1431,9 +1476,11 @@ fn protect_math(md: &str) -> (String, Vec<String>) {
             }
         }
 
-        // Inline math: $ ... $ (KaTeX-style, single line).
+        // Inline math: $ ... $ (KaTeX-style, single line). On table rows the
+        // scan stops at cell boundaries so a bare `$N` in one cell can't
+        // swallow the `|` up to a math span in a later cell.
         if b == b'$' && is_inline_math_open(s, i) {
-            if let Some(close) = find_inline_close(s, i + 1) {
+            if let Some(close) = find_inline_close(s, i + 1, line_is_table_row(s, i)) {
                 let original = &md[i..close + 1];
                 let idx = stash.len();
                 stash.push(original.to_string());
@@ -1588,16 +1635,39 @@ fn is_inline_math_open(s: &[u8], i: usize) -> bool {
     !nx.is_ascii_whitespace()
 }
 
+/// True if the line containing byte `i` looks like a GFM table row:
+/// at most 3 leading spaces followed by `|`.
+fn line_is_table_row(s: &[u8], i: usize) -> bool {
+    let ls = s[..i]
+        .iter()
+        .rposition(|&c| c == b'\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let mut j = ls;
+    while j < s.len() && s[j] == b' ' && j - ls < 3 {
+        j += 1;
+    }
+    j < s.len() && s[j] == b'|'
+}
+
 /// Find closing `$` for an inline span starting at `start`. Same line only.
 /// Closing `$` must be preceded by non-whitespace and not followed by a digit
 /// (KaTeX convention to avoid swallowing prices like "$5").
-fn find_inline_close(s: &[u8], start: usize) -> Option<usize> {
+///
+/// With `stop_at_pipe` (set on table-row lines) an unescaped `|` ends the
+/// scan: a table cell's `|` boundary must never be swallowed into a math
+/// span. Literal pipes inside table-cell math need `\|` or `\mid`, matching
+/// GFM's own escaping rule for pipes in cells.
+fn find_inline_close(s: &[u8], start: usize, stop_at_pipe: bool) -> Option<usize> {
     let n = s.len();
     let mut j = start;
     while j < n && s[j] != b'\n' {
         if s[j] == b'\\' && j + 1 < n {
             j += 2;
             continue;
+        }
+        if stop_at_pipe && s[j] == b'|' {
+            return None;
         }
         if s[j] == b'$' {
             let prev_ok = j > start && !s[j - 1].is_ascii_whitespace();
@@ -2542,6 +2612,89 @@ mod tests {
         let (rewritten, stash) = protect_math(src);
         let restored = restore_math(&rewritten, &stash);
         assert_eq!(restored, r"before \[\] after");
+    }
+
+    // ── single-tilde strikethrough demotion (audit S1/S2) ──
+
+    #[test]
+    fn single_tilde_stays_literal() {
+        for (src, tilde_text) in [
+            ("id ~foo~ and ~bar~ keys", "id ~foo~ and ~bar~ keys"),
+            ("swap ~this~ out", "swap ~this~ out"),
+            ("func(~x~)", "func(~x~)"),
+        ] {
+            let html = markdown_to_html(src);
+            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+            assert!(html.contains(tilde_text), "tildes lost: {src:?} → {html:?}");
+        }
+    }
+
+    #[test]
+    fn double_tilde_still_strikethrough() {
+        let html = markdown_to_html("this is ~~struck~~ text");
+        assert!(html.contains("<del>struck</del>"), "{html:?}");
+    }
+
+    #[test]
+    fn double_tilde_nested_single_stays_literal() {
+        let html = markdown_to_html("~~outer ~inner~ outer~~");
+        assert!(html.contains("<del>outer ~inner~ outer</del>"), "{html:?}");
+    }
+
+    #[test]
+    fn benign_tildes_unaffected() {
+        for src in [
+            "takes ~5 minutes to ~10 minutes",
+            "~/dotfiles and ~/bin",
+            "pH ~7",
+            "20~30 range",
+            "intraword a~b here",
+        ] {
+            let html = markdown_to_html(src);
+            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+        }
+    }
+
+    #[test]
+    fn tilde_wrapped_math_not_struck() {
+        // Audit S2: the stashed math placeholder is flanking-eligible, so
+        // single tildes used to pair around it.
+        let html = markdown_to_html("wrap ~$x$~ here");
+        assert!(!html.contains("<del>"), "{html:?}");
+        assert!(html.contains(r"~\(x\)~"), "{html:?}");
+
+        let html = markdown_to_html(r"a ~$\alpha$~ b");
+        assert!(!html.contains("<del>"), "{html:?}");
+        assert!(html.contains(r"~\(\alpha\)~"), "{html:?}");
+
+        let html = markdown_to_html("cost ~$5~$10 span");
+        assert!(!html.contains("<del>"), "{html:?}");
+        assert!(html.contains("cost ~$5~$10 span"), "{html:?}");
+    }
+
+    // ── table cells vs inline math (audit D2) ──
+
+    #[test]
+    fn table_row_bare_price_does_not_swallow_cell_boundary() {
+        let src = "| a | b |\n|---|---|\n| $5 | $x$ |";
+        let html = markdown_to_html(src);
+        assert!(html.contains("<td>$5</td>"), "{html:?}");
+        assert!(html.contains(r"<td>\(x\)</td>"), "{html:?}");
+    }
+
+    #[test]
+    fn table_row_math_then_price_still_works() {
+        let src = "| a | b |\n|---|---|\n| $y=2$ | cost $9 |";
+        let html = markdown_to_html(src);
+        assert!(html.contains(r"<td>\(y=2\)</td>"), "{html:?}");
+        assert!(html.contains("<td>cost $9</td>"), "{html:?}");
+    }
+
+    #[test]
+    fn prose_math_with_pipe_still_protected() {
+        // Only table rows terminate the scan at `|`; prose keeps `$P(A|B)$`.
+        let (_, stash) = protect_math("prob $P(A|B)$ here");
+        assert_eq!(stash, vec!["$P(A|B)$".to_string()]);
     }
 
     // ── Cross-notebook navigation (Option B) ──
