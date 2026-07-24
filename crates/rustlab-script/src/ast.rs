@@ -144,6 +144,9 @@ pub enum Expr {
     Number(f64),
     /// Imaginary literal `2j` / `2i` — the stored value is the imaginary part.
     Imag(f64),
+    /// Radix integer literal `0xFF` / `0b1010` / `0o17`. Evaluates to a
+    /// `Value::Int` of the smallest fitting unsigned class (≤ `u64::MAX`).
+    IntLit(u128),
     Str(String),
     Var(String),
     BinOp {

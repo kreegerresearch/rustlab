@@ -1768,6 +1768,10 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Imag(n))
             }
+            Token::IntLit(v) => {
+                self.advance();
+                Ok(Expr::IntLit(v))
+            }
             Token::Str(s) => {
                 self.advance();
                 Ok(Expr::Str(s))

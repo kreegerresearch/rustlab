@@ -5,7 +5,7 @@ use num_complex::Complex;
 use rand::Rng;
 use rand_distr::{Distribution, Normal, Uniform};
 use rustlab_core::{CMatrix, CVector, SparseMat, SparseVec, C64};
-use rustlab_core::{OverflowMode, RoundMode};
+use rustlab_core::{IntClass, OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
 use rustlab_dsp::fixed::{qadd as fixed_qadd, qconv as fixed_qconv, qmul as fixed_qmul};
 use rustlab_dsp::{
@@ -101,6 +101,22 @@ impl BuiltinRegistry {
         r.register("firpmq", builtin_firpmq);
         // Fixed-point quantization
         r.register("qfmt", builtin_qfmt);
+        // Integer types (dev/plans/integer_types.md)
+        r.register("int8", builtin_int8);
+        r.register("int16", builtin_int16);
+        r.register("int32", builtin_int32);
+        r.register("int64", builtin_int64);
+        r.register("uint8", builtin_uint8);
+        r.register("uint16", builtin_uint16);
+        r.register("uint32", builtin_uint32);
+        r.register("uint64", builtin_uint64);
+        r.register("class", builtin_class);
+        r.register("cast", builtin_cast);
+        r.register("intmax", builtin_intmax);
+        r.register("intmin", builtin_intmin);
+        r.register("isinteger", builtin_isinteger);
+        r.register("isa", builtin_isa);
+        r.register("double", builtin_double);
         r.register("quantize", builtin_quantize);
         r.register("qadd", builtin_qadd);
         r.register("qmul", builtin_qmul);
@@ -602,6 +618,17 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("abs", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(n.abs())),
+        // Class-preserving (MATLAB): abs(int8(-7)) → int8(7); abs(int8(-128))
+        // saturates to 127 under the value's overflow mode.
+        Value::Int {
+            data,
+            class,
+            overflow,
+        } => Ok(Value::Int {
+            data: class.coerce((*data).abs(), *overflow),
+            class: *class,
+            overflow: *overflow,
+        }),
         Value::Complex(c) => Ok(Value::Scalar(c.norm())),
         Value::Vector(v) => {
             // Fast path: |re| is cheaper than sqrt(re²+im²) for real-only vectors.
@@ -630,6 +657,11 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
         } else {
             std::f64::consts::PI
         })),
+        Value::Int { data, .. } => Ok(Value::Scalar(if *data >= 0 {
+            0.0
+        } else {
+            std::f64::consts::PI
+        })),
         Value::Complex(c) => Ok(Value::Scalar(c.arg())),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.arg(), 0.0)));
@@ -646,6 +678,7 @@ fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("real", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Int { .. } => Ok(args[0].clone()),
         Value::Complex(c) => Ok(Value::Scalar(c.re)),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.re, 0.0)));
@@ -664,6 +697,11 @@ fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("imag", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n == 0.0 { 0.0 } else { 0.0 })),
+        Value::Int { class, overflow, .. } => Ok(Value::Int {
+            data: 0,
+            class: *class,
+            overflow: *overflow,
+        }),
         Value::Complex(c) => Ok(Value::Scalar(c.im)),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.im, 0.0)));
@@ -682,6 +720,7 @@ fn builtin_conj(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("conj", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Int { .. } => Ok(args[0].clone()),
         Value::Complex(c) => Ok(Value::Complex(c.conj())),
         Value::Vector(v) => Ok(Value::Vector(v.mapv(|c| c.conj()))),
         Value::Matrix(m) => Ok(Value::Matrix(m.mapv(|c| c.conj()))),
@@ -730,6 +769,16 @@ fn apply_scalar_fn_promoting(
                 Ok(Value::Complex(fc(Complex::new(*n, 0.0))))
             } else {
                 Ok(Value::Scalar(f(*n)))
+            }
+        }
+        // Integers widen to their double value (result is double), so the
+        // element-wise math surface accepts them like the coercion chokepoints.
+        Value::Int { data, .. } => {
+            let n = *data as f64;
+            if needs_complex(n) {
+                Ok(Value::Complex(fc(Complex::new(n, 0.0))))
+            } else {
+                Ok(Value::Scalar(f(n)))
             }
         }
         Value::Complex(c) => Ok(Value::Complex(fc(*c))),
@@ -1264,9 +1313,31 @@ fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize)
     }
 }
 
+/// Peel a trailing integer-class name (`zeros(2, 3, "int32")`) off the arg
+/// list. Returns the remaining (dimension) args plus the class if present.
+fn peel_int_class(args: &[Value]) -> (Vec<Value>, Option<IntClass>) {
+    if let Some(Value::Str(s)) = args.last() {
+        if let Some(cls) = IntClass::from_str(s) {
+            return (args[..args.len() - 1].to_vec(), Some(cls));
+        }
+    }
+    (args.to_vec(), None)
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("zeros", &args, 1, 2)?;
-    let (m, n) = unpack_size_args(&args, "zeros")?;
+    let (dims, cls) = peel_int_class(&args);
+    check_args_range("zeros", &dims, 1, 2)?;
+    let (m, n) = unpack_size_args(&dims, "zeros")?;
+    if let Some(cls) = cls {
+        let (r, c) = (m.unwrap_or(1), n);
+        return Ok(Value::int_array(
+            vec![0i128; r * c],
+            r,
+            c,
+            cls,
+            OverflowMode::Saturate,
+        ));
+    }
     if let Some(m) = m {
         Ok(Value::Matrix(Array2::zeros((m, n))))
     } else {
@@ -1275,8 +1346,19 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("ones", &args, 1, 2)?;
-    let (m, n) = unpack_size_args(&args, "ones")?;
+    let (dims, cls) = peel_int_class(&args);
+    check_args_range("ones", &dims, 1, 2)?;
+    let (m, n) = unpack_size_args(&dims, "ones")?;
+    if let Some(cls) = cls {
+        let (r, c) = (m.unwrap_or(1), n);
+        return Ok(Value::int_array(
+            vec![1i128; r * c],
+            r,
+            c,
+            cls,
+            OverflowMode::Saturate,
+        ));
+    }
     if let Some(m) = m {
         Ok(Value::Matrix(Array2::from_elem(
             (m, n),
@@ -2138,6 +2220,22 @@ where
             Ok(Value::Matrix(axis_reduce(m, dim)))
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
+        Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
+        // Integer arrays widen to a complex matrix and reuse the matrix path.
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            if *rows == 0 || *cols == 0 {
+                return Ok(Value::Scalar(0.0));
+            }
+            let m = Value::int_array_to_cmatrix(data, *rows, *cols);
+            if *rows == 1 || *cols == 1 {
+                let elements: Vec<C64> = m.iter().copied().collect();
+                return flat_reduce(&elements);
+            }
+            let dim = dim_arg.unwrap_or(1);
+            Ok(Value::Matrix(axis_reduce(&m, dim)))
+        }
         Value::Complex(c) => Ok(Value::Complex(*c)),
         other => Err(ScriptError::type_err(format!(
             "{}: unsupported type {}",
@@ -2589,12 +2687,15 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         // it gives the longest dimension. Use numel(M) for total element
         // count and size(M) for full shape information.
         Value::Matrix(m) => Ok(Value::Scalar(m.nrows().max(m.ncols()) as f64)),
+        Value::IntArray { rows, cols, .. } => Ok(Value::Scalar((*rows).max(*cols) as f64)),
         Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
         // Scalar / complex / bool are all 1-element values; matlab's
         // length() on a scalar returns 1, not an error. Removes the
         // need for `length([x])` boxing in generic code that handles
         // both scalars and vectors uniformly.
-        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => Ok(Value::Scalar(1.0)),
+        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) | Value::Int { .. } => {
+            Ok(Value::Scalar(1.0))
+        }
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
@@ -2611,7 +2712,8 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Vector(v) => v.len(),
         Value::Matrix(m) => m.nrows() * m.ncols(),
         Value::Tensor3(t) => t.shape().iter().product::<usize>(),
-        Value::Scalar(_) | Value::Complex(_) => 1,
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
+        Value::IntArray { data, .. } => data.len(),
         Value::StringArray(v) => v.len(),
         other => {
             return Err(ScriptError::type_err(format!(
@@ -2650,7 +2752,8 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (nrows, ncols) = match &args[0] {
         Value::Vector(v) => (1usize, v.len()),
         Value::Matrix(m) => (m.nrows(), m.ncols()),
-        Value::Scalar(_) | Value::Complex(_) => (1, 1),
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => (1, 1),
+        Value::IntArray { rows, cols, .. } => (*rows, *cols),
         Value::SparseVector(sv) => (1, sv.len),
         Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         Value::StringArray(v) => (1, v.len()),
@@ -3722,6 +3825,198 @@ fn parse_overflow_mode(s: &str) -> Result<OverflowMode, ScriptError> {
             "unknown overflow mode '{s}'; valid: saturate, wrap"
         ))
     })
+}
+
+// ── Integer types (dev/plans/integer_types.md) ──────────────────────────────
+
+/// Cast a value to an integer `class` under `mode`. Scalars/vectors/matrices
+/// round half away from zero (via `IntClass::from_f64`); an existing integer
+/// is re-ranged with `coerce`. Vectors/matrices produce an `IntArray`.
+/// Complex values with a nonzero imaginary part are rejected.
+fn cast_scalar_to_int(
+    x: &Value,
+    class: IntClass,
+    mode: OverflowMode,
+    name: &str,
+) -> Result<Value, ScriptError> {
+    let scalar = |data: i128| Value::Int {
+        data,
+        class,
+        overflow: mode,
+    };
+    match x {
+        Value::Int { data, .. } => Ok(scalar(class.coerce(*data, mode))),
+        Value::Scalar(n) => Ok(scalar(class.from_f64(*n, mode))),
+        Value::Bool(b) => Ok(scalar(class.coerce(*b as i128, mode))),
+        Value::Complex(c) => {
+            if c.im.abs() > 1e-12 {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: cannot convert a complex value with nonzero imaginary part"
+                )));
+            }
+            Ok(scalar(class.from_f64(c.re, mode)))
+        }
+        Value::Vector(v) => {
+            let data: Vec<i128> = v.iter().map(|c| class.from_f64(c.re, mode)).collect();
+            let n = data.len();
+            Ok(Value::int_array(data, 1, n, class, mode))
+        }
+        Value::Matrix(m) => {
+            let (rows, cols) = (m.nrows(), m.ncols());
+            let data: Vec<i128> = m.iter().map(|c| class.from_f64(c.re, mode)).collect();
+            Ok(Value::int_array(data, rows, cols, class, mode))
+        }
+        Value::IntArray {
+            data, rows, cols, ..
+        } => Ok(Value::int_array(
+            data.iter().map(|&v| class.coerce(v, mode)).collect(),
+            *rows,
+            *cols,
+            class,
+            mode,
+        )),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: cannot convert {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Shared body for `int8` … `uint64`: `intN(x [, "saturate"|"wrap"])`.
+fn int_cast_builtin(name: &str, class: IntClass, args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 1, 2)?;
+    let mode = if args.len() == 2 {
+        parse_overflow_mode(&args[1].to_str().map_err(ScriptError::type_err)?)?
+    } else {
+        OverflowMode::Saturate
+    };
+    cast_scalar_to_int(&args[0], class, mode, name)
+}
+
+fn builtin_int8(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int8", IntClass::Int8, args)
+}
+fn builtin_int16(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int16", IntClass::Int16, args)
+}
+fn builtin_int32(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int32", IntClass::Int32, args)
+}
+fn builtin_int64(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int64", IntClass::Int64, args)
+}
+fn builtin_uint8(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint8", IntClass::Uint8, args)
+}
+fn builtin_uint16(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint16", IntClass::Uint16, args)
+}
+fn builtin_uint32(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint32", IntClass::Uint32, args)
+}
+fn builtin_uint64(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint64", IntClass::Uint64, args)
+}
+
+/// `class(x)` — the type/class name (e.g. `"int32"`, `"double"`, `"complex"`).
+fn builtin_class(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("class", &args, 1)?;
+    Ok(Value::Str(args[0].type_name().to_string()))
+}
+
+/// `cast(x, "int32")` — convert to a named class (`int8`…`uint64` or `double`).
+fn builtin_cast(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("cast", &args, 2)?;
+    let target = args[1].to_str().map_err(ScriptError::type_err)?;
+    if target == "double" {
+        return builtin_double(vec![args[0].clone()]);
+    }
+    let class = IntClass::from_str(&target).ok_or_else(|| {
+        ScriptError::type_err(format!(
+            "cast: unknown target class \"{target}\" (int8…uint64 or double)"
+        ))
+    })?;
+    cast_scalar_to_int(&args[0], class, OverflowMode::Saturate, "cast")
+}
+
+/// `intmax(["int32"])` / `intmin(["int32"])` — class extremes (default int32).
+fn int_extreme(name: &str, args: Vec<Value>, want_max: bool) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 0, 1)?;
+    let class = if args.is_empty() {
+        IntClass::Int32
+    } else {
+        let s = args[0].to_str().map_err(ScriptError::type_err)?;
+        IntClass::from_str(&s)
+            .ok_or_else(|| ScriptError::type_err(format!("{name}: unknown integer class \"{s}\"")))?
+    };
+    Ok(Value::Int {
+        data: if want_max { class.max() } else { class.min() },
+        class,
+        overflow: OverflowMode::Saturate,
+    })
+}
+fn builtin_intmax(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_extreme("intmax", args, true)
+}
+fn builtin_intmin(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_extreme("intmin", args, false)
+}
+
+/// `isinteger(x)` — true for an integer-class value.
+fn builtin_isinteger(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isinteger", &args, 1)?;
+    Ok(Value::Bool(matches!(
+        args[0],
+        Value::Int { .. } | Value::IntArray { .. }
+    )))
+}
+
+/// `isa(x, "class")` — class-name or category test. Categories: `numeric`,
+/// `integer`, `float` (alias `double`); otherwise an exact class-name match.
+fn builtin_isa(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isa", &args, 2)?;
+    let query = args[1].to_str().map_err(ScriptError::type_err)?;
+    let v = &args[0];
+    let is_int = matches!(v, Value::Int { .. } | Value::IntArray { .. });
+    let is_float = matches!(
+        v,
+        Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)
+    );
+    let result = match query.as_str() {
+        "numeric" => is_int || is_float,
+        "integer" => is_int,
+        "float" | "double" => is_float,
+        other => v.type_name() == other,
+    };
+    Ok(Value::Bool(result))
+}
+
+/// `double(x)` — convert to double precision. Integers → real scalar; bools →
+/// 0/1; reals/complex/vectors/matrices are already double-backed (identity).
+fn builtin_double(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("double", &args, 1)?;
+    match &args[0] {
+        Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
+        Value::Bool(b) => Ok(Value::Scalar(if *b { 1.0 } else { 0.0 })),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let m = Value::int_array_to_cmatrix(data, *rows, *cols);
+            // Collapse a row/column to a Vector (double), else a Matrix.
+            if *rows == 1 || *cols == 1 {
+                Ok(Value::Vector(m.iter().copied().collect()))
+            } else {
+                Ok(Value::Matrix(m))
+            }
+        }
+        v @ (Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)) => {
+            Ok(v.clone())
+        }
+        other => Err(ScriptError::type_err(format!(
+            "double: cannot convert {}",
+            other.type_name()
+        ))),
+    }
 }
 
 /// qfmt(word_bits, frac_bits)
@@ -5808,6 +6103,10 @@ fn to_cmatrix_arg(val: &Value, fn_name: &str, arg_name: &str) -> Result<CMatrix,
     match val {
         Value::Matrix(m) => Ok(m.clone()),
         Value::Scalar(n) => Ok(Array2::from_elem((1, 1), Complex::new(*n, 0.0))),
+        Value::Int { data, .. } => Ok(Array2::from_elem((1, 1), Complex::new(*data as f64, 0.0))),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => Ok(Value::int_array_to_cmatrix(data, *rows, *cols)),
         Value::Complex(c) => Ok(Array2::from_elem((1, 1), *c)),
         Value::Vector(v) => {
             let m = Array2::from_shape_fn((v.len(), 1), |(i, _)| v[i]);
@@ -5836,6 +6135,12 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
     match val {
         Value::Vector(v) => Ok(ndarray::Array1::from_iter(v.iter().map(|c| c.re))),
         Value::Scalar(n) => Ok(ndarray::Array1::from_vec(vec![*n])),
+        Value::Int { data, .. } => Ok(ndarray::Array1::from_vec(vec![*data as f64])),
+        Value::IntArray {
+            data, rows, cols, ..
+        } if *rows == 1 || *cols == 1 => {
+            Ok(ndarray::Array1::from_iter(data.iter().map(|&v| v as f64)))
+        }
         Value::Matrix(m) if m.ncols() == 1 => {
             Ok(ndarray::Array1::from_iter(m.column(0).iter().map(|c| c.re)))
         }
@@ -5925,6 +6230,48 @@ fn build_npy_bytes(data: &[Complex<f64>], shape: &[usize]) -> Vec<u8> {
     out
 }
 
+/// NPY dtype descriptor for an integer class (`int8` → `"|i1"`, else `"<iN"`
+/// / `"<uN"`). Single-byte types use `|` (byte order is moot).
+fn npy_int_descr(class: IntClass) -> String {
+    let width = (class.bits() / 8) as usize;
+    let kind = if class.is_signed() { 'i' } else { 'u' };
+    let order = if width == 1 { '|' } else { '<' };
+    format!("{order}{kind}{width}")
+}
+
+/// Serialize a tagged-width integer array to NPY bytes with its native dtype
+/// (little-endian, C-order). Round-trips through [`parse_npy_bytes`].
+fn build_npy_int_bytes(data: &[i128], shape: &[usize], class: IntClass) -> Vec<u8> {
+    let descr = npy_int_descr(class);
+    let width = (class.bits() / 8) as usize;
+    let shape_str = match shape {
+        [n] => format!("({n},)"),
+        [r, c] => format!("({r}, {c})"),
+        other => {
+            let parts: Vec<String> = other.iter().map(|d| d.to_string()).collect();
+            format!("({})", parts.join(", "))
+        }
+    };
+    let raw = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_str}, }}");
+    let needed = 10 + raw.len() + 1;
+    let padded = ((needed + 63) / 64) * 64;
+    let header = format!("{}{}\n", raw, " ".repeat(padded - needed));
+    let hlen = header.len() as u16;
+
+    let mut out = Vec::with_capacity(padded + data.len() * width);
+    out.extend_from_slice(b"\x93NUMPY");
+    out.push(1);
+    out.push(0);
+    out.extend_from_slice(&hlen.to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    for &v in data {
+        // Low `width` little-endian bytes of the two's-complement value.
+        let le = (v as i128 as u128).to_le_bytes();
+        out.extend_from_slice(&le[..width]);
+    }
+    out
+}
+
 /// Parse the shape tuple from an NPY header string.
 fn parse_npy_shape(header: &str) -> Result<Vec<usize>, String> {
     let key = header
@@ -5997,6 +6344,103 @@ fn array_to_value(
 }
 
 /// Parse an in-memory NPY byte buffer into a Value.
+/// Extract the `'descr'` dtype string (e.g. `"<i4"`, `">u8"`, `"|i1"`) from an
+/// NPY header dict.
+fn npy_descr(header: &str) -> Option<&str> {
+    let key = header.find("'descr'")?;
+    let after = &header[key + "'descr'".len()..];
+    let colon = after.find(':')?;
+    let rest = &after[colon + 1..];
+    let start = rest.find('\'')? + 1;
+    let end = rest[start..].find('\'')? + start;
+    Some(&rest[start..end])
+}
+
+/// Map an integer NPY dtype string to `(class, byte_width, big_endian)`.
+/// `|` order (single-byte) is treated as little-endian (byte order is moot).
+fn npy_int_dtype(descr: &str) -> Option<(IntClass, usize, bool)> {
+    let bytes = descr.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    let big = bytes[0] == b'>';
+    let signed = match bytes[1] {
+        b'i' => true,
+        b'u' => false,
+        _ => return None,
+    };
+    let width: usize = descr[2..].parse().ok()?;
+    let class = match (signed, width) {
+        (true, 1) => IntClass::Int8,
+        (true, 2) => IntClass::Int16,
+        (true, 4) => IntClass::Int32,
+        (true, 8) => IntClass::Int64,
+        (false, 1) => IntClass::Uint8,
+        (false, 2) => IntClass::Uint16,
+        (false, 4) => IntClass::Uint32,
+        (false, 8) => IntClass::Uint64,
+        _ => return None,
+    };
+    Some((class, width, big))
+}
+
+/// Read one integer element of `width` bytes (≤ 8), sign-extending if signed.
+fn read_npy_int(b: &[u8], width: usize, signed: bool, big: bool) -> i128 {
+    let mut u: u64 = 0;
+    if big {
+        for &byte in b.iter().take(width) {
+            u = (u << 8) | byte as u64;
+        }
+    } else {
+        for (k, &byte) in b.iter().take(width).enumerate() {
+            u |= (byte as u64) << (8 * k);
+        }
+    }
+    if signed {
+        let bits = width * 8;
+        if bits < 64 && (u >> (bits - 1)) & 1 == 1 {
+            (u | (!0u64 << bits)) as i64 as i128
+        } else {
+            u as i64 as i128
+        }
+    } else {
+        u as i128
+    }
+}
+
+/// Build an integer `Value` (Int / IntArray) from flat row-... data + shape.
+fn int_array_from_npy(
+    data: Vec<i128>,
+    shape: &[usize],
+    class: IntClass,
+    fortran: bool,
+) -> Result<Value, String> {
+    use ndarray::ShapeBuilder;
+    let sat = OverflowMode::Saturate;
+    match shape {
+        [] | [1] => Ok(Value::Int {
+            data: *data.first().ok_or("NPY: empty array")?,
+            class,
+            overflow: sat,
+        }),
+        [n] => Ok(Value::int_array(data, 1, *n, class, sat)),
+        [nrows, ncols] => {
+            let arr = if fortran {
+                Array2::from_shape_vec((*nrows, *ncols).f(), data).map_err(|e| e.to_string())?
+            } else {
+                Array2::from_shape_vec((*nrows, *ncols), data).map_err(|e| e.to_string())?
+            };
+            // Re-flatten in row-major to match IntArray's storage.
+            let flat: Vec<i128> = arr.iter().copied().collect();
+            Ok(Value::int_array(flat, *nrows, *ncols, class, sat))
+        }
+        other => Err(format!(
+            "NPY: integer arrays support rank ≤ 2, got rank {}",
+            other.len()
+        )),
+    }
+}
+
 fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
     if bytes.len() < 10 || &bytes[0..6] != b"\x93NUMPY" {
         return Err("not a valid NPY file".to_string());
@@ -6053,9 +6497,27 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
             .map(|i| Complex::new(rd(&data[i * 8..i * 8 + 8]), 0.0))
             .collect();
         array_to_value(values, &shape, fortran)
+    } else if let Some((class, width, big)) =
+        npy_descr(header).and_then(npy_int_dtype)
+    {
+        // Integer dtypes (<i1..<i8, <u1..<u8, big-endian, or |-order single
+        // byte) → a tagged-width IntArray. Fixes the prior gap where numpy
+        // integer arrays could not be loaded at all.
+        if data.len() % width != 0 {
+            return Err(format!(
+                "NPY {}: data length is not a multiple of {}",
+                class.name(),
+                width
+            ));
+        }
+        let signed = class.is_signed();
+        let values: Vec<i128> = (0..data.len() / width)
+            .map(|i| read_npy_int(&data[i * width..i * width + width], width, signed, big))
+            .collect();
+        int_array_from_npy(values, &shape, class, fortran)
     } else {
         Err(format!(
-            "unsupported NPY dtype (only f8 and c16 are supported): {}",
+            "unsupported NPY dtype: {}",
             header.chars().take(100).collect::<String>()
         ))
     }
@@ -6138,6 +6600,28 @@ fn write_csv(path: &str, val: &Value) -> Result<(), String> {
                     write!(w, "{}", fmt_csv_cell(m[[r, ci]])).map_err(|e| e.to_string())?;
                 }
                 writeln!(w).map_err(|e| e.to_string())?;
+            }
+        }
+        // Integers serialize as plain numbers (CSV is untyped — they load back
+        // as doubles).
+        Value::Int { data, .. } => writeln!(w, "{data}").map_err(|e| e.to_string())?,
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            if *rows == 1 || *cols == 1 {
+                for v in data {
+                    writeln!(w, "{v}").map_err(|e| e.to_string())?;
+                }
+            } else {
+                for r in 0..*rows {
+                    for c in 0..*cols {
+                        if c > 0 {
+                            write!(w, ",").map_err(|e| e.to_string())?;
+                        }
+                        write!(w, "{}", data[r * cols + c]).map_err(|e| e.to_string())?;
+                    }
+                    writeln!(w).map_err(|e| e.to_string())?;
+                }
             }
         }
         other => return Err(format!("save: cannot serialise {} to CSV", other)),
@@ -6334,8 +6818,31 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
                 "save: NPY format takes exactly one value".to_string(),
             ));
         }
-        let (data, shape) = value_to_c64_array(&args[1]).map_err(|e| ScriptError::runtime(e))?;
-        let bytes = build_npy_bytes(&data, &shape);
+        // Integers write their native dtype so they round-trip as integers.
+        let bytes = match &args[1] {
+            Value::Int { data, class, .. } => build_npy_int_bytes(&[*data], &[1], *class),
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => {
+                let shape = if *rows == 1 {
+                    vec![*cols]
+                } else if *cols == 1 {
+                    vec![*rows]
+                } else {
+                    vec![*rows, *cols]
+                };
+                build_npy_int_bytes(data, &shape, *class)
+            }
+            other => {
+                let (data, shape) =
+                    value_to_c64_array(other).map_err(|e| ScriptError::runtime(e))?;
+                build_npy_bytes(&data, &shape)
+            }
+        };
         std::fs::write(&path, bytes).map_err(|e| ScriptError::runtime(e.to_string()))?;
     }
     Ok(Value::None)

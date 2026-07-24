@@ -18192,3 +18192,630 @@ mod plot_arg_shape_tests {
         assert!(e.to_string().contains("must match y rows"), "{e}");
     }
 }
+
+/// Integer types (dev/plans/integer_types.md) — script-level Phase 1 coverage:
+/// casts, radix literals, arithmetic (same-class / cross-class error / Deviation
+/// A), overflow modes, and the introspection builtins.
+mod int_types_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = match lexer::tokenize(&src) {
+            Ok(t) => t,
+            Err(e) => return e.to_string(),
+        };
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            if let Err(er) = e.exec_stmt(s) {
+                return er.to_string();
+            }
+        }
+        panic!("expected an error from: {src}");
+    }
+
+    fn int_of(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    fn string(e: &Evaluator, name: &str) -> String {
+        match e.get(name).unwrap() {
+            Value::Str(s) => s.clone(),
+            other => panic!("{name}: expected Str, got {other:?}"),
+        }
+    }
+
+    fn boolean(e: &Evaluator, name: &str) -> bool {
+        match e.get(name).unwrap() {
+            Value::Bool(b) => *b,
+            other => panic!("{name}: expected Bool, got {other:?}"),
+        }
+    }
+
+    // ── casts ──
+
+    #[test]
+    fn casts_saturate_and_round_half_away() {
+        let e = ev("a = int8(200)\nb = int8(2.5)\nc = int8(-2.5)\nd = uint8(-5)");
+        assert_eq!(int_of(&e, "a"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (3, "int8".into()));
+        assert_eq!(int_of(&e, "c"), (-3, "int8".into()));
+        assert_eq!(int_of(&e, "d"), (0, "uint8".into()));
+    }
+
+    #[test]
+    fn cast_wrap_mode() {
+        let e = ev("a = int8(200, \"wrap\")"); // 200 - 256 = -56
+        assert_eq!(int_of(&e, "a"), (-56, "int8".into()));
+    }
+
+    #[test]
+    fn cast_and_class_builtins() {
+        let e = ev("c = class(int32(5))\nd = class(3.0)\nx = cast(9.7, \"int8\")");
+        assert_eq!(string(&e, "c"), "int32");
+        assert_eq!(string(&e, "d"), "scalar"); // double's class name
+        assert_eq!(int_of(&e, "x"), (10, "int8".into()));
+    }
+
+    // ── literals ──
+
+    #[test]
+    fn radix_literals_take_smallest_unsigned_class() {
+        let e = ev("a = 0xFF\nb = 0xFFFF\nc = 0xdead_beef\nd = 0b1010\ne = 0o17");
+        assert_eq!(int_of(&e, "a"), (255, "uint8".into()));
+        assert_eq!(int_of(&e, "b"), (65535, "uint16".into()));
+        assert_eq!(int_of(&e, "c"), (3735928559, "uint32".into()));
+        assert_eq!(int_of(&e, "d"), (10, "uint8".into()));
+        assert_eq!(int_of(&e, "e"), (15, "uint8".into()));
+    }
+
+    #[test]
+    fn typed_literal_suffix_errors() {
+        assert!(err("x = 0xFFu8").contains("typed integer literal"));
+    }
+
+    #[test]
+    fn oversized_literal_errors() {
+        assert!(err("x = 0x1_0000_0000_0000_0000").contains("uint64"));
+    }
+
+    // ── arithmetic ──
+
+    #[test]
+    fn same_class_arith_stays_integer_and_saturates() {
+        let e = ev("a = int8(100) + int8(50)\nb = uint8(200) + uint8(100)\nc = int8(10) * int8(20)");
+        assert_eq!(int_of(&e, "a"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (255, "uint8".into()));
+        assert_eq!(int_of(&e, "c"), (127, "int8".into()));
+    }
+
+    #[test]
+    fn wrap_arithmetic() {
+        let e = ev("a = int8(100, \"wrap\") + int8(50, \"wrap\")"); // 150 -> -106
+        assert_eq!(int_of(&e, "a"), (-106, "int8".into()));
+    }
+
+    #[test]
+    fn integer_division_rounds_half_away() {
+        let e = ev("a = int32(7) / int32(2)\nb = int32(-7) / int32(2)");
+        assert_eq!(int_of(&e, "a"), (4, "int32".into())); // 3.5 -> 4
+        assert_eq!(int_of(&e, "b"), (-4, "int32".into())); // -3.5 -> -4
+    }
+
+    #[test]
+    fn int_plus_double_promotes_to_double_deviation_a() {
+        let e = ev("a = int32(5) + 2.7\nc = class(int32(5) + 2.7)");
+        assert!((scalar(&e, "a") - 7.7).abs() < 1e-12);
+        assert_eq!(string(&e, "c"), "scalar");
+    }
+
+    #[test]
+    fn cross_class_arithmetic_errors() {
+        assert!(err("x = int8(1) + int16(2)").contains("different integer classes"));
+    }
+
+    #[test]
+    fn comparisons_return_bool_across_classes() {
+        let e = ev("a = int16(5) < int16(9)\nb = int8(5) == int32(5)");
+        assert!(boolean(&e, "a"));
+        assert!(boolean(&e, "b")); // cross-class comparison is allowed
+    }
+
+    #[test]
+    fn negation_stays_in_class() {
+        let e = ev("a = -int8(5)\nb = -uint8(5)"); // uint8 saturates to 0
+        assert_eq!(int_of(&e, "a"), (-5, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (0, "uint8".into()));
+    }
+
+    // ── introspection + widening ──
+
+    #[test]
+    fn intmax_intmin_isinteger_isa_double() {
+        let e = ev(
+            "g = intmax(\"int8\")\nh = intmin(\"int16\")\n\
+             i = isinteger(int8(3))\nj = isinteger(3.0)\n\
+             k = isa(int32(1), \"integer\")\nl = isa(3.0, \"float\")\n\
+             m = double(int16(1000))",
+        );
+        assert_eq!(int_of(&e, "g"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "h"), (-32768, "int16".into()));
+        assert!(boolean(&e, "i"));
+        assert!(!boolean(&e, "j"));
+        assert!(boolean(&e, "k"));
+        assert!(boolean(&e, "l"));
+        assert!((scalar(&e, "m") - 1000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integers_widen_into_builtins_and_indexing() {
+        let e = ev(
+            "c = sqrt(int32(16))\nv = [10, 20, 30]\ne = v(int32(2))\n\
+             g = abs(int8(-7))",
+        );
+        assert!((scalar(&e, "c") - 4.0).abs() < 1e-12); // sqrt widens → double
+        assert!((scalar(&e, "e") - 20.0).abs() < 1e-12); // integer index
+        assert_eq!(int_of(&e, "g"), (7, "int8".into())); // abs class-preserving
+    }
+}
+
+/// Integer arrays (Phase 2 of dev/plans/integer_types.md): packed IntArray
+/// construction, arithmetic/broadcast, indexing, reductions, constructors.
+mod int_array_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            if let Err(er) = e.exec_stmt(s) {
+                return er.to_string();
+            }
+        }
+        panic!("expected error from: {src}");
+    }
+
+    fn arr(e: &Evaluator, name: &str) -> (Vec<i128>, usize, usize, String) {
+        match e.get(name).unwrap() {
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => (data.clone(), *rows, *cols, class.name().to_string()),
+            other => panic!("{name}: expected IntArray, got {other:?}"),
+        }
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn construct_vector_and_matrix() {
+        let e = ev("a = int8([1, 2, 3])\nm = int8([1, 2; 3, 4])");
+        assert_eq!(arr(&e, "a"), (vec![1, 2, 3], 1, 3, "int8".into()));
+        assert_eq!(arr(&e, "m"), (vec![1, 2, 3, 4], 2, 2, "int8".into()));
+    }
+
+    #[test]
+    fn construction_saturates_each_element() {
+        let e = ev("a = uint8([-5, 100, 300])");
+        assert_eq!(arr(&e, "a").0, vec![0, 100, 255]);
+    }
+
+    #[test]
+    fn elementwise_arith_and_saturation() {
+        let e = ev("a = int8([100, 100]) + int8([50, 50])\nb = int8([10, 20, 30]) - int8([1, 2, 3])");
+        assert_eq!(arr(&e, "a").0, vec![127, 127]);
+        assert_eq!(arr(&e, "b").0, vec![9, 18, 27]);
+    }
+
+    #[test]
+    fn scalar_broadcast_both_orders() {
+        let e = ev("a = int8([1, 2, 3]) * int8(2)\nb = int8(10) - int8([1, 2, 3])");
+        assert_eq!(arr(&e, "a").0, vec![2, 4, 6]);
+        assert_eq!(arr(&e, "b").0, vec![9, 8, 7]); // order matters for `-`
+    }
+
+    #[test]
+    fn array_plus_double_widens_to_double() {
+        let e = ev("a = int8([1, 2, 3]) + 0.5\nc = class(a)");
+        // Result is a double vector; sum to a scalar to check numerically.
+        let s = ev("v = int8([1, 2, 3]) + 0.5\ns = sum(v)");
+        assert!((scalar(&s, "s") - 7.5).abs() < 1e-12);
+        assert_eq!(
+            match e.get("c").unwrap() {
+                Value::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            "vector"
+        );
+    }
+
+    #[test]
+    fn cross_class_and_shape_mismatch_error() {
+        assert!(err("x = int8([1,2]) + int16([3,4])").contains("different integer classes"));
+        assert!(err("x = int8([1,2,3]) + int8([1,2])").contains("do not match"));
+    }
+
+    #[test]
+    fn indexing_scalar_slice_and_2d() {
+        let e = ev(
+            "a = int8([10, 20, 30])\nx = a(2)\ns = a(2:3)\n\
+             m = int8([1, 2; 3, 4])\ny = m(2, 1)",
+        );
+        assert_eq!(int1(&e, "x"), (20, "int8".into()));
+        assert_eq!(arr(&e, "s"), (vec![20, 30], 1, 2, "int8".into()));
+        assert_eq!(int1(&e, "y"), (3, "int8".into()));
+    }
+
+    #[test]
+    fn negate_and_reduce() {
+        let e = ev("a = -int8([1, -2, 3])\ns = sum(int32([1, 2, 3, 4]))");
+        assert_eq!(arr(&e, "a").0, vec![-1, 2, -3]);
+        assert!((scalar(&e, "s") - 10.0).abs() < 1e-12); // sum widens to double
+    }
+
+    #[test]
+    fn zeros_ones_with_class() {
+        let e = ev("a = zeros(2, 3, \"int32\")\nb = ones(1, 4, \"uint8\")");
+        assert_eq!(arr(&e, "a"), (vec![0; 6], 2, 3, "int32".into()));
+        assert_eq!(arr(&e, "b"), (vec![1; 4], 1, 4, "uint8".into()));
+    }
+
+    #[test]
+    fn double_and_isinteger_on_arrays() {
+        let e = ev("a = int8([1, 2, 3])\nd = double(a)\ni = isinteger(a)\nj = isinteger(d)");
+        assert!(matches!(e.get("d").unwrap(), Value::Vector(_)));
+        assert!(matches!(e.get("i").unwrap(), Value::Bool(true)));
+        assert!(matches!(e.get("j").unwrap(), Value::Bool(false)));
+    }
+
+    #[test]
+    fn transpose_is_class_preserving() {
+        let e = ev("m = int8([1, 2; 3, 4])\nt = transpose(m)");
+        // Transpose stays int8, data transposed row-major.
+        assert_eq!(arr(&e, "t"), (vec![1, 3, 2, 4], 2, 2, "int8".into()));
+    }
+
+    #[test]
+    fn matrix_widens_into_builtins_via_chokepoints() {
+        // A genuine 2×3 int matrix flows into size (a builtin) unchanged.
+        let e = ev("m = int8([1, 2, 3; 4, 5, 6])\nsz = size(m)");
+        assert_eq!(arr(&e, "m").1, 2);
+        assert_eq!(arr(&e, "m").2, 3);
+    }
+}
+
+/// Integer width semantics (Phase 3 of dev/plans/integer_types.md): lossy
+/// narrowing and the full uint64 range on the i128 backing.
+mod int_width_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn narrowing_cast_saturates_and_wraps() {
+        let e = ev("a = int8(int32(300))\nb = int8(int32(300), \"wrap\")");
+        assert_eq!(int1(&e, "a"), (127, "int8".into()));
+        assert_eq!(int1(&e, "b"), (44, "int8".into())); // 300 - 256
+    }
+
+    #[test]
+    fn full_uint64_range_is_representable() {
+        let e = ev(
+            "a = uint64(0xFFFFFFFFFFFFFFFF)\nb = intmax(\"uint64\")\n\
+             c = uint64(18446744073709551615)",
+        );
+        let umax: i128 = u64::MAX as i128;
+        assert_eq!(int1(&e, "a"), (umax, "uint64".into()));
+        assert_eq!(int1(&e, "b"), (umax, "uint64".into()));
+        assert_eq!(int1(&e, "c"), (umax, "uint64".into()));
+    }
+
+    #[test]
+    fn uint64_arithmetic_above_i64_max_is_exact() {
+        // 1e19 + 5e18 = 1.5e19, well above i64::MAX (~9.2e18).
+        let e = ev("s = uint64(10000000000000000000) + uint64(5000000000000000000)");
+        assert_eq!(int1(&e, "s"), (15_000_000_000_000_000_000i128, "uint64".into()));
+    }
+
+    #[test]
+    fn uint64_saturates_at_its_own_max() {
+        let e = ev("s = uint64(0xFFFFFFFFFFFFFFFF) + uint64(1)"); // saturate
+        assert_eq!(int1(&e, "s").0, u64::MAX as i128);
+    }
+}
+
+/// Integer I/O (Phase 4 of dev/plans/integer_types.md): NPY typed round-trip,
+/// CSV/TOML integer serialization.
+mod int_io_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn tmp(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("rustlab_int_io_{}_{}", std::process::id(), name))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn arr(e: &Evaluator, name: &str) -> (Vec<i128>, usize, usize, String) {
+        match e.get(name).unwrap() {
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => (data.clone(), *rows, *cols, class.name().to_string()),
+            other => panic!("{name}: expected IntArray, got {other:?}"),
+        }
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn npy_int_vector_round_trip() {
+        let p = tmp("vec.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", int32([1, 2, 3, -4]))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(arr(&e, "b"), (vec![1, 2, 3, -4], 1, 4, "int32".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_int_matrix_round_trip() {
+        let p = tmp("mat.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", int16([1, 2, 3; 4, 5, 6]))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(arr(&e, "b"), (vec![1, 2, 3, 4, 5, 6], 2, 3, "int16".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_full_uint64_round_trip() {
+        let p = tmp("u64.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", uint64(0xFFFFFFFFFFFFFFFF))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(int1(&e, "b"), (u64::MAX as i128, "uint64".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_reads_hand_written_uint8() {
+        // A minimal `|u1` NPY buffer, parsed via load — proves numpy integer
+        // arrays load (previously an "unsupported dtype" error).
+        let p = tmp("u8.npy");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x93NUMPY\x01\x00");
+        let hdr = "{'descr': '|u1', 'fortran_order': False, 'shape': (3,), }";
+        let total = 10 + hdr.len() + 1;
+        let pad = (64 - total % 64) % 64;
+        let hdr = format!("{}{}\n", hdr, " ".repeat(pad));
+        bytes.extend_from_slice(&(hdr.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(hdr.as_bytes());
+        bytes.extend_from_slice(&[10u8, 200, 255]);
+        std::fs::write(&p, &bytes).unwrap();
+        let e = ev(&format!("b = load(\"{p}\")"));
+        assert_eq!(arr(&e, "b"), (vec![10, 200, 255], 1, 3, "uint8".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn csv_and_toml_accept_integers() {
+        let pc = tmp("i.csv");
+        let e = ev(&format!(
+            "save(\"{pc}\", int8([1, 2, 3]))\nc = load(\"{pc}\")"
+        ));
+        // CSV is untyped → loads back as a double vector.
+        assert!(matches!(e.get("c").unwrap(), Value::Vector(_)));
+        let _ = std::fs::remove_file(&pc);
+
+        let pt = tmp("s.toml");
+        let e = ev(&format!(
+            "save(\"{pt}\", struct(\"n\", int32(5)))\nt = load(\"{pt}\")\nn = t.n"
+        ));
+        // TOML integer loads back as a double scalar.
+        assert!(matches!(e.get("n").unwrap(), Value::Scalar(x) if (*x - 5.0).abs() < 1e-12));
+        let _ = std::fs::remove_file(&pt);
+    }
+}
+
+/// Regression tests for integer-widening gaps found in the full regression
+/// pass (2026-07-23): builtins that rejected integers, array concat, `if`
+/// conditions, integer-array indexing, and the storage-builtin allowlist.
+mod int_widening_regression_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    fn vec_of(e: &Evaluator, name: &str) -> Vec<f64> {
+        match e.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{name}: expected Vector, got {other:?}"),
+        }
+    }
+
+    fn class_of(e: &Evaluator, name: &str) -> String {
+        e.get(name).unwrap().type_name().to_string()
+    }
+
+    #[test]
+    fn common_builtins_accept_integers_via_widening() {
+        // These all rejected integer arrays before central widening.
+        let e = ev(
+            "a = min(int8([3, 1, 2]))\nb = max(int8([3, 1, 2]))\n\
+             s = sort(int8([3, 1, 2]))\nf = find(int8([0, 1, 0, 1]))\n\
+             c = cumsum(int8([1, 2, 3]))\nm = mod(int8(7), int8(3))\n\
+             an = any(int8([0, 0, 1]))\nal = all(int8([1, 1, 0]))",
+        );
+        assert_eq!(scalar(&e, "a"), 1.0);
+        assert_eq!(scalar(&e, "b"), 3.0);
+        assert_eq!(vec_of(&e, "s"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(vec_of(&e, "f"), vec![2.0, 4.0]);
+        assert_eq!(vec_of(&e, "c"), vec![1.0, 3.0, 6.0]);
+        assert_eq!(scalar(&e, "m"), 1.0);
+        assert!(matches!(e.get("an").unwrap(), Value::Bool(true)));
+        assert!(matches!(e.get("al").unwrap(), Value::Bool(false)));
+    }
+
+    #[test]
+    fn reshape_accepts_integers() {
+        let e = ev("m = reshape(int8([1, 2, 3, 4]), 2, 2)");
+        assert!(matches!(e.get("m").unwrap(), Value::Matrix(_)));
+    }
+
+    #[test]
+    fn class_preserving_builtins_stay_integer() {
+        // abs / transpose are allowlisted → keep their integer class.
+        let e = ev("a = abs(int8(-7))\nt = transpose(int8([1, 2; 3, 4]))");
+        assert_eq!(class_of(&e, "a"), "int8");
+        assert_eq!(class_of(&e, "t"), "int8");
+    }
+
+    #[test]
+    fn array_literal_concat_of_integers() {
+        let e = ev(
+            "a = [int8(1), int8(2), int8(3)]\nb = [int8([1, 2]), int8([3, 4])]\n\
+             c = [int8(1), 2.5]",
+        );
+        assert_eq!(vec_of(&e, "a"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(vec_of(&e, "b"), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(vec_of(&e, "c"), vec![1.0, 2.5]);
+    }
+
+    #[test]
+    fn integers_are_truthy_in_conditions() {
+        let e = ev(
+            "x = 0\nif int8(1)\nx = 1\nend\ny = 0\nif int8(0)\ny = 1\nelse\ny = 2\nend",
+        );
+        assert_eq!(scalar(&e, "x"), 1.0);
+        assert_eq!(scalar(&e, "y"), 2.0);
+    }
+
+    #[test]
+    fn integer_array_as_index_and_mask() {
+        let e = ev(
+            "v = [10, 20, 30]\nsel = v(int8([1, 3]))\nmask = v(int8([1, 0, 1]))",
+        );
+        assert_eq!(vec_of(&e, "sel"), vec![10.0, 30.0]);
+        assert_eq!(vec_of(&e, "mask"), vec![10.0, 30.0]);
+    }
+
+    #[test]
+    fn storage_builtins_preserve_class_through_widening() {
+        // The allowlist must keep struct field values typed (a regression the
+        // central-widening pass introduced and then fixed).
+        let e = ev("s = struct(\"n\", int8(5))\nc = class(s.n)");
+        assert_eq!(
+            match e.get("c").unwrap() {
+                Value::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            "int8"
+        );
+    }
+}

@@ -543,7 +543,7 @@ impl RoundMode {
 }
 
 /// Fixed-point overflow mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowMode {
     /// Clamp to [min, max] (default).
     Saturate,
@@ -565,6 +565,127 @@ impl OverflowMode {
         match self {
             Self::Saturate => "saturate",
             Self::Wrap => "wrap",
+        }
+    }
+}
+
+/// Integer class (width + signedness) for the tagged-width integer value type.
+/// Values are stored in `i128` so the full `uint64` range is representable;
+/// the class enforces the visible range on construction and arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntClass {
+    Int8,
+    Int16,
+    Int32,
+    Int64,
+    Uint8,
+    Uint16,
+    Uint32,
+    Uint64,
+}
+
+impl IntClass {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "int8" => Some(Self::Int8),
+            "int16" => Some(Self::Int16),
+            "int32" => Some(Self::Int32),
+            "int64" => Some(Self::Int64),
+            "uint8" => Some(Self::Uint8),
+            "uint16" => Some(Self::Uint16),
+            "uint32" => Some(Self::Uint32),
+            "uint64" => Some(Self::Uint64),
+            _ => None,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Int8 => "int8",
+            Self::Int16 => "int16",
+            Self::Int32 => "int32",
+            Self::Int64 => "int64",
+            Self::Uint8 => "uint8",
+            Self::Uint16 => "uint16",
+            Self::Uint32 => "uint32",
+            Self::Uint64 => "uint64",
+        }
+    }
+
+    pub fn is_signed(&self) -> bool {
+        matches!(self, Self::Int8 | Self::Int16 | Self::Int32 | Self::Int64)
+    }
+
+    /// Bit width (8, 16, 32, or 64).
+    pub fn bits(&self) -> u32 {
+        match self {
+            Self::Int8 | Self::Uint8 => 8,
+            Self::Int16 | Self::Uint16 => 16,
+            Self::Int32 | Self::Uint32 => 32,
+            Self::Int64 | Self::Uint64 => 64,
+        }
+    }
+
+    /// Inclusive minimum representable value.
+    pub fn min(&self) -> i128 {
+        if self.is_signed() {
+            -(1i128 << (self.bits() - 1))
+        } else {
+            0
+        }
+    }
+
+    /// Inclusive maximum representable value.
+    pub fn max(&self) -> i128 {
+        if self.is_signed() {
+            (1i128 << (self.bits() - 1)) - 1
+        } else {
+            (1i128 << self.bits()) - 1
+        }
+    }
+
+    /// Range-enforce `v` under `mode`: `Saturate` clamps to `[min, max]`,
+    /// `Wrap` reduces modulo `2^bits` (2's-complement wrap).
+    pub fn coerce(&self, v: i128, mode: OverflowMode) -> i128 {
+        match mode {
+            OverflowMode::Saturate => v.clamp(self.min(), self.max()),
+            OverflowMode::Wrap => {
+                let modulus = 1i128 << self.bits(); // 2^bits; fits i128 for bits ≤ 64
+                let r = v.rem_euclid(modulus); // 0 .. modulus-1
+                if self.is_signed() && r > self.max() {
+                    r - modulus
+                } else {
+                    r
+                }
+            }
+        }
+    }
+
+    /// Convert a float to this class: round half away from zero (matching the
+    /// integer-cast convention), then range-enforce under `mode`. `NaN → 0`.
+    pub fn from_f64(&self, x: f64, mode: OverflowMode) -> i128 {
+        if x.is_nan() {
+            return 0;
+        }
+        // `f64 as i128` saturates on overflow (Rust ≥ 1.45); `coerce` then
+        // clamps/wraps into the class range. `round()` is half-away-from-zero.
+        self.coerce(x.round() as i128, mode)
+    }
+
+    /// Smallest unsigned class that holds a non-negative value, for literal
+    /// typing (`0xFF → uint8`). `None` if it exceeds `uint64`.
+    pub fn smallest_unsigned_for(v: u128) -> Option<Self> {
+        if v <= u8::MAX as u128 {
+            Some(Self::Uint8)
+        } else if v <= u16::MAX as u128 {
+            Some(Self::Uint16)
+        } else if v <= u32::MAX as u128 {
+            Some(Self::Uint32)
+        } else if v <= u64::MAX as u128 {
+            Some(Self::Uint64)
+        } else {
+            None
         }
     }
 }
@@ -670,6 +791,95 @@ mod tests {
         for mode in [OverflowMode::Saturate, OverflowMode::Wrap] {
             assert_eq!(OverflowMode::from_str(mode.as_str()), Some(mode));
         }
+    }
+
+    // ── IntClass ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn int_class_ranges() {
+        assert_eq!((IntClass::Int8.min(), IntClass::Int8.max()), (-128, 127));
+        assert_eq!((IntClass::Uint8.min(), IntClass::Uint8.max()), (0, 255));
+        assert_eq!(IntClass::Int32.min(), -2_147_483_648);
+        assert_eq!(IntClass::Int32.max(), 2_147_483_647);
+        assert_eq!(IntClass::Uint64.max(), u64::MAX as i128); // full range, exact in i128
+        assert_eq!(IntClass::Int64.min(), i64::MIN as i128);
+    }
+
+    #[test]
+    fn int_class_from_str_round_trip() {
+        for c in [
+            IntClass::Int8,
+            IntClass::Int16,
+            IntClass::Int32,
+            IntClass::Int64,
+            IntClass::Uint8,
+            IntClass::Uint16,
+            IntClass::Uint32,
+            IntClass::Uint64,
+        ] {
+            assert_eq!(IntClass::from_str(c.name()), Some(c));
+        }
+        assert_eq!(IntClass::from_str("INT8"), Some(IntClass::Int8));
+        assert_eq!(IntClass::from_str("single"), None);
+    }
+
+    #[test]
+    fn int_class_coerce_saturate() {
+        assert_eq!(IntClass::Int8.coerce(200, OverflowMode::Saturate), 127);
+        assert_eq!(IntClass::Int8.coerce(-200, OverflowMode::Saturate), -128);
+        assert_eq!(IntClass::Uint8.coerce(-5, OverflowMode::Saturate), 0);
+        assert_eq!(IntClass::Uint8.coerce(300, OverflowMode::Saturate), 255);
+        assert_eq!(IntClass::Int32.coerce(100, OverflowMode::Saturate), 100);
+    }
+
+    #[test]
+    fn int_class_coerce_wrap() {
+        // int8: 128 wraps to -128, 255 -> -1, 256 -> 0.
+        assert_eq!(IntClass::Int8.coerce(128, OverflowMode::Wrap), -128);
+        assert_eq!(IntClass::Int8.coerce(255, OverflowMode::Wrap), -1);
+        assert_eq!(IntClass::Int8.coerce(256, OverflowMode::Wrap), 0);
+        // uint8: 256 -> 0, -1 -> 255.
+        assert_eq!(IntClass::Uint8.coerce(256, OverflowMode::Wrap), 0);
+        assert_eq!(IntClass::Uint8.coerce(-1, OverflowMode::Wrap), 255);
+    }
+
+    #[test]
+    fn int_class_from_f64_rounds_half_away() {
+        assert_eq!(IntClass::Int8.from_f64(2.5, OverflowMode::Saturate), 3);
+        assert_eq!(IntClass::Int8.from_f64(-2.5, OverflowMode::Saturate), -3);
+        assert_eq!(IntClass::Int8.from_f64(2.4, OverflowMode::Saturate), 2);
+        // Out of range saturates after rounding.
+        assert_eq!(IntClass::Int8.from_f64(999.9, OverflowMode::Saturate), 127);
+        assert_eq!(IntClass::Uint8.from_f64(f64::NAN, OverflowMode::Saturate), 0);
+    }
+
+    #[test]
+    fn int_class_smallest_unsigned_for() {
+        assert_eq!(IntClass::smallest_unsigned_for(0xFF), Some(IntClass::Uint8));
+        assert_eq!(
+            IntClass::smallest_unsigned_for(0x1_00),
+            Some(IntClass::Uint16)
+        );
+        assert_eq!(
+            IntClass::smallest_unsigned_for(0xFFFF),
+            Some(IntClass::Uint16)
+        );
+        assert_eq!(
+            IntClass::smallest_unsigned_for(0x1_0000),
+            Some(IntClass::Uint32)
+        );
+        assert_eq!(
+            IntClass::smallest_unsigned_for(0x1_0000_0000),
+            Some(IntClass::Uint64)
+        );
+        assert_eq!(
+            IntClass::smallest_unsigned_for(u64::MAX as u128),
+            Some(IntClass::Uint64)
+        );
+        assert_eq!(
+            IntClass::smallest_unsigned_for(u64::MAX as u128 + 1),
+            None
+        );
     }
 
     // ── SparseMat error paths ───────────────────────────────────────────────

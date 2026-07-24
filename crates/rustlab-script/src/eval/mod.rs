@@ -1552,6 +1552,7 @@ impl Evaluator {
         match val {
             Value::Bool(b) => Ok(*b),
             Value::Scalar(n) => Ok(*n != 0.0),
+            Value::Int { data, .. } => Ok(*data != 0),
             Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
             other => Err(ScriptError::runtime(format!(
                 "{} condition must be a bool or scalar, got {}",
@@ -1577,6 +1578,17 @@ impl Evaluator {
         match expr {
             Expr::Number(n) => Ok(Value::Scalar(*n)),
             Expr::Imag(n) => Ok(Value::Complex(Complex::new(0.0, *n))),
+            Expr::IntLit(v) => {
+                // Smallest fitting unsigned class (decision 7); the lexer
+                // guarantees v ≤ u64::MAX, so this never returns None.
+                let class = rustlab_core::IntClass::smallest_unsigned_for(*v)
+                    .expect("lexer caps radix literals at u64::MAX");
+                Ok(Value::Int {
+                    data: *v as i128,
+                    class,
+                    overflow: rustlab_core::OverflowMode::Saturate,
+                })
+            }
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Var(name) => match self.env.get(name) {
                 Some(v) => Ok(v.clone()),
@@ -1724,10 +1736,12 @@ impl Evaluator {
                         | Some(Value::Scalar(_))
                         | Some(Value::Complex(_))
                         | Some(Value::Bool(_))
+                        | Some(Value::Int { .. })
+                        | Some(Value::IntArray { .. })
                 ) {
-                    // A scalar / complex / bool is a 1×1 value; promote it to a
-                    // 1-element vector so `s(1)` indexes like MATLAB instead of
-                    // falling through and reporting `s` as an undefined function.
+                    // A scalar / complex / bool / integer is a 1×1 value; promote
+                    // it to a 1-element container so `s(1)` indexes like MATLAB
+                    // instead of falling through and reporting `s` as undefined.
                     let container = match self.env[name.as_str()].clone() {
                         Value::Scalar(x) => Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0))),
                         Value::Complex(c) => Value::Vector(Array1::from_elem(1, c)),
@@ -1735,6 +1749,19 @@ impl Evaluator {
                             1,
                             Complex::new(if b { 1.0 } else { 0.0 }, 0.0),
                         )),
+                        // A scalar integer becomes a 1×1 integer array so the
+                        // indexing path (which handles IntArray) accepts it.
+                        Value::Int {
+                            data,
+                            class,
+                            overflow,
+                        } => Value::IntArray {
+                            data: vec![data],
+                            rows: 1,
+                            cols: 1,
+                            class,
+                            overflow,
+                        },
                         other => other,
                     };
 
@@ -1766,6 +1793,7 @@ impl Evaluator {
                             Value::SparseMatrix(sm) => (sm.rows, sm.cols),
                             Value::Vector(v) => (1, v.len()),
                             Value::SparseVector(sv) => (1, sv.len),
+                            Value::IntArray { rows, cols, .. } => (*rows, *cols),
                             _ => unreachable!(),
                         };
                         if nrows > 1
@@ -1802,6 +1830,7 @@ impl Evaluator {
                             Value::Tuple(t) => t.len(),
                             Value::Str(s) => s.chars().count(),
                             Value::StringArray(v) => v.len(),
+                            Value::IntArray { data, .. } => data.len(),
                             _ => unreachable!(),
                         };
                         self.env
@@ -2643,6 +2672,18 @@ impl Evaluator {
             parmap::require_pure_context(name)?;
         }
 
+        // Integer widening (dev/plans/integer_types.md, decision 8): every
+        // builtin except the integer-aware set receives integers widened to
+        // their double form, so the whole builtin surface accepts them without
+        // per-builtin arms. The allowlist covers builtins that must see the raw
+        // integer (casts / introspection) or that intentionally preserve the
+        // integer class (abs / real / imag / conj / transpose).
+        let vals: Vec<Value> = if INT_AWARE_BUILTINS.contains(&name) {
+            vals
+        } else {
+            vals.into_iter().map(Value::widen_int).collect()
+        };
+
         if !self.profiler.should_track(name) {
             return self.builtins.call_with_nargout(name, vals, nargout);
         }
@@ -3279,6 +3320,21 @@ impl Default for Evaluator {
 ///   parmap and break the determinism contract; banned.
 ///
 /// Keep this list sorted alphabetically for easy maintenance.
+/// Builtins that receive integer arguments *without* widening to double —
+/// either because they must inspect the raw integer (casts / introspection)
+/// or because they intentionally preserve the integer class (see
+/// `dev/plans/integer_types.md`). Every other builtin gets widened integers.
+const INT_AWARE_BUILTINS: &[&str] = &[
+    // Casts + introspection (must see the raw integer / class).
+    "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "class", "cast",
+    "intmax", "intmin", "isinteger", "isa", "double",
+    // Class-preserving element ops.
+    "abs", "real", "imag", "conj", "transpose",
+    // Storage / passthrough — must keep the integer class, not a widened copy
+    // (save writes the native NPY dtype; struct stores fields verbatim).
+    "save", "struct",
+];
+
 const IMPURE_BUILTINS: &[&str] = &[
     "clf",
     "contour",

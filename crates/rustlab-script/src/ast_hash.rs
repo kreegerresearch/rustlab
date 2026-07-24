@@ -320,6 +320,10 @@ fn feed_expr(h: &mut blake3::Hasher, e: &Expr) {
             h.update(&[0x31]);
             h.update(&n.to_le_bytes());
         }
+        Expr::IntLit(v) => {
+            h.update(&[0x3A]);
+            h.update(&v.to_le_bytes());
+        }
         Expr::Str(s) => {
             h.update(&[0x21]);
             feed_str(h, s);
@@ -933,6 +937,10 @@ fn feed_expr_canonical(
         Expr::Imag(n) => {
             h.update(&[0x31]);
             h.update(&n.to_le_bytes());
+        }
+        Expr::IntLit(v) => {
+            h.update(&[0x3A]);
+            h.update(&v.to_le_bytes());
         }
         Expr::Str(s) => {
             h.update(&[0x21]);

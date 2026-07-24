@@ -6,6 +6,10 @@ pub enum Token {
     Number(f64),
     /// Imaginary literal `2j` / `2i` — the value is the imaginary part.
     Imaginary(f64),
+    /// Radix integer literal `0xFF` / `0b1010` / `0o17`. The value is the
+    /// magnitude (always non-negative, ≤ `u64::MAX`); its integer class is
+    /// resolved at eval to the smallest fitting unsigned type.
+    IntLit(u128),
     Str(String),
     Ident(String),
     // Operators
@@ -496,6 +500,65 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
                 pos += 1; // consume closing "
             }
             c if c.is_ascii_digit() || c == '.' => {
+                // Radix integer literal: 0x.. (hex) / 0b.. (binary) / 0o.. (octal).
+                if c == '0' && pos + 1 < chars.len() {
+                    let radix = match chars[pos + 1] {
+                        'x' | 'X' => Some(16u32),
+                        'b' | 'B' => Some(2u32),
+                        'o' | 'O' => Some(8u32),
+                        _ => None,
+                    };
+                    if let Some(radix) = radix {
+                        let kind = match radix {
+                            16 => "hex",
+                            2 => "binary",
+                            _ => "octal",
+                        };
+                        let digits_start = pos + 2;
+                        let mut j = digits_start;
+                        while j < chars.len() && (chars[j].is_digit(radix) || chars[j] == '_') {
+                            j += 1;
+                        }
+                        let digit_str: String =
+                            chars[digits_start..j].iter().filter(|c| **c != '_').collect();
+                        if digit_str.is_empty() {
+                            return Err(ScriptError::Lex {
+                                line,
+                                msg: format!("empty {kind} integer literal"),
+                            });
+                        }
+                        // A trailing identifier char means a typed suffix like
+                        // `0xFFu8` — unsupported; the cast form covers it.
+                        if j < chars.len()
+                            && (chars[j].is_alphanumeric() || chars[j] == '_')
+                        {
+                            return Err(ScriptError::Lex {
+                                line,
+                                msg: "typed integer literal suffixes are not supported; \
+                                      use a cast like uint8(0xFF)"
+                                    .to_string(),
+                            });
+                        }
+                        let val = u128::from_str_radix(&digit_str, radix).map_err(|_| {
+                            ScriptError::Lex {
+                                line,
+                                msg: format!("invalid {kind} integer literal"),
+                            }
+                        })?;
+                        if val > u64::MAX as u128 {
+                            return Err(ScriptError::Lex {
+                                line,
+                                msg: "integer literal exceeds uint64 range".to_string(),
+                            });
+                        }
+                        pos = j;
+                        tokens.push(Spanned {
+                            token: Token::IntLit(val),
+                            line,
+                        });
+                        continue;
+                    }
+                }
                 // Number — underscores allowed as digit separators (e.g. 1_000_000)
                 let start = pos;
                 while pos < chars.len()

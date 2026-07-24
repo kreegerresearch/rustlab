@@ -2,7 +2,7 @@ use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use rustlab_core::sparse_solve::{SparseChol, SparseLU};
-use rustlab_core::{CMatrix, CTensor3, CVector, SparseMat, SparseVec, C64};
+use rustlab_core::{CMatrix, CTensor3, CVector, IntClass, OverflowMode, SparseMat, SparseVec, C64};
 use rustlab_dsp::fixed::QFmtSpec;
 use std::collections::HashMap;
 use std::fmt;
@@ -145,6 +145,27 @@ impl WidgetValue {
 #[derive(Debug, Clone)]
 pub enum Value {
     Scalar(f64),
+    /// Tagged-width integer scalar. `data` is stored in `i128` (full `uint64`
+    /// range) and always kept within `class`'s range; `overflow` is the policy
+    /// used when a later operation would exceed that range. See the
+    /// `dev/plans/integer_types.md` plan. Widens to `f64`/`C64` at the coercion
+    /// chokepoints so existing builtins accept it unchanged.
+    Int {
+        data: i128,
+        class: IntClass,
+        overflow: OverflowMode,
+    },
+    /// Packed tagged-width integer array, row-major (`data[r*cols + c]`). A
+    /// row (`rows == 1`) or column (`cols == 1`) is a vector for shape helpers.
+    /// Every element is kept within `class`'s range. Widens to `CVector`/
+    /// `CMatrix` at the coercion chokepoints. See `dev/plans/integer_types.md`.
+    IntArray {
+        data: Vec<i128>,
+        rows: usize,
+        cols: usize,
+        class: IntClass,
+        overflow: OverflowMode,
+    },
     Complex(C64),
     Vector(CVector),
     Matrix(CMatrix),
@@ -224,9 +245,67 @@ pub enum Value {
 }
 
 impl Value {
+    /// Build an `IntArray`, range-enforcing every element to `class` under
+    /// `overflow`. A 1×1 collapses to a scalar `Int` (mirrors how a 1×1
+    /// `Matrix` acts like a scalar elsewhere).
+    pub fn int_array(
+        data: Vec<i128>,
+        rows: usize,
+        cols: usize,
+        class: IntClass,
+        overflow: OverflowMode,
+    ) -> Value {
+        let data: Vec<i128> = data.into_iter().map(|v| class.coerce(v, overflow)).collect();
+        if rows == 1 && cols == 1 {
+            return Value::Int {
+                data: data[0],
+                class,
+                overflow,
+            };
+        }
+        Value::IntArray {
+            data,
+            rows,
+            cols,
+            class,
+            overflow,
+        }
+    }
+
+    /// Widen a packed integer array to a complex matrix (imag = 0), row-major.
+    pub(crate) fn int_array_to_cmatrix(data: &[i128], rows: usize, cols: usize) -> CMatrix {
+        Array2::from_shape_fn((rows, cols), |(r, c)| {
+            Complex::new(data[r * cols + c] as f64, 0.0)
+        })
+    }
+
     pub fn negate(self) -> Result<Value, String> {
         match self {
             Value::Scalar(n) => Ok(Value::Scalar(-n)),
+            // Negation stays in-class under the value's overflow mode:
+            // `-uint8(5)` saturates to 0; `-int8(-128)` saturates to 127.
+            Value::Int {
+                data,
+                class,
+                overflow,
+            } => Ok(Value::Int {
+                data: class.coerce(-data, overflow),
+                class,
+                overflow,
+            }),
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                overflow,
+            } => Ok(Value::int_array(
+                data.into_iter().map(|v| class.coerce(-v, overflow)).collect(),
+                rows,
+                cols,
+                class,
+                overflow,
+            )),
             Value::Complex(c) => Ok(Value::Complex(-c)),
             Value::Vector(v) => Ok(Value::Vector(-v)),
             Value::Matrix(m) => Ok(Value::Matrix(-m)),
@@ -263,6 +342,10 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Scalar(_) => "scalar",
+            // The class name doubles as the `class()`/`type_name` result,
+            // matching MATLAB (`class(int32(5))` → "int32").
+            Value::Int { class, .. } => class.name(),
+            Value::IntArray { class, .. } => class.name(),
             Value::Complex(_) => "complex",
             Value::Vector(_) => "vector",
             Value::Matrix(_) => "matrix",
@@ -558,6 +641,8 @@ impl Value {
                 Ok(Value::Matrix(t.to_owned()))
             }
             Value::Scalar(n) => Ok(Value::Scalar(n)),
+            // Integers are real: conjugate transpose == transpose, class-preserving.
+            v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v)),
             Value::Complex(c) => Ok(Value::Complex(c.conj())),
             Value::SparseMatrix(sm) => {
                 let entries = sm
@@ -585,6 +670,7 @@ impl Value {
             }
             Value::Matrix(m) => Ok(Value::Matrix(m.t().to_owned())),
             Value::Scalar(n) => Ok(Value::Scalar(n)),
+            v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v)),
             Value::Complex(c) => Ok(Value::Complex(c)),
             Value::SparseMatrix(sm) => {
                 let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, v)).collect();
@@ -656,6 +742,13 @@ impl Value {
                 }
                 Ok(vec![i])
             }
+            Value::Int { data, .. } => {
+                let i = Self::one_based_to_zero(*data as f64)?;
+                if i >= dim_len {
+                    return Err(format!("index {} out of bounds (size {})", data, dim_len));
+                }
+                Ok(vec![i])
+            }
             Value::Vector(v) => {
                 if let Some(positions) = Self::as_logical_mask(v, dim_len) {
                     return Ok(positions);
@@ -682,6 +775,26 @@ impl Value {
     /// Single index: 1D selection. Two indices: 2D selection. Three indices: 3D selection.
     /// `:` (All) is supported in any dimension.
     pub fn index(self, indices: Vec<Value>) -> Result<Value, String> {
+        // Integer-typed indices widen to scalar subscripts so every
+        // dimension path (1-D/2-D/3-D) treats them like a plain number.
+        let indices: Vec<Value> = indices
+            .into_iter()
+            .map(|v| match v {
+                // Integer subscripts (scalar or array, incl. logical-style
+                // 0/1 masks) widen to their double form.
+                Value::Int { .. } | Value::IntArray { .. } => Self::widen_int(v),
+                other => other,
+            })
+            .collect();
+        // Indexing *into* an integer array: index the widened (double) form,
+        // then re-tag the selection with the original class (values are exact).
+        if let Value::IntArray {
+            class, overflow, ..
+        } = self
+        {
+            let selected = Self::widen_int(self).index(indices)?;
+            return Ok(Self::retag_as_int(selected, class, overflow));
+        }
         match indices.len() {
             1 => self.index_1d(indices.into_iter().next().unwrap()),
             2 => {
@@ -1210,11 +1323,252 @@ impl Value {
         match self {
             Value::Bool(b) => Ok(*b),
             Value::Scalar(s) => Ok(*s != 0.0),
+            Value::Int { data, .. } => Ok(*data != 0),
             Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
             other => Err(format!(
                 "&&/||: operand must be scalar (got {}); use any() or all() to reduce a matrix/vector",
                 other.type_name()
             )),
+        }
+    }
+
+    /// Compare two integers (widened to i128, exact) for an ordered/equality op.
+    fn int_cmp(op: BinOp, a: i128, b: i128) -> bool {
+        use BinOp::*;
+        match op {
+            Eq => a == b,
+            Ne => a != b,
+            Lt => a < b,
+            Le => a <= b,
+            Gt => a > b,
+            Ge => a >= b,
+            _ => unreachable!("int_cmp called with non-comparison op"),
+        }
+    }
+
+    /// Same-class integer arithmetic. Operands fit in `u64` so `i128` has
+    /// headroom for `+`/`-`; only a 64-bit-class multiply can exceed `i128`,
+    /// which is caught and resolved at the class width. `/` and `^` round half
+    /// away from zero; divide-by-zero saturates by sign (MATLAB convention).
+    fn int_arith(
+        op: BinOp,
+        a: i128,
+        b: i128,
+        class: IntClass,
+        mode: OverflowMode,
+    ) -> Result<i128, String> {
+        use BinOp::*;
+        let checked: Option<i128> = match op {
+            Add => a.checked_add(b),
+            Sub => a.checked_sub(b),
+            Mul | ElemMul => a.checked_mul(b),
+            Div | ElemDiv => {
+                if b == 0 {
+                    return Ok(match a.cmp(&0) {
+                        std::cmp::Ordering::Greater => class.max(),
+                        std::cmp::Ordering::Less => class.min(),
+                        std::cmp::Ordering::Equal => 0,
+                    });
+                }
+                return Ok(class.from_f64((a as f64) / (b as f64), mode));
+            }
+            Pow | ElemPow => {
+                return Ok(class.from_f64((a as f64).powf(b as f64), mode));
+            }
+            _ => return Err("operator not supported for integers".to_string()),
+        };
+        match checked {
+            Some(v) => Ok(class.coerce(v, mode)),
+            None => {
+                // Only a 64-bit-class multiply reaches here (exceeded i128).
+                match mode {
+                    OverflowMode::Saturate => {
+                        let positive = (a > 0) == (b > 0);
+                        Ok(if positive { class.max() } else { class.min() })
+                    }
+                    OverflowMode::Wrap => {
+                        let w = class.bits();
+                        let mask = (1u128 << w) - 1;
+                        let prod = (a as u128).wrapping_mul(b as u128) & mask;
+                        let val = if class.is_signed() && prod >= (1u128 << (w - 1)) {
+                            prod as i128 - (1i128 << w)
+                        } else {
+                            prod as i128
+                        };
+                        Ok(val)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Widen an integer value to its double-backed equivalent (scalar/vector/
+    /// matrix). Non-integer values pass through unchanged.
+    pub(crate) fn widen_int(v: Value) -> Value {
+        match v {
+            Value::Int { data, .. } => Value::Scalar(data as f64),
+            Value::IntArray {
+                data, rows, cols, ..
+            } => {
+                let m = Self::int_array_to_cmatrix(&data, rows, cols);
+                if rows == 1 || cols == 1 {
+                    Value::Vector(m.iter().copied().collect())
+                } else {
+                    Value::Matrix(m)
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Dispatch for an op where at least one operand is an integer value.
+    /// Same-class integer ⊗ integer (scalar or array, matching shape or
+    /// scalar broadcast) stays integer; different classes error; anything
+    /// mixed with a non-integer — and every comparison — widens to double and
+    /// reruns through [`binop`] (Deviation A: `int ⊗ double → double`).
+    fn int_binop(op: BinOp, lhs: Value, rhs: Value) -> Result<Value, String> {
+        use BinOp::*;
+
+        // Comparisons always go through the double path (Bool / 0-1 arrays).
+        if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+            return Self::binop(op, Self::widen_int(lhs), Self::widen_int(rhs));
+        }
+
+        let both_integer = matches!(lhs, Value::Int { .. } | Value::IntArray { .. })
+            && matches!(rhs, Value::Int { .. } | Value::IntArray { .. });
+        if !both_integer {
+            // One integer, one non-integer: widen and defer (Deviation A).
+            return Self::binop(op, Self::widen_int(lhs), Self::widen_int(rhs));
+        }
+
+        // Both integers — enforce same class.
+        let (ca, ma) = Self::int_meta(&lhs);
+        let cb = Self::int_meta(&rhs).0;
+        if ca != cb {
+            return Err(format!(
+                "operands have different integer classes ({} vs {}); cast one explicitly",
+                ca.name(),
+                cb.name()
+            ));
+        }
+
+        match (lhs, rhs) {
+            (Value::Int { data: a, .. }, Value::Int { data: b, .. }) => Ok(Value::Int {
+                data: Self::int_arith(op, a, b, ca, ma)?,
+                class: ca,
+                overflow: ma,
+            }),
+            (
+                Value::IntArray {
+                    data: da,
+                    rows,
+                    cols,
+                    ..
+                },
+                Value::IntArray {
+                    data: db,
+                    rows: rb,
+                    cols: cb_,
+                    ..
+                },
+            ) => {
+                if (rows, cols) != (rb, cb_) {
+                    return Err(format!(
+                        "integer array shapes {}×{} and {}×{} do not match",
+                        rows, cols, rb, cb_
+                    ));
+                }
+                let data: Result<Vec<i128>, String> = da
+                    .iter()
+                    .zip(db.iter())
+                    .map(|(&x, &y)| Self::int_arith(op, x, y, ca, ma))
+                    .collect();
+                Ok(Value::int_array(data?, rows, cols, ca, ma))
+            }
+            // Array ⊗ scalar-int broadcast — array on the left.
+            (Value::IntArray { data, rows, cols, .. }, Value::Int { data: s, .. }) => {
+                let out: Result<Vec<i128>, String> = data
+                    .iter()
+                    .map(|&x| Self::int_arith(op, x, s, ca, ma))
+                    .collect();
+                Ok(Value::int_array(out?, rows, cols, ca, ma))
+            }
+            // Scalar-int ⊗ array broadcast — scalar on the left (order matters
+            // for `-`, `/`, `^`).
+            (Value::Int { data: s, .. }, Value::IntArray { data, rows, cols, .. }) => {
+                let out: Result<Vec<i128>, String> = data
+                    .iter()
+                    .map(|&x| Self::int_arith(op, s, x, ca, ma))
+                    .collect();
+                Ok(Value::int_array(out?, rows, cols, ca, ma))
+            }
+            _ => unreachable!("both_integer guaranteed integer operands"),
+        }
+    }
+
+    /// Class-preserving transpose of an integer scalar/array (integers are
+    /// real, so conjugate and plain transpose coincide).
+    fn transpose_int(v: Value) -> Value {
+        match v {
+            Value::Int { .. } => v,
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                overflow,
+            } => {
+                let mut nd = vec![0i128; rows * cols];
+                for r in 0..rows {
+                    for c in 0..cols {
+                        nd[c * rows + r] = data[r * cols + c];
+                    }
+                }
+                Value::int_array(nd, cols, rows, class, overflow)
+            }
+            _ => v,
+        }
+    }
+
+    /// Re-tag a double-backed selection (from indexing a widened `IntArray`)
+    /// back to an integer `class`. Selected values are exact integers, so the
+    /// `as i128` conversion is lossless and `coerce` is an identity.
+    fn retag_as_int(v: Value, class: IntClass, overflow: OverflowMode) -> Value {
+        let tag = |x: f64| class.coerce(x as i128, overflow);
+        match v {
+            Value::Scalar(n) => Value::Int {
+                data: tag(n),
+                class,
+                overflow,
+            },
+            Value::Complex(c) => Value::Int {
+                data: tag(c.re),
+                class,
+                overflow,
+            },
+            Value::Vector(vec) => {
+                let n = vec.len();
+                Value::int_array(vec.iter().map(|c| tag(c.re)).collect(), 1, n, class, overflow)
+            }
+            Value::Matrix(m) => {
+                let (r, c) = (m.nrows(), m.ncols());
+                Value::int_array(m.iter().map(|z| tag(z.re)).collect(), r, c, class, overflow)
+            }
+            other => other,
+        }
+    }
+
+    /// `(class, overflow)` of an integer value. Panics on non-integers — only
+    /// called after an integer check.
+    fn int_meta(v: &Value) -> (IntClass, OverflowMode) {
+        match v {
+            Value::Int {
+                class, overflow, ..
+            }
+            | Value::IntArray {
+                class, overflow, ..
+            } => (*class, *overflow),
+            _ => unreachable!("int_meta on non-integer"),
         }
     }
 
@@ -1233,6 +1587,15 @@ impl Value {
                 Or => a || b,
                 _ => unreachable!(),
             }));
+        }
+
+        // Integer-typed operands (dev/plans/integer_types.md). Same-class
+        // int⊗int stays integer; cross-class errors; int⊗double promotes to
+        // double (Deviation A). Handled before the scalar/array arms below.
+        if matches!(lhs, Value::Int { .. } | Value::IntArray { .. })
+            || matches!(rhs, Value::Int { .. } | Value::IntArray { .. })
+        {
+            return Self::int_binop(op, lhs, rhs);
         }
 
         // Comparison operators: compare scalar/complex values, return Bool
@@ -1950,6 +2313,13 @@ impl Value {
         if rows.is_empty() {
             return Ok(Value::Vector(Array1::zeros(0)));
         }
+        // Integer elements widen to double: a matrix/vector literal built from
+        // integers is a double array (consistent with the widening rule; use an
+        // explicit cast like `int8([...])` to build a typed integer array).
+        let rows: Vec<Vec<Value>> = rows
+            .into_iter()
+            .map(|row| row.into_iter().map(Self::widen_int).collect())
+            .collect();
 
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
 
@@ -2045,6 +2415,12 @@ impl Value {
         match self {
             Value::Vector(v) => Ok(v.clone()),
             Value::Scalar(n) => Ok(Array1::from_vec(vec![Complex::new(*n, 0.0)])),
+            Value::Int { data, .. } => Ok(Array1::from_vec(vec![Complex::new(*data as f64, 0.0)])),
+            Value::IntArray {
+                data, rows, cols, ..
+            } if *rows == 1 || *cols == 1 => Ok(Array1::from_iter(
+                data.iter().map(|&v| Complex::new(v as f64, 0.0)),
+            )),
             Value::Complex(c) => Ok(Array1::from_vec(vec![*c])),
             Value::Matrix(m) if m.ncols() == 1 => Ok(m.column(0).to_owned()),
             Value::Matrix(m) if m.nrows() == 1 => Ok(m.row(0).to_owned()),
@@ -2057,6 +2433,7 @@ impl Value {
     pub fn to_scalar(&self) -> Result<f64, String> {
         match self {
             Value::Scalar(n) => Ok(*n),
+            Value::Int { data, .. } => Ok(*data as f64),
             Value::Complex(c) if c.im.abs() < 1e-10 => Ok(c.re),
             other => Err(format!("expected scalar, got {}", other.type_name())),
         }
@@ -2111,6 +2488,43 @@ impl fmt::Display for Value {
 
         match self {
             Value::Scalar(n) => write!(f, "{}", n),
+            // Class-annotated so an integer is distinguishable from a double
+            // in REPL/`disp` output (both would otherwise print bare digits).
+            Value::Int { data, class, .. } => write!(f, "{}  ({})", data, class.name()),
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => {
+                if *rows == 1 || *cols == 1 {
+                    write!(f, "[1×{}] ({})", data.len(), class.name())?;
+                    for v in data.iter().take(MAX_ELEMS) {
+                        write!(f, "  {}", v)?;
+                    }
+                    if data.len() > MAX_ELEMS {
+                        write!(f, "  ... ({} total)", data.len())?;
+                    }
+                    Ok(())
+                } else {
+                    write!(f, "IntArray({}×{}) ({})", rows, cols, class.name())?;
+                    for r in 0..(*rows).min(MAX_ELEMS) {
+                        write!(f, "\n  [")?;
+                        for c in 0..(*cols).min(MAX_ELEMS) {
+                            if c > 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{}", data[r * cols + c])?;
+                        }
+                        if *cols > MAX_ELEMS {
+                            write!(f, ", ...")?;
+                        }
+                        write!(f, "]")?;
+                    }
+                    Ok(())
+                }
+            }
             Value::Complex(c) => {
                 if c.im >= 0.0 {
                     write!(f, "{}+{}j", c.re, c.im)
@@ -2745,5 +3159,47 @@ fn fmt_f64(n: f64) -> String {
         format!("{}", n as i64)
     } else {
         format!("{}", n)
+    }
+}
+
+#[cfg(test)]
+mod int_value_tests {
+    use super::*;
+    use rustlab_core::{IntClass, OverflowMode};
+
+    fn int32(v: i128) -> Value {
+        Value::Int {
+            data: v,
+            class: IntClass::Int32,
+            overflow: OverflowMode::Saturate,
+        }
+    }
+
+    #[test]
+    fn int_widens_at_coercion_chokepoints() {
+        // to_scalar → f64
+        assert_eq!(int32(5).to_scalar().unwrap(), 5.0);
+        // to_usize (derives from to_scalar)
+        assert_eq!(int32(7).to_usize().unwrap(), 7);
+        // to_cvector → single-element complex vector, imag 0
+        let v = int32(9).to_cvector().unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], Complex::new(9.0, 0.0));
+    }
+
+    #[test]
+    fn int_type_name_is_the_class() {
+        assert_eq!(int32(0).type_name(), "int32");
+        let u8v = Value::Int {
+            data: 200,
+            class: IntClass::Uint8,
+            overflow: OverflowMode::Saturate,
+        };
+        assert_eq!(u8v.type_name(), "uint8");
+    }
+
+    #[test]
+    fn int_display_carries_class() {
+        assert_eq!(format!("{}", int32(5)), "5  (int32)");
     }
 }

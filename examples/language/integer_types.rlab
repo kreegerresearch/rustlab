@@ -1,0 +1,40 @@
+# Integer types — tagged-width integers (int8..int64, uint8..uint64)
+
+# ── Casts ─────────────────────────────────────────────────────────────
+# Reals round half away from zero; out-of-range saturates by default.
+a = int8(200)          # 127  (saturates to the int8 max)
+b = int8(2.5)          # 3    (round half away from zero)
+c = uint8(-5)          # 0    (unsigned floor)
+d = int8(200, "wrap")  # -56  (opt-in 2's-complement wrap)
+print("casts:")
+disp(a); disp(b); disp(c); disp(d)
+
+# ── Radix literals take the smallest fitting unsigned class ───────────
+hex  = 0xFF            # uint8  (255)
+mask = 0xdead_beef     # uint32 (underscores allowed)
+bits = 0b1010          # uint8  (10)
+disp(class(hex)); disp(class(mask))
+
+# ── Arithmetic ────────────────────────────────────────────────────────
+# Same-class stays integer (saturating); different classes error;
+# integer + double promotes to double.
+sum_sat = uint8(200) + uint8(100)   # 255 (saturates)
+promoted = int32(5) + 2.7           # 7.7 (double)
+print("arithmetic:")
+disp(sum_sat); disp(promoted)
+
+# ── Integer arrays ────────────────────────────────────────────────────
+v = int16([10, 20, 30])
+w = v + int16(5)          # elementwise broadcast → [15, 25, 35]
+m = int8([1, 2; 3, 4])
+mt = transpose(m)         # class-preserving transpose
+print("arrays:")
+disp(w)
+disp(sum(v))              # reductions widen to double (60)
+disp(mt)
+
+# ── Introspection ─────────────────────────────────────────────────────
+disp(class(v))            # "int16"
+disp(intmax("int8"))      # 127
+disp(isinteger(v))        # true
+disp(double(int32(42)))   # 42  (back to double)

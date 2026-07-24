@@ -15,6 +15,6 @@ pub use traits::{
     transform::Transform,
 };
 pub use types::{
-    CMatrix, CTensor3, CVector, OrderingHint, OverflowMode, RMatrix, RVector, RoundMode, SparseMat,
-    SparseVec, C64,
+    CMatrix, CTensor3, CVector, IntClass, OrderingHint, OverflowMode, RMatrix, RVector, RoundMode,
+    SparseMat, SparseVec, C64,
 };
