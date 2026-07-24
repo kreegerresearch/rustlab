@@ -24,7 +24,7 @@ saturates). See "Locked-in design decisions".
 | 1 — Scalar integer + widening + literals | M1 | ✅ **complete** | `IntClass` + `Value::Int` + widening + `0x/0b/0o` literals + casts (`int8`…`uint64`) + `class`/`cast`/`intmax`/`intmin`/`isinteger`/`isa`/`double` + same-class arithmetic / cross-class error / Deviation A + integer indexing. 15 script tests + 9 unit tests; help + docs. |
 | 2 — Packed integer arrays + indexing | M2 | ✅ **complete** | `IntArray` packed storage + Display/`whos` + widening + elementwise arithmetic (same-class, broadcast, shape/cross-class errors) + `intN([...])`/`zeros`/`ones` constructors + indexing (read + as-index) + class-preserving transpose + `size`/`length`/`numel`/`sum`. 12 script tests. |
 | 3 — Cross-class width semantics | M3 | ✅ **complete** | cross-class-mix errors (scalar + array), lossy-narrowing saturate/wrap, full `uint64` range + arithmetic above i64::MAX (exact via i128 backing). 4 width tests. |
-| 4 — I/O & interop | M4 | not started | NPY int dtypes (also fixes today's "can't load numpy int arrays" gap), CSV, TOML, `whos` class reporting |
+| 4 — I/O & interop | M4 | ✅ **complete** | NPY int dtypes read+write (all widths, endianness, full uint64) — **fixes the "can't load numpy int arrays" gap**; CSV + TOML integer serialization; `whos`/`class` report the class. 5 I/O tests. |
 
 Full milestone acceptance criteria are in the **Milestones** section below.
 
@@ -352,3 +352,10 @@ existing builtin surface green through widening.
   widening at all five coercion chokepoints, Display + `whos` class reporting,
   `Int` uncacheable. Full workspace suite green (2819 tests). This is the
   planned review checkpoint before casts/literals/arithmetic fan out.
+- **2026-07-23** — **Phases 1–4 complete** (M1–M4). Phase 1: literals + casts
+  + arithmetic. Phase 2: packed `IntArray` (construction, arithmetic,
+  broadcast, indexing, constructors, transpose, reductions). Phase 3: width
+  semantics (narrowing, full `uint64`). Phase 4: NPY typed read/write (fixes
+  the numpy-int-load gap), CSV/TOML. 36 script tests + 10 unit tests across the
+  four phases; full workspace suite green (35 suites), all 75 examples pass.
+  **Feature ready for review.**

@@ -6230,6 +6230,48 @@ fn build_npy_bytes(data: &[Complex<f64>], shape: &[usize]) -> Vec<u8> {
     out
 }
 
+/// NPY dtype descriptor for an integer class (`int8` → `"|i1"`, else `"<iN"`
+/// / `"<uN"`). Single-byte types use `|` (byte order is moot).
+fn npy_int_descr(class: IntClass) -> String {
+    let width = (class.bits() / 8) as usize;
+    let kind = if class.is_signed() { 'i' } else { 'u' };
+    let order = if width == 1 { '|' } else { '<' };
+    format!("{order}{kind}{width}")
+}
+
+/// Serialize a tagged-width integer array to NPY bytes with its native dtype
+/// (little-endian, C-order). Round-trips through [`parse_npy_bytes`].
+fn build_npy_int_bytes(data: &[i128], shape: &[usize], class: IntClass) -> Vec<u8> {
+    let descr = npy_int_descr(class);
+    let width = (class.bits() / 8) as usize;
+    let shape_str = match shape {
+        [n] => format!("({n},)"),
+        [r, c] => format!("({r}, {c})"),
+        other => {
+            let parts: Vec<String> = other.iter().map(|d| d.to_string()).collect();
+            format!("({})", parts.join(", "))
+        }
+    };
+    let raw = format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': {shape_str}, }}");
+    let needed = 10 + raw.len() + 1;
+    let padded = ((needed + 63) / 64) * 64;
+    let header = format!("{}{}\n", raw, " ".repeat(padded - needed));
+    let hlen = header.len() as u16;
+
+    let mut out = Vec::with_capacity(padded + data.len() * width);
+    out.extend_from_slice(b"\x93NUMPY");
+    out.push(1);
+    out.push(0);
+    out.extend_from_slice(&hlen.to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    for &v in data {
+        // Low `width` little-endian bytes of the two's-complement value.
+        let le = (v as i128 as u128).to_le_bytes();
+        out.extend_from_slice(&le[..width]);
+    }
+    out
+}
+
 /// Parse the shape tuple from an NPY header string.
 fn parse_npy_shape(header: &str) -> Result<Vec<usize>, String> {
     let key = header
@@ -6302,6 +6344,103 @@ fn array_to_value(
 }
 
 /// Parse an in-memory NPY byte buffer into a Value.
+/// Extract the `'descr'` dtype string (e.g. `"<i4"`, `">u8"`, `"|i1"`) from an
+/// NPY header dict.
+fn npy_descr(header: &str) -> Option<&str> {
+    let key = header.find("'descr'")?;
+    let after = &header[key + "'descr'".len()..];
+    let colon = after.find(':')?;
+    let rest = &after[colon + 1..];
+    let start = rest.find('\'')? + 1;
+    let end = rest[start..].find('\'')? + start;
+    Some(&rest[start..end])
+}
+
+/// Map an integer NPY dtype string to `(class, byte_width, big_endian)`.
+/// `|` order (single-byte) is treated as little-endian (byte order is moot).
+fn npy_int_dtype(descr: &str) -> Option<(IntClass, usize, bool)> {
+    let bytes = descr.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    let big = bytes[0] == b'>';
+    let signed = match bytes[1] {
+        b'i' => true,
+        b'u' => false,
+        _ => return None,
+    };
+    let width: usize = descr[2..].parse().ok()?;
+    let class = match (signed, width) {
+        (true, 1) => IntClass::Int8,
+        (true, 2) => IntClass::Int16,
+        (true, 4) => IntClass::Int32,
+        (true, 8) => IntClass::Int64,
+        (false, 1) => IntClass::Uint8,
+        (false, 2) => IntClass::Uint16,
+        (false, 4) => IntClass::Uint32,
+        (false, 8) => IntClass::Uint64,
+        _ => return None,
+    };
+    Some((class, width, big))
+}
+
+/// Read one integer element of `width` bytes (≤ 8), sign-extending if signed.
+fn read_npy_int(b: &[u8], width: usize, signed: bool, big: bool) -> i128 {
+    let mut u: u64 = 0;
+    if big {
+        for &byte in b.iter().take(width) {
+            u = (u << 8) | byte as u64;
+        }
+    } else {
+        for (k, &byte) in b.iter().take(width).enumerate() {
+            u |= (byte as u64) << (8 * k);
+        }
+    }
+    if signed {
+        let bits = width * 8;
+        if bits < 64 && (u >> (bits - 1)) & 1 == 1 {
+            (u | (!0u64 << bits)) as i64 as i128
+        } else {
+            u as i64 as i128
+        }
+    } else {
+        u as i128
+    }
+}
+
+/// Build an integer `Value` (Int / IntArray) from flat row-... data + shape.
+fn int_array_from_npy(
+    data: Vec<i128>,
+    shape: &[usize],
+    class: IntClass,
+    fortran: bool,
+) -> Result<Value, String> {
+    use ndarray::ShapeBuilder;
+    let sat = OverflowMode::Saturate;
+    match shape {
+        [] | [1] => Ok(Value::Int {
+            data: *data.first().ok_or("NPY: empty array")?,
+            class,
+            overflow: sat,
+        }),
+        [n] => Ok(Value::int_array(data, 1, *n, class, sat)),
+        [nrows, ncols] => {
+            let arr = if fortran {
+                Array2::from_shape_vec((*nrows, *ncols).f(), data).map_err(|e| e.to_string())?
+            } else {
+                Array2::from_shape_vec((*nrows, *ncols), data).map_err(|e| e.to_string())?
+            };
+            // Re-flatten in row-major to match IntArray's storage.
+            let flat: Vec<i128> = arr.iter().copied().collect();
+            Ok(Value::int_array(flat, *nrows, *ncols, class, sat))
+        }
+        other => Err(format!(
+            "NPY: integer arrays support rank ≤ 2, got rank {}",
+            other.len()
+        )),
+    }
+}
+
 fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
     if bytes.len() < 10 || &bytes[0..6] != b"\x93NUMPY" {
         return Err("not a valid NPY file".to_string());
@@ -6358,9 +6497,27 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
             .map(|i| Complex::new(rd(&data[i * 8..i * 8 + 8]), 0.0))
             .collect();
         array_to_value(values, &shape, fortran)
+    } else if let Some((class, width, big)) =
+        npy_descr(header).and_then(npy_int_dtype)
+    {
+        // Integer dtypes (<i1..<i8, <u1..<u8, big-endian, or |-order single
+        // byte) → a tagged-width IntArray. Fixes the prior gap where numpy
+        // integer arrays could not be loaded at all.
+        if data.len() % width != 0 {
+            return Err(format!(
+                "NPY {}: data length is not a multiple of {}",
+                class.name(),
+                width
+            ));
+        }
+        let signed = class.is_signed();
+        let values: Vec<i128> = (0..data.len() / width)
+            .map(|i| read_npy_int(&data[i * width..i * width + width], width, signed, big))
+            .collect();
+        int_array_from_npy(values, &shape, class, fortran)
     } else {
         Err(format!(
-            "unsupported NPY dtype (only f8 and c16 are supported): {}",
+            "unsupported NPY dtype: {}",
             header.chars().take(100).collect::<String>()
         ))
     }
@@ -6443,6 +6600,28 @@ fn write_csv(path: &str, val: &Value) -> Result<(), String> {
                     write!(w, "{}", fmt_csv_cell(m[[r, ci]])).map_err(|e| e.to_string())?;
                 }
                 writeln!(w).map_err(|e| e.to_string())?;
+            }
+        }
+        // Integers serialize as plain numbers (CSV is untyped — they load back
+        // as doubles).
+        Value::Int { data, .. } => writeln!(w, "{data}").map_err(|e| e.to_string())?,
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            if *rows == 1 || *cols == 1 {
+                for v in data {
+                    writeln!(w, "{v}").map_err(|e| e.to_string())?;
+                }
+            } else {
+                for r in 0..*rows {
+                    for c in 0..*cols {
+                        if c > 0 {
+                            write!(w, ",").map_err(|e| e.to_string())?;
+                        }
+                        write!(w, "{}", data[r * cols + c]).map_err(|e| e.to_string())?;
+                    }
+                    writeln!(w).map_err(|e| e.to_string())?;
+                }
             }
         }
         other => return Err(format!("save: cannot serialise {} to CSV", other)),
@@ -6639,8 +6818,31 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
                 "save: NPY format takes exactly one value".to_string(),
             ));
         }
-        let (data, shape) = value_to_c64_array(&args[1]).map_err(|e| ScriptError::runtime(e))?;
-        let bytes = build_npy_bytes(&data, &shape);
+        // Integers write their native dtype so they round-trip as integers.
+        let bytes = match &args[1] {
+            Value::Int { data, class, .. } => build_npy_int_bytes(&[*data], &[1], *class),
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => {
+                let shape = if *rows == 1 {
+                    vec![*cols]
+                } else if *cols == 1 {
+                    vec![*rows]
+                } else {
+                    vec![*rows, *cols]
+                };
+                build_npy_int_bytes(data, &shape, *class)
+            }
+            other => {
+                let (data, shape) =
+                    value_to_c64_array(other).map_err(|e| ScriptError::runtime(e))?;
+                build_npy_bytes(&data, &shape)
+            }
+        };
         std::fs::write(&path, bytes).map_err(|e| ScriptError::runtime(e.to_string()))?;
     }
     Ok(Value::None)

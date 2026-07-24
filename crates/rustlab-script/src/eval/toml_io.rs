@@ -49,6 +49,25 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             }
         }
         Value::Bool(b) => Ok(Toml::Boolean(*b)),
+        // Integers serialize as TOML integers (i64 range) — the class is not
+        // preserved (TOML has one integer type), so they load back as doubles.
+        // A `uint64` above i64::MAX falls back to a float.
+        Value::Int { data, .. } => Ok(int_to_toml(*data)),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            if *rows == 1 || *cols == 1 {
+                Ok(Toml::Array(data.iter().map(|&v| int_to_toml(v)).collect()))
+            } else {
+                let mut out = Vec::with_capacity(*rows);
+                for r in 0..*rows {
+                    let row: Vec<Toml> =
+                        (0..*cols).map(|c| int_to_toml(data[r * cols + c])).collect();
+                    out.push(Toml::Array(row));
+                }
+                Ok(Toml::Array(out))
+            }
+        }
         Value::Str(s) => Ok(Toml::String(s.clone())),
         Value::Vector(cv) => {
             let mut arr = Vec::with_capacity(cv.len());
@@ -137,6 +156,16 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             "save: cannot serialize {} to TOML",
             other.type_name()
         )),
+    }
+}
+
+/// TOML representation of an i128 integer: `Integer` when it fits i64, else a
+/// `Float` (a `uint64` above i64::MAX).
+fn int_to_toml(v: i128) -> Toml {
+    if v >= i64::MIN as i128 && v <= i64::MAX as i128 {
+        Toml::Integer(v as i64)
+    } else {
+        Toml::Float(v as f64)
     }
 }
 

@@ -18592,3 +18592,117 @@ mod int_width_tests {
         assert_eq!(int1(&e, "s").0, u64::MAX as i128);
     }
 }
+
+/// Integer I/O (Phase 4 of dev/plans/integer_types.md): NPY typed round-trip,
+/// CSV/TOML integer serialization.
+mod int_io_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn tmp(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("rustlab_int_io_{}_{}", std::process::id(), name))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn arr(e: &Evaluator, name: &str) -> (Vec<i128>, usize, usize, String) {
+        match e.get(name).unwrap() {
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => (data.clone(), *rows, *cols, class.name().to_string()),
+            other => panic!("{name}: expected IntArray, got {other:?}"),
+        }
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn npy_int_vector_round_trip() {
+        let p = tmp("vec.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", int32([1, 2, 3, -4]))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(arr(&e, "b"), (vec![1, 2, 3, -4], 1, 4, "int32".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_int_matrix_round_trip() {
+        let p = tmp("mat.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", int16([1, 2, 3; 4, 5, 6]))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(arr(&e, "b"), (vec![1, 2, 3, 4, 5, 6], 2, 3, "int16".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_full_uint64_round_trip() {
+        let p = tmp("u64.npy");
+        let e = ev(&format!(
+            "save(\"{p}\", uint64(0xFFFFFFFFFFFFFFFF))\nb = load(\"{p}\")"
+        ));
+        assert_eq!(int1(&e, "b"), (u64::MAX as i128, "uint64".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn npy_reads_hand_written_uint8() {
+        // A minimal `|u1` NPY buffer, parsed via load — proves numpy integer
+        // arrays load (previously an "unsupported dtype" error).
+        let p = tmp("u8.npy");
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"\x93NUMPY\x01\x00");
+        let hdr = "{'descr': '|u1', 'fortran_order': False, 'shape': (3,), }";
+        let total = 10 + hdr.len() + 1;
+        let pad = (64 - total % 64) % 64;
+        let hdr = format!("{}{}\n", hdr, " ".repeat(pad));
+        bytes.extend_from_slice(&(hdr.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(hdr.as_bytes());
+        bytes.extend_from_slice(&[10u8, 200, 255]);
+        std::fs::write(&p, &bytes).unwrap();
+        let e = ev(&format!("b = load(\"{p}\")"));
+        assert_eq!(arr(&e, "b"), (vec![10, 200, 255], 1, 3, "uint8".into()));
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn csv_and_toml_accept_integers() {
+        let pc = tmp("i.csv");
+        let e = ev(&format!(
+            "save(\"{pc}\", int8([1, 2, 3]))\nc = load(\"{pc}\")"
+        ));
+        // CSV is untyped → loads back as a double vector.
+        assert!(matches!(e.get("c").unwrap(), Value::Vector(_)));
+        let _ = std::fs::remove_file(&pc);
+
+        let pt = tmp("s.toml");
+        let e = ev(&format!(
+            "save(\"{pt}\", struct(\"n\", int32(5)))\nt = load(\"{pt}\")\nn = t.n"
+        ));
+        // TOML integer loads back as a double scalar.
+        assert!(matches!(e.get("n").unwrap(), Value::Scalar(x) if (*x - 5.0).abs() < 1e-12));
+        let _ = std::fs::remove_file(&pt);
+    }
+}
