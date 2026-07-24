@@ -5808,6 +5808,7 @@ fn to_cmatrix_arg(val: &Value, fn_name: &str, arg_name: &str) -> Result<CMatrix,
     match val {
         Value::Matrix(m) => Ok(m.clone()),
         Value::Scalar(n) => Ok(Array2::from_elem((1, 1), Complex::new(*n, 0.0))),
+        Value::Int { data, .. } => Ok(Array2::from_elem((1, 1), Complex::new(*data as f64, 0.0))),
         Value::Complex(c) => Ok(Array2::from_elem((1, 1), *c)),
         Value::Vector(v) => {
             let m = Array2::from_shape_fn((v.len(), 1), |(i, _)| v[i]);
@@ -5836,6 +5837,7 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
     match val {
         Value::Vector(v) => Ok(ndarray::Array1::from_iter(v.iter().map(|c| c.re))),
         Value::Scalar(n) => Ok(ndarray::Array1::from_vec(vec![*n])),
+        Value::Int { data, .. } => Ok(ndarray::Array1::from_vec(vec![*data as f64])),
         Value::Matrix(m) if m.ncols() == 1 => {
             Ok(ndarray::Array1::from_iter(m.column(0).iter().map(|c| c.re)))
         }

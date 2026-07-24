@@ -2,7 +2,7 @@ use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
 use rustlab_core::sparse_solve::{SparseChol, SparseLU};
-use rustlab_core::{CMatrix, CTensor3, CVector, SparseMat, SparseVec, C64};
+use rustlab_core::{CMatrix, CTensor3, CVector, IntClass, OverflowMode, SparseMat, SparseVec, C64};
 use rustlab_dsp::fixed::QFmtSpec;
 use std::collections::HashMap;
 use std::fmt;
@@ -145,6 +145,16 @@ impl WidgetValue {
 #[derive(Debug, Clone)]
 pub enum Value {
     Scalar(f64),
+    /// Tagged-width integer scalar. `data` is stored in `i128` (full `uint64`
+    /// range) and always kept within `class`'s range; `overflow` is the policy
+    /// used when a later operation would exceed that range. See the
+    /// `dev/plans/integer_types.md` plan. Widens to `f64`/`C64` at the coercion
+    /// chokepoints so existing builtins accept it unchanged.
+    Int {
+        data: i128,
+        class: IntClass,
+        overflow: OverflowMode,
+    },
     Complex(C64),
     Vector(CVector),
     Matrix(CMatrix),
@@ -263,6 +273,9 @@ impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
             Value::Scalar(_) => "scalar",
+            // The class name doubles as the `class()`/`type_name` result,
+            // matching MATLAB (`class(int32(5))` → "int32").
+            Value::Int { class, .. } => class.name(),
             Value::Complex(_) => "complex",
             Value::Vector(_) => "vector",
             Value::Matrix(_) => "matrix",
@@ -2045,6 +2058,7 @@ impl Value {
         match self {
             Value::Vector(v) => Ok(v.clone()),
             Value::Scalar(n) => Ok(Array1::from_vec(vec![Complex::new(*n, 0.0)])),
+            Value::Int { data, .. } => Ok(Array1::from_vec(vec![Complex::new(*data as f64, 0.0)])),
             Value::Complex(c) => Ok(Array1::from_vec(vec![*c])),
             Value::Matrix(m) if m.ncols() == 1 => Ok(m.column(0).to_owned()),
             Value::Matrix(m) if m.nrows() == 1 => Ok(m.row(0).to_owned()),
@@ -2057,6 +2071,7 @@ impl Value {
     pub fn to_scalar(&self) -> Result<f64, String> {
         match self {
             Value::Scalar(n) => Ok(*n),
+            Value::Int { data, .. } => Ok(*data as f64),
             Value::Complex(c) if c.im.abs() < 1e-10 => Ok(c.re),
             other => Err(format!("expected scalar, got {}", other.type_name())),
         }
@@ -2111,6 +2126,9 @@ impl fmt::Display for Value {
 
         match self {
             Value::Scalar(n) => write!(f, "{}", n),
+            // Class-annotated so an integer is distinguishable from a double
+            // in REPL/`disp` output (both would otherwise print bare digits).
+            Value::Int { data, class, .. } => write!(f, "{}  ({})", data, class.name()),
             Value::Complex(c) => {
                 if c.im >= 0.0 {
                     write!(f, "{}+{}j", c.re, c.im)
@@ -2745,5 +2763,47 @@ fn fmt_f64(n: f64) -> String {
         format!("{}", n as i64)
     } else {
         format!("{}", n)
+    }
+}
+
+#[cfg(test)]
+mod int_value_tests {
+    use super::*;
+    use rustlab_core::{IntClass, OverflowMode};
+
+    fn int32(v: i128) -> Value {
+        Value::Int {
+            data: v,
+            class: IntClass::Int32,
+            overflow: OverflowMode::Saturate,
+        }
+    }
+
+    #[test]
+    fn int_widens_at_coercion_chokepoints() {
+        // to_scalar → f64
+        assert_eq!(int32(5).to_scalar().unwrap(), 5.0);
+        // to_usize (derives from to_scalar)
+        assert_eq!(int32(7).to_usize().unwrap(), 7);
+        // to_cvector → single-element complex vector, imag 0
+        let v = int32(9).to_cvector().unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], Complex::new(9.0, 0.0));
+    }
+
+    #[test]
+    fn int_type_name_is_the_class() {
+        assert_eq!(int32(0).type_name(), "int32");
+        let u8v = Value::Int {
+            data: 200,
+            class: IntClass::Uint8,
+            overflow: OverflowMode::Saturate,
+        };
+        assert_eq!(u8v.type_name(), "uint8");
+    }
+
+    #[test]
+    fn int_display_carries_class() {
+        assert_eq!(format!("{}", int32(5)), "5  (int32)");
     }
 }

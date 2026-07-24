@@ -129,7 +129,12 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
         // LiveFigure), externally-bound resources (AudioIn/Out),
         // or because the captured environment of a Lambda is too
         // open-ended to fingerprint reliably.
-        Value::Tensor3(_)
+        // `Int` is treated as uncacheable for now: integer-argument calls
+        // bypass the persistent cache rather than commit to a wire format
+        // before the type stabilizes (Phase 1 of dev/plans/integer_types.md).
+        // Correct, just not yet memoized.
+        Value::Int { .. }
+        | Value::Tensor3(_)
         | Value::QFmt(_)
         | Value::All
         | Value::TransferFn { .. }
@@ -279,6 +284,9 @@ fn encode_value(out: &mut Vec<u8>, v: &Value) -> Option<()> {
         | Value::All
         | Value::TransferFn { .. }
         | Value::StateSpace { .. }
+        // See `feed_value`: `Int` is uncacheable until a wire tag is added
+        // (Phase 1 of dev/plans/integer_types.md).
+        | Value::Int { .. }
         | Value::Lambda { .. }
         | Value::FirState(_)
         | Value::DspStreamState(_)

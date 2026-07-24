@@ -21,7 +21,7 @@ saturates). See "Locked-in design decisions".
 | Phase | Milestone | State | Headline deliverable |
 |-------|-----------|-------|----------------------|
 | 0 — Design & scoping | M0 | **complete** (2026-07-23) | this document; type model + hybrid-MATLAB semantics locked with the user |
-| 1 — Scalar integer + widening + literals | M1 | not started | `Value::Int`, widening at the 5 coercion chokepoints, `0x/0b/0o` literals, casts, `class()`, int⊗int + int⊗double arithmetic |
+| 1 — Scalar integer + widening + literals | M1 | **in progress** | ✅ `IntClass` (core) + `Value::Int` + widening at all 5 chokepoints + Display/`whos`; ⬜ literals, casts, arithmetic, `class()`/`intmax`/… builtins |
 | 2 — Packed integer arrays + indexing | M2 | not started | `IntArray` packed storage, array constructors, integer index vectors |
 | 3 — Cross-class width semantics | M3 | not started | cross-class-mix errors, lossy-narrowing saturation, full `uint64` range |
 | 4 — I/O & interop | M4 | not started | NPY int dtypes (also fixes today's "can't load numpy int arrays" gap), CSV, TOML, `whos` class reporting |
@@ -193,17 +193,21 @@ M1; M3 depends on M2; M4 depends on M2 (I/O needs `IntArray`) but not M3.
 
 ## Phases
 
-### Phase 1 — Scalar integer + widening + literals  **Status:** not started
+### Phase 1 — Scalar integer + widening + literals  **Status:** in progress
 **Milestone:** M1 — Integers are real.
 
 The MVP that makes integers *real and usable*; all builtins work via widening.
 
-1. `IntClass` + `IntClass::coerce` in `rustlab-core`; `Value::Int` in
-   `value.rs` (Clone/Debug already derived; add Display + `type_name` →
-   the class name, e.g. `"int32"`).
-2. **Widening** in the five coercion methods: `Int` → `f64`/`C64`. This is the
-   linchpin — land it early and confirm the existing suite still passes before
-   anything else.
+1. ✅ **Done.** `IntClass` (+ `coerce`, `from_f64`, `smallest_unsigned_for`,
+   `min`/`max`/`bits`/`name`/`is_signed`, `from_str`) in `rustlab-core` with 6
+   unit tests; `Value::Int { data: i128, class, overflow }` in `value.rs` with
+   Display (`5  (int32)`) and `type_name` → the class name.
+2. ✅ **Done — linchpin verified.** Widening `Int → f64`/`C64` in all five
+   chokepoints (`to_scalar`, `to_usize`, `to_cvector` in `value.rs`;
+   `to_real_vector`, `to_cmatrix_arg` in `builtins.rs`). `whos` reports the
+   class. Full workspace suite stays green (2819 tests, 0 fail). `Int` marked
+   uncacheable in `cache_value.rs` for now (integer-arg calls bypass the cache;
+   correct, not yet memoized). **← review checkpoint reached here.**
 3. **Lexer:** `0x` / `0b` / `0o` integer literals (reuse `_` separators),
    parsed via `u128::from_str_radix`, emitted as a `Value::Int` of the
    **smallest fitting unsigned class** (decision 7: `0xFF → uint8`, …). Reject
@@ -219,7 +223,7 @@ The MVP that makes integers *real and usable*; all builtins work via widening.
    under the value's overflow mode via `IntClass::coerce`; **different class →
    error** (decision 5, no widening); `Int ⊗ double → double` (Deviation A);
    comparisons return `Bool`.
-6. `whos` reports the class; Display prints e.g. `x = 5  (int32)`.
+6. ✅ **Done.** `whos` reports the class; Display prints e.g. `5  (int32)`.
 7. Tests (`int_types_tests` in `tests.rs`): construction + range, saturate vs
    wrap round-trips, round-half-away casts, `int + double → double` (Deviation
    A), same-class `int⊗int`, **cross-class error**, smallest-fitting-unsigned
@@ -343,3 +347,8 @@ existing builtin surface green through widening.
   round-half-away casts (6), smallest-fitting-unsigned literals (7), full
   `uint64` via i128 backing (2), and the `intmax`/`intmin`/`isinteger`/`isa`/
   `double` builtin set. No code yet.
+- **2026-07-23** — **Phase 1 first slice landed** (branch
+  `feature/integer-types`): `IntClass` in core (6 tests), `Value::Int` variant,
+  widening at all five coercion chokepoints, Display + `whos` class reporting,
+  `Int` uncacheable. Full workspace suite green (2819 tests). This is the
+  planned review checkpoint before casts/literals/arithmetic fan out.

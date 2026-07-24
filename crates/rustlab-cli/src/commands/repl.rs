@@ -738,6 +738,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
     use rustlab_script::Value;
     match v {
         Value::Scalar(_) => "scalar",
+        Value::Int { class, .. } => class.name(),
         Value::Complex(_) => "complex",
         Value::Vector(_) => "vector",
         Value::Matrix(_) => "matrix",
@@ -811,6 +812,7 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
     use rustlab_script::Value;
     match v {
         Value::Scalar(n) => format!("{n}"),
+        Value::Int { data, .. } => format!("{data}"),
         Value::Complex(c) => {
             if c.im >= 0.0 {
                 format!("{}+{}j", c.re, c.im)
