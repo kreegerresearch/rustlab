@@ -461,12 +461,16 @@ where
         .margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
         .y_label_area_size(Y_LABEL_AREA)
-        .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
+        .build_cartesian_2d(
+            AxisTicks::new(x_lo, x_hi, x_log),
+            AxisTicks::new(y_lo, y_hi, y_log),
+        )
         .map_err(err)?;
 
     {
         // Formatter closures must outlive `draw()`, so bind them before the
-        // mesh builder borrows `chart`.
+        // mesh builder borrows `chart`. `AxisTicks` places the tick *positions*
+        // (nice decades for log axes); these supply the label *text*.
         let cat_labels = sp.x_labels.clone();
         let cat_fmt = move |v: &f64| -> String {
             let labels = match &cat_labels {
@@ -484,19 +488,10 @@ where
                 String::new()
             }
         };
-        let x_span = x_hi - x_lo;
-        let y_span = y_hi - y_lo;
-        let xlog_fmt = move |v: &f64| -> String { format_log_tick_span(*v, x_span) };
-        let ylog_fmt = move |v: &f64| -> String { format_log_tick_span(*v, y_span) };
-        // ~one label per decade (wide axes), more for narrow ones so a
-        // sub-decade axis isn't nearly blank.
-        let label_count = |span: f64| {
-            if span >= 1.5 {
-                (span.floor() as isize + 2).clamp(2, 12) as usize
-            } else {
-                5
-            }
-        };
+        // Log ticks arrive as log10-space positions → show the real value.
+        let log_fmt = |v: &f64| -> String { compact_num(10f64.powf(*v)) };
+        // Linear axes keep plotters' exact default `f64` formatting.
+        let lin_fmt = |v: &f64| -> String { format_linear_tick(*v) };
 
         let mut mesh = chart.configure_mesh();
         mesh.disable_mesh()
@@ -509,12 +504,14 @@ where
             let n = sp.x_labels.as_ref().map_or(0, |l| l.len());
             mesh.x_labels(n).x_label_formatter(&cat_fmt);
         } else if x_log {
-            mesh.x_labels(label_count(x_span))
-                .x_label_formatter(&xlog_fmt);
+            mesh.x_label_formatter(&log_fmt);
+        } else {
+            mesh.x_label_formatter(&lin_fmt);
         }
         if y_log {
-            mesh.y_labels(label_count(y_span))
-                .y_label_formatter(&ylog_fmt);
+            mesh.y_label_formatter(&log_fmt);
+        } else {
+            mesh.y_label_formatter(&lin_fmt);
         }
         mesh.draw().map_err(err)?;
     }
@@ -1585,11 +1582,8 @@ where
 /// are drawn on top, hiding the grid (matches Plotly's `showgrid` + heatmap
 /// behaviour); contour-only / quiver-only / streamline-only panels see the
 /// grid through the overlays.
-fn draw_grid<DB>(
-    chart: &mut ChartContext<
-        DB,
-        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
-    >,
+fn draw_grid<DB, X, Y>(
+    chart: &mut ChartContext<DB, Cartesian2d<X, Y>>,
     x_lo: f64,
     x_hi: f64,
     y_lo: f64,
@@ -1599,6 +1593,8 @@ fn draw_grid<DB>(
 where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
+    X: plotters::coord::ranged1d::Ranged<ValueType = f64>,
+    Y: plotters::coord::ranged1d::Ranged<ValueType = f64>,
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     const N: usize = 5;
@@ -1651,27 +1647,90 @@ fn compact_num(x: f64) -> String {
     }
 }
 
-/// Format a log-axis tick at log-space position `v` as its real decade value.
-/// Only whole decades get a label, so the axis shows the real numbers
-/// (`1, 10, 100, …`), matching MATLAB `semilogx`/`loglog`.
-fn format_log_tick(v: f64) -> String {
-    let r = v.round();
-    if (v - r).abs() > 1e-6 {
-        return String::new();
+/// Nice logarithmic tick positions, in **log10 space**, for the log-space
+/// bound range `[lo, hi]`. Ticks land on `m × 10^k` decades with a mantissa set
+/// chosen by how many decades the axis spans: wide axes get whole decades
+/// (`1, 10, 100`), narrower axes get `1/2/5` or `1/2/3/5` minor ticks so the
+/// axis is neither blank nor cluttered — matching MATLAB's log ticks.
+fn nice_log_key_points(lo: f64, hi: f64, max_points: usize) -> Vec<f64> {
+    let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+    let k0 = lo.floor() as i32;
+    let k1 = hi.ceil() as i32;
+    let decades = (k1 - k0).max(1);
+    let mantissas: &[f64] = if decades >= 3 {
+        &[1.0]
+    } else if decades == 2 {
+        &[1.0, 2.0, 5.0]
+    } else {
+        &[1.0, 2.0, 3.0, 5.0]
+    };
+    let mut pts = Vec::new();
+    for k in k0..=k1 {
+        for &m in mantissas {
+            let pos = k as f64 + m.log10(); // log10(m·10^k)
+            if pos >= lo - 1e-9 && pos <= hi + 1e-9 {
+                pts.push(pos);
+            }
+        }
     }
-    compact_num(10f64.powf(r))
+    // Cap the label count (plotters passes a hint); keep an even spread.
+    if max_points >= 2 && pts.len() > max_points {
+        let stride = pts.len().div_ceil(max_points).max(1);
+        pts = pts.iter().copied().step_by(stride).collect();
+    }
+    pts
 }
 
-/// Log-tick label chosen by how many decades the axis spans (in log10 units).
-/// Wide axes (≥ 1.5 decades) label whole decades only; a narrow axis would
-/// then show one lonely tick, so it falls back to labelling every sampled
-/// tick with its compact real value.
-fn format_log_tick_span(v: f64, span: f64) -> String {
-    if span >= 1.5 {
-        format_log_tick(v)
-    } else {
-        compact_num(10f64.powf(v))
+/// A chart axis coordinate that is either linear or logarithmic. In log mode
+/// the caller has already transformed the series + bounds to log10 space, so
+/// `map` is a plain linear map; only the tick key-points differ — they land on
+/// nice `1/2/3/5 × 10^k` decades (see [`nice_log_key_points`]). A single type
+/// is used for **both** axes so the chart has one concrete coordinate type
+/// regardless of the linear/log combination. Tick *labels* are always supplied
+/// by the caller via `configure_mesh().{x,y}_label_formatter`, so the
+/// `DefaultFormatting` here is never actually shown.
+#[derive(Clone)]
+struct AxisTicks {
+    lo: f64,
+    hi: f64,
+    log: bool,
+}
+
+impl AxisTicks {
+    fn new(lo: f64, hi: f64, log: bool) -> Self {
+        Self { lo, hi, log }
     }
+    fn linear(&self) -> plotters::coord::types::RangedCoordf64 {
+        (self.lo..self.hi).into()
+    }
+}
+
+impl plotters::coord::ranged1d::Ranged for AxisTicks {
+    type FormatOption = plotters::coord::ranged1d::DefaultFormatting;
+    type ValueType = f64;
+
+    fn map(&self, value: &f64, limit: (i32, i32)) -> i32 {
+        plotters::coord::ranged1d::Ranged::map(&self.linear(), value, limit)
+    }
+
+    fn key_points<Hint: plotters::coord::ranged1d::KeyPointHint>(&self, hint: Hint) -> Vec<f64> {
+        let n = hint.max_num_points();
+        if self.log {
+            nice_log_key_points(self.lo, self.hi, n)
+        } else {
+            plotters::coord::ranged1d::Ranged::key_points(&self.linear(), n)
+        }
+    }
+
+    fn range(&self) -> std::ops::Range<f64> {
+        self.lo..self.hi
+    }
+}
+
+/// Format a linear-axis tick exactly as plotters' default `f64` formatter, so
+/// switching every axis to [`AxisTicks`] does not change linear tick labels.
+fn format_linear_tick(v: f64) -> String {
+    <plotters::coord::types::RangedCoordf64 as plotters::coord::ranged1d::ValueFormatter<f64>>::format(&v)
 }
 
 fn bounds(xs: &[f64]) -> (f64, f64) {
@@ -2025,9 +2084,19 @@ mod tests {
         assert_eq!(super::compact_num(0.001), "0.001"); // inclusive lower bound → plain
         assert_eq!(super::compact_num(0.0001), "1e-4"); // below range → scientific
         assert_eq!(super::compact_num(2.512), "2.512");
-        // Whole decades stay clean via the tick formatter.
-        assert_eq!(super::format_log_tick(9.0), "1e9");
-        assert_eq!(super::format_log_tick(3.0), "1000");
+    }
+
+    #[test]
+    fn nice_log_key_points_land_on_clean_mantissas() {
+        // A sub-decade GHz sweep (1e9..5e9) → ticks at 1e9, 2e9, 3e9, 5e9
+        // (log10 positions 9, 9.301, 9.477, 9.699), not 1.58e9/2.51e9.
+        let pts = super::nice_log_key_points(9.0, 9.0 + 5f64.log10(), 12);
+        let reals: Vec<f64> = pts.iter().map(|p| 10f64.powf(*p).round()).collect();
+        assert_eq!(reals, vec![1e9, 2e9, 3e9, 5e9]);
+        // A wide range → whole decades only.
+        let wide = super::nice_log_key_points(0.0, 3.0, 12);
+        let wreals: Vec<f64> = wide.iter().map(|p| 10f64.powf(*p).round()).collect();
+        assert_eq!(wreals, vec![1.0, 10.0, 100.0, 1000.0]);
     }
 
     #[test]
