@@ -15279,15 +15279,15 @@ mod sparameters_phase4_tests {
 
     #[test]
     fn rfplot_panel_axes_are_log_x() {
-        // Frequency axis goes through semilogx → x values are log10(f),
-        // not f directly.
+        // Frequency axis is log-scaled but the data stays in real Hz (MATLAB
+        // behaviour: decade ticks labelled with the real frequencies).
         let state = rfplot_figure_state(&format!("{ATT_10DB_SETUP}\n rfplot(s, \"db\", 2, 1);"));
         let sp = state.current();
         let x = &sp.series.iter().find(|s| s.label == "S21").unwrap().x_data;
-        // First freq = 1e9 → log10 = 9.0; last = 5e9 → log10 ≈ 9.699.
-        assert!((x[0] - 9.0).abs() < 1e-9, "x[0]: {}", x[0]);
-        assert!((x[4] - 5e9_f64.log10()).abs() < 1e-9, "x[4]: {}", x[4]);
-        assert_eq!(sp.xlabel, "log10(freq) (Hz)");
+        assert!((x[0] - 1e9).abs() < 1.0, "x[0] real Hz: {}", x[0]);
+        assert!((x[4] - 5e9).abs() < 1.0, "x[4] real Hz: {}", x[4]);
+        assert_eq!(sp.x_scale, rustlab_plot::AxisScale::Log);
+        assert_eq!(sp.xlabel, "freq (Hz)");
         assert_eq!(sp.ylabel, "|Sij| (dB)");
     }
 
@@ -17958,16 +17958,15 @@ mod plot_arg_shape_tests {
     }
 
     #[test]
-    fn semilogx_accepts_nx1_matrix_and_logs_values() {
+    fn semilogx_accepts_nx1_matrix_and_flags_log_scale() {
         run("semilogx(transpose([1.0, 10.0, 100.0]), [0.5, 1.0, 1.5])");
         rustlab_plot::FIGURE.with(|f| {
             let fig = f.borrow();
-            let s = fig
-                .subplots
-                .first()
-                .and_then(|sp| sp.series.last())
-                .expect("series stored");
-            assert_eq!(s.x_data, vec![0.0, 1.0, 2.0], "x should be log10'd");
+            let sp = fig.subplots.first().expect("subplot");
+            let s = sp.series.last().expect("series stored");
+            // MATLAB behaviour: real data is kept; the axis is flagged log-scaled.
+            assert_eq!(s.x_data, vec![1.0, 10.0, 100.0], "x stays real (not log10'd)");
+            assert_eq!(sp.x_scale, rustlab_plot::AxisScale::Log);
         });
     }
 
@@ -18817,5 +18816,120 @@ mod int_widening_regression_tests {
             },
             "int8"
         );
+    }
+}
+
+/// Log-scale axes + legend/labeling fixes (dev/plans/log_axis_and_legend_fix.md).
+mod log_axis_and_legend_tests {
+    use crate::{lexer, parser, Evaluator};
+    use rustlab_plot::AxisScale;
+
+    fn run(src: &str) {
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+    }
+
+    fn current<T>(f: impl FnOnce(&rustlab_plot::SubplotState) -> T) -> T {
+        rustlab_plot::FIGURE.with(|fig| f(fig.borrow().current()))
+    }
+
+    // ── B1: log-scale axes keep real data + flag the scale ──
+
+    #[test]
+    fn semilogx_flags_log_x_and_keeps_real_data() {
+        run("semilogx([1, 10, 100, 1000], [1, 2, 3, 4])");
+        current(|sp| {
+            assert_eq!(sp.x_scale, AxisScale::Log);
+            assert_eq!(sp.y_scale, AxisScale::Linear);
+            let s = sp.series.last().unwrap();
+            assert_eq!(s.x_data, vec![1.0, 10.0, 100.0, 1000.0]); // real, not log10
+            assert!(!sp.xlabel.contains("log10")); // no log10 descriptor
+        });
+    }
+
+    #[test]
+    fn semilogy_flags_log_y() {
+        run("semilogy([1, 2, 3], [1, 10, 100])");
+        current(|sp| {
+            assert_eq!(sp.x_scale, AxisScale::Linear);
+            assert_eq!(sp.y_scale, AxisScale::Log);
+            assert_eq!(sp.series.last().unwrap().y_data, vec![1.0, 10.0, 100.0]);
+            assert!(!sp.ylabel.contains("log10"));
+        });
+    }
+
+    #[test]
+    fn loglog_flags_both_axes() {
+        run("loglog([1, 10, 100], [1, 100, 10000])");
+        current(|sp| {
+            assert_eq!(sp.x_scale, AxisScale::Log);
+            assert_eq!(sp.y_scale, AxisScale::Log);
+            assert_eq!(sp.series.last().unwrap().x_data, vec![1.0, 10.0, 100.0]);
+        });
+    }
+
+    // ── B2: a colour-spec string is not used as the title ──
+
+    #[test]
+    fn plot_color_spec_sets_no_title() {
+        run("plot([1, 2, 3], [1, 2, 3], \"r\")");
+        current(|sp| {
+            assert_eq!(sp.title, "", "colour spec must not become the title");
+            assert_eq!(sp.series.last().unwrap().color, rustlab_plot::SeriesColor::Red);
+        });
+    }
+
+    #[test]
+    fn plot_real_title_still_works() {
+        run("plot([1, 2, 3], [1, 2, 3], \"My Chart\")");
+        current(|sp| assert_eq!(sp.title, "My Chart"));
+    }
+
+    // ── B3: no spurious legend without legend() ──
+
+    #[test]
+    fn plain_plot_has_no_series_labels() {
+        run("plot([1, 2, 3], [1, 2, 3])");
+        current(|sp| {
+            assert!(
+                sp.series.iter().all(|s| s.label.is_empty()),
+                "a plain plot must not set a default legend label"
+            );
+        });
+    }
+
+    #[test]
+    fn legend_sets_labels() {
+        run("plot([1,2,3],[1,2,3]);\nhold(\"on\");\nplot([1,2,3],[3,2,1]);\nlegend(\"a\", \"b\")");
+        current(|sp| {
+            let labels: Vec<&str> = sp.series.iter().map(|s| s.label.as_str()).collect();
+            assert_eq!(labels, vec!["a", "b"]);
+        });
+    }
+
+    #[test]
+    fn bar_scatter_stem_have_no_default_legend() {
+        // Found while reviewing subplots: bar/scatter/stem used to set a
+        // default "bar"/"scatter"/"stem" label → a spurious legend on every
+        // such plot. Now empty (legend only via legend()), like plot().
+        for src in [
+            "bar([1,2,3],[4,5,6])",
+            "scatter([1,2,3],[4,5,6])",
+            "stem([1,2,3],[4,5,6])",
+        ] {
+            run(src);
+            current(|sp| {
+                assert!(
+                    sp.series.iter().all(|s| s.label.is_empty()),
+                    "no default legend label for: {src}"
+                );
+            });
+        }
     }
 }

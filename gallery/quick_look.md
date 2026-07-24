@@ -14,7 +14,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/quick_look/plot-1-4f67a7e6.svg)
+![plot 1](plots/quick_look/plot-1-6b878b98.svg)
 
 <!-- rustlab:output-end -->
 

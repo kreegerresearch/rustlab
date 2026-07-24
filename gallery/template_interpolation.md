@@ -67,7 +67,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/template_interpolation/plot-1-5035065e.svg)
+![plot 1](plots/template_interpolation/plot-1-67454b3b.svg)
 
 <!-- rustlab:output-end -->
 

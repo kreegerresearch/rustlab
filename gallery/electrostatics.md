@@ -84,7 +84,7 @@ title("Electrostatic potential — four-charge quadrupole");
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/electrostatics/plot-1-7b196a01.svg)
+![plot 1](plots/electrostatics/plot-1-22040da6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -123,7 +123,7 @@ title("Electric field E = -∇V over potential")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/electrostatics/plot-2-75ae77c1.svg)
+![plot 2](plots/electrostatics/plot-2-eaa0975b.svg)
 
 <!-- rustlab:output-end -->
 

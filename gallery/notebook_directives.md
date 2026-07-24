@@ -33,7 +33,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/notebook_directives/plot-1-35421e5b.svg)
+![plot 1](plots/notebook_directives/plot-1-d8f9cd6f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -63,10 +63,6 @@ grid on
 <!-- rustlab:output-start -->
 <details>
 <summary>Show all magnitude responses</summary>
-
-```text
-5
-```
 
 ![plot 2](plots/notebook_directives/plot-2-ecbe0f35.svg)
 
@@ -104,7 +100,7 @@ figure(); imagesc(G3, "viridis"); title("Difference");    savefig("g3.svg")
 
 ![plot 4](plots/notebook_directives/plot-4-4de70d2d.svg)
 
-![plot 5](plots/notebook_directives/plot-5-e9c91155.svg)
+![plot 5](plots/notebook_directives/plot-5-5d988d7e.svg)
 
 <!-- rustlab:output-end -->
 
@@ -163,7 +159,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/notebook_directives/plot-6-19192fca.svg)
+![plot 6](plots/notebook_directives/plot-6-04addeef.svg)
 
 <!-- rustlab:output-end -->
 
@@ -192,10 +188,6 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-```text
-9
-```
-
 ![plot 7](plots/notebook_directives/plot-7-8e60ad68.svg)
 
 <!-- rustlab:output-end -->

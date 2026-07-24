@@ -26,7 +26,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/spectral_estimation/plot-1-96477506.svg)
+![plot 1](plots/spectral_estimation/plot-1-56fce6b5.svg)
 
 <!-- rustlab:output-end -->
 
@@ -49,7 +49,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/spectral_estimation/plot-2-160a0c9b.svg)
+![plot 2](plots/spectral_estimation/plot-2-0a0bb096.svg)
 
 <!-- rustlab:output-end -->
 
@@ -76,7 +76,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/spectral_estimation/plot-3-6be10880.svg)
+![plot 3](plots/spectral_estimation/plot-3-634d25b9.svg)
 
 <!-- rustlab:output-end -->
 
@@ -107,7 +107,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/spectral_estimation/plot-4-e9686d4e.svg)
+![plot 4](plots/spectral_estimation/plot-4-f70fb052.svg)
 
 <!-- rustlab:output-end -->
 
@@ -133,7 +133,7 @@ title("Welch's PSD (Hamming, 8 segments)"); ylabel("dB"); xlabel("Frequency"); g
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/spectral_estimation/plot-5-0914c71a.svg)
+![plot 5](plots/spectral_estimation/plot-5-6d0b16ad.svg)
 
 <!-- rustlab:output-end -->
 

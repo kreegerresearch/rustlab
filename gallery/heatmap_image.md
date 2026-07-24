@@ -144,7 +144,7 @@ imagesc(G); title("imagesc — auto-normalised")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/heatmap_image/plot-5-61bc6362.svg)
+![plot 5](plots/heatmap_image/plot-5-0358610a.svg)
 
 <!-- rustlab:output-end -->
 

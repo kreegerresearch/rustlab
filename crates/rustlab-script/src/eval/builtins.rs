@@ -4289,22 +4289,32 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
 
-    let opts = parse_plot_opts(&args[opts_start..]);
-    let label = opts.label.as_deref().unwrap_or("").to_string();
+    let mut opts = parse_plot_opts(&args[opts_start..]);
 
-    // Title: check if last remaining string arg is not a key-value pair
+    // A lone trailing string is a MATLAB-style colour/line spec (e.g. `"r"`)
+    // when it parses as a colour — apply it as the series colour and do NOT
+    // use it as the chart title. Otherwise it is a genuine title.
     let title = {
         let rem = &args[opts_start..];
         if rem.len() == 1 {
-            if let Ok(s) = rem[0].to_str() {
-                s
-            } else {
-                String::new()
+            match rem[0].to_str() {
+                Ok(s) => {
+                    if let Some(c) = SeriesColor::parse(&s) {
+                        if opts.color.is_none() {
+                            opts.color = Some(c);
+                        }
+                        String::new()
+                    } else {
+                        s
+                    }
+                }
+                Err(_) => String::new(),
             }
         } else {
             String::new()
         }
     };
+    let label = opts.label.as_deref().unwrap_or("").to_string();
 
     match y_val {
         Value::Matrix(m) => {
@@ -4356,12 +4366,9 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                         None => (0..nrows).map(|i| i as f64).collect(),
                     };
                     let y_data: Vec<f64> = m.column(col).iter().map(|c| c.re).collect();
-                    let col_label = if label.is_empty() {
-                        format!("col{}", col + 1)
-                    } else {
-                        label.clone()
-                    };
-                    (x_data, y_data, col_label)
+                    // No default per-column label → no spurious legend; a
+                    // legend appears only via legend(...) (MATLAB behaviour).
+                    (x_data, y_data, label.clone())
                 })
                 .collect();
             // One push for the whole matrix: a per-column loop would clear
@@ -4394,12 +4401,9 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             }
             if is_real_vector(v) {
                 let y_data: Vec<f64> = v.iter().map(|c| c.re).collect();
-                let lbl = if label.is_empty() {
-                    "value"
-                } else {
-                    label.as_str()
-                };
-                push_xy_line(x_data, y_data, lbl, &title, opts.color, opts.style);
+                // No default label: a legend appears only when the user calls
+                // legend(...) (MATLAB behaviour), not on every plain plot.
+                push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
                 render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
             } else {
                 // Complex: push magnitude + real
@@ -4436,7 +4440,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Scalar(n) => {
             let x_data = vec![0.0f64];
             let y_data = vec![*n];
-            push_xy_line(x_data, y_data, "value", &title, opts.color, opts.style);
+            push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
             render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
         }
         other => Err(ScriptError::type_err(format!(
@@ -4461,7 +4465,7 @@ fn builtin_stem(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
 
     let opts = parse_plot_opts(&args[opts_start..]);
-    let label = opts.label.as_deref().unwrap_or("stem").to_string();
+    let label = opts.label.as_deref().unwrap_or("").to_string(); // no default legend
     let title = {
         let rem = &args[opts_start..];
         if rem.len() == 1 {
@@ -4960,29 +4964,35 @@ fn assert_strictly_positive(name: &str, role: &str, v: &CVector) -> Result<(), S
 /// `loglog(x, y [, opts])` — log-log plot. Pre-transforms both axes
 /// via `log10` and labels the axes with the `log10(...)` convention.
 /// `x` and `y` must be strictly positive.
+/// Flag the current subplot's axis scale(s) as logarithmic after a log plot.
+/// The data stays in real units; the backends do the log positioning and
+/// decade-tick labelling (MATLAB behaviour).
+fn set_axis_scales(x_log: bool, y_log: bool) {
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        let sp = fig.current_mut();
+        if x_log {
+            sp.x_scale = rustlab_plot::AxisScale::Log;
+        }
+        if y_log {
+            sp.y_scale = rustlab_plot::AxisScale::Log;
+        }
+    });
+}
+
 fn builtin_loglog(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("loglog", &args, 2, 8)?;
     let x = vector_arg(&args, 0, "loglog", "x")?;
     let y = vector_arg(&args, 1, "loglog", "y")?;
     assert_strictly_positive("loglog", "x", &x)?;
     assert_strictly_positive("loglog", "y", &y)?;
-    let lx = vector_transform("loglog", "x", &x, |v| v.log10())?;
-    let ly = vector_transform("loglog", "y", &y, |v| v.log10())?;
-
-    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(ly)];
+    // Plot the REAL data; the axes are log-scaled below (MATLAB behaviour:
+    // decade ticks labelled with the real values, no `log10(...)` descriptor).
+    let mut new_args: Vec<Value> =
+        vec![Value::Vector(x.into_owned()), Value::Vector(y.into_owned())];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
-
-    FIGURE.with(|fig| {
-        let mut f = fig.borrow_mut();
-        let cur = f.current_mut();
-        if cur.xlabel.is_empty() {
-            cur.xlabel = "log10(x)".into();
-        }
-        if cur.ylabel.is_empty() {
-            cur.ylabel = "log10(y)".into();
-        }
-    });
+    set_axis_scales(true, true);
     sync_figure_outputs();
     Ok(r)
 }
@@ -4993,19 +5003,11 @@ fn builtin_semilogx(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = vector_arg(&args, 0, "semilogx", "x")?;
     let y = vector_arg(&args, 1, "semilogx", "y")?;
     assert_strictly_positive("semilogx", "x", &x)?;
-    let lx = vector_transform("semilogx", "x", &x, |v| v.log10())?;
-
-    let mut new_args: Vec<Value> = vec![Value::Vector(lx), Value::Vector(y.into_owned())];
+    let mut new_args: Vec<Value> =
+        vec![Value::Vector(x.into_owned()), Value::Vector(y.into_owned())];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
-
-    FIGURE.with(|fig| {
-        let mut f = fig.borrow_mut();
-        let cur = f.current_mut();
-        if cur.xlabel.is_empty() {
-            cur.xlabel = "log10(x)".into();
-        }
-    });
+    set_axis_scales(true, false);
     sync_figure_outputs();
     Ok(r)
 }
@@ -5016,19 +5018,11 @@ fn builtin_semilogy(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = vector_arg(&args, 0, "semilogy", "x")?;
     let y = vector_arg(&args, 1, "semilogy", "y")?;
     assert_strictly_positive("semilogy", "y", &y)?;
-    let ly = vector_transform("semilogy", "y", &y, |v| v.log10())?;
-
-    let mut new_args: Vec<Value> = vec![Value::Vector(x.into_owned()), Value::Vector(ly)];
+    let mut new_args: Vec<Value> =
+        vec![Value::Vector(x.into_owned()), Value::Vector(y.into_owned())];
     new_args.extend(args.into_iter().skip(2));
     let r = builtin_plot(new_args)?;
-
-    FIGURE.with(|fig| {
-        let mut f = fig.borrow_mut();
-        let cur = f.current_mut();
-        if cur.ylabel.is_empty() {
-            cur.ylabel = "log10(y)".into();
-        }
-    });
+    set_axis_scales(false, true);
     sync_figure_outputs();
     Ok(r)
 }
@@ -11067,7 +11061,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
         return Ok(Value::None);
     }
     let (x_data, y_data, title) = extract_xy_with_title(&args, "bar")?;
-    push_xy_bar(x_data, y_data, "bar", &title, None);
+    push_xy_bar(x_data, y_data, "", &title, None); // no default legend
     render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)
@@ -11100,7 +11094,7 @@ fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let x_data: Vec<f64> = xv.to_vec();
     let y_data: Vec<f64> = yv.to_vec();
-    push_xy_scatter(x_data, y_data, "scatter", &title, None);
+    push_xy_scatter(x_data, y_data, "", &title, None); // no default legend
     render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)
@@ -15182,7 +15176,9 @@ fn push_rf_trace(
         if sp.title.is_empty() {
             sp.title = panel_title.to_string();
         }
-        sp.xlabel = "log10(freq) (Hz)".to_string();
+        // The x-axis is now a real log-scaled frequency axis (decade ticks
+        // labelled in Hz), not a log10-transformed linear axis.
+        sp.xlabel = "freq (Hz)".to_string();
         sp.ylabel = transform.y_axis_label().to_string();
     });
     Ok(())

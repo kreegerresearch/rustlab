@@ -48,7 +48,7 @@ ylabel("amplitude")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/widgets_demo/plot-1-132543b9.svg)
+![plot 1](plots/widgets_demo/plot-1-73788b15.svg)
 
 <!-- rustlab:output-end -->
 

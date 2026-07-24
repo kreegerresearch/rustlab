@@ -300,6 +300,16 @@ pub enum AxisYDirection {
     Xy,
 }
 
+/// Per-axis scale. `Log` renders the axis logarithmically: data is positioned
+/// by `log10`, and major ticks sit at decades labelled with the real values
+/// (`1, 10, 100`), matching MATLAB `semilogx`/`semilogy`/`loglog`. Set by those
+/// builtins; the data stored in each `Series` stays in real (un-logged) units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisScale {
+    Linear,
+    Log,
+}
+
 thread_local! {
     /// Per-thread default `AxisYDirection` applied to every new
     /// `SubplotState`. Tools that want physics-y semantics across an
@@ -342,6 +352,10 @@ pub struct SubplotState {
     pub y_axis_direction: AxisYDirection,
     /// Categorical x-axis tick labels (e.g. from string array bar charts).
     pub x_labels: Option<Vec<String>>,
+    /// Per-axis scale (linear by default). `Log` is set by
+    /// `semilogx`/`semilogy`/`loglog` and honoured by every backend.
+    pub x_scale: AxisScale,
+    pub y_scale: AxisScale,
     /// Optional 2D heatmap data (takes precedence over series when present).
     pub heatmap: Option<HeatmapData>,
     /// Optional 3D surface data (takes precedence over heatmap and series when present).
@@ -375,6 +389,8 @@ impl SubplotState {
             axis_equal: false,
             y_axis_direction: default_axis_y_direction(),
             x_labels: None,
+            x_scale: AxisScale::Linear,
+            y_scale: AxisScale::Linear,
             heatmap: None,
             surface: None,
             contours: Vec::new(),

@@ -62,7 +62,7 @@ ylabel("log10(time s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_scaling/plot-1-16438998.svg)
+![plot 1](plots/sparse_scaling/plot-1-63df95b6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -96,7 +96,7 @@ print(mem_mb)
 [1×6]  0.506153  4.386425  15.216579  36.572933  125.169277  298.785686
 ```
 
-![plot 2](plots/sparse_scaling/plot-2-16438998.svg)
+![plot 2](plots/sparse_scaling/plot-2-63df95b6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -118,7 +118,7 @@ print(t_dense(3) / t_lu_amd(3))      % → ~240x   (lu/amd vs dense)
 239.95890410958904
 ```
 
-![plot 3](plots/sparse_scaling/plot-3-16438998.svg)
+![plot 3](plots/sparse_scaling/plot-3-63df95b6.svg)
 
 <!-- rustlab:output-end -->
 
@@ -142,7 +142,7 @@ ylabel("AMD time / Identity time")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/sparse_scaling/plot-4-fa97deb5.svg)
+![plot 4](plots/sparse_scaling/plot-4-6764051f.svg)
 
 <!-- rustlab:output-end -->
 

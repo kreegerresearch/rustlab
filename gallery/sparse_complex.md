@@ -91,7 +91,7 @@ title("Re(V) — standing-wave pattern with loss")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_complex/plot-1-9d79cf67.svg)
+![plot 1](plots/sparse_complex/plot-1-5fe7a7b3.svg)
 
 <!-- rustlab:output-end -->
 
@@ -105,7 +105,7 @@ title("Im(V) — out-of-phase response")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/sparse_complex/plot-2-0fb1266d.svg)
+![plot 2](plots/sparse_complex/plot-2-372c30e3.svg)
 
 <!-- rustlab:output-end -->
 
