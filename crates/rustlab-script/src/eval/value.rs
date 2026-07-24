@@ -1332,20 +1332,6 @@ impl Value {
         }
     }
 
-    /// Compare two integers (widened to i128, exact) for an ordered/equality op.
-    fn int_cmp(op: BinOp, a: i128, b: i128) -> bool {
-        use BinOp::*;
-        match op {
-            Eq => a == b,
-            Ne => a != b,
-            Lt => a < b,
-            Le => a <= b,
-            Gt => a > b,
-            Ge => a >= b,
-            _ => unreachable!("int_cmp called with non-comparison op"),
-        }
-    }
-
     /// Same-class integer arithmetic. Operands fit in `u64` so `i128` has
     /// headroom for `+`/`-`; only a 64-bit-class multiply can exceed `i128`,
     /// which is caught and resolved at the class width. `/` and `^` round half
