@@ -1373,7 +1373,7 @@ impl Value {
             Pow | ElemPow => {
                 return Ok(class.from_f64((a as f64).powf(b as f64), mode));
             }
-            _ => return Err(format!("operator not supported for integers")),
+            _ => return Err("operator not supported for integers".to_string()),
         };
         match checked {
             Some(v) => Ok(class.coerce(v, mode)),
