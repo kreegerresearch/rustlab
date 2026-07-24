@@ -89,3 +89,13 @@ Tests: 8 new (`log_axis_and_legend_tests` ×7 in rustlab-script;
 `log_x_axis_renders_real_decade_ticks_not_log10` in rustlab-plot). Two existing
 tests updated to the new behaviour. Full suite green (35 suites); 76 examples
 pass.
+
+### Follow-up (2026-07-24): nice log-tick positions
+
+The first pass labelled whatever positions plotters sampled linearly in log
+space, so a sub-decade sweep (1–5 GHz) read `1e9, 1.58e9, 2.51e9`. Fixed with a
+custom `AxisTicks` plotters coordinate (one type for both axes) whose
+`key_points` land on clean `1/2/3/5 × 10^k` decades — a 1–5 GHz axis now shows
+`1e9, 2e9, 3e9, 5e9`. Linear axes delegate to `RangedCoordf64` (byte-identical,
+no regression); `draw_grid` is generic over the coordinate.
+Test: `nice_log_key_points_land_on_clean_mantissas`.
