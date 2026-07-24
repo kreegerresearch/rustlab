@@ -4924,31 +4924,6 @@ fn vector_arg<'a>(
     }
 }
 
-/// Element-wise transform of a real-valued `Vector` via a closure.
-/// Returns a new `Value::Vector` with imag part zeroed (the inputs are
-/// asserted real-positive elsewhere; the transform is real-valued).
-fn vector_transform(
-    name: &str,
-    role: &str,
-    v: &CVector,
-    f: impl Fn(f64) -> f64,
-) -> Result<CVector, ScriptError> {
-    let out: CVector = v
-        .iter()
-        .map(|c| {
-            if c.im.abs() > 1e-12 {
-                Err(ScriptError::type_err(format!(
-                    "{name}: {role} must be real-valued (got nontrivial imag part)"
-                )))
-            } else {
-                Ok(Complex::new(f(c.re), 0.0))
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .into();
-    Ok(out)
-}
-
 fn assert_strictly_positive(name: &str, role: &str, v: &CVector) -> Result<(), ScriptError> {
     for c in v.iter() {
         if c.re <= 0.0 || !c.re.is_finite() {
