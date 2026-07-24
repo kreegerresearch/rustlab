@@ -237,6 +237,17 @@ impl Value {
     pub fn negate(self) -> Result<Value, String> {
         match self {
             Value::Scalar(n) => Ok(Value::Scalar(-n)),
+            // Negation stays in-class under the value's overflow mode:
+            // `-uint8(5)` saturates to 0; `-int8(-128)` saturates to 127.
+            Value::Int {
+                data,
+                class,
+                overflow,
+            } => Ok(Value::Int {
+                data: class.coerce(-data, overflow),
+                class,
+                overflow,
+            }),
             Value::Complex(c) => Ok(Value::Complex(-c)),
             Value::Vector(v) => Ok(Value::Vector(-v)),
             Value::Matrix(m) => Ok(Value::Matrix(-m)),
@@ -669,6 +680,13 @@ impl Value {
                 }
                 Ok(vec![i])
             }
+            Value::Int { data, .. } => {
+                let i = Self::one_based_to_zero(*data as f64)?;
+                if i >= dim_len {
+                    return Err(format!("index {} out of bounds (size {})", data, dim_len));
+                }
+                Ok(vec![i])
+            }
             Value::Vector(v) => {
                 if let Some(positions) = Self::as_logical_mask(v, dim_len) {
                     return Ok(positions);
@@ -695,6 +713,15 @@ impl Value {
     /// Single index: 1D selection. Two indices: 2D selection. Three indices: 3D selection.
     /// `:` (All) is supported in any dimension.
     pub fn index(self, indices: Vec<Value>) -> Result<Value, String> {
+        // Integer-typed indices widen to scalar subscripts so every
+        // dimension path (1-D/2-D/3-D) treats them like a plain number.
+        let indices: Vec<Value> = indices
+            .into_iter()
+            .map(|v| match v {
+                Value::Int { data, .. } => Value::Scalar(data as f64),
+                other => other,
+            })
+            .collect();
         match indices.len() {
             1 => self.index_1d(indices.into_iter().next().unwrap()),
             2 => {
@@ -1223,12 +1250,126 @@ impl Value {
         match self {
             Value::Bool(b) => Ok(*b),
             Value::Scalar(s) => Ok(*s != 0.0),
+            Value::Int { data, .. } => Ok(*data != 0),
             Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
             other => Err(format!(
                 "&&/||: operand must be scalar (got {}); use any() or all() to reduce a matrix/vector",
                 other.type_name()
             )),
         }
+    }
+
+    /// Compare two integers (widened to i128, exact) for an ordered/equality op.
+    fn int_cmp(op: BinOp, a: i128, b: i128) -> bool {
+        use BinOp::*;
+        match op {
+            Eq => a == b,
+            Ne => a != b,
+            Lt => a < b,
+            Le => a <= b,
+            Gt => a > b,
+            Ge => a >= b,
+            _ => unreachable!("int_cmp called with non-comparison op"),
+        }
+    }
+
+    /// Same-class integer arithmetic. Operands fit in `u64` so `i128` has
+    /// headroom for `+`/`-`; only a 64-bit-class multiply can exceed `i128`,
+    /// which is caught and resolved at the class width. `/` and `^` round half
+    /// away from zero; divide-by-zero saturates by sign (MATLAB convention).
+    fn int_arith(
+        op: BinOp,
+        a: i128,
+        b: i128,
+        class: IntClass,
+        mode: OverflowMode,
+    ) -> Result<i128, String> {
+        use BinOp::*;
+        let checked: Option<i128> = match op {
+            Add => a.checked_add(b),
+            Sub => a.checked_sub(b),
+            Mul | ElemMul => a.checked_mul(b),
+            Div | ElemDiv => {
+                if b == 0 {
+                    return Ok(match a.cmp(&0) {
+                        std::cmp::Ordering::Greater => class.max(),
+                        std::cmp::Ordering::Less => class.min(),
+                        std::cmp::Ordering::Equal => 0,
+                    });
+                }
+                return Ok(class.from_f64((a as f64) / (b as f64), mode));
+            }
+            Pow | ElemPow => {
+                return Ok(class.from_f64((a as f64).powf(b as f64), mode));
+            }
+            _ => return Err(format!("operator not supported for integers")),
+        };
+        match checked {
+            Some(v) => Ok(class.coerce(v, mode)),
+            None => {
+                // Only a 64-bit-class multiply reaches here (exceeded i128).
+                match mode {
+                    OverflowMode::Saturate => {
+                        let positive = (a > 0) == (b > 0);
+                        Ok(if positive { class.max() } else { class.min() })
+                    }
+                    OverflowMode::Wrap => {
+                        let w = class.bits();
+                        let mask = (1u128 << w) - 1;
+                        let prod = (a as u128).wrapping_mul(b as u128) & mask;
+                        let val = if class.is_signed() && prod >= (1u128 << (w - 1)) {
+                            prod as i128 - (1i128 << w)
+                        } else {
+                            prod as i128
+                        };
+                        Ok(val)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch for an op where at least one operand is a `Value::Int`.
+    /// Two same-class integers stay integer; different classes error;
+    /// otherwise the integer widens to a `double` scalar and the op reruns
+    /// through [`binop`] (Deviation A: `int ⊗ double → double`).
+    fn int_binop(op: BinOp, lhs: Value, rhs: Value) -> Result<Value, String> {
+        use BinOp::*;
+        if let (
+            Value::Int {
+                data: a,
+                class: ca,
+                overflow: ma,
+            },
+            Value::Int {
+                data: b, class: cb, ..
+            },
+        ) = (&lhs, &rhs)
+        {
+            if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+                return Ok(Value::Bool(Self::int_cmp(op, *a, *b)));
+            }
+            if ca != cb {
+                return Err(format!(
+                    "operands have different integer classes ({} vs {}); cast one explicitly",
+                    ca.name(),
+                    cb.name()
+                ));
+            }
+            let r = Self::int_arith(op, *a, *b, *ca, *ma)?;
+            return Ok(Value::Int {
+                data: r,
+                class: *ca,
+                overflow: *ma,
+            });
+        }
+        // Exactly one integer: widen it to a double scalar and rerun. Neither
+        // side is `Int` afterward, so this cannot re-enter `int_binop`.
+        let widen = |v: Value| match v {
+            Value::Int { data, .. } => Value::Scalar(data as f64),
+            other => other,
+        };
+        Self::binop(op, widen(lhs), widen(rhs))
     }
 
     pub fn binop(op: BinOp, lhs: Value, rhs: Value) -> Result<Value, String> {
@@ -1246,6 +1387,13 @@ impl Value {
                 Or => a || b,
                 _ => unreachable!(),
             }));
+        }
+
+        // Integer-typed operands (dev/plans/integer_types.md). Same-class
+        // int⊗int stays integer; cross-class errors; int⊗double promotes to
+        // double (Deviation A). Handled before the scalar/array arms below.
+        if matches!(lhs, Value::Int { .. }) || matches!(rhs, Value::Int { .. }) {
+            return Self::int_binop(op, lhs, rhs);
         }
 
         // Comparison operators: compare scalar/complex values, return Bool

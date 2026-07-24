@@ -18192,3 +18192,192 @@ mod plot_arg_shape_tests {
         assert!(e.to_string().contains("must match y rows"), "{e}");
     }
 }
+
+/// Integer types (dev/plans/integer_types.md) — script-level Phase 1 coverage:
+/// casts, radix literals, arithmetic (same-class / cross-class error / Deviation
+/// A), overflow modes, and the introspection builtins.
+mod int_types_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = match lexer::tokenize(&src) {
+            Ok(t) => t,
+            Err(e) => return e.to_string(),
+        };
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            if let Err(er) = e.exec_stmt(s) {
+                return er.to_string();
+            }
+        }
+        panic!("expected an error from: {src}");
+    }
+
+    fn int_of(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    fn string(e: &Evaluator, name: &str) -> String {
+        match e.get(name).unwrap() {
+            Value::Str(s) => s.clone(),
+            other => panic!("{name}: expected Str, got {other:?}"),
+        }
+    }
+
+    fn boolean(e: &Evaluator, name: &str) -> bool {
+        match e.get(name).unwrap() {
+            Value::Bool(b) => *b,
+            other => panic!("{name}: expected Bool, got {other:?}"),
+        }
+    }
+
+    // ── casts ──
+
+    #[test]
+    fn casts_saturate_and_round_half_away() {
+        let e = ev("a = int8(200)\nb = int8(2.5)\nc = int8(-2.5)\nd = uint8(-5)");
+        assert_eq!(int_of(&e, "a"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (3, "int8".into()));
+        assert_eq!(int_of(&e, "c"), (-3, "int8".into()));
+        assert_eq!(int_of(&e, "d"), (0, "uint8".into()));
+    }
+
+    #[test]
+    fn cast_wrap_mode() {
+        let e = ev("a = int8(200, \"wrap\")"); // 200 - 256 = -56
+        assert_eq!(int_of(&e, "a"), (-56, "int8".into()));
+    }
+
+    #[test]
+    fn cast_and_class_builtins() {
+        let e = ev("c = class(int32(5))\nd = class(3.0)\nx = cast(9.7, \"int8\")");
+        assert_eq!(string(&e, "c"), "int32");
+        assert_eq!(string(&e, "d"), "scalar"); // double's class name
+        assert_eq!(int_of(&e, "x"), (10, "int8".into()));
+    }
+
+    // ── literals ──
+
+    #[test]
+    fn radix_literals_take_smallest_unsigned_class() {
+        let e = ev("a = 0xFF\nb = 0xFFFF\nc = 0xdead_beef\nd = 0b1010\ne = 0o17");
+        assert_eq!(int_of(&e, "a"), (255, "uint8".into()));
+        assert_eq!(int_of(&e, "b"), (65535, "uint16".into()));
+        assert_eq!(int_of(&e, "c"), (3735928559, "uint32".into()));
+        assert_eq!(int_of(&e, "d"), (10, "uint8".into()));
+        assert_eq!(int_of(&e, "e"), (15, "uint8".into()));
+    }
+
+    #[test]
+    fn typed_literal_suffix_errors() {
+        assert!(err("x = 0xFFu8").contains("typed integer literal"));
+    }
+
+    #[test]
+    fn oversized_literal_errors() {
+        assert!(err("x = 0x1_0000_0000_0000_0000").contains("uint64"));
+    }
+
+    // ── arithmetic ──
+
+    #[test]
+    fn same_class_arith_stays_integer_and_saturates() {
+        let e = ev("a = int8(100) + int8(50)\nb = uint8(200) + uint8(100)\nc = int8(10) * int8(20)");
+        assert_eq!(int_of(&e, "a"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (255, "uint8".into()));
+        assert_eq!(int_of(&e, "c"), (127, "int8".into()));
+    }
+
+    #[test]
+    fn wrap_arithmetic() {
+        let e = ev("a = int8(100, \"wrap\") + int8(50, \"wrap\")"); // 150 -> -106
+        assert_eq!(int_of(&e, "a"), (-106, "int8".into()));
+    }
+
+    #[test]
+    fn integer_division_rounds_half_away() {
+        let e = ev("a = int32(7) / int32(2)\nb = int32(-7) / int32(2)");
+        assert_eq!(int_of(&e, "a"), (4, "int32".into())); // 3.5 -> 4
+        assert_eq!(int_of(&e, "b"), (-4, "int32".into())); // -3.5 -> -4
+    }
+
+    #[test]
+    fn int_plus_double_promotes_to_double_deviation_a() {
+        let e = ev("a = int32(5) + 2.7\nc = class(int32(5) + 2.7)");
+        assert!((scalar(&e, "a") - 7.7).abs() < 1e-12);
+        assert_eq!(string(&e, "c"), "scalar");
+    }
+
+    #[test]
+    fn cross_class_arithmetic_errors() {
+        assert!(err("x = int8(1) + int16(2)").contains("different integer classes"));
+    }
+
+    #[test]
+    fn comparisons_return_bool_across_classes() {
+        let e = ev("a = int16(5) < int16(9)\nb = int8(5) == int32(5)");
+        assert!(boolean(&e, "a"));
+        assert!(boolean(&e, "b")); // cross-class comparison is allowed
+    }
+
+    #[test]
+    fn negation_stays_in_class() {
+        let e = ev("a = -int8(5)\nb = -uint8(5)"); // uint8 saturates to 0
+        assert_eq!(int_of(&e, "a"), (-5, "int8".into()));
+        assert_eq!(int_of(&e, "b"), (0, "uint8".into()));
+    }
+
+    // ── introspection + widening ──
+
+    #[test]
+    fn intmax_intmin_isinteger_isa_double() {
+        let e = ev(
+            "g = intmax(\"int8\")\nh = intmin(\"int16\")\n\
+             i = isinteger(int8(3))\nj = isinteger(3.0)\n\
+             k = isa(int32(1), \"integer\")\nl = isa(3.0, \"float\")\n\
+             m = double(int16(1000))",
+        );
+        assert_eq!(int_of(&e, "g"), (127, "int8".into()));
+        assert_eq!(int_of(&e, "h"), (-32768, "int16".into()));
+        assert!(boolean(&e, "i"));
+        assert!(!boolean(&e, "j"));
+        assert!(boolean(&e, "k"));
+        assert!(boolean(&e, "l"));
+        assert!((scalar(&e, "m") - 1000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integers_widen_into_builtins_and_indexing() {
+        let e = ev(
+            "c = sqrt(int32(16))\nv = [10, 20, 30]\ne = v(int32(2))\n\
+             g = abs(int8(-7))",
+        );
+        assert!((scalar(&e, "c") - 4.0).abs() < 1e-12); // sqrt widens → double
+        assert!((scalar(&e, "e") - 20.0).abs() < 1e-12); // integer index
+        assert_eq!(int_of(&e, "g"), (7, "int8".into())); // abs class-preserving
+    }
+}

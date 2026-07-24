@@ -5,7 +5,7 @@ use num_complex::Complex;
 use rand::Rng;
 use rand_distr::{Distribution, Normal, Uniform};
 use rustlab_core::{CMatrix, CVector, SparseMat, SparseVec, C64};
-use rustlab_core::{OverflowMode, RoundMode};
+use rustlab_core::{IntClass, OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
 use rustlab_dsp::fixed::{qadd as fixed_qadd, qconv as fixed_qconv, qmul as fixed_qmul};
 use rustlab_dsp::{
@@ -101,6 +101,22 @@ impl BuiltinRegistry {
         r.register("firpmq", builtin_firpmq);
         // Fixed-point quantization
         r.register("qfmt", builtin_qfmt);
+        // Integer types (dev/plans/integer_types.md)
+        r.register("int8", builtin_int8);
+        r.register("int16", builtin_int16);
+        r.register("int32", builtin_int32);
+        r.register("int64", builtin_int64);
+        r.register("uint8", builtin_uint8);
+        r.register("uint16", builtin_uint16);
+        r.register("uint32", builtin_uint32);
+        r.register("uint64", builtin_uint64);
+        r.register("class", builtin_class);
+        r.register("cast", builtin_cast);
+        r.register("intmax", builtin_intmax);
+        r.register("intmin", builtin_intmin);
+        r.register("isinteger", builtin_isinteger);
+        r.register("isa", builtin_isa);
+        r.register("double", builtin_double);
         r.register("quantize", builtin_quantize);
         r.register("qadd", builtin_qadd);
         r.register("qmul", builtin_qmul);
@@ -602,6 +618,17 @@ fn builtin_abs(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("abs", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(n.abs())),
+        // Class-preserving (MATLAB): abs(int8(-7)) → int8(7); abs(int8(-128))
+        // saturates to 127 under the value's overflow mode.
+        Value::Int {
+            data,
+            class,
+            overflow,
+        } => Ok(Value::Int {
+            data: class.coerce((*data).abs(), *overflow),
+            class: *class,
+            overflow: *overflow,
+        }),
         Value::Complex(c) => Ok(Value::Scalar(c.norm())),
         Value::Vector(v) => {
             // Fast path: |re| is cheaper than sqrt(re²+im²) for real-only vectors.
@@ -630,6 +657,11 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
         } else {
             std::f64::consts::PI
         })),
+        Value::Int { data, .. } => Ok(Value::Scalar(if *data >= 0 {
+            0.0
+        } else {
+            std::f64::consts::PI
+        })),
         Value::Complex(c) => Ok(Value::Scalar(c.arg())),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.arg(), 0.0)));
@@ -646,6 +678,7 @@ fn builtin_real(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("real", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Int { .. } => Ok(args[0].clone()),
         Value::Complex(c) => Ok(Value::Scalar(c.re)),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.re, 0.0)));
@@ -664,6 +697,11 @@ fn builtin_imag(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("imag", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(if *n == 0.0 { 0.0 } else { 0.0 })),
+        Value::Int { class, overflow, .. } => Ok(Value::Int {
+            data: 0,
+            class: *class,
+            overflow: *overflow,
+        }),
         Value::Complex(c) => Ok(Value::Scalar(c.im)),
         Value::Vector(v) => {
             let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.im, 0.0)));
@@ -682,6 +720,7 @@ fn builtin_conj(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("conj", &args, 1)?;
     match &args[0] {
         Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Int { .. } => Ok(args[0].clone()),
         Value::Complex(c) => Ok(Value::Complex(c.conj())),
         Value::Vector(v) => Ok(Value::Vector(v.mapv(|c| c.conj()))),
         Value::Matrix(m) => Ok(Value::Matrix(m.mapv(|c| c.conj()))),
@@ -730,6 +769,16 @@ fn apply_scalar_fn_promoting(
                 Ok(Value::Complex(fc(Complex::new(*n, 0.0))))
             } else {
                 Ok(Value::Scalar(f(*n)))
+            }
+        }
+        // Integers widen to their double value (result is double), so the
+        // element-wise math surface accepts them like the coercion chokepoints.
+        Value::Int { data, .. } => {
+            let n = *data as f64;
+            if needs_complex(n) {
+                Ok(Value::Complex(fc(Complex::new(n, 0.0))))
+            } else {
+                Ok(Value::Scalar(f(n)))
             }
         }
         Value::Complex(c) => Ok(Value::Complex(fc(*c))),
@@ -3722,6 +3771,166 @@ fn parse_overflow_mode(s: &str) -> Result<OverflowMode, ScriptError> {
             "unknown overflow mode '{s}'; valid: saturate, wrap"
         ))
     })
+}
+
+// ── Integer types (dev/plans/integer_types.md) ──────────────────────────────
+
+/// Cast a scalar-shaped value to an integer `class` under `mode`. Reals round
+/// half away from zero (via `IntClass::from_f64`); an existing integer is
+/// re-ranged with `coerce`. Complex with nonzero imaginary part is rejected.
+fn cast_scalar_to_int(
+    x: &Value,
+    class: IntClass,
+    mode: OverflowMode,
+    name: &str,
+) -> Result<Value, ScriptError> {
+    let data: i128 = match x {
+        Value::Int { data, .. } => class.coerce(*data, mode),
+        Value::Scalar(n) => class.from_f64(*n, mode),
+        Value::Bool(b) => class.coerce(*b as i128, mode),
+        Value::Complex(c) => {
+            if c.im.abs() > 1e-12 {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: cannot convert a complex value with nonzero imaginary part"
+                )));
+            }
+            class.from_f64(c.re, mode)
+        }
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected a real scalar or integer, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    Ok(Value::Int {
+        data,
+        class,
+        overflow: mode,
+    })
+}
+
+/// Shared body for `int8` … `uint64`: `intN(x [, "saturate"|"wrap"])`.
+fn int_cast_builtin(name: &str, class: IntClass, args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 1, 2)?;
+    let mode = if args.len() == 2 {
+        parse_overflow_mode(&args[1].to_str().map_err(ScriptError::type_err)?)?
+    } else {
+        OverflowMode::Saturate
+    };
+    cast_scalar_to_int(&args[0], class, mode, name)
+}
+
+fn builtin_int8(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int8", IntClass::Int8, args)
+}
+fn builtin_int16(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int16", IntClass::Int16, args)
+}
+fn builtin_int32(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int32", IntClass::Int32, args)
+}
+fn builtin_int64(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("int64", IntClass::Int64, args)
+}
+fn builtin_uint8(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint8", IntClass::Uint8, args)
+}
+fn builtin_uint16(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint16", IntClass::Uint16, args)
+}
+fn builtin_uint32(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint32", IntClass::Uint32, args)
+}
+fn builtin_uint64(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_cast_builtin("uint64", IntClass::Uint64, args)
+}
+
+/// `class(x)` — the type/class name (e.g. `"int32"`, `"double"`, `"complex"`).
+fn builtin_class(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("class", &args, 1)?;
+    Ok(Value::Str(args[0].type_name().to_string()))
+}
+
+/// `cast(x, "int32")` — convert to a named class (`int8`…`uint64` or `double`).
+fn builtin_cast(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("cast", &args, 2)?;
+    let target = args[1].to_str().map_err(ScriptError::type_err)?;
+    if target == "double" {
+        return builtin_double(vec![args[0].clone()]);
+    }
+    let class = IntClass::from_str(&target).ok_or_else(|| {
+        ScriptError::type_err(format!(
+            "cast: unknown target class \"{target}\" (int8…uint64 or double)"
+        ))
+    })?;
+    cast_scalar_to_int(&args[0], class, OverflowMode::Saturate, "cast")
+}
+
+/// `intmax(["int32"])` / `intmin(["int32"])` — class extremes (default int32).
+fn int_extreme(name: &str, args: Vec<Value>, want_max: bool) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 0, 1)?;
+    let class = if args.is_empty() {
+        IntClass::Int32
+    } else {
+        let s = args[0].to_str().map_err(ScriptError::type_err)?;
+        IntClass::from_str(&s)
+            .ok_or_else(|| ScriptError::type_err(format!("{name}: unknown integer class \"{s}\"")))?
+    };
+    Ok(Value::Int {
+        data: if want_max { class.max() } else { class.min() },
+        class,
+        overflow: OverflowMode::Saturate,
+    })
+}
+fn builtin_intmax(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_extreme("intmax", args, true)
+}
+fn builtin_intmin(args: Vec<Value>) -> Result<Value, ScriptError> {
+    int_extreme("intmin", args, false)
+}
+
+/// `isinteger(x)` — true for an integer-class value.
+fn builtin_isinteger(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isinteger", &args, 1)?;
+    Ok(Value::Bool(matches!(args[0], Value::Int { .. })))
+}
+
+/// `isa(x, "class")` — class-name or category test. Categories: `numeric`,
+/// `integer`, `float` (alias `double`); otherwise an exact class-name match.
+fn builtin_isa(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("isa", &args, 2)?;
+    let query = args[1].to_str().map_err(ScriptError::type_err)?;
+    let v = &args[0];
+    let is_int = matches!(v, Value::Int { .. });
+    let is_float = matches!(
+        v,
+        Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)
+    );
+    let result = match query.as_str() {
+        "numeric" => is_int || is_float,
+        "integer" => is_int,
+        "float" | "double" => is_float,
+        other => v.type_name() == other,
+    };
+    Ok(Value::Bool(result))
+}
+
+/// `double(x)` — convert to double precision. Integers → real scalar; bools →
+/// 0/1; reals/complex/vectors/matrices are already double-backed (identity).
+fn builtin_double(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("double", &args, 1)?;
+    match &args[0] {
+        Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
+        Value::Bool(b) => Ok(Value::Scalar(if *b { 1.0 } else { 0.0 })),
+        v @ (Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)) => {
+            Ok(v.clone())
+        }
+        other => Err(ScriptError::type_err(format!(
+            "double: cannot convert {}",
+            other.type_name()
+        ))),
+    }
 }
 
 /// qfmt(word_bits, frac_bits)

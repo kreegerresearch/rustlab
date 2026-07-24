@@ -1577,6 +1577,17 @@ impl Evaluator {
         match expr {
             Expr::Number(n) => Ok(Value::Scalar(*n)),
             Expr::Imag(n) => Ok(Value::Complex(Complex::new(0.0, *n))),
+            Expr::IntLit(v) => {
+                // Smallest fitting unsigned class (decision 7); the lexer
+                // guarantees v ≤ u64::MAX, so this never returns None.
+                let class = rustlab_core::IntClass::smallest_unsigned_for(*v)
+                    .expect("lexer caps radix literals at u64::MAX");
+                Ok(Value::Int {
+                    data: *v as i128,
+                    class,
+                    overflow: rustlab_core::OverflowMode::Saturate,
+                })
+            }
             Expr::Str(s) => Ok(Value::Str(s.clone())),
             Expr::Var(name) => match self.env.get(name) {
                 Some(v) => Ok(v.clone()),

@@ -543,7 +543,7 @@ impl RoundMode {
 }
 
 /// Fixed-point overflow mode.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverflowMode {
     /// Clamp to [min, max] (default).
     Saturate,

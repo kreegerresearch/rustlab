@@ -325,7 +325,7 @@ fn visit_expr_collect_call_names(e: &Expr, out: &mut BTreeSet<String>) {
                 visit_expr_collect_call_names(a, out);
             }
         }
-        Expr::Number(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
+        Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
     }
 }
 
@@ -525,7 +525,7 @@ fn visit_expr_for_var_refs(e: &Expr, out: &mut BTreeSet<String>) {
                 visit_expr_for_var_refs(a, out);
             }
         }
-        Expr::Number(_) | Expr::Imag(_) | Expr::Str(_) | Expr::All => {}
+        Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::All => {}
     }
 }
 
@@ -655,7 +655,7 @@ fn visit_expr_for_impure_calls(e: &Expr, out: &mut BTreeSet<String>) {
                 visit_expr_for_impure_calls(a, out);
             }
         }
-        Expr::Number(_) | Expr::Imag(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
+        Expr::Number(_) | Expr::Imag(_) | Expr::IntLit(_) | Expr::Str(_) | Expr::Var(_) | Expr::All => {}
     }
 }
 

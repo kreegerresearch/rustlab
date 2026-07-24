@@ -397,6 +397,28 @@ Touchstone formats accepted: `RI` (real/imag), `MA` (mag/angle°), `DB` (dB/angl
 
 ---
 
+## Integer Types
+
+Tagged-width integers (`int8`…`int64`, `uint8`…`uint64`). Casts round half away
+from zero and saturate by default; pass `"wrap"` for 2's-complement wraparound.
+
+| Function | Description |
+|---|---|
+| `int8(x)` … `int64(x)` | Cast to a signed integer class (optional 2nd arg `"saturate"`/`"wrap"`) |
+| `uint8(x)` … `uint64(x)` | Cast to an unsigned integer class (`uint64` covers the full 64-bit range) |
+| `class(x)` | Type/class name, e.g. `"int32"`, `"double"` |
+| `cast(x, "int32")` | Convert to a named class (any integer class or `"double"`) |
+| `intmax(["int8"])` / `intmin(["int8"])` | Largest / smallest value of a class (default `int32`) |
+| `isinteger(x)` | True for an integer-class value |
+| `isa(x, "integer")` | Class or category test (`"numeric"`, `"integer"`, `"float"`, or a class name) |
+| `double(x)` | Convert to double precision |
+| `0xFF` `0b1010` `0o17` | Radix literals → smallest fitting unsigned class (`0xFF` → `uint8`) |
+
+Semantics: same-class `int⊗int` stays integer (saturating/wrapping);
+**different integer classes error** — cast one explicitly; **`int + double`
+yields a `double`**. Integers flow through other builtins by widening to double
+(`sqrt(int32(16))` → `4`).
+
 ## Fixed-Point Quantization
 
 | Function | Description |
