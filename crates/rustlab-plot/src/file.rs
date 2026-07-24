@@ -484,10 +484,19 @@ where
                 String::new()
             }
         };
-        let log_fmt = |v: &f64| -> String { format_log_tick(*v) };
-        // One label per decade in the (log-space) range.
-        let decade_count =
-            |lo: f64, hi: f64| ((hi.floor() - lo.ceil()) as isize + 1).clamp(2, 12) as usize;
+        let x_span = x_hi - x_lo;
+        let y_span = y_hi - y_lo;
+        let xlog_fmt = move |v: &f64| -> String { format_log_tick_span(*v, x_span) };
+        let ylog_fmt = move |v: &f64| -> String { format_log_tick_span(*v, y_span) };
+        // ~one label per decade (wide axes), more for narrow ones so a
+        // sub-decade axis isn't nearly blank.
+        let label_count = |span: f64| {
+            if span >= 1.5 {
+                (span.floor() as isize + 2).clamp(2, 12) as usize
+            } else {
+                5
+            }
+        };
 
         let mut mesh = chart.configure_mesh();
         mesh.disable_mesh()
@@ -500,12 +509,12 @@ where
             let n = sp.x_labels.as_ref().map_or(0, |l| l.len());
             mesh.x_labels(n).x_label_formatter(&cat_fmt);
         } else if x_log {
-            mesh.x_labels(decade_count(x_lo, x_hi))
-                .x_label_formatter(&log_fmt);
+            mesh.x_labels(label_count(x_span))
+                .x_label_formatter(&xlog_fmt);
         }
         if y_log {
-            mesh.y_labels(decade_count(y_lo, y_hi))
-                .y_label_formatter(&log_fmt);
+            mesh.y_labels(label_count(y_span))
+                .y_label_formatter(&ylog_fmt);
         }
         mesh.draw().map_err(err)?;
     }
@@ -1615,23 +1624,53 @@ where
     Ok(())
 }
 
+/// A compact real-number label: plain digits in the human-friendly range
+/// `[0.001, 10000)`, scientific (`1.58e9`, `1e-5`) outside it. Trailing zeros
+/// are trimmed so whole decades read cleanly (`1e9`, not `1.00e9`).
+fn compact_num(x: f64) -> String {
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    let ax = x.abs();
+    if (1e-3..1e4).contains(&ax) {
+        if x.fract().abs() < 1e-9 {
+            format!("{}", x.round() as i64)
+        } else {
+            let s = format!("{:.3}", x);
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        }
+    } else {
+        // Scientific with up to 2 significant decimals; trim the mantissa.
+        let s = format!("{:.2e}", x); // e.g. "1.58e9", "1.00e9"
+        if let Some((mant, exp)) = s.split_once('e') {
+            let mant = mant.trim_end_matches('0').trim_end_matches('.');
+            format!("{mant}e{exp}")
+        } else {
+            s
+        }
+    }
+}
+
 /// Format a log-axis tick at log-space position `v` as its real decade value.
-/// Only integer positions (whole decades) get a label; everything else is
-/// blank, so the axis shows `1, 10, 100, …` (or `0.1, 0.01`) — the real
-/// numbers, matching MATLAB `semilogx`/`loglog`.
+/// Only whole decades get a label, so the axis shows the real numbers
+/// (`1, 10, 100, …`), matching MATLAB `semilogx`/`loglog`.
 fn format_log_tick(v: f64) -> String {
     let r = v.round();
     if (v - r).abs() > 1e-6 {
         return String::new();
     }
-    let real = 10f64.powf(r);
-    if (0.0..=9.0).contains(&r) {
-        format!("{}", real as i64) // 1, 10, 100, … 1e9
-    } else if (-4.0..0.0).contains(&r) {
-        // 0.1, 0.01, 0.001, 0.0001 without float noise.
-        format!("{:.*}", (-r) as usize, real)
+    compact_num(10f64.powf(r))
+}
+
+/// Log-tick label chosen by how many decades the axis spans (in log10 units).
+/// Wide axes (≥ 1.5 decades) label whole decades only; a narrow axis would
+/// then show one lonely tick, so it falls back to labelling every sampled
+/// tick with its compact real value.
+fn format_log_tick_span(v: f64, span: f64) -> String {
+    if span >= 1.5 {
+        format_log_tick(v)
     } else {
-        format!("1e{}", r as i64) // very large/small decades
+        compact_num(10f64.powf(v))
     }
 }
 
@@ -1974,6 +2013,21 @@ mod tests {
         }
         assert!(!svg.contains("log10"), "log10 descriptor should be gone");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn log_axis_large_values_use_compact_labels() {
+        // Regression: a sub-decade GHz frequency sweep (1e9..5e9) must not
+        // render 10-digit tick labels like "1584893192.461"; use "1.58e9".
+        assert_eq!(super::compact_num(1e9), "1e9");
+        assert_eq!(super::compact_num(1_584_893_192.461), "1.58e9");
+        assert_eq!(super::compact_num(1000.0), "1000");
+        assert_eq!(super::compact_num(0.001), "0.001"); // inclusive lower bound → plain
+        assert_eq!(super::compact_num(0.0001), "1e-4"); // below range → scientific
+        assert_eq!(super::compact_num(2.512), "2.512");
+        // Whole decades stay clean via the tick formatter.
+        assert_eq!(super::format_log_tick(9.0), "1e9");
+        assert_eq!(super::format_log_tick(3.0), "1000");
     }
 
     #[test]
