@@ -1313,9 +1313,31 @@ fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize)
     }
 }
 
+/// Peel a trailing integer-class name (`zeros(2, 3, "int32")`) off the arg
+/// list. Returns the remaining (dimension) args plus the class if present.
+fn peel_int_class(args: &[Value]) -> (Vec<Value>, Option<IntClass>) {
+    if let Some(Value::Str(s)) = args.last() {
+        if let Some(cls) = IntClass::from_str(s) {
+            return (args[..args.len() - 1].to_vec(), Some(cls));
+        }
+    }
+    (args.to_vec(), None)
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("zeros", &args, 1, 2)?;
-    let (m, n) = unpack_size_args(&args, "zeros")?;
+    let (dims, cls) = peel_int_class(&args);
+    check_args_range("zeros", &dims, 1, 2)?;
+    let (m, n) = unpack_size_args(&dims, "zeros")?;
+    if let Some(cls) = cls {
+        let (r, c) = (m.unwrap_or(1), n);
+        return Ok(Value::int_array(
+            vec![0i128; r * c],
+            r,
+            c,
+            cls,
+            OverflowMode::Saturate,
+        ));
+    }
     if let Some(m) = m {
         Ok(Value::Matrix(Array2::zeros((m, n))))
     } else {
@@ -1324,8 +1346,19 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
-    check_args_range("ones", &args, 1, 2)?;
-    let (m, n) = unpack_size_args(&args, "ones")?;
+    let (dims, cls) = peel_int_class(&args);
+    check_args_range("ones", &dims, 1, 2)?;
+    let (m, n) = unpack_size_args(&dims, "ones")?;
+    if let Some(cls) = cls {
+        let (r, c) = (m.unwrap_or(1), n);
+        return Ok(Value::int_array(
+            vec![1i128; r * c],
+            r,
+            c,
+            cls,
+            OverflowMode::Saturate,
+        ));
+    }
     if let Some(m) = m {
         Ok(Value::Matrix(Array2::from_elem(
             (m, n),
@@ -2187,6 +2220,22 @@ where
             Ok(Value::Matrix(axis_reduce(m, dim)))
         }
         Value::Scalar(s) => Ok(Value::Scalar(*s)),
+        Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
+        // Integer arrays widen to a complex matrix and reuse the matrix path.
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            if *rows == 0 || *cols == 0 {
+                return Ok(Value::Scalar(0.0));
+            }
+            let m = Value::int_array_to_cmatrix(data, *rows, *cols);
+            if *rows == 1 || *cols == 1 {
+                let elements: Vec<C64> = m.iter().copied().collect();
+                return flat_reduce(&elements);
+            }
+            let dim = dim_arg.unwrap_or(1);
+            Ok(Value::Matrix(axis_reduce(&m, dim)))
+        }
         Value::Complex(c) => Ok(Value::Complex(*c)),
         other => Err(ScriptError::type_err(format!(
             "{}: unsupported type {}",
@@ -2638,12 +2687,15 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         // it gives the longest dimension. Use numel(M) for total element
         // count and size(M) for full shape information.
         Value::Matrix(m) => Ok(Value::Scalar(m.nrows().max(m.ncols()) as f64)),
+        Value::IntArray { rows, cols, .. } => Ok(Value::Scalar((*rows).max(*cols) as f64)),
         Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
         // Scalar / complex / bool are all 1-element values; matlab's
         // length() on a scalar returns 1, not an error. Removes the
         // need for `length([x])` boxing in generic code that handles
         // both scalars and vectors uniformly.
-        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => Ok(Value::Scalar(1.0)),
+        Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) | Value::Int { .. } => {
+            Ok(Value::Scalar(1.0))
+        }
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
@@ -2660,7 +2712,8 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Vector(v) => v.len(),
         Value::Matrix(m) => m.nrows() * m.ncols(),
         Value::Tensor3(t) => t.shape().iter().product::<usize>(),
-        Value::Scalar(_) | Value::Complex(_) => 1,
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
+        Value::IntArray { data, .. } => data.len(),
         Value::StringArray(v) => v.len(),
         other => {
             return Err(ScriptError::type_err(format!(
@@ -2699,7 +2752,8 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (nrows, ncols) = match &args[0] {
         Value::Vector(v) => (1usize, v.len()),
         Value::Matrix(m) => (m.nrows(), m.ncols()),
-        Value::Scalar(_) | Value::Complex(_) => (1, 1),
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => (1, 1),
+        Value::IntArray { rows, cols, .. } => (*rows, *cols),
         Value::SparseVector(sv) => (1, sv.len),
         Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         Value::StringArray(v) => (1, v.len()),
@@ -3775,39 +3829,57 @@ fn parse_overflow_mode(s: &str) -> Result<OverflowMode, ScriptError> {
 
 // ── Integer types (dev/plans/integer_types.md) ──────────────────────────────
 
-/// Cast a scalar-shaped value to an integer `class` under `mode`. Reals round
-/// half away from zero (via `IntClass::from_f64`); an existing integer is
-/// re-ranged with `coerce`. Complex with nonzero imaginary part is rejected.
+/// Cast a value to an integer `class` under `mode`. Scalars/vectors/matrices
+/// round half away from zero (via `IntClass::from_f64`); an existing integer
+/// is re-ranged with `coerce`. Vectors/matrices produce an `IntArray`.
+/// Complex values with a nonzero imaginary part are rejected.
 fn cast_scalar_to_int(
     x: &Value,
     class: IntClass,
     mode: OverflowMode,
     name: &str,
 ) -> Result<Value, ScriptError> {
-    let data: i128 = match x {
-        Value::Int { data, .. } => class.coerce(*data, mode),
-        Value::Scalar(n) => class.from_f64(*n, mode),
-        Value::Bool(b) => class.coerce(*b as i128, mode),
+    let scalar = |data: i128| Value::Int {
+        data,
+        class,
+        overflow: mode,
+    };
+    match x {
+        Value::Int { data, .. } => Ok(scalar(class.coerce(*data, mode))),
+        Value::Scalar(n) => Ok(scalar(class.from_f64(*n, mode))),
+        Value::Bool(b) => Ok(scalar(class.coerce(*b as i128, mode))),
         Value::Complex(c) => {
             if c.im.abs() > 1e-12 {
                 return Err(ScriptError::type_err(format!(
                     "{name}: cannot convert a complex value with nonzero imaginary part"
                 )));
             }
-            class.from_f64(c.re, mode)
+            Ok(scalar(class.from_f64(c.re, mode)))
         }
-        other => {
-            return Err(ScriptError::type_err(format!(
-                "{name}: expected a real scalar or integer, got {}",
-                other.type_name()
-            )))
+        Value::Vector(v) => {
+            let data: Vec<i128> = v.iter().map(|c| class.from_f64(c.re, mode)).collect();
+            let n = data.len();
+            Ok(Value::int_array(data, 1, n, class, mode))
         }
-    };
-    Ok(Value::Int {
-        data,
-        class,
-        overflow: mode,
-    })
+        Value::Matrix(m) => {
+            let (rows, cols) = (m.nrows(), m.ncols());
+            let data: Vec<i128> = m.iter().map(|c| class.from_f64(c.re, mode)).collect();
+            Ok(Value::int_array(data, rows, cols, class, mode))
+        }
+        Value::IntArray {
+            data, rows, cols, ..
+        } => Ok(Value::int_array(
+            data.iter().map(|&v| class.coerce(v, mode)).collect(),
+            *rows,
+            *cols,
+            class,
+            mode,
+        )),
+        other => Err(ScriptError::type_err(format!(
+            "{name}: cannot convert {}",
+            other.type_name()
+        ))),
+    }
 }
 
 /// Shared body for `int8` … `uint64`: `intN(x [, "saturate"|"wrap"])`.
@@ -3893,7 +3965,10 @@ fn builtin_intmin(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `isinteger(x)` — true for an integer-class value.
 fn builtin_isinteger(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("isinteger", &args, 1)?;
-    Ok(Value::Bool(matches!(args[0], Value::Int { .. })))
+    Ok(Value::Bool(matches!(
+        args[0],
+        Value::Int { .. } | Value::IntArray { .. }
+    )))
 }
 
 /// `isa(x, "class")` — class-name or category test. Categories: `numeric`,
@@ -3902,7 +3977,7 @@ fn builtin_isa(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("isa", &args, 2)?;
     let query = args[1].to_str().map_err(ScriptError::type_err)?;
     let v = &args[0];
-    let is_int = matches!(v, Value::Int { .. });
+    let is_int = matches!(v, Value::Int { .. } | Value::IntArray { .. });
     let is_float = matches!(
         v,
         Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)
@@ -3923,6 +3998,17 @@ fn builtin_double(args: Vec<Value>) -> Result<Value, ScriptError> {
     match &args[0] {
         Value::Int { data, .. } => Ok(Value::Scalar(*data as f64)),
         Value::Bool(b) => Ok(Value::Scalar(if *b { 1.0 } else { 0.0 })),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let m = Value::int_array_to_cmatrix(data, *rows, *cols);
+            // Collapse a row/column to a Vector (double), else a Matrix.
+            if *rows == 1 || *cols == 1 {
+                Ok(Value::Vector(m.iter().copied().collect()))
+            } else {
+                Ok(Value::Matrix(m))
+            }
+        }
         v @ (Value::Scalar(_) | Value::Complex(_) | Value::Vector(_) | Value::Matrix(_)) => {
             Ok(v.clone())
         }
@@ -6018,6 +6104,9 @@ fn to_cmatrix_arg(val: &Value, fn_name: &str, arg_name: &str) -> Result<CMatrix,
         Value::Matrix(m) => Ok(m.clone()),
         Value::Scalar(n) => Ok(Array2::from_elem((1, 1), Complex::new(*n, 0.0))),
         Value::Int { data, .. } => Ok(Array2::from_elem((1, 1), Complex::new(*data as f64, 0.0))),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => Ok(Value::int_array_to_cmatrix(data, *rows, *cols)),
         Value::Complex(c) => Ok(Array2::from_elem((1, 1), *c)),
         Value::Vector(v) => {
             let m = Array2::from_shape_fn((v.len(), 1), |(i, _)| v[i]);
@@ -6047,6 +6136,11 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
         Value::Vector(v) => Ok(ndarray::Array1::from_iter(v.iter().map(|c| c.re))),
         Value::Scalar(n) => Ok(ndarray::Array1::from_vec(vec![*n])),
         Value::Int { data, .. } => Ok(ndarray::Array1::from_vec(vec![*data as f64])),
+        Value::IntArray {
+            data, rows, cols, ..
+        } if *rows == 1 || *cols == 1 => {
+            Ok(ndarray::Array1::from_iter(data.iter().map(|&v| v as f64)))
+        }
         Value::Matrix(m) if m.ncols() == 1 => {
             Ok(ndarray::Array1::from_iter(m.column(0).iter().map(|c| c.re)))
         }

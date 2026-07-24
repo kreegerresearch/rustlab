@@ -770,6 +770,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
     match v {
         Value::Scalar(_) => "scalar",
         Value::Int { class, .. } => class.name(),
+        Value::IntArray { class, .. } => class.name(),
         Value::Complex(_) => "complex",
         Value::Vector(_) => "vector",
         Value::Matrix(_) => "matrix",
@@ -834,6 +835,7 @@ fn whos_size(v: &rustlab_script::Value) -> String {
             )
         }
         Value::StringArray(v) => format!("1×{}", v.len()),
+        Value::IntArray { rows, cols, .. } => format!("{}×{}", rows, cols),
         Value::All => "—".to_string(),
         _ => "1×1".to_string(),
     }
@@ -844,6 +846,17 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
     match v {
         Value::Scalar(n) => format!("{n}"),
         Value::Int { data, .. } => format!("{data}"),
+        Value::IntArray {
+            data, rows, cols, ..
+        } => {
+            let preview: Vec<String> = data.iter().take(3).map(|v| v.to_string()).collect();
+            let suffix = if data.len() > 3 { ", …" } else { "" };
+            if *rows == 1 || *cols == 1 {
+                format!("[{}{}]", preview.join(", "), suffix)
+            } else {
+                format!("[{}×{} {}]", rows, cols, whos_type(v))
+            }
+        }
         Value::Complex(c) => {
             if c.im >= 0.0 {
                 format!("{}+{}j", c.re, c.im)

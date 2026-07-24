@@ -1735,10 +1735,12 @@ impl Evaluator {
                         | Some(Value::Scalar(_))
                         | Some(Value::Complex(_))
                         | Some(Value::Bool(_))
+                        | Some(Value::Int { .. })
+                        | Some(Value::IntArray { .. })
                 ) {
-                    // A scalar / complex / bool is a 1×1 value; promote it to a
-                    // 1-element vector so `s(1)` indexes like MATLAB instead of
-                    // falling through and reporting `s` as an undefined function.
+                    // A scalar / complex / bool / integer is a 1×1 value; promote
+                    // it to a 1-element container so `s(1)` indexes like MATLAB
+                    // instead of falling through and reporting `s` as undefined.
                     let container = match self.env[name.as_str()].clone() {
                         Value::Scalar(x) => Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0))),
                         Value::Complex(c) => Value::Vector(Array1::from_elem(1, c)),
@@ -1746,6 +1748,19 @@ impl Evaluator {
                             1,
                             Complex::new(if b { 1.0 } else { 0.0 }, 0.0),
                         )),
+                        // A scalar integer becomes a 1×1 integer array so the
+                        // indexing path (which handles IntArray) accepts it.
+                        Value::Int {
+                            data,
+                            class,
+                            overflow,
+                        } => Value::IntArray {
+                            data: vec![data],
+                            rows: 1,
+                            cols: 1,
+                            class,
+                            overflow,
+                        },
                         other => other,
                     };
 
@@ -1777,6 +1792,7 @@ impl Evaluator {
                             Value::SparseMatrix(sm) => (sm.rows, sm.cols),
                             Value::Vector(v) => (1, v.len()),
                             Value::SparseVector(sv) => (1, sv.len),
+                            Value::IntArray { rows, cols, .. } => (*rows, *cols),
                             _ => unreachable!(),
                         };
                         if nrows > 1
@@ -1813,6 +1829,7 @@ impl Evaluator {
                             Value::Tuple(t) => t.len(),
                             Value::Str(s) => s.chars().count(),
                             Value::StringArray(v) => v.len(),
+                            Value::IntArray { data, .. } => data.len(),
                             _ => unreachable!(),
                         };
                         self.env

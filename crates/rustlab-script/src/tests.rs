@@ -18381,3 +18381,157 @@ mod int_types_tests {
         assert_eq!(int_of(&e, "g"), (7, "int8".into())); // abs class-preserving
     }
 }
+
+/// Integer arrays (Phase 2 of dev/plans/integer_types.md): packed IntArray
+/// construction, arithmetic/broadcast, indexing, reductions, constructors.
+mod int_array_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            if let Err(er) = e.exec_stmt(s) {
+                return er.to_string();
+            }
+        }
+        panic!("expected error from: {src}");
+    }
+
+    fn arr(e: &Evaluator, name: &str) -> (Vec<i128>, usize, usize, String) {
+        match e.get(name).unwrap() {
+            Value::IntArray {
+                data,
+                rows,
+                cols,
+                class,
+                ..
+            } => (data.clone(), *rows, *cols, class.name().to_string()),
+            other => panic!("{name}: expected IntArray, got {other:?}"),
+        }
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn construct_vector_and_matrix() {
+        let e = ev("a = int8([1, 2, 3])\nm = int8([1, 2; 3, 4])");
+        assert_eq!(arr(&e, "a"), (vec![1, 2, 3], 1, 3, "int8".into()));
+        assert_eq!(arr(&e, "m"), (vec![1, 2, 3, 4], 2, 2, "int8".into()));
+    }
+
+    #[test]
+    fn construction_saturates_each_element() {
+        let e = ev("a = uint8([-5, 100, 300])");
+        assert_eq!(arr(&e, "a").0, vec![0, 100, 255]);
+    }
+
+    #[test]
+    fn elementwise_arith_and_saturation() {
+        let e = ev("a = int8([100, 100]) + int8([50, 50])\nb = int8([10, 20, 30]) - int8([1, 2, 3])");
+        assert_eq!(arr(&e, "a").0, vec![127, 127]);
+        assert_eq!(arr(&e, "b").0, vec![9, 18, 27]);
+    }
+
+    #[test]
+    fn scalar_broadcast_both_orders() {
+        let e = ev("a = int8([1, 2, 3]) * int8(2)\nb = int8(10) - int8([1, 2, 3])");
+        assert_eq!(arr(&e, "a").0, vec![2, 4, 6]);
+        assert_eq!(arr(&e, "b").0, vec![9, 8, 7]); // order matters for `-`
+    }
+
+    #[test]
+    fn array_plus_double_widens_to_double() {
+        let e = ev("a = int8([1, 2, 3]) + 0.5\nc = class(a)");
+        // Result is a double vector; sum to a scalar to check numerically.
+        let s = ev("v = int8([1, 2, 3]) + 0.5\ns = sum(v)");
+        assert!((scalar(&s, "s") - 7.5).abs() < 1e-12);
+        assert_eq!(
+            match e.get("c").unwrap() {
+                Value::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            "vector"
+        );
+    }
+
+    #[test]
+    fn cross_class_and_shape_mismatch_error() {
+        assert!(err("x = int8([1,2]) + int16([3,4])").contains("different integer classes"));
+        assert!(err("x = int8([1,2,3]) + int8([1,2])").contains("do not match"));
+    }
+
+    #[test]
+    fn indexing_scalar_slice_and_2d() {
+        let e = ev(
+            "a = int8([10, 20, 30])\nx = a(2)\ns = a(2:3)\n\
+             m = int8([1, 2; 3, 4])\ny = m(2, 1)",
+        );
+        assert_eq!(int1(&e, "x"), (20, "int8".into()));
+        assert_eq!(arr(&e, "s"), (vec![20, 30], 1, 2, "int8".into()));
+        assert_eq!(int1(&e, "y"), (3, "int8".into()));
+    }
+
+    #[test]
+    fn negate_and_reduce() {
+        let e = ev("a = -int8([1, -2, 3])\ns = sum(int32([1, 2, 3, 4]))");
+        assert_eq!(arr(&e, "a").0, vec![-1, 2, -3]);
+        assert!((scalar(&e, "s") - 10.0).abs() < 1e-12); // sum widens to double
+    }
+
+    #[test]
+    fn zeros_ones_with_class() {
+        let e = ev("a = zeros(2, 3, \"int32\")\nb = ones(1, 4, \"uint8\")");
+        assert_eq!(arr(&e, "a"), (vec![0; 6], 2, 3, "int32".into()));
+        assert_eq!(arr(&e, "b"), (vec![1; 4], 1, 4, "uint8".into()));
+    }
+
+    #[test]
+    fn double_and_isinteger_on_arrays() {
+        let e = ev("a = int8([1, 2, 3])\nd = double(a)\ni = isinteger(a)\nj = isinteger(d)");
+        assert!(matches!(e.get("d").unwrap(), Value::Vector(_)));
+        assert!(matches!(e.get("i").unwrap(), Value::Bool(true)));
+        assert!(matches!(e.get("j").unwrap(), Value::Bool(false)));
+    }
+
+    #[test]
+    fn transpose_is_class_preserving() {
+        let e = ev("m = int8([1, 2; 3, 4])\nt = transpose(m)");
+        // Transpose stays int8, data transposed row-major.
+        assert_eq!(arr(&e, "t"), (vec![1, 3, 2, 4], 2, 2, "int8".into()));
+    }
+
+    #[test]
+    fn matrix_widens_into_builtins_via_chokepoints() {
+        // A genuine 2×3 int matrix flows into size (a builtin) unchanged.
+        let e = ev("m = int8([1, 2, 3; 4, 5, 6])\nsz = size(m)");
+        assert_eq!(arr(&e, "m").1, 2);
+        assert_eq!(arr(&e, "m").2, 3);
+    }
+}

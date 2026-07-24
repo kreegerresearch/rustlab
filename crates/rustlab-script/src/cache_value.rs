@@ -134,6 +134,7 @@ pub fn feed_value(hasher: &mut blake3::Hasher, v: &Value) -> bool {
         // before the type stabilizes (Phase 1 of dev/plans/integer_types.md).
         // Correct, just not yet memoized.
         Value::Int { .. }
+        | Value::IntArray { .. }
         | Value::Tensor3(_)
         | Value::QFmt(_)
         | Value::All
@@ -287,6 +288,7 @@ fn encode_value(out: &mut Vec<u8>, v: &Value) -> Option<()> {
         // See `feed_value`: `Int` is uncacheable until a wire tag is added
         // (Phase 1 of dev/plans/integer_types.md).
         | Value::Int { .. }
+        | Value::IntArray { .. }
         | Value::Lambda { .. }
         | Value::FirState(_)
         | Value::DspStreamState(_)
