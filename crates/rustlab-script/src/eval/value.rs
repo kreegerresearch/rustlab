@@ -780,7 +780,9 @@ impl Value {
         let indices: Vec<Value> = indices
             .into_iter()
             .map(|v| match v {
-                Value::Int { data, .. } => Value::Scalar(data as f64),
+                // Integer subscripts (scalar or array, incl. logical-style
+                // 0/1 masks) widen to their double form.
+                Value::Int { .. } | Value::IntArray { .. } => Self::widen_int(v),
                 other => other,
             })
             .collect();
@@ -1402,7 +1404,7 @@ impl Value {
 
     /// Widen an integer value to its double-backed equivalent (scalar/vector/
     /// matrix). Non-integer values pass through unchanged.
-    fn widen_int(v: Value) -> Value {
+    pub(crate) fn widen_int(v: Value) -> Value {
         match v {
             Value::Int { data, .. } => Value::Scalar(data as f64),
             Value::IntArray {
@@ -2311,6 +2313,13 @@ impl Value {
         if rows.is_empty() {
             return Ok(Value::Vector(Array1::zeros(0)));
         }
+        // Integer elements widen to double: a matrix/vector literal built from
+        // integers is a double array (consistent with the widening rule; use an
+        // explicit cast like `int8([...])` to build a typed integer array).
+        let rows: Vec<Vec<Value>> = rows
+            .into_iter()
+            .map(|row| row.into_iter().map(Self::widen_int).collect())
+            .collect();
 
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
 

@@ -18706,3 +18706,116 @@ mod int_io_tests {
         let _ = std::fs::remove_file(&pt);
     }
 }
+
+/// Regression tests for integer-widening gaps found in the full regression
+/// pass (2026-07-23): builtins that rejected integers, array concat, `if`
+/// conditions, integer-array indexing, and the storage-builtin allowlist.
+mod int_widening_regression_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn scalar(e: &Evaluator, name: &str) -> f64 {
+        match e.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected Scalar, got {other:?}"),
+        }
+    }
+
+    fn vec_of(e: &Evaluator, name: &str) -> Vec<f64> {
+        match e.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{name}: expected Vector, got {other:?}"),
+        }
+    }
+
+    fn class_of(e: &Evaluator, name: &str) -> String {
+        e.get(name).unwrap().type_name().to_string()
+    }
+
+    #[test]
+    fn common_builtins_accept_integers_via_widening() {
+        // These all rejected integer arrays before central widening.
+        let e = ev(
+            "a = min(int8([3, 1, 2]))\nb = max(int8([3, 1, 2]))\n\
+             s = sort(int8([3, 1, 2]))\nf = find(int8([0, 1, 0, 1]))\n\
+             c = cumsum(int8([1, 2, 3]))\nm = mod(int8(7), int8(3))\n\
+             an = any(int8([0, 0, 1]))\nal = all(int8([1, 1, 0]))",
+        );
+        assert_eq!(scalar(&e, "a"), 1.0);
+        assert_eq!(scalar(&e, "b"), 3.0);
+        assert_eq!(vec_of(&e, "s"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(vec_of(&e, "f"), vec![2.0, 4.0]);
+        assert_eq!(vec_of(&e, "c"), vec![1.0, 3.0, 6.0]);
+        assert_eq!(scalar(&e, "m"), 1.0);
+        assert!(matches!(e.get("an").unwrap(), Value::Bool(true)));
+        assert!(matches!(e.get("al").unwrap(), Value::Bool(false)));
+    }
+
+    #[test]
+    fn reshape_accepts_integers() {
+        let e = ev("m = reshape(int8([1, 2, 3, 4]), 2, 2)");
+        assert!(matches!(e.get("m").unwrap(), Value::Matrix(_)));
+    }
+
+    #[test]
+    fn class_preserving_builtins_stay_integer() {
+        // abs / transpose are allowlisted → keep their integer class.
+        let e = ev("a = abs(int8(-7))\nt = transpose(int8([1, 2; 3, 4]))");
+        assert_eq!(class_of(&e, "a"), "int8");
+        assert_eq!(class_of(&e, "t"), "int8");
+    }
+
+    #[test]
+    fn array_literal_concat_of_integers() {
+        let e = ev(
+            "a = [int8(1), int8(2), int8(3)]\nb = [int8([1, 2]), int8([3, 4])]\n\
+             c = [int8(1), 2.5]",
+        );
+        assert_eq!(vec_of(&e, "a"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(vec_of(&e, "b"), vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(vec_of(&e, "c"), vec![1.0, 2.5]);
+    }
+
+    #[test]
+    fn integers_are_truthy_in_conditions() {
+        let e = ev(
+            "x = 0\nif int8(1)\nx = 1\nend\ny = 0\nif int8(0)\ny = 1\nelse\ny = 2\nend",
+        );
+        assert_eq!(scalar(&e, "x"), 1.0);
+        assert_eq!(scalar(&e, "y"), 2.0);
+    }
+
+    #[test]
+    fn integer_array_as_index_and_mask() {
+        let e = ev(
+            "v = [10, 20, 30]\nsel = v(int8([1, 3]))\nmask = v(int8([1, 0, 1]))",
+        );
+        assert_eq!(vec_of(&e, "sel"), vec![10.0, 30.0]);
+        assert_eq!(vec_of(&e, "mask"), vec![10.0, 30.0]);
+    }
+
+    #[test]
+    fn storage_builtins_preserve_class_through_widening() {
+        // The allowlist must keep struct field values typed (a regression the
+        // central-widening pass introduced and then fixed).
+        let e = ev("s = struct(\"n\", int8(5))\nc = class(s.n)");
+        assert_eq!(
+            match e.get("c").unwrap() {
+                Value::Str(s) => s.clone(),
+                _ => unreachable!(),
+            },
+            "int8"
+        );
+    }
+}

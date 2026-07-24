@@ -1552,6 +1552,7 @@ impl Evaluator {
         match val {
             Value::Bool(b) => Ok(*b),
             Value::Scalar(n) => Ok(*n != 0.0),
+            Value::Int { data, .. } => Ok(*data != 0),
             Value::Complex(c) => Ok(c.re != 0.0 || c.im != 0.0),
             other => Err(ScriptError::runtime(format!(
                 "{} condition must be a bool or scalar, got {}",
@@ -2671,6 +2672,18 @@ impl Evaluator {
             parmap::require_pure_context(name)?;
         }
 
+        // Integer widening (dev/plans/integer_types.md, decision 8): every
+        // builtin except the integer-aware set receives integers widened to
+        // their double form, so the whole builtin surface accepts them without
+        // per-builtin arms. The allowlist covers builtins that must see the raw
+        // integer (casts / introspection) or that intentionally preserve the
+        // integer class (abs / real / imag / conj / transpose).
+        let vals: Vec<Value> = if INT_AWARE_BUILTINS.contains(&name) {
+            vals
+        } else {
+            vals.into_iter().map(Value::widen_int).collect()
+        };
+
         if !self.profiler.should_track(name) {
             return self.builtins.call_with_nargout(name, vals, nargout);
         }
@@ -3307,6 +3320,21 @@ impl Default for Evaluator {
 ///   parmap and break the determinism contract; banned.
 ///
 /// Keep this list sorted alphabetically for easy maintenance.
+/// Builtins that receive integer arguments *without* widening to double —
+/// either because they must inspect the raw integer (casts / introspection)
+/// or because they intentionally preserve the integer class (see
+/// `dev/plans/integer_types.md`). Every other builtin gets widened integers.
+const INT_AWARE_BUILTINS: &[&str] = &[
+    // Casts + introspection (must see the raw integer / class).
+    "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "class", "cast",
+    "intmax", "intmin", "isinteger", "isa", "double",
+    // Class-preserving element ops.
+    "abs", "real", "imag", "conj", "transpose",
+    // Storage / passthrough — must keep the integer class, not a widened copy
+    // (save writes the native NPY dtype; struct stores fields verbatim).
+    "save", "struct",
+];
+
 const IMPURE_BUILTINS: &[&str] = &[
     "clf",
     "contour",
