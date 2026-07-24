@@ -4465,7 +4465,7 @@ fn builtin_stem(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
 
     let opts = parse_plot_opts(&args[opts_start..]);
-    let label = opts.label.as_deref().unwrap_or("stem").to_string();
+    let label = opts.label.as_deref().unwrap_or("").to_string(); // no default legend
     let title = {
         let rem = &args[opts_start..];
         if rem.len() == 1 {
@@ -11061,7 +11061,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
         return Ok(Value::None);
     }
     let (x_data, y_data, title) = extract_xy_with_title(&args, "bar")?;
-    push_xy_bar(x_data, y_data, "bar", &title, None);
+    push_xy_bar(x_data, y_data, "", &title, None); // no default legend
     render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)
@@ -11094,7 +11094,7 @@ fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let x_data: Vec<f64> = xv.to_vec();
     let y_data: Vec<f64> = yv.to_vec();
-    push_xy_scatter(x_data, y_data, "scatter", &title, None);
+    push_xy_scatter(x_data, y_data, "", &title, None); // no default legend
     render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)

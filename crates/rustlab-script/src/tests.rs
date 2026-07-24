@@ -18912,4 +18912,24 @@ mod log_axis_and_legend_tests {
             assert_eq!(labels, vec!["a", "b"]);
         });
     }
+
+    #[test]
+    fn bar_scatter_stem_have_no_default_legend() {
+        // Found while reviewing subplots: bar/scatter/stem used to set a
+        // default "bar"/"scatter"/"stem" label → a spurious legend on every
+        // such plot. Now empty (legend only via legend()), like plot().
+        for src in [
+            "bar([1,2,3],[4,5,6])",
+            "scatter([1,2,3],[4,5,6])",
+            "stem([1,2,3],[4,5,6])",
+        ] {
+            run(src);
+            current(|sp| {
+                assert!(
+                    sp.series.iter().all(|s| s.label.is_empty()),
+                    "no default legend label for: {src}"
+                );
+            });
+        }
+    }
 }
