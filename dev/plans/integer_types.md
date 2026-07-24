@@ -23,7 +23,7 @@ saturates). See "Locked-in design decisions".
 | 0 — Design & scoping | M0 | **complete** (2026-07-23) | this document; type model + hybrid-MATLAB semantics locked with the user |
 | 1 — Scalar integer + widening + literals | M1 | ✅ **complete** | `IntClass` + `Value::Int` + widening + `0x/0b/0o` literals + casts (`int8`…`uint64`) + `class`/`cast`/`intmax`/`intmin`/`isinteger`/`isa`/`double` + same-class arithmetic / cross-class error / Deviation A + integer indexing. 15 script tests + 9 unit tests; help + docs. |
 | 2 — Packed integer arrays + indexing | M2 | ✅ **complete** | `IntArray` packed storage + Display/`whos` + widening + elementwise arithmetic (same-class, broadcast, shape/cross-class errors) + `intN([...])`/`zeros`/`ones` constructors + indexing (read + as-index) + class-preserving transpose + `size`/`length`/`numel`/`sum`. 12 script tests. |
-| 3 — Cross-class width semantics | M3 | not started | cross-class-mix errors, lossy-narrowing saturation, full `uint64` range |
+| 3 — Cross-class width semantics | M3 | ✅ **complete** | cross-class-mix errors (scalar + array), lossy-narrowing saturate/wrap, full `uint64` range + arithmetic above i64::MAX (exact via i128 backing). 4 width tests. |
 | 4 — I/O & interop | M4 | not started | NPY int dtypes (also fixes today's "can't load numpy int arrays" gap), CSV, TOML, `whos` class reporting |
 
 Full milestone acceptance criteria are in the **Milestones** section below.

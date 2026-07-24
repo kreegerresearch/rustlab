@@ -18535,3 +18535,60 @@ mod int_array_tests {
         assert_eq!(arr(&e, "m").2, 3);
     }
 }
+
+/// Integer width semantics (Phase 3 of dev/plans/integer_types.md): lossy
+/// narrowing and the full uint64 range on the i128 backing.
+mod int_width_tests {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn ev(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut e = Evaluator::new();
+        for s in &stmts {
+            e.exec_stmt(s).unwrap();
+        }
+        e
+    }
+
+    fn int1(e: &Evaluator, name: &str) -> (i128, String) {
+        match e.get(name).unwrap() {
+            Value::Int { data, class, .. } => (*data, class.name().to_string()),
+            other => panic!("{name}: expected Int, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn narrowing_cast_saturates_and_wraps() {
+        let e = ev("a = int8(int32(300))\nb = int8(int32(300), \"wrap\")");
+        assert_eq!(int1(&e, "a"), (127, "int8".into()));
+        assert_eq!(int1(&e, "b"), (44, "int8".into())); // 300 - 256
+    }
+
+    #[test]
+    fn full_uint64_range_is_representable() {
+        let e = ev(
+            "a = uint64(0xFFFFFFFFFFFFFFFF)\nb = intmax(\"uint64\")\n\
+             c = uint64(18446744073709551615)",
+        );
+        let umax: i128 = u64::MAX as i128;
+        assert_eq!(int1(&e, "a"), (umax, "uint64".into()));
+        assert_eq!(int1(&e, "b"), (umax, "uint64".into()));
+        assert_eq!(int1(&e, "c"), (umax, "uint64".into()));
+    }
+
+    #[test]
+    fn uint64_arithmetic_above_i64_max_is_exact() {
+        // 1e19 + 5e18 = 1.5e19, well above i64::MAX (~9.2e18).
+        let e = ev("s = uint64(10000000000000000000) + uint64(5000000000000000000)");
+        assert_eq!(int1(&e, "s"), (15_000_000_000_000_000_000i128, "uint64".into()));
+    }
+
+    #[test]
+    fn uint64_saturates_at_its_own_max() {
+        let e = ev("s = uint64(0xFFFFFFFFFFFFFFFF) + uint64(1)"); // saturate
+        assert_eq!(int1(&e, "s").0, u64::MAX as i128);
+    }
+}
