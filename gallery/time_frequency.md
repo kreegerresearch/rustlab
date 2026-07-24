@@ -38,7 +38,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/time_frequency/plot-1-cdc57a90.svg)
+![plot 1](plots/time_frequency/plot-1-39b2ae25.svg)
 
 <!-- rustlab:output-end -->
 

@@ -43,7 +43,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/vector_fields/plot-1-a6ae9d76.svg)
+![plot 1](plots/vector_fields/plot-1-faf977f0.svg)
 
 <!-- rustlab:output-end -->
 
@@ -58,7 +58,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/vector_fields/plot-2-2b4f0d2c.svg)
+![plot 2](plots/vector_fields/plot-2-301f6cea.svg)
 
 <!-- rustlab:output-end -->
 
@@ -74,7 +74,7 @@ title("quiver(U, V) — indexed axes")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/vector_fields/plot-3-6a9d8009.svg)
+![plot 3](plots/vector_fields/plot-3-51264f58.svg)
 
 <!-- rustlab:output-end -->
 
@@ -173,7 +173,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 8](plots/vector_fields/plot-8-1335ae18.svg)
+![plot 8](plots/vector_fields/plot-8-377ae2c3.svg)
 
 <!-- rustlab:output-end -->
 
@@ -197,7 +197,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 9](plots/vector_fields/plot-9-bf147cdc.svg)
+![plot 9](plots/vector_fields/plot-9-be4a1060.svg)
 
 <!-- rustlab:output-end -->
 

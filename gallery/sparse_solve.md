@@ -156,7 +156,7 @@ title("Poisson solution: -∇² V = δ at grid centre")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_solve/plot-1-dfa686a6.svg)
+![plot 1](plots/sparse_solve/plot-1-c2fc2297.svg)
 
 <!-- rustlab:output-end -->
 

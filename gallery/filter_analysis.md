@@ -21,7 +21,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/filter_analysis/plot-1-e19e8915.svg)
+![plot 1](plots/filter_analysis/plot-1-5cbce121.svg)
 
 <!-- rustlab:output-end -->
 
@@ -41,7 +41,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/filter_analysis/plot-2-05922cf6.svg)
+![plot 2](plots/filter_analysis/plot-2-529d5342.svg)
 
 <!-- rustlab:output-end -->
 
@@ -69,7 +69,7 @@ subplot(2,1,2); plot(y(1:256)); title("Filtered Output"); grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/filter_analysis/plot-3-32831018.svg)
+![plot 3](plots/filter_analysis/plot-3-8fd0fb0f.svg)
 
 <!-- rustlab:output-end -->
 

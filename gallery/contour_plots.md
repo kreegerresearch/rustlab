@@ -150,7 +150,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/contour_plots/plot-6-9531655e.svg)
+![plot 6](plots/contour_plots/plot-6-91c668ea.svg)
 
 <!-- rustlab:output-end -->
 

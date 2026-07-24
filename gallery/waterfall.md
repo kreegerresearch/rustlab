@@ -57,7 +57,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/waterfall/plot-1-3fcd5d37.svg)
+![plot 1](plots/waterfall/plot-1-1c7a0d23.svg)
 
 <!-- rustlab:output-end -->
 
@@ -115,7 +115,7 @@ ylabel("Time row (newest = top)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/waterfall/plot-3-35e5d769.svg)
+![plot 3](plots/waterfall/plot-3-09413deb.svg)
 
 <!-- rustlab:output-end -->
 
@@ -148,7 +148,7 @@ ylabel("Time row (newest = top)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/waterfall/plot-4-3b32a648.svg)
+![plot 4](plots/waterfall/plot-4-2924b897.svg)
 
 <!-- rustlab:output-end -->
 
@@ -172,7 +172,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/waterfall/plot-5-962b29c8.svg)
+![plot 5](plots/waterfall/plot-5-10adc8e4.svg)
 
 <!-- rustlab:output-end -->
 

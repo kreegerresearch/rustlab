@@ -22,7 +22,7 @@ title("y = x² — slope 2 on log-log");
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/log_polar/plot-1-6e57513e.svg)
+![plot 1](plots/log_polar/plot-1-6abe1f05.svg)
 
 <!-- rustlab:output-end -->
 
@@ -45,7 +45,7 @@ title("Exponential decay e^{-t} on semilogy");
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/log_polar/plot-2-932999e3.svg)
+![plot 2](plots/log_polar/plot-2-8b74c405.svg)
 
 <!-- rustlab:output-end -->
 
@@ -82,7 +82,7 @@ title("Three-petal rose: r = cos(3θ)");
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/log_polar/plot-3-870ff619.svg)
+![plot 3](plots/log_polar/plot-3-9a283398.svg)
 
 <!-- rustlab:output-end -->
 
@@ -100,7 +100,7 @@ title("Hertzian dipole pattern: |sin θ|");
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/log_polar/plot-4-2f8ea14a.svg)
+![plot 4](plots/log_polar/plot-4-34410e29.svg)
 
 <!-- rustlab:output-end -->
 

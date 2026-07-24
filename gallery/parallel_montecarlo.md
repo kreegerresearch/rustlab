@@ -27,7 +27,7 @@ print("logical CPUs")
 <!-- rustlab:output-start -->
 ```text
 running parmap on
-14
+10
 logical CPUs
 ```
 
@@ -104,7 +104,7 @@ title("Black–Scholes call price vs. spot")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/parallel_montecarlo/plot-1-46eeb079.svg)
+![plot 1](plots/parallel_montecarlo/plot-1-195db0a3.svg)
 
 <!-- rustlab:output-end -->
 
@@ -210,7 +210,7 @@ title("Per-trial estimates of π")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/parallel_montecarlo/plot-2-2d93ad0f.svg)
+![plot 2](plots/parallel_montecarlo/plot-2-cc3791a6.svg)
 
 <!-- rustlab:output-end -->
 

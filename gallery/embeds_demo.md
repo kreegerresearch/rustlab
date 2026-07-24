@@ -69,7 +69,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/embeds_demo/plot-1-70d30018.svg)
+![plot 1](plots/embeds_demo/plot-1-168ce6ee.svg)
 
 <!-- rustlab:output-end -->
 

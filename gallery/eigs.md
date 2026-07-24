@@ -95,7 +95,7 @@ title("Mode 2 — first lateral mode");
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/eigs/plot-2-1caec07b.svg)
+![plot 2](plots/eigs/plot-2-71c69c51.svg)
 
 <!-- rustlab:output-end -->
 
@@ -111,7 +111,7 @@ title("Mode 3");
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/eigs/plot-3-6222dd93.svg)
+![plot 3](plots/eigs/plot-3-6eaf4c25.svg)
 
 <!-- rustlab:output-end -->
 

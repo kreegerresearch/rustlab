@@ -67,7 +67,7 @@ rfplot(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/amplifier_analysis/plot-1-cc1d866b.svg)
+![plot 1](plots/amplifier_analysis/plot-1-d8eaac99.svg)
 
 <!-- rustlab:output-end -->
 
@@ -92,7 +92,7 @@ title("Forward gain |S21| in dB")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/amplifier_analysis/plot-2-ebaf2d91.svg)
+![plot 2](plots/amplifier_analysis/plot-2-d8bac559.svg)
 
 <!-- rustlab:output-end -->
 
@@ -103,7 +103,7 @@ title("S21 phase (wrapped, degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/amplifier_analysis/plot-3-b4afb235.svg)
+![plot 3](plots/amplifier_analysis/plot-3-a9cce04b.svg)
 
 <!-- rustlab:output-end -->
 
@@ -117,7 +117,7 @@ title("S21 unwrapped phase (degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/amplifier_analysis/plot-4-12e430dd.svg)
+![plot 4](plots/amplifier_analysis/plot-4-aae49671.svg)
 
 <!-- rustlab:output-end -->
 
@@ -131,7 +131,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-a7a6bc7a.svg)
+![plot 5](plots/amplifier_analysis/plot-5-f76755da.svg)
 
 <!-- rustlab:output-end -->
 
@@ -414,7 +414,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 9](plots/amplifier_analysis/plot-9-898aa399.svg)
+![plot 9](plots/amplifier_analysis/plot-9-f712cd46.svg)
 
 <!-- rustlab:output-end -->
 

@@ -270,7 +270,7 @@ title("plot(x, 1×N row-Matrix)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/language_v0_3_4/plot-1-d5ed00e3.svg)
+![plot 1](plots/language_v0_3_4/plot-1-4000d022.svg)
 
 <!-- rustlab:output-end -->
 

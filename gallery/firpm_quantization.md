@@ -33,7 +33,7 @@ ylim([-100, 5])
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/firpm_quantization/plot-1-6d42ecd0.svg)
+![plot 1](plots/firpm_quantization/plot-1-33c34252.svg)
 
 <!-- rustlab:output-end -->
 
@@ -112,7 +112,7 @@ ylim([-80, -20])
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/firpm_quantization/plot-2-879ed324.svg)
+![plot 2](plots/firpm_quantization/plot-2-fbbd0a5f.svg)
 
 <!-- rustlab:output-end -->
 

@@ -118,7 +118,7 @@ title("|E| with field arrows — interface jump at j = 50")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/dielectric/plot-3-a1dd35de.svg)
+![plot 3](plots/dielectric/plot-3-cdc31b22.svg)
 
 <!-- rustlab:output-end -->
 
