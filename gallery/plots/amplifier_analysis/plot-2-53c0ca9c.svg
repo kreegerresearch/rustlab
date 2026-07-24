@@ -39,18 +39,18 @@ freq (Hz)
 1e9
 </text>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="90,430 90,435 "/>
-<text x="292" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-1.58e9
+<text x="395" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
+2e9
 </text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="292,430 292,435 "/>
-<text x="495" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-2.51e9
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="395,430 395,435 "/>
+<text x="573" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
+3e9
 </text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="495,430 495,435 "/>
-<text x="698" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
-3.98e9
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="573,430 573,435 "/>
+<text x="798" y="440" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="9.67741935483871" opacity="1" fill="#CDD6F4">
+5e9
 </text>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="698,430 698,435 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="798,430 798,435 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="90,429 879,429 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="90,353 879,353 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="90,277 879,277 "/>
