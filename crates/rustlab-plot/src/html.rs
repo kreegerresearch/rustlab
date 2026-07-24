@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::fmt::Write as _;
 
 use crate::error::PlotError;
-use crate::figure::{FigureState, LineStyle, PlotKind, SeriesColor, FIGURE};
+use crate::figure::{AxisScale, FigureState, LineStyle, PlotKind, SeriesColor, FIGURE};
 use crate::theme::{Theme, ThemeColors};
 
 thread_local! {
@@ -215,9 +215,29 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 plot_bg = theme.plot_bg,
             ));
         } else {
+            // Log-scaled axes (semilogx/semilogy/loglog): Plotly renders real
+            // data on a `type: "log"` axis with decade ticks natively. An
+            // explicit range must be given in log10 units for a log axis.
+            let x_log = panel.x_scale == AxisScale::Log;
+            let y_log = panel.y_scale == AxisScale::Log;
+            let log10_lim = |lim: (Option<f64>, Option<f64>)| {
+                (lim.0.map(f64::log10), lim.1.map(f64::log10))
+            };
+            let xtype = if x_log { r#", type: "log""# } else { "" };
+            let ytype = if y_log { r#", type: "log""# } else { "" };
+            let xrange = if x_log {
+                format_range(log10_lim(panel.xlim))
+            } else {
+                format_range(panel.xlim)
+            };
+            let yrange = if y_log {
+                format_range(log10_lim(panel.ylim))
+            } else {
+                format_range(panel.ylim)
+            };
             layout_axes.push_str(&format!(
-                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], title: {{ text: "{xlabel}" }}{xrange}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
-yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
+                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], title: {{ text: "{xlabel}" }}{xrange}{xtype}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
+yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{ytype}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
 "#,
                 ax = axis_suffix,
                 x0 = x_start, x1 = x_end,
@@ -226,8 +246,6 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange},
                 plot_grid = theme.plot_grid,
                 xlabel = escape_js(&panel.xlabel),
                 ylabel = escape_js(&panel.ylabel),
-                xrange = format_range(panel.xlim),
-                yrange = format_range(panel.ylim),
                 xtick = xtick_extra,
                 yextra = yaxis_extra,
             ));

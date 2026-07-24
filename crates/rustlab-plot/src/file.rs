@@ -1,8 +1,8 @@
 use crate::contour::{band_index, marching_squares};
 use crate::error::PlotError;
 use crate::figure::{
-    colormap_rgb, plot_context, push_notebook_figure_snapshot, ContourData, FigureState, LineStyle,
-    PlotContext, PlotKind, SeriesColor, SubplotState, SurfaceData, FIGURE,
+    colormap_rgb, plot_context, push_notebook_figure_snapshot, AxisScale, ContourData, FigureState,
+    LineStyle, PlotContext, PlotKind, SeriesColor, SubplotState, SurfaceData, FIGURE,
 };
 use crate::theme::{Theme, ThemeColors};
 use plotters::prelude::*;
@@ -367,6 +367,45 @@ where
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
 
+    // Log-scaled axes (semilogx/semilogy/loglog): position data by log10 while
+    // keeping the stored data real. We render a transformed copy whose series
+    // (and limits) are log10'd, then label ticks with the real decade values.
+    let x_log = sp.x_scale == AxisScale::Log;
+    let y_log = sp.y_scale == AxisScale::Log;
+    let log_owned;
+    let sp: &SubplotState = if x_log || y_log {
+        let mut c = sp.clone();
+        for s in &mut c.series {
+            if x_log {
+                for v in &mut s.x_data {
+                    *v = v.log10();
+                }
+            }
+            if y_log {
+                for v in &mut s.y_data {
+                    *v = v.log10();
+                }
+            }
+        }
+        let logify = |o: &mut Option<f64>| {
+            if let Some(v) = o.as_mut() {
+                *v = v.log10();
+            }
+        };
+        if x_log {
+            logify(&mut c.xlim.0);
+            logify(&mut c.xlim.1);
+        }
+        if y_log {
+            logify(&mut c.ylim.0);
+            logify(&mut c.ylim.1);
+        }
+        log_owned = c;
+        &log_owned
+    } else {
+        sp
+    };
+
     // Compute axis bounds (shared with the terminal backend), then ensure a
     // non-degenerate range for plotters' cartesian mapping.
     let Some((x_min, x_max, y_min, y_max)) = crate::figure::compute_axis_bounds(sp) else {
@@ -425,42 +464,50 @@ where
         .build_cartesian_2d(x_lo..x_hi, y_lo..y_hi)
         .map_err(err)?;
 
-    if let Some(labels) = &sp.x_labels {
-        let labels_c = labels.clone();
-        chart
-            .configure_mesh()
-            .disable_mesh()
+    {
+        // Formatter closures must outlive `draw()`, so bind them before the
+        // mesh builder borrows `chart`.
+        let cat_labels = sp.x_labels.clone();
+        let cat_fmt = move |v: &f64| -> String {
+            let labels = match &cat_labels {
+                Some(l) => l,
+                None => return String::new(),
+            };
+            let rounded = v.round();
+            if (*v - rounded).abs() > 1e-6 {
+                return String::new();
+            }
+            let idx = (rounded as isize) - 1;
+            if idx >= 0 && (idx as usize) < labels.len() {
+                labels[idx as usize].clone()
+            } else {
+                String::new()
+            }
+        };
+        let log_fmt = |v: &f64| -> String { format_log_tick(*v) };
+        // One label per decade in the (log-space) range.
+        let decade_count =
+            |lo: f64, hi: f64| ((hi.floor() - lo.ceil()) as isize + 1).clamp(2, 12) as usize;
+
+        let mut mesh = chart.configure_mesh();
+        mesh.disable_mesh()
             .axis_style(axis_style)
             .label_style(label_style.clone())
             .axis_desc_style(desc_style.clone())
             .x_desc(xlabel)
-            .y_desc(ylabel)
-            .x_labels(labels_c.len())
-            .x_label_formatter(&|v| {
-                let rounded = v.round();
-                if (*v - rounded).abs() > 1e-6 {
-                    return String::new();
-                }
-                let idx = (rounded as isize) - 1;
-                if idx >= 0 && (idx as usize) < labels_c.len() {
-                    labels_c[idx as usize].clone()
-                } else {
-                    String::new()
-                }
-            })
-            .draw()
-            .map_err(err)?;
-    } else {
-        chart
-            .configure_mesh()
-            .disable_mesh()
-            .axis_style(axis_style)
-            .label_style(label_style.clone())
-            .axis_desc_style(desc_style.clone())
-            .x_desc(xlabel)
-            .y_desc(ylabel)
-            .draw()
-            .map_err(err)?;
+            .y_desc(ylabel);
+        if sp.x_labels.is_some() {
+            let n = sp.x_labels.as_ref().map_or(0, |l| l.len());
+            mesh.x_labels(n).x_label_formatter(&cat_fmt);
+        } else if x_log {
+            mesh.x_labels(decade_count(x_lo, x_hi))
+                .x_label_formatter(&log_fmt);
+        }
+        if y_log {
+            mesh.y_labels(decade_count(y_lo, y_hi))
+                .y_label_formatter(&log_fmt);
+        }
+        mesh.draw().map_err(err)?;
     }
 
     if sp.grid {
@@ -1568,6 +1615,26 @@ where
     Ok(())
 }
 
+/// Format a log-axis tick at log-space position `v` as its real decade value.
+/// Only integer positions (whole decades) get a label; everything else is
+/// blank, so the axis shows `1, 10, 100, …` (or `0.1, 0.01`) — the real
+/// numbers, matching MATLAB `semilogx`/`loglog`.
+fn format_log_tick(v: f64) -> String {
+    let r = v.round();
+    if (v - r).abs() > 1e-6 {
+        return String::new();
+    }
+    let real = 10f64.powf(r);
+    if (0.0..=9.0).contains(&r) {
+        format!("{}", real as i64) // 1, 10, 100, … 1e9
+    } else if (-4.0..0.0).contains(&r) {
+        // 0.1, 0.01, 0.001, 0.0001 without float noise.
+        format!("{:.*}", (-r) as usize, real)
+    } else {
+        format!("1e{}", r as i64) // very large/small decades
+    }
+}
+
 fn bounds(xs: &[f64]) -> (f64, f64) {
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
@@ -1872,6 +1939,40 @@ mod tests {
         // structure; the simplest invariant is that no <text> element
         // contains the non-existent label "MISSING_LEGEND_TEXT".
         assert!(!content.contains("MISSING_LEGEND_TEXT"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn log_x_axis_renders_real_decade_ticks_not_log10() {
+        // Regression: semilogx/loglog used to plot log10(data) on a linear
+        // axis, so ticks read 0,1,2,3 and the label said "log10(x)". A log-
+        // scaled axis must keep the real data and label ticks 1, 10, 100, 1000.
+        let path = tmp_path("_logx.svg");
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(
+            vec![1.0, 10.0, 100.0, 1000.0],
+            vec![1.0, 2.0, 3.0, 4.0],
+            "",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|fig| {
+            fig.borrow_mut().current_mut().x_scale = crate::figure::AxisScale::Log;
+        });
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let texts: Vec<String> = svg
+            .split("</text>")
+            .filter_map(|seg| seg.rsplit_once('>').map(|(_, t)| t.trim().to_string()))
+            .collect();
+        for real in ["10", "100", "1000"] {
+            assert!(
+                texts.iter().any(|t| t == real),
+                "log x-axis missing real decade tick {real}; texts={texts:?}"
+            );
+        }
+        assert!(!svg.contains("log10"), "log10 descriptor should be gone");
         let _ = std::fs::remove_file(&path);
     }
 
