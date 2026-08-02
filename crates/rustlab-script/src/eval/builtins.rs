@@ -4159,10 +4159,42 @@ fn is_real_vector(v: &CVector) -> bool {
 
 // ─── Plot options helper ────────────────────────────────────────────────────
 
+/// Marker request on a plotting call.
+///
+/// The renderers draw one mark — a filled circle — so only the circle
+/// spellings are accepted. Taking `"s"` or `"^"` and quietly drawing a circle
+/// would be the same silent substitution this option set is trying to stop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MarkerSpec {
+    /// Draw the series as point marks with no connecting line.
+    Circle,
+    /// Explicit opt-out — draw the line, no marks.
+    None,
+}
+
+impl MarkerSpec {
+    fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "o" | "." | "circle" | "point" => Some(Self::Circle),
+            "none" | "" => Some(Self::None),
+            _ => None,
+        }
+    }
+    const KNOWN_NAMES: &'static str = "o/./circle/point, none";
+}
+
 struct PlotOpts {
     color: Option<SeriesColor>,
     label: Option<String>,
     style: LineStyle,
+    marker: Option<MarkerSpec>,
+}
+
+impl PlotOpts {
+    /// True when the caller asked for point marks instead of a line.
+    fn wants_markers(&self) -> bool {
+        self.marker == Some(MarkerSpec::Circle)
+    }
 }
 
 impl Default for PlotOpts {
@@ -4171,6 +4203,7 @@ impl Default for PlotOpts {
             color: None,
             label: None,
             style: LineStyle::Solid,
+            marker: None,
         }
     }
 }
@@ -4195,44 +4228,129 @@ fn warn_non_finite_plot_data(builtin: &str, args: &[Value]) {
     }
 }
 
+/// The option keys [`parse_plot_opts_for`] understands — kept next to the
+/// parser so the "unknown option" message can't drift from it.
+const KNOWN_PLOT_OPTS: &str = "color/colour, label, style, marker";
+
 /// Parse trailing key-value string pairs from args slice.
-/// Returns (opts, number_of_args_consumed).
-fn parse_plot_opts(args: &[Value]) -> PlotOpts {
+///
+/// An unrecognized key is reported and skipped, not treated as end-of-options.
+/// Stopping at the first unknown key silently discarded every argument after
+/// it too, so `plot(x, y, "marker", "o", "color", "red")` dropped the colour
+/// as well and drew a palette hue with no warning at all.
+/// Returns the options and the number of arguments consumed. The caller needs
+/// the count to tell a genuine trailing title from an argument the parser gave
+/// up on — inferring that from the remainder's parity is wrong, because when
+/// parsing stops early the leftover is not where parity says it is.
+fn parse_plot_opts_for(builtin: &str, args: &[Value]) -> (PlotOpts, usize) {
     let mut opts = PlotOpts::default();
     let mut i = 0;
     while i + 1 < args.len() {
-        if let (Ok(k), Ok(v)) = (args[i].to_str(), args[i + 1].to_str()) {
-            match k.to_lowercase().as_str() {
-                "color" | "colour" => {
-                    opts.color = SeriesColor::parse(&v);
-                    if opts.color.is_none() {
-                        eprintln!(
-                            "plot: warning: unrecognized color '{v}' — using a palette \
-                             color. Known: {}",
-                            SeriesColor::KNOWN_NAMES
-                        );
-                    }
-                    i += 2;
+        // A non-string key means we are no longer looking at options at all;
+        // hand the rest back to the caller rather than guessing.
+        let Ok(k) = args[i].to_str() else { break };
+        // A non-string *value* is a typo'd option, not end-of-options: warn
+        // and step over the pair so later options still apply. Breaking here
+        // is what made `plot(x, y, "linewidth", 3, "color", "red")` drop the
+        // colour in silence.
+        let Ok(v) = args[i + 1].to_str() else {
+            eprintln!(
+                "{builtin}: warning: option '{k}' needs a string value — ignored. \
+                 Known options: {KNOWN_PLOT_OPTS}"
+            );
+            i += 2;
+            continue;
+        };
+        match k.to_lowercase().as_str() {
+            "color" | "colour" => {
+                opts.color = SeriesColor::parse(&v);
+                if opts.color.is_none() {
+                    eprintln!(
+                        "{builtin}: warning: unrecognized color '{v}' — using a palette \
+                         color. Known: {}",
+                        SeriesColor::KNOWN_NAMES
+                    );
                 }
-                "label" => {
-                    opts.label = Some(v);
-                    i += 2;
-                }
-                "style" => {
-                    opts.style = if v.to_lowercase() == "dashed" {
-                        LineStyle::Dashed
-                    } else {
-                        LineStyle::Solid
-                    };
-                    i += 2;
-                }
-                _ => break,
             }
-        } else {
-            break;
+            "label" => opts.label = Some(v),
+            // Any value that wasn't "dashed" used to fall through to Solid, so
+            // a typo'd or unsupported style silently drew the default line.
+            "style" => match v.to_lowercase().as_str() {
+                "dashed" => opts.style = LineStyle::Dashed,
+                "solid" => opts.style = LineStyle::Solid,
+                other => eprintln!(
+                    "{builtin}: warning: unrecognized style '{other}' — using solid. \
+                     Known: solid, dashed"
+                ),
+            },
+            "marker" => match MarkerSpec::parse(&v) {
+                Some(m) => opts.marker = Some(m),
+                None => eprintln!(
+                    "{builtin}: warning: unrecognized marker '{v}' — ignored. Known: {}",
+                    MarkerSpec::KNOWN_NAMES
+                ),
+            },
+            other => eprintln!(
+                "{builtin}: warning: unknown option '{other}' — ignored. \
+                 Known options: {KNOWN_PLOT_OPTS}"
+            ),
         }
+        i += 2;
     }
-    opts
+    (opts, i)
+}
+
+/// Parse a plotting builtin's trailing arguments: key/value option pairs
+/// followed by an optional title.
+///
+/// One entry point for `plot`, `stem` and `scatter` so the three cannot drift
+/// — they previously each had their own copy of the title rule and disagreed
+/// about when a title survives.
+fn parse_trailing_plot_args(builtin: &str, rem: &[Value]) -> (PlotOpts, String) {
+    // MATLAB's grammar is `plot(x, y, LineSpec, Name, Value, ...)` — a bare
+    // colour spec may LEAD the option pairs. Options come in pairs, so a
+    // leading spec makes the remainder odd; without this the pair-parser ate
+    // `("r", "label")` as one bogus option and the real label became a title.
+    let leading_spec = match rem.first().map(|v| v.to_str()) {
+        Some(Ok(s)) if rem.len() % 2 == 1 && SeriesColor::is_base_spec(&s) => {
+            SeriesColor::parse(&s)
+        }
+        _ => None,
+    };
+    let rem = if leading_spec.is_some() { &rem[1..] } else { rem };
+
+    let (mut opts, consumed) = parse_plot_opts_for(builtin, rem);
+    if opts.color.is_none() {
+        opts.color = leading_spec;
+    }
+    let title = match &rem[consumed..] {
+        [] => String::new(),
+        [one] => match one.to_str() {
+            // Only the historical spellings act as a bare colour spec. Gating
+            // on `is_base_spec` keeps the newly-added names from reclassifying
+            // one-word titles: `plot(y, "Gold")` stays a titled chart.
+            Ok(s) if SeriesColor::is_base_spec(&s) => {
+                if opts.color.is_none() {
+                    opts.color = SeriesColor::parse(&s);
+                }
+                String::new()
+            }
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("{builtin}: warning: trailing argument is not a string — ignored");
+                String::new()
+            }
+        },
+        extra => {
+            eprintln!(
+                "{builtin}: warning: {} trailing argument(s) ignored — expected \
+                 \"key\", \"value\" pairs optionally followed by a title",
+                extra.len()
+            );
+            String::new()
+        }
+    };
+    (opts, title)
 }
 
 // ─── plot builtin ──────────────────────────────────────────────────────────
@@ -4289,31 +4407,9 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
 
-    let mut opts = parse_plot_opts(&args[opts_start..]);
-
-    // A lone trailing string is a MATLAB-style colour/line spec (e.g. `"r"`)
-    // when it parses as a colour — apply it as the series colour and do NOT
-    // use it as the chart title. Otherwise it is a genuine title.
-    let title = {
-        let rem = &args[opts_start..];
-        if rem.len() == 1 {
-            match rem[0].to_str() {
-                Ok(s) => {
-                    if let Some(c) = SeriesColor::parse(&s) {
-                        if opts.color.is_none() {
-                            opts.color = Some(c);
-                        }
-                        String::new()
-                    } else {
-                        s
-                    }
-                }
-                Err(_) => String::new(),
-            }
-        } else {
-            String::new()
-        }
-    };
+    // Options, then an optional title. A lone trailing string that is a
+    // MATLAB-style colour spec (e.g. `"r"`) sets the colour instead.
+    let (opts, title) = parse_trailing_plot_args("plot", &args[opts_start..]);
     let label = opts.label.as_deref().unwrap_or("").to_string();
 
     match y_val {
@@ -4373,7 +4469,12 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 .collect();
             // One push for the whole matrix: a per-column loop would clear
             // the subplot on each call and keep only the last column.
-            push_xy_lines(columns, &title, opts.color, opts.style.clone());
+            let kind = if opts.wants_markers() {
+                rustlab_plot::PlotKind::Scatter
+            } else {
+                rustlab_plot::PlotKind::Line
+            };
+            push_xy_lines(columns, &title, opts.color, opts.style.clone(), kind);
             render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
         }
         Value::Vector(v) => {
@@ -4403,7 +4504,13 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 let y_data: Vec<f64> = v.iter().map(|c| c.re).collect();
                 // No default label: a legend appears only when the user calls
                 // legend(...) (MATLAB behaviour), not on every plain plot.
-                push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+                if opts.wants_markers() {
+                    // MATLAB `plot(x, y, 'o')`: marks, no connecting line. A
+                    // one-point series drawn as a line renders nothing at all.
+                    push_xy_scatter(x_data, y_data, label.as_str(), &title, opts.color);
+                } else {
+                    push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+                }
                 render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
             } else {
                 // Complex: push magnitude + real
@@ -4440,7 +4547,11 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Scalar(n) => {
             let x_data = vec![0.0f64];
             let y_data = vec![*n];
-            push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+            if opts.wants_markers() {
+                push_xy_scatter(x_data, y_data, label.as_str(), &title, opts.color);
+            } else {
+                push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
+            }
             render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
         }
         other => Err(ScriptError::type_err(format!(
@@ -4464,20 +4575,9 @@ fn builtin_stem(args: Vec<Value>) -> Result<Value, ScriptError> {
         _ => (None, &args[0], 1),
     };
 
-    let opts = parse_plot_opts(&args[opts_start..]);
+    // Named "stem" so its diagnostics do not point the user at plot().
+    let (opts, title) = parse_trailing_plot_args("stem", &args[opts_start..]);
     let label = opts.label.as_deref().unwrap_or("").to_string(); // no default legend
-    let title = {
-        let rem = &args[opts_start..];
-        if rem.len() == 1 {
-            if let Ok(s) = rem[0].to_str() {
-                s
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        }
-    };
 
     match y_val {
         Value::Vector(v) => {
@@ -11046,9 +11146,11 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// scatter(x, y)  or  scatter(x, y, "title")
 fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
-    if args.len() < 2 || args.len() > 3 {
+    if args.len() < 2 {
         return Err(ScriptError::type_err(
-            "scatter: expected scatter(x, y) or scatter(x, y, title)".to_string(),
+            "scatter: expected scatter(x, y), scatter(x, y, title), or \
+             scatter(x, y, \"label\", \"...\", \"color\", \"...\")"
+                .to_string(),
         ));
     }
     let mut args = args;
@@ -11062,14 +11164,18 @@ fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
             yv.len()
         )));
     }
-    let title = if args.len() == 3 {
-        args[2].to_str().map_err(|e| ScriptError::type_err(e))?
-    } else {
-        String::new()
-    };
+    // Trailing arguments follow plot()'s convention: a lone string is a title
+    // (or a colour spec), anything longer is key/value options. Before this,
+    // scatter took a title and nothing else, so a scatter could not be given a
+    // legend entry at all — the type-name auto-label was the only thing that
+    // ever put one in a legend, and dropping that left the overlay idiom
+    // (labelled curve + scatter marking the operating point) as an
+    // unexplained dot.
+    let (opts, title) = parse_trailing_plot_args("scatter", &args[2..]);
+    let label = opts.label.as_deref().unwrap_or("");
     let x_data: Vec<f64> = xv.to_vec();
     let y_data: Vec<f64> = yv.to_vec();
-    push_xy_scatter(x_data, y_data, "", &title, None); // no default legend
+    push_xy_scatter(x_data, y_data, label, &title, opts.color);
     render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
     sync_figure_outputs();
     Ok(Value::None)

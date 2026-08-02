@@ -18822,7 +18822,7 @@ mod int_widening_regression_tests {
 /// Log-scale axes + legend/labeling fixes (dev/plans/log_axis_and_legend_fix.md).
 mod log_axis_and_legend_tests {
     use crate::{lexer, parser, Evaluator};
-    use rustlab_plot::AxisScale;
+    use rustlab_plot::{AxisScale, PlotKind, SeriesColor};
 
     fn run(src: &str) {
         rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
@@ -18931,5 +18931,256 @@ mod log_axis_and_legend_tests {
                 );
             });
         }
+    }
+
+    // ── scatter() can be given a legend entry ──
+
+    #[test]
+    fn scatter_honours_label_and_color_options() {
+        // Regression: scatter took (x, y, title) and nothing else, so a
+        // scatter could not be labelled at all — the keyword form was an
+        // arity error and there was no other spelling. Suppressing the
+        // type-name auto-label then left the overlay idiom (labelled curve +
+        // scatter marking the operating point) as an unexplained dot.
+        run(r#"
+            hold on
+            plot([0,10],[0,10],"label","the line","color","blue")
+            scatter([5],[5],"label","the point","color","red")
+            hold off
+        "#);
+        current(|sp| {
+            let labels: Vec<&str> = sp.series.iter().map(|s| s.label.as_str()).collect();
+            assert_eq!(labels, vec!["the line", "the point"]);
+            assert_eq!(sp.series[1].color, SeriesColor::Red);
+            assert_eq!(sp.series[1].kind, PlotKind::Scatter);
+        });
+    }
+
+    #[test]
+    fn scatter_lone_string_is_still_a_title() {
+        // The documented positional form keeps its meaning: a legend entry
+        // comes from "label", not from the third argument.
+        run(r#"scatter([1,2],[3,4],"my title")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "my title");
+            assert!(sp.series[0].label.is_empty());
+        });
+    }
+
+    // ── unknown options are reported, not silently swallowed ──
+
+    #[test]
+    fn unknown_option_does_not_discard_the_options_after_it() {
+        // The parser stopped at the first key it did not know, which threw
+        // away every remaining argument too. `plot(x, y, "marker", "o",
+        // "color", "red")` therefore drew a palette colour, silently — the
+        // workaround people reached for when scatter could not be labelled.
+        run(r#"plot([0,10],[0,10],"linewidth","3","color","red")"#);
+        current(|sp| assert_eq!(sp.series[0].color, SeriesColor::Red));
+    }
+
+    #[test]
+    fn marker_option_draws_points_not_an_invisible_line() {
+        // A one-point series rendered as a line draws nothing at all, so the
+        // marker request has to change the series kind.
+        run(r#"plot([5],[5],"label","pt","marker","o","color","red")"#);
+        current(|sp| {
+            assert_eq!(sp.series[0].kind, PlotKind::Scatter);
+            assert_eq!(sp.series[0].color, SeriesColor::Red);
+            assert_eq!(sp.series[0].label, "pt");
+        });
+    }
+
+    #[test]
+    fn trailing_title_survives_preceding_options() {
+        // The title was only read when it was the sole trailing argument, so
+        // adding any option in front of it dropped it without a word.
+        run(r#"plot([0,10],[0,10],"color","red","My Title")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "My Title");
+            assert_eq!(sp.series[0].color, SeriesColor::Red);
+        });
+        run(r#"stem([1,2,3],"label","s","Stem Title")"#);
+        current(|sp| assert_eq!(sp.title, "Stem Title"));
+    }
+
+    #[test]
+    fn unrecognized_style_value_is_reported_not_silently_solid() {
+        // Anything that wasn't "dashed" fell through to Solid, so a typo drew
+        // the default line with no diagnostic.
+        run(r#"plot([0,10],[0,10],"style","dashed")"#);
+        current(|sp| assert_eq!(sp.series[0].style, rustlab_plot::LineStyle::Dashed));
+        run(r#"plot([0,10],[0,10],"style","dotted")"#);
+        current(|sp| assert_eq!(sp.series[0].style, rustlab_plot::LineStyle::Solid));
+    }
+
+    #[test]
+    fn marker_none_keeps_the_line() {
+        run(r#"plot([0,10],[0,10],"marker","none")"#);
+        current(|sp| assert_eq!(sp.series[0].kind, PlotKind::Line));
+    }
+
+    // ── extended colour names ──
+
+    #[test]
+    fn common_colour_names_are_recognized() {
+        // orange/purple are the natural 5th and 6th series colours once
+        // r/g/b/c/m/y are spoken for; they used to fall back to a palette
+        // hue, which could collide with a series already on the axes.
+        for (name, expect) in [
+            ("orange", SeriesColor::Rgb(255, 127, 14)),
+            ("purple", SeriesColor::Rgb(128, 0, 128)),
+            ("brown", SeriesColor::Rgb(140, 86, 75)),
+            ("pink", SeriesColor::Rgb(227, 119, 194)),
+            ("olive", SeriesColor::Rgb(128, 128, 0)),
+            ("teal", SeriesColor::Rgb(0, 128, 128)),
+            ("navy", SeriesColor::Rgb(0, 0, 128)),
+            ("gold", SeriesColor::Rgb(255, 215, 0)),
+        ] {
+            assert_eq!(SeriesColor::parse(name), Some(expect), "colour {name}");
+        }
+    }
+
+    #[test]
+    fn base_colour_values_are_unchanged() {
+        // This change is purely ADDITIVE. The base names are known misnomers
+        // (`magenta` renders matplotlib's purple, `yellow` renders olive) but
+        // they are baked into every committed figure and into the live
+        // viewer's wire protocol, so changing them is a separate change with
+        // a four-backend blast radius. Pin them so it cannot happen by
+        // accident here.
+        for (name, rgb) in [
+            ("b", (31, 119, 180)),
+            ("r", (214, 39, 40)),
+            ("g", (44, 160, 44)),
+            ("c", (23, 190, 207)),
+            ("m", (148, 103, 189)),
+            ("y", (188, 189, 34)),
+            ("k", (0, 0, 0)),
+            ("w", (255, 255, 255)),
+            ("gray", (128, 128, 128)),
+        ] {
+            assert_eq!(SeriesColor::parse(name).unwrap().to_rgb(), rgb, "{name}");
+        }
+    }
+
+    #[test]
+    fn extended_names_do_not_swallow_one_word_titles() {
+        // A lone trailing string is a colour spec only for the historical
+        // spellings. Without that gate, adding `gold` silently turned
+        // `plot(y, "Gold")` from a titled chart into an untitled gold line.
+        run(r#"plot([1,2,3],"Gold")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "Gold");
+            assert_ne!(sp.series[0].color, SeriesColor::Rgb(255, 215, 0));
+        });
+        // The base spellings keep their MATLAB meaning.
+        run(r#"plot([1,2,3],"r")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "");
+            assert_eq!(sp.series[0].color, SeriesColor::Red);
+        });
+        // …and the extended names still work when asked for explicitly.
+        run(r#"plot([1,2,3],"color","gold")"#);
+        current(|sp| assert_eq!(sp.series[0].color, SeriesColor::Rgb(255, 215, 0)));
+    }
+
+    #[test]
+    fn named_colours_never_collide_with_each_other() {
+        // The whole point of the extended set is more distinguishable hues;
+        // two spellings rendering the same colour would defeat it.
+        let names = [
+            "red", "green", "blue", "cyan", "magenta", "yellow", "black", "white", "gray",
+            "orange", "purple", "brown", "pink", "olive", "teal", "navy", "gold",
+        ];
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                assert_ne!(
+                    SeriesColor::parse(a).unwrap().to_rgb(),
+                    SeriesColor::parse(b).unwrap().to_rgb(),
+                    "'{a}' and '{b}' render identically"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_yields_named_variants_for_ansi_terminals() {
+        // The cycle must hand out named variants, not Rgb literals:
+        // `to_ratatui` maps names to 16-colour ANSI, and the terminal is the
+        // default output for every plot builtin. Rgb here would emit 24-bit
+        // escapes that non-truecolor terminals drop, silently decolouring
+        // every default plot.
+        let expect = [
+            SeriesColor::Cyan,
+            SeriesColor::Yellow,
+            SeriesColor::Green,
+            SeriesColor::Magenta,
+            SeriesColor::Red,
+            SeriesColor::Blue,
+        ];
+        for (i, c) in expect.iter().enumerate() {
+            assert_eq!(SeriesColor::cycle(i), *c, "cycle slot {i}");
+            assert!(
+                !matches!(SeriesColor::cycle(i), SeriesColor::Rgb(..)),
+                "cycle slot {i} must be a named variant for ANSI output"
+            );
+        }
+    }
+
+    #[test]
+    fn cycle_colour_skips_a_hue_already_on_the_axes() {
+        // Uses an explicit HEX equal to a cycle slot, so the skip is exercised
+        // across spellings. The earlier version of this test used "cyan",
+        // which compared unequal to the cycle slot by enum variant and so
+        // passed even with the skip logic deleted entirely.
+        run(r##"
+            hold on
+            plot([0,1],[0,1],"color","#17becf")
+            plot([0,1],[0,2])
+            hold off
+        "##);
+        current(|sp| {
+            assert_eq!(sp.series[0].color, SeriesColor::Rgb(23, 190, 207));
+            assert_ne!(
+                sp.series[0].color.to_rgb(),
+                sp.series[1].color.to_rgb(),
+                "cycle handed out a hue already on the axes"
+            );
+        });
+    }
+
+    // ── trailing-argument parsing ──
+
+    #[test]
+    fn leading_colour_spec_before_options_is_not_mistaken_for_a_title() {
+        // Deriving the leftover from remainder parity promoted an option
+        // VALUE to the chart title: `plot(x,y,"r","label","L")` set the title
+        // to "L", dropped the label and dropped the colour.
+        run(r#"plot([0,10],[0,10],"r","label","L")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "", "an option value became the title");
+            assert_eq!(sp.series[0].label, "L");
+            assert_eq!(sp.series[0].color, SeriesColor::Red);
+        });
+    }
+
+    #[test]
+    fn non_string_option_value_does_not_discard_later_options() {
+        // A numeric value is a typo'd option, not end-of-options. Breaking
+        // here dropped everything after it, silently — the same defect the
+        // unknown-key handling fixes, via the other exit from the loop.
+        run(r#"plot([0,10],[0,10],"linewidth",3,"color","red")"#);
+        current(|sp| assert_eq!(sp.series[0].color, SeriesColor::Red));
+    }
+
+    #[test]
+    fn scatter_shares_plots_trailing_argument_rules() {
+        // scatter had its own copy of the title rule and disagreed with plot.
+        run(r#"scatter([1,2],[3,4],"color","red","My Title")"#);
+        current(|sp| {
+            assert_eq!(sp.title, "My Title");
+            assert_eq!(sp.series[0].color, SeriesColor::Red);
+        });
     }
 }

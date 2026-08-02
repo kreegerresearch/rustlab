@@ -947,20 +947,6 @@ where
     Ok(())
 }
 
-fn series_color_to_rgb(c: &SeriesColor) -> RGBColor {
-    match c {
-        SeriesColor::Blue => RGBColor(31, 119, 180),
-        SeriesColor::Red => RGBColor(214, 39, 40),
-        SeriesColor::Green => RGBColor(44, 160, 44),
-        SeriesColor::Cyan => RGBColor(23, 190, 207),
-        SeriesColor::Magenta => RGBColor(148, 103, 189),
-        SeriesColor::Yellow => RGBColor(188, 189, 34),
-        SeriesColor::Black => RGBColor(0, 0, 0),
-        SeriesColor::White => RGBColor(255, 255, 255),
-        SeriesColor::Rgb(r, g, b) => RGBColor(*r, *g, *b),
-    }
-}
-
 /// Render a heatmap and/or contour overlays into a single shared chart so
 /// that under `hold on` an `imagesc` heatmap and a `contour` overlay align
 /// in the same coordinate frame.
@@ -1475,10 +1461,17 @@ where
 
 fn format_cbar_value(v: f64, range: f64) -> String {
     let m = v.abs().max(range.abs());
-    if m != 0.0 && (m >= 1e4 || m < 1e-3) {
+    let s = if m != 0.0 && (m >= 1e4 || m < 1e-3) {
         format!("{:.2e}", v)
     } else {
         format!("{:.3}", v)
+    };
+    // A value that rounds to zero must not print as "-0.000". The sign is
+    // floating-point drift, and on a symmetric colour scale a signed zero
+    // reads as a real negative bin sitting next to the positive one.
+    match s.strip_prefix('-') {
+        Some(rest) if rest.parse::<f64>() == Ok(0.0) => rest.to_string(),
+        _ => s,
     }
 }
 
@@ -1498,7 +1491,7 @@ where
     if arrows.is_empty() {
         return Ok(());
     }
-    let color = series_color_to_rgb(qd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+    let color = qd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
     let style = ShapeStyle {
         color: color.to_rgba(),
         filled: false,
@@ -1542,7 +1535,7 @@ where
     }
     let step = crate::streamline::default_step(&sd.x, &sd.y);
     let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
-    let color = series_color_to_rgb(sd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
+    let color = sd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
     let style = ShapeStyle {
         color: color.to_rgba(),
         filled: false,
@@ -1768,7 +1761,7 @@ where
     // When the user didn't pick a colour, follow the theme foreground so
     // dark-theme contours don't render as invisible black-on-near-black.
     let color: RGBAColor = match &cd.line_color {
-        Some(c) => series_color_to_rgb(c).to_rgba(),
+        Some(c) => c.to_plotters().to_rgba(),
         None => palette.text,
     };
     let style = ShapeStyle {
@@ -1849,6 +1842,18 @@ mod tests {
     fn rgba_at(rgba: &[u8], ncols: usize, row: usize, col: usize) -> (u8, u8, u8) {
         let off = (row * ncols + col) * 4;
         (rgba[off], rgba[off + 1], rgba[off + 2])
+    }
+
+    #[test]
+    fn colorbar_zero_tick_is_never_signed() {
+        // A symmetric scale printed "-0.000" for the midpoint tick, which
+        // reads as a negative bin rather than zero.
+        assert_eq!(format_cbar_value(-1e-9, 1.414), "0.000");
+        assert_eq!(format_cbar_value(-0.0, 1.414), "0.000");
+        assert_eq!(format_cbar_value(0.0, 1.414), "0.000");
+        // Genuine negatives keep their sign.
+        assert_eq!(format_cbar_value(-0.354, 1.414), "-0.354");
+        assert_eq!(format_cbar_value(-0.707, 1.414), "-0.707");
     }
 
     // PL3 — NaN cells render transparent and a stray Inf doesn't collapse the

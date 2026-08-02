@@ -51,7 +51,7 @@ title("Dirichlet — V = 0 at boundary")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/laplacian_bc/plot-1-20f66201.svg)
+![plot 1](plots/laplacian_bc/plot-1-8defb79b.svg)
 
 <!-- rustlab:output-end -->
 

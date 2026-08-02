@@ -100,7 +100,7 @@ figure(); imagesc(G3, "viridis"); title("Difference");    savefig("g3.svg")
 
 ![plot 4](plots/notebook_directives/plot-4-4de70d2d.svg)
 
-![plot 5](plots/notebook_directives/plot-5-5d988d7e.svg)
+![plot 5](plots/notebook_directives/plot-5-110e04c7.svg)
 
 <!-- rustlab:output-end -->
 

@@ -1,5 +1,40 @@
 # Bug: `scatter()` ignores `"label"`, so scatter series cannot appear in a legend
 
+**Status**: Fixed — `scatter()` takes the same trailing option pairs as `plot()`
+(`"label"`, `"color"`, `"style"`, `"marker"`). #35 was **not** reverted, as the
+report asked. Verified against quantum_lab lessons 09/11/18.
+**Date**: 2026-07-28
+
+## Corrections to the report as filed
+
+Two details differ from what was observed; the underlying complaint is real either way.
+
+- **The keyword form was not silently dropped — it was a hard error.** `scatter()`
+  capped arity at 3, so `scatter(x, y, "label", "…")` raised
+  `scatter: expected scatter(x, y) or scatter(x, y, title)` and the notebook
+  renderer recorded it as an error block. Only the *positional* form was silent.
+- **The positional form set the chart title, not nothing.** `scatter(x, y, "the point")`
+  put "the point" in the title slot, so it rendered at the top of the figure while
+  the legend showed only the line. That behaviour is kept — a lone trailing string
+  is still a title; legend entries now come from `"label"`.
+
+## Also found while fixing this
+
+The workaround the report adopted was itself broken, in two ways:
+
+```rustlab
+plot([f_z / 1.0e3], [B_min], "label", "…", "marker", "o", "color", "red")
+```
+
+- `"marker"` was not a plot option at all (it is a Smith-chart builtin), and the
+  option parser treated the first unknown key as end-of-options — so `"color", "red"`
+  was discarded too. The point rendered in a palette colour, silently.
+- With no marker support, the one-point series was drawn as a *line*, which renders
+  nothing. The published figure had a legend entry for a mark that was not on the page.
+
+Both are fixed: unknown keys now warn and parsing continues, and `"marker"` draws
+point marks. See `dev/requests/plot-option-silent-drops.md` for the full write-up.
+
 Affects rustlab / rustlab-notebook **0.3.7**.
 
 Two defects compound here. The first is long-standing and silent; the second is new in
