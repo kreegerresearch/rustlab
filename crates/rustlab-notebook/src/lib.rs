@@ -804,6 +804,15 @@ pub fn cmd_render_dir(
             // notebook. Skip it so it doesn't appear in the rendered index
             // alongside real notebooks. (`index.md` is handled separately.)
             .filter(|p| p.file_name().map_or(true, |n| n != "README.md"))
+            // `_name.md` is a partial meant to be transcluded into other
+            // notebooks, not read on its own — the embed expander reads it
+            // straight off disk, so hiding it here costs nothing. Without the
+            // convention `_setup.md` listed itself in the index as a peer of
+            // real notebooks, titled "Shared Setup (transcluded)".
+            .filter(|p| {
+                p.file_name()
+                    .map_or(true, |n| !n.to_string_lossy().starts_with('_'))
+            })
             .collect(),
         Err(e) => {
             eprintln!("error: cannot read directory {}: {e}", dir.display());
@@ -864,13 +873,7 @@ pub fn cmd_render_dir(
         });
     }
 
-    // Sort the same way the index used to: order asc (None last), ties by filename.
-    pending.sort_by(|a, b| match (a.order, b.order) {
-        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.filename.cmp(&b.filename)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.filename.cmp(&b.filename),
-    });
+    pending.sort_by(|a, b| compare_notebook_order((a.order, &a.filename), (b.order, &b.filename)));
 
     let emit_nav = matches!(format, Format::Html);
     let n = pending.len();
@@ -1711,6 +1714,28 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Listing order for a notebook collection: explicit frontmatter `order:`
+/// first (ascending, ties broken by filename), then unordered notebooks by
+/// filename.
+///
+/// Shared by the static directory render and the dev server. They used to
+/// sort independently — the server ignored `order:` entirely — so `watch`
+/// could present a different lesson sequence, and different prev/next links,
+/// than the built output. That is the worst place for the two to disagree,
+/// because the built output is what ships and the served one is what gets
+/// proof-read.
+pub fn compare_notebook_order(
+    a: (Option<i64>, &str),
+    b: (Option<i64>, &str),
+) -> std::cmp::Ordering {
+    match (a.0, b.0) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.1.cmp(b.1)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(b.1),
+    }
 }
 
 #[cfg(test)]

@@ -276,47 +276,64 @@ pub fn render_html(
         body.push_str("</div>\n");
     }
 
-    // Directory-mode sub-pages get a top breadcrumb bar instead of the fixed
-    // sidebar — less visual weight, more horizontal room for content.
-    // Single-file renders (`nav = None`) keep the sidebar with the in-page TOC.
-    let use_topbar = nav.is_some();
-    let body_class = if use_topbar {
-        " class=\"topbar-layout\""
-    } else {
-        ""
-    };
-
-    let topbar_block = match nav {
-        Some(n) => {
-            let index_link = n
-                .index_href
-                .as_ref()
-                .map(|href| {
-                    format!(
-                        "<a href=\"{href}\">&larr; Index</a>",
-                        href = escape_html(href),
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "<header class=\"topbar\">{index}<span class=\"sep\">/</span><span class=\"current\">{title}</span></header>\n",
-                index = index_link,
-                title = escape_html(title),
-            )
-        }
-        None => String::new(),
-    };
-
-    let sidebar_block = if use_topbar {
-        String::new()
-    } else {
+    // One layout for both modes. The two navs answer different questions and
+    // are both always present: the topbar moves BETWEEN notebooks, the
+    // sidebar moves WITHIN one. Previously they were mutually exclusive, so a
+    // directory render dropped the in-page TOC entirely — the heading anchors
+    // were still emitted, and the sidebar CSS still shipped, with nothing
+    // linking to them. A reader should not be able to tell from the page how
+    // the file was rendered.
+    let topbar_block = {
+        let (prev_link, index_link, next_link) = match nav {
+            Some(n) => (
+                n.prev
+                    .as_ref()
+                    .map(|(t, href)| {
+                        format!(
+                            "<a class=\"prev\" href=\"{href}\">&larr; {t}</a>",
+                            href = escape_html(href),
+                            t = escape_html(t),
+                        )
+                    })
+                    .unwrap_or_default(),
+                n.index_href
+                    .as_ref()
+                    .map(|href| {
+                        format!(
+                            "<a class=\"index\" href=\"{href}\">Index</a><span class=\"sep\">/</span>",
+                            href = escape_html(href),
+                        )
+                    })
+                    .unwrap_or_default(),
+                n.next
+                    .as_ref()
+                    .map(|(t, href)| {
+                        format!(
+                            "<a class=\"next\" href=\"{href}\">{t} &rarr;</a>",
+                            href = escape_html(href),
+                            t = escape_html(t),
+                        )
+                    })
+                    .unwrap_or_default(),
+            ),
+            // Single-file render: same chrome, just nothing to page to.
+            None => (String::new(), String::new(), String::new()),
+        };
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar').classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
-             <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
+            "<header class=\"topbar\">{prev}<span class=\"crumb\">{index}<span class=\"current\">{title}</span></span>{next}</header>\n",
+            prev = prev_link,
+            index = index_link,
+            next = next_link,
             title = escape_html(title),
-            nav_items = nav_items,
         )
     };
+
+    let sidebar_block = format!(
+        "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar').classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+         <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
+        title = escape_html(title),
+        nav_items = nav_items,
+    );
 
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
@@ -347,13 +364,17 @@ pub fn render_html(
     display: flex;
     min-height: 100vh;
   }}
-  /* ── Navigation sidebar ── */
+  /* Height of the fixed topbar; the sidebar and main both clear it. */
+  :root {{
+    --topbar-h: 2.6rem;
+  }}
+  /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
     position: fixed;
-    top: 0;
+    top: var(--topbar-h);
     left: 0;
     width: 220px;
-    height: 100vh;
+    height: calc(100vh - var(--topbar-h));
     background: {bg_secondary};
     border-right: 1px solid {border};
     padding: 1.5rem 0;
@@ -376,6 +397,13 @@ pub fn render_html(
     text-decoration: none;
     font-size: 0.9rem;
     transition: background 0.15s, color 0.15s;
+    /* Headings can be long, and KaTeX typesets any inline math in them
+       (auto-render walks the whole body, sidebar included). Wrap rather
+       than let either overflow the fixed 220px column. */
+    overflow-wrap: anywhere;
+  }}
+  nav.sidebar .katex {{
+    font-size: 0.95em;
   }}
   nav.sidebar a:hover {{
     background: {border};
@@ -410,38 +438,53 @@ pub fn render_html(
   main {{
     margin-left: 220px;
     flex: 1;
-    padding: 2rem 2.5rem;
+    padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
     max-width: 960px;
     min-width: 0;
   }}
-  /* ── Directory-mode top bar (replaces sidebar for sub-pages) ── */
-  body.topbar-layout {{
-    display: block;
-  }}
-  body.topbar-layout main {{
-    margin: 0 auto;
-    padding: 2rem 2.5rem;
-    max-width: 960px;
-  }}
+  /* ── Topbar (between-notebook nav) ──
+     Fixed rather than sticky: it spans the full width above the sidebar, so
+     it cannot participate in the body's flex row. */
   .topbar {{
-    position: sticky;
+    position: fixed;
     top: 0;
-    z-index: 100;
+    left: 0;
+    right: 0;
+    height: var(--topbar-h);
+    z-index: 150;
     background: {bg_secondary};
     border-bottom: 1px solid {border};
-    padding: 0.6rem 1.2rem;
+    padding: 0 1.2rem;
     font-size: 0.85rem;
     color: {text_dim};
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
   }}
   .topbar a {{
     color: {accent_secondary};
     text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }}
   .topbar a:hover {{
     text-decoration: underline;
+  }}
+  /* Prev/next flank the breadcrumb and yield space to it when cramped. */
+  .topbar a.prev, .topbar a.next {{
+    flex: 0 1 auto;
+    max-width: 22%;
+  }}
+  .topbar a.next {{
+    margin-left: auto;
+    text-align: right;
+  }}
+  .topbar .crumb {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
   }}
   .topbar .sep {{
     color: {text_dim};
@@ -744,12 +787,19 @@ pub fn render_html(
     }}
     main {{
       margin-left: 0;
-      padding: 3rem 1rem 2rem;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }}
+    /* Leave room for the hamburger, which sits over the topbar's left end. */
+    .topbar {{
+      padding-left: 3rem;
+    }}
+    .topbar a.prev, .topbar a.next {{
+      max-width: 28%;
     }}
   }}
 </style>
 </head>
-<body{body_class}>
+<body>
 {topbar_block}{sidebar_block}<main>
 {body}{footer_nav}<footer>Generated by rustlab-notebook</footer>
 </main>
@@ -757,7 +807,6 @@ pub fn render_html(
 </html>
 "##,
         title = escape_html(title),
-        body_class = body_class,
         topbar_block = topbar_block,
         sidebar_block = sidebar_block,
         footer_nav = footer_nav,
@@ -981,12 +1030,16 @@ fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
                 // Replace <hN> with <hN id="heading-N">
                 let new_open = format!("<{tag} id=\"{id}\">");
                 result.replace_range(abs_open..abs_open + open.len(), &new_open);
-                // Build nav link
+                // Build nav link. `clean` came out of already-rendered HTML,
+                // so its entities are encoded already — `strip_tags` only
+                // removes tag spans and leaves them alone. Escaping again
+                // turned a heading's `&` into `&amp;amp;`, which the sidebar
+                // then displayed literally as "&amp;".
                 nav.push_str(&format!(
                     "  <a href=\"#{id}\" class=\"{tag}\">{text}</a>\n",
                     id = id,
                     tag = tag,
-                    text = escape_html(&clean),
+                    text = clean,
                 ));
                 search_from = abs_open + new_open.len() + rel_end + close.len();
             } else {
@@ -1872,6 +1925,25 @@ mod tests {
     }
 
     #[test]
+    fn inject_heading_ids_does_not_double_escape_entities() {
+        // The heading text is a slice of already-rendered HTML, so `&` has
+        // been encoded once. Escaping it again produced `&amp;amp;`, and the
+        // sidebar rendered a literal "&amp;" — e.g. quantum_lab's
+        // "Hyperfine Structure & Qubit Selection".
+        let mut nav = String::new();
+        let mut idx = 0;
+        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx);
+        assert!(
+            nav.contains("Structure &amp; Selection"),
+            "nav label lost its single-escaped entity: {nav}"
+        );
+        assert!(
+            !nav.contains("&amp;amp;"),
+            "nav label was escaped twice: {nav}"
+        );
+    }
+
+    #[test]
     fn inject_heading_ids_no_headings() {
         let mut nav = String::new();
         let mut idx = 0;
@@ -2702,13 +2774,15 @@ mod tests {
     #[test]
     fn render_html_no_nav_for_single_file() {
         let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
-        // Single-file renders keep the sidebar layout, no topbar.
-        assert!(!html.contains("class=\"page-nav\""));
-        assert!(!html.contains("&larr; Index"));
-        assert!(!html.contains("class=\"topbar\""));
-        assert!(!html.contains("class=\"topbar-layout\""));
+        // Same chrome as a collection page — there is just nothing to page to.
+        assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("<nav class=\"sidebar\">"));
         assert!(html.contains("class=\"nav-title\""));
+        // No cross-notebook affordances when the notebook stands alone.
+        assert!(!html.contains("class=\"page-nav\""));
+        assert!(!html.contains("class=\"prev\""));
+        assert!(!html.contains("class=\"next\""));
+        assert!(!html.contains("href=\"index.html\""));
     }
 
     #[test]
@@ -2720,17 +2794,39 @@ mod tests {
         };
         let html = render_html("Filter Analysis", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
         // Topbar present with breadcrumb.
-        assert!(html.contains("class=\"topbar-layout\""));
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"index.html\""));
-        assert!(html.contains("&larr; Index"));
         assert!(html.contains("class=\"sep\""));
         assert!(html.contains("class=\"current\""));
         assert!(html.contains("Filter Analysis"));
-        // Sidebar removed.
-        assert!(!html.contains("<nav class=\"sidebar\">"));
-        assert!(!html.contains("class=\"nav-title\""));
-        assert!(!html.contains("class=\"nav-toggle\""));
+    }
+
+    #[test]
+    fn collection_pages_keep_the_in_page_toc() {
+        // The two navs answer different questions and must coexist. A
+        // directory render used to drop the sidebar entirely, so a long
+        // lesson lost its table of contents — while still emitting the
+        // heading anchors and shipping the sidebar CSS, both unreachable.
+        let nav = NotebookNav {
+            index_href: Some("index.html".to_string()),
+            prev: Some(("Lesson 08".to_string(), "08.html".to_string())),
+            next: Some(("Lesson 10".to_string(), "10.html".to_string())),
+        };
+        let blocks = vec![Rendered::Markdown(
+            "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
+        )];
+        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        // Between-notebook nav.
+        assert!(html.contains("class=\"topbar\""));
+        assert!(html.contains("href=\"08.html\""), "prev link missing");
+        assert!(html.contains("href=\"10.html\""), "next link missing");
+        // Within-notebook nav, on the same page.
+        assert!(html.contains("<nav class=\"sidebar\">"), "sidebar dropped");
+        assert!(
+            html.contains("href=\"#heading-1\""),
+            "heading anchors emitted but nothing links to them"
+        );
+        assert!(html.contains("id=\"heading-1\""));
     }
 
     #[test]

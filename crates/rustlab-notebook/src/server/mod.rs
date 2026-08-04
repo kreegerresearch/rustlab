@@ -147,13 +147,35 @@ fn build_state(
     // needs the whole set, so it can't be built in a single render pass
     // (the first notebook wouldn't yet know its successor).
     let mut entries: Vec<(String, PathBuf, String)> = Vec::with_capacity(sources.len());
+    // Collected alongside each entry purely to sort by, then dropped: the
+    // frontmatter `order:` and the filename the static renderer sorts on.
+    let mut sort_keys: Vec<(Option<i64>, String)> = Vec::with_capacity(sources.len());
     for path in &sources {
         let slug = unique_slug(path, &mut used);
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
+        let (fm, _) = crate::parse::extract_frontmatter(&source);
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        sort_keys.push((fm.order, filename));
         entries.push((slug, path.clone(), title));
     }
+
+    // Same ordering as the static build, so `watch` cannot show a different
+    // sequence — or different prev/next links — than what gets shipped.
+    let mut idxs: Vec<usize> = (0..entries.len()).collect();
+    idxs.sort_by(|&a, &b| {
+        crate::compare_notebook_order(
+            (sort_keys[a].0, &sort_keys[a].1),
+            (sort_keys[b].0, &sort_keys[b].1),
+        )
+    });
+    let entries: Vec<(String, PathBuf, String)> =
+        idxs.into_iter().map(|i| entries[i].clone()).collect();
 
     // (slug, title) in listing order — the input to per-page nav.
     let listing: Vec<(String, String)> = entries
@@ -571,6 +593,32 @@ mod tests {
     }
 
     #[test]
+    fn served_listing_honours_frontmatter_order() {
+        // The server sorted by path and ignored `order:`, so `watch` could
+        // present a different lesson sequence — and different prev/next
+        // links — than the built output.
+        let dir = tempfile::tempdir().unwrap();
+        for (name, order) in [("a-third.md", 3), ("b-first.md", 1), ("c-second.md", 2)] {
+            std::fs::write(
+                dir.path().join(name),
+                format!("---\norder: {order}\ntitle: N{order}\n---\n\n# N{order}\n"),
+            )
+            .unwrap();
+        }
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            vec!["N1", "N2", "N3"],
+            "served order ignored frontmatter `order:` (filename order would be N3, N1, N2)"
+        );
+    }
+
+    #[test]
     fn server_nav_links_neighbours_and_index() {
         let listing = vec![
             ("a".to_string(), "Alpha".to_string()),
@@ -608,8 +656,9 @@ mod tests {
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
         let beta = get_body(&app, "/n/beta").await;
-        assert!(beta.contains("class=\"topbar-layout\""), "beta missing topbar layout");
         assert!(beta.contains("class=\"topbar\""), "beta missing breadcrumb topbar");
+        // The in-page TOC coexists with the cross-notebook nav.
+        assert!(beta.contains("<nav class=\"sidebar\">"), "beta lost its in-page TOC");
         assert!(beta.contains("href=\"/\""), "beta breadcrumb missing index link");
         assert!(beta.contains("class=\"page-nav\""), "beta missing footer nav");
         assert!(beta.contains("href=\"/n/alpha\""), "beta missing prev link");
@@ -636,8 +685,13 @@ mod tests {
         let app = http::router(state);
 
         let page = get_body(&app, &format!("/n/{slug}")).await;
-        assert!(!page.contains("class=\"topbar\""), "single file should have no topbar");
+        // Same chrome as a collection page — a reader should not be able to
+        // tell how the notebook was rendered — but with nothing to page to.
+        assert!(page.contains("class=\"topbar\""), "single file should still have the topbar");
+        assert!(page.contains("<nav class=\"sidebar\">"), "single file should keep its TOC");
         assert!(!page.contains("class=\"page-nav\""), "single file should have no footer nav");
+        assert!(!page.contains("class=\"prev\""), "single file should have no prev link");
+        assert!(!page.contains("class=\"next\""), "single file should have no next link");
     }
 
     #[tokio::test]
