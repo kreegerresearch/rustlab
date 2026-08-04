@@ -128,12 +128,22 @@ fn build_state(
     editable: bool,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
-        let files = crate::list_md_files_recursive(canonical_input);
+        // Same listing rule as the static build: partials are transcluded,
+        // not browsed, so serving them as top-level pages would show a
+        // collection the built output does not have.
+        let files: Vec<PathBuf> = crate::list_md_files_recursive(canonical_input)
+            .into_iter()
+            .filter(|p| {
+                crate::is_listable_notebook(p.strip_prefix(canonical_input).unwrap_or(p))
+            })
+            .collect();
         if files.is_empty() {
             anyhow::bail!("no .md notebooks found in {}", canonical_input.display());
         }
         files
     } else {
+        // An explicitly-named single file is served even if it is a partial —
+        // the user asked for it by name.
         vec![canonical_input.to_path_buf()]
     };
 
@@ -156,12 +166,17 @@ fn build_state(
             .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
         let (fm, _) = crate::parse::extract_frontmatter(&source);
-        let filename = path
-            .file_name()
-            .unwrap_or_default()
+        // Sort on the path relative to the collection root, not the bare
+        // filename: this walk is recursive, so `ch1/09-end.md` and
+        // `ch2/01-start.md` must stay in chapter order. Keying on the
+        // filename alone interleaved chapters and made same-named files in
+        // different directories compare equal.
+        let rel = path
+            .strip_prefix(canonical_input)
+            .unwrap_or(path)
             .to_string_lossy()
             .to_string();
-        sort_keys.push((fm.order, filename));
+        sort_keys.push((fm.order, rel));
         entries.push((slug, path.clone(), title));
     }
 
@@ -590,6 +605,65 @@ mod tests {
         let b = unique_slug(Path::new("/y/intro.md"), &mut used);
         assert_eq!(a, "intro");
         assert_eq!(b, "intro-2");
+    }
+
+    #[test]
+    fn served_listing_keeps_nested_collections_in_path_order() {
+        // The shared sort key was the bare filename, but this walk is
+        // recursive: `ch2/01.md` then sorted before `ch1/09.md`, interleaving
+        // chapters, and same-named files in different directories compared
+        // equal. The key is the path relative to the collection root.
+        let dir = tempfile::tempdir().unwrap();
+        for (sub, name) in [("ch1", "01.md"), ("ch1", "09.md"), ("ch2", "01.md")] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            std::fs::write(
+                dir.path().join(sub).join(name),
+                format!("# {sub}-{}\n", name.trim_end_matches(".md")),
+            )
+            .unwrap();
+        }
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["ch1-01", "ch1-09", "ch2-01"]);
+    }
+
+    #[test]
+    fn served_listing_excludes_the_index_page_body() {
+        // index.md becomes the index page's own body in the static build, so
+        // serving it as an ordinary notebook invented a page the built output
+        // does not have — and chained it into prev/next.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.md"), "# Welcome\n").unwrap();
+        std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["One"], "index.md served as a notebook");
+    }
+
+    #[test]
+    fn served_listing_hides_partials_like_the_static_build() {
+        // The `_name.md` partial convention was added to the static build
+        // only, so the server would have listed `_setup.md` as a browsable
+        // peer of real notebooks while the built index hid it — the same
+        // serve-vs-build divergence the shared sort order fixed.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
+        std::fs::write(dir.path().join("_partial.md"), "# Partial\n").unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Real"], "server listed a transcluded partial");
     }
 
     #[test]

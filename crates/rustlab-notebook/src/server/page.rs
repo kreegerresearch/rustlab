@@ -69,9 +69,11 @@ fn chrome_style(c: &ThemeColors) -> String {
     position: fixed; top: 10px; right: 14px; z-index: 100000;
     display: flex; gap: 6px; align-items: center;
   }}
-  /* Directory-mode pages carry a sticky breadcrumb topbar; reserve room
-     on its right so the title doesn't slide under the fixed toolbar. */
-  body.topbar-layout .topbar {{ padding-right: 9rem; }}
+  /* Every served page carries the topbar; reserve room on its right so the
+     "Next" link and title don't slide under the fixed toolbar. This used to
+     be scoped to `body.topbar-layout`, which no longer exists — leaving the
+     toolbar sitting on top of the next-notebook link, unclickable. */
+  .topbar {{ padding-right: 9rem; }}
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};

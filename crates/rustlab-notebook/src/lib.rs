@@ -800,18 +800,13 @@ pub fn cmd_render_dir(
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
-            // README.md is project metadata for the directory itself, not a
-            // notebook. Skip it so it doesn't appear in the rendered index
-            // alongside real notebooks. (`index.md` is handled separately.)
-            .filter(|p| p.file_name().map_or(true, |n| n != "README.md"))
-            // `_name.md` is a partial meant to be transcluded into other
-            // notebooks, not read on its own — the embed expander reads it
-            // straight off disk, so hiding it here costs nothing. Without the
-            // convention `_setup.md` listed itself in the index as a peer of
-            // real notebooks, titled "Shared Setup (transcluded)".
+            // This walk is non-recursive, so the file name IS the path
+            // relative to the collection root. `index.md` is kept here and
+            // split out below — it becomes the index page's own body.
             .filter(|p| {
                 p.file_name()
-                    .map_or(true, |n| !n.to_string_lossy().starts_with('_'))
+                    .map(|n| n == "index.md" || is_listable_notebook(Path::new(n)))
+                    .unwrap_or(false)
             })
             .collect(),
         Err(e) => {
@@ -1714,6 +1709,41 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Whether a `.md` file should appear in a notebook *listing* — an index page
+/// or the dev server's sidebar — as a browsable notebook in its own right.
+///
+/// Deliberately narrower than "is a notebook we should read". `check` and
+/// `validate` still lint everything, because a partial is real source that
+/// gets transcluded and can be just as broken.
+///
+/// - `README.md` is metadata for the directory itself.
+/// - `index.md` becomes the index page's own body, not an entry on it.
+/// - `_name.md`, or anything under a `_dir/`, is a partial meant to be
+///   transcluded. The embed expander reads it straight off disk, so hiding it
+///   from the listing costs nothing. Without the convention, `_setup.md`
+///   listed itself as a peer of real notebooks, titled "Shared Setup
+///   (transcluded)".
+///
+/// Shared by the static build and the server so the two cannot disagree about
+/// what a collection contains — the same trap the sort order fell into.
+///
+/// `rel` must be RELATIVE to the collection root. The underscore rule checks
+/// every component (the server walks recursively, so `_shared/setup.md` is a
+/// partial too), and an absolute path would wrongly match any ancestor
+/// directory that happens to start with `_`.
+pub fn is_listable_notebook(rel: &Path) -> bool {
+    if rel
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().starts_with('_'))
+    {
+        return false;
+    }
+    match rel.file_name().map(|n| n.to_string_lossy().into_owned()) {
+        Some(name) => name != "README.md" && name != "index.md",
+        None => false,
+    }
 }
 
 /// Listing order for a notebook collection: explicit frontmatter `order:`

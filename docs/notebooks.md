@@ -210,12 +210,12 @@ Behaviour:
   suffix). Passing a directory *with* `--obsidian`/`--output` still
   selects the re-render-on-save mode instead.
 - **Directory pages get the same navigation as `render`.** In
-  directory mode each served page drops the sidebar for a sticky
-  `← Index / <Page Title>` breadcrumb and a `Previous · Index · Next`
-  footer wired to the adjacent notebooks (the index lives at `/`,
-  siblings at `/n/<slug>`). A single-file `watch` keeps the classic
-  sidebar + TOC layout — there's no sibling set to navigate. (See
-  [Page navigation](#page-navigation).)
+  directory mode each served page gets a topbar carrying
+  `← Previous · Index · Next →` plus the page title, and a matching
+  footer bar, wired to the adjacent notebooks (the index lives at `/`,
+  siblings at `/n/<slug>`). The in-page TOC sidebar is present either
+  way; a single-file `watch` shows the same chrome with nothing to page
+  to. (See [Page navigation](#page-navigation).)
 - **Relative `run`/`load` paths resolve against the notebook's own
   directory**, not wherever you launched the server — so
   `run setup.rlab` finds the sibling next to the notebook, matching
@@ -1300,16 +1300,25 @@ becomes `<a href="filter_design.html">` in the HTML output.
 
 ### Page navigation
 
-When rendering a directory, each notebook page drops the sidebar and gets
-two lightweight navigation aids instead:
+Every notebook page carries two navigations, which answer different
+questions and are always both present:
 
-- A **sticky breadcrumb** at the top: `← Index / <Page Title>`.
-- A **Previous · Index · Next** bar at the bottom of the page, wired
-  to the adjacent notebooks in sort order. The first notebook has no
-  "Previous" link; the last has no "Next" link.
+- The **sidebar** moves *within* a notebook: an in-page TOC built from the
+  H1/H2/H3 headings. Omitted only when a notebook has no headings at all,
+  in which case the content reclaims the width.
+- The **topbar** moves *between* notebooks: `← Previous`, `Index`, and
+  `Next →` alongside the current page title. A **Previous · Index · Next**
+  bar is also appended at the foot of the page, where it is useful after a
+  long read.
 
-Single-file renders (`rustlab-notebook render file.md`) keep the classic
-sidebar layout with an in-page TOC — there's no sibling set to navigate.
+Single-file renders (`rustlab-notebook render file.md`) show the same
+chrome, minus the cross-notebook links — there's no sibling set to
+navigate. A reader should not be able to tell from the page whether it was
+rendered on its own or as part of a collection.
+
+Headings written with an explicit anchor (`## Title {#anchor}`) keep that
+id and are linked from the TOC by it, so cross-notebook deep links stay
+stable.
 
 ## Template Interpolation
 
