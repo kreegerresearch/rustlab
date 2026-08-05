@@ -91,7 +91,7 @@ title("Re(V) — standing-wave pattern with loss")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparse_complex/plot-1-5fe7a7b3.svg)
+![plot 1](plots/sparse_complex/plot-1-6745de5a.svg)
 
 <!-- rustlab:output-end -->
 

@@ -677,18 +677,11 @@ Plotly.newPlot("{div_id}", data_{js_var}, layout_{js_var}, {{ responsive: true }
     out
 }
 
+/// Delegates to [`SeriesColor::to_rgb`] so the Plotly backend can't drift from
+/// the SVG one — the two tables used to be maintained by hand, side by side.
 fn color_to_css(c: &SeriesColor) -> String {
-    match c {
-        SeriesColor::Blue => "rgb(31,119,180)".into(),
-        SeriesColor::Red => "rgb(214,39,40)".into(),
-        SeriesColor::Green => "rgb(44,160,44)".into(),
-        SeriesColor::Cyan => "rgb(23,190,207)".into(),
-        SeriesColor::Magenta => "rgb(148,103,189)".into(),
-        SeriesColor::Yellow => "rgb(188,189,34)".into(),
-        SeriesColor::Black => "rgb(0,0,0)".into(),
-        SeriesColor::White => "rgb(255,255,255)".into(),
-        SeriesColor::Rgb(r, g, b) => format!("rgb({},{},{})", r, g, b),
-    }
+    let (r, g, b) = c.to_rgb();
+    format!("rgb({},{},{})", r, g, b)
 }
 
 /// Flatten a slice of arrow glyphs into a pair of Plotly JSON arrays

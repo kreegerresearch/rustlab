@@ -873,6 +873,7 @@ pub fn push_xy_lines(
     title: &str,
     color: Option<SeriesColor>,
     style: LineStyle,
+    kind: PlotKind,
 ) {
     FIGURE.with(|fig| {
         let mut fig = fig.borrow_mut();
@@ -893,7 +894,7 @@ pub fn push_xy_lines(
                 y_data: y,
                 color: c,
                 style: style.clone(),
-                kind: PlotKind::Line,
+                kind: kind.clone(),
             });
         }
     });

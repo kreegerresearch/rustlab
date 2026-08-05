@@ -37,17 +37,60 @@ impl SeriesColor {
             "k" | "black" => Some(Self::Black),
             "w" | "white" => Some(Self::White),
             "gray" | "grey" => Some(Self::Rgb(128, 128, 128)),
+            _ => Self::parse_extended(&lower),
+        }
+    }
+
+    /// Names added on top of the historical set. Purely additive: the base
+    /// variants above keep the values they have always rendered, so no
+    /// existing figure changes colour.
+    ///
+    /// Values are chosen to be distinguishable from every base name as it
+    /// actually renders — the base palette is misnamed (`magenta` renders
+    /// #9467BD, matplotlib's purple; `yellow` renders #BCBD22, olive), so
+    /// `purple` and `olive` take their CSS values rather than the tab10 hues
+    /// they would otherwise want. Two names that render alike would defeat
+    /// the point of adding them.
+    fn parse_extended(lower: &str) -> Option<Self> {
+        match lower {
+            "orange" => Some(Self::Rgb(255, 127, 14)),
+            "purple" => Some(Self::Rgb(128, 0, 128)), // CSS; magenta is #9467BD
+            "brown" => Some(Self::Rgb(140, 86, 75)),
+            "pink" => Some(Self::Rgb(227, 119, 194)),
+            "olive" => Some(Self::Rgb(128, 128, 0)), // CSS; yellow is #BCBD22
+            "teal" => Some(Self::Rgb(0, 128, 128)),
+            "navy" => Some(Self::Rgb(0, 0, 128)),
+            "gold" => Some(Self::Rgb(255, 215, 0)),
             _ => None,
         }
+    }
+
+    /// True for the colour spellings that predate the extended set.
+    ///
+    /// Callers that treat a lone trailing string as "colour spec, else title"
+    /// must gate on this: widening [`parse`](Self::parse) would otherwise
+    /// silently reclassify one-word titles, turning `plot(y, "Gold")` from a
+    /// titled chart into an untitled gold line.
+    pub fn is_base_spec(s: &str) -> bool {
+        let lower = s.to_lowercase();
+        Self::parse(&lower).is_some() && Self::parse_extended(&lower).is_none()
     }
 
     /// The color names [`parse`](Self::parse) accepts — for "unrecognized
     /// color" warnings, so the caller's message can't drift from the parser.
     pub const KNOWN_NAMES: &'static str =
-        "r/red, g/green, b/blue, c/cyan, m/magenta, y/yellow, k/black, w/white, gray/grey, #RRGGBB";
+        "r/red, g/green, b/blue, c/cyan, m/magenta, y/yellow, k/black, w/white, gray/grey, \
+         orange, purple, brown, pink, olive, teal, navy, gold, #RRGGBB";
+    /// Number of distinct hues in [`cycle`](Self::cycle).
+    pub const CYCLE_LEN: usize = 6;
     /// Default color cycle (matplotlib-like).
+    ///
+    /// Returns the named variants, not RGB literals: `to_ratatui` maps those
+    /// to 16-colour ANSI, and the terminal backend is the default output for
+    /// every plot builtin. Handing out `Rgb` here would emit 24-bit escapes
+    /// that non-truecolor terminals drop.
     pub fn cycle(idx: usize) -> Self {
-        match idx % 6 {
+        match idx % Self::CYCLE_LEN {
             0 => Self::Cyan,
             1 => Self::Yellow,
             2 => Self::Green,
@@ -58,16 +101,28 @@ impl SeriesColor {
     }
     pub fn to_plotters(&self) -> plotters::style::RGBColor {
         use plotters::style::RGBColor;
+        let (r, g, b) = self.to_rgb();
+        RGBColor(r, g, b)
+    }
+    /// The single source of truth for what a `SeriesColor` renders as.
+    ///
+    /// These values are historical and deliberately unchanged — the names are
+    /// known to be misnomers (`magenta` is really matplotlib's purple,
+    /// `yellow` is olive), but they are baked into every committed figure and
+    /// into the live viewer's wire protocol. Renaming them is a separate
+    /// change; this method exists so the four backends stop keeping four
+    /// hand-maintained copies of the same table.
+    pub fn to_rgb(&self) -> (u8, u8, u8) {
         match self {
-            Self::Blue => RGBColor(31, 119, 180),
-            Self::Red => RGBColor(214, 39, 40),
-            Self::Green => RGBColor(44, 160, 44),
-            Self::Cyan => RGBColor(23, 190, 207),
-            Self::Magenta => RGBColor(148, 103, 189),
-            Self::Yellow => RGBColor(188, 189, 34),
-            Self::Black => RGBColor(0, 0, 0),
-            Self::White => RGBColor(255, 255, 255),
-            Self::Rgb(r, g, b) => RGBColor(*r, *g, *b),
+            Self::Blue => (31, 119, 180),
+            Self::Red => (214, 39, 40),
+            Self::Green => (44, 160, 44),
+            Self::Cyan => (23, 190, 207),
+            Self::Magenta => (148, 103, 189),
+            Self::Yellow => (188, 189, 34),
+            Self::Black => (0, 0, 0),
+            Self::White => (255, 255, 255),
+            Self::Rgb(r, g, b) => (*r, *g, *b),
         }
     }
     pub fn to_ratatui(&self) -> ratatui::style::Color {
@@ -450,8 +505,22 @@ impl FigureState {
         self.hold = false;
     }
     /// Color for the next series added to current subplot.
+    ///
+    /// Prefers the next slot in the cycle, but skips any hue already drawn on
+    /// these axes. Without that, an explicitly-coloured series and a
+    /// cycle-assigned one can land on the same colour — including when the
+    /// explicit colour was a *rejected* name falling back here — and two
+    /// series a reader is meant to tell apart render identically.
     pub fn next_color(&self) -> SeriesColor {
-        SeriesColor::cycle(self.current().series.len())
+        // Compare by rendered RGB, not by enum variant: `SeriesColor::Cyan`
+        // and `Rgb(23,190,207)` are the same colour on the page, and an
+        // explicit "#17becf" or a named `purple` must still count as taken.
+        let series = &self.current().series;
+        let start = series.len();
+        (0..SeriesColor::CYCLE_LEN)
+            .map(|offset| SeriesColor::cycle(start + offset))
+            .find(|c| !series.iter().any(|s| s.color.to_rgb() == c.to_rgb()))
+            .unwrap_or_else(|| SeriesColor::cycle(start))
     }
 }
 
