@@ -55,7 +55,9 @@ fn single_state_with(
         theme: Theme::Dark.colors(),
         index_title: slug.to_string(),
         link_slugs: HashMap::new(),
-        render_tx: std::sync::OnceLock::new(),
+        index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
     })
 }
 

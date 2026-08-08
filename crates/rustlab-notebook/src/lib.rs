@@ -1053,7 +1053,7 @@ fn generate_obsidian_index_md(title: &str, entries: &[(String, String)]) -> Stri
 /// rendered as plain markdown (not executed) to keep the landing page
 /// lightweight — put executable content in regular notebooks and link to
 /// them from `index.md`.
-fn read_and_render_index_md(
+pub(crate) fn read_and_render_index_md(
     path: &PathBuf,
     dir: &PathBuf,
     _theme: &ThemeColors,

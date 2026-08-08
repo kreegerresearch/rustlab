@@ -146,6 +146,17 @@ pub struct ServerState {
     /// is recursive and same-stem files hold distinct `-N` slugs. Single-
     /// file mode holds just that file, keyed by its bare filename.
     pub link_slugs: HashMap<String, String>,
+    /// Rendered body of the collection root's `index.md`, shown on `/` —
+    /// matching the static build, which hoists it into `index.html`.
+    /// Empty when the collection has none. RwLock: an `index.md` edit
+    /// during watch refreshes it (the index page holds no WS socket, so
+    /// the next page load simply reads the new body).
+    pub index_body: tokio::sync::RwLock<String>,
+    /// Canonical path of the root `index.md`, when present. The watcher
+    /// routes its change events to an index-body refresh instead of a
+    /// notebook render (it has no slug — it is not a notebook). Its
+    /// *title* is read once at startup; a title edit needs a restart.
+    pub index_md_path: Option<PathBuf>,
     /// Render-request channel into the coordinator. Set once by
     /// `render_loop::spawn` after it creates the coordinator channel; the
     /// WS `widget_update` / `run_block` handlers send requests here
@@ -231,14 +242,16 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
     if let Some(nb) = state.sole() {
         return Redirect::temporary(&format!("/n/{}", nb.slug)).into_response();
     }
-    // Directory mode: generated index listing.
+    // Directory mode: generated index listing, with the root index.md's
+    // rendered body above it — same page the static build produces.
     let entries: Vec<(String, String)> = state
         .order
         .iter()
         .filter_map(|slug| state.notebooks.get(slug))
         .map(|nb| (nb.title.clone(), format!("n/{}", nb.slug)))
         .collect();
-    let html = crate::generate_index_html(&state.index_title, &entries, state.theme, "");
+    let body = state.index_body.read().await;
+    let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
     // Inject the WS client so a future "index refresh on add/remove"
     // has a socket to push over; harmless today (no slug → no connect).
     let html = ws::inject_ws_client(&html);
@@ -401,6 +414,8 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
         })
     }
@@ -521,6 +536,8 @@ mod tests {
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
             link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
         });
         let app = router(editable_state);

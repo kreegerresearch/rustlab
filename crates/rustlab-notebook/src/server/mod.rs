@@ -243,11 +243,34 @@ fn build_state(
         order.push(slug.clone());
     }
 
+    // The collection root's index.md is the served index page's body and
+    // title, exactly as in the static build (which hoists it into
+    // index.html). It is filtered from the notebook listing, so without
+    // this the served `/` showed an empty body under the directory name —
+    // and a `[home](index.md)` body link resolved to a page missing the
+    // very content it named.
+    let index_md_path = is_dir
+        .then(|| canonical_input.join("index.md"))
+        .filter(|p| p.is_file());
+    let (index_body, index_md_title) = match index_md_path.as_ref() {
+        Some(p) => {
+            let link = crate::render::LinkMode::Server {
+                slugs: link_slugs.clone(),
+                current_rel_dir: String::new(),
+            };
+            crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
+        }
+        None => (String::new(), None),
+    };
+
+    // Same title precedence as `cmd_render_dir`: index.md > directory name.
     let index_title = if is_dir {
-        canonical_input
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Notebooks".to_string())
+        index_md_title.unwrap_or_else(|| {
+            canonical_input
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Notebooks".to_string())
+        })
     } else {
         notebooks
             .get(&order[0])
@@ -264,6 +287,8 @@ fn build_state(
         theme,
         index_title,
         link_slugs,
+        index_body: tokio::sync::RwLock::new(index_body),
+        index_md_path,
         render_tx: std::sync::OnceLock::new(),
     }))
 }
@@ -782,6 +807,31 @@ mod tests {
         let alpha = get_body(&app, "/n/alpha").await;
         assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
         assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+    }
+
+    #[tokio::test]
+    async fn served_index_renders_index_md_body_and_title() {
+        // The static build hoists index.md into index.html (body + title);
+        // the server filtered it from the listing and then showed an empty
+        // body under the directory name — and a `[home](index.md)` body
+        // link resolved to a page missing the very content it named.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.md"),
+            "# Welcome\n\nRead [the first lesson](01.md) first.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
+        let app = http::router(state);
+        let index = get_body(&app, "/").await;
+        assert!(
+            index.contains("Read <a href=\"/n/01\">the first lesson</a> first."),
+            "index.md body missing or its links unresolved: {index}"
+        );
     }
 
     #[tokio::test]
