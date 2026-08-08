@@ -639,6 +639,7 @@ pub fn cmd_render_cached(
         &outcome.rendered,
         theme,
         None,
+        &render::LinkMode::single_file(),
         Some(&source),
         Some(&input),
     );
@@ -700,6 +701,7 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
         &rendered,
         theme,
         None,
+        &render::LinkMode::single_file(),
         Some(&source),
         Some(&input),
     );
@@ -871,6 +873,26 @@ pub fn cmd_render_dir(
     pending.sort_by(|a, b| compare_notebook_order((a.order, &a.filename), (b.order, &b.filename)));
 
     let emit_nav = matches!(format, Format::Html);
+
+    // Link resolution for directory HTML renders: only siblings this build
+    // actually emits are rewritten to `.html`. `index.md` is always a valid
+    // target — HTML directory mode generates `index.html` unconditionally.
+    // Anything else (partials, dangling targets) is left as written.
+    let link_mode = if emit_nav {
+        let mut known: std::collections::HashSet<String> = pending
+            .iter()
+            .filter_map(|p| {
+                p.md_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .collect();
+        known.insert("index.md".to_string());
+        render::LinkMode::Static { known: Some(known) }
+    } else {
+        render::LinkMode::single_file()
+    };
+
     let n = pending.len();
     for i in 0..n {
         let nav = if emit_nav {
@@ -908,6 +930,7 @@ pub fn cmd_render_dir(
             &rendered,
             theme,
             nav.as_ref(),
+            &link_mode,
             Some(&p.source),
             Some(&p.md_path),
         );
@@ -917,7 +940,7 @@ pub fn cmd_render_dir(
     if matches!(format, Format::Html) {
         // Resolve the index title: CLI flag > index.md title > dir name.
         let (index_body_html, index_md_title) = match index_md_path.as_ref() {
-            Some(p) => read_and_render_index_md(p, &dir, theme),
+            Some(p) => read_and_render_index_md(p, &dir, theme, &link_mode),
             None => (String::new(), None),
         };
         let resolved_title = index_title.clone().or(index_md_title).unwrap_or_else(|| {
@@ -971,6 +994,8 @@ pub fn cmd_render_dir(
                     &rendered,
                     theme,
                     None,
+                    // Markdown-format arm only — link mode is HTML-only.
+                    &render::LinkMode::single_file(),
                     Some(&source),
                     Some(src_index),
                 );
@@ -1032,6 +1057,7 @@ fn read_and_render_index_md(
     path: &PathBuf,
     dir: &PathBuf,
     _theme: &ThemeColors,
+    link: &render::LinkMode,
 ) -> (String, Option<String>) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -1052,7 +1078,10 @@ fn read_and_render_index_md(
     // Demote single-tilde `~word~` spans to literal text, same as the
     // notebook HTML pipeline (the index page has no KaTeX, so no math
     // protection is needed here).
-    let events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    let mut events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    // The index body links to the notebooks it introduces — resolve its
+    // `.md` references exactly like any notebook page's.
+    render::rewrite_link_events(&mut events, link);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
     (html, Some(title))
@@ -1140,6 +1169,7 @@ fn render_output(
     rendered: &[execute::Rendered],
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
+    link: &render::LinkMode,
     source_md: Option<&str>,
     input: Option<&Path>,
 ) {
@@ -1147,7 +1177,7 @@ fn render_output(
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
             let html =
-                render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav);
+                render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
             write_output(out_path, html.as_bytes());
         }
         Format::Markdown { obsidian } => {

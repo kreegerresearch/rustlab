@@ -26,6 +26,7 @@ fn render_to_html(host_src: &str, dir: &Path) -> String {
         "plots",
         &theme,
         None,
+        &render::LinkMode::single_file(),
     )
 }
 

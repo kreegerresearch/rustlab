@@ -1289,14 +1289,30 @@ above), with filename as a tiebreaker.
 
 ### Cross-notebook links
 
-Links to other `.md` files are automatically rewritten to `.html` in
-the rendered output:
+Links to other `.md` files are automatically rewritten to match how the
+output is published:
 
 ```markdown
 See [Filter Design](filter_design.md) for details.
 ```
 
-becomes `<a href="filter_design.html">` in the HTML output.
+becomes `<a href="filter_design.html">` in a static render, and
+`<a href="/n/filter_design">` when served by `watch` — the server routes
+notebooks at `/n/<slug>`, so a `.html` href would 404 there. Fragments
+survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
+`/n/filter_design#anchor`), titled and reference-style links resolve the
+same way, and `[[wikilinks]]` go through the same resolver.
+
+The rewrite applies only to real links: code spans and fenced blocks are
+untouched (`` `[x](a.md)` `` renders literally), as are external URLs
+that happen to end in `.md`, absolute paths, and images. `index.md`
+resolves to `index.html` statically and to `/` under `watch`.
+
+In a directory render, only links to notebooks the build actually emits
+are rewritten. A link to a partial (`_setup.md`), or to a target that
+does not exist, is left exactly as written — a visibly broken `.md` link
+is easier to notice and fix than a generated `.html` one that 404s while
+looking intentional.
 
 ### Page navigation
 

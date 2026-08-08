@@ -8,9 +8,133 @@ use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+
+/// How cross-notebook `.md` link destinations resolve in HTML output.
+///
+/// The static build and the watch server publish notebooks at different
+/// addresses — `<stem>.html` siblings vs `/n/<slug>` routes — so the same
+/// `[next](02-filter.md)` source must emit different hrefs per mode. The
+/// rewrite happens in the pulldown-cmark event stream (see
+/// [`markdown_to_html_linked`]), which is what scopes it to real link
+/// destinations: code spans, fenced blocks, titles, and reference-style
+/// definitions are all handled by the parser, not by string matching.
+///
+/// Only destinations that are relative (no URL scheme, no leading `/`) and
+/// end in `.md` before an optional `#fragment` are candidates. Everything
+/// else — external URLs, absolute paths, images, anchors — passes through
+/// untouched. A candidate that cannot be resolved (dangling target, a
+/// `_partial.md`, a path outside the collection) is left exactly as
+/// written: a visibly broken `.md` link beats a manufactured `.html` one
+/// that 404s while looking intentional.
+#[derive(Clone, Debug)]
+pub enum LinkMode {
+    /// Static HTML render: `foo.md` → `foo.html`.
+    ///
+    /// `known` is the set of collection-relative sources the build actually
+    /// emits (listable notebooks plus `index.md`, which the directory build
+    /// hoists into `index.html`). `Some` (directory renders) rewrites only
+    /// members and leaves the rest as written; `None` (single-file renders)
+    /// rewrites unconditionally — a lone file has no collection to check
+    /// against, and the sibling may well be rendered separately.
+    Static { known: Option<HashSet<String>> },
+    /// Watch server: `foo.md` → `/n/<slug>`.
+    ///
+    /// `slugs` maps normalized collection-root-relative paths
+    /// (`"ch1/notes.md"`) to server slugs. Keyed by path, not stem: the
+    /// server walk is recursive and same-stem files in different
+    /// directories hold distinct `-N` suffixed slugs. `current_rel_dir` is
+    /// the linking notebook's directory relative to the root (`""` at the
+    /// root), used to resolve `./` and `../`. Root `index.md` maps to `/`
+    /// (it is the index page's body, not a notebook — it has no slug).
+    Server {
+        slugs: HashMap<String, String>,
+        current_rel_dir: String,
+    },
+}
+
+impl LinkMode {
+    /// The mode for a standalone single-file static render.
+    pub fn single_file() -> Self {
+        LinkMode::Static { known: None }
+    }
+}
+
+/// Rewrite one link destination per [`LinkMode`], or `None` to leave it
+/// exactly as written.
+fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
+    // Scheme'd (`https:`, `mailto:`), protocol-relative (`//host/x`),
+    // absolute (`/docs/x`), and pure-fragment (`#x`) destinations are not
+    // notebook references.
+    if dest.starts_with('/') || dest.starts_with('#') || has_url_scheme(dest) {
+        return None;
+    }
+    let (path, fragment) = match dest.find('#') {
+        Some(at) => (&dest[..at], &dest[at..]),
+        None => (dest, ""),
+    };
+    let stem = path.strip_suffix(".md")?;
+    match mode {
+        LinkMode::Static { known } => {
+            let normalized = normalize_rel_path("", path)?;
+            if let Some(known) = known {
+                if !known.contains(&normalized) {
+                    return None;
+                }
+            }
+            Some(format!("{stem}.html{fragment}"))
+        }
+        LinkMode::Server {
+            slugs,
+            current_rel_dir,
+        } => {
+            let normalized = normalize_rel_path(current_rel_dir, path)?;
+            if normalized == "index.md" {
+                // The index page's body, hoisted to the server root.
+                return Some(format!("/{fragment}"));
+            }
+            let slug = slugs.get(&normalized)?;
+            Some(format!("/n/{slug}{fragment}"))
+        }
+    }
+}
+
+/// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
+/// path character?
+fn has_url_scheme(dest: &str) -> bool {
+    let mut chars = dest.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for c in chars {
+        match c {
+            ':' => return true,
+            c if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.') => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Join `target` onto `base_dir` and normalize `.`/`..` components, all in
+/// `/`-separated collection-relative terms. `None` when `..` escapes the
+/// collection root — such a link cannot be resolved against the listing.
+fn normalize_rel_path(base_dir: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = base_dir.split('/').filter(|p| !p.is_empty()).collect();
+    for comp in target.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
 
 /// Render executed notebook blocks into an HTML string.
 ///
@@ -22,6 +146,9 @@ use std::path::Path;
 /// `nav` is `Some` when the notebook is part of a multi-notebook directory
 /// render — it carries an "← Index" link for the sidebar plus prev/next
 /// footer links. `None` for single-file renders.
+///
+/// `link` chooses how `.md` cross-notebook references resolve — static
+/// `.html` siblings or server `/n/<slug>` routes. See [`LinkMode`].
 pub fn render_html(
     title: &str,
     blocks: &[Rendered],
@@ -29,6 +156,7 @@ pub fn render_html(
     plot_href_prefix: &str,
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
+    link: &LinkMode,
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
@@ -69,11 +197,11 @@ pub fn render_html(
             Rendered::Markdown(md) => {
                 let mark = body.len();
                 // Transform `[[wiki]]` / `![[embed]]` to standard markdown
+                // (wikilinks emit `.md` targets for the link resolver)
                 let md = transform_wikilinks(md);
-                // Rewrite .md links to .html for cross-notebook references
-                let md = rewrite_md_links(&md);
-                // Convert markdown to HTML (math-protected shared pipeline)
-                let html = markdown_to_html(&md);
+                // Convert markdown to HTML (math-protected shared pipeline),
+                // resolving cross-notebook `.md` links per `link` mode
+                let html = markdown_to_html_linked(&md, Some(link));
 
                 // Extract headings for nav and inject IDs
                 let html = inject_heading_ids(&html, &mut nav_items, &mut heading_idx);
@@ -249,8 +377,7 @@ pub fn render_html(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let md = rewrite_md_links(&md);
-                let html = markdown_to_html(&md);
+                let html = markdown_to_html_linked(&md, Some(link));
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -947,11 +1074,38 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
+    markdown_to_html_linked(md, None)
+}
+
+/// [`markdown_to_html`] with cross-notebook link resolution.
+///
+/// Destinations are rewritten on `Event::Start(Tag::Link)` — after the
+/// parser has resolved reference-style definitions and separated titles,
+/// and only for real links: text, code spans, and fenced blocks never
+/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Images
+/// (`Tag::Image`) are deliberately untouched — `.md` is not an image
+/// format, and embeds were already expanded upstream.
+pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
-    let events = parse_single_tilde_safe(&protected, notebook_md_options());
+    let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    if let Some(mode) = link {
+        rewrite_link_events(&mut events, mode);
+    }
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
     restore_math(&html, &math)
+}
+
+/// Apply [`LinkMode`] resolution to every link-open event in place. Shared
+/// with the index-page body renderer, which runs its own event pipeline.
+pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
+    for ev in events.iter_mut() {
+        if let Event::Start(Tag::Link { dest_url, .. }) = ev {
+            if let Some(new) = rewrite_link_dest(dest_url, mode) {
+                *dest_url = new.into();
+            }
+        }
+    }
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1334,16 +1488,10 @@ fn push_escaped_char(out: &mut String, ch: char) {
     }
 }
 
-/// Rewrite relative `.md` links to `.html` in markdown text.
-/// Converts `](something.md)` to `](something.html)` for cross-notebook links.
-fn rewrite_md_links(md: &str) -> String {
-    md.replace(".md)", ".html)").replace(".md#", ".html#")
-}
-
 /// Transform Obsidian-style wikilinks and embeds into standard markdown so
 /// the committed `book/*.md` renders correctly on GitHub (where `[[...]]`
-/// is literal text) and the HTML pipeline can run them through
-/// `rewrite_md_links` like ordinary `.md` references.
+/// is literal text) and the HTML pipeline can resolve them through
+/// [`rewrite_link_dest`] like ordinary `.md` references.
 ///
 /// Mappings:
 /// - `[[Foo]]`              → `[Foo](Foo.md)`
@@ -2289,7 +2437,7 @@ mod tests {
     #[test]
     fn render_html_basic_structure() {
         let blocks = vec![Rendered::Markdown("# Hello".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
@@ -2304,7 +2452,7 @@ mod tests {
             Rendered::Markdown("hello".to_string()),
             Rendered::Markdown("world".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Each prose block lives inside a rl-block section.
         let opens: Vec<_> = html.matches("<section class=\"rl-block\" id=\"b-").collect();
         assert_eq!(opens.len(), 2, "expected 2 block wrappers, full html:\n{html}");
@@ -2319,7 +2467,7 @@ mod tests {
             Rendered::Markdown("dup".to_string()),
             Rendered::Markdown("unique".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // The two `dup` blocks have identical content → identical
         // 8-char hashes → second gets the "-1" suffix.
         let suffixed = html.matches("\" id=\"b-").count();
@@ -2333,8 +2481,8 @@ mod tests {
     #[test]
     fn render_html_block_ids_stable_across_renders() {
         let blocks = vec![Rendered::Markdown("stable content".to_string())];
-        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
-        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         assert_eq!(id1, id2, "block id changed between identical renders");
@@ -2363,7 +2511,7 @@ mod tests {
             Rendered::Markdown("more prose".to_string()),
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("data-code-idx=\"0\""), "first code block is idx 0");
         assert!(html.contains("data-code-idx=\"1\""), "second code block is idx 1");
         // Prose sections carry no ordinal.
@@ -2384,7 +2532,7 @@ mod tests {
             },
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("data-code-idx=\"0\""));
         assert!(
             html.contains("data-code-idx=\"2\""),
@@ -2401,7 +2549,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("data-code-idx="), "mermaid gets no Run affordance");
     }
 
@@ -2415,7 +2563,7 @@ mod tests {
         // Identifiers survive `highlight_rustlab` verbatim; operators and
         // numbers get wrapped in spans, so match on the bare name only.
         let plot = std::path::PathBuf::from("/tmp/rustlab_test_plots");
-        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None);
+        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None, &LinkMode::single_file());
         let shifted = render_html(
             "T",
             &[code("unrelated = 2"), code("xyzzy = 1")],
@@ -2423,6 +2571,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         );
         let id_of = |html: &str, marker: &str| -> String {
             // Find the section whose body contains `marker`, return its id.
@@ -2451,7 +2600,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
@@ -2469,7 +2618,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
     }
@@ -2486,7 +2635,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
@@ -2506,7 +2655,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Source shown, but no output div
         assert!(html.contains("class=\"source\""));
         assert!(!html.contains("class=\"output\""));
@@ -2514,26 +2663,26 @@ mod tests {
 
     #[test]
     fn render_html_katex_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
     }
 
     #[test]
     fn render_html_plotly_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("plotly"));
     }
 
     #[test]
     fn render_html_nav_toggle() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("nav-toggle"));
     }
 
     #[test]
     fn render_html_title_escaped() {
-        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("A &lt;script&gt; &amp; &quot;test&quot;"));
     }
 
@@ -2549,7 +2698,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
@@ -2560,42 +2709,302 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Section One\n\n## Sub Section".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("heading-1"));
         assert!(html.contains("heading-2"));
         assert!(html.contains("Section One"));
         assert!(html.contains("Sub Section"));
     }
 
-    // ── rewrite_md_links ──
+    // ── cross-notebook link resolution (LinkMode) ──
+    //
+    // The old `rewrite_md_links` was a raw string replace on unparsed
+    // markdown: it corrupted external URLs ending in `.md`, rewrote inside
+    // code spans, and missed titled and reference-style links entirely.
+    // These tests pin the resolver's contract at both altitudes: the
+    // destination-level rules here, the full-pipeline behaviour below.
+
+    fn server_mode(pairs: &[(&str, &str)], current_rel_dir: &str) -> LinkMode {
+        LinkMode::Server {
+            slugs: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            current_rel_dir: current_rel_dir.to_string(),
+        }
+    }
 
     #[test]
-    fn rewrite_md_links_basic() {
+    fn link_dest_static_swaps_md_for_html() {
+        let mode = LinkMode::single_file();
         assert_eq!(
-            rewrite_md_links("See [filter](filter.md) for details"),
-            "See [filter](filter.html) for details"
+            rewrite_link_dest("filter.md", &mode).as_deref(),
+            Some("filter.html")
+        );
+        // Fragment survives verbatim.
+        assert_eq!(
+            rewrite_link_dest("other.md#intro", &mode).as_deref(),
+            Some("other.html#intro")
+        );
+        // Non-.md destinations pass through untouched.
+        assert_eq!(rewrite_link_dest("image.png", &mode), None);
+        assert_eq!(rewrite_link_dest("#local-anchor", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_never_touches_external_or_absolute_urls() {
+        // The old string replace corrupted every one of these to `.html`.
+        for mode in [
+            LinkMode::single_file(),
+            server_mode(&[("doc.md", "doc")], ""),
+        ] {
+            for dest in [
+                "https://example.com/README.md",
+                "https://github.com/x/y/blob/main/doc.md",
+                "http://host/doc.md#frag",
+                "mailto:someone@example.md",
+                "//host/proto-relative.md",
+                "/docs/absolute.md",
+            ] {
+                assert_eq!(
+                    rewrite_link_dest(dest, &mode),
+                    None,
+                    "{dest} must pass through unrewritten"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn link_dest_static_collection_only_rewrites_emitted_siblings() {
+        // Directory renders know exactly which .html files they emit; a
+        // link to anything else (partial, dangling target, subdirectory)
+        // is left as written — visibly broken beats a manufactured 404.
+        let known: HashSet<String> = ["01-intro.md".to_string(), "index.md".to_string()]
+            .into_iter()
+            .collect();
+        let mode = LinkMode::Static { known: Some(known) };
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("01-intro.html")
+        );
+        assert_eq!(
+            rewrite_link_dest("index.md", &mode).as_deref(),
+            Some("index.html")
+        );
+        assert_eq!(rewrite_link_dest("_setup.md", &mode), None, "partial");
+        assert_eq!(rewrite_link_dest("nope.md", &mode), None, "dangling");
+        assert_eq!(
+            rewrite_link_dest("sub/foo.md", &mode),
+            None,
+            "static dir build is non-recursive; sub/foo.html is never emitted"
         );
     }
 
     #[test]
-    fn rewrite_md_links_with_anchor() {
+    fn link_dest_server_resolves_to_slug_routes() {
+        let mode = server_mode(&[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")], "");
         assert_eq!(
-            rewrite_md_links("[section](other.md#intro)"),
-            "[section](other.html#intro)"
+            rewrite_link_dest("02-filter.md", &mode).as_deref(),
+            Some("/n/02-filter")
+        );
+        assert_eq!(
+            rewrite_link_dest("./02-filter.md#setup", &mode).as_deref(),
+            Some("/n/02-filter#setup")
+        );
+        // index.md is the index page's body, not a notebook: it has no
+        // slug and must land on the server root.
+        assert_eq!(rewrite_link_dest("index.md", &mode).as_deref(), Some("/"));
+        // Dangling and partial targets: left exactly as written.
+        assert_eq!(rewrite_link_dest("nope.md", &mode), None);
+        assert_eq!(rewrite_link_dest("_setup.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_server_resolves_nested_paths_by_path_not_stem() {
+        // ch1/01-intro.md and 01-intro.md share a stem but hold distinct
+        // slugs; the link must resolve to the slug of the file the path
+        // names. A stem-keyed map fails this test.
+        let mode = server_mode(
+            &[
+                ("01-intro.md", "01-intro"),
+                ("ch1/01-intro.md", "01-intro-2"),
+                ("ch2/notes.md", "notes"),
+            ],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro-2"),
+            "relative to ch1/, `01-intro.md` is the ch1 file"
+        );
+        assert_eq!(
+            rewrite_link_dest("../01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro")
+        );
+        assert_eq!(
+            rewrite_link_dest("../ch2/notes.md", &mode).as_deref(),
+            Some("/n/notes")
+        );
+        // `..` escaping the collection root cannot resolve — left alone.
+        assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    /// Render one markdown block through the full HTML pipeline in `mode`.
+    fn render_md_linked(src: &str, mode: &LinkMode) -> String {
+        let blocks = vec![Rendered::Markdown(src.to_string())];
+        render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            mode,
+        )
+    }
+
+    #[test]
+    fn pipeline_rewrites_titled_links() {
+        // `[x](a.md "title")` never matched the old `.md)` string replace,
+        // so titled cross-references shipped broken in BOTH modes.
+        let html = render_md_linked(
+            r#"[x](02-filter.md "Filter lesson")"#,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains(r#"href="02-filter.html" title="Filter lesson""#),
+            "titled link not rewritten with title preserved: {html}"
+        );
+        let html = render_md_linked(
+            r#"[x](02-filter.md "Filter lesson")"#,
+            &server_mode(&[("02-filter.md", "02-filter")], ""),
+        );
+        assert!(
+            html.contains(r#"href="/n/02-filter" title="Filter lesson""#),
+            "titled link not resolved to slug route: {html}"
         );
     }
 
     #[test]
-    fn rewrite_md_links_no_md() {
-        let input = "No links here.";
-        assert_eq!(rewrite_md_links(input), input);
+    fn pipeline_rewrites_reference_style_links() {
+        // `[flt]: 02-filter.md` has no `.md)` for a string replace to see;
+        // the parser resolves the reference before the Link event fires.
+        let src = "See [the filter][flt] lesson.\n\n[flt]: 02-filter.md#setup\n";
+        let html = render_md_linked(src, &LinkMode::single_file());
+        assert!(
+            html.contains(r#"href="02-filter.html#setup""#),
+            "reference-style link not rewritten: {html}"
+        );
+        let html = render_md_linked(src, &server_mode(&[("02-filter.md", "02-filter")], ""));
+        assert!(
+            html.contains(r#"href="/n/02-filter#setup""#),
+            "reference-style link not resolved to slug route: {html}"
+        );
     }
 
     #[test]
-    fn rewrite_md_links_multiple() {
-        assert_eq!(
-            rewrite_md_links("[a](a.md) and [b](b.md)"),
-            "[a](a.html) and [b](b.html)"
+    fn pipeline_leaves_code_spans_and_fences_byte_identical() {
+        // The old replace ran on raw markdown BEFORE parsing, so
+        // `` `[link](a.md)` `` displayed as `[link](a.html)` — a rendered
+        // code example asserting a rewrite the reader never wrote.
+        let src = "Inline `[link](a.md)` span.\n\n```text\nsee [x](a.md)\n```\n";
+        for mode in [
+            LinkMode::single_file(),
+            server_mode(&[("a.md", "a")], ""),
+        ] {
+            let html = render_md_linked(src, &mode);
+            assert!(
+                html.contains("[link](a.md)"),
+                "inline code span was rewritten: {html}"
+            );
+            assert!(
+                html.contains("see [x](a.md)"),
+                "fenced block was rewritten: {html}"
+            );
+            assert!(!html.contains("a.html"), "code content leaked a rewrite: {html}");
+        }
+    }
+
+    #[test]
+    fn pipeline_keeps_external_md_urls_intact() {
+        // Confirmed corruption before the resolver: this exact form
+        // rendered as `https://example.com/README.html`.
+        let html = render_md_linked(
+            "[readme](https://example.com/README.md)",
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains(r#"href="https://example.com/README.md""#),
+            "external URL was corrupted: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_bare_md_angle_reference_is_literal_text() {
+        // CommonMark autolinks require a scheme: `<02-filter.md>` is plain
+        // text, not a link. Pinned so nobody "fixes" it with string
+        // matching later.
+        let html = render_md_linked("see <02-filter.md> here", &LinkMode::single_file());
+        assert!(!html.contains("href=\"02-filter"), "text became a link: {html}");
+        assert!(
+            html.contains("&lt;02-filter.md&gt;"),
+            "angle reference should render as literal text: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_resolves_wikilinks_through_the_same_seam() {
+        // `[[02-filter#Setup|the setup]]` → transform_wikilinks emits
+        // `[the setup](02-filter.md#setup)` (fragment lowercased) → the
+        // resolver routes it per mode. The fragment must match the id the
+        // explicit-anchor pipeline emits for `## Setup {#setup}`.
+        let src = "see [[02-filter#Setup|the setup]]";
+        let html = render_md_linked(src, &LinkMode::single_file());
+        assert!(
+            html.contains(r#"href="02-filter.html#setup""#),
+            "wikilink not resolved statically: {html}"
+        );
+        let html = render_md_linked(src, &server_mode(&[("02-filter.md", "02-filter")], ""));
+        assert!(
+            html.contains(r#"href="/n/02-filter#setup""#),
+            "wikilink not resolved to slug route: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_resolves_links_inside_callouts() {
+        // Callout bodies run through their own markdown_to_html call
+        // (the second rewrite site) — same resolution applies.
+        let blocks = vec![Rendered::Callout {
+            kind: CalloutKind::Note,
+            title: None,
+            content: "see [next](02-filter.md)".to_string(),
+        }];
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &server_mode(&[("02-filter.md", "02-filter")], ""),
+        );
+        assert!(
+            html.contains(r#"href="/n/02-filter""#),
+            "callout link not resolved: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_explicit_anchor_target_exists_end_to_end() {
+        // The served `#setup` fragment lands on a real id: this PR's
+        // explicit-anchor preservation keeps `## Setup {#setup}` as
+        // `id="setup"` rather than renumbering it `heading-N`.
+        let html = render_md_linked("## Setup {#setup}", &LinkMode::single_file());
+        assert!(
+            html.contains(r#"id="setup""#),
+            "explicit anchor id missing — fragment links would dangle: {html}"
         );
     }
 
@@ -2604,7 +3013,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "See [other](other.md) for details".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("other.html"));
         assert!(!html.contains("other.md"));
     }
@@ -2729,7 +3138,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             r"$$\begin{pmatrix}0 & 1 \\ 1 & 0\end{pmatrix}$$".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // The `\\` must reach the rendered HTML so KaTeX can split rows.
         assert!(
             html.contains(r"\\"),
@@ -2744,7 +3153,7 @@ mod tests {
             title: None,
             content: r"see $$a \\ b$$".to_string(),
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains(r"\\"));
     }
 
@@ -2893,7 +3302,7 @@ mod tests {
     #[test]
     fn render_html_no_nav_for_single_file() {
         let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Same chrome as a collection page — there is just nothing to page to.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("<nav class=\"sidebar\">"));
@@ -2917,7 +3326,7 @@ mod tests {
             next: None,
         };
         for n in [None, Some(&nav)] {
-            let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), n);
+            let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), n, &LinkMode::single_file());
             assert!(!html.contains("topbar-layout"), "stale layout class emitted");
         }
     }
@@ -2930,7 +3339,7 @@ mod tests {
             next: None,
         };
         let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
-        let html = render_html("Filter Analysis", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Filter Analysis", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         // Topbar present with breadcrumb.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"index.html\""));
@@ -2948,7 +3357,7 @@ mod tests {
         // Emitting the sidebar unconditionally cost 220px of chrome holding
         // nothing but the title. `no-toc` gives that width back to content.
         let blocks = vec![Rendered::Markdown("just prose, no headings.\n".to_string())];
-        let html = render_html("Solo", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Solo", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("<nav class=\"sidebar\">"), "empty sidebar emitted");
         assert!(html.contains("<body class=\"no-toc\">"));
         // The topbar is still there — chrome stays consistent.
@@ -2961,7 +3370,7 @@ mod tests {
         // y=0, behind the fixed topbar — the heading you clicked is the one
         // thing you cannot see.
         let blocks = vec![Rendered::Markdown("# Alpha\n".to_string())];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(
             html.contains("scroll-margin-top"),
             "heading anchors would land under the topbar"
@@ -2982,7 +3391,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
         )];
-        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         // Between-notebook nav.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"08.html\""), "prev link missing");
@@ -3003,7 +3412,7 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("A &lt;script&gt; &amp; &quot;x&quot;"));
     }
 
@@ -3014,7 +3423,7 @@ mod tests {
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"page-nav\""));
         assert!(html.contains("class=\"prev\""));
         assert!(html.contains("href=\"intro.html\""));
@@ -3032,7 +3441,7 @@ mod tests {
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"page-nav\""));
         assert!(!html.contains("class=\"prev\""));
         assert!(html.contains("class=\"next\""));
@@ -3045,7 +3454,7 @@ mod tests {
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"prev\""));
         assert!(!html.contains("class=\"next\""));
     }
@@ -3057,7 +3466,7 @@ mod tests {
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
     }
@@ -3084,7 +3493,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<figure class=\"mermaid\">"));
         assert!(html.contains("<svg"), "expected inline <svg> tag");
         assert!(!html.contains("<?xml"), "XML decl should be stripped");
@@ -3101,7 +3510,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("cdn.jsdelivr.net/npm/mermaid"));
         assert!(!html.contains("mermaid.initialize("));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3117,7 +3526,7 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<figcaption>Signal flow</figcaption>"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3132,7 +3541,7 @@ mod tests {
             details: Some("Architecture".to_string()),
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<details class=\"code-details\">"));
         assert!(html.contains("<summary>Architecture</summary>"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3147,7 +3556,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("<figure class=\"mermaid\">"));
         assert!(!html.contains("<svg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3171,7 +3580,7 @@ mod tests {
                 caption: None,
             },
         ];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         let figs = html.matches("<figure class=\"mermaid\">").count();
         assert_eq!(figs, 2, "expected two mermaid figures, got {figs}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -3187,7 +3596,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"mermaid-source\""));
         assert!(html.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -3217,6 +3626,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         )
     }
 
@@ -3284,6 +3694,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         )
     }
 
@@ -3401,6 +3812,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         );
         assert!(html.contains(r#"href="Foo.html""#), "expected .html href: {html}");
         assert!(html.contains(">Foo</a>"));

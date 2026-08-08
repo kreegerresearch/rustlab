@@ -141,6 +141,11 @@ pub struct ServerState {
     pub theme: &'static ThemeColors,
     /// Index-page heading (directory name, or the lone notebook's title).
     pub index_title: String,
+    /// Cross-notebook link resolution: normalized collection-root-relative
+    /// path (`"ch1/notes.md"`) → slug. Keyed by path, not stem — the walk
+    /// is recursive and same-stem files hold distinct `-N` slugs. Single-
+    /// file mode holds just that file, keyed by its bare filename.
+    pub link_slugs: HashMap<String, String>,
     /// Render-request channel into the coordinator. Set once by
     /// `render_loop::spawn` after it creates the coordinator channel; the
     /// WS `widget_update` / `run_block` handlers send requests here
@@ -160,6 +165,23 @@ impl ServerState {
             self.order.first().and_then(|s| self.notebooks.get(s))
         } else {
             None
+        }
+    }
+
+    /// The [`crate::render::LinkMode`] for re-rendering the notebook at
+    /// `slug` — same resolution `build_state` used at startup, so a live
+    /// re-render cannot emit different hrefs than the first render.
+    pub fn link_mode_for(&self, slug: &str) -> crate::render::LinkMode {
+        let current_rel_dir = self
+            .link_slugs
+            .iter()
+            .find(|(_, s)| s.as_str() == slug)
+            .and_then(|(rel, _)| rel.rsplit_once('/'))
+            .map(|(dir, _)| dir.to_string())
+            .unwrap_or_default();
+        crate::render::LinkMode::Server {
+            slugs: self.link_slugs.clone(),
+            current_rel_dir,
         }
     }
 }
@@ -375,6 +397,7 @@ mod tests {
             order: vec!["nb".to_string()],
             plot_dir,
             editable: false,
+            link_slugs: HashMap::new(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
@@ -497,6 +520,7 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
             render_tx: std::sync::OnceLock::new(),
         });
         let app = router(editable_state);

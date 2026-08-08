@@ -283,6 +283,9 @@ fn schedule_render(
             .iter()
             .position(|(s, _)| *s == slug)
             .and_then(|idx| super::server_nav(&listing, idx, state.single));
+        // Same link resolution as the startup render — recomputed from
+        // state so hrefs cannot drift across live re-renders.
+        let link = state.link_mode_for(&slug);
 
         // Snapshot the current live widget values to feed this render as
         // overrides. A slider drag updates this map (via the WS handler)
@@ -304,6 +307,7 @@ fn schedule_render(
                 &slug,
                 editable,
                 nav.as_ref(),
+                &link,
                 cancel,
                 Some(&widget_overrides),
                 Some(&mut cache),
@@ -475,6 +479,7 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            link_slugs: Map::new(),
             render_tx: std::sync::OnceLock::new(),
         });
         (state, nb)
@@ -489,7 +494,7 @@ mod tests {
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
                 .unwrap()
                 .html;
         let (state, nb) = single_state(&nb_path, html0);
@@ -532,7 +537,7 @@ mod tests {
         std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
                 .unwrap()
                 .html;
         let (state, nb) = single_state(&nb_path, html0);
