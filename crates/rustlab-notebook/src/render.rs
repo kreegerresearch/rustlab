@@ -1193,59 +1193,72 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// 1. Inject an `id` attribute so nav links can scroll to it.
 /// 2. Append a nav link to `nav`.
 /// Returns the modified HTML.
+///
+/// ONE pass, taking the earliest heading of any level from the cursor. The
+/// old shape — a full-document pass per level — emitted every h1 to the nav
+/// before any h2 and numbered `heading-N` in that grouped order, so any
+/// prose block with more than one heading (the common case: contiguous
+/// prose between code fences is a single block) got a sidebar whose order
+/// and implied nesting contradicted the page.
 fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
     let mut result = html.to_string();
-    for tag in ["h1", "h2", "h3"] {
+    let mut search_from = 0;
+    loop {
+        // Match `<hN>` *and* `<hN ...>`: pulldown-cmark emits an explicit
+        // id for `## Title {#anchor}`, and matching only the bare tag
+        // skipped those headings entirely — no TOC entry at all, which
+        // hit exactly the notebooks using anchors for deep links.
+        let found = ["h1", "h2", "h3"]
+            .iter()
+            .filter_map(|t| {
+                find_heading_open(&result[search_from..], t)
+                    .map(|(rel, len)| (*t, search_from + rel, len))
+            })
+            .min_by_key(|&(_, at, _)| at);
+        let Some((tag, abs_open, open_len)) = found else {
+            break;
+        };
         let close = format!("</{tag}>");
-        let mut search_from = 0;
-        loop {
-            // Match `<hN>` *and* `<hN ...>`: pulldown-cmark emits an explicit
-            // id for `## Title {#anchor}`, and matching only the bare tag
-            // skipped those headings entirely — no TOC entry at all, which
-            // hit exactly the notebooks using anchors for deep links.
-            let Some((abs_open, open_len)) = find_heading_open(&result[search_from..], tag)
-                .map(|(rel, len)| (search_from + rel, len))
-            else {
-                break;
+        let content_start = abs_open + open_len;
+        let Some(rel_end) = result[content_start..].find(&close) else {
+            // Unterminated heading: step past it so another level can still
+            // match later in the document.
+            search_from = content_start;
+            continue;
+        };
+        let content = result[content_start..content_start + rel_end].to_string();
+        let clean = strip_tags(&content);
+        if !clean.is_empty() {
+            let open_tag = result[abs_open..abs_open + open_len].to_string();
+            // An explicit `{#anchor}` already produced an id, and other
+            // pages may link to it — keep it and point the TOC there
+            // rather than overwriting someone's stable anchor.
+            let (id, new_open) = match existing_id(&open_tag) {
+                Some(existing) => (existing, open_tag.clone()),
+                None => {
+                    *idx += 1;
+                    let id = format!("heading-{idx}");
+                    let inner = open_tag
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string();
+                    (id.clone(), format!("<{inner} id=\"{id}\">"))
+                }
             };
-            let content_start = abs_open + open_len;
-            let Some(rel_end) = result[content_start..].find(&close) else {
-                break;
-            };
-            let content = result[content_start..content_start + rel_end].to_string();
-            let clean = strip_tags(&content);
-            if !clean.is_empty() {
-                let open_tag = result[abs_open..abs_open + open_len].to_string();
-                // An explicit `{#anchor}` already produced an id, and other
-                // pages may link to it — keep it and point the TOC there
-                // rather than overwriting someone's stable anchor.
-                let (id, new_open) = match existing_id(&open_tag) {
-                    Some(existing) => (existing, open_tag.clone()),
-                    None => {
-                        *idx += 1;
-                        let id = format!("heading-{idx}");
-                        let inner = open_tag
-                            .trim_start_matches('<')
-                            .trim_end_matches('>')
-                            .to_string();
-                        (id.clone(), format!("<{inner} id=\"{id}\">"))
-                    }
-                };
-                result.replace_range(abs_open..abs_open + open_len, &new_open);
-                // `clean` came out of already-rendered HTML, so its entities
-                // are encoded already — `strip_tags` only removes tag spans
-                // and leaves them alone. Escaping again turned a heading's
-                // `&` into `&amp;amp;`, which the sidebar displayed literally.
-                nav.push_str(&format!(
-                    "  <a href=\"#{id}\" class=\"{tag}\">{text}</a>\n",
-                    id = id,
-                    tag = tag,
-                    text = clean,
-                ));
-                search_from = abs_open + new_open.len() + rel_end + close.len();
-            } else {
-                search_from = content_start + rel_end + close.len();
-            }
+            result.replace_range(abs_open..abs_open + open_len, &new_open);
+            // `clean` came out of already-rendered HTML, so its entities
+            // are encoded already — `strip_tags` only removes tag spans
+            // and leaves them alone. Escaping again turned a heading's
+            // `&` into `&amp;amp;`, which the sidebar displayed literally.
+            nav.push_str(&format!(
+                "  <a href=\"#{id}\" class=\"{tag}\">{text}</a>\n",
+                id = id,
+                tag = tag,
+                text = clean,
+            ));
+            search_from = abs_open + new_open.len() + rel_end + close.len();
+        } else {
+            search_from = content_start + rel_end + close.len();
         }
     }
     result
@@ -1262,8 +1275,11 @@ fn find_heading_open(hay: &str, tag: &str) -> Option<(usize, usize)> {
             // `<h1>` or `<h1 id=…>` — but not `<h11>` or `<hr>`.
             Some('>') => return Some((start, after - start + 1)),
             Some(c) if c.is_whitespace() => {
-                let close = hay[after..].find('>')?;
-                return Some((start, after + close - start + 1));
+                // Quote-aware: a raw-HTML heading can carry `>` inside an
+                // attribute value (`<h2 title="a > b">`), and cutting the
+                // tag there spliced the injected id into the attribute.
+                let end = end_of_open_tag(hay, start)?;
+                return Some((start, end - start));
             }
             _ => from = after,
         }
@@ -1271,37 +1287,126 @@ fn find_heading_open(hay: &str, tag: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Byte offset just past the `>` closing the tag that opens at `start`
+/// (`s[start]` must be `<`). `>` inside quoted attribute values does not
+/// terminate the tag. `None` when unterminated.
+fn end_of_open_tag(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut quote: Option<u8> = None;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'>' => return Some(i + 1),
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
 /// The value of an `id="…"` attribute already present on an open tag.
+///
+/// Boundary-checked: `id` must start its own attribute name. A bare
+/// substring search matched `data-id="…"`, stealing an anchor nothing on
+/// the page carries — the heading got no id and the TOC entry went dead.
 fn existing_id(open_tag: &str) -> Option<String> {
-    let at = open_tag.find("id=\"")? + 4;
-    let end = open_tag[at..].find('"')?;
-    Some(open_tag[at..at + end].to_string())
+    let bytes = open_tag.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = open_tag[from..].find("id=\"") {
+        let at = from + rel;
+        if at > 0 && bytes[at - 1].is_ascii_whitespace() {
+            let vstart = at + 4;
+            let end = open_tag[vstart..].find('"')?;
+            return Some(open_tag[vstart..vstart + end].to_string());
+        }
+        from = at + 4;
+    }
+    None
 }
 
 /// Remove HTML tag spans, leaving text and entity references intact.
 ///
-/// A `<` only opens a tag when a tag name or `/` follows it. Treating every
-/// `<` as a tag opener swallowed the rest of the heading whenever inline math
-/// contained a comparison — `## Regime $T < T_c$` produced a TOC label cut
-/// off at `Regime \(T `, with an unmatched `\(` that KaTeX could not close.
-/// A bare `>` outside a tag is likewise just text (`$E > 0$`).
+/// Three things here are deliberately NOT treated as tags:
+/// - **Restored math.** `markdown_to_html_linked` restores `\(…\)` / `\[…\]`
+///   spans as plain text *after* pulldown escaping, so `$a<b$` arrives here
+///   as a literal `\(a<b\)`. Treating that `<` as a tag opener swallowed to
+///   the next `>` — `$a<b$ and $c>d$` spliced into `\(ad\)`, a label the
+///   heading never said, with delimiters balanced so nothing looked wrong.
+///   Delimited math is copied verbatim.
+/// - **A `<` not followed by a tag-name character** (`$E > 0$`, `a < b`):
+///   plain text in HTML's data state, kept.
+/// - **Comments** are skipped to their `-->`, not to the first `>` — a
+///   comment containing `>` leaked its tail into the label.
+///
+/// Real tag spans are skipped quote-aware, matching [`end_of_open_tag`].
 fn strip_tags(s: &str) -> String {
-    let bytes: Vec<char> = s.chars().collect();
+    let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == '<'
-            && bytes
+    while i < chars.len() {
+        // Math span: copy verbatim through its closing delimiter.
+        if chars[i] == '\\' && matches!(chars.get(i + 1), Some('(') | Some('[')) {
+            let closer = if chars[i + 1] == '(' { ')' } else { ']' };
+            out.push(chars[i]);
+            out.push(chars[i + 1]);
+            i += 2;
+            while i < chars.len() {
+                if chars[i] == '\\' && chars.get(i + 1) == Some(&closer) {
+                    out.push('\\');
+                    out.push(closer);
+                    i += 2;
+                    break;
+                }
+                out.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] == '<'
+            && chars
                 .get(i + 1)
                 .is_some_and(|c| c.is_ascii_alphabetic() || *c == '/' || *c == '!')
         {
-            // Skip to the tag's closing '>', or to the end if unterminated.
-            match bytes[i..].iter().position(|c| *c == '>') {
-                Some(rel) => i += rel + 1,
-                None => break,
+            // Comment: skip to `-->` (or end if unterminated).
+            if chars[i..].starts_with(&['<', '!', '-', '-']) {
+                match (i + 4..chars.len().saturating_sub(2))
+                    .find(|&j| chars[j..].starts_with(&['-', '-', '>']))
+                {
+                    Some(j) => i = j + 3,
+                    None => break,
+                }
+                continue;
+            }
+            // Tag: skip quote-aware to its closing '>' (or end).
+            let mut quote: Option<char> = None;
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                match quote {
+                    Some(q) => {
+                        if c == q {
+                            quote = None;
+                        }
+                    }
+                    None => match c {
+                        '"' | '\'' => quote = Some(c),
+                        '>' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+                i += 1;
             }
         } else {
-            out.push(bytes[i]);
+            out.push(chars[i]);
             i += 1;
         }
     }
@@ -2159,6 +2264,101 @@ mod tests {
         assert!(nav.contains("class=\"h2\""));
         assert!(nav.contains("class=\"h3\""));
         assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn inject_heading_ids_follows_document_order() {
+        // The old per-level passes emitted every h1 before any h2, so a
+        // block with mixed levels got a sidebar whose order and implied
+        // nesting contradicted the page (docs/notebooks.md itself nested
+        // Quick Start's subsections under the wrong h2), and heading-N ids
+        // were non-monotonic down the page.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>",
+            &mut nav,
+            &mut idx,
+        );
+        let labels: Vec<&str> = nav
+            .lines()
+            .filter_map(|l| l.split('>').nth(1).and_then(|s| s.split('<').next()))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Title", "Section A", "A.1", "Section B"],
+            "nav must follow document order: {nav}"
+        );
+        // Ids number in document order too — A.1 is heading-3, B heading-4.
+        assert!(out.contains("<h3 id=\"heading-3\">A.1</h3>"), "{out}");
+        assert!(out.contains("<h2 id=\"heading-4\">Section B</h2>"), "{out}");
+        // Level ascending within one block (h2 before h1) must also hold.
+        let mut nav = String::new();
+        let mut idx = 0;
+        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx);
+        let first = nav.lines().next().unwrap_or_default();
+        assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
+    }
+
+    #[test]
+    fn inject_heading_ids_ignores_data_id_attributes() {
+        // `existing_id` substring-matched `data-id="…"`, so the heading got
+        // no injected id and the TOC linked to an anchor nothing carries.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx);
+        assert!(
+            out.contains("id=\"heading-1\""),
+            "generated id missing — data-id stole the anchor: {out}"
+        );
+        assert!(
+            nav.contains("href=\"#heading-1\""),
+            "TOC must target the injected id, not data-id: {nav}"
+        );
+    }
+
+    #[test]
+    fn inject_heading_ids_handles_gt_inside_quoted_attributes() {
+        // The open-tag scan cut at the first `>` even inside a quoted
+        // attribute value, splicing the injected id into the attribute and
+        // leaking `b">` into the heading text.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h2 title=\"a > b\">Raw attr heading</h2>",
+            &mut nav,
+            &mut idx,
+        );
+        assert!(
+            out.contains("<h2 title=\"a > b\" id=\"heading-1\">Raw attr heading</h2>"),
+            "id must be appended after the quoted attribute: {out}"
+        );
+        assert!(nav.contains(">Raw attr heading</a>"), "label corrupted: {nav}");
+    }
+
+    #[test]
+    fn strip_tags_keeps_unspaced_math_comparisons() {
+        // `$a<b$` reaches strip_tags as `\(a<b\)`; `<b` looked like a tag
+        // opener and the scan swallowed to the `>` in the NEXT math span,
+        // splicing `\(a<b\) and \(c>d\)` into `\(ad\)` — balanced
+        // delimiters, silently wrong label.
+        assert_eq!(
+            strip_tags(r"Bounds \(a<b\) and \(c>d\)"),
+            r"Bounds \(a<b\) and \(c>d\)"
+        );
+        // Truncation form: no later `>` at all.
+        assert_eq!(strip_tags(r"Regime \(a<b\)"), r"Regime \(a<b\)");
+        // Real tags around math still strip.
+        assert_eq!(strip_tags(r"<em>x</em> \(a<b\)"), r"x \(a<b\)");
+    }
+
+    #[test]
+    fn strip_tags_skips_comments_to_their_real_close() {
+        // The generic tag-skip stopped at the first `>`, so a comment
+        // containing `>` leaked its tail into the TOC label.
+        assert_eq!(strip_tags("Comment <!-- a > b --> tail"), "Comment  tail");
+        // Unterminated comment: drop the rest rather than leak it.
+        assert_eq!(strip_tags("x <!-- open"), "x ");
     }
 
     #[test]
