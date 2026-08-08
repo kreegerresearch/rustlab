@@ -31,15 +31,22 @@ use std::path::Path;
 /// that 404s while looking intentional.
 #[derive(Clone, Debug)]
 pub enum LinkMode {
-    /// Static HTML render: `foo.md` → `foo.html`.
+    /// Static HTML render: `foo.md` → `foo.html`, preserving the path as
+    /// the author wrote it (`../ch2/b.md` → `../ch2/b.html`).
     ///
-    /// `known` is the set of collection-relative sources the build actually
-    /// emits (listable notebooks plus `index.md`, which the directory build
-    /// hoists into `index.html`). `Some` (directory renders) rewrites only
-    /// members and leaves the rest as written; `None` (single-file renders)
-    /// rewrites unconditionally — a lone file has no collection to check
-    /// against, and the sibling may well be rendered separately.
-    Static { known: Option<HashSet<String>> },
+    /// `known` is the set of collection-root-relative sources the build
+    /// actually emits (listable notebooks plus `index.md`, which the
+    /// directory build hoists into `index.html`). `Some` (directory
+    /// renders) rewrites only members and leaves the rest as written;
+    /// `None` (single-file renders) rewrites unconditionally — a lone file
+    /// has no collection to check against, and the sibling may well be
+    /// rendered separately. `current_rel_dir` is the linking notebook's
+    /// directory relative to the collection root, used to resolve `./` and
+    /// `../` against `known` — the directory walk is recursive.
+    Static {
+        known: Option<HashSet<String>>,
+        current_rel_dir: String,
+    },
     /// Watch server: `foo.md` → `/n/<slug>`.
     ///
     /// `slugs` maps normalized collection-root-relative paths
@@ -58,7 +65,10 @@ pub enum LinkMode {
 impl LinkMode {
     /// The mode for a standalone single-file static render.
     pub fn single_file() -> Self {
-        LinkMode::Static { known: None }
+        LinkMode::Static {
+            known: None,
+            current_rel_dir: String::new(),
+        }
     }
 }
 
@@ -77,13 +87,18 @@ fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
     };
     let stem = path.strip_suffix(".md")?;
     match mode {
-        LinkMode::Static { known } => {
-            let normalized = normalize_rel_path("", path)?;
+        LinkMode::Static {
+            known,
+            current_rel_dir,
+        } => {
+            let normalized = normalize_rel_path(current_rel_dir, path)?;
             if let Some(known) = known {
                 if !known.contains(&normalized) {
                     return None;
                 }
             }
+            // Extension swap on the path AS WRITTEN — a `../ch2/` prefix
+            // stays relative to the emitting page.
             Some(format!("{stem}.html{fragment}"))
         }
         LinkMode::Server {
@@ -2993,12 +3008,19 @@ mod tests {
     #[test]
     fn link_dest_static_collection_only_rewrites_emitted_siblings() {
         // Directory renders know exactly which .html files they emit; a
-        // link to anything else (partial, dangling target, subdirectory)
-        // is left as written — visibly broken beats a manufactured 404.
-        let known: HashSet<String> = ["01-intro.md".to_string(), "index.md".to_string()]
-            .into_iter()
-            .collect();
-        let mode = LinkMode::Static { known: Some(known) };
+        // link to anything else (partial, dangling target) is left as
+        // written — visibly broken beats a manufactured 404.
+        let known: HashSet<String> = [
+            "01-intro.md".to_string(),
+            "index.md".to_string(),
+            "ch2/notes.md".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let mode = LinkMode::Static {
+            known: Some(known.clone()),
+            current_rel_dir: String::new(),
+        };
         assert_eq!(
             rewrite_link_dest("01-intro.md", &mode).as_deref(),
             Some("01-intro.html")
@@ -3007,13 +3029,25 @@ mod tests {
             rewrite_link_dest("index.md", &mode).as_deref(),
             Some("index.html")
         );
+        // The walk is recursive: nested targets rewrite when emitted.
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &mode).as_deref(),
+            Some("ch2/notes.html")
+        );
         assert_eq!(rewrite_link_dest("_setup.md", &mode), None, "partial");
         assert_eq!(rewrite_link_dest("nope.md", &mode), None, "dangling");
+
+        // From inside ch2/, links resolve against the known set via the
+        // page's rel dir but keep the author's relative form.
+        let nested = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: "ch2".to_string(),
+        };
         assert_eq!(
-            rewrite_link_dest("sub/foo.md", &mode),
-            None,
-            "static dir build is non-recursive; sub/foo.html is never emitted"
+            rewrite_link_dest("../01-intro.md", &nested).as_deref(),
+            Some("../01-intro.html")
         );
+        assert_eq!(rewrite_link_dest("../gone.md", &nested), None);
     }
 
     #[test]

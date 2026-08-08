@@ -797,35 +797,35 @@ pub fn cmd_render_dir(
         .map(|o| std::path::absolute(&o).unwrap_or(o))
         .unwrap_or_else(|| dir.clone());
 
-    let mut md_files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
-            // This walk is non-recursive, so the file name IS the path
-            // relative to the collection root. `index.md` is kept here and
-            // split out below — it becomes the index page's own body.
-            .filter(|p| {
-                p.file_name()
-                    .map(|n| n == "index.md" || is_listable_notebook(Path::new(n)))
-                    .unwrap_or(false)
-            })
-            .collect(),
-        Err(e) => {
-            eprintln!("error: cannot read directory {}: {e}", dir.display());
-            std::process::exit(1);
-        }
-    };
-    md_files.sort();
+    if let Err(e) = std::fs::read_dir(&dir) {
+        eprintln!("error: cannot read directory {}: {e}", dir.display());
+        std::process::exit(1);
+    }
+    // Recursive, with the same listing rule as the watch server — the two
+    // walked different depths before, so `watch` served nested notebooks
+    // (`ch1/deep.md` at /n/deep, listed on /) that `render` never emitted.
+    // Nested notebooks render to mirrored output subdirectories.
+    let md_files: Vec<PathBuf> = list_md_files_recursive(&dir)
+        .into_iter()
+        .filter(|p| {
+            let rel = p.strip_prefix(&dir).unwrap_or(p);
+            is_listable_notebook(rel)
+        })
+        .collect();
 
-    // Split out `index.md` so it is not listed as a notebook entry.
-    let index_md_path = md_files
-        .iter()
-        .position(|p| p.file_name().map_or(false, |n| n == "index.md"))
-        .map(|i| md_files.remove(i));
+    // The root `index.md` is not a notebook entry: it becomes the index
+    // page's own body. (Nested `chN/index.md` is neither — see
+    // `is_listable_notebook`.)
+    let index_md_path = {
+        let p = dir.join("index.md");
+        p.is_file().then_some(p)
+    };
 
     if md_files.is_empty() && index_md_path.is_none() {
-        eprintln!("warning: no .md files found in {}", dir.display());
+        eprintln!(
+            "warning: no notebooks found in {} (README.md, index.md and _partials are not listable)",
+            dir.display()
+        );
         return;
     }
 
@@ -837,7 +837,13 @@ pub fn cmd_render_dir(
         md_path: PathBuf,
         out_file: PathBuf,
         title: String,
+        /// Output path relative to the collection root, `/`-joined
+        /// (`"ch1/foo.html"`) — index hrefs and nav targets.
         filename: String,
+        /// Source path relative to the collection root, `/`-joined
+        /// (`"ch1/foo.md"`) — the sort key and link-resolver key, byte-
+        /// identical to the server's so the two orders cannot disagree.
+        rel_md: String,
         order: Option<i64>,
         source: String,
     }
@@ -853,68 +859,79 @@ pub fn cmd_render_dir(
         let source = strip_render_artifacts(&source);
         let (fm, _) = parse::extract_frontmatter(&source);
         let title = extract_title(&source, md_path);
-        let stem = md_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let filename = format!("{stem}.{ext}");
+        let rel_md = md_path
+            .strip_prefix(&dir)
+            .unwrap_or(md_path)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let filename = format!("{}.{ext}", rel_md.trim_end_matches(".md"));
         let out_file = out_dir.join(&filename);
         pending.push(Pending {
             md_path: md_path.clone(),
             out_file,
             title,
             filename,
+            rel_md,
             order: fm.order,
             source,
         });
     }
 
-    pending.sort_by(|a, b| compare_notebook_order((a.order, &a.filename), (b.order, &b.filename)));
+    pending.sort_by(|a, b| compare_notebook_order((a.order, &a.rel_md), (b.order, &b.rel_md)));
 
     let emit_nav = matches!(format, Format::Html);
 
-    // Link resolution for directory HTML renders: only siblings this build
-    // actually emits are rewritten to `.html`. `index.md` is always a valid
-    // target — HTML directory mode generates `index.html` unconditionally.
-    // Anything else (partials, dangling targets) is left as written.
-    let link_mode = if emit_nav {
-        let mut known: std::collections::HashSet<String> = pending
+    // Link resolution for directory HTML renders: only targets this build
+    // actually emits are rewritten to `.html` (keyed by collection-relative
+    // path, so `../ch2/notes.md` from a nested notebook resolves).
+    // `index.md` is always a valid target — HTML directory mode generates
+    // `index.html` unconditionally. Partials and dangling targets are left
+    // as written.
+    let known: Option<std::collections::HashSet<String>> = emit_nav.then(|| {
+        pending
             .iter()
-            .filter_map(|p| {
-                p.md_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-            })
-            .collect();
-        known.insert("index.md".to_string());
-        render::LinkMode::Static { known: Some(known) }
-    } else {
-        render::LinkMode::single_file()
+            .map(|p| p.rel_md.clone())
+            .chain(std::iter::once("index.md".to_string()))
+            .collect()
+    });
+    // Root-level link mode, used for the index page's own body.
+    let link_mode = render::LinkMode::Static {
+        known: known.clone(),
+        current_rel_dir: String::new(),
     };
 
     let n = pending.len();
     for i in 0..n {
+        // Nav and link targets are collection-root-relative; this page may
+        // sit in a subdirectory, so hrefs to them climb out of it first.
+        let page_dir = rel_dir_of(&pending[i].rel_md);
+        let href_to = |target: &str| href_between(&page_dir, target);
         let nav = if emit_nav {
             let prev = (i > 0).then(|| {
                 (
                     pending[i - 1].title.clone(),
-                    pending[i - 1].filename.clone(),
+                    href_to(&pending[i - 1].filename),
                 )
             });
             let next = (i + 1 < n).then(|| {
                 (
                     pending[i + 1].title.clone(),
-                    pending[i + 1].filename.clone(),
+                    href_to(&pending[i + 1].filename),
                 )
             });
             Some(NotebookNav {
-                index_href: Some("index.html".to_string()),
+                index_href: Some(href_to("index.html")),
                 prev,
                 next,
             })
         } else {
             None
+        };
+        let page_link_mode = render::LinkMode::Static {
+            known: known.clone(),
+            current_rel_dir: page_dir,
         };
 
         let p = &pending[i];
@@ -930,7 +947,7 @@ pub fn cmd_render_dir(
             &rendered,
             theme,
             nav.as_ref(),
-            &link_mode,
+            &page_link_mode,
             Some(&p.source),
             Some(&p.md_path),
         );
@@ -1034,14 +1051,18 @@ fn generate_obsidian_index_md(title: &str, entries: &[(String, String)]) -> Stri
     let mut out = String::new();
     out.push_str(&format!("# {title}\n\n"));
     for (entry_title, filename) in entries {
-        let stem = std::path::Path::new(filename)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
+        // Wikilink by the vault-relative stem (`ch1/foo`), not the bare
+        // basename — the walk is recursive and same-named notes in
+        // different folders would otherwise be ambiguous.
+        let stem = filename
+            .rsplit_once('.')
+            .map(|(s, _)| s.to_string())
             .unwrap_or_else(|| filename.clone());
-        if entry_title == &stem {
+        let label = entry_title.as_str();
+        if label == stem {
             out.push_str(&format!("- [[{stem}]]\n"));
         } else {
-            out.push_str(&format!("- [[{stem}|{entry_title}]]\n"));
+            out.push_str(&format!("- [[{stem}|{label}]]\n"));
         }
     }
     out.push('\n');
@@ -1786,6 +1807,26 @@ pub fn is_listable_notebook(rel: &Path) -> bool {
 /// than the built output. That is the worst place for the two to disagree,
 /// because the built output is what ships and the served one is what gets
 /// proof-read.
+/// The directory part of a `/`-joined collection-relative path
+/// (`"ch1/notes.md"` → `"ch1"`, `"notes.md"` → `""`).
+pub(crate) fn rel_dir_of(rel: &str) -> String {
+    rel.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
+}
+
+/// Href from a page in `from_rel_dir` (collection-relative, `""` at the
+/// root) to `target_rel` (collection-root-relative): climb out of the
+/// page's directory, then descend the target path.
+pub(crate) fn href_between(from_rel_dir: &str, target_rel: &str) -> String {
+    let ups = if from_rel_dir.is_empty() {
+        0
+    } else {
+        from_rel_dir.split('/').count()
+    };
+    format!("{}{}", "../".repeat(ups), target_rel)
+}
+
 pub fn compare_notebook_order(
     a: (Option<i64>, &str),
     b: (Option<i64>, &str),

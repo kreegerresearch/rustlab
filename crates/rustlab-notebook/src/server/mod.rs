@@ -226,7 +226,7 @@ fn build_state(
         let nav = server_nav(&listing, idx, !is_dir);
         let link = crate::render::LinkMode::Server {
             slugs: link_slugs.clone(),
-            current_rel_dir: rel_dir_of(&rels[idx]),
+            current_rel_dir: crate::rel_dir_of(&rels[idx]),
         };
         let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref(), &link)
             .with_context(|| format!("rendering {} for server", path.display()))?;
@@ -293,16 +293,13 @@ fn build_state(
     }))
 }
 
-/// The directory part of a `/`-joined rel path (`"ch1/notes.md"` → `"ch1"`,
-/// `"notes.md"` → `""`).
-fn rel_dir_of(rel: &str) -> String {
-    rel.rsplit_once('/')
-        .map(|(dir, _)| dir.to_string())
-        .unwrap_or_default()
-}
-
 /// Derive a unique, URL-safe slug for `path`, deduping collisions with a
 /// `-N` suffix. Mutates `used` to record the chosen slug.
+///
+/// Suffixes are positional over the sorted walk: adding or removing a
+/// same-stem file renumbers its collision group on the next start, so
+/// `/n/<slug>` URLs are stable across restarts only for a fixed file set —
+/// don't treat them as durable identities.
 fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
     let stem = path
         .file_stem()
@@ -807,6 +804,65 @@ mod tests {
         let alpha = get_body(&app, "/n/alpha").await;
         assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
         assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+    }
+
+    #[test]
+    fn static_and_served_listings_agree() {
+        // The PR's stated invariant: `watch` may not present a different
+        // collection — different entries or a different sequence — than
+        // the built output. One fixture, both listings, must be equal.
+        // Exercises order: frontmatter, nesting, and partial/index/README
+        // filtering in one pass.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("index.md"), "# Home\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Repo readme\n").unwrap();
+        std::fs::write(dir.path().join("_setup.md"), "# Partial\n").unwrap();
+        std::fs::write(
+            dir.path().join("z-first.md"),
+            "---\norder: 1\n---\n\n# Z First\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a-unordered.md"), "# A Unordered\n").unwrap();
+        std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+
+        // Served listing.
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let served: Vec<String> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.clone())
+            .collect();
+
+        // Static listing, parsed from the generated index.html.
+        let out = tempfile::tempdir().unwrap();
+        crate::cmd_render_dir(
+            canon.clone(),
+            Some(out.path().to_path_buf()),
+            crate::Format::Html,
+            theme,
+            None,
+        );
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        let built: Vec<String> = index
+            .lines()
+            .filter(|l| l.trim_start().starts_with("<li><a href="))
+            .filter_map(|l| l.split('>').nth(2).map(|s| s.trim_end_matches("</a").to_string()))
+            .collect();
+
+        assert_eq!(
+            served, built,
+            "watch and render disagree about the collection"
+        );
+        assert_eq!(
+            served,
+            vec!["Z First", "A Unordered", "Deep"],
+            "order: frontmatter first, then rel path; partials/index/README hidden"
+        );
+        // The nested notebook was actually emitted by the static build.
+        assert!(out.path().join("ch1/deep.html").is_file(), "nested output missing");
     }
 
     #[tokio::test]

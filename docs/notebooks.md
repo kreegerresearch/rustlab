@@ -1268,8 +1268,18 @@ rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
 
 This produces one output file per `.md` file plus an `index.html` linking
-to all notebooks (HTML format only). Each notebook gets its own independent
-evaluator — variables do not leak between notebooks.
+to all notebooks (HTML format only). The walk is **recursive**, with the
+same listing rule as `watch`: nested notebooks (`ch1/deep.md`) render to
+mirrored output subdirectories (`ch1/deep.html`) and appear on the index;
+`README.md`, `index.md`, and partials (`_name.md`, or anything under a
+`_dir/`) are read where needed but never rendered as pages. Each notebook
+gets its own independent evaluator — variables do not leak between
+notebooks.
+
+Partials are meant to be transcluded via embeds; because they are not
+rendered, a body link to `_setup.md` is left as written rather than
+pointed at a page that does not exist. `check`/`validate` still lint
+partials — they are real source.
 
 ### Index page
 
@@ -1285,7 +1295,9 @@ wins):
 3. Parent directory name — fallback when neither of the above is set.
 
 Entries are sorted by frontmatter `order:` ascending (see Frontmatter
-above), with filename as a tiebreaker.
+above), with the collection-relative path as a tiebreaker; entries
+without `order:` sort after those that have one. `watch` uses the same
+rule, so the served listing and the built one cannot disagree.
 
 ### Cross-notebook links
 
