@@ -218,6 +218,28 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
     rest[..end].parse().ok()
 }
 
+/// The page chrome living OUTSIDE `<main>`, invisible to block-level
+/// diffs: the topbar, the sidebar TOC (whose `heading-N` hrefs must match
+/// the body's ids), and the `<body>` open tag carrying the `no-toc`
+/// switch. A partial/reconcile broadcast swaps blocks only, so when any
+/// of this differs between renders the client's chrome goes stale — a
+/// heading edit renumbers body ids while the TOC keeps the old hrefs,
+/// every entry off by one. The coordinator compares fingerprints and
+/// upgrades to a full refresh when they differ.
+#[allow(clippy::type_complexity)]
+pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+    let slice = |open: &str, close: &str| -> Option<&str> {
+        let start = html.find(open)?;
+        let end = html[start..].find(close)?;
+        Some(&html[start..start + end])
+    };
+    (
+        slice("<header class=\"topbar\">", "</header>"),
+        slice("<nav class=\"sidebar\">", "</nav>"),
+        slice("<body", ">"),
+    )
+}
+
 /// Whether a rendered document is "flat" — i.e. every `rl-block`
 /// section is a direct child of `<main>`, with no exercise/solution
 /// wrappers nesting sections inside `<div class="exercise">` or
@@ -226,6 +248,32 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
 /// direct children of `<main>`; moving a nested section would reparent
 /// it out of its wrapper. Non-flat documents fall back to a full
 /// refresh on structural edits.
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_sees_sidebar_topbar_and_body_class() {
+        let a = "<body><header class=\"topbar\">t</header><nav class=\"sidebar\">x</nav><main></main></body>";
+        let renamed = a.replace(">x<", ">y<");
+        let no_toc = a.replace("<body>", "<body class=\"no-toc\">");
+        assert_eq!(chrome_fingerprint(a), chrome_fingerprint(a));
+        assert_ne!(
+            chrome_fingerprint(a),
+            chrome_fingerprint(&renamed),
+            "sidebar TOC change must alter the fingerprint"
+        );
+        assert_ne!(
+            chrome_fingerprint(a),
+            chrome_fingerprint(&no_toc),
+            "no-toc switch must alter the fingerprint"
+        );
+        // Block-only edits leave it unchanged — no spurious full refreshes.
+        let body_edit = a.replace("<main></main>", "<main>new</main>");
+        assert_eq!(chrome_fingerprint(a), chrome_fingerprint(&body_edit));
+    }
+}
+
 pub fn is_flat(html: &str) -> bool {
     !html.contains("class=\"exercise\"") && !html.contains("<details class=\"solution\"")
 }

@@ -496,9 +496,20 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // frozen at page load: adding, renaming or reordering a heading
     // renumbered the heading-N ids in the body while the TOC kept pointing
     // at the old ones. Swap it too, and handle it appearing/disappearing
-    // when a notebook gains or loses its first heading.
+    // when a notebook gains or loses its first heading. The hamburger is a
+    // SIBLING of the sidebar, not a child — sync it with the same lifecycle
+    // or a notebook gaining its first heading has an unreachable mobile TOC
+    // and one losing its last leaves an orphaned button.
     syncOutsideMain(parsed, 'nav.sidebar', tgt);
+    syncOutsideMain(parsed, 'button.nav-toggle', tgt);
     syncOutsideMain(parsed, 'header.topbar', tgt);
+    // Only the class the server owns. Assigning the whole className wiped
+    // runtime classes — rl-source-open in particular, which closed the
+    // source/editor pane on every save and defeated the source/cell-editor
+    // mutual-exclusion guard while the pane was logically open.
+    if (parsed.body) {
+      document.body.classList.toggle('no-toc', parsed.body.classList.contains('no-toc'));
+    }
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
     rerunKaTeX(document.body);
@@ -510,15 +521,17 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     const next = parsed.querySelector(selector);
     const cur = document.querySelector(selector);
     if (next && cur) {
+      // Keep the user's open mobile drawer open across the swap — the
+      // server always renders the sidebar closed.
+      const keepOpen = cur.classList.contains('open');
       cur.innerHTML = next.innerHTML;
       cur.className = next.className;
+      if (keepOpen) cur.classList.add('open');
     } else if (next && !cur) {
       document.body.insertBefore(next.cloneNode(true), mainTgt || document.body.firstChild);
     } else if (!next && cur) {
       cur.remove();
     }
-    // Body class carries the no-toc layout switch.
-    if (parsed.body) document.body.className = parsed.body.className;
   }
 
   function applyPartial(blocks) {

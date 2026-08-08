@@ -366,9 +366,24 @@ fn schedule_render(
         // notebooks without exercise/solution nesting are safe to reconcile.
         let new_blocks = diff::split_blocks(&new_html);
         let allow_reconcile = diff::is_flat(&new_html);
+        // Partial/reconcile envelopes carry blocks only; the sidebar TOC,
+        // topbar, and body class live outside <main> and would go stale —
+        // heading edits renumber body ids while the TOC keeps old hrefs.
+        // A chrome change therefore forces a full refresh.
+        let chrome_changed = {
+            let prev_html = nb.html.read().await;
+            diff::chrome_fingerprint(&prev_html) != diff::chrome_fingerprint(&new_html)
+        };
         let decision = {
             let prev = nb.prev_blocks.lock().unwrap();
-            diff::classify(&prev, &new_blocks, allow_reconcile)
+            match diff::classify(&prev, &new_blocks, allow_reconcile) {
+                d @ (Broadcast::Partial(_) | Broadcast::Reconcile(_)) if chrome_changed => {
+                    eprintln!("[watch] chrome changed ({}) — upgrading to full", nb.slug);
+                    drop(d);
+                    Broadcast::Full
+                }
+                d => d,
+            }
         };
 
         // Publish state regardless of broadcast kind so a fresh page load

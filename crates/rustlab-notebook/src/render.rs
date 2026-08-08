@@ -461,7 +461,7 @@ pub fn render_html(
     let body_class = if has_toc { "" } else { " class=\"no-toc\"" };
     let sidebar_block = if has_toc {
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar').classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar')?.classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
              <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
             title = escape_html(title),
             nav_items = nav_items,
