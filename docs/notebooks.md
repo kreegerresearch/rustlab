@@ -1315,10 +1315,16 @@ survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
 `/n/filter_design#anchor`), titled and reference-style links resolve the
 same way, and `[[wikilinks]]` go through the same resolver.
 
+PDF and LaTeX output resolves the same links to the sibling `.pdf`
+files a directory PDF build emits (`filter_design.md` →
+`\href{filter_design.pdf}`), dropping `#anchor` fragments — PDFs have
+no named destinations for markdown headings.
+
 The rewrite applies only to real links: code spans and fenced blocks are
 untouched (`` `[x](a.md)` `` renders literally), as are external URLs
 that happen to end in `.md`, absolute paths, and images. `index.md`
-resolves to `index.html` statically and to `/` under `watch`.
+resolves to `index.html` statically and to `/` under `watch` (there is
+no `index.pdf`, so PDF output leaves it as written).
 
 In a directory render, only links to notebooks the build actually emits
 are rewritten. A link to a partial (`_setup.md`), or to a target that

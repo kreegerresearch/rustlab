@@ -883,19 +883,22 @@ pub fn cmd_render_dir(
 
     let emit_nav = matches!(format, Format::Html);
 
-    // Link resolution for directory HTML renders: only targets this build
-    // actually emits are rewritten to `.html` (keyed by collection-relative
-    // path, so `../ch2/notes.md` from a nested notebook resolves).
-    // `index.md` is always a valid target — HTML directory mode generates
-    // `index.html` unconditionally. Partials and dangling targets are left
-    // as written.
-    let known: Option<std::collections::HashSet<String>> = emit_nav.then(|| {
-        pending
-            .iter()
-            .map(|p| p.rel_md.clone())
-            .chain(std::iter::once("index.md".to_string()))
-            .collect()
-    });
+    // Link resolution for directory renders: only targets this build
+    // actually emits are rewritten (keyed by collection-relative path, so
+    // `../ch2/notes.md` from a nested notebook resolves) — to `.html` for
+    // HTML output, `.pdf` for LaTeX/PDF output. `index.md` is a valid
+    // target only in HTML mode, which generates `index.html`
+    // unconditionally; no `index.pdf` exists. Partials and dangling
+    // targets are left as written. Markdown output ignores link mode
+    // (Obsidian emission has its own wikilink path).
+    let known: Option<std::collections::HashSet<String>> = {
+        let mut set: std::collections::HashSet<String> =
+            pending.iter().map(|p| p.rel_md.clone()).collect();
+        if emit_nav {
+            set.insert("index.md".to_string());
+        }
+        Some(set)
+    };
     // Root-level link mode, used for the index page's own body.
     let link_mode = render::LinkMode::Static {
         known: known.clone(),
@@ -1264,7 +1267,8 @@ fn render_output(
         }
         Format::Latex => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
-            let tex = render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme);
+            let tex =
+                render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme, link);
             write_output(out_path, tex.as_bytes());
         }
         Format::Pdf => {
@@ -1286,6 +1290,7 @@ fn render_output(
                 &plot_dir,
                 "plots/notebook",
                 theme,
+                link,
             );
             write_output(&tex_path, tex.as_bytes());
             compile_pdf(&tex_path, out_path);

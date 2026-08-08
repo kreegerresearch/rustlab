@@ -75,6 +75,23 @@ impl LinkMode {
 /// Rewrite one link destination per [`LinkMode`], or `None` to leave it
 /// exactly as written.
 fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
+    rewrite_link_dest_to(dest, mode, "html", true)
+}
+
+/// PDF flavour of [`rewrite_link_dest`]: same candidacy and known-set
+/// rules, but targets the sibling `.pdf` artifacts a directory PDF build
+/// emits, and DROPS fragments — the generated PDFs carry no named
+/// destinations for markdown anchors, so `b.pdf#setup` would dangle.
+pub(crate) fn rewrite_link_dest_pdf(dest: &str, mode: &LinkMode) -> Option<String> {
+    rewrite_link_dest_to(dest, mode, "pdf", false)
+}
+
+fn rewrite_link_dest_to(
+    dest: &str,
+    mode: &LinkMode,
+    target_ext: &str,
+    keep_fragment: bool,
+) -> Option<String> {
     // Scheme'd (`https:`, `mailto:`), protocol-relative (`//host/x`),
     // absolute (`/docs/x`), and pure-fragment (`#x`) destinations are not
     // notebook references.
@@ -85,6 +102,7 @@ fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
         Some(at) => (&dest[..at], &dest[at..]),
         None => (dest, ""),
     };
+    let fragment = if keep_fragment { fragment } else { "" };
     let stem = path.strip_suffix(".md")?;
     match mode {
         LinkMode::Static {
@@ -99,7 +117,7 @@ fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
             }
             // Extension swap on the path AS WRITTEN — a `../ch2/` prefix
             // stays relative to the emitting page.
-            Some(format!("{stem}.html{fragment}"))
+            Some(format!("{stem}.{target_ext}{fragment}"))
         }
         LinkMode::Server {
             slugs,
