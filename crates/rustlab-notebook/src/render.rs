@@ -581,8 +581,8 @@ pub fn render_html(
        with `flex: 1` the item fills the line before `max-width` clamps
        it, and the freed space all lands on the single auto margin —
        position unchanged, prose pinned against the sidebar. (Measured:
-       `margin-right: auto` left main at x=220 on a 1600px viewport;
-       this puts it at 320, matching the old `margin: 0 auto` layout.) */
+       the auto-right-margin form left main at x=220 on a 1600px
+       viewport; this puts it at 320, like the old `margin: 0 auto`.) */
     margin-left: max(220px, calc(50% - 480px));
     flex: 1;
     padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
