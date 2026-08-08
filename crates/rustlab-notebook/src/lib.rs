@@ -1776,6 +1776,9 @@ fn escape_html(s: &str) -> String {
 ///   from the listing costs nothing. Without the convention, `_setup.md`
 ///   listed itself as a peer of real notebooks, titled "Shared Setup
 ///   (transcluded)".
+/// - Dotfiles (`.#lesson.md` editor locks, `.obsidian/` app dirs) are
+///   hidden-by-convention and often unreadable — an Emacs lock is a
+///   dangling symlink that used to abort `watch` startup outright.
 ///
 /// Shared by the static build and the server so the two cannot disagree about
 /// what a collection contains — the same trap the sort order fell into.
@@ -1785,10 +1788,10 @@ fn escape_html(s: &str) -> String {
 /// partial too), and an absolute path would wrongly match any ancestor
 /// directory that happens to start with `_`.
 pub fn is_listable_notebook(rel: &Path) -> bool {
-    if rel
-        .components()
-        .any(|c| c.as_os_str().to_string_lossy().starts_with('_'))
-    {
+    if rel.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        s.starts_with('_') || s.starts_with('.')
+    }) {
         return false;
     }
     match rel.file_name().map(|n| n.to_string_lossy().into_owned()) {
@@ -1843,6 +1846,45 @@ pub fn compare_notebook_order(
 mod tests {
     use super::*;
     use rustlab_plot::Theme;
+
+    // ── shared listing rules (static build + watch server) ───────────
+
+    #[test]
+    fn compare_notebook_order_puts_ordered_before_unordered() {
+        // The clause most likely to be flipped later: ANY explicit
+        // `order:` sorts before every entry without one, regardless of
+        // name. Ties break by name; unordered sort among themselves by
+        // name.
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_notebook_order((Some(99), "zz.md"), (None, "aa.md")), Less);
+        assert_eq!(compare_notebook_order((None, "aa.md"), (Some(99), "zz.md")), Greater);
+        assert_eq!(compare_notebook_order((Some(1), "b.md"), (Some(1), "a.md")), Greater);
+        assert_eq!(compare_notebook_order((Some(1), "a.md"), (Some(2), "z.md")), Less);
+        assert_eq!(compare_notebook_order((None, "a.md"), (None, "b.md")), Less);
+    }
+
+    #[test]
+    fn is_listable_notebook_component_rules() {
+        use std::path::Path;
+        assert!(is_listable_notebook(Path::new("lesson.md")));
+        assert!(is_listable_notebook(Path::new("ch1/lesson.md")));
+        // Special names, at any depth of the *filename* position.
+        assert!(!is_listable_notebook(Path::new("README.md")));
+        assert!(!is_listable_notebook(Path::new("index.md")));
+        assert!(!is_listable_notebook(Path::new("ch1/index.md")));
+        // Partials: the underscore rule checks EVERY component — the
+        // server walk is recursive, so `_shared/setup.md` is a partial
+        // even though its filename has no underscore.
+        assert!(!is_listable_notebook(Path::new("_setup.md")));
+        assert!(!is_listable_notebook(Path::new("_shared/setup.md")));
+        assert!(!is_listable_notebook(Path::new("ch1/_setup.md")));
+        // Dotfiles: editor locks (`.#a.md`) and hidden dirs.
+        assert!(!is_listable_notebook(Path::new(".#lesson.md")));
+        assert!(!is_listable_notebook(Path::new(".obsidian/note.md")));
+        // The contract: `rel` must be RELATIVE. An absolute path would
+        // wrongly match `_`-prefixed ancestors — callers strip first.
+        assert!(!is_listable_notebook(Path::new("/tmp/_work/coll/lesson.md")));
+    }
 
     // ── guard_markdown_overwrite ────────────────────────────────────
 

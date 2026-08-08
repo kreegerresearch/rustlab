@@ -125,7 +125,9 @@ impl Notebook {
 pub struct ServerState {
     /// Notebooks keyed by slug.
     pub notebooks: HashMap<String, Arc<Notebook>>,
-    /// Slugs in listing order (sorted by source path), for the index.
+    /// Slugs in listing order — frontmatter `order:` ascending, ties by
+    /// collection-relative path, unordered entries last (the same rule as
+    /// the static build; see `compare_notebook_order`). Drives the index.
     pub order: Vec<String>,
     /// Owns the tempdir that holds plot artefacts (`<slug>/<file>`).
     /// Dropping the state (= server shutdown) cleans it up.

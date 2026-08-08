@@ -413,18 +413,30 @@ fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<P
     found
 }
 
+/// Whether a changed/discovered `.md` under the watched tree is one this
+/// watcher renders as a page of its own.
+///
+/// Same listing rule as `cmd_render_dir` and the watch server
+/// ([`crate::is_listable_notebook`]) — this used to filter only
+/// `README.md`, so `--obsidian` mode kept rendering partials and
+/// `index.md` as peers of real notebooks after the other two surfaces
+/// stopped. One exception: the root `index.md` stays renderable here,
+/// because in `--obsidian` mode it produces the vault home page and a
+/// save of it must re-render like any notebook. Partial saves still
+/// re-render their dependents via the embed graph.
+fn is_renderable_watch_source(p: &Path, root: &Path) -> bool {
+    match p.strip_prefix(root) {
+        Ok(rel) => rel == Path::new("index.md") || crate::is_listable_notebook(rel),
+        // Outside the root (or unprefixed): don't silently hide it.
+        Err(_) => true,
+    }
+}
+
 fn list_notebooks(dir: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
-            .filter(|p| p.file_name().map_or(true, |n| n != "README.md"))
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    out.sort();
-    out
+    crate::list_md_files_recursive(dir)
+        .into_iter()
+        .filter(|p| is_renderable_watch_source(p, dir))
+        .collect()
 }
 
 fn canonicalize_lossy(p: &Path) -> Option<PathBuf> {
@@ -604,10 +616,11 @@ pub(crate) fn compute_render_set(
         if !is_md_in_root && !is_tracked_embed {
             continue;
         }
-        if is_md_in_root && c.file_name().map_or(true, |n| n != "README.md") {
-            // Render any `.md` under the watched tree, whether or not the
-            // graph already tracks it. Matches `list_notebooks` filtering
-            // at startup (README.md is excluded the same way).
+        if is_md_in_root && is_renderable_watch_source(c, root_dir) {
+            // Render any listable `.md` under the watched tree, whether or
+            // not the graph already tracks it. Matches `list_notebooks`
+            // filtering at startup; a partial's own save falls through to
+            // the dependents loop below instead of rendering as a page.
             to_render.insert(c.clone());
         }
         for dep in graph.dependents_of(c) {

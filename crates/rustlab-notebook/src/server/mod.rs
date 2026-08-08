@@ -133,12 +133,23 @@ fn build_state(
         // collection the built output does not have.
         let files: Vec<PathBuf> = crate::list_md_files_recursive(canonical_input)
             .into_iter()
-            .filter(|p| {
-                crate::is_listable_notebook(p.strip_prefix(canonical_input).unwrap_or(p))
+            .filter(|p| match p.strip_prefix(canonical_input) {
+                Ok(rel) => crate::is_listable_notebook(rel),
+                // The walk seeds from canonical_input, so every result is
+                // prefixed. If that ever breaks, an ABSOLUTE path would hit
+                // the underscore rule on unrelated ancestors (`~/_work/…`)
+                // and silently hide the whole collection — include instead.
+                Err(_) => {
+                    debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                    true
+                }
             })
             .collect();
         if files.is_empty() {
-            anyhow::bail!("no .md notebooks found in {}", canonical_input.display());
+            anyhow::bail!(
+                "no listable notebooks in {} (README.md, index.md, dotfiles and _partials are hidden from listings)",
+                canonical_input.display()
+            );
         }
         files
     } else {
@@ -161,9 +172,18 @@ fn build_state(
     // frontmatter `order:` and the filename the static renderer sorts on.
     let mut sort_keys: Vec<(Option<i64>, String)> = Vec::with_capacity(sources.len());
     for path in &sources {
+        // Warn-and-skip, matching cmd_render_dir: one unreadable file
+        // (an editor's stale lock, a permissions hiccup) must not refuse
+        // to start the whole server. Read BEFORE assigning the slug so a
+        // skipped file doesn't consume a collision suffix.
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: cannot read {} — skipping: {e}", path.display());
+                continue;
+            }
+        };
         let slug = unique_slug(path, &mut used);
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
         let (fm, _) = crate::parse::extract_frontmatter(&source);
         // Sort on the path relative to the collection root, not the bare
@@ -198,6 +218,13 @@ fn build_state(
         .zip(sort_keys.iter())
         .map(|((slug, _, _), (_, rel))| (rel.clone(), slug.clone()))
         .collect();
+
+    if entries.is_empty() {
+        anyhow::bail!(
+            "no readable notebooks in {}",
+            canonical_input.display()
+        );
+    }
 
     // Same ordering as the static build, so `watch` cannot show a different
     // sequence — or different prev/next links — than what gets shipped.
@@ -804,6 +831,73 @@ mod tests {
         let alpha = get_body(&app, "/n/alpha").await;
         assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
         assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+    }
+
+    #[test]
+    fn collection_under_underscore_ancestor_still_lists() {
+        // The listing filter must judge paths RELATIVE to the collection
+        // root: a root that itself lives under a `_`-prefixed directory
+        // (`~/_work/coll/`) must not have its notebooks mistaken for
+        // partials. This is the documented reason the rel-path stripping
+        // exists — previously untested.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("_work").join("coll");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
+        let canon = std::fs::canonicalize(&root).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        assert_eq!(state.order.len(), 1, "notebook hidden by an ancestor's underscore");
+    }
+
+    #[test]
+    fn unreadable_file_skips_instead_of_aborting_startup() {
+        // An editor's stale lock (a dangling symlink with a .md name) or a
+        // permissions hiccup must not refuse to start the whole server —
+        // warn and skip, like cmd_render_dir. (Dotfile locks like `.#a.md`
+        // are additionally filtered from listings outright.)
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.md"), "# Good\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join("nonexistent-target"),
+            dir.path().join("broken.md"),
+        )
+        .unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Good"], "broken symlink aborted or was listed");
+    }
+
+    #[test]
+    fn link_mode_for_round_trips_nested_rel_dir() {
+        // Live re-renders must resolve links exactly like the startup
+        // render: link_mode_for(slug) recovers the notebook's rel dir from
+        // the same map build_state stored.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
+        std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
+        match state.link_mode_for(deep_slug) {
+            crate::render::LinkMode::Server {
+                slugs,
+                current_rel_dir,
+            } => {
+                assert_eq!(current_rel_dir, "ch1");
+                assert_eq!(slugs, state.link_slugs);
+            }
+            other => panic!("expected Server mode, got {other:?}"),
+        }
     }
 
     #[test]
