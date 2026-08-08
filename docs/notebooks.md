@@ -1320,17 +1320,18 @@ Every notebook page carries two navigations, which answer different
 questions and are always both present:
 
 - The **sidebar** moves *within* a notebook: an in-page TOC built from the
-  H1/H2/H3 headings. Omitted only when a notebook has no headings at all,
-  in which case the content reclaims the width.
+  H1/H2/H3 headings, in document order. Omitted only when a notebook has
+  no headings at all, in which case the content column centres in the
+  full viewport instead of the space beside the sidebar.
 - The **topbar** moves *between* notebooks: `← Previous`, `Index`, and
   `Next →` alongside the current page title. A **Previous · Index · Next**
   bar is also appended at the foot of the page, where it is useful after a
   long read.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same
-chrome, minus the cross-notebook links — there's no sibling set to
-navigate. A reader should not be able to tell from the page whether it was
-rendered on its own or as part of a collection.
+chrome, minus the cross-notebook links and the footer bar — there's no
+sibling set to navigate. The page layout is otherwise identical to a
+collection page.
 
 Headings written with an explicit anchor (`## Title {#anchor}`) keep that
 id and are linked from the TOC by it, so cross-notebook deep links stay

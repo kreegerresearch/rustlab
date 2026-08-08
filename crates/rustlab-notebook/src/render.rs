@@ -514,6 +514,9 @@ pub fn render_html(
     border-right: 1px solid {border};
     padding: 1.5rem 0;
     overflow-y: auto;
+    /* Unbreakable content (a wide KaTeX formula) clips at the column edge
+       rather than painting over `main` or growing a stray h-scrollbar. */
+    overflow-x: hidden;
     z-index: 100;
     transition: transform 0.25s ease;
   }}
@@ -533,8 +536,10 @@ pub fn render_html(
     font-size: 0.9rem;
     transition: background 0.15s, color 0.15s;
     /* Headings can be long, and KaTeX typesets any inline math in them
-       (auto-render walks the whole body, sidebar included). Wrap rather
-       than let either overflow the fixed 220px column. */
+       (auto-render walks the whole body, sidebar included). Text wraps;
+       KaTeX output is internally nowrap, so an unbreakable formula wider
+       than the column is clipped by the sidebar's overflow-x instead —
+       it must never leak over the content. */
     overflow-wrap: anywhere;
   }}
   nav.sidebar .katex {{
@@ -571,11 +576,14 @@ pub fn render_html(
   }}
   /* ── Main content ── */
   main {{
-    margin-left: 220px;
-    /* Collection pages used to centre their column (`margin: 0 auto`); keep
-       that on wide displays rather than stranding the prose against the
-       sidebar with dead space to its right. */
-    margin-right: auto;
+    /* Centre the 960px column in the space right of the sidebar on wide
+       displays, never under it. An auto right margin does NOT do this:
+       with `flex: 1` the item fills the line before `max-width` clamps
+       it, and the freed space all lands on the single auto margin —
+       position unchanged, prose pinned against the sidebar. (Measured:
+       `margin-right: auto` left main at x=220 on a 1600px viewport;
+       this puts it at 320, matching the old `margin: 0 auto` layout.) */
+    margin-left: max(220px, calc(50% - 480px));
     flex: 1;
     padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
     max-width: 960px;
@@ -610,7 +618,13 @@ pub fn render_html(
   .topbar a:hover {{
     text-decoration: underline;
   }}
-  /* Prev/next flank the breadcrumb and yield space to it when cramped. */
+  /* Prev/next flank the breadcrumb and yield space to it when cramped.
+     The Index link must NOT shrink: `overflow: hidden` gives every topbar
+     link a zero flex minimum, and on a narrow screen the crumb squeezed
+     "Index" — the one link back to the collection root — to a 5px sliver. */
+  .topbar a.index {{
+    flex: 0 0 auto;
+  }}
   .topbar a.prev, .topbar a.next {{
     flex: 0 1 auto;
     max-width: 22%;
@@ -649,10 +663,9 @@ pub fn render_html(
   [id] {{
     scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
   }}
-  /* No headings, no sidebar: give the content the full width back. */
+  /* No headings, no sidebar: the column centres in the full viewport. */
   body.no-toc main {{
-    margin-left: 0;
-    margin-right: auto;
+    margin-left: max(0px, calc(50% - 480px));
   }}
   .prose {{
     line-height: 1.7;
@@ -947,8 +960,10 @@ pub fn render_html(
       margin-left: 0;
       padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
     }}
-    /* Leave room for the hamburger, which sits over the topbar's left end. */
-    .topbar {{
+    /* Leave room for the hamburger, which sits over the topbar's left
+       end. no-toc pages have no hamburger — don't reserve 3rem of the
+       narrowest layout for a button that doesn't exist. */
+    body:not(.no-toc) .topbar {{
       padding-left: 3rem;
     }}
     .topbar a.prev, .topbar a.next {{
@@ -3562,6 +3577,43 @@ mod tests {
         assert!(html.contains("<body class=\"no-toc\">"));
         // The topbar is still there — chrome stays consistent.
         assert!(html.contains("class=\"topbar\""));
+    }
+
+    #[test]
+    fn layout_css_centres_and_protects_the_index_link() {
+        // Structural pins for measured layout fixes (headless-Chrome
+        // verified): `margin-right: auto` under `flex: 1` centres nothing —
+        // the freed space lands entirely on the auto margin and the column
+        // stays pinned against the sidebar; the Index link shrank to a 5px
+        // sliver on narrow screens; sidebar math needs explicit clipping.
+        let blocks = vec![Rendered::Markdown("# A\n".to_string())];
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("margin-left: max(220px, calc(50% - 480px))"),
+            "main lost its centring rule"
+        );
+        assert!(
+            html.contains("margin-left: max(0px, calc(50% - 480px))"),
+            "no-toc main lost its centring rule"
+        );
+        assert!(
+            !html.contains("margin-right: auto"),
+            "the inert auto-margin rule is back"
+        );
+        assert!(html.contains(".topbar a.index"), "Index link flex guard missing");
+        assert!(
+            html.contains("body:not(.no-toc) .topbar"),
+            "no-toc pages must not reserve hamburger space"
+        );
+        assert!(html.contains("overflow-x: hidden"), "sidebar clipping rule missing");
     }
 
     #[test]
