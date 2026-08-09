@@ -412,7 +412,7 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                 Tag::Link { dest_url, .. } => {
                     let dest = crate::render::rewrite_link_dest_pdf(&dest_url, link)
                         .unwrap_or_else(|| dest_url.to_string());
-                    out.push_str(&format!("\\href{{{}}}", dest));
+                    out.push_str(&format!("\\href{{{}}}", escape_href_dest(&dest)));
                     out.push('{');
                 }
                 _ => {}
@@ -479,6 +479,32 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
         }
     }
 
+    out
+}
+
+/// Escape an `\href` DESTINATION.
+///
+/// hyperref tolerates most URL characters, but `#` and `%` are fatal
+/// whenever the `\href` expands inside an already-tokenized macro argument
+/// — `\section{}`, `\textbf{}`, `\emph{}` — which is exactly where markdown
+/// puts links ("see **[setup](#setup)**", a link in a heading). A same-page
+/// anchor or any external URL with a fragment or percent-escape then kills
+/// the whole PDF build. `{`/`}` would unbalance the argument; `\` starts a
+/// control sequence. Everything else (`_ & ~` spaces) compiles fine in all
+/// contexts, verified against tectonic — do not over-escape, hyperref
+/// treats the argument as a URL, not text.
+fn escape_href_dest(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '#' => out.push_str("\\#"),
+            '%' => out.push_str("\\%"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '\\' => out.push_str("\\textbackslash{}"),
+            _ => out.push(ch),
+        }
+    }
     out
 }
 
@@ -681,6 +707,25 @@ mod tests {
         let out = markdown_to_latex("[click](https://example.com)", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
+    }
+
+    #[test]
+    fn md_to_latex_escapes_href_destinations() {
+        // Unescaped `#`/`%` in an \href destination is a fatal TeX error
+        // whenever the link sits inside \section{}, \textbf{} or \emph{} —
+        // i.e. a same-page anchor in a heading or bold text, ordinary
+        // markdown. Compile-verified against tectonic in all three
+        // contexts.
+        let single = crate::render::LinkMode::single_file();
+        let out = markdown_to_latex("## Jump to [Setup](#setup)", &single);
+        assert!(out.contains("\\href{\\#setup}"), "unescaped # in heading: {out}");
+        let out = markdown_to_latex("**[deal](https://ex.com/50%off)**", &single);
+        assert!(out.contains("\\href{https://ex.com/50\\%off}"), "unescaped %: {out}");
+        let out = markdown_to_latex("[frag](https://ex.com/p#sec)", &single);
+        assert!(out.contains("\\href{https://ex.com/p\\#sec}"), "{out}");
+        // Underscores are fine everywhere — do not over-escape.
+        let out = markdown_to_latex("[n](my_notes.md)", &single);
+        assert!(out.contains("\\href{my_notes.pdf}"), "over-escaped _: {out}");
     }
 
     #[test]
