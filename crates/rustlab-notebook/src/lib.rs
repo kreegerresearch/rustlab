@@ -805,12 +805,20 @@ pub fn cmd_render_dir(
     // walked different depths before, so `watch` served nested notebooks
     // (`ch1/deep.md` at /n/deep, listed on /) that `render` never emitted.
     // Nested notebooks render to mirrored output subdirectories.
+    //
+    // Never ingest our own output: an output dir nested inside the source
+    // tree (`render notebooks/ -o notebooks/vault`) combined with a format
+    // that writes .md (obsidian) re-listed run 1's output as run 2's
+    // sources — one new nesting level per run, unbounded. In-place renders
+    // (out_dir == dir) are exempt: there, output paths ARE source paths.
+    let out_exclude = std::fs::canonicalize(&out_dir).ok().filter(|o| *o != dir);
     let md_files: Vec<PathBuf> = list_md_files_recursive(&dir)
         .into_iter()
         .filter(|p| {
             let rel = p.strip_prefix(&dir).unwrap_or(p);
             is_listable_notebook(rel)
         })
+        .filter(|p| out_exclude.as_ref().map_or(true, |o| !p.starts_with(o)))
         .collect();
 
     // The root `index.md` is not a notebook entry: it becomes the index
@@ -938,8 +946,14 @@ pub fn cmd_render_dir(
         };
 
         let p = &pending[i];
-        let _ = std::env::set_current_dir(&dir);
         let host_dir = p.md_path.parent().unwrap_or(&dir);
+        // Execute from the notebook's OWN directory — matching cmd_render
+        // and the watch server — so `run`/`load`/`save` relative paths
+        // resolve against the notebook. Chdir'ing to the collection root
+        // made a nested notebook read/write different files in `render`
+        // than in `watch`: the same notebook errored in the build and
+        // succeeded in the server.
+        let _ = std::env::set_current_dir(host_dir);
         let expanded = embed::expand_embeds(&p.source, host_dir, &dir);
         let blocks = parse::parse_notebook(&expanded);
         let rendered = execute::execute_notebook(&blocks);

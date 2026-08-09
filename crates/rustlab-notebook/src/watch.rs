@@ -122,7 +122,12 @@ pub fn cmd_watch(
     // call skips executing every code block — the user's prose-only
     // edits no longer pay the cost of re-running slow notebooks.
     let mut caches: HashMap<PathBuf, crate::cache::NotebookCache> = HashMap::new();
-    let initial = list_notebooks(&dir);
+    // Output exclusion applies only when the output dir is a distinct
+    // subtree — in-place mode's outputs ARE its sources.
+    let out_exclude = (!paths_equal(&dir, &out_dir))
+        .then(|| std::fs::canonicalize(&out_dir).ok())
+        .flatten();
+    let initial = list_notebooks(&dir, out_exclude.as_deref());
     for src in &initial {
         if let Some(out_path) = render_one_with_tracking(
             src,
@@ -216,7 +221,7 @@ pub fn cmd_watch(
         // flush pending work.
         if let Some(when) = last_event {
             if when.elapsed() >= debounce && !pending.is_empty() {
-                let to_render = compute_render_set(&pending, &dir, &graph);
+                let to_render = compute_render_set(&pending, &dir, &graph, out_exclude.as_deref());
                 pending.clear();
                 last_event = None;
                 if to_render.is_empty() {
@@ -305,12 +310,31 @@ fn render_one_with_tracking(
         return None;
     }
 
-    // Compute the output file path mirroring `cmd_render_dir`.
-    let stem = src
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "out".to_string());
-    let out_path = out_dir.join(format!("{stem}.{}", format.extension()));
+    // Compute the output file path mirroring `cmd_render_dir`: the path
+    // relative to the collection root with the extension swapped, so
+    // nested notebooks land in mirrored output subdirectories. The old
+    // bare-stem computation flattened every nested notebook into the
+    // output root — `ch1/alpha.md` and `ch2/alpha.md` clobbered each
+    // other's render, and in-place mode never updated nested notes.
+    let rel = src
+        .strip_prefix(root_dir)
+        .map(|r| {
+            r.components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|_| {
+            src.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "out.md".to_string())
+        });
+    let out_rel = format!(
+        "{}.{}",
+        rel.strip_suffix(".md").unwrap_or(&rel),
+        format.extension()
+    );
+    let out_path = out_dir.join(&out_rel);
 
     // Skip index.md — handled separately by cmd_render_dir, but in
     // watch mode the simplest behaviour is to render it as a notebook
@@ -424,7 +448,16 @@ fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<P
 /// because in `--obsidian` mode it produces the vault home page and a
 /// save of it must re-render like any notebook. Partial saves still
 /// re-render their dependents via the embed graph.
-fn is_renderable_watch_source(p: &Path, root: &Path) -> bool {
+fn is_renderable_watch_source(p: &Path, root: &Path, out_exclude: Option<&Path>) -> bool {
+    // Never treat our own output as a source: an output dir nested inside
+    // the watched tree plus a format that writes .md would list run 1's
+    // output as sources on the next startup.
+    if let Some(o) = out_exclude {
+        let canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if canon.starts_with(o) {
+            return false;
+        }
+    }
     match p.strip_prefix(root) {
         Ok(rel) => rel == Path::new("index.md") || crate::is_listable_notebook(rel),
         // Outside the root (or unprefixed): don't silently hide it.
@@ -432,10 +465,10 @@ fn is_renderable_watch_source(p: &Path, root: &Path) -> bool {
     }
 }
 
-fn list_notebooks(dir: &Path) -> Vec<PathBuf> {
+fn list_notebooks(dir: &Path, out_exclude: Option<&Path>) -> Vec<PathBuf> {
     crate::list_md_files_recursive(dir)
         .into_iter()
-        .filter(|p| is_renderable_watch_source(p, dir))
+        .filter(|p| is_renderable_watch_source(p, dir, out_exclude))
         .collect()
 }
 
@@ -607,6 +640,7 @@ pub(crate) fn compute_render_set(
     changed: &HashSet<PathBuf>,
     root_dir: &Path,
     graph: &DependencyGraph,
+    out_exclude: Option<&Path>,
 ) -> Vec<PathBuf> {
     let mut to_render: HashSet<PathBuf> = HashSet::new();
     for c in changed {
@@ -616,7 +650,7 @@ pub(crate) fn compute_render_set(
         if !is_md_in_root && !is_tracked_embed {
             continue;
         }
-        if is_md_in_root && is_renderable_watch_source(c, root_dir) {
+        if is_md_in_root && is_renderable_watch_source(c, root_dir, out_exclude) {
             // Render any listable `.md` under the watched tree, whether or
             // not the graph already tracks it. Matches `list_notebooks`
             // filtering at startup; a partial's own save falls through to
@@ -814,7 +848,7 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(setup.clone());
-        let render = compute_render_set(&changed, &root, &g);
+        let render = compute_render_set(&changed, &root, &g, None);
         assert!(render.contains(&l1));
         assert!(render.contains(&l2));
         assert!(!render.contains(&l3));
@@ -905,7 +939,7 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(new_note.clone());
-        let render = compute_render_set(&changed, &root, &g);
+        let render = compute_render_set(&changed, &root, &g, None);
         assert_eq!(
             render,
             vec![new_note],
@@ -921,7 +955,7 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(readme);
-        let render = compute_render_set(&changed, &root, &g);
+        let render = compute_render_set(&changed, &root, &g, None);
         assert!(render.is_empty(), "README.md must not be rendered (mirrors list_notebooks)");
     }
 
@@ -936,7 +970,7 @@ mod tests {
 
         let mut changed = HashSet::new();
         changed.insert(l1.clone());
-        let render = compute_render_set(&changed, &root, &g);
+        let render = compute_render_set(&changed, &root, &g, None);
         assert_eq!(render, vec![l1]);
     }
 
