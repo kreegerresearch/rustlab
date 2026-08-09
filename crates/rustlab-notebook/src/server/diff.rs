@@ -228,10 +228,16 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
 /// upgrades to a full refresh when they differ.
 #[allow(clippy::type_complexity)]
 pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+    // Real chrome always precedes <main>; author-written raw HTML inside
+    // a prose block does not. Without this bound, a no-toc page (no real
+    // sidebar) whose markdown contained a literal `<nav class="sidebar">`
+    // matched the fake and upgraded every edit of that block to a full
+    // refresh.
+    let head = &html[..html.find("<main").unwrap_or(html.len())];
     let slice = |open: &str, close: &str| -> Option<&str> {
-        let start = html.find(open)?;
-        let end = html[start..].find(close)?;
-        Some(&html[start..start + end])
+        let start = head.find(open)?;
+        let end = head[start..].find(close)?;
+        Some(&head[start..start + end])
     };
     (
         slice("<header class=\"topbar\">", "</header>"),
@@ -248,6 +254,10 @@ pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&st
 /// direct children of `<main>`; moving a nested section would reparent
 /// it out of its wrapper. Non-flat documents fall back to a full
 /// refresh on structural edits.
+pub fn is_flat(html: &str) -> bool {
+    !html.contains("class=\"exercise\"") && !html.contains("<details class=\"solution\"")
+}
+
 #[cfg(test)]
 mod chrome_tests {
     use super::*;
@@ -272,10 +282,22 @@ mod chrome_tests {
         let body_edit = a.replace("<main></main>", "<main>new</main>");
         assert_eq!(chrome_fingerprint(a), chrome_fingerprint(&body_edit));
     }
-}
 
-pub fn is_flat(html: &str) -> bool {
-    !html.contains("class=\"exercise\"") && !html.contains("<details class=\"solution\"")
+    #[test]
+    fn fingerprint_ignores_fake_chrome_inside_main() {
+        // On a no-toc page there is no real sidebar before <main>, so an
+        // author-written raw `<nav class="sidebar">` inside a prose block
+        // used to win the find() and upgrade every edit of that block to
+        // a full refresh. The fingerprint reads only the pre-<main> region.
+        let v1 = "<body class=\"no-toc\"><header class=\"topbar\">t</header><main><p>x</p><nav class=\"sidebar\">FAKE-V1</nav></main></body>";
+        let v2 = v1.replace("FAKE-V1", "FAKE-V2");
+        assert_eq!(
+            chrome_fingerprint(v1),
+            chrome_fingerprint(&v2),
+            "fake in-content sidebar leaked into the fingerprint"
+        );
+        assert_eq!(chrome_fingerprint(v1).1, None, "no real sidebar exists");
+    }
 }
 
 /// Decide which envelope to send. `None` means "no content

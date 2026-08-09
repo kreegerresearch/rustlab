@@ -500,9 +500,15 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // SIBLING of the sidebar, not a child — sync it with the same lifecycle
     // or a notebook gaining its first heading has an unreachable mobile TOC
     // and one losing its last leaves an orphaned button.
-    syncOutsideMain(parsed, 'nav.sidebar', tgt);
-    syncOutsideMain(parsed, 'button.nav-toggle', tgt);
-    syncOutsideMain(parsed, 'header.topbar', tgt);
+    // `body >` scoping: the unqualified selectors matched author-written
+    // raw HTML inside <main> — on a no-toc page (no real sidebar) a
+    // literal <nav class="sidebar"> in prose got the real TOC written
+    // INTO it, permanently diverging the live DOM from the served page.
+    // Sync order matches server emission (topbar, button, sidebar) so
+    // inserted nodes land in server order and tab order.
+    syncOutsideMain(parsed, 'body > header.topbar', tgt);
+    syncOutsideMain(parsed, 'body > button.nav-toggle', tgt);
+    syncOutsideMain(parsed, 'body > nav.sidebar', tgt);
     // Only the class the server owns. Assigning the whole className wiped
     // runtime classes — rl-source-open in particular, which closed the
     // source/editor pane on every save and defeated the source/cell-editor

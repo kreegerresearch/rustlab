@@ -593,6 +593,7 @@ pub fn render_html(
     transition: transform 0.25s ease;
   }}
   nav.sidebar .nav-title {{
+    overflow-wrap: anywhere;
     font-size: 1.1rem;
     font-weight: 700;
     color: {accent_primary};
