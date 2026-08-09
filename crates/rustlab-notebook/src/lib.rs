@@ -302,7 +302,8 @@ pub fn strip_render_artifacts(source: &str) -> String {
 /// are preserved.
 ///
 /// `input` may be a single file or a directory; directories are walked
-/// non-recursively for `.md` files (mirrors `cmd_render_dir`).
+/// recursively for `.md` files (`README.md` and hidden entries skipped),
+/// the same walk `cmd_render_dir` uses.
 ///
 /// When `output` is `None`, files are cleaned in place. When `output` is
 /// `Some(out)`:
@@ -491,6 +492,17 @@ pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let p = entry.path();
+            // Skip hidden entries at the walk level so every consumer
+            // (check/validate/clean/render/watch) agrees: `.git` and
+            // `.obsidian` are app state, and editor locks (`.#a.md`) are
+            // dangling symlinks that abort naive readers. `clean` used to
+            // descend into `.obsidian/` and rewrite files there.
+            let hidden = p
+                .file_name()
+                .map_or(false, |n| n.to_string_lossy().starts_with('.'));
+            if hidden {
+                continue;
+            }
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().map_or(false, |e| e == "md")
@@ -594,6 +606,11 @@ pub fn cmd_render_cached(
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
     let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+    // Resolve an explicit output path against the INVOKING cwd before the
+    // chdir below — a relative `-o out/x.html` used to silently land
+    // relative to the notebook's directory while the summary printed the
+    // cwd-relative path. (The defaulted output stays notebook-relative.)
+    let output = output.map(|o| std::path::absolute(&o).unwrap_or(o));
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -656,6 +673,9 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
     let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+    // Resolve an explicit output path against the INVOKING cwd before the
+    // chdir — see cmd_render_cached for the failure this prevents.
+    let output = output.map(|o| std::path::absolute(&o).unwrap_or(o));
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -815,9 +835,16 @@ pub fn cmd_render_dir(
     let out_exclude = std::fs::canonicalize(&out_dir).ok().filter(|o| *o != dir);
     let md_files: Vec<PathBuf> = list_md_files_recursive(&dir)
         .into_iter()
-        .filter(|p| {
-            let rel = p.strip_prefix(&dir).unwrap_or(p);
-            is_listable_notebook(rel)
+        .filter(|p| match p.strip_prefix(&dir) {
+            Ok(rel) => is_listable_notebook(rel),
+            // Same fail-OPEN policy as the server's build_state: an
+            // absolute path fed to the underscore rule would match
+            // unrelated ancestors (`~/_work/…`) and silently hide the
+            // whole collection.
+            Err(_) => {
+                debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                true
+            }
         })
         .filter(|p| out_exclude.as_ref().map_or(true, |o| !p.starts_with(o)))
         .collect();
@@ -875,7 +902,7 @@ pub fn cmd_render_dir(
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
             .join("/");
-        let filename = format!("{}.{ext}", rel_md.trim_end_matches(".md"));
+        let filename = format!("{}.{ext}", rel_md.strip_suffix(".md").unwrap_or(&rel_md));
         let out_file = out_dir.join(&filename);
         pending.push(Pending {
             md_path: md_path.clone(),
@@ -1917,6 +1944,119 @@ mod tests {
         // The contract: `rel` must be RELATIVE. An absolute path would
         // wrongly match `_`-prefixed ancestors — callers strip first.
         assert!(!is_listable_notebook(Path::new("/tmp/_work/coll/lesson.md")));
+    }
+
+    #[test]
+    fn href_between_climbs_out_of_nested_directories() {
+        // Sole source of nav hrefs for every nested page; all outputs are
+        // relative (no leading `/`) so file:// browsing works.
+        assert_eq!(href_between("", "a.html"), "a.html");
+        assert_eq!(href_between("", "index.html"), "index.html");
+        assert_eq!(href_between("ch1", "index.html"), "../index.html");
+        assert_eq!(href_between("ch1", "ch2/x.html"), "../ch2/x.html");
+        assert_eq!(href_between("a/b", "x.html"), "../../x.html");
+        assert_eq!(href_between("a/b", "a/b/y.html"), "../../a/b/y.html");
+        assert!(!href_between("ch1", "x.html").starts_with('/'));
+        // rel_dir_of round-trip.
+        assert_eq!(rel_dir_of("ch1/notes.md"), "ch1");
+        assert_eq!(rel_dir_of("notes.md"), "");
+        assert_eq!(rel_dir_of("a/b/c.md"), "a/b");
+    }
+
+    #[test]
+    fn recursive_walk_skips_hidden_entries() {
+        // Editor locks (`.#a.md`, dangling symlinks) and app dirs
+        // (`.git`, `.obsidian`) must be invisible to every consumer —
+        // `clean` used to descend into `.obsidian/` and rewrite files.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
+        std::fs::write(dir.path().join(".obsidian").join("note.md"), "x").unwrap();
+        std::fs::write(dir.path().join(".hidden.md"), "x").unwrap();
+        std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
+        let found = list_md_files_recursive(dir.path());
+        assert_eq!(found.len(), 1, "hidden entries leaked: {found:?}");
+        assert!(found[0].ends_with("real.md"));
+    }
+
+    #[test]
+    fn dir_markdown_render_leaves_md_links_untouched() {
+        // The format matrix's unpinned cell: plain -f markdown output is
+        // GitHub-facing source — body links must stay .md in every file.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(
+            dir.path().join("ch1").join("a.md"),
+            "# A\n\n[root](../root.md)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("root.md"), "# R\n\n[a](ch1/a.md)\n").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            dir.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+            None,
+        );
+        let a = std::fs::read_to_string(out.path().join("ch1/a.md")).unwrap();
+        let r = std::fs::read_to_string(out.path().join("root.md")).unwrap();
+        assert!(a.contains("[root](../root.md)"), "link rewritten: {a}");
+        assert!(r.contains("[a](ch1/a.md)"), "link rewritten: {r}");
+        assert!(!a.contains(".html"), "{a}");
+    }
+
+    #[test]
+    fn recursive_render_in_place_is_idempotent() {
+        // out_dir == src_dir with the recursive walk: run 1's .html output
+        // must not perturb run 2's listing or bytes.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("ch1").join("a.md"), "# A\n\nprose\n").unwrap();
+        std::fs::write(dir.path().join("root.md"), "# R\n\nprose\n").unwrap();
+        let run = || {
+            cmd_render_dir(
+                dir.path().to_path_buf(),
+                None,
+                Format::Html,
+                Theme::Dark.colors(),
+                None,
+            );
+            let mut hashes = Vec::new();
+            for f in ["ch1/a.html", "root.html", "index.html"] {
+                hashes.push(hash_bytes(&std::fs::read(dir.path().join(f)).unwrap()));
+            }
+            hashes
+        };
+        let first = run();
+        let second = run();
+        assert_eq!(first, second, "in-place re-render is not idempotent");
+    }
+
+    #[test]
+    fn cross_notebook_fragment_needs_an_explicit_anchor() {
+        // Documents current behaviour (round-2 finding, deferred design
+        // gap): a fragment to a PLAIN heading survives resolution but has
+        // no matching id on the target page — generated ids are
+        // heading-N. Only explicit `{#anchor}` headings are stable
+        // targets. See dev/requests for the slugification proposal.
+        let blocks = vec![execute::Rendered::Markdown(
+            "## Section Two\n".to_string(),
+        )];
+        let html = render::render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            Theme::Dark.colors(),
+            None,
+            &render::LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("id=\"section-two\""),
+            "if heading ids are now slugified, update the fragment docs and \
+             delete this pin"
+        );
+        assert!(html.contains("id=\"heading-1\""));
     }
 
     // ── guard_markdown_overwrite ────────────────────────────────────

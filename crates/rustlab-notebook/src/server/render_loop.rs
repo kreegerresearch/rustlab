@@ -432,9 +432,8 @@ fn schedule_render(
         let decision = {
             let prev = nb.prev_blocks.lock().unwrap();
             match diff::classify(&prev, &new_blocks, allow_reconcile) {
-                d @ (Broadcast::Partial(_) | Broadcast::Reconcile(_)) if chrome_changed => {
+                Broadcast::Partial(_) | Broadcast::Reconcile(_) if chrome_changed => {
                     eprintln!("[watch] chrome changed ({}) — upgrading to full", nb.slug);
-                    drop(d);
                     Broadcast::Full
                 }
                 d => d,

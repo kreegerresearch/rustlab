@@ -56,8 +56,8 @@ fn single_state_with(
         index_title: slug.to_string(),
         link_slugs: HashMap::new(),
         index_body: tokio::sync::RwLock::new(String::new()),
-            index_md_path: None,
-            render_tx: std::sync::OnceLock::new(),
+        index_md_path: None,
+        render_tx: std::sync::OnceLock::new(),
     })
 }
 

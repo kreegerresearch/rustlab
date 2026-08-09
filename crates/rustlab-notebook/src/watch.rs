@@ -955,6 +955,41 @@ mod tests {
     }
 
     #[test]
+    fn is_renderable_watch_source_rules() {
+        use std::path::Path;
+        let root = Path::new("/w");
+        let ok = |p: &str| is_renderable_watch_source(Path::new(p), root, None);
+        // The deliberate exception: root index.md renders the vault home
+        // page in --obsidian mode.
+        assert!(ok("/w/index.md"));
+        assert!(ok("/w/lesson.md"));
+        assert!(ok("/w/ch1/lesson.md"));
+        // Nested index files are not hoisted anywhere — not renderable.
+        assert!(!ok("/w/ch1/index.md"));
+        assert!(!ok("/w/README.md"));
+        assert!(!ok("/w/_setup.md"));
+        assert!(!ok("/w/_shared/x.md"));
+        assert!(!ok("/w/.#lesson.md"));
+        assert!(!ok("/w/.obsidian/n.md"));
+        // Outside the root: never silently hidden.
+        assert!(ok("/elsewhere/x.md"));
+    }
+
+    #[test]
+    fn compute_render_set_skips_partials_and_dotfiles_to_match_startup() {
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let mut changed = HashSet::new();
+        changed.insert(root.join("_setup.md"));
+        changed.insert(root.join(".#lock.md"));
+        let g = DependencyGraph::default();
+        let render = compute_render_set(&changed, &root, &g, None);
+        assert!(
+            render.is_empty(),
+            "partials/dotfiles must not render as pages: {render:?}"
+        );
+    }
+
+    #[test]
     fn compute_render_set_skips_readme_md_to_match_startup() {
         let g = DependencyGraph::default();
         let root = PathBuf::from("/n");
