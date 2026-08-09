@@ -54,11 +54,16 @@ pub enum LinkMode {
     /// server walk is recursive and same-stem files in different
     /// directories hold distinct `-N` suffixed slugs. `current_rel_dir` is
     /// the linking notebook's directory relative to the root (`""` at the
-    /// root), used to resolve `./` and `../`. Root `index.md` maps to `/`
-    /// (it is the index page's body, not a notebook — it has no slug).
+    /// root), used to resolve `./` and `../`. When `index_at_root` is set
+    /// (directory mode), root `index.md` maps to `/` — the index page's
+    /// body, not a notebook, so it has no slug. Single-file serves clear
+    /// it: their `/` redirects back to the lone notebook, so the mapping
+    /// would send `[home](index.md)` in a circle instead of leaving it
+    /// visibly unresolved.
     Server {
         slugs: HashMap<String, String>,
         current_rel_dir: String,
+        index_at_root: bool,
     },
 }
 
@@ -109,22 +114,31 @@ fn rewrite_link_dest_to(
             known,
             current_rel_dir,
         } => {
-            let normalized = normalize_rel_path(current_rel_dir, path)?;
             if let Some(known) = known {
+                // Membership checks against literal on-disk names: decode
+                // %XX first — `foo%20bar.md` is the standard spelling for
+                // a link to `foo bar.md` and must resolve like it.
+                let normalized =
+                    normalize_rel_path(current_rel_dir, &percent_decode(path))?;
                 if !known.contains(&normalized) {
                     return None;
                 }
             }
+            // known: None (single-file render) rewrites unconditionally —
+            // including `../sibling.md`, which may well be rendered
+            // separately; there is no collection to resolve against.
+            //
             // Extension swap on the path AS WRITTEN — a `../ch2/` prefix
-            // stays relative to the emitting page.
+            // (or its percent-encoding) stays relative to the page.
             Some(format!("{stem}.{target_ext}{fragment}"))
         }
         LinkMode::Server {
             slugs,
             current_rel_dir,
+            index_at_root,
         } => {
-            let normalized = normalize_rel_path(current_rel_dir, path)?;
-            if normalized == "index.md" {
+            let normalized = normalize_rel_path(current_rel_dir, &percent_decode(path))?;
+            if *index_at_root && normalized == "index.md" {
                 // The index page's body, hoisted to the server root.
                 return Some(format!("/{fragment}"));
             }
@@ -132,6 +146,31 @@ fn rewrite_link_dest_to(
             Some(format!("/n/{slug}{fragment}"))
         }
     }
+}
+
+/// Decode `%XX` escapes so href spellings compare against the literal
+/// filesystem names held in `known`/`slugs`. Invalid or truncated escapes
+/// and non-UTF-8 results leave the input unchanged.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
 /// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
@@ -2978,6 +3017,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            index_at_root: true,
             current_rel_dir: current_rel_dir.to_string(),
         }
     }
@@ -3115,6 +3155,64 @@ mod tests {
         );
         // `..` escaping the collection root cannot resolve — left alone.
         assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_single_file_rewrites_parent_relative_paths() {
+        // Doc contract: known: None rewrites UNCONDITIONALLY — including
+        // `../sibling.md`, which may well be rendered separately. The
+        // normalize gate (correct for collections, where `..` really does
+        // escape) was wrongly applied here too.
+        let mode = LinkMode::single_file();
+        assert_eq!(
+            rewrite_link_dest("../ch1/intro.md", &mode).as_deref(),
+            Some("../ch1/intro.html")
+        );
+        assert_eq!(
+            rewrite_link_dest("../../far.md#sec", &mode).as_deref(),
+            Some("../../far.html#sec")
+        );
+    }
+
+    #[test]
+    fn link_dest_percent_encoded_paths_resolve_against_literal_names() {
+        // `foo%20bar.md` is the standard spelling for a link to
+        // `foo bar.md`; the known set and slug map hold literal on-disk
+        // names, so the encoded form silently dangled while the raw-space
+        // form resolved. Decode for the lookup; emit the path as written.
+        let known: HashSet<String> = ["foo bar.md".to_string()].into_iter().collect();
+        let mode = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: String::new(),
+        };
+        assert_eq!(
+            rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
+            Some("foo%20bar.html"),
+            "encoded spelling must resolve, keeping its encoding"
+        );
+        let mode = server_mode(&[("foo bar.md", "foo-bar")], "");
+        assert_eq!(
+            rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
+            Some("/n/foo-bar")
+        );
+        // Invalid escapes pass through to the (failing) literal lookup.
+        assert_eq!(rewrite_link_dest("bad%2.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_single_file_server_leaves_index_md_alone() {
+        // A single-file serve's `/` redirects back to the lone notebook —
+        // mapping index.md there sent `[home](index.md)` in a circle.
+        let mode = LinkMode::Server {
+            slugs: [("solo.md".to_string(), "solo".to_string())]
+                .into_iter()
+                .collect(),
+            current_rel_dir: String::new(),
+            index_at_root: false,
+        };
+        assert_eq!(rewrite_link_dest("index.md", &mode), None, "left as written");
+        // Self-link still resolves.
+        assert_eq!(rewrite_link_dest("solo.md", &mode).as_deref(), Some("/n/solo"));
     }
 
     /// Render one markdown block through the full HTML pipeline in `mode`.

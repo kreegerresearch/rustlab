@@ -195,6 +195,9 @@ impl ServerState {
         crate::render::LinkMode::Server {
             slugs: self.link_slugs.clone(),
             current_rel_dir,
+            // Single-file `/` redirects to the notebook itself — mapping
+            // index.md there would send the link in a circle.
+            index_at_root: !self.single,
         }
     }
 }

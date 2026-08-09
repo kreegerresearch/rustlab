@@ -254,6 +254,7 @@ fn build_state(
         let link = crate::render::LinkMode::Server {
             slugs: link_slugs.clone(),
             current_rel_dir: crate::rel_dir_of(&rels[idx]),
+            index_at_root: is_dir,
         };
         let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref(), &link)
             .with_context(|| format!("rendering {} for server", path.display()))?;
@@ -284,6 +285,7 @@ fn build_state(
             let link = crate::render::LinkMode::Server {
                 slugs: link_slugs.clone(),
                 current_rel_dir: String::new(),
+                index_at_root: true,
             };
             crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
         }
@@ -892,9 +894,11 @@ mod tests {
             crate::render::LinkMode::Server {
                 slugs,
                 current_rel_dir,
+                index_at_root,
             } => {
                 assert_eq!(current_rel_dir, "ch1");
                 assert_eq!(slugs, state.link_slugs);
+                assert!(index_at_root, "directory mode must map index.md to /");
             }
             other => panic!("expected Server mode, got {other:?}"),
         }
