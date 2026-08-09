@@ -588,6 +588,7 @@ pub fn cmd_render_cached(
     format: Format,
     theme: &ThemeColors,
     cache: &mut cache::NotebookCache,
+    link: &render::LinkMode,
 ) -> CachedRenderSummary {
     let _cwd_guard = CwdGuard::new();
     // Capture the canonical input BEFORE the chdir so the markdown-
@@ -639,7 +640,7 @@ pub fn cmd_render_cached(
         &outcome.rendered,
         theme,
         None,
-        &render::LinkMode::single_file(),
+        link,
         Some(&source),
         Some(&input),
     );
@@ -973,10 +974,10 @@ pub fn cmd_render_dir(
 
     if matches!(format, Format::Html) {
         // Resolve the index title: CLI flag > index.md title > dir name.
-        let (index_body_html, index_md_title) = match index_md_path.as_ref() {
-            Some(p) => read_and_render_index_md(p, &dir, theme, &link_mode),
-            None => (String::new(), None),
-        };
+        let (index_body_html, index_md_title) = index_md_path
+            .as_ref()
+            .and_then(|p| read_and_render_index_md(p, &dir, theme, &link_mode))
+            .unwrap_or((String::new(), None));
         let resolved_title = index_title.clone().or(index_md_title).unwrap_or_else(|| {
             dir.file_name()
                 .unwrap_or_default()
@@ -1091,17 +1092,20 @@ fn generate_obsidian_index_md(title: &str, entries: &[(String, String)]) -> Stri
 /// rendered as plain markdown (not executed) to keep the landing page
 /// lightweight — put executable content in regular notebooks and link to
 /// them from `index.md`.
+/// `None` means the file could not be READ (transient during atomic
+/// saves, permissions) — callers must not mistake that for an empty
+/// index body and blank a previously-good page.
 pub(crate) fn read_and_render_index_md(
     path: &PathBuf,
     dir: &PathBuf,
     _theme: &ThemeColors,
     link: &render::LinkMode,
-) -> (String, Option<String>) {
+) -> Option<(String, Option<String>)> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("warning: cannot read {}: {e}", path.display());
-            return (String::new(), None);
+            return None;
         }
     };
     let title = extract_title(&source, path);
@@ -1122,7 +1126,7 @@ pub(crate) fn read_and_render_index_md(
     render::rewrite_link_events(&mut events, link);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
-    (html, Some(title))
+    Some((html, Some(title)))
 }
 
 fn strip_leading_h1(src: &str) -> &str {
@@ -1260,6 +1264,15 @@ fn render_output(
             // a "do not edit directly" warning is misleading — the user
             // edits this file by design. Two-dir renders still emit it
             // so committed gallery output keeps the provenance line.
+            // Wikilink emission needs the notebook's collection-relative
+            // dir to compute vault-relative targets; the Static link mode
+            // already carries it (Server mode never reaches this arm).
+            let current_rel_dir = match link {
+                render::LinkMode::Static {
+                    current_rel_dir, ..
+                } => current_rel_dir.as_str(),
+                _ => "",
+            };
             let body = render_markdown::render_markdown(
                 title,
                 rendered,
@@ -1269,6 +1282,7 @@ fn render_output(
                 iframe_href.as_deref(),
                 link_style,
                 !in_place,
+                current_rel_dir,
             );
             let final_md = match obsidian {
                 Some(_) => {

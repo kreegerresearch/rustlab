@@ -194,7 +194,7 @@ fn has_url_scheme(dest: &str) -> bool {
 /// Join `target` onto `base_dir` and normalize `.`/`..` components, all in
 /// `/`-separated collection-relative terms. `None` when `..` escapes the
 /// collection root — such a link cannot be resolved against the listing.
-fn normalize_rel_path(base_dir: &str, target: &str) -> Option<String> {
+pub(crate) fn normalize_rel_path(base_dir: &str, target: &str) -> Option<String> {
     let mut parts: Vec<&str> = base_dir.split('/').filter(|p| !p.is_empty()).collect();
     for comp in target.split('/') {
         match comp {

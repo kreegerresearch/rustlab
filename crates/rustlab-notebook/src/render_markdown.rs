@@ -61,6 +61,7 @@ pub fn render_markdown(
     iframe_href: Option<&str>,
     link_style: LinkStyle,
     emit_header: bool,
+    current_rel_dir: &str,
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0usize;
@@ -89,7 +90,7 @@ pub fn render_markdown(
                         // additionally lift any standard `[Text](Foo.md)`
                         // link into `[[Foo|Text]]` so Obsidian's graph and
                         // backlinks panel see them.
-                        rewrite_md_links_to_wikilinks(md)
+                        rewrite_md_links_to_wikilinks(md, current_rel_dir)
                     }
                 };
                 body.push_str(transformed.trim_end());
@@ -419,7 +420,7 @@ fn hashed_plot_stem(base: &str, path: &Path) -> String {
     format!("{base}-{digest:08x}")
 }
 
-fn rewrite_md_links_to_wikilinks(md: &str) -> String {
+fn rewrite_md_links_to_wikilinks(md: &str, current_rel_dir: &str) -> String {
     let s = md.as_bytes();
     let n = s.len();
     let mut out = String::with_capacity(n);
@@ -477,8 +478,25 @@ fn rewrite_md_links_to_wikilinks(md: &str) -> String {
                 let url = &md[url_start..url_end];
                 if let Some((target, anchor)) = parse_relative_md_link(url) {
                     let text = &md[text_start..text_end];
-                    let basename = strip_md_extension(target);
-                    let wl = render_wikilink_for(basename, anchor, text);
+                    let stem = strip_md_extension(target);
+                    // Vault-relative target, not the bare basename:
+                    // Obsidian resolves a bare [[dup]] shortest-path /
+                    // same-folder-first, so from ch1/ a basename link to
+                    // ../ch2/dup.md pointed at ch1's OWN dup — and the
+                    // relative-path information was destroyed in the
+                    // written file, unrecoverable by a later HTML render.
+                    // The generated index (generate_obsidian_index_md)
+                    // already links by vault-relative stem for exactly
+                    // this reason. A path escaping the vault root falls
+                    // back to the old basename form.
+                    let wl_target = crate::render::normalize_rel_path(current_rel_dir, stem)
+                        .unwrap_or_else(|| {
+                            std::path::Path::new(stem)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| stem.to_string())
+                        });
+                    let wl = render_wikilink_for(&wl_target, anchor, text);
                     out.push_str(&md[copied_to..i]);
                     out.push_str(&wl);
                     i = end;
@@ -585,19 +603,47 @@ fn strip_md_extension(target: &str) -> &str {
         .unwrap_or(target)
 }
 
+#[cfg(test)]
+mod wikilink_target_tests {
+    use super::*;
+
+    #[test]
+    fn nested_links_emit_vault_relative_targets() {
+        // Bare-basename wikilinks made two different targets collapse into
+        // one link ([[dup]] for both ch1/dup.md and ch2/dup.md), and
+        // Obsidian's same-folder-first resolution pointed a ../ch2/ link
+        // back at the linking note's own folder. Worse: in-place renders
+        // WROTE that collapsed form into the source, destroying the
+        // relative path irrecoverably.
+        let out = rewrite_md_links_to_wikilinks("[two](../ch2/dup.md)", "ch1");
+        assert_eq!(out, "[[ch2/dup|two]]");
+        let out = rewrite_md_links_to_wikilinks("[me](dup.md)", "ch1");
+        assert_eq!(out, "[[ch1/dup|me]]");
+        let out = rewrite_md_links_to_wikilinks("[home](../index.md)", "ch1");
+        assert_eq!(out, "[[index|home]]");
+        // Flat collections keep their old shape (alias suppressed when the
+        // text is what Obsidian would display anyway).
+        let out = rewrite_md_links_to_wikilinks("[a](a.md)", "");
+        assert_eq!(out, "[[a]]");
+        let out = rewrite_md_links_to_wikilinks("[a.md § sec](a.md#sec)", "");
+        assert_eq!(out, "[[a#sec|a.md § sec]]");
+        // Escaping the vault root falls back to the basename form.
+        let out = rewrite_md_links_to_wikilinks("[out](../outside.md)", "");
+        assert_eq!(out, "[[outside|out]]");
+    }
+}
+
 fn render_wikilink_for(target: &str, anchor: Option<&str>, text: &str) -> String {
-    let target_basename = std::path::Path::new(target)
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| target.to_string());
-    let mut body = target_basename.clone();
+    let mut body = target.to_string();
     if let Some(a) = anchor {
         body.push('#');
         body.push_str(a);
     }
-    if text == target_basename
-        || (anchor.is_none() && text == target)
-        || (anchor.is_some() && text == format!("{} § {}", target_basename, anchor.unwrap()))
+    // Suppress the alias only when the display text IS what Obsidian would
+    // show for the bare link. A basename display of a nested target keeps
+    // its alias (`[[ch2/dup|dup]]`) so the note reads as before.
+    if (anchor.is_none() && text == target)
+        || (anchor.is_some() && text == format!("{} § {}", target, anchor.unwrap()))
     {
         format!("[[{body}]]")
     } else {
@@ -687,7 +733,7 @@ mod tests {
 
     #[test]
     fn generated_banner_is_emitted() {
-        let md = render_markdown("Hello", &[], &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("Hello", &[], &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("Generated by rustlab-notebook"));
         // No synthetic H1 — that comes from the source notebook.
         assert!(!md.contains("# Hello\n"));
@@ -698,7 +744,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "## Section\n\nSome *prose* with `code`.".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("## Section"));
         assert!(md.contains("*prose*"));
         assert!(md.contains("`code`"));
@@ -716,7 +762,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("```rustlab\nx = 42\n```"));
     }
 
@@ -732,7 +778,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(!md.contains("secret = 42"));
         assert!(md.contains("```text\nanswer: 42\n```"));
     }
@@ -749,7 +795,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("error: undefined variable 'x'"));
     }
 
@@ -760,7 +806,7 @@ mod tests {
             title: None,
             content: "Pay attention here.".to_string(),
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(
             md.contains("> [!NOTE]\n> Pay attention here."),
             "expected GFM-native callout syntax: {md}"
@@ -774,7 +820,7 @@ mod tests {
             title: Some("Heads up".to_string()),
             content: "key fact".to_string(),
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(
             md.contains("> [!IMPORTANT] Heads up\n> key fact"),
             "expected inline title in callout header: {md}"
@@ -788,7 +834,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [[Foo]] and [[Bar|alias]]".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("[Foo](Foo.md)"), "missing wikilink: {md}");
         assert!(md.contains("[alias](Bar.md)"), "missing alias link: {md}");
         assert!(!md.contains("[[Foo]]"), "raw wikilink leaked: {md}");
@@ -799,7 +845,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "![[diagram.svg]] then ![[chart.png|chart]]".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("![](diagram.svg)"), "missing embed: {md}");
         assert!(md.contains("![chart](chart.png)"), "missing embed alt: {md}");
         assert!(!md.contains("![["), "raw embed leaked: {md}");
@@ -821,7 +867,7 @@ mod tests {
                 title: None,
                 content: "body".to_string(),
             }];
-            let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+            let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
             assert!(md.contains(tag), "missing {tag} for {kind:?}: {md}");
         }
     }
@@ -829,7 +875,7 @@ mod tests {
     #[test]
     fn solution_wraps_in_details() {
         let blocks = vec![Rendered::SolutionStart];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("<details>"));
         assert!(md.contains("<summary>Solution</summary>"));
     }
@@ -861,7 +907,7 @@ mod tests {
         let plot_dir = tmp_plot_dir();
         // Use a multi-segment relative href to verify the prefix is taken
         // verbatim and not derived from the plot directory's basename.
-        let md = render_markdown("T", &blocks, &plot_dir, "plots/quick_look", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &plot_dir, "plots/quick_look", theme(), None, LinkStyle::Standard, true, "");
         // Filename carries the cache-bust as a hex suffix (`plot-1-<hex>.svg`)
         // so Obsidian's local-file path resolution finds the actual file on
         // disk. A `?v=` query string would work in a browser but not in
@@ -895,6 +941,7 @@ mod tests {
             Some("analysis.html"),
             LinkStyle::Standard,
             true,
+            "",
         );
         assert!(
             md.contains(r#"<iframe src="analysis.html""#),
@@ -905,7 +952,7 @@ mod tests {
 
     #[test]
     fn no_iframe_when_href_none() {
-        let md = render_markdown("T", &[], &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &[], &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(!md.contains("<iframe"));
     }
 
@@ -917,7 +964,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("```mermaid\nflowchart LR\nA-->B\n```"));
     }
 
@@ -929,7 +976,7 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("*Signal flow*"));
     }
 
@@ -941,7 +988,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(!md.contains("```mermaid"));
     }
 
@@ -952,7 +999,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [Foo](other.md) for details".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[[other|Foo]]"), "expected wikilink: {md}");
         assert!(!md.contains("](other.md)"), "raw md link leaked: {md}");
     }
@@ -962,7 +1009,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [Sec](other.md#section) for context".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[[other#section|Sec]]"), "expected anchored wikilink: {md}");
     }
 
@@ -971,7 +1018,7 @@ mod tests {
         // `[Foo](Foo.md)` → `[[Foo]]` (no `|Foo` alias) so the rendered
         // markdown matches the form Obsidian users author by hand.
         let blocks = vec![Rendered::Markdown("see [Foo](Foo.md) here".to_string())];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[[Foo]]"), "expected bare wikilink: {md}");
         assert!(!md.contains("[[Foo|Foo]]"));
     }
@@ -981,7 +1028,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [GH](https://github.com) and [mail](mailto:a@b)".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[GH](https://github.com)"), "external URL rewritten: {md}");
         assert!(md.contains("[mail](mailto:a@b)"), "mailto rewritten: {md}");
     }
@@ -989,7 +1036,7 @@ mod tests {
     #[test]
     fn obsidian_anchor_only_link_unchanged() {
         let blocks = vec![Rendered::Markdown("jump to [Top](#top)".to_string())];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[Top](#top)"), "anchor-only link rewritten: {md}");
     }
 
@@ -999,7 +1046,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "![diagram](pic.svg) plus [doc](doc.md)".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("![diagram](pic.svg)"), "image rewritten: {md}");
         assert!(md.contains("[[doc]]"), "doc not rewritten: {md}");
     }
@@ -1009,7 +1056,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see `[Foo](bar.md)` literal".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("`[Foo](bar.md)`"), "inline code rewritten: {md}");
     }
 
@@ -1020,7 +1067,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [[Foo]] and [[Bar|alias]]".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Wiki, true, "");
         assert!(md.contains("[[Foo]]"), "source wikilink lost: {md}");
         assert!(md.contains("[[Bar|alias]]"), "aliased wikilink lost: {md}");
         assert!(!md.contains("[Foo](Foo.md)"), "Standard transform applied: {md}");
@@ -1045,6 +1092,7 @@ mod tests {
             None,
             LinkStyle::Standard,
             true,
+            "",
         );
         assert!(md.contains(src), "math mangled in render output:\n{md}");
         assert!(!md.contains(r"\\,"), "double-backslash leaked: {md}");
@@ -1058,7 +1106,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "see [Foo](other.md) here".to_string(),
         )];
-        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true);
+        let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("[Foo](other.md)"), "MD link rewritten in Standard: {md}");
         assert!(!md.contains("[[other"), "wikilink leaked into Standard mode: {md}");
     }

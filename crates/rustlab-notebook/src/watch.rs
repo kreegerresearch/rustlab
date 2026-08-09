@@ -340,12 +340,19 @@ fn render_one_with_tracking(
     // watch mode the simplest behaviour is to render it as a notebook
     // too. Acceptable trade-off for the watch loop's simplicity.
     let cache = caches.entry(src.to_path_buf()).or_default();
+    // Wikilink emission resolves targets against the notebook's own
+    // collection-relative directory — same rel string as the output path.
+    let link = crate::render::LinkMode::Static {
+        known: None,
+        current_rel_dir: crate::rel_dir_of(&rel),
+    };
     let summary = crate::cmd_render_cached(
         src.to_path_buf(),
         Some(out_path.clone()),
         format.clone(),
         theme,
         cache,
+        &link,
     );
 
     // GC stale plot files **after** the render, not before. Wiping

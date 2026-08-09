@@ -286,7 +286,11 @@ fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
             crate::read_and_render_index_md(&path, &root, theme, &link)
         })
         .await;
-        if let Ok((body, _title)) = rendered {
+        // A read failure (None) — e.g. the brief not-there window of an
+        // editor's atomic rename — must NOT blank a previously-good index:
+        // skip the write and keep serving the last body. Only a successful
+        // read publishes (including a legitimately emptied file).
+        if let Ok(Some((body, _title))) = rendered {
             *state.index_body.write().await = body;
             eprintln!("[watch] index.md body refreshed");
         }

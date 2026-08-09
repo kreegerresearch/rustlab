@@ -280,17 +280,17 @@ fn build_state(
     let index_md_path = is_dir
         .then(|| canonical_input.join("index.md"))
         .filter(|p| p.is_file());
-    let (index_body, index_md_title) = match index_md_path.as_ref() {
-        Some(p) => {
+    let (index_body, index_md_title) = index_md_path
+        .as_ref()
+        .and_then(|p| {
             let link = crate::render::LinkMode::Server {
                 slugs: link_slugs.clone(),
                 current_rel_dir: String::new(),
                 index_at_root: true,
             };
             crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
-        }
-        None => (String::new(), None),
-    };
+        })
+        .unwrap_or((String::new(), None));
 
     // Same title precedence as `cmd_render_dir`: index.md > directory name.
     let index_title = if is_dir {
