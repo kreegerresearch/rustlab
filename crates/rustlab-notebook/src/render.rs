@@ -1288,29 +1288,70 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// prose between code fences is a single block) got a sidebar whose order
 /// and implied nesting contradicted the page.
 fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
+    const TAGS: [&str; 3] = ["h1", "h2", "h3"];
     let mut result = html.to_string();
     let mut search_from = 0;
+    // Per-level next-match cache. Recomputing every level from the cursor
+    // on every iteration made a level with NO remaining matches scan to
+    // end-of-document once per heading — 25x slower on the common
+    // all-`##` notebook. A cache entry stays valid across iterations:
+    // id insertion cannot create a new `<hN` (it lands inside a tag), so
+    // only positions past an edit shift (by the insertion length) and
+    // only entries behind the cursor go stale.
+    let mut next: [Option<(usize, usize)>; 3] = [None; 3];
+    let mut dirty: [bool; 3] = [true; 3];
     loop {
         // Match `<hN>` *and* `<hN ...>`: pulldown-cmark emits an explicit
         // id for `## Title {#anchor}`, and matching only the bare tag
         // skipped those headings entirely — no TOC entry at all, which
         // hit exactly the notebooks using anchors for deep links.
-        let found = ["h1", "h2", "h3"]
-            .iter()
-            .filter_map(|t| {
-                find_heading_open(&result[search_from..], t)
-                    .map(|(rel, len)| (*t, search_from + rel, len))
-            })
+        for k in 0..3 {
+            if dirty[k] {
+                next[k] = find_heading_open(&result[search_from..], TAGS[k])
+                    .map(|(rel, len)| (search_from + rel, len));
+                dirty[k] = false;
+            }
+        }
+        let found = (0..3)
+            .filter_map(|k| next[k].map(|(at, len)| (k, at, len)))
             .min_by_key(|&(_, at, _)| at);
-        let Some((tag, abs_open, open_len)) = found else {
+        let Some((tag_idx, abs_open, open_len)) = found else {
             break;
         };
+        let tag = TAGS[tag_idx];
+        // A cache adjustment closure, applied after every cursor move:
+        // shift positions past an edit by `delta`, invalidate anything
+        // now behind the cursor (a malformed nested `<hN` can sit inside
+        // the heading just consumed).
+        let advance = |next: &mut [Option<(usize, usize)>; 3],
+                       dirty: &mut [bool; 3],
+                       edit_at: usize,
+                       delta: isize,
+                       cursor: usize| {
+            for k in 0..3 {
+                if let Some((at, len)) = next[k] {
+                    let at = if delta != 0 && at > edit_at {
+                        (at as isize + delta) as usize
+                    } else {
+                        at
+                    };
+                    if at < cursor {
+                        dirty[k] = true;
+                    } else {
+                        next[k] = Some((at, len));
+                    }
+                }
+            }
+        };
+        // The consumed level's cached match is spent either way.
+        dirty[tag_idx] = true;
         let close = format!("</{tag}>");
         let content_start = abs_open + open_len;
         let Some(rel_end) = result[content_start..].find(&close) else {
             // Unterminated heading: step past it so another level can still
             // match later in the document.
             search_from = content_start;
+            advance(&mut next, &mut dirty, 0, 0, search_from);
             continue;
         };
         let content = result[content_start..content_start + rel_end].to_string();
@@ -1332,6 +1373,7 @@ fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
                     (id.clone(), format!("<{inner} id=\"{id}\">"))
                 }
             };
+            let delta = new_open.len() as isize - open_len as isize;
             result.replace_range(abs_open..abs_open + open_len, &new_open);
             // `clean` came out of already-rendered HTML, so its entities
             // are encoded already — `strip_tags` only removes tag spans
@@ -1344,8 +1386,10 @@ fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
                 text = clean,
             ));
             search_from = abs_open + new_open.len() + rel_end + close.len();
+            advance(&mut next, &mut dirty, abs_open, delta, search_from);
         } else {
             search_from = content_start + rel_end + close.len();
+            advance(&mut next, &mut dirty, 0, 0, search_from);
         }
     }
     result
@@ -1365,8 +1409,14 @@ fn find_heading_open(hay: &str, tag: &str) -> Option<(usize, usize)> {
                 // Quote-aware: a raw-HTML heading can carry `>` inside an
                 // attribute value (`<h2 title="a > b">`), and cutting the
                 // tag there spliced the injected id into the attribute.
-                let end = end_of_open_tag(hay, start)?;
-                return Some((start, end - start));
+                match end_of_open_tag(hay, start) {
+                    Some(end) => return Some((start, end - start)),
+                    // Unterminated (an unbalanced quote swallows every
+                    // later `>`): skip this candidate rather than abandon
+                    // the level — propagating None here silently dropped
+                    // every well-formed same-level heading after it.
+                    None => from = after,
+                }
             }
             _ => from = after,
         }
@@ -2385,6 +2435,48 @@ mod tests {
         inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx);
         let first = nav.lines().next().unwrap_or_default();
         assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
+    }
+
+    #[test]
+    fn unbalanced_quote_does_not_swallow_later_headings() {
+        // An odd number of quotes made end_of_open_tag see every later `>`
+        // as quoted; propagating that None abandoned the LEVEL, so every
+        // well-formed same-level heading after the broken one silently
+        // lost its id and TOC entry.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h2 x=\">A</h2><h2>B</h2><h1>C</h1>",
+            &mut nav,
+            &mut idx,
+        );
+        assert!(out.contains("<h2 id=\"heading-1\">B</h2>"), "B lost its id: {out}");
+        assert!(nav.contains(">B</a>"), "B missing from TOC: {nav}");
+        assert!(nav.contains(">C</a>"), "{nav}");
+    }
+
+    #[test]
+    fn heading_scan_is_linear_not_quadratic_in_headings() {
+        // A level with no remaining matches used to rescan to
+        // end-of-document once per heading — ~25x on all-## notebooks.
+        // Time-free proxy: a large single-level document must complete
+        // well under the old quadratic budget. 2000 headings; the fixed
+        // scan does this in ~ms, the old one took ~700ms release /
+        // multi-second debug — a generous debug-mode ceiling still
+        // separates the two implementations.
+        let doc: String = (0..2000)
+            .map(|i| format!("<h2>Section {i}</h2><p>{}</p>", "x".repeat(400)))
+            .collect();
+        let mut nav = String::new();
+        let mut idx = 0;
+        let t = std::time::Instant::now();
+        inject_heading_ids(&doc, &mut nav, &mut idx);
+        assert_eq!(idx, 2000);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "heading scan took {:?} — quadratic tail rescans are back",
+            t.elapsed()
+        );
     }
 
     #[test]
