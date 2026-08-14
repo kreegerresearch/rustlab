@@ -125,7 +125,9 @@ impl Notebook {
 pub struct ServerState {
     /// Notebooks keyed by slug.
     pub notebooks: HashMap<String, Arc<Notebook>>,
-    /// Slugs in listing order (sorted by source path), for the index.
+    /// Slugs in listing order — frontmatter `order:` ascending, ties by
+    /// collection-relative path, unordered entries last (the same rule as
+    /// the static build; see `compare_notebook_order`). Drives the index.
     pub order: Vec<String>,
     /// Owns the tempdir that holds plot artefacts (`<slug>/<file>`).
     /// Dropping the state (= server shutdown) cleans it up.
@@ -141,6 +143,22 @@ pub struct ServerState {
     pub theme: &'static ThemeColors,
     /// Index-page heading (directory name, or the lone notebook's title).
     pub index_title: String,
+    /// Cross-notebook link resolution: normalized collection-root-relative
+    /// path (`"ch1/notes.md"`) → slug. Keyed by path, not stem — the walk
+    /// is recursive and same-stem files hold distinct `-N` slugs. Single-
+    /// file mode holds just that file, keyed by its bare filename.
+    pub link_slugs: HashMap<String, String>,
+    /// Rendered body of the collection root's `index.md`, shown on `/` —
+    /// matching the static build, which hoists it into `index.html`.
+    /// Empty when the collection has none. RwLock: an `index.md` edit
+    /// during watch refreshes it (the index page holds no WS socket, so
+    /// the next page load simply reads the new body).
+    pub index_body: tokio::sync::RwLock<String>,
+    /// Canonical path of the root `index.md`, when present. The watcher
+    /// routes its change events to an index-body refresh instead of a
+    /// notebook render (it has no slug — it is not a notebook). Its
+    /// *title* is read once at startup; a title edit needs a restart.
+    pub index_md_path: Option<PathBuf>,
     /// Render-request channel into the coordinator. Set once by
     /// `render_loop::spawn` after it creates the coordinator channel; the
     /// WS `widget_update` / `run_block` handlers send requests here
@@ -160,6 +178,26 @@ impl ServerState {
             self.order.first().and_then(|s| self.notebooks.get(s))
         } else {
             None
+        }
+    }
+
+    /// The [`crate::render::LinkMode`] for re-rendering the notebook at
+    /// `slug` — same resolution `build_state` used at startup, so a live
+    /// re-render cannot emit different hrefs than the first render.
+    pub fn link_mode_for(&self, slug: &str) -> crate::render::LinkMode {
+        let current_rel_dir = self
+            .link_slugs
+            .iter()
+            .find(|(_, s)| s.as_str() == slug)
+            .and_then(|(rel, _)| rel.rsplit_once('/'))
+            .map(|(dir, _)| dir.to_string())
+            .unwrap_or_default();
+        crate::render::LinkMode::Server {
+            slugs: self.link_slugs.clone(),
+            current_rel_dir,
+            // Single-file `/` redirects to the notebook itself — mapping
+            // index.md there would send the link in a circle.
+            index_at_root: !self.single,
         }
     }
 }
@@ -209,14 +247,16 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
     if let Some(nb) = state.sole() {
         return Redirect::temporary(&format!("/n/{}", nb.slug)).into_response();
     }
-    // Directory mode: generated index listing.
+    // Directory mode: generated index listing, with the root index.md's
+    // rendered body above it — same page the static build produces.
     let entries: Vec<(String, String)> = state
         .order
         .iter()
         .filter_map(|slug| state.notebooks.get(slug))
         .map(|nb| (nb.title.clone(), format!("n/{}", nb.slug)))
         .collect();
-    let html = crate::generate_index_html(&state.index_title, &entries, state.theme, "");
+    let body = state.index_body.read().await;
+    let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
     // Inject the WS client so a future "index refresh on add/remove"
     // has a socket to push over; harmless today (no slug → no connect).
     let html = ws::inject_ws_client(&html);
@@ -375,9 +415,12 @@ mod tests {
             order: vec!["nb".to_string()],
             plot_dir,
             editable: false,
+            link_slugs: HashMap::new(),
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
         })
     }
@@ -497,6 +540,9 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
         });
         let app = router(editable_state);

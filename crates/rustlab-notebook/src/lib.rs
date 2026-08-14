@@ -302,7 +302,8 @@ pub fn strip_render_artifacts(source: &str) -> String {
 /// are preserved.
 ///
 /// `input` may be a single file or a directory; directories are walked
-/// non-recursively for `.md` files (mirrors `cmd_render_dir`).
+/// recursively for `.md` files (`README.md` and hidden entries skipped),
+/// the same walk `cmd_render_dir` uses.
 ///
 /// When `output` is `None`, files are cleaned in place. When `output` is
 /// `Some(out)`:
@@ -491,6 +492,17 @@ pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let p = entry.path();
+            // Skip hidden entries at the walk level so every consumer
+            // (check/validate/clean/render/watch) agrees: `.git` and
+            // `.obsidian` are app state, and editor locks (`.#a.md`) are
+            // dangling symlinks that abort naive readers. `clean` used to
+            // descend into `.obsidian/` and rewrite files there.
+            let hidden = p
+                .file_name()
+                .map_or(false, |n| n.to_string_lossy().starts_with('.'));
+            if hidden {
+                continue;
+            }
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().map_or(false, |e| e == "md")
@@ -588,11 +600,17 @@ pub fn cmd_render_cached(
     format: Format,
     theme: &ThemeColors,
     cache: &mut cache::NotebookCache,
+    link: &render::LinkMode,
 ) -> CachedRenderSummary {
     let _cwd_guard = CwdGuard::new();
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
     let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+    // Resolve an explicit output path against the INVOKING cwd before the
+    // chdir below — a relative `-o out/x.html` used to silently land
+    // relative to the notebook's directory while the summary printed the
+    // cwd-relative path. (The defaulted output stays notebook-relative.)
+    let output = output.map(|o| std::path::absolute(&o).unwrap_or(o));
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -639,6 +657,7 @@ pub fn cmd_render_cached(
         &outcome.rendered,
         theme,
         None,
+        link,
         Some(&source),
         Some(&input),
     );
@@ -654,6 +673,9 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
     let canon_input = std::fs::canonicalize(&input).unwrap_or_else(|_| input.clone());
+    // Resolve an explicit output path against the INVOKING cwd before the
+    // chdir — see cmd_render_cached for the failure this prevents.
+    let output = output.map(|o| std::path::absolute(&o).unwrap_or(o));
     let source = match std::fs::read_to_string(&input) {
         Ok(s) => s,
         Err(e) => {
@@ -700,6 +722,7 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
         &rendered,
         theme,
         None,
+        &render::LinkMode::single_file(),
         Some(&source),
         Some(&input),
     );
@@ -795,31 +818,50 @@ pub fn cmd_render_dir(
         .map(|o| std::path::absolute(&o).unwrap_or(o))
         .unwrap_or_else(|| dir.clone());
 
-    let mut md_files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |ext| ext == "md"))
-            // README.md is project metadata for the directory itself, not a
-            // notebook. Skip it so it doesn't appear in the rendered index
-            // alongside real notebooks. (`index.md` is handled separately.)
-            .filter(|p| p.file_name().map_or(true, |n| n != "README.md"))
-            .collect(),
-        Err(e) => {
-            eprintln!("error: cannot read directory {}: {e}", dir.display());
-            std::process::exit(1);
-        }
-    };
-    md_files.sort();
+    if let Err(e) = std::fs::read_dir(&dir) {
+        eprintln!("error: cannot read directory {}: {e}", dir.display());
+        std::process::exit(1);
+    }
+    // Recursive, with the same listing rule as the watch server — the two
+    // walked different depths before, so `watch` served nested notebooks
+    // (`ch1/deep.md` at /n/deep, listed on /) that `render` never emitted.
+    // Nested notebooks render to mirrored output subdirectories.
+    //
+    // Never ingest our own output: an output dir nested inside the source
+    // tree (`render notebooks/ -o notebooks/vault`) combined with a format
+    // that writes .md (obsidian) re-listed run 1's output as run 2's
+    // sources — one new nesting level per run, unbounded. In-place renders
+    // (out_dir == dir) are exempt: there, output paths ARE source paths.
+    let out_exclude = std::fs::canonicalize(&out_dir).ok().filter(|o| *o != dir);
+    let md_files: Vec<PathBuf> = list_md_files_recursive(&dir)
+        .into_iter()
+        .filter(|p| match p.strip_prefix(&dir) {
+            Ok(rel) => is_listable_notebook(rel),
+            // Same fail-OPEN policy as the server's build_state: an
+            // absolute path fed to the underscore rule would match
+            // unrelated ancestors (`~/_work/…`) and silently hide the
+            // whole collection.
+            Err(_) => {
+                debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                true
+            }
+        })
+        .filter(|p| out_exclude.as_ref().map_or(true, |o| !p.starts_with(o)))
+        .collect();
 
-    // Split out `index.md` so it is not listed as a notebook entry.
-    let index_md_path = md_files
-        .iter()
-        .position(|p| p.file_name().map_or(false, |n| n == "index.md"))
-        .map(|i| md_files.remove(i));
+    // The root `index.md` is not a notebook entry: it becomes the index
+    // page's own body. (Nested `chN/index.md` is neither — see
+    // `is_listable_notebook`.)
+    let index_md_path = {
+        let p = dir.join("index.md");
+        p.is_file().then_some(p)
+    };
 
     if md_files.is_empty() && index_md_path.is_none() {
-        eprintln!("warning: no .md files found in {}", dir.display());
+        eprintln!(
+            "warning: no notebooks found in {} (README.md, index.md and _partials are not listable)",
+            dir.display()
+        );
         return;
     }
 
@@ -831,7 +873,13 @@ pub fn cmd_render_dir(
         md_path: PathBuf,
         out_file: PathBuf,
         title: String,
+        /// Output path relative to the collection root, `/`-joined
+        /// (`"ch1/foo.html"`) — index hrefs and nav targets.
         filename: String,
+        /// Source path relative to the collection root, `/`-joined
+        /// (`"ch1/foo.md"`) — the sort key and link-resolver key, byte-
+        /// identical to the server's so the two orders cannot disagree.
+        rel_md: String,
         order: Option<i64>,
         source: String,
     }
@@ -847,59 +895,93 @@ pub fn cmd_render_dir(
         let source = strip_render_artifacts(&source);
         let (fm, _) = parse::extract_frontmatter(&source);
         let title = extract_title(&source, md_path);
-        let stem = md_path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let filename = format!("{stem}.{ext}");
+        let rel_md = md_path
+            .strip_prefix(&dir)
+            .unwrap_or(md_path)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let filename = format!("{}.{ext}", rel_md.strip_suffix(".md").unwrap_or(&rel_md));
         let out_file = out_dir.join(&filename);
         pending.push(Pending {
             md_path: md_path.clone(),
             out_file,
             title,
             filename,
+            rel_md,
             order: fm.order,
             source,
         });
     }
 
-    // Sort the same way the index used to: order asc (None last), ties by filename.
-    pending.sort_by(|a, b| match (a.order, b.order) {
-        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.filename.cmp(&b.filename)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.filename.cmp(&b.filename),
-    });
+    pending.sort_by(|a, b| compare_notebook_order((a.order, &a.rel_md), (b.order, &b.rel_md)));
 
     let emit_nav = matches!(format, Format::Html);
+
+    // Link resolution for directory renders: only targets this build
+    // actually emits are rewritten (keyed by collection-relative path, so
+    // `../ch2/notes.md` from a nested notebook resolves) — to `.html` for
+    // HTML output, `.pdf` for LaTeX/PDF output. `index.md` is a valid
+    // target only in HTML mode, which generates `index.html`
+    // unconditionally; no `index.pdf` exists. Partials and dangling
+    // targets are left as written. Markdown output ignores link mode
+    // (Obsidian emission has its own wikilink path).
+    let known: Option<std::collections::HashSet<String>> = {
+        let mut set: std::collections::HashSet<String> =
+            pending.iter().map(|p| p.rel_md.clone()).collect();
+        if emit_nav {
+            set.insert("index.md".to_string());
+        }
+        Some(set)
+    };
+    // Root-level link mode, used for the index page's own body.
+    let link_mode = render::LinkMode::Static {
+        known: known.clone(),
+        current_rel_dir: String::new(),
+    };
+
     let n = pending.len();
     for i in 0..n {
+        // Nav and link targets are collection-root-relative; this page may
+        // sit in a subdirectory, so hrefs to them climb out of it first.
+        let page_dir = rel_dir_of(&pending[i].rel_md);
+        let href_to = |target: &str| href_between(&page_dir, target);
         let nav = if emit_nav {
             let prev = (i > 0).then(|| {
                 (
                     pending[i - 1].title.clone(),
-                    pending[i - 1].filename.clone(),
+                    href_to(&pending[i - 1].filename),
                 )
             });
             let next = (i + 1 < n).then(|| {
                 (
                     pending[i + 1].title.clone(),
-                    pending[i + 1].filename.clone(),
+                    href_to(&pending[i + 1].filename),
                 )
             });
             Some(NotebookNav {
-                index_href: Some("index.html".to_string()),
+                index_href: Some(href_to("index.html")),
                 prev,
                 next,
             })
         } else {
             None
         };
+        let page_link_mode = render::LinkMode::Static {
+            known: known.clone(),
+            current_rel_dir: page_dir,
+        };
 
         let p = &pending[i];
-        let _ = std::env::set_current_dir(&dir);
         let host_dir = p.md_path.parent().unwrap_or(&dir);
+        // Execute from the notebook's OWN directory — matching cmd_render
+        // and the watch server — so `run`/`load`/`save` relative paths
+        // resolve against the notebook. Chdir'ing to the collection root
+        // made a nested notebook read/write different files in `render`
+        // than in `watch`: the same notebook errored in the build and
+        // succeeded in the server.
+        let _ = std::env::set_current_dir(host_dir);
         let expanded = embed::expand_embeds(&p.source, host_dir, &dir);
         let blocks = parse::parse_notebook(&expanded);
         let rendered = execute::execute_notebook(&blocks);
@@ -910,6 +992,7 @@ pub fn cmd_render_dir(
             &rendered,
             theme,
             nav.as_ref(),
+            &page_link_mode,
             Some(&p.source),
             Some(&p.md_path),
         );
@@ -918,10 +1001,10 @@ pub fn cmd_render_dir(
 
     if matches!(format, Format::Html) {
         // Resolve the index title: CLI flag > index.md title > dir name.
-        let (index_body_html, index_md_title) = match index_md_path.as_ref() {
-            Some(p) => read_and_render_index_md(p, &dir, theme),
-            None => (String::new(), None),
-        };
+        let (index_body_html, index_md_title) = index_md_path
+            .as_ref()
+            .and_then(|p| read_and_render_index_md(p, &dir, theme, &link_mode))
+            .unwrap_or((String::new(), None));
         let resolved_title = index_title.clone().or(index_md_title).unwrap_or_else(|| {
             dir.file_name()
                 .unwrap_or_default()
@@ -973,6 +1056,8 @@ pub fn cmd_render_dir(
                     &rendered,
                     theme,
                     None,
+                    // Markdown-format arm only — link mode is HTML-only.
+                    &render::LinkMode::single_file(),
                     Some(&source),
                     Some(src_index),
                 );
@@ -1011,14 +1096,18 @@ fn generate_obsidian_index_md(title: &str, entries: &[(String, String)]) -> Stri
     let mut out = String::new();
     out.push_str(&format!("# {title}\n\n"));
     for (entry_title, filename) in entries {
-        let stem = std::path::Path::new(filename)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
+        // Wikilink by the vault-relative stem (`ch1/foo`), not the bare
+        // basename — the walk is recursive and same-named notes in
+        // different folders would otherwise be ambiguous.
+        let stem = filename
+            .rsplit_once('.')
+            .map(|(s, _)| s.to_string())
             .unwrap_or_else(|| filename.clone());
-        if entry_title == &stem {
+        let label = entry_title.as_str();
+        if label == stem {
             out.push_str(&format!("- [[{stem}]]\n"));
         } else {
-            out.push_str(&format!("- [[{stem}|{entry_title}]]\n"));
+            out.push_str(&format!("- [[{stem}|{label}]]\n"));
         }
     }
     out.push('\n');
@@ -1030,16 +1119,20 @@ fn generate_obsidian_index_md(title: &str, entries: &[(String, String)]) -> Stri
 /// rendered as plain markdown (not executed) to keep the landing page
 /// lightweight — put executable content in regular notebooks and link to
 /// them from `index.md`.
-fn read_and_render_index_md(
+/// `None` means the file could not be READ (transient during atomic
+/// saves, permissions) — callers must not mistake that for an empty
+/// index body and blank a previously-good page.
+pub(crate) fn read_and_render_index_md(
     path: &PathBuf,
     dir: &PathBuf,
     _theme: &ThemeColors,
-) -> (String, Option<String>) {
+    link: &render::LinkMode,
+) -> Option<(String, Option<String>)> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("warning: cannot read {}: {e}", path.display());
-            return (String::new(), None);
+            return None;
         }
     };
     let title = extract_title(&source, path);
@@ -1054,10 +1147,13 @@ fn read_and_render_index_md(
     // Demote single-tilde `~word~` spans to literal text, same as the
     // notebook HTML pipeline (the index page has no KaTeX, so no math
     // protection is needed here).
-    let events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    let mut events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    // The index body links to the notebooks it introduces — resolve its
+    // `.md` references exactly like any notebook page's.
+    render::rewrite_link_events(&mut events, link);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
-    (html, Some(title))
+    Some((html, Some(title)))
 }
 
 fn strip_leading_h1(src: &str) -> &str {
@@ -1142,6 +1238,7 @@ fn render_output(
     rendered: &[execute::Rendered],
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
+    link: &render::LinkMode,
     source_md: Option<&str>,
     input: Option<&Path>,
 ) {
@@ -1149,7 +1246,7 @@ fn render_output(
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
             let html =
-                render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav);
+                render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
             write_output(out_path, html.as_bytes());
         }
         Format::Markdown { obsidian } => {
@@ -1194,6 +1291,15 @@ fn render_output(
             // a "do not edit directly" warning is misleading — the user
             // edits this file by design. Two-dir renders still emit it
             // so committed gallery output keeps the provenance line.
+            // Wikilink emission needs the notebook's collection-relative
+            // dir to compute vault-relative targets; the Static link mode
+            // already carries it (Server mode never reaches this arm).
+            let current_rel_dir = match link {
+                render::LinkMode::Static {
+                    current_rel_dir, ..
+                } => current_rel_dir.as_str(),
+                _ => "",
+            };
             let body = render_markdown::render_markdown(
                 title,
                 rendered,
@@ -1203,6 +1309,7 @@ fn render_output(
                 iframe_href.as_deref(),
                 link_style,
                 !in_place,
+                current_rel_dir,
             );
             let final_md = match obsidian {
                 Some(_) => {
@@ -1215,7 +1322,8 @@ fn render_output(
         }
         Format::Latex => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
-            let tex = render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme);
+            let tex =
+                render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme, link);
             write_output(out_path, tex.as_bytes());
         }
         Format::Pdf => {
@@ -1237,6 +1345,7 @@ fn render_output(
                 &plot_dir,
                 "plots/notebook",
                 theme,
+                link,
             );
             write_output(&tex_path, tex.as_bytes());
             compile_pdf(&tex_path, out_path);
@@ -1713,10 +1822,242 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Whether a `.md` file should appear in a notebook *listing* — an index page
+/// or the dev server's sidebar — as a browsable notebook in its own right.
+///
+/// Deliberately narrower than "is a notebook we should read". `check` and
+/// `validate` still lint everything, because a partial is real source that
+/// gets transcluded and can be just as broken.
+///
+/// - `README.md` is metadata for the directory itself.
+/// - `index.md` becomes the index page's own body, not an entry on it.
+/// - `_name.md`, or anything under a `_dir/`, is a partial meant to be
+///   transcluded. The embed expander reads it straight off disk, so hiding it
+///   from the listing costs nothing. Without the convention, `_setup.md`
+///   listed itself as a peer of real notebooks, titled "Shared Setup
+///   (transcluded)".
+/// - Dotfiles (`.#lesson.md` editor locks, `.obsidian/` app dirs) are
+///   hidden-by-convention and often unreadable — an Emacs lock is a
+///   dangling symlink that used to abort `watch` startup outright.
+///
+/// Shared by the static build and the server so the two cannot disagree about
+/// what a collection contains — the same trap the sort order fell into.
+///
+/// `rel` must be RELATIVE to the collection root. The underscore rule checks
+/// every component (the server walks recursively, so `_shared/setup.md` is a
+/// partial too), and an absolute path would wrongly match any ancestor
+/// directory that happens to start with `_`.
+pub fn is_listable_notebook(rel: &Path) -> bool {
+    if rel.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        s.starts_with('_') || s.starts_with('.')
+    }) {
+        return false;
+    }
+    match rel.file_name().map(|n| n.to_string_lossy().into_owned()) {
+        Some(name) => name != "README.md" && name != "index.md",
+        None => false,
+    }
+}
+
+/// Listing order for a notebook collection: explicit frontmatter `order:`
+/// first (ascending, ties broken by filename), then unordered notebooks by
+/// filename.
+///
+/// Shared by the static directory render and the dev server. They used to
+/// sort independently — the server ignored `order:` entirely — so `watch`
+/// could present a different lesson sequence, and different prev/next links,
+/// than the built output. That is the worst place for the two to disagree,
+/// because the built output is what ships and the served one is what gets
+/// proof-read.
+/// The directory part of a `/`-joined collection-relative path
+/// (`"ch1/notes.md"` → `"ch1"`, `"notes.md"` → `""`).
+pub(crate) fn rel_dir_of(rel: &str) -> String {
+    rel.rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
+}
+
+/// Href from a page in `from_rel_dir` (collection-relative, `""` at the
+/// root) to `target_rel` (collection-root-relative): climb out of the
+/// page's directory, then descend the target path.
+pub(crate) fn href_between(from_rel_dir: &str, target_rel: &str) -> String {
+    let ups = if from_rel_dir.is_empty() {
+        0
+    } else {
+        from_rel_dir.split('/').count()
+    };
+    format!("{}{}", "../".repeat(ups), target_rel)
+}
+
+pub fn compare_notebook_order(
+    a: (Option<i64>, &str),
+    b: (Option<i64>, &str),
+) -> std::cmp::Ordering {
+    match (a.0, b.0) {
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.1.cmp(b.1)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.1.cmp(b.1),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rustlab_plot::Theme;
+
+    // ── shared listing rules (static build + watch server) ───────────
+
+    #[test]
+    fn compare_notebook_order_puts_ordered_before_unordered() {
+        // The clause most likely to be flipped later: ANY explicit
+        // `order:` sorts before every entry without one, regardless of
+        // name. Ties break by name; unordered sort among themselves by
+        // name.
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_notebook_order((Some(99), "zz.md"), (None, "aa.md")), Less);
+        assert_eq!(compare_notebook_order((None, "aa.md"), (Some(99), "zz.md")), Greater);
+        assert_eq!(compare_notebook_order((Some(1), "b.md"), (Some(1), "a.md")), Greater);
+        assert_eq!(compare_notebook_order((Some(1), "a.md"), (Some(2), "z.md")), Less);
+        assert_eq!(compare_notebook_order((None, "a.md"), (None, "b.md")), Less);
+    }
+
+    #[test]
+    fn is_listable_notebook_component_rules() {
+        use std::path::Path;
+        assert!(is_listable_notebook(Path::new("lesson.md")));
+        assert!(is_listable_notebook(Path::new("ch1/lesson.md")));
+        // Special names, at any depth of the *filename* position.
+        assert!(!is_listable_notebook(Path::new("README.md")));
+        assert!(!is_listable_notebook(Path::new("index.md")));
+        assert!(!is_listable_notebook(Path::new("ch1/index.md")));
+        // Partials: the underscore rule checks EVERY component — the
+        // server walk is recursive, so `_shared/setup.md` is a partial
+        // even though its filename has no underscore.
+        assert!(!is_listable_notebook(Path::new("_setup.md")));
+        assert!(!is_listable_notebook(Path::new("_shared/setup.md")));
+        assert!(!is_listable_notebook(Path::new("ch1/_setup.md")));
+        // Dotfiles: editor locks (`.#a.md`) and hidden dirs.
+        assert!(!is_listable_notebook(Path::new(".#lesson.md")));
+        assert!(!is_listable_notebook(Path::new(".obsidian/note.md")));
+        // The contract: `rel` must be RELATIVE. An absolute path would
+        // wrongly match `_`-prefixed ancestors — callers strip first.
+        assert!(!is_listable_notebook(Path::new("/tmp/_work/coll/lesson.md")));
+    }
+
+    #[test]
+    fn href_between_climbs_out_of_nested_directories() {
+        // Sole source of nav hrefs for every nested page; all outputs are
+        // relative (no leading `/`) so file:// browsing works.
+        assert_eq!(href_between("", "a.html"), "a.html");
+        assert_eq!(href_between("", "index.html"), "index.html");
+        assert_eq!(href_between("ch1", "index.html"), "../index.html");
+        assert_eq!(href_between("ch1", "ch2/x.html"), "../ch2/x.html");
+        assert_eq!(href_between("a/b", "x.html"), "../../x.html");
+        assert_eq!(href_between("a/b", "a/b/y.html"), "../../a/b/y.html");
+        assert!(!href_between("ch1", "x.html").starts_with('/'));
+        // rel_dir_of round-trip.
+        assert_eq!(rel_dir_of("ch1/notes.md"), "ch1");
+        assert_eq!(rel_dir_of("notes.md"), "");
+        assert_eq!(rel_dir_of("a/b/c.md"), "a/b");
+    }
+
+    #[test]
+    fn recursive_walk_skips_hidden_entries() {
+        // Editor locks (`.#a.md`, dangling symlinks) and app dirs
+        // (`.git`, `.obsidian`) must be invisible to every consumer —
+        // `clean` used to descend into `.obsidian/` and rewrite files.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".obsidian")).unwrap();
+        std::fs::write(dir.path().join(".obsidian").join("note.md"), "x").unwrap();
+        std::fs::write(dir.path().join(".hidden.md"), "x").unwrap();
+        std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
+        let found = list_md_files_recursive(dir.path());
+        assert_eq!(found.len(), 1, "hidden entries leaked: {found:?}");
+        assert!(found[0].ends_with("real.md"));
+    }
+
+    #[test]
+    fn dir_markdown_render_leaves_md_links_untouched() {
+        // The format matrix's unpinned cell: plain -f markdown output is
+        // GitHub-facing source — body links must stay .md in every file.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(
+            dir.path().join("ch1").join("a.md"),
+            "# A\n\n[root](../root.md)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("root.md"), "# R\n\n[a](ch1/a.md)\n").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            dir.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Markdown { obsidian: None },
+            Theme::Dark.colors(),
+            None,
+        );
+        let a = std::fs::read_to_string(out.path().join("ch1/a.md")).unwrap();
+        let r = std::fs::read_to_string(out.path().join("root.md")).unwrap();
+        assert!(a.contains("[root](../root.md)"), "link rewritten: {a}");
+        assert!(r.contains("[a](ch1/a.md)"), "link rewritten: {r}");
+        assert!(!a.contains(".html"), "{a}");
+    }
+
+    #[test]
+    fn recursive_render_in_place_is_idempotent() {
+        // out_dir == src_dir with the recursive walk: run 1's .html output
+        // must not perturb run 2's listing or bytes.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("ch1").join("a.md"), "# A\n\nprose\n").unwrap();
+        std::fs::write(dir.path().join("root.md"), "# R\n\nprose\n").unwrap();
+        let run = || {
+            cmd_render_dir(
+                dir.path().to_path_buf(),
+                None,
+                Format::Html,
+                Theme::Dark.colors(),
+                None,
+            );
+            let mut hashes = Vec::new();
+            for f in ["ch1/a.html", "root.html", "index.html"] {
+                hashes.push(hash_bytes(&std::fs::read(dir.path().join(f)).unwrap()));
+            }
+            hashes
+        };
+        let first = run();
+        let second = run();
+        assert_eq!(first, second, "in-place re-render is not idempotent");
+    }
+
+    #[test]
+    fn cross_notebook_fragment_needs_an_explicit_anchor() {
+        // Documents current behaviour (round-2 finding, deferred design
+        // gap): a fragment to a PLAIN heading survives resolution but has
+        // no matching id on the target page — generated ids are
+        // heading-N. Only explicit `{#anchor}` headings are stable
+        // targets. See dev/requests for the slugification proposal.
+        let blocks = vec![execute::Rendered::Markdown(
+            "## Section Two\n".to_string(),
+        )];
+        let html = render::render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            Theme::Dark.colors(),
+            None,
+            &render::LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("id=\"section-two\""),
+            "if heading ids are now slugified, update the fragment docs and \
+             delete this pin"
+        );
+        assert!(html.contains("id=\"heading-1\""));
+    }
 
     // ── guard_markdown_overwrite ────────────────────────────────────
 

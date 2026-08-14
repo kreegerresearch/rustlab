@@ -210,12 +210,12 @@ Behaviour:
   suffix). Passing a directory *with* `--obsidian`/`--output` still
   selects the re-render-on-save mode instead.
 - **Directory pages get the same navigation as `render`.** In
-  directory mode each served page drops the sidebar for a sticky
-  `← Index / <Page Title>` breadcrumb and a `Previous · Index · Next`
-  footer wired to the adjacent notebooks (the index lives at `/`,
-  siblings at `/n/<slug>`). A single-file `watch` keeps the classic
-  sidebar + TOC layout — there's no sibling set to navigate. (See
-  [Page navigation](#page-navigation).)
+  directory mode each served page gets a topbar carrying
+  `← Previous · Index · Next →` plus the page title, and a matching
+  footer bar, wired to the adjacent notebooks (the index lives at `/`,
+  siblings at `/n/<slug>`). The in-page TOC sidebar is present either
+  way; a single-file `watch` shows the same chrome with nothing to page
+  to. (See [Page navigation](#page-navigation).)
 - **Relative `run`/`load` paths resolve against the notebook's own
   directory**, not wherever you launched the server — so
   `run setup.rlab` finds the sibling next to the notebook, matching
@@ -1268,8 +1268,18 @@ rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
 
 This produces one output file per `.md` file plus an `index.html` linking
-to all notebooks (HTML format only). Each notebook gets its own independent
-evaluator — variables do not leak between notebooks.
+to all notebooks (HTML format only). The walk is **recursive**, with the
+same listing rule as `watch`: nested notebooks (`ch1/deep.md`) render to
+mirrored output subdirectories (`ch1/deep.html`) and appear on the index;
+`README.md`, `index.md`, and partials (`_name.md`, or anything under a
+`_dir/`) are read where needed but never rendered as pages. Each notebook
+gets its own independent evaluator — variables do not leak between
+notebooks.
+
+Partials are meant to be transcluded via embeds; because they are not
+rendered, a body link to `_setup.md` is left as written rather than
+pointed at a page that does not exist. `check`/`validate` still lint
+partials — they are real source.
 
 ### Index page
 
@@ -1285,31 +1295,65 @@ wins):
 3. Parent directory name — fallback when neither of the above is set.
 
 Entries are sorted by frontmatter `order:` ascending (see Frontmatter
-above), with filename as a tiebreaker.
+above), with the collection-relative path as a tiebreaker; entries
+without `order:` sort after those that have one. `watch` uses the same
+rule, so the served listing and the built one cannot disagree.
 
 ### Cross-notebook links
 
-Links to other `.md` files are automatically rewritten to `.html` in
-the rendered output:
+Links to other `.md` files are automatically rewritten to match how the
+output is published:
 
 ```markdown
 See [Filter Design](filter_design.md) for details.
 ```
 
-becomes `<a href="filter_design.html">` in the HTML output.
+becomes `<a href="filter_design.html">` in a static render, and
+`<a href="/n/filter_design">` when served by `watch` — the server routes
+notebooks at `/n/<slug>`, so a `.html` href would 404 there. Fragments
+survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
+`/n/filter_design#anchor`), titled and reference-style links resolve the
+same way, and `[[wikilinks]]` go through the same resolver.
+
+PDF and LaTeX output resolves the same links to the sibling `.pdf`
+files a directory PDF build emits (`filter_design.md` →
+`\href{filter_design.pdf}`), dropping `#anchor` fragments — PDFs have
+no named destinations for markdown headings.
+
+The rewrite applies only to real links: code spans and fenced blocks are
+untouched (`` `[x](a.md)` `` renders literally), as are external URLs
+that happen to end in `.md`, absolute paths, and images. `index.md`
+resolves to `index.html` statically and to `/` under `watch` (there is
+no `index.pdf`, so PDF output leaves it as written).
+
+In a directory render, only links to notebooks the build actually emits
+are rewritten. A link to a partial (`_setup.md`), or to a target that
+does not exist, is left exactly as written — a visibly broken `.md` link
+is easier to notice and fix than a generated `.html` one that 404s while
+looking intentional.
 
 ### Page navigation
 
-When rendering a directory, each notebook page drops the sidebar and gets
-two lightweight navigation aids instead:
+Every notebook page carries two navigations, which answer different
+questions and are always both present:
 
-- A **sticky breadcrumb** at the top: `← Index / <Page Title>`.
-- A **Previous · Index · Next** bar at the bottom of the page, wired
-  to the adjacent notebooks in sort order. The first notebook has no
-  "Previous" link; the last has no "Next" link.
+- The **sidebar** moves *within* a notebook: an in-page TOC built from the
+  H1/H2/H3 headings, in document order. Omitted only when a notebook has
+  no headings at all, in which case the content column centres in the
+  full viewport instead of the space beside the sidebar.
+- The **topbar** moves *between* notebooks: `← Previous`, `Index`, and
+  `Next →` alongside the current page title. A **Previous · Index · Next**
+  bar is also appended at the foot of the page, where it is useful after a
+  long read.
 
-Single-file renders (`rustlab-notebook render file.md`) keep the classic
-sidebar layout with an in-page TOC — there's no sibling set to navigate.
+Single-file renders (`rustlab-notebook render file.md`) show the same
+chrome, minus the cross-notebook links and the footer bar — there's no
+sibling set to navigate. The page layout is otherwise identical to a
+collection page.
+
+Headings written with an explicit anchor (`## Title {#anchor}`) keep that
+id and are linked from the TOC by it, so cross-notebook deep links stay
+stable.
 
 ## Template Interpolation
 

@@ -54,6 +54,9 @@ fn single_state_with(
         single: true,
         theme: Theme::Dark.colors(),
         index_title: slug.to_string(),
+        link_slugs: HashMap::new(),
+        index_body: tokio::sync::RwLock::new(String::new()),
+        index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
     })
 }
@@ -130,7 +133,7 @@ async fn ws_receives_full_envelope_on_file_save() {
         let blocks = rustlab_notebook::parse::parse_notebook(&expanded);
         let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
         let html =
-            rustlab_notebook::render::render_html(&title, &rendered, &plot, "/plots", theme, None);
+            rustlab_notebook::render::render_html(&title, &rendered, &plot, "/plots", theme, None, &rustlab_notebook::render::LinkMode::single_file());
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
     };
@@ -226,6 +229,7 @@ async fn ws_receives_partial_envelope_when_one_of_many_blocks_changes() {
             "/plots",
             theme,
             None,
+            &rustlab_notebook::render::LinkMode::single_file(),
         );
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
@@ -348,6 +352,7 @@ async fn ws_receives_reconcile_envelope_when_blocks_are_inserted() {
             "/plots",
             theme,
             None,
+            &rustlab_notebook::render::LinkMode::single_file(),
         );
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
@@ -450,6 +455,7 @@ async fn ws_widget_update_triggers_rerender_with_new_value() {
             "/plots",
             theme,
             None,
+            &rustlab_notebook::render::LinkMode::single_file(),
         );
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
@@ -550,6 +556,7 @@ async fn ws_option_update_selects_choice_and_drives_output() {
         let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
         let html = rustlab_notebook::render::render_html(
             &title, &rendered, plot_dir.path(), "/plots", theme, None,
+            &rustlab_notebook::render::LinkMode::single_file(),
         );
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)
@@ -668,6 +675,7 @@ async fn ws_run_block_forces_reexecution_of_unchanged_block() {
             "/plots",
             theme,
             None,
+            &rustlab_notebook::render::LinkMode::single_file(),
         );
         let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
         rustlab_notebook::server::ws::inject_ws_client(&html)

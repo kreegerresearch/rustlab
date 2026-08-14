@@ -18,6 +18,7 @@ pub fn render_latex(
     plot_dir: &Path,
     plot_href_prefix: &str,
     theme: &ThemeColors,
+    link: &crate::render::LinkMode,
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0;
@@ -28,7 +29,7 @@ pub fn render_latex(
     for block in blocks {
         match block {
             Rendered::Markdown(md) => {
-                body.push_str(&markdown_to_latex(md));
+                body.push_str(&markdown_to_latex(md, link));
             }
             Rendered::Code {
                 source,
@@ -150,7 +151,7 @@ pub fn render_latex(
             } => {
                 let label = title.as_deref().unwrap_or(kind.default_label());
                 body.push_str(&format!("\\begin{{quote}}\n\\textbf{{{label}:}} "));
-                body.push_str(&markdown_to_latex(content));
+                body.push_str(&markdown_to_latex(content, link));
                 body.push_str("\\end{quote}\n\n");
             }
             Rendered::ExerciseStart { number } => {
@@ -337,7 +338,13 @@ pub fn render_latex(
 }
 
 /// Convert a markdown string to LaTeX using pulldown-cmark events.
-fn markdown_to_latex(md: &str) -> String {
+///
+/// Cross-notebook `.md` links resolve through the shared [`LinkMode`]
+/// contract, but to sibling `.pdf` artifacts (the files a directory PDF
+/// build emits) and with fragments dropped — the generated PDFs carry no
+/// named destinations for markdown anchors. `\href{a.md}` pointed a PDF
+/// reader at the raw source file, which ships nowhere.
+fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     let md = transform_wikilinks(md);
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
@@ -403,7 +410,9 @@ fn markdown_to_latex(md: &str) -> String {
                     }
                 }
                 Tag::Link { dest_url, .. } => {
-                    out.push_str(&format!("\\href{{{}}}", dest_url));
+                    let dest = crate::render::rewrite_link_dest_pdf(&dest_url, link)
+                        .unwrap_or_else(|| dest_url.to_string());
+                    out.push_str(&format!("\\href{{{}}}", escape_href_dest(&dest)));
                     out.push('{');
                 }
                 _ => {}
@@ -470,6 +479,32 @@ fn markdown_to_latex(md: &str) -> String {
         }
     }
 
+    out
+}
+
+/// Escape an `\href` DESTINATION.
+///
+/// hyperref tolerates most URL characters, but `#` and `%` are fatal
+/// whenever the `\href` expands inside an already-tokenized macro argument
+/// — `\section{}`, `\textbf{}`, `\emph{}` — which is exactly where markdown
+/// puts links ("see **[setup](#setup)**", a link in a heading). A same-page
+/// anchor or any external URL with a fragment or percent-escape then kills
+/// the whole PDF build. `{`/`}` would unbalance the argument; `\` starts a
+/// control sequence. Everything else (`_ & ~` spaces) compiles fine in all
+/// contexts, verified against tectonic — do not over-escape, hyperref
+/// treats the argument as a URL, not text.
+fn escape_href_dest(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '#' => out.push_str("\\#"),
+            '%' => out.push_str("\\%"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
+            '\\' => out.push_str("\\textbackslash{}"),
+            _ => out.push(ch),
+        }
+    }
     out
 }
 
@@ -584,38 +619,38 @@ mod tests {
 
     #[test]
     fn md_to_latex_heading_h1() {
-        let out = markdown_to_latex("# Title");
+        let out = markdown_to_latex("# Title", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\section{Title}"));
     }
 
     #[test]
     fn md_to_latex_heading_h2() {
-        let out = markdown_to_latex("## Sub");
+        let out = markdown_to_latex("## Sub", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\subsection{Sub}"));
     }
 
     #[test]
     fn md_to_latex_heading_h3() {
-        let out = markdown_to_latex("### Sub Sub");
+        let out = markdown_to_latex("### Sub Sub", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\subsubsection{Sub Sub}"));
     }
 
     #[test]
     fn md_to_latex_emphasis() {
-        let out = markdown_to_latex("*italic*");
+        let out = markdown_to_latex("*italic*", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\emph{italic}"));
     }
 
     #[test]
     fn md_to_latex_strong() {
-        let out = markdown_to_latex("**bold**");
+        let out = markdown_to_latex("**bold**", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\textbf{bold}"));
     }
 
     #[test]
     fn md_to_latex_strikethrough() {
         // Audit S3: double-tilde strikethrough must survive as \sout{…}.
-        let out = markdown_to_latex("this is ~~struck~~ text");
+        let out = markdown_to_latex("this is ~~struck~~ text", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\sout{struck}"), "{out:?}");
     }
 
@@ -623,7 +658,7 @@ mod tests {
     fn md_to_latex_single_tilde_stays_literal() {
         // Audit S1 (LaTeX target): `~single~` is prose, and the tildes
         // must not vanish — they come out escaped.
-        let out = markdown_to_latex("a ~single~ tilde");
+        let out = markdown_to_latex("a ~single~ tilde", &crate::render::LinkMode::single_file());
         assert!(!out.contains("\\sout"), "{out:?}");
         assert!(
             out.contains("\\textasciitilde{}single\\textasciitilde{}"),
@@ -633,20 +668,20 @@ mod tests {
 
     #[test]
     fn md_to_latex_inline_code() {
-        let out = markdown_to_latex("`x = 1`");
+        let out = markdown_to_latex("`x = 1`", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\texttt{"));
     }
 
     #[test]
     fn md_to_latex_code_block() {
-        let out = markdown_to_latex("```\ncode here\n```");
+        let out = markdown_to_latex("```\ncode here\n```", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\begin{verbatim}"));
         assert!(out.contains("\\end{verbatim}"));
     }
 
     #[test]
     fn md_to_latex_unordered_list() {
-        let out = markdown_to_latex("- item one\n- item two");
+        let out = markdown_to_latex("- item one\n- item two", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\begin{itemize}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{itemize}"));
@@ -654,7 +689,7 @@ mod tests {
 
     #[test]
     fn md_to_latex_ordered_list() {
-        let out = markdown_to_latex("1. first\n2. second");
+        let out = markdown_to_latex("1. first\n2. second", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\begin{enumerate}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{enumerate}"));
@@ -662,22 +697,95 @@ mod tests {
 
     #[test]
     fn md_to_latex_blockquote() {
-        let out = markdown_to_latex("> quoted text");
+        let out = markdown_to_latex("> quoted text", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\begin{quote}"));
         assert!(out.contains("\\end{quote}"));
     }
 
     #[test]
     fn md_to_latex_link() {
-        let out = markdown_to_latex("[click](https://example.com)");
+        let out = markdown_to_latex("[click](https://example.com)", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
     }
 
     #[test]
+    fn md_to_latex_escapes_href_destinations() {
+        // Unescaped `#`/`%` in an \href destination is a fatal TeX error
+        // whenever the link sits inside \section{}, \textbf{} or \emph{} —
+        // i.e. a same-page anchor in a heading or bold text, ordinary
+        // markdown. Compile-verified against tectonic in all three
+        // contexts.
+        let single = crate::render::LinkMode::single_file();
+        let out = markdown_to_latex("## Jump to [Setup](#setup)", &single);
+        assert!(out.contains("\\href{\\#setup}"), "unescaped # in heading: {out}");
+        let out = markdown_to_latex("**[deal](https://ex.com/50%off)**", &single);
+        assert!(out.contains("\\href{https://ex.com/50\\%off}"), "unescaped %: {out}");
+        let out = markdown_to_latex("[frag](https://ex.com/p#sec)", &single);
+        assert!(out.contains("\\href{https://ex.com/p\\#sec}"), "{out}");
+        // Underscores are fine everywhere — do not over-escape.
+        let out = markdown_to_latex("[n](my_notes.md)", &single);
+        assert!(out.contains("\\href{my_notes.pdf}"), "over-escaped _: {out}");
+    }
+
+    #[test]
+    fn md_to_latex_resolves_notebook_links_to_pdf_siblings() {
+        // `\href{a.md}` pointed a PDF reader at the raw source file, which
+        // ships nowhere. Cross-notebook links target the sibling `.pdf`
+        // artifacts a directory PDF build emits, with fragments dropped —
+        // the generated PDFs carry no named destinations for anchors.
+        let single = crate::render::LinkMode::single_file();
+        let out = markdown_to_latex("[next](02-filter.md)", &single);
+        assert!(out.contains("\\href{02-filter.pdf}"), "{out}");
+        let out = markdown_to_latex("[setup](02-filter.md#setup)", &single);
+        assert!(
+            out.contains("\\href{02-filter.pdf}") && !out.contains("#setup}"),
+            "fragment must be dropped for PDF targets: {out}"
+        );
+        // Titled and reference-style links resolve too (parser-level).
+        let out = markdown_to_latex("[x](02-filter.md \"Filter\")", &single);
+        assert!(out.contains("\\href{02-filter.pdf}"), "{out}");
+        let out = markdown_to_latex("See [x][r].\n\n[r]: 02-filter.md\n", &single);
+        assert!(out.contains("\\href{02-filter.pdf}"), "{out}");
+        // Wikilinks route through the same seam.
+        let out = markdown_to_latex("see [[02-filter]]", &single);
+        assert!(out.contains("\\href{02-filter.pdf}"), "{out}");
+    }
+
+    #[test]
+    fn md_to_latex_leaves_external_and_unemitted_targets_alone() {
+        // External URLs ending .md must not be corrupted, and in a
+        // directory build only emitted siblings rewrite — partials and
+        // dangling targets are left exactly as written. index.md is NOT a
+        // valid PDF target (no index.pdf is generated).
+        let single = crate::render::LinkMode::single_file();
+        let out = markdown_to_latex("[readme](https://example.com/README.md)", &single);
+        assert!(out.contains("\\href{https://example.com/README.md}"), "{out}");
+        // Inline code with a link is verbatim, not a link.
+        let out = markdown_to_latex("code `[x](a.md)` here", &single);
+        assert!(!out.contains("\\href"), "code span became a link: {out}");
+
+        let known: std::collections::HashSet<String> =
+            ["01-intro.md".to_string()].into_iter().collect();
+        let dir_mode = crate::render::LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: String::new(),
+        };
+        let out = markdown_to_latex("[p](_setup.md) [g](nope.md) [h](index.md)", &dir_mode);
+        assert!(out.contains("\\href{_setup.md}"), "partial rewritten: {out}");
+        assert!(out.contains("\\href{nope.md}"), "dangling rewritten: {out}");
+        assert!(
+            out.contains("\\href{index.md}"),
+            "index.md rewritten but no index.pdf exists: {out}"
+        );
+        let out = markdown_to_latex("[i](01-intro.md)", &dir_mode);
+        assert!(out.contains("\\href{01-intro.pdf}"), "{out}");
+    }
+
+    #[test]
     fn md_to_latex_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
-        let out = markdown_to_latex(md);
+        let out = markdown_to_latex(md, &crate::render::LinkMode::single_file());
         assert!(out.contains("\\begin{tabular}"));
         assert!(out.contains("\\toprule"));
         assert!(out.contains("\\midrule"));
@@ -688,26 +796,26 @@ mod tests {
 
     #[test]
     fn md_to_latex_inline_math() {
-        let out = markdown_to_latex("The value $x^2$ is large.");
+        let out = markdown_to_latex("The value $x^2$ is large.", &crate::render::LinkMode::single_file());
         assert!(out.contains("$x^2$"));
     }
 
     #[test]
     fn md_to_latex_display_math() {
-        let out = markdown_to_latex("$$E = mc^2$$");
+        let out = markdown_to_latex("$$E = mc^2$$", &crate::render::LinkMode::single_file());
         assert!(out.contains("\\[\nE = mc^2\n\\]"));
     }
 
     #[test]
     fn md_to_latex_special_chars_escaped() {
-        let out = markdown_to_latex("Use 100% of the CPU & GPU");
+        let out = markdown_to_latex("Use 100% of the CPU & GPU", &crate::render::LinkMode::single_file());
         assert!(out.contains("100\\%"));
         assert!(out.contains("\\&"));
     }
 
     #[test]
     fn md_to_latex_paragraph() {
-        let out = markdown_to_latex("Para one.\n\nPara two.");
+        let out = markdown_to_latex("Para one.\n\nPara two.", &crate::render::LinkMode::single_file());
         // Paragraphs should be separated
         assert!(out.contains("Para one."));
         assert!(out.contains("Para two."));
@@ -715,7 +823,7 @@ mod tests {
 
     #[test]
     fn md_to_latex_empty() {
-        assert_eq!(markdown_to_latex(""), "");
+        assert_eq!(markdown_to_latex("", &crate::render::LinkMode::single_file()), "");
     }
 
     // ── regression: Bug B — escaped `\$` in markdown prose stays literal in
@@ -724,7 +832,7 @@ mod tests {
     // template_interpolation.md at the `Use \${...}` paragraph.
     #[test]
     fn md_to_latex_escaped_dollar_stays_literal() {
-        let out = markdown_to_latex(r"literal: \${not_evaluated}.");
+        let out = markdown_to_latex(r"literal: \${not_evaluated}.", &crate::render::LinkMode::single_file());
         // Every `$` in the output must be preceded by a backslash —
         // otherwise it opens math mode and pdflatex fails with
         // "Missing $ inserted".
@@ -751,6 +859,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\documentclass"));
         assert!(tex.contains("\\usepackage{graphicx}"));
@@ -775,6 +884,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(
             tex.contains("\\svgsetup{inkscapelatex=false}"),
@@ -794,6 +904,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\usepackage{newunicodechar}"));
         // Spot-check the characters that broke real notebooks.
@@ -824,6 +935,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\title{A \\& B}"));
     }
@@ -846,6 +958,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\begin{verbatim}\nx = 42\n\\end{verbatim}"));
     }
@@ -868,6 +981,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         // Source should not appear in verbatim
         assert!(!tex.contains("secret = 42"));
@@ -893,6 +1007,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\begin{quote}"));
         assert!(tex.contains("ans = 1"));
@@ -916,6 +1031,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         // Only one verbatim (source), no quote block for output
         let verbatim_count = tex.matches("\\begin{verbatim}").count();
@@ -941,6 +1057,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\color[HTML]{"));
         assert!(tex.contains("undefined variable"));
@@ -957,6 +1074,7 @@ mod tests {
             std::path::Path::new("/tmp/test_plots"),
             "plots/test",
             light(),
+            &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\subsection{Analysis}"));
         assert!(tex.contains("$x^2$"));
@@ -984,7 +1102,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(tex.contains("\\begin{figure}[htbp]"));
         assert!(tex.contains("\\includesvg[width=0.8\\linewidth]{plots/test/diagram-1}"));
         assert!(tex.contains("\\end{figure}"));
@@ -1002,7 +1120,7 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(tex.contains("\\caption{Signal flow}"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1017,7 +1135,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(!tex.contains("\\caption{"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1031,7 +1149,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(!tex.contains("\\begin{figure}"));
         assert!(!tex.contains("\\includesvg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1047,7 +1165,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light());
+        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(tex.contains("\\begin{verbatim}"));
         assert!(tex.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);

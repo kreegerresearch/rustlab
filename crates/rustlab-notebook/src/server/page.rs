@@ -69,9 +69,11 @@ fn chrome_style(c: &ThemeColors) -> String {
     position: fixed; top: 10px; right: 14px; z-index: 100000;
     display: flex; gap: 6px; align-items: center;
   }}
-  /* Directory-mode pages carry a sticky breadcrumb topbar; reserve room
-     on its right so the title doesn't slide under the fixed toolbar. */
-  body.topbar-layout .topbar {{ padding-right: 9rem; }}
+  /* Every served page carries the topbar; reserve room on its right so the
+     "Next" link and title don't slide under the fixed toolbar. This used to
+     be scoped to `body.topbar-layout`, which no longer exists — leaving the
+     toolbar sitting on top of the next-notebook link, unclickable. */
+  .topbar {{ padding-right: 9rem; }}
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};
@@ -90,7 +92,11 @@ fn chrome_style(c: &ThemeColors) -> String {
     box-shadow: -8px 0 24px rgba(0,0,0,.25);
   }}
   body.rl-source-open #rl-source-pane {{ transform: translateX(0); }}
-  body.rl-source-open main {{ margin-right: 42vw; max-width: none; }}
+  /* With the pane open, main's viewport-centring margin (50% of the FULL
+     width) would ignore the 42vw the pane took and squeeze the content
+     against it — pin the margin to the sidebar edge instead. */
+  body.rl-source-open main {{ margin-left: 220px; margin-right: 42vw; max-width: none; }}
+  body.no-toc.rl-source-open main {{ margin-left: 0; }}
   #rl-source-head {{
     padding: 9px 14px; border-bottom: 1px solid {border};
     font: 12px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim};

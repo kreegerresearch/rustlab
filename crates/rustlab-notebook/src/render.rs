@@ -8,9 +8,205 @@ use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+
+/// How cross-notebook `.md` link destinations resolve in HTML output.
+///
+/// The static build and the watch server publish notebooks at different
+/// addresses — `<stem>.html` siblings vs `/n/<slug>` routes — so the same
+/// `[next](02-filter.md)` source must emit different hrefs per mode. The
+/// rewrite happens in the pulldown-cmark event stream (see
+/// [`markdown_to_html_linked`]), which is what scopes it to real link
+/// destinations: code spans, fenced blocks, titles, and reference-style
+/// definitions are all handled by the parser, not by string matching.
+///
+/// Only destinations that are relative (no URL scheme, no leading `/`) and
+/// end in `.md` before an optional `#fragment` are candidates. Everything
+/// else — external URLs, absolute paths, images, anchors — passes through
+/// untouched. A candidate that cannot be resolved (dangling target, a
+/// `_partial.md`, a path outside the collection) is left exactly as
+/// written: a visibly broken `.md` link beats a manufactured `.html` one
+/// that 404s while looking intentional.
+#[derive(Clone, Debug)]
+pub enum LinkMode {
+    /// Static HTML render: `foo.md` → `foo.html`, preserving the path as
+    /// the author wrote it (`../ch2/b.md` → `../ch2/b.html`).
+    ///
+    /// `known` is the set of collection-root-relative sources the build
+    /// actually emits (listable notebooks plus `index.md`, which the
+    /// directory build hoists into `index.html`). `Some` (directory
+    /// renders) rewrites only members and leaves the rest as written;
+    /// `None` (single-file renders) rewrites unconditionally — a lone file
+    /// has no collection to check against, and the sibling may well be
+    /// rendered separately. `current_rel_dir` is the linking notebook's
+    /// directory relative to the collection root, used to resolve `./` and
+    /// `../` against `known` — the directory walk is recursive.
+    Static {
+        known: Option<HashSet<String>>,
+        current_rel_dir: String,
+    },
+    /// Watch server: `foo.md` → `/n/<slug>`.
+    ///
+    /// `slugs` maps normalized collection-root-relative paths
+    /// (`"ch1/notes.md"`) to server slugs. Keyed by path, not stem: the
+    /// server walk is recursive and same-stem files in different
+    /// directories hold distinct `-N` suffixed slugs. `current_rel_dir` is
+    /// the linking notebook's directory relative to the root (`""` at the
+    /// root), used to resolve `./` and `../`. When `index_at_root` is set
+    /// (directory mode), root `index.md` maps to `/` — the index page's
+    /// body, not a notebook, so it has no slug. Single-file serves clear
+    /// it: their `/` redirects back to the lone notebook, so the mapping
+    /// would send `[home](index.md)` in a circle instead of leaving it
+    /// visibly unresolved.
+    Server {
+        slugs: HashMap<String, String>,
+        current_rel_dir: String,
+        index_at_root: bool,
+    },
+}
+
+impl LinkMode {
+    /// The mode for a standalone single-file static render.
+    pub fn single_file() -> Self {
+        LinkMode::Static {
+            known: None,
+            current_rel_dir: String::new(),
+        }
+    }
+}
+
+/// Rewrite one link destination per [`LinkMode`], or `None` to leave it
+/// exactly as written.
+fn rewrite_link_dest(dest: &str, mode: &LinkMode) -> Option<String> {
+    rewrite_link_dest_to(dest, mode, "html", true)
+}
+
+/// PDF flavour of [`rewrite_link_dest`]: same candidacy and known-set
+/// rules, but targets the sibling `.pdf` artifacts a directory PDF build
+/// emits, and DROPS fragments — the generated PDFs carry no named
+/// destinations for markdown anchors, so `b.pdf#setup` would dangle.
+pub(crate) fn rewrite_link_dest_pdf(dest: &str, mode: &LinkMode) -> Option<String> {
+    rewrite_link_dest_to(dest, mode, "pdf", false)
+}
+
+fn rewrite_link_dest_to(
+    dest: &str,
+    mode: &LinkMode,
+    target_ext: &str,
+    keep_fragment: bool,
+) -> Option<String> {
+    // Scheme'd (`https:`, `mailto:`), protocol-relative (`//host/x`),
+    // absolute (`/docs/x`), and pure-fragment (`#x`) destinations are not
+    // notebook references.
+    if dest.starts_with('/') || dest.starts_with('#') || has_url_scheme(dest) {
+        return None;
+    }
+    let (path, fragment) = match dest.find('#') {
+        Some(at) => (&dest[..at], &dest[at..]),
+        None => (dest, ""),
+    };
+    let fragment = if keep_fragment { fragment } else { "" };
+    let stem = path.strip_suffix(".md")?;
+    match mode {
+        LinkMode::Static {
+            known,
+            current_rel_dir,
+        } => {
+            if let Some(known) = known {
+                // Membership checks against literal on-disk names: decode
+                // %XX first — `foo%20bar.md` is the standard spelling for
+                // a link to `foo bar.md` and must resolve like it.
+                let normalized =
+                    normalize_rel_path(current_rel_dir, &percent_decode(path))?;
+                if !known.contains(&normalized) {
+                    return None;
+                }
+            }
+            // known: None (single-file render) rewrites unconditionally —
+            // including `../sibling.md`, which may well be rendered
+            // separately; there is no collection to resolve against.
+            //
+            // Extension swap on the path AS WRITTEN — a `../ch2/` prefix
+            // (or its percent-encoding) stays relative to the page.
+            Some(format!("{stem}.{target_ext}{fragment}"))
+        }
+        LinkMode::Server {
+            slugs,
+            current_rel_dir,
+            index_at_root,
+        } => {
+            let normalized = normalize_rel_path(current_rel_dir, &percent_decode(path))?;
+            if *index_at_root && normalized == "index.md" {
+                // The index page's body, hoisted to the server root.
+                return Some(format!("/{fragment}"));
+            }
+            let slug = slugs.get(&normalized)?;
+            Some(format!("/n/{slug}{fragment}"))
+        }
+    }
+}
+
+/// Decode `%XX` escapes so href spellings compare against the literal
+/// filesystem names held in `known`/`slugs`. Invalid or truncated escapes
+/// and non-UTF-8 results leave the input unchanged.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
+/// path character?
+fn has_url_scheme(dest: &str) -> bool {
+    let mut chars = dest.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    for c in chars {
+        match c {
+            ':' => return true,
+            c if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.') => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Join `target` onto `base_dir` and normalize `.`/`..` components, all in
+/// `/`-separated collection-relative terms. `None` when `..` escapes the
+/// collection root — such a link cannot be resolved against the listing.
+pub(crate) fn normalize_rel_path(base_dir: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = base_dir.split('/').filter(|p| !p.is_empty()).collect();
+    for comp in target.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    Some(parts.join("/"))
+}
 
 /// Render executed notebook blocks into an HTML string.
 ///
@@ -22,6 +218,9 @@ use std::path::Path;
 /// `nav` is `Some` when the notebook is part of a multi-notebook directory
 /// render — it carries an "← Index" link for the sidebar plus prev/next
 /// footer links. `None` for single-file renders.
+///
+/// `link` chooses how `.md` cross-notebook references resolve — static
+/// `.html` siblings or server `/n/<slug>` routes. See [`LinkMode`].
 pub fn render_html(
     title: &str,
     blocks: &[Rendered],
@@ -29,6 +228,7 @@ pub fn render_html(
     plot_href_prefix: &str,
     theme: &ThemeColors,
     nav: Option<&NotebookNav>,
+    link: &LinkMode,
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
@@ -69,11 +269,11 @@ pub fn render_html(
             Rendered::Markdown(md) => {
                 let mark = body.len();
                 // Transform `[[wiki]]` / `![[embed]]` to standard markdown
+                // (wikilinks emit `.md` targets for the link resolver)
                 let md = transform_wikilinks(md);
-                // Rewrite .md links to .html for cross-notebook references
-                let md = rewrite_md_links(&md);
-                // Convert markdown to HTML (math-protected shared pipeline)
-                let html = markdown_to_html(&md);
+                // Convert markdown to HTML (math-protected shared pipeline),
+                // resolving cross-notebook `.md` links per `link` mode
+                let html = markdown_to_html_linked(&md, Some(link));
 
                 // Extract headings for nav and inject IDs
                 let html = inject_heading_ids(&html, &mut nav_items, &mut heading_idx);
@@ -249,8 +449,7 @@ pub fn render_html(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let md = rewrite_md_links(&md);
-                let html = markdown_to_html(&md);
+                let html = markdown_to_html_linked(&md, Some(link));
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -276,46 +475,71 @@ pub fn render_html(
         body.push_str("</div>\n");
     }
 
-    // Directory-mode sub-pages get a top breadcrumb bar instead of the fixed
-    // sidebar — less visual weight, more horizontal room for content.
-    // Single-file renders (`nav = None`) keep the sidebar with the in-page TOC.
-    let use_topbar = nav.is_some();
-    let body_class = if use_topbar {
-        " class=\"topbar-layout\""
-    } else {
-        ""
-    };
-
-    let topbar_block = match nav {
-        Some(n) => {
-            let index_link = n
-                .index_href
-                .as_ref()
-                .map(|href| {
-                    format!(
-                        "<a href=\"{href}\">&larr; Index</a>",
-                        href = escape_html(href),
-                    )
-                })
-                .unwrap_or_default();
-            format!(
-                "<header class=\"topbar\">{index}<span class=\"sep\">/</span><span class=\"current\">{title}</span></header>\n",
-                index = index_link,
-                title = escape_html(title),
-            )
-        }
-        None => String::new(),
-    };
-
-    let sidebar_block = if use_topbar {
-        String::new()
-    } else {
+    // One layout for both modes. The two navs answer different questions and
+    // are both always present: the topbar moves BETWEEN notebooks, the
+    // sidebar moves WITHIN one. Previously they were mutually exclusive, so a
+    // directory render dropped the in-page TOC entirely — the heading anchors
+    // were still emitted, and the sidebar CSS still shipped, with nothing
+    // linking to them. A reader should not be able to tell from the page how
+    // the file was rendered.
+    let topbar_block = {
+        let (prev_link, index_link, next_link) = match nav {
+            Some(n) => (
+                n.prev
+                    .as_ref()
+                    .map(|(t, href)| {
+                        format!(
+                            "<a class=\"prev\" href=\"{href}\">&larr; {t}</a>",
+                            href = escape_html(href),
+                            t = escape_html(t),
+                        )
+                    })
+                    .unwrap_or_default(),
+                n.index_href
+                    .as_ref()
+                    .map(|href| {
+                        format!(
+                            "<a class=\"index\" href=\"{href}\">Index</a><span class=\"sep\">/</span>",
+                            href = escape_html(href),
+                        )
+                    })
+                    .unwrap_or_default(),
+                n.next
+                    .as_ref()
+                    .map(|(t, href)| {
+                        format!(
+                            "<a class=\"next\" href=\"{href}\">{t} &rarr;</a>",
+                            href = escape_html(href),
+                            t = escape_html(t),
+                        )
+                    })
+                    .unwrap_or_default(),
+            ),
+            // Single-file render: same chrome, just nothing to page to.
+            None => (String::new(), String::new(), String::new()),
+        };
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar').classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+            "<header class=\"topbar\">{prev}<span class=\"crumb\">{index}<span class=\"current\">{title}</span></span>{next}</header>\n",
+            prev = prev_link,
+            index = index_link,
+            next = next_link,
+            title = escape_html(title),
+        )
+    };
+
+    // A notebook with no h1–h3 has nothing to put in a TOC; emitting the
+    // sidebar anyway costs 220px of empty chrome. `no-toc` lets main reclaim it.
+    let has_toc = !nav_items.trim().is_empty();
+    let body_class = if has_toc { "" } else { " class=\"no-toc\"" };
+    let sidebar_block = if has_toc {
+        format!(
+            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar')?.classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
              <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
             title = escape_html(title),
             nav_items = nav_items,
         )
+    } else {
+        String::new()
     };
 
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
@@ -347,21 +571,29 @@ pub fn render_html(
     display: flex;
     min-height: 100vh;
   }}
-  /* ── Navigation sidebar ── */
+  /* Height of the fixed topbar; the sidebar and main both clear it. */
+  :root {{
+    --topbar-h: 2.6rem;
+  }}
+  /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
     position: fixed;
-    top: 0;
+    top: var(--topbar-h);
     left: 0;
     width: 220px;
-    height: 100vh;
+    height: calc(100vh - var(--topbar-h));
     background: {bg_secondary};
     border-right: 1px solid {border};
     padding: 1.5rem 0;
     overflow-y: auto;
+    /* Unbreakable content (a wide KaTeX formula) clips at the column edge
+       rather than painting over `main` or growing a stray h-scrollbar. */
+    overflow-x: hidden;
     z-index: 100;
     transition: transform 0.25s ease;
   }}
   nav.sidebar .nav-title {{
+    overflow-wrap: anywhere;
     font-size: 1.1rem;
     font-weight: 700;
     color: {accent_primary};
@@ -376,6 +608,15 @@ pub fn render_html(
     text-decoration: none;
     font-size: 0.9rem;
     transition: background 0.15s, color 0.15s;
+    /* Headings can be long, and KaTeX typesets any inline math in them
+       (auto-render walks the whole body, sidebar included). Text wraps;
+       KaTeX output is internally nowrap, so an unbreakable formula wider
+       than the column is clipped by the sidebar's overflow-x instead —
+       it must never leak over the content. */
+    overflow-wrap: anywhere;
+  }}
+  nav.sidebar .katex {{
+    font-size: 0.95em;
   }}
   nav.sidebar a:hover {{
     background: {border};
@@ -408,40 +649,74 @@ pub fn render_html(
   }}
   /* ── Main content ── */
   main {{
-    margin-left: 220px;
+    /* Centre the 960px column in the space right of the sidebar on wide
+       displays, never under it. An auto right margin does NOT do this:
+       with `flex: 1` the item fills the line before `max-width` clamps
+       it, and the freed space all lands on the single auto margin —
+       position unchanged, prose pinned against the sidebar. (Measured:
+       the auto-right-margin form left main at x=220 on a 1600px
+       viewport; this puts it at 320, like the old `margin: 0 auto`.) */
+    margin-left: max(220px, calc(50% - 480px));
     flex: 1;
-    padding: 2rem 2.5rem;
+    padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
     max-width: 960px;
     min-width: 0;
   }}
-  /* ── Directory-mode top bar (replaces sidebar for sub-pages) ── */
-  body.topbar-layout {{
-    display: block;
-  }}
-  body.topbar-layout main {{
-    margin: 0 auto;
-    padding: 2rem 2.5rem;
-    max-width: 960px;
-  }}
+  /* ── Topbar (between-notebook nav) ──
+     Fixed rather than sticky: it spans the full width above the sidebar, so
+     it cannot participate in the body's flex row. */
   .topbar {{
-    position: sticky;
+    position: fixed;
     top: 0;
-    z-index: 100;
+    left: 0;
+    right: 0;
+    height: var(--topbar-h);
+    z-index: 150;
     background: {bg_secondary};
     border-bottom: 1px solid {border};
-    padding: 0.6rem 1.2rem;
+    padding: 0 1.2rem;
     font-size: 0.85rem;
     color: {text_dim};
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
   }}
   .topbar a {{
     color: {accent_secondary};
     text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }}
   .topbar a:hover {{
     text-decoration: underline;
+  }}
+  /* Prev/next flank the breadcrumb and yield space to it when cramped.
+     The Index link must NOT shrink: `overflow: hidden` gives every topbar
+     link a zero flex minimum, and on a narrow screen the crumb squeezed
+     "Index" — the one link back to the collection root — to a 5px sliver. */
+  .topbar a.index {{
+    flex: 0 0 auto;
+  }}
+  .topbar a.prev, .topbar a.next {{
+    flex: 0 1 auto;
+    max-width: 22%;
+  }}
+  .topbar a.next {{
+    margin-left: auto;
+    text-align: right;
+  }}
+  .topbar .crumb {{
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Claim the leftover width. Flex items default to min-width:auto and
+       refuse to shrink below their content, so without this the fixed-size
+       prev/next links won and the title — the one label saying where you
+       are — collapsed to nothing on a narrow screen. `.current` keeps
+       min-width:0 so it ellipsises instead. */
+    flex: 1 1 auto;
   }}
   .topbar .sep {{
     color: {text_dim};
@@ -452,6 +727,18 @@ pub fn render_html(
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }}
+  /* Anchor targets must clear the fixed topbar. Without this a link scrolls
+     its target to y=0, which is behind the bar — the heading you clicked is
+     the one thing you cannot see. Applies to EVERY id, not just the
+     generated `heading-N` ones: explicit `{{#anchor}}` headings, footnote
+     back-references and block ids are all link targets too. */
+  [id] {{
+    scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
+  }}
+  /* No headings, no sidebar: the column centres in the full viewport. */
+  body.no-toc main {{
+    margin-left: max(0px, calc(50% - 480px));
   }}
   .prose {{
     line-height: 1.7;
@@ -744,7 +1031,16 @@ pub fn render_html(
     }}
     main {{
       margin-left: 0;
-      padding: 3rem 1rem 2rem;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }}
+    /* Leave room for the hamburger, which sits over the topbar's left
+       end. no-toc pages have no hamburger — don't reserve 3rem of the
+       narrowest layout for a button that doesn't exist. */
+    body:not(.no-toc) .topbar {{
+      padding-left: 3rem;
+    }}
+    .topbar a.prev, .topbar a.next {{
+      max-width: 28%;
     }}
   }}
 </style>
@@ -866,11 +1162,38 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
+    markdown_to_html_linked(md, None)
+}
+
+/// [`markdown_to_html`] with cross-notebook link resolution.
+///
+/// Destinations are rewritten on `Event::Start(Tag::Link)` — after the
+/// parser has resolved reference-style definitions and separated titles,
+/// and only for real links: text, code spans, and fenced blocks never
+/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Images
+/// (`Tag::Image`) are deliberately untouched — `.md` is not an image
+/// format, and embeds were already expanded upstream.
+pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
-    let events = parse_single_tilde_safe(&protected, notebook_md_options());
+    let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    if let Some(mode) = link {
+        rewrite_link_events(&mut events, mode);
+    }
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
     restore_math(&html, &math)
+}
+
+/// Apply [`LinkMode`] resolution to every link-open event in place. Shared
+/// with the index-page body renderer, which runs its own event pipeline.
+pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
+    for ev in events.iter_mut() {
+        if let Event::Start(Tag::Link { dest_url, .. }) = ev {
+            if let Some(new) = rewrite_link_dest(dest_url, mode) {
+                *dest_url = new.into();
+            }
+        }
+    }
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -958,55 +1281,271 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// 1. Inject an `id` attribute so nav links can scroll to it.
 /// 2. Append a nav link to `nav`.
 /// Returns the modified HTML.
+///
+/// ONE pass, taking the earliest heading of any level from the cursor. The
+/// old shape — a full-document pass per level — emitted every h1 to the nav
+/// before any h2 and numbered `heading-N` in that grouped order, so any
+/// prose block with more than one heading (the common case: contiguous
+/// prose between code fences is a single block) got a sidebar whose order
+/// and implied nesting contradicted the page.
 fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
+    const TAGS: [&str; 3] = ["h1", "h2", "h3"];
     let mut result = html.to_string();
-    for tag in ["h1", "h2", "h3"] {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let mut search_from = 0;
-        loop {
-            let Some(start) = result[search_from..].find(&open) else {
-                break;
-            };
-            let abs_open = search_from + start;
-            let content_start = abs_open + open.len();
-            let Some(rel_end) = result[content_start..].find(&close) else {
-                break;
-            };
-            let content = result[content_start..content_start + rel_end].to_string();
-            let clean = strip_tags(&content);
-            if !clean.is_empty() {
-                *idx += 1;
-                let id = format!("heading-{idx}");
-                // Replace <hN> with <hN id="heading-N">
-                let new_open = format!("<{tag} id=\"{id}\">");
-                result.replace_range(abs_open..abs_open + open.len(), &new_open);
-                // Build nav link
-                nav.push_str(&format!(
-                    "  <a href=\"#{id}\" class=\"{tag}\">{text}</a>\n",
-                    id = id,
-                    tag = tag,
-                    text = escape_html(&clean),
-                ));
-                search_from = abs_open + new_open.len() + rel_end + close.len();
-            } else {
-                search_from = content_start + rel_end + close.len();
+    let mut search_from = 0;
+    // Per-level next-match cache. Recomputing every level from the cursor
+    // on every iteration made a level with NO remaining matches scan to
+    // end-of-document once per heading — 25x slower on the common
+    // all-`##` notebook. A cache entry stays valid across iterations:
+    // id insertion cannot create a new `<hN` (it lands inside a tag), so
+    // only positions past an edit shift (by the insertion length) and
+    // only entries behind the cursor go stale.
+    let mut next: [Option<(usize, usize)>; 3] = [None; 3];
+    let mut dirty: [bool; 3] = [true; 3];
+    loop {
+        // Match `<hN>` *and* `<hN ...>`: pulldown-cmark emits an explicit
+        // id for `## Title {#anchor}`, and matching only the bare tag
+        // skipped those headings entirely — no TOC entry at all, which
+        // hit exactly the notebooks using anchors for deep links.
+        for k in 0..3 {
+            if dirty[k] {
+                next[k] = find_heading_open(&result[search_from..], TAGS[k])
+                    .map(|(rel, len)| (search_from + rel, len));
+                dirty[k] = false;
             }
+        }
+        let found = (0..3)
+            .filter_map(|k| next[k].map(|(at, len)| (k, at, len)))
+            .min_by_key(|&(_, at, _)| at);
+        let Some((tag_idx, abs_open, open_len)) = found else {
+            break;
+        };
+        let tag = TAGS[tag_idx];
+        // A cache adjustment closure, applied after every cursor move:
+        // shift positions past an edit by `delta`, invalidate anything
+        // now behind the cursor (a malformed nested `<hN` can sit inside
+        // the heading just consumed).
+        let advance = |next: &mut [Option<(usize, usize)>; 3],
+                       dirty: &mut [bool; 3],
+                       edit_at: usize,
+                       delta: isize,
+                       cursor: usize| {
+            for k in 0..3 {
+                if let Some((at, len)) = next[k] {
+                    let at = if delta != 0 && at > edit_at {
+                        (at as isize + delta) as usize
+                    } else {
+                        at
+                    };
+                    if at < cursor {
+                        dirty[k] = true;
+                    } else {
+                        next[k] = Some((at, len));
+                    }
+                }
+            }
+        };
+        // The consumed level's cached match is spent either way.
+        dirty[tag_idx] = true;
+        let close = format!("</{tag}>");
+        let content_start = abs_open + open_len;
+        let Some(rel_end) = result[content_start..].find(&close) else {
+            // Unterminated heading: step past it so another level can still
+            // match later in the document.
+            search_from = content_start;
+            advance(&mut next, &mut dirty, 0, 0, search_from);
+            continue;
+        };
+        let content = result[content_start..content_start + rel_end].to_string();
+        let clean = strip_tags(&content);
+        if !clean.is_empty() {
+            let open_tag = result[abs_open..abs_open + open_len].to_string();
+            // An explicit `{#anchor}` already produced an id, and other
+            // pages may link to it — keep it and point the TOC there
+            // rather than overwriting someone's stable anchor.
+            let (id, new_open) = match existing_id(&open_tag) {
+                Some(existing) => (existing, open_tag.clone()),
+                None => {
+                    *idx += 1;
+                    let id = format!("heading-{idx}");
+                    let inner = open_tag
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string();
+                    (id.clone(), format!("<{inner} id=\"{id}\">"))
+                }
+            };
+            let delta = new_open.len() as isize - open_len as isize;
+            result.replace_range(abs_open..abs_open + open_len, &new_open);
+            // `clean` came out of already-rendered HTML, so its entities
+            // are encoded already — `strip_tags` only removes tag spans
+            // and leaves them alone. Escaping again turned a heading's
+            // `&` into `&amp;amp;`, which the sidebar displayed literally.
+            nav.push_str(&format!(
+                "  <a href=\"#{id}\" class=\"{tag}\">{text}</a>\n",
+                id = id,
+                tag = tag,
+                text = clean,
+            ));
+            search_from = abs_open + new_open.len() + rel_end + close.len();
+            advance(&mut next, &mut dirty, abs_open, delta, search_from);
+        } else {
+            search_from = content_start + rel_end + close.len();
+            advance(&mut next, &mut dirty, 0, 0, search_from);
         }
     }
     result
 }
 
-/// Strip HTML tags from a string.
+/// Find the next `<hN>` or `<hN ...>` open tag, returning `(offset, len)`.
+fn find_heading_open(hay: &str, tag: &str) -> Option<(usize, usize)> {
+    let needle = format!("<{tag}");
+    let mut from = 0;
+    while let Some(rel) = hay[from..].find(&needle) {
+        let start = from + rel;
+        let after = start + needle.len();
+        match hay[after..].chars().next() {
+            // `<h1>` or `<h1 id=…>` — but not `<h11>` or `<hr>`.
+            Some('>') => return Some((start, after - start + 1)),
+            Some(c) if c.is_whitespace() => {
+                // Quote-aware: a raw-HTML heading can carry `>` inside an
+                // attribute value (`<h2 title="a > b">`), and cutting the
+                // tag there spliced the injected id into the attribute.
+                match end_of_open_tag(hay, start) {
+                    Some(end) => return Some((start, end - start)),
+                    // Unterminated (an unbalanced quote swallows every
+                    // later `>`): skip this candidate rather than abandon
+                    // the level — propagating None here silently dropped
+                    // every well-formed same-level heading after it.
+                    None => from = after,
+                }
+            }
+            _ => from = after,
+        }
+    }
+    None
+}
+
+/// Byte offset just past the `>` closing the tag that opens at `start`
+/// (`s[start]` must be `<`). `>` inside quoted attribute values does not
+/// terminate the tag. `None` when unterminated.
+fn end_of_open_tag(s: &str, start: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut quote: Option<u8> = None;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match quote {
+            Some(q) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => quote = Some(b),
+                b'>' => return Some(i + 1),
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
+/// The value of an `id="…"` attribute already present on an open tag.
+///
+/// Boundary-checked: `id` must start its own attribute name. A bare
+/// substring search matched `data-id="…"`, stealing an anchor nothing on
+/// the page carries — the heading got no id and the TOC entry went dead.
+fn existing_id(open_tag: &str) -> Option<String> {
+    let bytes = open_tag.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = open_tag[from..].find("id=\"") {
+        let at = from + rel;
+        if at > 0 && bytes[at - 1].is_ascii_whitespace() {
+            let vstart = at + 4;
+            let end = open_tag[vstart..].find('"')?;
+            return Some(open_tag[vstart..vstart + end].to_string());
+        }
+        from = at + 4;
+    }
+    None
+}
+
+/// Remove HTML tag spans, leaving text and entity references intact.
+///
+/// Three things here are deliberately NOT treated as tags:
+/// - **Restored math.** `markdown_to_html_linked` restores `\(…\)` / `\[…\]`
+///   spans as plain text *after* pulldown escaping, so `$a<b$` arrives here
+///   as a literal `\(a<b\)`. Treating that `<` as a tag opener swallowed to
+///   the next `>` — `$a<b$ and $c>d$` spliced into `\(ad\)`, a label the
+///   heading never said, with delimiters balanced so nothing looked wrong.
+///   Delimited math is copied verbatim.
+/// - **A `<` not followed by a tag-name character** (`$E > 0$`, `a < b`):
+///   plain text in HTML's data state, kept.
+/// - **Comments** are skipped to their `-->`, not to the first `>` — a
+///   comment containing `>` leaked its tail into the label.
+///
+/// Real tag spans are skipped quote-aware, matching [`end_of_open_tag`].
 fn strip_tags(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
     let mut out = String::new();
-    let mut in_tag = false;
-    for ch in s.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => out.push(ch),
-            _ => {}
+    let mut i = 0;
+    while i < chars.len() {
+        // Math span: copy verbatim through its closing delimiter.
+        if chars[i] == '\\' && matches!(chars.get(i + 1), Some('(') | Some('[')) {
+            let closer = if chars[i + 1] == '(' { ')' } else { ']' };
+            out.push(chars[i]);
+            out.push(chars[i + 1]);
+            i += 2;
+            while i < chars.len() {
+                if chars[i] == '\\' && chars.get(i + 1) == Some(&closer) {
+                    out.push('\\');
+                    out.push(closer);
+                    i += 2;
+                    break;
+                }
+                out.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        if chars[i] == '<'
+            && chars
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_alphabetic() || *c == '/' || *c == '!')
+        {
+            // Comment: skip to `-->` (or end if unterminated).
+            if chars[i..].starts_with(&['<', '!', '-', '-']) {
+                match (i + 4..chars.len().saturating_sub(2))
+                    .find(|&j| chars[j..].starts_with(&['-', '-', '>']))
+                {
+                    Some(j) => i = j + 3,
+                    None => break,
+                }
+                continue;
+            }
+            // Tag: skip quote-aware to its closing '>' (or end).
+            let mut quote: Option<char> = None;
+            i += 1;
+            while i < chars.len() {
+                let c = chars[i];
+                match quote {
+                    Some(q) => {
+                        if c == q {
+                            quote = None;
+                        }
+                    }
+                    None => match c {
+                        '"' | '\'' => quote = Some(c),
+                        '>' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => {}
+                    },
+                }
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
         }
     }
     out
@@ -1192,16 +1731,10 @@ fn push_escaped_char(out: &mut String, ch: char) {
     }
 }
 
-/// Rewrite relative `.md` links to `.html` in markdown text.
-/// Converts `](something.md)` to `](something.html)` for cross-notebook links.
-fn rewrite_md_links(md: &str) -> String {
-    md.replace(".md)", ".html)").replace(".md#", ".html#")
-}
-
 /// Transform Obsidian-style wikilinks and embeds into standard markdown so
 /// the committed `book/*.md` renders correctly on GitHub (where `[[...]]`
-/// is literal text) and the HTML pipeline can run them through
-/// `rewrite_md_links` like ordinary `.md` references.
+/// is literal text) and the HTML pipeline can resolve them through
+/// [`rewrite_link_dest`] like ordinary `.md` references.
 ///
 /// Mappings:
 /// - `[[Foo]]`              → `[Foo](Foo.md)`
@@ -1872,6 +2405,192 @@ mod tests {
     }
 
     #[test]
+    fn inject_heading_ids_follows_document_order() {
+        // The old per-level passes emitted every h1 before any h2, so a
+        // block with mixed levels got a sidebar whose order and implied
+        // nesting contradicted the page (docs/notebooks.md itself nested
+        // Quick Start's subsections under the wrong h2), and heading-N ids
+        // were non-monotonic down the page.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>",
+            &mut nav,
+            &mut idx,
+        );
+        let labels: Vec<&str> = nav
+            .lines()
+            .filter_map(|l| l.split('>').nth(1).and_then(|s| s.split('<').next()))
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Title", "Section A", "A.1", "Section B"],
+            "nav must follow document order: {nav}"
+        );
+        // Ids number in document order too — A.1 is heading-3, B heading-4.
+        assert!(out.contains("<h3 id=\"heading-3\">A.1</h3>"), "{out}");
+        assert!(out.contains("<h2 id=\"heading-4\">Section B</h2>"), "{out}");
+        // Level ascending within one block (h2 before h1) must also hold.
+        let mut nav = String::new();
+        let mut idx = 0;
+        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx);
+        let first = nav.lines().next().unwrap_or_default();
+        assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
+    }
+
+    #[test]
+    fn unbalanced_quote_does_not_swallow_later_headings() {
+        // An odd number of quotes made end_of_open_tag see every later `>`
+        // as quoted; propagating that None abandoned the LEVEL, so every
+        // well-formed same-level heading after the broken one silently
+        // lost its id and TOC entry.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h2 x=\">A</h2><h2>B</h2><h1>C</h1>",
+            &mut nav,
+            &mut idx,
+        );
+        assert!(out.contains("<h2 id=\"heading-1\">B</h2>"), "B lost its id: {out}");
+        assert!(nav.contains(">B</a>"), "B missing from TOC: {nav}");
+        assert!(nav.contains(">C</a>"), "{nav}");
+    }
+
+    #[test]
+    fn heading_scan_is_linear_not_quadratic_in_headings() {
+        // A level with no remaining matches used to rescan to
+        // end-of-document once per heading — ~25x on all-## notebooks.
+        // Time-free proxy: a large single-level document must complete
+        // well under the old quadratic budget. 2000 headings; the fixed
+        // scan does this in ~ms, the old one took ~700ms release /
+        // multi-second debug — a generous debug-mode ceiling still
+        // separates the two implementations.
+        let doc: String = (0..2000)
+            .map(|i| format!("<h2>Section {i}</h2><p>{}</p>", "x".repeat(400)))
+            .collect();
+        let mut nav = String::new();
+        let mut idx = 0;
+        let t = std::time::Instant::now();
+        inject_heading_ids(&doc, &mut nav, &mut idx);
+        assert_eq!(idx, 2000);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "heading scan took {:?} — quadratic tail rescans are back",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn inject_heading_ids_ignores_data_id_attributes() {
+        // `existing_id` substring-matched `data-id="…"`, so the heading got
+        // no injected id and the TOC linked to an anchor nothing carries.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx);
+        assert!(
+            out.contains("id=\"heading-1\""),
+            "generated id missing — data-id stole the anchor: {out}"
+        );
+        assert!(
+            nav.contains("href=\"#heading-1\""),
+            "TOC must target the injected id, not data-id: {nav}"
+        );
+    }
+
+    #[test]
+    fn inject_heading_ids_handles_gt_inside_quoted_attributes() {
+        // The open-tag scan cut at the first `>` even inside a quoted
+        // attribute value, splicing the injected id into the attribute and
+        // leaking `b">` into the heading text.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            "<h2 title=\"a > b\">Raw attr heading</h2>",
+            &mut nav,
+            &mut idx,
+        );
+        assert!(
+            out.contains("<h2 title=\"a > b\" id=\"heading-1\">Raw attr heading</h2>"),
+            "id must be appended after the quoted attribute: {out}"
+        );
+        assert!(nav.contains(">Raw attr heading</a>"), "label corrupted: {nav}");
+    }
+
+    #[test]
+    fn strip_tags_keeps_unspaced_math_comparisons() {
+        // `$a<b$` reaches strip_tags as `\(a<b\)`; `<b` looked like a tag
+        // opener and the scan swallowed to the `>` in the NEXT math span,
+        // splicing `\(a<b\) and \(c>d\)` into `\(ad\)` — balanced
+        // delimiters, silently wrong label.
+        assert_eq!(
+            strip_tags(r"Bounds \(a<b\) and \(c>d\)"),
+            r"Bounds \(a<b\) and \(c>d\)"
+        );
+        // Truncation form: no later `>` at all.
+        assert_eq!(strip_tags(r"Regime \(a<b\)"), r"Regime \(a<b\)");
+        // Real tags around math still strip.
+        assert_eq!(strip_tags(r"<em>x</em> \(a<b\)"), r"x \(a<b\)");
+    }
+
+    #[test]
+    fn strip_tags_skips_comments_to_their_real_close() {
+        // The generic tag-skip stopped at the first `>`, so a comment
+        // containing `>` leaked its tail into the TOC label.
+        assert_eq!(strip_tags("Comment <!-- a > b --> tail"), "Comment  tail");
+        // Unterminated comment: drop the rest rather than leak it.
+        assert_eq!(strip_tags("x <!-- open"), "x ");
+    }
+
+    #[test]
+    fn inject_heading_ids_keeps_inline_math_intact() {
+        // strip_tags treated every `<` as a tag opener, so a comparison
+        // inside heading math swallowed the rest of the label — leaving an
+        // unmatched `\(` that KaTeX could not close — and a `>` was deleted
+        // outright, making the TOC assert the opposite of the heading.
+        let mut nav = String::new();
+        let mut idx = 0;
+        inject_heading_ids(
+            "<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>",
+            &mut nav,
+            &mut idx,
+        );
+        assert!(nav.contains("Regime \\(T < T_c\\)"), "math truncated: {nav}");
+        assert!(nav.contains("Threshold \\(E > 0\\)"), "operator lost: {nav}");
+    }
+
+    #[test]
+    fn inject_heading_ids_honours_explicit_anchors() {
+        // `## Title {#anchor}` renders as `<h2 id="anchor">`. Matching only
+        // the bare `<h2>` skipped those headings entirely — no TOC entry —
+        // and overwriting the id would break cross-notebook deep links.
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids("<h2 id=\"filters\">Filter Analysis</h2>", &mut nav, &mut idx);
+        assert!(out.contains("id=\"filters\""), "explicit id was overwritten");
+        assert!(nav.contains("href=\"#filters\""), "anchor heading missing from TOC: {nav}");
+        assert!(nav.contains("Filter Analysis"));
+    }
+
+    #[test]
+    fn inject_heading_ids_does_not_double_escape_entities() {
+        // The heading text is a slice of already-rendered HTML, so `&` has
+        // been encoded once. Escaping it again produced `&amp;amp;`, and the
+        // sidebar rendered a literal "&amp;" — e.g. quantum_lab's
+        // "Hyperfine Structure & Qubit Selection".
+        let mut nav = String::new();
+        let mut idx = 0;
+        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx);
+        assert!(
+            nav.contains("Structure &amp; Selection"),
+            "nav label lost its single-escaped entity: {nav}"
+        );
+        assert!(
+            !nav.contains("&amp;amp;"),
+            "nav label was escaped twice: {nav}"
+        );
+    }
+
+    #[test]
     fn inject_heading_ids_no_headings() {
         let mut nav = String::new();
         let mut idx = 0;
@@ -2098,7 +2817,7 @@ mod tests {
     #[test]
     fn render_html_basic_structure() {
         let blocks = vec![Rendered::Markdown("# Hello".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
@@ -2113,7 +2832,7 @@ mod tests {
             Rendered::Markdown("hello".to_string()),
             Rendered::Markdown("world".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Each prose block lives inside a rl-block section.
         let opens: Vec<_> = html.matches("<section class=\"rl-block\" id=\"b-").collect();
         assert_eq!(opens.len(), 2, "expected 2 block wrappers, full html:\n{html}");
@@ -2128,7 +2847,7 @@ mod tests {
             Rendered::Markdown("dup".to_string()),
             Rendered::Markdown("unique".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // The two `dup` blocks have identical content → identical
         // 8-char hashes → second gets the "-1" suffix.
         let suffixed = html.matches("\" id=\"b-").count();
@@ -2142,8 +2861,8 @@ mod tests {
     #[test]
     fn render_html_block_ids_stable_across_renders() {
         let blocks = vec![Rendered::Markdown("stable content".to_string())];
-        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
-        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
         assert_eq!(id1, id2, "block id changed between identical renders");
@@ -2172,7 +2891,7 @@ mod tests {
             Rendered::Markdown("more prose".to_string()),
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("data-code-idx=\"0\""), "first code block is idx 0");
         assert!(html.contains("data-code-idx=\"1\""), "second code block is idx 1");
         // Prose sections carry no ordinal.
@@ -2193,7 +2912,7 @@ mod tests {
             },
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("data-code-idx=\"0\""));
         assert!(
             html.contains("data-code-idx=\"2\""),
@@ -2210,7 +2929,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("data-code-idx="), "mermaid gets no Run affordance");
     }
 
@@ -2224,7 +2943,7 @@ mod tests {
         // Identifiers survive `highlight_rustlab` verbatim; operators and
         // numbers get wrapped in spans, so match on the bare name only.
         let plot = std::path::PathBuf::from("/tmp/rustlab_test_plots");
-        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None);
+        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None, &LinkMode::single_file());
         let shifted = render_html(
             "T",
             &[code("unrelated = 2"), code("xyzzy = 1")],
@@ -2232,6 +2951,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         );
         let id_of = |html: &str, marker: &str| -> String {
             // Find the section whose body contains `marker`, return its id.
@@ -2260,7 +2980,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
@@ -2278,7 +2998,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
     }
@@ -2295,7 +3015,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
@@ -2315,7 +3035,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // Source shown, but no output div
         assert!(html.contains("class=\"source\""));
         assert!(!html.contains("class=\"output\""));
@@ -2323,26 +3043,26 @@ mod tests {
 
     #[test]
     fn render_html_katex_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
     }
 
     #[test]
     fn render_html_plotly_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("plotly"));
     }
 
     #[test]
     fn render_html_nav_toggle() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("nav-toggle"));
     }
 
     #[test]
     fn render_html_title_escaped() {
-        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("A &lt;script&gt; &amp; &quot;test&quot;"));
     }
 
@@ -2358,7 +3078,7 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
@@ -2369,42 +3089,380 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Section One\n\n## Sub Section".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("heading-1"));
         assert!(html.contains("heading-2"));
         assert!(html.contains("Section One"));
         assert!(html.contains("Sub Section"));
     }
 
-    // ── rewrite_md_links ──
+    // ── cross-notebook link resolution (LinkMode) ──
+    //
+    // The old `rewrite_md_links` was a raw string replace on unparsed
+    // markdown: it corrupted external URLs ending in `.md`, rewrote inside
+    // code spans, and missed titled and reference-style links entirely.
+    // These tests pin the resolver's contract at both altitudes: the
+    // destination-level rules here, the full-pipeline behaviour below.
+
+    fn server_mode(pairs: &[(&str, &str)], current_rel_dir: &str) -> LinkMode {
+        LinkMode::Server {
+            slugs: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            index_at_root: true,
+            current_rel_dir: current_rel_dir.to_string(),
+        }
+    }
 
     #[test]
-    fn rewrite_md_links_basic() {
+    fn link_dest_static_swaps_md_for_html() {
+        let mode = LinkMode::single_file();
         assert_eq!(
-            rewrite_md_links("See [filter](filter.md) for details"),
-            "See [filter](filter.html) for details"
+            rewrite_link_dest("filter.md", &mode).as_deref(),
+            Some("filter.html")
+        );
+        // Fragment survives verbatim.
+        assert_eq!(
+            rewrite_link_dest("other.md#intro", &mode).as_deref(),
+            Some("other.html#intro")
+        );
+        // Non-.md destinations pass through untouched.
+        assert_eq!(rewrite_link_dest("image.png", &mode), None);
+        assert_eq!(rewrite_link_dest("#local-anchor", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_never_touches_external_or_absolute_urls() {
+        // The old string replace corrupted every one of these to `.html`.
+        for mode in [
+            LinkMode::single_file(),
+            server_mode(&[("doc.md", "doc")], ""),
+        ] {
+            for dest in [
+                "https://example.com/README.md",
+                "https://github.com/x/y/blob/main/doc.md",
+                "http://host/doc.md#frag",
+                "mailto:someone@example.md",
+                "//host/proto-relative.md",
+                "/docs/absolute.md",
+            ] {
+                assert_eq!(
+                    rewrite_link_dest(dest, &mode),
+                    None,
+                    "{dest} must pass through unrewritten"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn link_dest_static_collection_only_rewrites_emitted_siblings() {
+        // Directory renders know exactly which .html files they emit; a
+        // link to anything else (partial, dangling target) is left as
+        // written — visibly broken beats a manufactured 404.
+        let known: HashSet<String> = [
+            "01-intro.md".to_string(),
+            "index.md".to_string(),
+            "ch2/notes.md".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        let mode = LinkMode::Static {
+            known: Some(known.clone()),
+            current_rel_dir: String::new(),
+        };
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("01-intro.html")
+        );
+        assert_eq!(
+            rewrite_link_dest("index.md", &mode).as_deref(),
+            Some("index.html")
+        );
+        // The walk is recursive: nested targets rewrite when emitted.
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &mode).as_deref(),
+            Some("ch2/notes.html")
+        );
+        assert_eq!(rewrite_link_dest("_setup.md", &mode), None, "partial");
+        assert_eq!(rewrite_link_dest("nope.md", &mode), None, "dangling");
+
+        // From inside ch2/, links resolve against the known set via the
+        // page's rel dir but keep the author's relative form.
+        let nested = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: "ch2".to_string(),
+        };
+        assert_eq!(
+            rewrite_link_dest("../01-intro.md", &nested).as_deref(),
+            Some("../01-intro.html")
+        );
+        assert_eq!(rewrite_link_dest("../gone.md", &nested), None);
+    }
+
+    #[test]
+    fn link_dest_server_resolves_to_slug_routes() {
+        let mode = server_mode(&[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")], "");
+        assert_eq!(
+            rewrite_link_dest("02-filter.md", &mode).as_deref(),
+            Some("/n/02-filter")
+        );
+        assert_eq!(
+            rewrite_link_dest("./02-filter.md#setup", &mode).as_deref(),
+            Some("/n/02-filter#setup")
+        );
+        // index.md is the index page's body, not a notebook: it has no
+        // slug and must land on the server root.
+        assert_eq!(rewrite_link_dest("index.md", &mode).as_deref(), Some("/"));
+        // Dangling and partial targets: left exactly as written.
+        assert_eq!(rewrite_link_dest("nope.md", &mode), None);
+        assert_eq!(rewrite_link_dest("_setup.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_server_resolves_nested_paths_by_path_not_stem() {
+        // ch1/01-intro.md and 01-intro.md share a stem but hold distinct
+        // slugs; the link must resolve to the slug of the file the path
+        // names. A stem-keyed map fails this test.
+        let mode = server_mode(
+            &[
+                ("01-intro.md", "01-intro"),
+                ("ch1/01-intro.md", "01-intro-2"),
+                ("ch2/notes.md", "notes"),
+            ],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro-2"),
+            "relative to ch1/, `01-intro.md` is the ch1 file"
+        );
+        assert_eq!(
+            rewrite_link_dest("../01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro")
+        );
+        assert_eq!(
+            rewrite_link_dest("../ch2/notes.md", &mode).as_deref(),
+            Some("/n/notes")
+        );
+        // `..` escaping the collection root cannot resolve — left alone.
+        assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_single_file_rewrites_parent_relative_paths() {
+        // Doc contract: known: None rewrites UNCONDITIONALLY — including
+        // `../sibling.md`, which may well be rendered separately. The
+        // normalize gate (correct for collections, where `..` really does
+        // escape) was wrongly applied here too.
+        let mode = LinkMode::single_file();
+        assert_eq!(
+            rewrite_link_dest("../ch1/intro.md", &mode).as_deref(),
+            Some("../ch1/intro.html")
+        );
+        assert_eq!(
+            rewrite_link_dest("../../far.md#sec", &mode).as_deref(),
+            Some("../../far.html#sec")
         );
     }
 
     #[test]
-    fn rewrite_md_links_with_anchor() {
+    fn link_dest_percent_encoded_paths_resolve_against_literal_names() {
+        // `foo%20bar.md` is the standard spelling for a link to
+        // `foo bar.md`; the known set and slug map hold literal on-disk
+        // names, so the encoded form silently dangled while the raw-space
+        // form resolved. Decode for the lookup; emit the path as written.
+        let known: HashSet<String> = ["foo bar.md".to_string()].into_iter().collect();
+        let mode = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: String::new(),
+        };
         assert_eq!(
-            rewrite_md_links("[section](other.md#intro)"),
-            "[section](other.html#intro)"
+            rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
+            Some("foo%20bar.html"),
+            "encoded spelling must resolve, keeping its encoding"
+        );
+        let mode = server_mode(&[("foo bar.md", "foo-bar")], "");
+        assert_eq!(
+            rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
+            Some("/n/foo-bar")
+        );
+        // Invalid escapes pass through to the (failing) literal lookup.
+        assert_eq!(rewrite_link_dest("bad%2.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_single_file_server_leaves_index_md_alone() {
+        // A single-file serve's `/` redirects back to the lone notebook —
+        // mapping index.md there sent `[home](index.md)` in a circle.
+        let mode = LinkMode::Server {
+            slugs: [("solo.md".to_string(), "solo".to_string())]
+                .into_iter()
+                .collect(),
+            current_rel_dir: String::new(),
+            index_at_root: false,
+        };
+        assert_eq!(rewrite_link_dest("index.md", &mode), None, "left as written");
+        // Self-link still resolves.
+        assert_eq!(rewrite_link_dest("solo.md", &mode).as_deref(), Some("/n/solo"));
+    }
+
+    /// Render one markdown block through the full HTML pipeline in `mode`.
+    fn render_md_linked(src: &str, mode: &LinkMode) -> String {
+        let blocks = vec![Rendered::Markdown(src.to_string())];
+        render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            mode,
+        )
+    }
+
+    #[test]
+    fn pipeline_rewrites_titled_links() {
+        // `[x](a.md "title")` never matched the old `.md)` string replace,
+        // so titled cross-references shipped broken in BOTH modes.
+        let html = render_md_linked(
+            r#"[x](02-filter.md "Filter lesson")"#,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains(r#"href="02-filter.html" title="Filter lesson""#),
+            "titled link not rewritten with title preserved: {html}"
+        );
+        let html = render_md_linked(
+            r#"[x](02-filter.md "Filter lesson")"#,
+            &server_mode(&[("02-filter.md", "02-filter")], ""),
+        );
+        assert!(
+            html.contains(r#"href="/n/02-filter" title="Filter lesson""#),
+            "titled link not resolved to slug route: {html}"
         );
     }
 
     #[test]
-    fn rewrite_md_links_no_md() {
-        let input = "No links here.";
-        assert_eq!(rewrite_md_links(input), input);
+    fn pipeline_rewrites_reference_style_links() {
+        // `[flt]: 02-filter.md` has no `.md)` for a string replace to see;
+        // the parser resolves the reference before the Link event fires.
+        let src = "See [the filter][flt] lesson.\n\n[flt]: 02-filter.md#setup\n";
+        let html = render_md_linked(src, &LinkMode::single_file());
+        assert!(
+            html.contains(r#"href="02-filter.html#setup""#),
+            "reference-style link not rewritten: {html}"
+        );
+        let html = render_md_linked(src, &server_mode(&[("02-filter.md", "02-filter")], ""));
+        assert!(
+            html.contains(r#"href="/n/02-filter#setup""#),
+            "reference-style link not resolved to slug route: {html}"
+        );
     }
 
     #[test]
-    fn rewrite_md_links_multiple() {
-        assert_eq!(
-            rewrite_md_links("[a](a.md) and [b](b.md)"),
-            "[a](a.html) and [b](b.html)"
+    fn pipeline_leaves_code_spans_and_fences_byte_identical() {
+        // The old replace ran on raw markdown BEFORE parsing, so
+        // `` `[link](a.md)` `` displayed as `[link](a.html)` — a rendered
+        // code example asserting a rewrite the reader never wrote.
+        let src = "Inline `[link](a.md)` span.\n\n```text\nsee [x](a.md)\n```\n";
+        for mode in [
+            LinkMode::single_file(),
+            server_mode(&[("a.md", "a")], ""),
+        ] {
+            let html = render_md_linked(src, &mode);
+            assert!(
+                html.contains("[link](a.md)"),
+                "inline code span was rewritten: {html}"
+            );
+            assert!(
+                html.contains("see [x](a.md)"),
+                "fenced block was rewritten: {html}"
+            );
+            assert!(!html.contains("a.html"), "code content leaked a rewrite: {html}");
+        }
+    }
+
+    #[test]
+    fn pipeline_keeps_external_md_urls_intact() {
+        // Confirmed corruption before the resolver: this exact form
+        // rendered as `https://example.com/README.html`.
+        let html = render_md_linked(
+            "[readme](https://example.com/README.md)",
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains(r#"href="https://example.com/README.md""#),
+            "external URL was corrupted: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_bare_md_angle_reference_is_literal_text() {
+        // CommonMark autolinks require a scheme: `<02-filter.md>` is plain
+        // text, not a link. Pinned so nobody "fixes" it with string
+        // matching later.
+        let html = render_md_linked("see <02-filter.md> here", &LinkMode::single_file());
+        assert!(!html.contains("href=\"02-filter"), "text became a link: {html}");
+        assert!(
+            html.contains("&lt;02-filter.md&gt;"),
+            "angle reference should render as literal text: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_resolves_wikilinks_through_the_same_seam() {
+        // `[[02-filter#Setup|the setup]]` → transform_wikilinks emits
+        // `[the setup](02-filter.md#setup)` (fragment lowercased) → the
+        // resolver routes it per mode. The fragment must match the id the
+        // explicit-anchor pipeline emits for `## Setup {#setup}`.
+        let src = "see [[02-filter#Setup|the setup]]";
+        let html = render_md_linked(src, &LinkMode::single_file());
+        assert!(
+            html.contains(r#"href="02-filter.html#setup""#),
+            "wikilink not resolved statically: {html}"
+        );
+        let html = render_md_linked(src, &server_mode(&[("02-filter.md", "02-filter")], ""));
+        assert!(
+            html.contains(r#"href="/n/02-filter#setup""#),
+            "wikilink not resolved to slug route: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_resolves_links_inside_callouts() {
+        // Callout bodies run through their own markdown_to_html call
+        // (the second rewrite site) — same resolution applies.
+        let blocks = vec![Rendered::Callout {
+            kind: CalloutKind::Note,
+            title: None,
+            content: "see [next](02-filter.md)".to_string(),
+        }];
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &server_mode(&[("02-filter.md", "02-filter")], ""),
+        );
+        assert!(
+            html.contains(r#"href="/n/02-filter""#),
+            "callout link not resolved: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_explicit_anchor_target_exists_end_to_end() {
+        // The served `#setup` fragment lands on a real id: this PR's
+        // explicit-anchor preservation keeps `## Setup {#setup}` as
+        // `id="setup"` rather than renumbering it `heading-N`.
+        let html = render_md_linked("## Setup {#setup}", &LinkMode::single_file());
+        assert!(
+            html.contains(r#"id="setup""#),
+            "explicit anchor id missing — fragment links would dangle: {html}"
         );
     }
 
@@ -2413,7 +3471,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "See [other](other.md) for details".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("other.html"));
         assert!(!html.contains("other.md"));
     }
@@ -2538,7 +3596,7 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             r"$$\begin{pmatrix}0 & 1 \\ 1 & 0\end{pmatrix}$$".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         // The `\\` must reach the rendered HTML so KaTeX can split rows.
         assert!(
             html.contains(r"\\"),
@@ -2553,7 +3611,7 @@ mod tests {
             title: None,
             content: r"see $$a \\ b$$".to_string(),
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains(r"\\"));
     }
 
@@ -2701,14 +3759,34 @@ mod tests {
 
     #[test]
     fn render_html_no_nav_for_single_file() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None);
-        // Single-file renders keep the sidebar layout, no topbar.
-        assert!(!html.contains("class=\"page-nav\""));
-        assert!(!html.contains("&larr; Index"));
-        assert!(!html.contains("class=\"topbar\""));
-        assert!(!html.contains("class=\"topbar-layout\""));
+        let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
+        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        // Same chrome as a collection page — there is just nothing to page to.
+        assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("<nav class=\"sidebar\">"));
         assert!(html.contains("class=\"nav-title\""));
+        // No cross-notebook affordances when the notebook stands alone.
+        assert!(!html.contains("class=\"page-nav\""));
+        assert!(!html.contains("class=\"prev\""));
+        assert!(!html.contains("class=\"next\""));
+        assert!(!html.contains("href=\"index.html\""));
+    }
+
+    #[test]
+    fn no_page_emits_the_removed_topbar_layout_class() {
+        // The class is gone, but a rule keyed off it survived in
+        // server/page.rs and left the source/edit toolbar sitting on top of
+        // the "Next" link. Nothing may reference it again.
+        let blocks = vec![Rendered::Markdown("# Alpha\n".to_string())];
+        let nav = NotebookNav {
+            index_href: Some("index.html".to_string()),
+            prev: None,
+            next: None,
+        };
+        for n in [None, Some(&nav)] {
+            let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), n, &LinkMode::single_file());
+            assert!(!html.contains("topbar-layout"), "stale layout class emitted");
+        }
     }
 
     #[test]
@@ -2718,19 +3796,108 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("Filter Analysis", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
+        let html = render_html("Filter Analysis", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         // Topbar present with breadcrumb.
-        assert!(html.contains("class=\"topbar-layout\""));
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"index.html\""));
-        assert!(html.contains("&larr; Index"));
         assert!(html.contains("class=\"sep\""));
         assert!(html.contains("class=\"current\""));
         assert!(html.contains("Filter Analysis"));
-        // Sidebar removed.
-        assert!(!html.contains("<nav class=\"sidebar\">"));
-        assert!(!html.contains("class=\"nav-title\""));
-        assert!(!html.contains("class=\"nav-toggle\""));
+        // The assertions above all held under the old mutually-exclusive
+        // layout too; these are what make the test fail on a revert.
+        assert!(html.contains("<nav class=\"sidebar\">"), "sidebar dropped");
+        assert!(!html.contains("topbar-layout"), "stale layout class");
+    }
+
+    #[test]
+    fn notebook_without_headings_gets_no_empty_sidebar() {
+        // Emitting the sidebar unconditionally cost 220px of chrome holding
+        // nothing but the title. `no-toc` gives that width back to content.
+        let blocks = vec![Rendered::Markdown("just prose, no headings.\n".to_string())];
+        let html = render_html("Solo", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        assert!(!html.contains("<nav class=\"sidebar\">"), "empty sidebar emitted");
+        assert!(html.contains("<body class=\"no-toc\">"));
+        // The topbar is still there — chrome stays consistent.
+        assert!(html.contains("class=\"topbar\""));
+    }
+
+    #[test]
+    fn layout_css_centres_and_protects_the_index_link() {
+        // Structural pins for measured layout fixes (headless-Chrome
+        // verified): `margin-right: auto` under `flex: 1` centres nothing —
+        // the freed space lands entirely on the auto margin and the column
+        // stays pinned against the sidebar; the Index link shrank to a 5px
+        // sliver on narrow screens; sidebar math needs explicit clipping.
+        let blocks = vec![Rendered::Markdown("# A\n".to_string())];
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("margin-left: max(220px, calc(50% - 480px))"),
+            "main lost its centring rule"
+        );
+        assert!(
+            html.contains("margin-left: max(0px, calc(50% - 480px))"),
+            "no-toc main lost its centring rule"
+        );
+        assert!(
+            !html.contains("margin-right: auto"),
+            "the inert auto-margin rule is back"
+        );
+        assert!(html.contains(".topbar a.index"), "Index link flex guard missing");
+        assert!(
+            html.contains("body:not(.no-toc) .topbar"),
+            "no-toc pages must not reserve hamburger space"
+        );
+        assert!(html.contains("overflow-x: hidden"), "sidebar clipping rule missing");
+    }
+
+    #[test]
+    fn heading_anchors_clear_the_fixed_topbar() {
+        // Without scroll-margin-top a sidebar link scrolls its heading to
+        // y=0, behind the fixed topbar — the heading you clicked is the one
+        // thing you cannot see.
+        let blocks = vec![Rendered::Markdown("# Alpha\n".to_string())];
+        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        assert!(
+            html.contains("scroll-margin-top"),
+            "heading anchors would land under the topbar"
+        );
+    }
+
+    #[test]
+    fn collection_pages_keep_the_in_page_toc() {
+        // The two navs answer different questions and must coexist. A
+        // directory render used to drop the sidebar entirely, so a long
+        // lesson lost its table of contents — while still emitting the
+        // heading anchors and shipping the sidebar CSS, both unreachable.
+        let nav = NotebookNav {
+            index_href: Some("index.html".to_string()),
+            prev: Some(("Lesson 08".to_string(), "08.html".to_string())),
+            next: Some(("Lesson 10".to_string(), "10.html".to_string())),
+        };
+        let blocks = vec![Rendered::Markdown(
+            "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
+        )];
+        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        // Between-notebook nav.
+        assert!(html.contains("class=\"topbar\""));
+        assert!(html.contains("href=\"08.html\""), "prev link missing");
+        assert!(html.contains("href=\"10.html\""), "next link missing");
+        // Within-notebook nav, on the same page.
+        assert!(html.contains("<nav class=\"sidebar\">"), "sidebar dropped");
+        assert!(
+            html.contains("href=\"#heading-1\""),
+            "heading anchors emitted but nothing links to them"
+        );
+        assert!(html.contains("id=\"heading-1\""));
     }
 
     #[test]
@@ -2740,7 +3907,7 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("A &lt;script&gt; &amp; &quot;x&quot;"));
     }
 
@@ -2751,7 +3918,7 @@ mod tests {
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"page-nav\""));
         assert!(html.contains("class=\"prev\""));
         assert!(html.contains("href=\"intro.html\""));
@@ -2769,7 +3936,7 @@ mod tests {
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"page-nav\""));
         assert!(!html.contains("class=\"prev\""));
         assert!(html.contains("class=\"next\""));
@@ -2782,7 +3949,7 @@ mod tests {
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("class=\"prev\""));
         assert!(!html.contains("class=\"next\""));
     }
@@ -2794,7 +3961,7 @@ mod tests {
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav));
+        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
     }
@@ -2821,7 +3988,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<figure class=\"mermaid\">"));
         assert!(html.contains("<svg"), "expected inline <svg> tag");
         assert!(!html.contains("<?xml"), "XML decl should be stripped");
@@ -2838,7 +4005,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("cdn.jsdelivr.net/npm/mermaid"));
         assert!(!html.contains("mermaid.initialize("));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2854,7 +4021,7 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<figcaption>Signal flow</figcaption>"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2869,7 +4036,7 @@ mod tests {
             details: Some("Architecture".to_string()),
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("<details class=\"code-details\">"));
         assert!(html.contains("<summary>Architecture</summary>"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2884,7 +4051,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(!html.contains("<figure class=\"mermaid\">"));
         assert!(!html.contains("<svg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2908,7 +4075,7 @@ mod tests {
                 caption: None,
             },
         ];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         let figs = html.matches("<figure class=\"mermaid\">").count();
         assert_eq!(figs, 2, "expected two mermaid figures, got {figs}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -2924,7 +4091,7 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None);
+        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
         assert!(html.contains("class=\"mermaid-source\""));
         assert!(html.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2954,6 +4121,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         )
     }
 
@@ -3021,6 +4189,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         )
     }
 
@@ -3138,6 +4307,7 @@ mod tests {
             "plots",
             test_theme(),
             None,
+            &LinkMode::single_file(),
         );
         assert!(html.contains(r#"href="Foo.html""#), "expected .html href: {html}");
         assert!(html.contains(">Foo</a>"));

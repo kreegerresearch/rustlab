@@ -26,6 +26,7 @@ fn render_to_html(host_src: &str, dir: &Path) -> String {
         "plots",
         &theme,
         None,
+        &render::LinkMode::single_file(),
     )
 }
 
@@ -43,6 +44,7 @@ fn render_to_markdown(host_src: &str, dir: &Path) -> String {
         None,
         render_markdown::LinkStyle::Standard,
         true,
+        "",
     )
 }
 

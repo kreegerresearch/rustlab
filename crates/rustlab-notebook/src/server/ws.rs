@@ -492,10 +492,52 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       // Degenerate render with no <main> — replace the whole body.
       document.body.innerHTML = parsed.body.innerHTML;
     }
+    // The sidebar TOC lives OUTSIDE <main>, so a main-scoped swap left it
+    // frozen at page load: adding, renaming or reordering a heading
+    // renumbered the heading-N ids in the body while the TOC kept pointing
+    // at the old ones. Swap it too, and handle it appearing/disappearing
+    // when a notebook gains or loses its first heading. The hamburger is a
+    // SIBLING of the sidebar, not a child — sync it with the same lifecycle
+    // or a notebook gaining its first heading has an unreachable mobile TOC
+    // and one losing its last leaves an orphaned button.
+    // `body >` scoping: the unqualified selectors matched author-written
+    // raw HTML inside <main> — on a no-toc page (no real sidebar) a
+    // literal <nav class="sidebar"> in prose got the real TOC written
+    // INTO it, permanently diverging the live DOM from the served page.
+    // Sync order matches server emission (topbar, button, sidebar) so
+    // inserted nodes land in server order and tab order.
+    syncOutsideMain(parsed, 'body > header.topbar', tgt);
+    syncOutsideMain(parsed, 'body > button.nav-toggle', tgt);
+    syncOutsideMain(parsed, 'body > nav.sidebar', tgt);
+    // Only the class the server owns. Assigning the whole className wiped
+    // runtime classes — rl-source-open in particular, which closed the
+    // source/editor pane on every save and defeated the source/cell-editor
+    // mutual-exclusion guard while the pane was logically open.
+    if (parsed.body) {
+      document.body.classList.toggle('no-toc', parsed.body.classList.contains('no-toc'));
+    }
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
-    rerunKaTeX(tgt || document.body);
+    rerunKaTeX(document.body);
     afterUpdate();
+  }
+
+  // Reconcile a chrome element that sits outside <main>.
+  function syncOutsideMain(parsed, selector, mainTgt) {
+    const next = parsed.querySelector(selector);
+    const cur = document.querySelector(selector);
+    if (next && cur) {
+      // Keep the user's open mobile drawer open across the swap — the
+      // server always renders the sidebar closed.
+      const keepOpen = cur.classList.contains('open');
+      cur.innerHTML = next.innerHTML;
+      cur.className = next.className;
+      if (keepOpen) cur.classList.add('open');
+    } else if (next && !cur) {
+      document.body.insertBefore(next.cloneNode(true), mainTgt || document.body.firstChild);
+    } else if (!next && cur) {
+      cur.remove();
+    }
   }
 
   function applyPartial(blocks) {

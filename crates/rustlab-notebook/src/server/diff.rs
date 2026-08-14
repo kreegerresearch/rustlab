@@ -218,6 +218,34 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
     rest[..end].parse().ok()
 }
 
+/// The page chrome living OUTSIDE `<main>`, invisible to block-level
+/// diffs: the topbar, the sidebar TOC (whose `heading-N` hrefs must match
+/// the body's ids), and the `<body>` open tag carrying the `no-toc`
+/// switch. A partial/reconcile broadcast swaps blocks only, so when any
+/// of this differs between renders the client's chrome goes stale — a
+/// heading edit renumbers body ids while the TOC keeps the old hrefs,
+/// every entry off by one. The coordinator compares fingerprints and
+/// upgrades to a full refresh when they differ.
+#[allow(clippy::type_complexity)]
+pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+    // Real chrome always precedes <main>; author-written raw HTML inside
+    // a prose block does not. Without this bound, a no-toc page (no real
+    // sidebar) whose markdown contained a literal `<nav class="sidebar">`
+    // matched the fake and upgraded every edit of that block to a full
+    // refresh.
+    let head = &html[..html.find("<main").unwrap_or(html.len())];
+    let slice = |open: &str, close: &str| -> Option<&str> {
+        let start = head.find(open)?;
+        let end = head[start..].find(close)?;
+        Some(&head[start..start + end])
+    };
+    (
+        slice("<header class=\"topbar\">", "</header>"),
+        slice("<nav class=\"sidebar\">", "</nav>"),
+        slice("<body", ">"),
+    )
+}
+
 /// Whether a rendered document is "flat" — i.e. every `rl-block`
 /// section is a direct child of `<main>`, with no exercise/solution
 /// wrappers nesting sections inside `<div class="exercise">` or
@@ -228,6 +256,48 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
 /// refresh on structural edits.
 pub fn is_flat(html: &str) -> bool {
     !html.contains("class=\"exercise\"") && !html.contains("<details class=\"solution\"")
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_sees_sidebar_topbar_and_body_class() {
+        let a = "<body><header class=\"topbar\">t</header><nav class=\"sidebar\">x</nav><main></main></body>";
+        let renamed = a.replace(">x<", ">y<");
+        let no_toc = a.replace("<body>", "<body class=\"no-toc\">");
+        assert_eq!(chrome_fingerprint(a), chrome_fingerprint(a));
+        assert_ne!(
+            chrome_fingerprint(a),
+            chrome_fingerprint(&renamed),
+            "sidebar TOC change must alter the fingerprint"
+        );
+        assert_ne!(
+            chrome_fingerprint(a),
+            chrome_fingerprint(&no_toc),
+            "no-toc switch must alter the fingerprint"
+        );
+        // Block-only edits leave it unchanged — no spurious full refreshes.
+        let body_edit = a.replace("<main></main>", "<main>new</main>");
+        assert_eq!(chrome_fingerprint(a), chrome_fingerprint(&body_edit));
+    }
+
+    #[test]
+    fn fingerprint_ignores_fake_chrome_inside_main() {
+        // On a no-toc page there is no real sidebar before <main>, so an
+        // author-written raw `<nav class="sidebar">` inside a prose block
+        // used to win the find() and upgrade every edit of that block to
+        // a full refresh. The fingerprint reads only the pre-<main> region.
+        let v1 = "<body class=\"no-toc\"><header class=\"topbar\">t</header><main><p>x</p><nav class=\"sidebar\">FAKE-V1</nav></main></body>";
+        let v2 = v1.replace("FAKE-V1", "FAKE-V2");
+        assert_eq!(
+            chrome_fingerprint(v1),
+            chrome_fingerprint(&v2),
+            "fake in-content sidebar leaked into the fingerprint"
+        );
+        assert_eq!(chrome_fingerprint(v1).1, None, "no real sidebar exists");
+    }
 }
 
 /// Decide which envelope to send. `None` means "no content

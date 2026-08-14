@@ -54,6 +54,7 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         "/plots",
         theme,
         None,
+        &rustlab_notebook::render::LinkMode::single_file(),
     );
     let html = rewrite_cdn_urls(&html);
 
@@ -75,6 +76,9 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         single: true,
         theme,
         index_title: "smoke".to_string(),
+        link_slugs: HashMap::new(),
+        index_body: tokio::sync::RwLock::new(String::new()),
+        index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
     });
     (state, src_dir, plot_dir)

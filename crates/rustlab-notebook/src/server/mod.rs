@@ -128,12 +128,33 @@ fn build_state(
     editable: bool,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
-        let files = crate::list_md_files_recursive(canonical_input);
+        // Same listing rule as the static build: partials are transcluded,
+        // not browsed, so serving them as top-level pages would show a
+        // collection the built output does not have.
+        let files: Vec<PathBuf> = crate::list_md_files_recursive(canonical_input)
+            .into_iter()
+            .filter(|p| match p.strip_prefix(canonical_input) {
+                Ok(rel) => crate::is_listable_notebook(rel),
+                // The walk seeds from canonical_input, so every result is
+                // prefixed. If that ever breaks, an ABSOLUTE path would hit
+                // the underscore rule on unrelated ancestors (`~/_work/…`)
+                // and silently hide the whole collection — include instead.
+                Err(_) => {
+                    debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                    true
+                }
+            })
+            .collect();
         if files.is_empty() {
-            anyhow::bail!("no .md notebooks found in {}", canonical_input.display());
+            anyhow::bail!(
+                "no listable notebooks in {} (README.md, index.md, dotfiles and _partials are hidden from listings)",
+                canonical_input.display()
+            );
         }
         files
     } else {
+        // An explicitly-named single file is served even if it is a partial —
+        // the user asked for it by name.
         vec![canonical_input.to_path_buf()]
     };
 
@@ -147,13 +168,79 @@ fn build_state(
     // needs the whole set, so it can't be built in a single render pass
     // (the first notebook wouldn't yet know its successor).
     let mut entries: Vec<(String, PathBuf, String)> = Vec::with_capacity(sources.len());
+    // Collected alongside each entry purely to sort by, then dropped: the
+    // frontmatter `order:` and the filename the static renderer sorts on.
+    let mut sort_keys: Vec<(Option<i64>, String)> = Vec::with_capacity(sources.len());
     for path in &sources {
+        // Warn-and-skip, matching cmd_render_dir: one unreadable file
+        // (an editor's stale lock, a permissions hiccup) must not refuse
+        // to start the whole server. Read BEFORE assigning the slug so a
+        // skipped file doesn't consume a collision suffix.
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("warning: cannot read {} — skipping: {e}", path.display());
+                continue;
+            }
+        };
         let slug = unique_slug(path, &mut used);
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
         let title = crate::extract_title(&source, &path.to_path_buf());
+        let (fm, _) = crate::parse::extract_frontmatter(&source);
+        // Sort on the path relative to the collection root, not the bare
+        // filename: this walk is recursive, so `ch1/09-end.md` and
+        // `ch2/01-start.md` must stay in chapter order. Keying on the
+        // filename alone interleaved chapters and made same-named files in
+        // different directories compare equal. Joined with `/` regardless
+        // of platform — the same string doubles as the link-resolver key.
+        let rel = if is_dir {
+            path.strip_prefix(canonical_input)
+                .unwrap_or(path)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        } else {
+            // A lone file strips to the empty path against itself; key it
+            // by name so a self-referential link still resolves.
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
+        sort_keys.push((fm.order, rel));
         entries.push((slug, path.clone(), title));
     }
+
+    // Cross-notebook link resolution: rel path → slug, for rewriting body
+    // `[next](02-filter.md)` references to `/n/<slug>` routes. Built from
+    // the same rel strings the sort uses, so the two cannot disagree.
+    let link_slugs: HashMap<String, String> = entries
+        .iter()
+        .zip(sort_keys.iter())
+        .map(|((slug, _, _), (_, rel))| (rel.clone(), slug.clone()))
+        .collect();
+
+    if entries.is_empty() {
+        anyhow::bail!(
+            "no readable notebooks in {}",
+            canonical_input.display()
+        );
+    }
+
+    // Same ordering as the static build, so `watch` cannot show a different
+    // sequence — or different prev/next links — than what gets shipped.
+    let mut idxs: Vec<usize> = (0..entries.len()).collect();
+    idxs.sort_by(|&a, &b| {
+        crate::compare_notebook_order(
+            (sort_keys[a].0, &sort_keys[a].1),
+            (sort_keys[b].0, &sort_keys[b].1),
+        )
+    });
+    // Keep each entry's rel path alongside it through the reorder — pass 2
+    // needs the notebook's directory to resolve its relative links.
+    let (entries, rels): (Vec<(String, PathBuf, String)>, Vec<String>) = idxs
+        .into_iter()
+        .map(|i| (entries[i].clone(), sort_keys[i].1.clone()))
+        .unzip();
 
     // (slug, title) in listing order — the input to per-page nav.
     let listing: Vec<(String, String)> = entries
@@ -164,7 +251,12 @@ fn build_state(
     // Pass 2: render each notebook with its cross-notebook nav baked in.
     for (idx, (slug, path, title)) in entries.iter().enumerate() {
         let nav = server_nav(&listing, idx, !is_dir);
-        let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref())
+        let link = crate::render::LinkMode::Server {
+            slugs: link_slugs.clone(),
+            current_rel_dir: crate::rel_dir_of(&rels[idx]),
+            index_at_root: is_dir,
+        };
+        let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref(), &link)
             .with_context(|| format!("rendering {} for server", path.display()))?;
         let nb = Arc::new(http::Notebook::new(
             slug.clone(),
@@ -179,11 +271,35 @@ fn build_state(
         order.push(slug.clone());
     }
 
+    // The collection root's index.md is the served index page's body and
+    // title, exactly as in the static build (which hoists it into
+    // index.html). It is filtered from the notebook listing, so without
+    // this the served `/` showed an empty body under the directory name —
+    // and a `[home](index.md)` body link resolved to a page missing the
+    // very content it named.
+    let index_md_path = is_dir
+        .then(|| canonical_input.join("index.md"))
+        .filter(|p| p.is_file());
+    let (index_body, index_md_title) = index_md_path
+        .as_ref()
+        .and_then(|p| {
+            let link = crate::render::LinkMode::Server {
+                slugs: link_slugs.clone(),
+                current_rel_dir: String::new(),
+                index_at_root: true,
+            };
+            crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
+        })
+        .unwrap_or((String::new(), None));
+
+    // Same title precedence as `cmd_render_dir`: index.md > directory name.
     let index_title = if is_dir {
-        canonical_input
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Notebooks".to_string())
+        index_md_title.unwrap_or_else(|| {
+            canonical_input
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Notebooks".to_string())
+        })
     } else {
         notebooks
             .get(&order[0])
@@ -199,12 +315,20 @@ fn build_state(
         single: !is_dir,
         theme,
         index_title,
+        link_slugs,
+        index_body: tokio::sync::RwLock::new(index_body),
+        index_md_path,
         render_tx: std::sync::OnceLock::new(),
     }))
 }
 
 /// Derive a unique, URL-safe slug for `path`, deduping collisions with a
 /// `-N` suffix. Mutates `used` to record the chosen slug.
+///
+/// Suffixes are positional over the sorted walk: adding or removing a
+/// same-stem file renumbers its collision group on the next start, so
+/// `/n/<slug>` URLs are stable across restarts only for a fixed file set —
+/// don't treat them as durable identities.
 fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
     let stem = path
         .file_stem()
@@ -278,12 +402,13 @@ pub(super) fn render_for_server(
     slug: &str,
     editable: bool,
     nav: Option<&crate::NotebookNav>,
+    link: &crate::render::LinkMode,
 ) -> Result<ServerRender> {
     // A never-tripped flag → the cancellable path can't return `None`.
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
     Ok(
         render_for_server_cancellable(
-            input, theme, plot_root, slug, editable, nav, never, None, None, None,
+            input, theme, plot_root, slug, editable, nav, link, never, None, None, None,
         )?
         .expect("render with a never-set cancel flag cannot be cancelled"),
     )
@@ -300,6 +425,7 @@ pub(super) fn render_for_server_cancellable(
     slug: &str,
     editable: bool,
     nav: Option<&crate::NotebookNav>,
+    link: &crate::render::LinkMode,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     widget_overrides: Option<&std::collections::BTreeMap<String, rustlab_script::WidgetValue>>,
     cache: Option<&mut crate::cache::NotebookCache>,
@@ -371,7 +497,7 @@ pub(super) fn render_for_server_cancellable(
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
-    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, nav);
+    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, nav, link);
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client(&html);
     let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
@@ -571,6 +697,91 @@ mod tests {
     }
 
     #[test]
+    fn served_listing_keeps_nested_collections_in_path_order() {
+        // The shared sort key was the bare filename, but this walk is
+        // recursive: `ch2/01.md` then sorted before `ch1/09.md`, interleaving
+        // chapters, and same-named files in different directories compared
+        // equal. The key is the path relative to the collection root.
+        let dir = tempfile::tempdir().unwrap();
+        for (sub, name) in [("ch1", "01.md"), ("ch1", "09.md"), ("ch2", "01.md")] {
+            std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+            std::fs::write(
+                dir.path().join(sub).join(name),
+                format!("# {sub}-{}\n", name.trim_end_matches(".md")),
+            )
+            .unwrap();
+        }
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["ch1-01", "ch1-09", "ch2-01"]);
+    }
+
+    #[test]
+    fn served_listing_excludes_the_index_page_body() {
+        // index.md becomes the index page's own body in the static build, so
+        // serving it as an ordinary notebook invented a page the built output
+        // does not have — and chained it into prev/next.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.md"), "# Welcome\n").unwrap();
+        std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["One"], "index.md served as a notebook");
+    }
+
+    #[test]
+    fn served_listing_hides_partials_like_the_static_build() {
+        // The `_name.md` partial convention was added to the static build
+        // only, so the server would have listed `_setup.md` as a browsable
+        // peer of real notebooks while the built index hid it — the same
+        // serve-vs-build divergence the shared sort order fixed.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
+        std::fs::write(dir.path().join("_partial.md"), "# Partial\n").unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Real"], "server listed a transcluded partial");
+    }
+
+    #[test]
+    fn served_listing_honours_frontmatter_order() {
+        // The server sorted by path and ignored `order:`, so `watch` could
+        // present a different lesson sequence — and different prev/next
+        // links — than the built output.
+        let dir = tempfile::tempdir().unwrap();
+        for (name, order) in [("a-third.md", 3), ("b-first.md", 1), ("c-second.md", 2)] {
+            std::fs::write(
+                dir.path().join(name),
+                format!("---\norder: {order}\ntitle: N{order}\n---\n\n# N{order}\n"),
+            )
+            .unwrap();
+        }
+        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            vec!["N1", "N2", "N3"],
+            "served order ignored frontmatter `order:` (filename order would be N3, N1, N2)"
+        );
+    }
+
+    #[test]
     fn server_nav_links_neighbours_and_index() {
         let listing = vec![
             ("a".to_string(), "Alpha".to_string()),
@@ -608,8 +819,9 @@ mod tests {
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
         let beta = get_body(&app, "/n/beta").await;
-        assert!(beta.contains("class=\"topbar-layout\""), "beta missing topbar layout");
         assert!(beta.contains("class=\"topbar\""), "beta missing breadcrumb topbar");
+        // The in-page TOC coexists with the cross-notebook nav.
+        assert!(beta.contains("<nav class=\"sidebar\">"), "beta lost its in-page TOC");
         assert!(beta.contains("href=\"/\""), "beta breadcrumb missing index link");
         assert!(beta.contains("class=\"page-nav\""), "beta missing footer nav");
         assert!(beta.contains("href=\"/n/alpha\""), "beta missing prev link");
@@ -621,6 +833,250 @@ mod tests {
         let alpha = get_body(&app, "/n/alpha").await;
         assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
         assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+    }
+
+    #[test]
+    fn collection_under_underscore_ancestor_still_lists() {
+        // The listing filter must judge paths RELATIVE to the collection
+        // root: a root that itself lives under a `_`-prefixed directory
+        // (`~/_work/coll/`) must not have its notebooks mistaken for
+        // partials. This is the documented reason the rel-path stripping
+        // exists — previously untested.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("_work").join("coll");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
+        let canon = std::fs::canonicalize(&root).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        assert_eq!(state.order.len(), 1, "notebook hidden by an ancestor's underscore");
+    }
+
+    #[test]
+    fn unreadable_file_skips_instead_of_aborting_startup() {
+        // An editor's stale lock (a dangling symlink with a .md name) or a
+        // permissions hiccup must not refuse to start the whole server —
+        // warn and skip, like cmd_render_dir. (Dotfile locks like `.#a.md`
+        // are additionally filtered from listings outright.)
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.md"), "# Good\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            dir.path().join("nonexistent-target"),
+            dir.path().join("broken.md"),
+        )
+        .unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let titles: Vec<&str> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Good"], "broken symlink aborted or was listed");
+    }
+
+    #[test]
+    fn link_mode_for_round_trips_nested_rel_dir() {
+        // Live re-renders must resolve links exactly like the startup
+        // render: link_mode_for(slug) recovers the notebook's rel dir from
+        // the same map build_state stored.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
+        std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
+        match state.link_mode_for(deep_slug) {
+            crate::render::LinkMode::Server {
+                slugs,
+                current_rel_dir,
+                index_at_root,
+            } => {
+                assert_eq!(current_rel_dir, "ch1");
+                assert_eq!(slugs, state.link_slugs);
+                assert!(index_at_root, "directory mode must map index.md to /");
+            }
+            other => panic!("expected Server mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn static_and_served_listings_agree() {
+        // The PR's stated invariant: `watch` may not present a different
+        // collection — different entries or a different sequence — than
+        // the built output. One fixture, both listings, must be equal.
+        // Exercises order: frontmatter, nesting, and partial/index/README
+        // filtering in one pass.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::write(dir.path().join("index.md"), "# Home\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Repo readme\n").unwrap();
+        std::fs::write(dir.path().join("_setup.md"), "# Partial\n").unwrap();
+        std::fs::write(
+            dir.path().join("z-first.md"),
+            "---\norder: 1\n---\n\n# Z First\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("a-unordered.md"), "# A Unordered\n").unwrap();
+        std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+
+        // Served listing.
+        let state = build_state(&canon, true, theme, false).unwrap();
+        let served: Vec<String> = state
+            .order
+            .iter()
+            .map(|slug| state.notebooks[slug].title.clone())
+            .collect();
+
+        // Static listing, parsed from the generated index.html.
+        let out = tempfile::tempdir().unwrap();
+        crate::cmd_render_dir(
+            canon.clone(),
+            Some(out.path().to_path_buf()),
+            crate::Format::Html,
+            theme,
+            None,
+        );
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        let built: Vec<String> = index
+            .lines()
+            .filter(|l| l.trim_start().starts_with("<li><a href="))
+            .filter_map(|l| l.split('>').nth(2).map(|s| s.trim_end_matches("</a").to_string()))
+            .collect();
+
+        assert_eq!(
+            served, built,
+            "watch and render disagree about the collection"
+        );
+        assert_eq!(
+            served,
+            vec!["Z First", "A Unordered", "Deep"],
+            "order: frontmatter first, then rel path; partials/index/README hidden"
+        );
+        // The nested notebook was actually emitted by the static build.
+        assert!(out.path().join("ch1/deep.html").is_file(), "nested output missing");
+    }
+
+    #[tokio::test]
+    async fn served_index_renders_index_md_body_and_title() {
+        // The static build hoists index.md into index.html (body + title);
+        // the server filtered it from the listing and then showed an empty
+        // body under the directory name — and a `[home](index.md)` body
+        // link resolved to a page missing the very content it named.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("index.md"),
+            "# Welcome\n\nRead [the first lesson](01.md) first.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
+        let app = http::router(state);
+        let index = get_body(&app, "/").await;
+        assert!(
+            index.contains("Read <a href=\"/n/01\">the first lesson</a> first."),
+            "index.md body missing or its links unresolved: {index}"
+        );
+    }
+
+    #[tokio::test]
+    async fn served_body_links_resolve_to_slug_routes() {
+        // The WS0 fixture collection: served pages must emit `/n/<slug>`
+        // for resolvable cross-notebook links — the server has no `.html`
+        // route, so anything else 404s — and leave unresolvable targets
+        // (partials, dangling, root-escaping) exactly as written.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.md"), "# Welcome\n").unwrap();
+        std::fs::write(
+            dir.path().join("01-intro.md"),
+            "# Intro\n\n[next](02-filter.md) · [setup](02-filter.md#setup) · \
+             [home](index.md) · [shared](_setup.md) · [gone](nope.md)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("02-filter.md"),
+            "# Filter\n\n## Setup {#setup}\n\ntext\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("_setup.md"), "# Shared Setup\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
+        std::fs::create_dir_all(dir.path().join("ch2")).unwrap();
+        std::fs::write(
+            dir.path().join("ch1").join("01-intro.md"),
+            "# Ch1 Intro\n\n[sibling myself](01-intro.md) · [root intro](../01-intro.md) · \
+             [notes](../ch2/notes.md)\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
+
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false).unwrap();
+        // Read slugs from the state rather than hardcoding slugify/dedup
+        // output — walk order decides which same-stem file carries `-2`.
+        let slug_of = |rel: &str| -> String {
+            state.link_slugs.get(rel).unwrap_or_else(|| panic!("no slug for {rel}")).clone()
+        };
+        let root_intro = slug_of("01-intro.md");
+        let ch1_intro = slug_of("ch1/01-intro.md");
+        let filter = slug_of("02-filter.md");
+        let notes = slug_of("ch2/notes.md");
+        assert_ne!(root_intro, ch1_intro, "same-stem files need distinct slugs");
+        let app = http::router(state);
+
+        let intro = get_body(&app, &format!("/n/{root_intro}")).await;
+        assert!(
+            intro.contains(&format!("href=\"/n/{filter}\"")),
+            "same-dir link not resolved to slug route: {intro}"
+        );
+        assert!(
+            intro.contains(&format!("href=\"/n/{filter}#setup\"")),
+            "fragment did not survive resolution"
+        );
+        // index.md has no slug — it is the index page's body at `/`.
+        assert!(intro.contains("href=\"/\""), "index.md link should land on /");
+        // Unresolvable targets stay exactly as written — visibly broken
+        // beats a manufactured href that 404s while looking intentional.
+        assert!(intro.contains("href=\"_setup.md\""), "partial target rewritten");
+        assert!(intro.contains("href=\"nope.md\""), "dangling target rewritten");
+        assert!(!intro.contains(".html\""), "served page emitted a static .html href");
+
+        // Nested pages resolve by path, not stem: `01-intro.md` relative
+        // to ch1/ is the ch1 file, `../01-intro.md` the root one. A
+        // stem-keyed map cannot pass this.
+        let ch1 = get_body(&app, &format!("/n/{ch1_intro}")).await;
+        assert!(
+            ch1.contains(&format!("href=\"/n/{ch1_intro}\"")),
+            "same-dir nested link resolved to the wrong file: {ch1}"
+        );
+        assert!(
+            ch1.contains(&format!("href=\"/n/{root_intro}\"")),
+            "../ link did not resolve to the root file"
+        );
+        assert!(
+            ch1.contains(&format!("href=\"/n/{notes}\"")),
+            "../ch2/ link did not resolve"
+        );
+
+        // The fragment target really exists on the destination page.
+        let filter_page = get_body(&app, &format!("/n/{filter}")).await;
+        assert!(
+            filter_page.contains("id=\"setup\""),
+            "explicit {{#setup}} anchor missing from destination page"
+        );
+        // Chrome guard: body-link resolution must not touch the topbar or
+        // footer nav, which were already correct server hrefs.
+        assert!(filter_page.contains("class=\"topbar\""));
+        assert!(filter_page.contains("class=\"page-nav\""));
     }
 
     #[tokio::test]
@@ -636,8 +1092,13 @@ mod tests {
         let app = http::router(state);
 
         let page = get_body(&app, &format!("/n/{slug}")).await;
-        assert!(!page.contains("class=\"topbar\""), "single file should have no topbar");
+        // Same chrome as a collection page — a reader should not be able to
+        // tell how the notebook was rendered — but with nothing to page to.
+        assert!(page.contains("class=\"topbar\""), "single file should still have the topbar");
+        assert!(page.contains("<nav class=\"sidebar\">"), "single file should keep its TOC");
         assert!(!page.contains("class=\"page-nav\""), "single file should have no footer nav");
+        assert!(!page.contains("class=\"prev\""), "single file should have no prev link");
+        assert!(!page.contains("class=\"next\""), "single file should have no next link");
     }
 
     #[tokio::test]

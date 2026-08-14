@@ -74,6 +74,15 @@ impl RenderRequest {
     pub fn rerender(slug: String) -> Self {
         Self { slug, force_from: None }
     }
+
+    /// Refresh the served index page's `index.md` body. The empty slug is
+    /// unambiguous — `slugify` never produces one for a real notebook.
+    pub fn index_refresh() -> Self {
+        Self {
+            slug: String::new(),
+            force_from: None,
+        }
+    }
 }
 
 /// Merge two force-run scopes for the same debounce window: forcing from
@@ -138,6 +147,9 @@ pub fn spawn(
     // can request renders through the same debounce + preemption path as a
     // file save.
     let _ = state.render_tx.set(tx.clone());
+    // index.md has no slug (it is the index page's body, not a notebook),
+    // so the slug map can't route its saves — match it by path instead.
+    let index_md_path = state.index_md_path.clone();
     std::thread::spawn(move || {
         while let Ok(res) = raw_rx.recv() {
             let event = match res {
@@ -151,8 +163,17 @@ pub fn spawn(
                 continue;
             }
             for path in &event.paths {
-                if let Some(slug) = match_slug(&by_path, path) {
-                    if tx.send(RenderRequest::rerender(slug)).is_err() {
+                let req = match match_slug(&by_path, path) {
+                    Some(slug) => Some(RenderRequest::rerender(slug)),
+                    None => {
+                        let canon =
+                            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                        (index_md_path.as_deref() == Some(canon.as_path()))
+                            .then(RenderRequest::index_refresh)
+                    }
+                };
+                if let Some(req) = req {
+                    if tx.send(req).is_err() {
                         return; // coordinator gone
                     }
                 }
@@ -234,12 +255,46 @@ async fn coordinator(
         }
 
         for (slug, force_from) in pending {
+            if slug.is_empty() {
+                refresh_index(theme, state.clone());
+                continue;
+            }
             let Some(nb) = state.notebook(&slug).cloned() else {
                 continue;
             };
             schedule_render(theme, state.clone(), nb, force_from);
         }
     }
+}
+
+/// Re-render the root `index.md` body into the served index page. No WS
+/// push: the index page holds no socket (no slug), so the next page load
+/// simply reads the refreshed body. Title changes need a restart — the
+/// listing title is read once at startup.
+fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
+    tokio::spawn(async move {
+        let Some(path) = state.index_md_path.clone() else {
+            return;
+        };
+        let root = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let link = crate::render::LinkMode::Server {
+            slugs: state.link_slugs.clone(),
+            current_rel_dir: String::new(),
+            index_at_root: true,
+        };
+        let rendered = tokio::task::spawn_blocking(move || {
+            crate::read_and_render_index_md(&path, &root, theme, &link)
+        })
+        .await;
+        // A read failure (None) — e.g. the brief not-there window of an
+        // editor's atomic rename — must NOT blank a previously-good index:
+        // skip the write and keep serving the last body. Only a successful
+        // read publishes (including a legitimately emptied file).
+        if let Ok(Some((body, _title))) = rendered {
+            *state.index_body.write().await = body;
+            eprintln!("[watch] index.md body refreshed");
+        }
+    });
 }
 
 /// Schedule a (preemptible) re-render of `nb`. Non-blocking: the render
@@ -283,6 +338,9 @@ fn schedule_render(
             .iter()
             .position(|(s, _)| *s == slug)
             .and_then(|idx| super::server_nav(&listing, idx, state.single));
+        // Same link resolution as the startup render — recomputed from
+        // state so hrefs cannot drift across live re-renders.
+        let link = state.link_mode_for(&slug);
 
         // Snapshot the current live widget values to feed this render as
         // overrides. A slider drag updates this map (via the WS handler)
@@ -304,6 +362,7 @@ fn schedule_render(
                 &slug,
                 editable,
                 nav.as_ref(),
+                &link,
                 cancel,
                 Some(&widget_overrides),
                 Some(&mut cache),
@@ -362,9 +421,23 @@ fn schedule_render(
         // notebooks without exercise/solution nesting are safe to reconcile.
         let new_blocks = diff::split_blocks(&new_html);
         let allow_reconcile = diff::is_flat(&new_html);
+        // Partial/reconcile envelopes carry blocks only; the sidebar TOC,
+        // topbar, and body class live outside <main> and would go stale —
+        // heading edits renumber body ids while the TOC keeps old hrefs.
+        // A chrome change therefore forces a full refresh.
+        let chrome_changed = {
+            let prev_html = nb.html.read().await;
+            diff::chrome_fingerprint(&prev_html) != diff::chrome_fingerprint(&new_html)
+        };
         let decision = {
             let prev = nb.prev_blocks.lock().unwrap();
-            diff::classify(&prev, &new_blocks, allow_reconcile)
+            match diff::classify(&prev, &new_blocks, allow_reconcile) {
+                Broadcast::Partial(_) | Broadcast::Reconcile(_) if chrome_changed => {
+                    eprintln!("[watch] chrome changed ({}) — upgrading to full", nb.slug);
+                    Broadcast::Full
+                }
+                d => d,
+            }
         };
 
         // Publish state regardless of broadcast kind so a fresh page load
@@ -475,6 +548,9 @@ mod tests {
             single: true,
             theme: Theme::Dark.colors(),
             index_title: "nb".to_string(),
+            link_slugs: Map::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
         });
         (state, nb)
@@ -489,7 +565,7 @@ mod tests {
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
                 .unwrap()
                 .html;
         let (state, nb) = single_state(&nb_path, html0);
@@ -532,7 +608,7 @@ mod tests {
         std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
 
         let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None)
+            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
                 .unwrap()
                 .html;
         let (state, nb) = single_state(&nb_path, html0);

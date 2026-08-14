@@ -50,6 +50,7 @@ fn render_with(overrides: Option<&BTreeMap<String, WidgetValue>>) -> String {
         "/plots",
         Theme::Dark.colors(),
         None,
+        &rustlab_notebook::render::LinkMode::single_file(),
     )
 }
 
@@ -115,6 +116,7 @@ fn malformed_widget_fence_becomes_a_caution_callout() {
         "/plots",
         Theme::Dark.colors(),
         None,
+        &rustlab_notebook::render::LinkMode::single_file(),
     );
     assert!(html.contains("callout-caution"), "expected a caution callout:\n{html}");
     assert!(!html.contains("class=\"rl-widget\""), "broken widget must not render a control");
@@ -165,6 +167,7 @@ fn render_src(src: &str, overrides: Option<&BTreeMap<String, WidgetValue>>) -> S
         "/plots",
         Theme::Dark.colors(),
         None,
+        &rustlab_notebook::render::LinkMode::single_file(),
     )
 }
 
@@ -315,6 +318,7 @@ fn scoped_rerender_produces_correct_new_values() {
         "/plots",
         Theme::Dark.colors(),
         None,
+        &rustlab_notebook::render::LinkMode::single_file(),
     );
     assert!(html.contains("11"), "cached upstream block still present");
     assert!(html.contains("70"), "widget-reading block recomputed (b=70)");
