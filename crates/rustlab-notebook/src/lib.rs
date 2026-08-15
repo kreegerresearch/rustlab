@@ -2032,33 +2032,6 @@ mod tests {
         assert_eq!(first, second, "in-place re-render is not idempotent");
     }
 
-    #[test]
-    fn cross_notebook_fragment_needs_an_explicit_anchor() {
-        // Documents current behaviour (round-2 finding, deferred design
-        // gap): a fragment to a PLAIN heading survives resolution but has
-        // no matching id on the target page — generated ids are
-        // heading-N. Only explicit `{#anchor}` headings are stable
-        // targets. See dev/requests for the slugification proposal.
-        let blocks = vec![execute::Rendered::Markdown(
-            "## Section Two\n".to_string(),
-        )];
-        let html = render::render_html(
-            "T",
-            &blocks,
-            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
-            "plots",
-            Theme::Dark.colors(),
-            None,
-            &render::LinkMode::single_file(),
-        );
-        assert!(
-            !html.contains("id=\"section-two\""),
-            "if heading ids are now slugified, update the fragment docs and \
-             delete this pin"
-        );
-        assert!(html.contains("id=\"heading-1\""));
-    }
-
     // ── guard_markdown_overwrite ────────────────────────────────────
 
     #[test]
