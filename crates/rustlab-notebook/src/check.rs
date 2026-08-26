@@ -77,6 +77,7 @@ pub fn check_source(
     findings.extend(check_mismatched_details(source));
     findings.extend(check_unresolved_embeds(source, host_dir, root_dir));
     findings.extend(check_plot_urls_resolve(source, file));
+    findings.extend(check_fragment_targets(source, host_dir));
     // Stable order: by (line, code).
     findings.sort_by_key(|f| (f.line.unwrap_or(0), f.code));
     findings
@@ -294,6 +295,132 @@ pub fn check_duplicate_generated_headers(source: &str) -> Vec<Finding> {
 /// **W002** — `<details>` and `</details>` tag counts must balance.
 /// A mismatch typically means a hand-authored disclosure widget lost
 /// its closing tag.
+/// **W003 / W004** — Cross-notebook links must point at files that exist
+/// (W003) and fragments must land on real anchors in the target (W004).
+///
+/// An anchor is either an explicit `{#id}` heading attribute (any level)
+/// or the generated GitHub-style slug of an h1–h3 heading — the same
+/// algorithm the renderer uses (`render::slugify_heading`, with the same
+/// in-order `-N` dedup), so this check and the rendered page cannot
+/// disagree about which fragments resolve.
+///
+/// Only standard `[text](target.md…)` links are inspected; wikilinks are
+/// transformed upstream of rendering and would need offset-shifting to
+/// attribute lines correctly. External URLs, absolute paths and non-`.md`
+/// targets are ignored, matching the link resolver's candidacy rules.
+pub fn check_fragment_targets(source: &str, host_dir: &Path) -> Vec<Finding> {
+    use pulldown_cmark::{Event, Parser, Tag};
+    let mut findings = Vec::new();
+    let parser = Parser::new_ext(source, crate::render::notebook_md_options());
+    for (event, range) in parser.into_offset_iter() {
+        let Event::Start(Tag::Link { dest_url, .. }) = event else {
+            continue;
+        };
+        let dest = dest_url.as_ref();
+        // Same candidacy rules as the link resolver — shared helpers, so
+        // the check and the renderer cannot drift.
+        if dest.starts_with('/') || dest.starts_with('#') || crate::render::has_url_scheme(dest) {
+            continue;
+        }
+        let (path, fragment) = match dest.find('#') {
+            Some(at) => (&dest[..at], Some(&dest[at + 1..])),
+            None => (dest, None),
+        };
+        if !path.ends_with(".md") {
+            continue;
+        }
+        let line = Some(1 + source[..range.start].matches('\n').count());
+        let target = host_dir.join(crate::render::percent_decode(path));
+        if !target.is_file() {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                line,
+                code: "rustlab:W003",
+                message: format!("link target '{path}' not found"),
+                auto_fixable: false,
+            });
+            continue;
+        }
+        let Some(frag) = fragment else { continue };
+        if frag.is_empty() {
+            continue;
+        }
+        let Ok(target_src) = std::fs::read_to_string(&target) else {
+            continue; // unreadable target: not this rule's problem
+        };
+        if !target_anchors(&target_src).contains(frag) {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                line,
+                code: "rustlab:W004",
+                message: format!(
+                    "fragment '#{frag}' not found in '{path}' — anchors are explicit \
+                     `{{#id}}` attributes or heading slugs (e.g. `## Section Two` \u{2192} #section-two)"
+                ),
+                auto_fixable: false,
+            });
+        }
+    }
+    findings
+}
+
+/// Every anchor a rendered page of `source` will carry: explicit heading
+/// ids (any level — pulldown emits them straight into the HTML) plus
+/// generated slugs for h1–h3, deduped in document order exactly like
+/// `inject_heading_ids`.
+fn target_anchors(source: &str) -> std::collections::HashSet<String> {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+    let mut anchors = std::collections::HashSet::new();
+    let mut in_heading: Option<(u32, Option<String>)> = None; // (level, explicit id)
+    let mut text = String::new();
+    for event in Parser::new_ext(source, crate::render::notebook_md_options()) {
+        match event {
+            Event::Start(Tag::Heading { level, id, .. }) => {
+                in_heading = Some((level as u32, id.map(|s| s.to_string())));
+                text.clear();
+            }
+            Event::Text(t) | Event::Code(t) if in_heading.is_some() => text.push_str(&t),
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, explicit)) = in_heading.take() {
+                    if let Some(id) = explicit {
+                        anchors.insert(id);
+                    } else if level <= 3 {
+                        // Strip raw `$…$` spans the way the math pipeline
+                        // removes them from rendered labels.
+                        let mut plain = String::new();
+                        let mut in_math = false;
+                        for c in text.chars() {
+                            if c == '$' {
+                                in_math = !in_math;
+                            } else if !in_math {
+                                plain.push(c);
+                            }
+                        }
+                        let base = crate::render::slugify_heading(&plain);
+                        if !base.is_empty() {
+                            let id = if anchors.contains(&base) {
+                                let mut n = 1;
+                                loop {
+                                    let cand = format!("{base}-{n}");
+                                    if !anchors.contains(&cand) {
+                                        break cand;
+                                    }
+                                    n += 1;
+                                }
+                            } else {
+                                base
+                            };
+                            anchors.insert(id);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    anchors
+}
+
 pub fn check_mismatched_details(source: &str) -> Vec<Finding> {
     // Cheap substring count; `<details>` and `</details>` are
     // sufficiently unique that we don't need a full HTML parser.
@@ -600,5 +727,78 @@ mod tests {
         let e004_pos = codes.iter().position(|c| *c == "rustlab:E004").unwrap();
         let e001_pos = codes.iter().position(|c| *c == "rustlab:E001").unwrap();
         assert!(e004_pos < e001_pos, "findings out of order: {codes:?}");
+    }
+
+    // ── W003/W004: link targets and fragments ──
+
+    fn frag_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("target.md"),
+            "# Target\n\n## Section Two\n\n## Setup {#custom}\n\n## Setup\n\n## Setup\n\n#### Deep Heading\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn w004_flags_dangling_fragments_and_accepts_real_anchors() {
+        let dir = frag_fixture();
+        let src = "\
+[ok slug](target.md#section-two)
+[ok explicit](target.md#custom)
+[ok dedup](target.md#setup)
+[bad](target.md#no-such-section)
+[plain link, no fragment](target.md)
+";
+        let findings = check_fragment_targets(src, dir.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "rustlab:W004");
+        assert_eq!(findings[0].line, Some(4));
+        assert!(findings[0].message.contains("#no-such-section"));
+    }
+
+    #[test]
+    fn w004_generated_slugs_exclude_h4_but_explicit_ids_any_level() {
+        let dir = frag_fixture();
+        // h4 headings get no generated id in the rendered page — a
+        // fragment to one dangles and must warn.
+        let findings =
+            check_fragment_targets("[deep](target.md#deep-heading)", dir.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        // Dedup sequence matches the renderer: the first PLAIN `## Setup`
+        // takes `setup` (the {#custom} one consumed no slug), the second
+        // plain one takes `setup-1`, and `setup-2` does not exist.
+        let findings = check_fragment_targets("[d](target.md#setup-1)", dir.path());
+        assert!(
+            findings.is_empty(),
+            "dedup sequence must match the renderer: {findings:?}"
+        );
+        let findings = check_fragment_targets("[d](target.md#setup-2)", dir.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    #[test]
+    fn w003_flags_missing_targets_and_skips_non_candidates() {
+        let dir = frag_fixture();
+        let src = "\
+[gone](nope.md)
+[external](https://example.com/README.md)
+[absolute](/abs/x.md)
+[not markdown](image.png)
+";
+        let findings = check_fragment_targets(src, dir.path());
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].code, "rustlab:W003");
+        assert_eq!(findings[0].line, Some(1));
+        assert!(findings[0].message.contains("nope.md"));
+    }
+
+    #[test]
+    fn w003_percent_encoded_targets_resolve_before_judging() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my note.md"), "# Note\n").unwrap();
+        let findings = check_fragment_targets("[n](my%20note.md)", dir.path());
+        assert!(findings.is_empty(), "{findings:?}");
     }
 }

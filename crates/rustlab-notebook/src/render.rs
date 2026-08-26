@@ -151,7 +151,7 @@ fn rewrite_link_dest_to(
 /// Decode `%XX` escapes so href spellings compare against the literal
 /// filesystem names held in `known`/`slugs`. Invalid or truncated escapes
 /// and non-UTF-8 results leave the input unchanged.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     if !s.contains('%') {
         return s.to_string();
     }
@@ -175,7 +175,7 @@ fn percent_decode(s: &str) -> String {
 
 /// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
 /// path character?
-fn has_url_scheme(dest: &str) -> bool {
+pub(crate) fn has_url_scheme(dest: &str) -> bool {
     let mut chars = dest.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() => {}
@@ -235,6 +235,7 @@ pub fn render_html(
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
+    let mut heading_ids: HashSet<String> = HashSet::new();
     let mut plot_idx = 0;
     let mut in_solution = false;
     let mut in_exercise = false;
@@ -276,7 +277,8 @@ pub fn render_html(
                 let html = markdown_to_html_linked(&md, Some(link));
 
                 // Extract headings for nav and inject IDs
-                let html = inject_heading_ids(&html, &mut nav_items, &mut heading_idx);
+                let html =
+                    inject_heading_ids(&html, &mut nav_items, &mut heading_idx, &mut heading_ids);
 
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
@@ -1282,13 +1284,26 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// 2. Append a nav link to `nav`.
 /// Returns the modified HTML.
 ///
+/// Generated ids are GitHub-style slugs of the heading text
+/// (`## Section Two` → `id="section-two"`), deduped `-1`, `-2`, … within
+/// the page — so `[details](other.md#section-two)` written the natural
+/// way lands on a real anchor. `used` carries every id seen so far on the
+/// page (explicit anchors included: a generated slug must never collide
+/// with one). A heading whose label slugs to nothing (math-only) falls
+/// back to positional `heading-N` via `idx`.
+///
 /// ONE pass, taking the earliest heading of any level from the cursor. The
 /// old shape — a full-document pass per level — emitted every h1 to the nav
 /// before any h2 and numbered `heading-N` in that grouped order, so any
 /// prose block with more than one heading (the common case: contiguous
 /// prose between code fences is a single block) got a sidebar whose order
 /// and implied nesting contradicted the page.
-fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
+fn inject_heading_ids(
+    html: &str,
+    nav: &mut String,
+    idx: &mut usize,
+    used: &mut HashSet<String>,
+) -> String {
     const TAGS: [&str; 3] = ["h1", "h2", "h3"];
     let mut result = html.to_string();
     let mut search_from = 0;
@@ -1363,10 +1378,35 @@ fn inject_heading_ids(html: &str, nav: &mut String, idx: &mut usize) -> String {
             // pages may link to it — keep it and point the TOC there
             // rather than overwriting someone's stable anchor.
             let (id, new_open) = match existing_id(&open_tag) {
-                Some(existing) => (existing, open_tag.clone()),
+                Some(existing) => {
+                    used.insert(existing.clone());
+                    (existing, open_tag.clone())
+                }
                 None => {
-                    *idx += 1;
-                    let id = format!("heading-{idx}");
+                    let base = slugify_heading(&clean);
+                    let id = if base.is_empty() {
+                        // Math-only / punctuation-only label: positional
+                        // fallback (still deduped — an explicit
+                        // `{#heading-3}` could exist).
+                        *idx += 1;
+                        format!("heading-{idx}")
+                    } else {
+                        base
+                    };
+                    // GitHub-style dedup: second `## Setup` → `setup-1`.
+                    let id = if used.contains(&id) {
+                        let mut n = 1;
+                        loop {
+                            let cand = format!("{id}-{n}");
+                            if !used.contains(&cand) {
+                                break cand;
+                            }
+                            n += 1;
+                        }
+                    } else {
+                        id
+                    };
+                    used.insert(id.clone());
                     let inner = open_tag
                         .trim_start_matches('<')
                         .trim_end_matches('>')
@@ -1446,6 +1486,60 @@ fn end_of_open_tag(s: &str, start: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// GitHub-style slug for a heading label: what `## Section Two` should
+/// use as its anchor (`section-two`) so cross-notebook fragments written
+/// the way people naturally write them actually land somewhere.
+///
+/// The input is the TOC label — already-rendered HTML with tags stripped —
+/// so entities are decoded first (`&amp;` is one character of text) and
+/// restored math spans are dropped entirely (their TeX source would slug
+/// into garbage, and GitHub-flavoured anchors skip code/math too).
+/// Rules, matching GitHub's anchor algorithm: lowercase; letters, digits,
+/// `-` and `_` kept (unicode included); whitespace becomes `-`; all other
+/// punctuation dropped. May return an empty string (math-only or
+/// punctuation-only headings) — callers fall back to `heading-N`.
+pub(crate) fn slugify_heading(label: &str) -> String {
+    // Drop math spans: `\(…\)` / `\[…\]` restored by the math pipeline.
+    let mut text = String::with_capacity(label.len());
+    let chars: Vec<char> = label.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && matches!(chars.get(i + 1), Some('(') | Some('[')) {
+            let closer = if chars[i + 1] == '(' { ')' } else { ']' };
+            i += 2;
+            while i < chars.len() {
+                if chars[i] == '\\' && chars.get(i + 1) == Some(&closer) {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            text.push(chars[i]);
+            i += 1;
+        }
+    }
+    // Decode the entities escape_html-rendered text can carry.
+    let text = text
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    let mut slug = String::with_capacity(text.len());
+    for c in text.trim().chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' {
+            for lc in c.to_lowercase() {
+                slug.push(lc);
+            }
+        } else if c.is_whitespace() {
+            slug.push('-');
+        }
+        // Everything else (punctuation, symbols) is dropped.
+    }
+    slug
 }
 
 /// The value of an `id="…"` attribute already present on an open tag.
@@ -2382,11 +2476,12 @@ mod tests {
     fn inject_heading_ids_h1() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1>Title</h1>", &mut nav, &mut idx);
-        assert!(result.contains("id=\"heading-1\""));
-        assert!(nav.contains("href=\"#heading-1\""));
+        let result = inject_heading_ids("<h1>Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        // Generated ids are GitHub-style slugs of the heading text.
+        assert!(result.contains("id=\"title\""));
+        assert!(nav.contains("href=\"#title\""));
         assert!(nav.contains("class=\"h1\""));
-        assert_eq!(idx, 1);
+        assert_eq!(idx, 0, "positional fallback untouched for sluggable labels");
     }
 
     #[test]
@@ -2394,14 +2489,85 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let html = "<h1>A</h1><h2>B</h2><h3>C</h3>";
-        let result = inject_heading_ids(html, &mut nav, &mut idx);
-        assert!(result.contains("id=\"heading-1\""));
-        assert!(result.contains("id=\"heading-2\""));
-        assert!(result.contains("id=\"heading-3\""));
+        let result = inject_heading_ids(html, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        assert!(result.contains("id=\"a\""));
+        assert!(result.contains("id=\"b\""));
+        assert!(result.contains("id=\"c\""));
         assert!(nav.contains("class=\"h1\""));
         assert!(nav.contains("class=\"h2\""));
         assert!(nav.contains("class=\"h3\""));
-        assert_eq!(idx, 3);
+    }
+
+    #[test]
+    fn slugify_heading_matches_github_rules() {
+        assert_eq!(slugify_heading("Section Two"), "section-two");
+        assert_eq!(slugify_heading("A.1"), "a1");
+        // Entities decode first; `&` then drops as punctuation — GitHub
+        // leaves the double hyphen.
+        assert_eq!(
+            slugify_heading("Structure &amp; Selection"),
+            "structure--selection"
+        );
+        // Unicode letters survive, punctuation (em dash) drops.
+        assert_eq!(slugify_heading("Größe — Übersicht"), "größe--übersicht");
+        // Math spans are stripped from the slug source.
+        assert_eq!(slugify_heading(r"Regime \(a<b\) limits"), "regime--limits");
+        // Math-only label: empty → caller falls back to heading-N.
+        assert_eq!(slugify_heading(r"\(E = mc^2\)"), "");
+        assert_eq!(slugify_heading("under_score-kept"), "under_score-kept");
+    }
+
+    #[test]
+    fn generated_slugs_dedup_and_never_collide_with_explicit_anchors() {
+        let mut nav = String::new();
+        let mut idx = 0;
+        let mut used = std::collections::HashSet::new();
+        // Explicit {#setup} first; then two plain `## Setup` headings.
+        let out = inject_heading_ids(
+            "<h2 id=\"setup\">Setup</h2><h2>Setup</h2><h2>Setup</h2>",
+            &mut nav,
+            &mut idx,
+            &mut used,
+        );
+        assert!(out.contains("id=\"setup\""), "{out}");
+        assert!(out.contains("id=\"setup-1\""), "generated must skip the explicit id: {out}");
+        assert!(out.contains("id=\"setup-2\""), "{out}");
+        assert!(nav.contains("#setup\"") && nav.contains("#setup-1\"") && nav.contains("#setup-2\""));
+    }
+
+    #[test]
+    fn math_only_heading_falls_back_to_positional_id() {
+        let mut nav = String::new();
+        let mut idx = 0;
+        let out = inject_heading_ids(
+            r"<h2>\(E = mc^2\)</h2><h2>Real Words</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
+        assert!(out.contains("id=\"heading-1\""), "math-only fallback: {out}");
+        assert!(out.contains("id=\"real-words\""), "{out}");
+    }
+
+    #[test]
+    fn cross_notebook_fragments_land_on_slug_anchors() {
+        // The feature's point, end to end: `[x](other.md#section-two)`
+        // written the natural way resolves — the target page really
+        // carries id="section-two". (Replaces the design-gap pin that
+        // documented the old heading-N behaviour.)
+        let link_html = render_md_linked(
+            "[details](02-filter.md#section-two)",
+            &LinkMode::single_file(),
+        );
+        assert!(
+            link_html.contains("href=\"02-filter.html#section-two\""),
+            "{link_html}"
+        );
+        let target_html = render_md_linked("## Section Two", &LinkMode::single_file());
+        assert!(
+            target_html.contains("id=\"section-two\""),
+            "fragment target missing: {target_html}"
+        );
     }
 
     #[test]
@@ -2413,11 +2579,7 @@ mod tests {
         // were non-monotonic down the page.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids(
-            "<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>",
-            &mut nav,
-            &mut idx,
-        );
+        let out = inject_heading_ids("<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         let labels: Vec<&str> = nav
             .lines()
             .filter_map(|l| l.split('>').nth(1).and_then(|s| s.split('<').next()))
@@ -2427,13 +2589,13 @@ mod tests {
             vec!["Title", "Section A", "A.1", "Section B"],
             "nav must follow document order: {nav}"
         );
-        // Ids number in document order too — A.1 is heading-3, B heading-4.
-        assert!(out.contains("<h3 id=\"heading-3\">A.1</h3>"), "{out}");
-        assert!(out.contains("<h2 id=\"heading-4\">Section B</h2>"), "{out}");
+        // Ids are slugs; "A.1" drops its dot per the GitHub algorithm.
+        assert!(out.contains("<h3 id=\"a1\">A.1</h3>"), "{out}");
+        assert!(out.contains("<h2 id=\"section-b\">Section B</h2>"), "{out}");
         // Level ascending within one block (h2 before h1) must also hold.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx);
+        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         let first = nav.lines().next().unwrap_or_default();
         assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
     }
@@ -2446,12 +2608,8 @@ mod tests {
         // lost its id and TOC entry.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids(
-            "<h2 x=\">A</h2><h2>B</h2><h1>C</h1>",
-            &mut nav,
-            &mut idx,
-        );
-        assert!(out.contains("<h2 id=\"heading-1\">B</h2>"), "B lost its id: {out}");
+        let out = inject_heading_ids("<h2 x=\">A</h2><h2>B</h2><h1>C</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        assert!(out.contains("<h2 id=\"b\">B</h2>"), "B lost its id: {out}");
         assert!(nav.contains(">B</a>"), "B missing from TOC: {nav}");
         assert!(nav.contains(">C</a>"), "{nav}");
     }
@@ -2471,8 +2629,8 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let t = std::time::Instant::now();
-        inject_heading_ids(&doc, &mut nav, &mut idx);
-        assert_eq!(idx, 2000);
+        inject_heading_ids(&doc, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        assert_eq!(nav.lines().count(), 2000);
         assert!(
             t.elapsed() < std::time::Duration::from_secs(5),
             "heading scan took {:?} — quadratic tail rescans are back",
@@ -2486,13 +2644,13 @@ mod tests {
         // no injected id and the TOC linked to an anchor nothing carries.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx);
+        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert!(
-            out.contains("id=\"heading-1\""),
+            out.contains("id=\"data-attr\""),
             "generated id missing — data-id stole the anchor: {out}"
         );
         assert!(
-            nav.contains("href=\"#heading-1\""),
+            nav.contains("href=\"#data-attr\""),
             "TOC must target the injected id, not data-id: {nav}"
         );
     }
@@ -2504,13 +2662,9 @@ mod tests {
         // leaking `b">` into the heading text.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids(
-            "<h2 title=\"a > b\">Raw attr heading</h2>",
-            &mut nav,
-            &mut idx,
-        );
+        let out = inject_heading_ids("<h2 title=\"a > b\">Raw attr heading</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert!(
-            out.contains("<h2 title=\"a > b\" id=\"heading-1\">Raw attr heading</h2>"),
+            out.contains("<h2 title=\"a > b\" id=\"raw-attr-heading\">Raw attr heading</h2>"),
             "id must be appended after the quoted attribute: {out}"
         );
         assert!(nav.contains(">Raw attr heading</a>"), "label corrupted: {nav}");
@@ -2549,11 +2703,7 @@ mod tests {
         // outright, making the TOC assert the opposite of the heading.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids(
-            "<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>",
-            &mut nav,
-            &mut idx,
-        );
+        inject_heading_ids("<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert!(nav.contains("Regime \\(T < T_c\\)"), "math truncated: {nav}");
         assert!(nav.contains("Threshold \\(E > 0\\)"), "operator lost: {nav}");
     }
@@ -2565,7 +2715,7 @@ mod tests {
         // and overwriting the id would break cross-notebook deep links.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 id=\"filters\">Filter Analysis</h2>", &mut nav, &mut idx);
+        let out = inject_heading_ids("<h2 id=\"filters\">Filter Analysis</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert!(out.contains("id=\"filters\""), "explicit id was overwritten");
         assert!(nav.contains("href=\"#filters\""), "anchor heading missing from TOC: {nav}");
         assert!(nav.contains("Filter Analysis"));
@@ -2579,7 +2729,7 @@ mod tests {
         // "Hyperfine Structure & Qubit Selection".
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx);
+        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert!(
             nav.contains("Structure &amp; Selection"),
             "nav label lost its single-escaped entity: {nav}"
@@ -2594,7 +2744,7 @@ mod tests {
     fn inject_heading_ids_no_headings() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<p>no headings</p>", &mut nav, &mut idx);
+        let result = inject_heading_ids("<p>no headings</p>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
         assert_eq!(result, "<p>no headings</p>");
         assert!(nav.is_empty());
         assert_eq!(idx, 0);
@@ -2604,8 +2754,8 @@ mod tests {
     fn inject_heading_ids_with_inner_tags() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1><em>Styled</em> Title</h1>", &mut nav, &mut idx);
-        assert!(result.contains("id=\"heading-1\""));
+        let result = inject_heading_ids("<h1><em>Styled</em> Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        assert!(result.contains("id=\"styled-title\""), "{result}");
         // Nav text should be stripped of tags
         assert!(nav.contains("Styled Title"));
     }
@@ -3090,8 +3240,8 @@ mod tests {
             "# Section One\n\n## Sub Section".to_string(),
         )];
         let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(html.contains("heading-1"));
-        assert!(html.contains("heading-2"));
+        assert!(html.contains("id=\"section-one\""));
+        assert!(html.contains("id=\"sub-section\""));
         assert!(html.contains("Section One"));
         assert!(html.contains("Sub Section"));
     }
@@ -3894,10 +4044,10 @@ mod tests {
         // Within-notebook nav, on the same page.
         assert!(html.contains("<nav class=\"sidebar\">"), "sidebar dropped");
         assert!(
-            html.contains("href=\"#heading-1\""),
+            html.contains("href=\"#alpha\""),
             "heading anchors emitted but nothing links to them"
         );
-        assert!(html.contains("id=\"heading-1\""));
+        assert!(html.contains("id=\"alpha\""));
     }
 
     #[test]
