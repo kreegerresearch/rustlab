@@ -557,11 +557,25 @@ impl Evaluator {
                                     }
                                 }
                                 Ok(false) => {
+                                    // Name the socket we tried. Over an SSH
+                                    // forward that path is the whole story —
+                                    // a stale or mistyped one is the usual
+                                    // cause. Named sessions get no env-var
+                                    // hint because they ignore it: the path
+                                    // is derived from the uid and name.
                                     if let Some(n) = name {
                                         eprintln!("viewer: could not connect to session '{}' — is rustlab-viewer --name {} running?", n, n);
+                                        eprintln!(
+                                            "  tried: {}",
+                                            rustlab_plot::socket_path_for_name(n).display()
+                                        );
                                     } else {
                                         eprintln!(
                                             "viewer: could not connect — is rustlab-viewer running?"
+                                        );
+                                        eprintln!(
+                                            "  tried: {} (override with RUSTLAB_VIEWER_SOCK)",
+                                            rustlab_plot::default_socket_path().display()
                                         );
                                     }
                                     eprintln!("  plots will continue to render in the terminal");
