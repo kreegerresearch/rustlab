@@ -4097,4 +4097,7 @@ These are interactive commands available in the `rustlab` REPL only (not in scri
 | `ls [path]` | List directory contents |
 | `cd [path]` | Change working directory |
 | `pwd` | Print current working directory |
+| `history` | List previously entered commands, numbered and oldest first (spans earlier sessions via `~/.rustlab_history`) |
+| `history <n>` | List only the last `n` commands |
+| `history clear` | Forget the whole history (the saved file is emptied on the next clean exit) |
 | `help` or `?` | Show help. `? <name>` for detail on a specific function |

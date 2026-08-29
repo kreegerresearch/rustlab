@@ -3,6 +3,7 @@ use rustlab_script::{lexer, parser, Evaluator};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::HistoryHinter;
+use rustyline::history::{History, SearchDirection};
 use rustyline::{error::ReadlineError, Helper, Hinter, Validator};
 use rustyline::{CompletionType, Config, Context, Editor};
 
@@ -534,6 +535,8 @@ pub const HELP: &[HelpEntry] = &[
         detail: "cd          — change to home directory\ncd <path>   — change to the given path" },
     HelpEntry { name: "pwd", brief: "Print working directory",
         detail: "pwd  — show the current working directory" },
+    HelpEntry { name: "history", brief: "Show previously entered commands",
+        detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines. After `history clear` that saved file is emptied too, on the\n  next clean exit.\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
     // Math (additional)
     HelpEntry { name: "atan2", brief: "Two-argument inverse tangent  atan2(y, x)",
         detail: "atan2(y, x)  — angle in radians in the range (-π, π]\n  Element-wise; accepts scalars, vectors, or matrices.\n  atan2(1, 1)   →  π/4\n  atan2(0, -1)  →  π" },
@@ -1061,6 +1064,63 @@ fn cmd_ls(path: &str) {
     println!("\n");
 }
 
+/// What a `history` line is asking for, once its argument is parsed.
+#[derive(Debug, PartialEq, Eq)]
+enum HistoryArg {
+    /// `history` — every remembered line.
+    All,
+    /// `history <n>` — only the last n lines.
+    Last(usize),
+    /// `history clear` — forget everything.
+    Clear,
+    /// Anything else; carries the offending argument for the error message.
+    Bad(String),
+}
+
+fn parse_history_arg(arg: &str) -> HistoryArg {
+    let arg = arg.trim();
+    if arg.is_empty() {
+        return HistoryArg::All;
+    }
+    if arg == "clear" {
+        return HistoryArg::Clear;
+    }
+    match arg.parse::<usize>() {
+        Ok(n) if n > 0 => HistoryArg::Last(n),
+        _ => HistoryArg::Bad(arg.to_string()),
+    }
+}
+
+/// Print the readline history oldest-first, numbered like shell `history`.
+///
+/// Entries loaded from `~/.rustlab_history` at startup are included, so the
+/// listing spans previous sessions as well as this one. Numbering is 1-based
+/// over what is *currently* remembered — the oldest lines fall off once the
+/// buffer is full, so a number marks a position in the list, not a stable id.
+fn cmd_history<H: History>(hist: &H, count: Option<usize>) {
+    let len = hist.len();
+    if len == 0 {
+        println!("{}", color::dim("(no history)"));
+        return;
+    }
+    let start = count.map_or(0, |n| len.saturating_sub(n));
+    let width = len.to_string().len();
+
+    println!();
+    for idx in start..len {
+        // `get` only fails on a backend error; a missing index just yields
+        // None, so skipping quietly is right for both.
+        if let Ok(Some(e)) = hist.get(idx, SearchDirection::Forward) {
+            println!(
+                "  {}  {}",
+                color::dim(&format!("{:>width$}", idx + 1, width = width)),
+                e.entry
+            );
+        }
+    }
+    println!();
+}
+
 /// Run a script source string through the evaluator.
 ///
 /// Returns `true` when the script completed cleanly (including the
@@ -1149,6 +1209,8 @@ pub static CATEGORIES: &[CategoryRow] = &[
         names: &["tic", "toc", "sleep"] },
     CategoryRow { toolbox: "language", subcategory: "Filesystem",
         names: &["run", "ls", "cd", "pwd"] },
+    CategoryRow { toolbox: "language", subcategory: "Session",
+        names: &["history"] },
     CategoryRow { toolbox: "language", subcategory: "Higher-order",
         names: &["arrayfun", "feval"] },
     CategoryRow { toolbox: "language", subcategory: "Profiling",
@@ -1554,6 +1616,38 @@ mod block_opener_tests {
 }
 
 #[cfg(test)]
+mod history_arg_tests {
+    use super::*;
+
+    #[test]
+    fn bare_history_lists_everything() {
+        assert_eq!(parse_history_arg(""), HistoryArg::All);
+        assert_eq!(parse_history_arg("   "), HistoryArg::All);
+    }
+
+    #[test]
+    fn positive_count_limits_the_listing() {
+        assert_eq!(parse_history_arg("5"), HistoryArg::Last(5));
+        assert_eq!(parse_history_arg("  20  "), HistoryArg::Last(20));
+    }
+
+    #[test]
+    fn clear_is_recognised() {
+        assert_eq!(parse_history_arg("clear"), HistoryArg::Clear);
+        assert_eq!(parse_history_arg(" clear "), HistoryArg::Clear);
+    }
+
+    #[test]
+    fn zero_and_junk_are_rejected() {
+        // Zero would print nothing at all — that's a typo, not a request.
+        assert_eq!(parse_history_arg("0"), HistoryArg::Bad("0".to_string()));
+        assert_eq!(parse_history_arg("-3"), HistoryArg::Bad("-3".to_string()));
+        assert_eq!(parse_history_arg("2.5"), HistoryArg::Bad("2.5".to_string()));
+        assert_eq!(parse_history_arg("all"), HistoryArg::Bad("all".to_string()));
+    }
+}
+
+#[cfg(test)]
 mod help_coverage_tests {
     use super::*;
     use std::collections::HashSet;
@@ -1774,6 +1868,9 @@ pub fn execute() -> Result<()> {
 
     let config = Config::builder()
         .completion_type(CompletionType::List)
+        // rustyline defaults to 100 remembered lines, which `history` makes
+        // visible — and 100 is a short memory for a session that spans days.
+        .max_history_size(1000)?
         .build();
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(ReplHelper::new()));
@@ -1865,6 +1962,29 @@ pub fn execute() -> Result<()> {
                 }
                 if let Some(path) = trimmed.strip_prefix("ls ") {
                     cmd_ls(path.trim());
+                    continue;
+                }
+
+                // history [n | clear]
+                if trimmed == "history" || trimmed.starts_with("history ") {
+                    let arg = trimmed.strip_prefix("history").unwrap_or("");
+                    match parse_history_arg(arg) {
+                        HistoryArg::All => cmd_history(rl.history(), None),
+                        HistoryArg::Last(n) => cmd_history(rl.history(), Some(n)),
+                        HistoryArg::Clear => {
+                            // Clears the in-memory list; the emptied list is
+                            // what gets written back to ~/.rustlab_history on
+                            // exit, so the saved file follows.
+                            if let Err(e) = rl.clear_history() {
+                                eprintln!("history: clear: {e}");
+                            } else {
+                                println!("{}", color::dim("history cleared"));
+                            }
+                        }
+                        HistoryArg::Bad(a) => eprintln!(
+                            "history: {a}: expected a positive count or 'clear'"
+                        ),
+                    }
                     continue;
                 }
 
