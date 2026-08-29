@@ -1957,6 +1957,13 @@ Show or hide grid lines on the current subplot. Also accepts function-call form:
 Connect to a running `rustlab-viewer` process. When connected, all plot commands (`plot`, `stem`, `bar`, `bode`, `surf`, etc.) render in the external egui viewer with zoom/pan/crosshairs instead of the terminal. `viewer off` disconnects and returns to terminal plotting. Bare `viewer` (no argument) reports the current connection state and where the active figure will be rendered (rustlab-viewer, HTML file, or the TUI).
 
 Requires the `viewer` feature (included in `make install`). Start `rustlab-viewer` before typing `viewer on`.
+
+The viewer does not have to be on the same machine. `RUSTLAB_VIEWER_SOCK` points
+`rustlab` at any socket path, so an SSH remote forward lets a remote session draw
+on your local desktop — `rustlab remote <host>` sets that up in one command. Note
+that **named sessions ignore `RUSTLAB_VIEWER_SOCK`** (their path is derived from
+the uid and name), so forwarded sessions want plain `viewer on`. See
+[remote-viewer.md](remote-viewer.md).
 ```
 viewer on          % connect to default viewer
 plot(x, sin(x))   % renders in viewer window

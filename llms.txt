@@ -23,6 +23,9 @@ stays 0 — check stderr, not the exit code.
 - [docs/notebooks.md](docs/notebooks.md): complete notebook reference — directives,
   widgets, embeds, template interpolation, render/watch/check/clean CLI
 - [docs/examples.md](docs/examples.md): annotated walkthroughs of the example scripts
+- [docs/remote-viewer.md](docs/remote-viewer.md): running rustlab on a remote
+  machine with plots rendering in a local rustlab-viewer (`rustlab remote`, SSH
+  socket forwarding, Linux/macOS/WSL notes)
 - [README.md](README.md): install, quickstart, CLI usage
 
 ## Examples

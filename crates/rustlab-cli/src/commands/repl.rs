@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Args;
 use rustlab_script::{lexer, parser, Evaluator};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
@@ -1853,7 +1854,24 @@ impl Completer for ReplHelper {
 
 // ─── REPL ─────────────────────────────────────────────────────────────────────
 
-pub fn execute() -> Result<()> {
+#[derive(Args, Default)]
+pub struct ReplArgs {
+    /// Connect to a running rustlab-viewer at startup, so plots render there
+    /// from the first command (same as typing `viewer on`). Falls back to the
+    /// TUI with a warning if no viewer answers.
+    #[arg(long)]
+    pub viewer: bool,
+
+    /// With `--viewer`, connect to a named viewer session.
+    ///
+    /// Note: named sessions derive their socket from the uid and name, so they
+    /// ignore RUSTLAB_VIEWER_SOCK — over an SSH forward, use the plain
+    /// `--viewer` form.
+    #[arg(long, value_name = "NAME", requires = "viewer")]
+    pub viewer_name: Option<String>,
+}
+
+pub fn execute(args: ReplArgs) -> Result<()> {
     println!(
         "rustlab {} — type {} or {} for help, {} or Ctrl+D to quit",
         color::bold_green(env!("CARGO_PKG_VERSION")),
@@ -1865,6 +1883,15 @@ pub fn execute() -> Result<()> {
         "{}\n",
         color::dim("Tip: end a line with ; to suppress output")
     );
+
+    // Reuses the script runner's routing so `--viewer` and `run --plot viewer`
+    // connect, fall back, and report identically.
+    if args.viewer {
+        crate::commands::run::apply_plot_mode(
+            crate::commands::run::PlotMode::Viewer,
+            args.viewer_name.as_deref(),
+        );
+    }
 
     let config = Config::builder()
         .completion_type(CompletionType::List)

@@ -23,7 +23,8 @@ Builds release binaries and installs three tools to `~/.local/bin`:
 
 - **`rustlab`** — REPL, script runner, and CLI toolkit
 - **`rustlab-notebook`** — render Markdown notebooks to HTML, LaTeX, or PDF
-- **`rustlab-viewer`** — standalone interactive plot viewer (egui)
+- **`rustlab-viewer`** — standalone interactive plot viewer (egui). Can render plots from a
+  `rustlab` running on another machine — see [Remote sessions](docs/remote-viewer.md)
 
 No `sudo` required. On macOS, `codesign` is run automatically.
 
@@ -528,6 +529,25 @@ authoritative index without re-implementing the categories table.
 When the topic doesn't match any builtin or category name, `rustlab docs`
 prints a "No help found" message and exits with a non-zero status — handy
 in scripts that probe for support of a particular feature.
+
+### `rustlab remote <host>`
+
+Run rustlab on a remote machine with its plots rendering in your local viewer.
+Starts the viewer's socket forwarding over SSH and drops you into a remote REPL
+that is already connected:
+
+```sh
+rustlab-viewer &            # local: opens the viewer window
+rustlab remote user@host    # remote REPL, plots appear locally
+```
+
+```sh
+rustlab remote user@host --command "rustlab run /data/sim.rlab --plot viewer"
+rustlab remote user@host --print       # show the ssh command instead of running it
+```
+
+Works on Linux, macOS and WSL; needs nothing but SSH. Full setup, manual `ssh -R`
+recipe, per-platform notes and troubleshooting: [docs/remote-viewer.md](docs/remote-viewer.md).
 
 ### `rustlab filter fir [OPTIONS]`
 
