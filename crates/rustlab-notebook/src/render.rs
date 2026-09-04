@@ -2,11 +2,11 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
-use rustlab_script::WidgetValue;
 use pulldown_cmark::{html::push_html, Event, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
+use rustlab_script::WidgetValue;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -25,10 +25,17 @@ use std::path::Path;
 /// Only destinations that are relative (no URL scheme, no leading `/`) and
 /// end in `.md` before an optional `#fragment` are candidates. Everything
 /// else — external URLs, absolute paths, images, anchors — passes through
-/// untouched. A candidate that cannot be resolved (dangling target, a
-/// `_partial.md`, a path outside the collection) is left exactly as
-/// written: a visibly broken `.md` link beats a manufactured `.html` one
-/// that 404s while looking intentional.
+/// untouched. Lookup is page-relative first (CommonMark). If that misses
+/// and the dest is not `./`/`../`, a collection-root-relative key is
+/// tried (`[x](ch2/notes.md)` / `[[ch2/notes]]` from a nested page), then
+/// a unique-basename match for a bare filename (two files sharing the
+/// name → leave as written). Static fallback hits emit via
+/// `href_between`, not the author's spelling — otherwise a nested
+/// page would 404 looking for `ch1/ch2/notes.html`. A candidate that still
+/// cannot be resolved (dangling target, a `_partial.md`, a path outside
+/// the collection) is left exactly as written: a visibly broken `.md`
+/// link beats a manufactured `.html` one that 404s while looking
+/// intentional.
 #[derive(Clone, Debug)]
 pub enum LinkMode {
     /// Static HTML render: `foo.md` → `foo.html`, preserving the path as
@@ -115,14 +122,29 @@ fn rewrite_link_dest_to(
             current_rel_dir,
         } => {
             if let Some(known) = known {
-                // Membership checks against literal on-disk names: decode
-                // %XX first — `foo%20bar.md` is the standard spelling for
-                // a link to `foo bar.md` and must resolve like it.
-                let normalized =
-                    normalize_rel_path(current_rel_dir, &percent_decode(path))?;
-                if !known.contains(&normalized) {
-                    return None;
+                let decoded = percent_decode(path);
+                let resolved = resolve_collection_md(
+                    current_rel_dir,
+                    &decoded,
+                    &|k| known.contains(k),
+                    &|filename| {
+                        unique_basename_key(known.iter().map(|s| s.as_str()), filename)
+                            .map(str::to_string)
+                    },
+                )?;
+                // Page-relative hits keep the author's spelling (`../ch2/a.md`
+                // → `../ch2/a.html`). Fallback hits (collection-root path or
+                // unique basename) must climb out of the page dir — emitting
+                // the dest as written would 404 from a nested page.
+                let page_rel = normalize_rel_path(current_rel_dir, &decoded);
+                if page_rel.as_deref() == Some(resolved.as_str()) {
+                    return Some(format!("{stem}.{target_ext}{fragment}"));
                 }
+                let target = swap_md_ext(&resolved, target_ext);
+                return Some(format!(
+                    "{}{fragment}",
+                    crate::href_between(current_rel_dir, &target)
+                ));
             }
             // known: None (single-file render) rewrites unconditionally —
             // including `../sibling.md`, which may well be rendered
@@ -137,15 +159,90 @@ fn rewrite_link_dest_to(
             current_rel_dir,
             index_at_root,
         } => {
-            let normalized = normalize_rel_path(current_rel_dir, &percent_decode(path))?;
-            if *index_at_root && normalized == "index.md" {
+            let decoded = percent_decode(path);
+            let resolved = resolve_collection_md(
+                current_rel_dir,
+                &decoded,
+                &|k| (*index_at_root && k == "index.md") || slugs.contains_key(k),
+                &|filename| {
+                    unique_basename_key(slugs.keys().map(|s| s.as_str()), filename)
+                        .map(str::to_string)
+                },
+            )?;
+            if *index_at_root && resolved == "index.md" {
                 // The index page's body, hoisted to the server root.
                 return Some(format!("/{fragment}"));
             }
-            let slug = slugs.get(&normalized)?;
+            let slug = slugs.get(&resolved)?;
             Some(format!("/n/{slug}{fragment}"))
         }
     }
+}
+
+/// Swap a `.md` suffix for `ext` (`"html"` / `"pdf"`). `path` is a
+/// collection-root-relative key that already ends in `.md`.
+fn swap_md_ext(path: &str, ext: &str) -> String {
+    match path.strip_suffix(".md") {
+        Some(stem) => format!("{stem}.{ext}"),
+        None => format!("{path}.{ext}"),
+    }
+}
+
+/// `./foo.md` / `../ch2/foo.md` — the author opted into CommonMark
+/// page-relative resolution, including the "escapes the collection"
+/// failure. Those must not take the root-relative / unique-basename
+/// fallbacks.
+fn dest_is_dot_relative(path: &str) -> bool {
+    path == "." || path == ".." || path.starts_with("./") || path.starts_with("../")
+}
+
+/// First collection-root-relative key whose basename equals `filename`.
+/// `None` when zero or more than one key matches — collision stays
+/// visibly unresolved rather than picking a winner.
+fn unique_basename_key<'a>(keys: impl Iterator<Item = &'a str>, filename: &str) -> Option<&'a str> {
+    let mut found: Option<&'a str> = None;
+    for k in keys {
+        let base = k.rsplit_once('/').map(|(_, n)| n).unwrap_or(k);
+        if base == filename {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(k);
+        }
+    }
+    found
+}
+
+/// Resolve a decoded `.md` path against a collection.
+///
+/// Order: page-relative (CommonMark) → collection-root-relative → unique
+/// basename for a bare filename. `./` and `../` destinations skip the
+/// fallbacks. `None` when nothing matches or `../` escapes the root.
+fn resolve_collection_md(
+    current_rel_dir: &str,
+    decoded_path: &str,
+    has: &dyn Fn(&str) -> bool,
+    unique_base: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match normalize_rel_path(current_rel_dir, decoded_path) {
+        Some(page_rel) if has(&page_rel) => return Some(page_rel),
+        None if dest_is_dot_relative(decoded_path) => return None,
+        _ => {}
+    }
+    if dest_is_dot_relative(decoded_path) {
+        return None;
+    }
+    // Collection-root-relative: `[x](ch2/notes.md)` from `ch1/` and
+    // `[[ch2/notes]]` (wikilinks are vault-relative) both land here.
+    if !decoded_path.contains("..") && has(decoded_path) {
+        return Some(decoded_path.to_string());
+    }
+    if !decoded_path.contains('/') {
+        if let Some(key) = unique_base(decoded_path) {
+            return Some(key);
+        }
+    }
+    None
 }
 
 /// Decode `%XX` escapes so href spellings compare against the literal
@@ -171,6 +268,53 @@ pub(crate) fn percent_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// CSS `color-scheme` for the page: dark when the background is closer to
+/// black than white. Drives UA chrome (scrollbars, form controls) and is
+/// a backstop if any `<a>` ever ships unstyled again.
+pub(crate) fn css_color_scheme(bg: &str) -> &'static str {
+    match relative_luminance(bg) {
+        Some(l) if l >= 0.5 => "light",
+        _ => "dark",
+    }
+}
+
+/// sRGB relative luminance of `#RRGGBB`. `None` on a non-hex swatch.
+fn relative_luminance(hex: &str) -> Option<f64> {
+    let (r, g, b) = parse_hex_rgb(hex)?;
+    Some(0.2126 * srgb_lin(r) + 0.7152 * srgb_lin(g) + 0.0722 * srgb_lin(b))
+}
+
+fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    Some((
+        ((n >> 16) & 0xff) as u8,
+        ((n >> 8) & 0xff) as u8,
+        (n & 0xff) as u8,
+    ))
+}
+
+fn srgb_lin(c: u8) -> f64 {
+    let x = f64::from(c) / 255.0;
+    if x <= 0.04045 {
+        x / 12.92
+    } else {
+        ((x + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// WCAG contrast ratio of two `#RRGGBB` swatches.
+#[cfg(test)]
+fn contrast_ratio(fg: &str, bg: &str) -> Option<f64> {
+    let l1 = relative_luminance(fg)?;
+    let l2 = relative_luminance(bg)?;
+    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
+    Some((hi + 0.05) / (lo + 0.05))
 }
 
 /// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
@@ -371,16 +515,13 @@ pub fn render_html(
                             body.push_str("\n</div>\n");
                         }
                         NotebookAnimationFormat::Gif => {
-                            let gif_path =
-                                plot_dir.join(format!("anim-{plot_idx}.gif"));
+                            let gif_path = plot_dir.join(format!("anim-{plot_idx}.gif"));
                             if let Err(e) = rustlab_plot::write_animation_gif(
                                 &gif_path.to_string_lossy(),
                                 &anim.frames,
                                 anim.fps,
                             ) {
-                                eprintln!(
-                                    "warning: could not write anim-{plot_idx}.gif: {e}"
-                                );
+                                eprintln!("warning: could not write anim-{plot_idx}.gif: {e}");
                                 continue;
                             }
                             body.push_str(&format!(
@@ -421,10 +562,7 @@ pub fn render_html(
                 body.push_str("<figure class=\"mermaid\">\n");
                 emit_mermaid_html(&mut body, source, plot_dir);
                 if let Some(cap) = caption {
-                    body.push_str(&format!(
-                        "<figcaption>{}</figcaption>\n",
-                        escape_html(cap)
-                    ));
+                    body.push_str(&format!("<figcaption>{}</figcaption>\n", escape_html(cap)));
                 }
                 body.push_str("</figure>\n");
                 if details.is_some() {
@@ -566,6 +704,7 @@ pub fn render_html(
   }});"></script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html {{ color-scheme: {color_scheme}; }}
   body {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: {bg};
@@ -765,6 +904,21 @@ pub fn render_html(
   }}
   .prose p {{
     margin-bottom: 1rem;
+  }}
+  /* Prose/callout/exercise links. Without this, UA-default `#0000EE` /
+     visited `#551A8B` sit on the dark page background at ~2:1 contrast.
+     More-specific `.topbar a` / `.page-nav a` / `nav.sidebar a` keep
+     their own colors. */
+  .prose a, .callout a, .exercise a {{
+    color: {accent_secondary};
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }}
+  .prose a:visited, .callout a:visited, .exercise a:visited {{
+    color: {accent_primary};
+  }}
+  .prose a:hover, .callout a:hover, .exercise a:hover {{
+    color: {accent_tertiary};
   }}
   .prose code {{
     background: {inline_code_bg};
@@ -1060,6 +1214,7 @@ pub fn render_html(
         sidebar_block = sidebar_block,
         footer_nav = footer_nav,
         body = body,
+        color_scheme = css_color_scheme(c.bg),
         bg = c.bg,
         bg_secondary = c.bg_secondary,
         text = c.text,
@@ -1943,7 +2098,9 @@ fn render_wikilink(inner: &str) -> String {
     } else {
         format!("{path}.md")
     };
-    let anchor_url = anchor.map(|a| format!("#{}", slugify(a))).unwrap_or_default();
+    let anchor_url = anchor
+        .map(|a| format!("#{}", slugify(a)))
+        .unwrap_or_default();
     let text = match (alias, anchor) {
         (Some(a), _) => a.to_string(),
         (None, Some(a)) => format!("{path} § {a}"),
@@ -2476,7 +2633,12 @@ mod tests {
     fn inject_heading_ids_h1() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1>Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<h1>Title</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         // Generated ids are GitHub-style slugs of the heading text.
         assert!(result.contains("id=\"title\""));
         assert!(nav.contains("href=\"#title\""));
@@ -2489,7 +2651,12 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let html = "<h1>A</h1><h2>B</h2><h3>C</h3>";
-        let result = inject_heading_ids(html, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            html,
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(result.contains("id=\"a\""));
         assert!(result.contains("id=\"b\""));
         assert!(result.contains("id=\"c\""));
@@ -2530,9 +2697,14 @@ mod tests {
             &mut used,
         );
         assert!(out.contains("id=\"setup\""), "{out}");
-        assert!(out.contains("id=\"setup-1\""), "generated must skip the explicit id: {out}");
+        assert!(
+            out.contains("id=\"setup-1\""),
+            "generated must skip the explicit id: {out}"
+        );
         assert!(out.contains("id=\"setup-2\""), "{out}");
-        assert!(nav.contains("#setup\"") && nav.contains("#setup-1\"") && nav.contains("#setup-2\""));
+        assert!(
+            nav.contains("#setup\"") && nav.contains("#setup-1\"") && nav.contains("#setup-2\"")
+        );
     }
 
     #[test]
@@ -2545,7 +2717,10 @@ mod tests {
             &mut idx,
             &mut std::collections::HashSet::new(),
         );
-        assert!(out.contains("id=\"heading-1\""), "math-only fallback: {out}");
+        assert!(
+            out.contains("id=\"heading-1\""),
+            "math-only fallback: {out}"
+        );
         assert!(out.contains("id=\"real-words\""), "{out}");
     }
 
@@ -2579,7 +2754,12 @@ mod tests {
         // were non-monotonic down the page.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         let labels: Vec<&str> = nav
             .lines()
             .filter_map(|l| l.split('>').nth(1).and_then(|s| s.split('<').next()))
@@ -2595,9 +2775,17 @@ mod tests {
         // Level ascending within one block (h2 before h1) must also hold.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            "<h2>Sub</h2><h1>Main</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         let first = nav.lines().next().unwrap_or_default();
-        assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
+        assert!(
+            first.contains("Sub"),
+            "h2 emitted first in doc order: {nav}"
+        );
     }
 
     #[test]
@@ -2608,7 +2796,12 @@ mod tests {
         // lost its id and TOC entry.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 x=\">A</h2><h2>B</h2><h1>C</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 x=\">A</h2><h2>B</h2><h1>C</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(out.contains("<h2 id=\"b\">B</h2>"), "B lost its id: {out}");
         assert!(nav.contains(">B</a>"), "B missing from TOC: {nav}");
         assert!(nav.contains(">C</a>"), "{nav}");
@@ -2629,7 +2822,12 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let t = std::time::Instant::now();
-        inject_heading_ids(&doc, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            &doc,
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert_eq!(nav.lines().count(), 2000);
         assert!(
             t.elapsed() < std::time::Duration::from_secs(5),
@@ -2644,7 +2842,12 @@ mod tests {
         // no injected id and the TOC linked to an anchor nothing carries.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 data-id=\"zzz\">Data attr</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             out.contains("id=\"data-attr\""),
             "generated id missing — data-id stole the anchor: {out}"
@@ -2662,12 +2865,20 @@ mod tests {
         // leaking `b">` into the heading text.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 title=\"a > b\">Raw attr heading</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 title=\"a > b\">Raw attr heading</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             out.contains("<h2 title=\"a > b\" id=\"raw-attr-heading\">Raw attr heading</h2>"),
             "id must be appended after the quoted attribute: {out}"
         );
-        assert!(nav.contains(">Raw attr heading</a>"), "label corrupted: {nav}");
+        assert!(
+            nav.contains(">Raw attr heading</a>"),
+            "label corrupted: {nav}"
+        );
     }
 
     #[test]
@@ -2703,9 +2914,20 @@ mod tests {
         // outright, making the TOC assert the opposite of the heading.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
-        assert!(nav.contains("Regime \\(T < T_c\\)"), "math truncated: {nav}");
-        assert!(nav.contains("Threshold \\(E > 0\\)"), "operator lost: {nav}");
+        inject_heading_ids(
+            "<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
+        assert!(
+            nav.contains("Regime \\(T < T_c\\)"),
+            "math truncated: {nav}"
+        );
+        assert!(
+            nav.contains("Threshold \\(E > 0\\)"),
+            "operator lost: {nav}"
+        );
     }
 
     #[test]
@@ -2715,9 +2937,20 @@ mod tests {
         // and overwriting the id would break cross-notebook deep links.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 id=\"filters\">Filter Analysis</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
-        assert!(out.contains("id=\"filters\""), "explicit id was overwritten");
-        assert!(nav.contains("href=\"#filters\""), "anchor heading missing from TOC: {nav}");
+        let out = inject_heading_ids(
+            "<h2 id=\"filters\">Filter Analysis</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
+        assert!(
+            out.contains("id=\"filters\""),
+            "explicit id was overwritten"
+        );
+        assert!(
+            nav.contains("href=\"#filters\""),
+            "anchor heading missing from TOC: {nav}"
+        );
         assert!(nav.contains("Filter Analysis"));
     }
 
@@ -2729,7 +2962,12 @@ mod tests {
         // "Hyperfine Structure & Qubit Selection".
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            "<h1>Structure &amp; Selection</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             nav.contains("Structure &amp; Selection"),
             "nav label lost its single-escaped entity: {nav}"
@@ -2744,7 +2982,12 @@ mod tests {
     fn inject_heading_ids_no_headings() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<p>no headings</p>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<p>no headings</p>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert_eq!(result, "<p>no headings</p>");
         assert!(nav.is_empty());
         assert_eq!(idx, 0);
@@ -2754,7 +2997,12 @@ mod tests {
     fn inject_heading_ids_with_inner_tags() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1><em>Styled</em> Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<h1><em>Styled</em> Title</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(result.contains("id=\"styled-title\""), "{result}");
         // Nav text should be stripped of tags
         assert!(nav.contains("Styled Title"));
@@ -2967,11 +3215,88 @@ mod tests {
     #[test]
     fn render_html_basic_structure() {
         let blocks = vec![Rendered::Markdown("# Hello".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
         assert!(html.contains("Generated by rustlab-notebook"));
+    }
+
+    #[test]
+    fn render_html_styles_prose_links_and_sets_color_scheme() {
+        let dark = Theme::Dark.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("[x](https://example.com)".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            dark,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("color-scheme: dark"), "{html}");
+        assert!(
+            html.contains(".prose a, .callout a, .exercise a"),
+            "prose link rule missing"
+        );
+        assert!(
+            html.contains(&format!("color: {}", dark.accent_secondary)),
+            "unvisited link colour should be accent_secondary"
+        );
+        assert!(
+            html.contains("class=\"prose\""),
+            "body link must sit in .prose"
+        );
+        assert!(html.contains("href=\"https://example.com\""), "{html}");
+
+        let light = Theme::Light.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            light,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("color-scheme: light"), "{html}");
+        assert!(html.contains(&format!("color: {}", light.accent_secondary)));
+    }
+
+    #[test]
+    fn theme_link_contrast_meets_wcag_aa() {
+        // Pins the original bug: UA-default `#0000EE` on Mocha `#1e1e2e`
+        // is ~2:1. Dark-theme accents must stay at or above 4.5:1 against
+        // bg. Light (Latte `#1e66f5` on `#eff1f5`) is the official
+        // palette at ~4.3:1 — don't retune it here.
+        let dark = Theme::Dark.colors();
+        let unvisited = super::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
+        assert!(
+            unvisited >= 4.5,
+            "dark unvisited link contrast {unvisited:.2} < 4.5 ({} on {})",
+            dark.accent_secondary,
+            dark.bg
+        );
+        let visited = super::contrast_ratio(dark.accent_primary, dark.bg).unwrap_or(0.0);
+        assert!(
+            visited >= 4.5,
+            "dark visited link contrast {visited:.2} < 4.5 ({} on {})",
+            dark.accent_primary,
+            dark.bg
+        );
+        let ua = super::contrast_ratio("#0000EE", "#1e1e2e").unwrap_or(99.0);
+        assert!(
+            ua < 4.5,
+            "UA-default blue on Mocha should fail WCAG — if this passes, the regression test is stale"
+        );
     }
 
     // ── Phase 3: stable block-id wrapping ──
@@ -2982,10 +3307,24 @@ mod tests {
             Rendered::Markdown("hello".to_string()),
             Rendered::Markdown("world".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Each prose block lives inside a rl-block section.
-        let opens: Vec<_> = html.matches("<section class=\"rl-block\" id=\"b-").collect();
-        assert_eq!(opens.len(), 2, "expected 2 block wrappers, full html:\n{html}");
+        let opens: Vec<_> = html
+            .matches("<section class=\"rl-block\" id=\"b-")
+            .collect();
+        assert_eq!(
+            opens.len(),
+            2,
+            "expected 2 block wrappers, full html:\n{html}"
+        );
         // The pre-existing prose div is preserved inside the section.
         assert!(html.contains("class=\"prose\""));
     }
@@ -2997,7 +3336,15 @@ mod tests {
             Rendered::Markdown("dup".to_string()),
             Rendered::Markdown("unique".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // The two `dup` blocks have identical content → identical
         // 8-char hashes → second gets the "-1" suffix.
         let suffixed = html.matches("\" id=\"b-").count();
@@ -3011,10 +3358,38 @@ mod tests {
     #[test]
     fn render_html_block_ids_stable_across_renders() {
         let blocks = vec![Rendered::Markdown("stable content".to_string())];
-        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
-        let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
+        let h1 = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let h2 = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let id1 = h1
+            .split("id=\"b-")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let id2 = h2
+            .split("id=\"b-")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
         assert_eq!(id1, id2, "block id changed between identical renders");
     }
 
@@ -3041,9 +3416,23 @@ mod tests {
             Rendered::Markdown("more prose".to_string()),
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(html.contains("data-code-idx=\"0\""), "first code block is idx 0");
-        assert!(html.contains("data-code-idx=\"1\""), "second code block is idx 1");
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("data-code-idx=\"0\""),
+            "first code block is idx 0"
+        );
+        assert!(
+            html.contains("data-code-idx=\"1\""),
+            "second code block is idx 1"
+        );
         // Prose sections carry no ordinal.
         assert_eq!(html.matches("data-code-idx=").count(), 2);
     }
@@ -3062,13 +3451,24 @@ mod tests {
             },
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("data-code-idx=\"0\""));
         assert!(
             html.contains("data-code-idx=\"2\""),
             "code after hidden mermaid must be idx 2, not 1:\n{html}"
         );
-        assert!(!html.contains("data-code-idx=\"1\""), "slot 1 is the hidden mermaid");
+        assert!(
+            !html.contains("data-code-idx=\"1\""),
+            "slot 1 is the hidden mermaid"
+        );
     }
 
     #[test]
@@ -3079,8 +3479,19 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(!html.contains("data-code-idx="), "mermaid gets no Run affordance");
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("data-code-idx="),
+            "mermaid gets no Run affordance"
+        );
     }
 
     #[test]
@@ -3093,7 +3504,15 @@ mod tests {
         // Identifiers survive `highlight_rustlab` verbatim; operators and
         // numbers get wrapped in spans, so match on the bare name only.
         let plot = std::path::PathBuf::from("/tmp/rustlab_test_plots");
-        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None, &LinkMode::single_file());
+        let solo = render_html(
+            "T",
+            &[code("xyzzy = 1")],
+            &plot,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         let shifted = render_html(
             "T",
             &[code("unrelated = 2"), code("xyzzy = 1")],
@@ -3130,7 +3549,15 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
@@ -3148,7 +3575,15 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
     }
@@ -3165,7 +3600,15 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
@@ -3185,7 +3628,15 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Source shown, but no output div
         assert!(html.contains("class=\"source\""));
         assert!(!html.contains("class=\"output\""));
@@ -3193,26 +3644,58 @@ mod tests {
 
     #[test]
     fn render_html_katex_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
     }
 
     #[test]
     fn render_html_plotly_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("plotly"));
     }
 
     #[test]
     fn render_html_nav_toggle() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("nav-toggle"));
     }
 
     #[test]
     fn render_html_title_escaped() {
-        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "A <script> & \"test\"",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &lt;script&gt; &amp; &quot;test&quot;"));
     }
 
@@ -3228,7 +3711,15 @@ mod tests {
             details: None,
             grid_cols: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
@@ -3239,7 +3730,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Section One\n\n## Sub Section".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("id=\"section-one\""));
         assert!(html.contains("id=\"sub-section\""));
         assert!(html.contains("Section One"));
@@ -3353,7 +3852,10 @@ mod tests {
 
     #[test]
     fn link_dest_server_resolves_to_slug_routes() {
-        let mode = server_mode(&[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")], "");
+        let mode = server_mode(
+            &[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")],
+            "",
+        );
         assert_eq!(
             rewrite_link_dest("02-filter.md", &mode).as_deref(),
             Some("/n/02-filter")
@@ -3398,6 +3900,88 @@ mod tests {
         );
         // `..` escaping the collection root cannot resolve — left alone.
         assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_server_falls_back_to_collection_root_and_unique_basename() {
+        // Nested authors (and wikilinks, which are vault-relative) write
+        // `ch2/notes.md` without a `../`. Page-relative that is
+        // `ch1/ch2/notes.md` — a miss. Root-relative and unique-basename
+        // fallbacks are what make watch navigation work.
+        let mode = server_mode(
+            &[
+                ("01-intro.md", "01-intro"),
+                ("ch1/01-intro.md", "01-intro-2"),
+                ("ch2/notes.md", "notes"),
+            ],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &mode).as_deref(),
+            Some("/n/notes"),
+            "collection-root path from a nested page"
+        );
+        assert_eq!(
+            rewrite_link_dest("notes.md", &mode).as_deref(),
+            Some("/n/notes"),
+            "unique basename when the name exists once"
+        );
+        // Same-dir still wins over a root file of the same name.
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro-2")
+        );
+        // Explicit `./` / `../` do not take the fallback.
+        assert_eq!(rewrite_link_dest("./ch2/notes.md", &mode), None);
+        assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_unique_basename_refuses_collision() {
+        let mode = server_mode(
+            &[
+                ("ch1/a.md", "a"),
+                ("ch2/dup.md", "dup"),
+                ("ch3/dup.md", "dup-2"),
+            ],
+            "ch1",
+        );
+        // Bare name is ambiguous — leave as written rather than pick a
+        // winner. Same-dir still wins when the page actually has the file.
+        assert_eq!(rewrite_link_dest("dup.md", &mode), None);
+        let same_dir = server_mode(
+            &[("ch1/dup.md", "dup-ch1"), ("ch2/dup.md", "dup-ch2")],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("dup.md", &same_dir).as_deref(),
+            Some("/n/dup-ch1")
+        );
+    }
+
+    #[test]
+    fn link_dest_static_fallback_climbs_out_of_nested_dir() {
+        let known: HashSet<String> = ["01-intro.md".to_string(), "ch2/notes.md".to_string()]
+            .into_iter()
+            .collect();
+        let nested = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: "ch1".to_string(),
+        };
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &nested).as_deref(),
+            Some("../ch2/notes.html"),
+            "fallback must emit href_between, not the dest as written"
+        );
+        assert_eq!(
+            rewrite_link_dest("notes.md", &nested).as_deref(),
+            Some("../ch2/notes.html")
+        );
+        // Page-relative form is unchanged.
+        assert_eq!(
+            rewrite_link_dest("../01-intro.md", &nested).as_deref(),
+            Some("../01-intro.html")
+        );
     }
 
     #[test]
@@ -3453,9 +4037,16 @@ mod tests {
             current_rel_dir: String::new(),
             index_at_root: false,
         };
-        assert_eq!(rewrite_link_dest("index.md", &mode), None, "left as written");
+        assert_eq!(
+            rewrite_link_dest("index.md", &mode),
+            None,
+            "left as written"
+        );
         // Self-link still resolves.
-        assert_eq!(rewrite_link_dest("solo.md", &mode).as_deref(), Some("/n/solo"));
+        assert_eq!(
+            rewrite_link_dest("solo.md", &mode).as_deref(),
+            Some("/n/solo")
+        );
     }
 
     /// Render one markdown block through the full HTML pipeline in `mode`.
@@ -3517,10 +4108,7 @@ mod tests {
         // `` `[link](a.md)` `` displayed as `[link](a.html)` — a rendered
         // code example asserting a rewrite the reader never wrote.
         let src = "Inline `[link](a.md)` span.\n\n```text\nsee [x](a.md)\n```\n";
-        for mode in [
-            LinkMode::single_file(),
-            server_mode(&[("a.md", "a")], ""),
-        ] {
+        for mode in [LinkMode::single_file(), server_mode(&[("a.md", "a")], "")] {
             let html = render_md_linked(src, &mode);
             assert!(
                 html.contains("[link](a.md)"),
@@ -3530,7 +4118,10 @@ mod tests {
                 html.contains("see [x](a.md)"),
                 "fenced block was rewritten: {html}"
             );
-            assert!(!html.contains("a.html"), "code content leaked a rewrite: {html}");
+            assert!(
+                !html.contains("a.html"),
+                "code content leaked a rewrite: {html}"
+            );
         }
     }
 
@@ -3554,7 +4145,10 @@ mod tests {
         // text, not a link. Pinned so nobody "fixes" it with string
         // matching later.
         let html = render_md_linked("see <02-filter.md> here", &LinkMode::single_file());
-        assert!(!html.contains("href=\"02-filter"), "text became a link: {html}");
+        assert!(
+            !html.contains("href=\"02-filter"),
+            "text became a link: {html}"
+        );
         assert!(
             html.contains("&lt;02-filter.md&gt;"),
             "angle reference should render as literal text: {html}"
@@ -3577,6 +4171,33 @@ mod tests {
         assert!(
             html.contains(r#"href="/n/02-filter#setup""#),
             "wikilink not resolved to slug route: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_nested_wikilink_uses_vault_relative_path() {
+        // `[[ch2/notes]]` → `[ch2/notes](ch2/notes.md)`. From ch1/ that
+        // is not page-relative; the root-relative fallback must fire or
+        // watch navigation 404s.
+        let html = render_md_linked(
+            "see [[ch2/notes]]",
+            &server_mode(&[("ch2/notes.md", "notes")], "ch1"),
+        );
+        assert!(
+            html.contains(r#"href="/n/notes""#),
+            "nested wikilink not resolved to slug route: {html}"
+        );
+        let known: HashSet<String> = ["ch2/notes.md".to_string()].into_iter().collect();
+        let html = render_md_linked(
+            "see [[ch2/notes]]",
+            &LinkMode::Static {
+                known: Some(known),
+                current_rel_dir: "ch1".to_string(),
+            },
+        );
+        assert!(
+            html.contains(r#"href="../ch2/notes.html""#),
+            "nested static wikilink must climb out of ch1/: {html}"
         );
     }
 
@@ -3621,7 +4242,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "See [other](other.md) for details".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("other.html"));
         assert!(!html.contains("other.md"));
     }
@@ -3728,7 +4357,10 @@ mod tests {
         assert!(stash.is_empty(), "currency must not be stashed as math");
         let restored = restore_math(&rewritten, &stash);
         assert_eq!(restored, src);
-        assert!(!restored.contains(r"\("), "no inline math delimiter injected");
+        assert!(
+            !restored.contains(r"\("),
+            "no inline math delimiter injected"
+        );
     }
 
     #[test]
@@ -3746,7 +4378,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             r"$$\begin{pmatrix}0 & 1 \\ 1 & 0\end{pmatrix}$$".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // The `\\` must reach the rendered HTML so KaTeX can split rows.
         assert!(
             html.contains(r"\\"),
@@ -3761,7 +4401,15 @@ mod tests {
             title: None,
             content: r"see $$a \\ b$$".to_string(),
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains(r"\\"));
     }
 
@@ -3832,7 +4480,10 @@ mod tests {
             ("func(~x~)", "func(~x~)"),
         ] {
             let html = markdown_to_html(src);
-            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+            assert!(
+                !html.contains("<del>"),
+                "struck through: {src:?} → {html:?}"
+            );
             assert!(html.contains(tilde_text), "tildes lost: {src:?} → {html:?}");
         }
     }
@@ -3859,7 +4510,10 @@ mod tests {
             "intraword a~b here",
         ] {
             let html = markdown_to_html(src);
-            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+            assert!(
+                !html.contains("<del>"),
+                "struck through: {src:?} → {html:?}"
+            );
         }
     }
 
@@ -3910,7 +4564,15 @@ mod tests {
     #[test]
     fn render_html_no_nav_for_single_file() {
         let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Same chrome as a collection page — there is just nothing to page to.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("<nav class=\"sidebar\">"));
@@ -3934,8 +4596,19 @@ mod tests {
             next: None,
         };
         for n in [None, Some(&nav)] {
-            let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), n, &LinkMode::single_file());
-            assert!(!html.contains("topbar-layout"), "stale layout class emitted");
+            let html = render_html(
+                "T",
+                &blocks,
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                test_theme(),
+                n,
+                &LinkMode::single_file(),
+            );
+            assert!(
+                !html.contains("topbar-layout"),
+                "stale layout class emitted"
+            );
         }
     }
 
@@ -3947,7 +4620,15 @@ mod tests {
             next: None,
         };
         let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
-        let html = render_html("Filter Analysis", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Filter Analysis",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         // Topbar present with breadcrumb.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"index.html\""));
@@ -3965,8 +4646,19 @@ mod tests {
         // Emitting the sidebar unconditionally cost 220px of chrome holding
         // nothing but the title. `no-toc` gives that width back to content.
         let blocks = vec![Rendered::Markdown("just prose, no headings.\n".to_string())];
-        let html = render_html("Solo", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(!html.contains("<nav class=\"sidebar\">"), "empty sidebar emitted");
+        let html = render_html(
+            "Solo",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("<nav class=\"sidebar\">"),
+            "empty sidebar emitted"
+        );
         assert!(html.contains("<body class=\"no-toc\">"));
         // The topbar is still there — chrome stays consistent.
         assert!(html.contains("class=\"topbar\""));
@@ -4001,12 +4693,18 @@ mod tests {
             !html.contains("margin-right: auto"),
             "the inert auto-margin rule is back"
         );
-        assert!(html.contains(".topbar a.index"), "Index link flex guard missing");
+        assert!(
+            html.contains(".topbar a.index"),
+            "Index link flex guard missing"
+        );
         assert!(
             html.contains("body:not(.no-toc) .topbar"),
             "no-toc pages must not reserve hamburger space"
         );
-        assert!(html.contains("overflow-x: hidden"), "sidebar clipping rule missing");
+        assert!(
+            html.contains("overflow-x: hidden"),
+            "sidebar clipping rule missing"
+        );
     }
 
     #[test]
@@ -4015,7 +4713,15 @@ mod tests {
         // y=0, behind the fixed topbar — the heading you clicked is the one
         // thing you cannot see.
         let blocks = vec![Rendered::Markdown("# Alpha\n".to_string())];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(
             html.contains("scroll-margin-top"),
             "heading anchors would land under the topbar"
@@ -4036,7 +4742,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
         )];
-        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Lesson 09",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         // Between-notebook nav.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"08.html\""), "prev link missing");
@@ -4057,7 +4771,15 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "A <script> & \"x\"",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &lt;script&gt; &amp; &quot;x&quot;"));
     }
 
@@ -4068,7 +4790,15 @@ mod tests {
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"page-nav\""));
         assert!(html.contains("class=\"prev\""));
         assert!(html.contains("href=\"intro.html\""));
@@ -4086,7 +4816,15 @@ mod tests {
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"page-nav\""));
         assert!(!html.contains("class=\"prev\""));
         assert!(html.contains("class=\"next\""));
@@ -4099,7 +4837,15 @@ mod tests {
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"prev\""));
         assert!(!html.contains("class=\"next\""));
     }
@@ -4111,7 +4857,15 @@ mod tests {
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
     }
@@ -4138,7 +4892,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<figure class=\"mermaid\">"));
         assert!(html.contains("<svg"), "expected inline <svg> tag");
         assert!(!html.contains("<?xml"), "XML decl should be stripped");
@@ -4155,7 +4917,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(!html.contains("cdn.jsdelivr.net/npm/mermaid"));
         assert!(!html.contains("mermaid.initialize("));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4171,7 +4941,15 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<figcaption>Signal flow</figcaption>"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4186,7 +4964,15 @@ mod tests {
             details: Some("Architecture".to_string()),
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<details class=\"code-details\">"));
         assert!(html.contains("<summary>Architecture</summary>"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4201,7 +4987,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(!html.contains("<figure class=\"mermaid\">"));
         assert!(!html.contains("<svg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4225,7 +5019,15 @@ mod tests {
                 caption: None,
             },
         ];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         let figs = html.matches("<figure class=\"mermaid\">").count();
         assert_eq!(figs, 2, "expected two mermaid figures, got {figs}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -4241,7 +5043,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"mermaid-source\""));
         assert!(html.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4304,7 +5114,10 @@ mod tests {
     #[test]
     fn render_html_task_list_checked() {
         let html = render_md("- [x] done");
-        assert!(html.contains("type=\"checkbox\""), "checkbox missing: {html}");
+        assert!(
+            html.contains("type=\"checkbox\""),
+            "checkbox missing: {html}"
+        );
         assert!(html.contains("checked"), "checked attr missing: {html}");
     }
 
@@ -4406,10 +5219,7 @@ mod tests {
 
     #[test]
     fn embed_simple() {
-        assert_eq!(
-            transform_wikilinks("![[image.png]]"),
-            "![](image.png)"
-        );
+        assert_eq!(transform_wikilinks("![[image.png]]"), "![](image.png)");
     }
 
     #[test]
@@ -4459,7 +5269,10 @@ mod tests {
             None,
             &LinkMode::single_file(),
         );
-        assert!(html.contains(r#"href="Foo.html""#), "expected .html href: {html}");
+        assert!(
+            html.contains(r#"href="Foo.html""#),
+            "expected .html href: {html}"
+        );
         assert!(html.contains(">Foo</a>"));
     }
 

@@ -1721,6 +1721,7 @@ pub fn generate_index_html(
 <title>{title} — Notebook Index</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html {{ color-scheme: {color_scheme}; }}
   body {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: {bg};
@@ -1785,7 +1786,8 @@ pub fn generate_index_html(
     display: inline; padding: 0; background: transparent; border: 0;
     color: {accent_secondary}; text-decoration: underline;
   }}
-  .intro a:hover {{ background: transparent; }}
+  .intro a:visited {{ color: {accent_primary}; }}
+  .intro a:hover {{ background: transparent; color: {accent_tertiary}; }}
 </style>
 </head>
 <body>
@@ -1804,6 +1806,7 @@ pub fn generate_index_html(
         plural = if entries.len() == 1 { "" } else { "s" },
         intro = intro,
         links = links,
+        color_scheme = crate::render::css_color_scheme(c.bg),
         bg = c.bg,
         bg_secondary = c.bg_secondary,
         text = c.text,
@@ -1811,6 +1814,7 @@ pub fn generate_index_html(
         border = c.border,
         accent_primary = c.accent_primary,
         accent_secondary = c.accent_secondary,
+        accent_tertiary = c.accent_tertiary,
         footer_text = c.footer_text,
     )
 }
@@ -3154,6 +3158,7 @@ More.\n";
         let html = generate_index_html("notebooks", &entries, Theme::Dark.colors(), "");
         assert!(html.contains("notebooks"));
         assert!(html.contains("2 notebooks"));
+        assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("href=\"filter.html\""));
         assert!(html.contains("Filter Analysis"));
         assert!(html.contains("href=\"quick.html\""));
