@@ -1334,6 +1334,19 @@ survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
 `/n/filter_design#anchor`), titled and reference-style links resolve the
 same way, and `[[wikilinks]]` go through the same resolver.
 
+Lookup order, for both `render` and `watch`:
+
+1. **Page-relative** (CommonMark) — `[x](../ch2/notes.md)` from `ch1/`
+   resolves against the linking notebook's directory.
+2. **Collection-root-relative** — if that misses and the dest is not
+   `./` or `../`, `[x](ch2/notes.md)` and `[[ch2/notes]]` (Obsidian
+   wikilinks are vault-relative) are tried from the collection root.
+   Static HTML emits the climbed path (`../ch2/notes.html`), not the
+   dest as written.
+3. **Unique basename** — a bare `[x](notes.md)` that still misses
+   matches the one notebook in the collection with that filename. Two
+   files sharing the name stay unresolved rather than picking a winner.
+
 PDF and LaTeX output resolves the same links to the sibling `.pdf`
 files a directory PDF build emits (`filter_design.md` →
 `\href{filter_design.pdf}`), dropping `#anchor` fragments — PDFs have
@@ -1349,7 +1362,9 @@ In a directory render, only links to notebooks the build actually emits
 are rewritten. A link to a partial (`_setup.md`), or to a target that
 does not exist, is left exactly as written — a visibly broken `.md` link
 is easier to notice and fix than a generated `.html` one that 404s while
-looking intentional.
+looking intentional. `watch <file.md>` (single-file) has no collection
+to resolve against; leftover `.md` hrefs 404 on the server — watch the
+parent directory to enable cross-notebook navigation.
 
 ### Page navigation
 

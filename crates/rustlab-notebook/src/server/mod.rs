@@ -258,6 +258,9 @@ fn build_state(
         };
         let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref(), &link)
             .with_context(|| format!("rendering {} for server", path.display()))?;
+        if !is_dir {
+            warn_unresolved_md_links(&render.html);
+        }
         let nb = Arc::new(http::Notebook::new(
             slug.clone(),
             path.clone(),
@@ -320,6 +323,29 @@ fn build_state(
         index_md_path,
         render_tx: std::sync::OnceLock::new(),
     }))
+}
+
+/// Single-file `watch` cannot resolve cross-notebook `.md` links (the
+/// slug map holds one entry). Leftover `href="….md"` values 404 on the
+/// server — point the user at directory watch instead of failing silent.
+fn warn_unresolved_md_links(html: &str) {
+    let mut seen = HashSet::new();
+    let mut rest = html;
+    while let Some(i) = rest.find("href=\"") {
+        rest = &rest[i + 6..];
+        let Some(end) = rest.find('"') else { break };
+        let href = &rest[..end];
+        rest = &rest[end + 1..];
+        if href.starts_with('/') || href.starts_with('#') || crate::render::has_url_scheme(href) {
+            continue;
+        }
+        let path = href.split_once('#').map(|(p, _)| p).unwrap_or(href);
+        if path.ends_with(".md") && seen.insert(path.to_string()) {
+            eprintln!(
+                "[watch] unresolved link to '{path}' — watch the collection directory to enable navigation"
+            );
+        }
+    }
 }
 
 /// Derive a unique, URL-safe slug for `path`, deduping collisions with a
@@ -1014,7 +1040,7 @@ mod tests {
         std::fs::write(
             dir.path().join("ch1").join("01-intro.md"),
             "# Ch1 Intro\n\n[sibling myself](01-intro.md) · [root intro](../01-intro.md) · \
-             [notes](../ch2/notes.md)\n",
+             [notes](../ch2/notes.md) · [root-rel notes](ch2/notes.md) · [[ch2/notes]]\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
@@ -1066,6 +1092,13 @@ mod tests {
             ch1.contains(&format!("href=\"/n/{notes}\"")),
             "../ch2/ link did not resolve"
         );
+        // Collection-root spelling (no `../`) and the equivalent wikilink
+        // must also resolve — otherwise watch 404s from nested pages.
+        let root_rel_hits = ch1.matches(&format!("href=\"/n/{notes}\"")).count();
+        assert!(
+            root_rel_hits >= 3,
+            "expected page-relative + root-relative + wikilink to all resolve, got {root_rel_hits}: {ch1}"
+        );
 
         // The fragment target really exists on the destination page.
         let filter_page = get_body(&app, &format!("/n/{filter}")).await;
@@ -1099,6 +1132,30 @@ mod tests {
         assert!(!page.contains("class=\"page-nav\""), "single file should have no footer nav");
         assert!(!page.contains("class=\"prev\""), "single file should have no prev link");
         assert!(!page.contains("class=\"next\""), "single file should have no next link");
+    }
+
+    #[tokio::test]
+    async fn single_file_mode_leaves_sibling_md_links_unresolved() {
+        // Single-file watch has a one-entry slug map; a link to another
+        // notebook must stay a `.md` href rather than inventing a `/n/`
+        // route the server does not serve.
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let nb = dir.path().join("solo.md");
+        std::fs::write(&nb, "# Solo\n\nSee [other](ch2/notes.md).\n").unwrap();
+        let canon = std::fs::canonicalize(&nb).unwrap();
+        let state = build_state(&canon, false, theme, false).unwrap();
+        let slug = state.order[0].clone();
+        let app = http::router(state);
+        let page = get_body(&app, &format!("/n/{slug}")).await;
+        assert!(
+            page.contains("href=\"ch2/notes.md\""),
+            "sibling .md link was rewritten in single-file mode: {page}"
+        );
+        assert!(
+            !page.contains("href=\"/n/"),
+            "single-file mode invented a slug route: {page}"
+        );
     }
 
     #[tokio::test]

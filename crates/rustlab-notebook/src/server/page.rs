@@ -139,6 +139,9 @@ fn editor_style(c: &ThemeColors) -> String {
   #rl-source-pane .CodeMirror-cursor {{ border-left: 1px solid {text}; }}
   #rl-source-pane .CodeMirror-selected {{ background: {border}; }}
   #rl-source-pane .CodeMirror-activeline-background {{ background: {bg_secondary}; }}
+  /* Default CodeMirror tokens assume a light page; `.cm-link` is a
+     dark blue that vanishes on Mocha. */
+  #rl-source-pane .cm-link {{ color: {accent}; }}
 </style>
 "##,
         bg_secondary = c.bg_secondary,
@@ -146,6 +149,7 @@ fn editor_style(c: &ThemeColors) -> String {
         text_dim = c.text_dim,
         border = c.border,
         code_bg = c.code_bg,
+        accent = c.accent_secondary,
     )
 }
 
@@ -318,6 +322,7 @@ mod tests {
         assert!(out.contains(">Edit<"), "button reads Edit in editable mode");
         assert!(out.contains("/assets/codemirror/codemirror.min.js"));
         assert!(out.contains("/assets/codemirror/codemirror.min.css"));
+        assert!(out.contains(".cm-link"), "dark-theme override for markdown links");
         assert!(out.contains("/assets/codemirror/mode/markdown/markdown.min.js"));
         assert!(out.contains("/save/' + slug"), "save POST target present");
         assert!(out.contains("CodeMirror("), "editor is constructed");

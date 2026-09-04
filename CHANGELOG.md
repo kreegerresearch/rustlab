@@ -82,6 +82,22 @@ Workflow Rule 12).
   line), as one combined message naming the plot kinds.
 
 ### Fixed
+- Dark-mode notebook HTML no longer leaves prose links unstyled. Body,
+  callout, and exercise `<a>` tags inherit the browser default
+  (`#0000EE` / visited `#551A8B`) which is invisible on Catppuccin
+  Mocha (`#1e1e2e`). They now use the theme accents (`#89b4fa` /
+  `#cba6f7` in dark, the Latte blues/purples in light), with
+  `color-scheme` set on `<html>` so UA chrome matches the page. The
+  index intro links and the `--editable` CodeMirror `.cm-link` token
+  get the same treatment.
+- `notebook watch` (and directory `render`) now resolve
+  collection-root paths and unique basenames from nested notebooks.
+  `[x](ch2/notes.md)` and `[[ch2/notes]]` written from `ch1/` used to
+  stay as `.md` hrefs — the watch server has no `*.md` route, so
+  clicks 404'd. Lookup is still page-relative first; `./` and `../`
+  spellings do not take the fallback; two files sharing a basename
+  stay unresolved rather than picking a winner. Static HTML emits the
+  climbed path (`../ch2/notes.html`) for a fallback hit.
 - Bare `figure()` and `histogram(v)` / `hist(v)` statements no longer
   echo their return values (a meaningless figure-handle integer above
   every plot in notebook output — churning with global figure count
