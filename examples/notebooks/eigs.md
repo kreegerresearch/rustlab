@@ -91,8 +91,7 @@ Switching the selector reaches the high end of the spectrum:
 print(Dlm(1))     % largest eigenvalue
 ```
 
-For grid Laplacians, the largest eigenvalue lives at $(m, n) =
-(n_x, n_y)$ — the highest-frequency standing wave that fits on the
+For grid Laplacians, the largest eigenvalue lives at $(m, n) = (n_x, n_y)$ — the highest-frequency standing wave that fits on the
 grid before aliasing.
 
 ## Generalized eigenproblem — `eigs(A, B, n)`

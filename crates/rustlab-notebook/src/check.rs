@@ -75,6 +75,7 @@ pub fn check_source(
     findings.extend(check_frontmatter_terminated(source));
     findings.extend(check_duplicate_generated_headers(source));
     findings.extend(check_mismatched_details(source));
+    findings.extend(check_multiline_inline_math(source));
     findings.extend(check_unresolved_embeds(source, host_dir, root_dir));
     findings.extend(check_plot_urls_resolve(source, file));
     findings.extend(check_fragment_targets(source, host_dir));
@@ -292,9 +293,6 @@ pub fn check_duplicate_generated_headers(source: &str) -> Vec<Finding> {
     }]
 }
 
-/// **W002** — `<details>` and `</details>` tag counts must balance.
-/// A mismatch typically means a hand-authored disclosure widget lost
-/// its closing tag.
 /// **W003 / W004** — Cross-notebook links must point at files that exist
 /// (W003) and fragments must land on real anchors in the target (W004).
 ///
@@ -421,11 +419,13 @@ fn target_anchors(source: &str) -> std::collections::HashSet<String> {
     anchors
 }
 
+/// **W002** — `<details>` and `</details>` tag counts must balance.
+/// A mismatch typically means a hand-authored disclosure widget lost
+/// its closing tag. Counts ignore fenced code blocks and inline code
+/// spans (so prose like `` `<details>` `` does not false-positive).
 pub fn check_mismatched_details(source: &str) -> Vec<Finding> {
-    // Cheap substring count; `<details>` and `</details>` are
-    // sufficiently unique that we don't need a full HTML parser.
-    let opens = source.matches("<details>").count();
-    let closes = source.matches("</details>").count();
+    let opens = count_tag_outside_code(source, "<details>");
+    let closes = count_tag_outside_code(source, "</details>");
     if opens == closes {
         return Vec::new();
     }
@@ -449,7 +449,331 @@ pub fn check_mismatched_details(source: &str) -> Vec<Finding> {
     }]
 }
 
+/// **W005** — Inline `$...$` math that does not close on the same line.
+///
+/// The HTML renderer only matches same-line `$` (KaTeX-style; see
+/// `render::protect_math` / `find_inline_close`), so a split like
+/// `$x =\n y$` leaves raw TeX in the page. Display `$$...$$` may span
+/// lines and is not flagged here. Skips fenced code blocks, inline code
+/// spans, and `\$` escapes — matching the renderer's math protection.
+pub fn check_multiline_inline_math(source: &str) -> Vec<Finding> {
+    let s = source.as_bytes();
+    let n = s.len();
+    let mut findings = Vec::new();
+    let mut i = 0;
+    let mut at_line_start = true;
+
+    while i < n {
+        if at_line_start {
+            let trimmed_off = {
+                let mut j = i;
+                while j < n && s[j] == b' ' {
+                    j += 1;
+                }
+                j
+            };
+            if trimmed_off < n && s[trimmed_off] == b'`' {
+                // Possible ``` fence (same spirit as E002 — backtick fences only).
+                let mut k = trimmed_off;
+                while k < n && s[k] == b'`' {
+                    k += 1;
+                }
+                if k - trimmed_off >= 3 {
+                    // Copy/skip through this fence block.
+                    // Advance to end of opening line, then until a close fence or EOF.
+                    while i < n && s[i] != b'\n' {
+                        i += 1;
+                    }
+                    if i < n {
+                        i += 1; // consume newline
+                    }
+                    while i < n {
+                        let line_start = i;
+                        while i < n && s[i] != b'\n' {
+                            i += 1;
+                        }
+                        let line = &s[line_start..i];
+                        let close_trim = {
+                            let mut t = 0;
+                            while t < line.len() && line[t] == b' ' {
+                                t += 1;
+                            }
+                            t
+                        };
+                        let mut ticks = 0;
+                        while close_trim + ticks < line.len() && line[close_trim + ticks] == b'`' {
+                            ticks += 1;
+                        }
+                        let is_close = ticks >= 3
+                            && line[close_trim + ticks..]
+                                .iter()
+                                .all(|&c| c == b' ' || c == b'\t' || c == b'\r');
+                        if i < n {
+                            i += 1; // newline
+                        }
+                        if is_close {
+                            break;
+                        }
+                    }
+                    at_line_start = true;
+                    continue;
+                }
+            }
+        }
+
+        let b = s[i];
+
+        // Inline code span: matched run of N backticks.
+        if b == b'`' {
+            let run_start = i;
+            while i < n && s[i] == b'`' {
+                i += 1;
+            }
+            let open_len = i - run_start;
+            let mut j = i;
+            let mut closed = false;
+            while j < n {
+                if s[j] == b'`' {
+                    let cs = j;
+                    while j < n && s[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - cs == open_len {
+                        i = j;
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if !closed {
+                // Unclosed run: treat opener bytes as literal; already advanced past them.
+            }
+            at_line_start = false;
+            continue;
+        }
+
+        // `\$` — currency / escape; not math.
+        if b == b'\\' && i + 1 < n && s[i + 1] == b'$' {
+            i += 2;
+            at_line_start = false;
+            continue;
+        }
+
+        // Notebook `${expr}` / `${expr:fmt}` templates — not math. Skip the
+        // balanced `{...}` (and an optional trailing math-wrap `$`).
+        if b == b'$' && i + 1 < n && s[i + 1] == b'{' {
+            if let Some(after) = skip_template_interp(s, i) {
+                i = after;
+                at_line_start = false;
+                continue;
+            }
+        }
+
+        // Display math $$...$$ — may span lines; skip the whole span when closed.
+        // Display math $$...$$ — may span lines; skip the whole span when closed.
+        if b == b'$' && i + 1 < n && s[i + 1] == b'$' {
+            let start = i;
+            i += 2;
+            let mut j = i;
+            let mut found = false;
+            while j + 1 < n {
+                if s[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if s[j] == b'$' && s[j + 1] == b'$' {
+                    i = j + 2;
+                    found = true;
+                    break;
+                }
+                j += 1;
+            }
+            if !found {
+                // Unclosed display: leave the `$$` consumed and continue.
+            }
+            at_line_start = source[start..i.min(source.len())].ends_with('\n');
+            let _ = start;
+            continue;
+        }
+
+        // Inline math opener — must close on the same line.
+        if b == b'$' && is_inline_math_open_bytes(s, i) {
+            if let Some(close) = find_inline_close_same_line(s, i + 1) {
+                i = close + 1;
+                at_line_start = false;
+                continue;
+            }
+            // `$5` is a KaTeX-style opener (next byte is non-whitespace) but
+            // a following digit means currency, which the renderer also
+            // leaves unmatched. Don't warn unless it looks like TeX.
+            let next_is_digit = i + 1 < n && s[i + 1].is_ascii_digit();
+            if !next_is_digit {
+                let line = 1 + source[..i].matches('\n').count();
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    line: Some(line),
+                    code: "rustlab:W005",
+                    message: "inline `$...$` math does not close on the same line — the renderer only matches same-line `$` (split delimiters leak raw TeX into HTML)"
+                        .to_string(),
+                    auto_fixable: false,
+                });
+            }
+            i += 1;
+            at_line_start = false;
+            continue;
+        }
+
+        if b == b'\n' {
+            at_line_start = true;
+        } else {
+            at_line_start = false;
+        }
+        i += 1;
+    }
+    findings
+}
+
 // ── helpers ────────────────────────────────────────────────────────────────
+
+/// Count non-overlapping occurrences of `tag` outside fenced ``` blocks and
+/// inline backtick code spans.
+fn count_tag_outside_code(source: &str, tag: &str) -> usize {
+    let mut count = 0;
+    let mut in_fence = false;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        count += count_substr_outside_inline_code(line, tag);
+    }
+    count
+}
+
+/// Count non-overlapping `needle` matches on `line`, skipping CommonMark
+/// inline code spans (matched runs of N backticks).
+fn count_substr_outside_inline_code(line: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let bytes = line.as_bytes();
+    let n = bytes.len();
+    let needle_bytes = needle.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i < n {
+        if bytes[i] == b'`' {
+            let run_start = i;
+            while i < n && bytes[i] == b'`' {
+                i += 1;
+            }
+            let open_len = i - run_start;
+            let mut j = i;
+            let mut closed = false;
+            while j < n {
+                if bytes[j] == b'`' {
+                    let cs = j;
+                    while j < n && bytes[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - cs == open_len {
+                        i = j;
+                        closed = true;
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if !closed {
+                // Unclosed: keep scanning from current i (past opener).
+            }
+            continue;
+        }
+        if i + needle_bytes.len() <= n && &bytes[i..i + needle_bytes.len()] == needle_bytes {
+            count += 1;
+            i += needle_bytes.len();
+            continue;
+        }
+        i += 1;
+    }
+    count
+}
+
+
+/// Skip a `${...}` template starting at `i` (where `s[i..i+2] == b"${"`).
+/// Returns the index just past the closing `}`, or past a trailing
+/// math-wrap `$` when present (`${expr}$`). Brace depth is tracked so
+/// nested `{` in the expression don't truncate early.
+fn skip_template_interp(s: &[u8], i: usize) -> Option<usize> {
+    if i + 1 >= s.len() || s[i] != b'$' || s[i + 1] != b'{' {
+        return None;
+    }
+    let mut j = i + 2;
+    let mut depth = 1i32;
+    while j < s.len() {
+        match s[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    j += 1;
+                    // Optional trailing math-wrap `$` (not `$$` / `${`).
+                    if j < s.len()
+                        && s[j] == b'$'
+                        && (j + 1 >= s.len() || (s[j + 1] != b'$' && s[j + 1] != b'{'))
+                    {
+                        j += 1;
+                    }
+                    return Some(j);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
+}
+
+/// KaTeX-style inline math opener: `$` followed by a non-whitespace, non-`$` byte.
+fn is_inline_math_open_bytes(s: &[u8], i: usize) -> bool {
+    if i + 1 >= s.len() {
+        return false;
+    }
+    let nx = s[i + 1];
+    if nx == b'$' {
+        return false;
+    }
+    !nx.is_ascii_whitespace()
+}
+
+/// Closing `$` on the same line only (mirrors `render::find_inline_close`
+/// without the table-pipe special case — a missing close is still a miss).
+fn find_inline_close_same_line(s: &[u8], start: usize) -> Option<usize> {
+    let n = s.len();
+    let mut j = start;
+    while j < n && s[j] != b'\n' {
+        if s[j] == b'\\' && j + 1 < n {
+            j += 2;
+            continue;
+        }
+        if s[j] == b'$' {
+            let prev_ok = j > start && !s[j - 1].is_ascii_whitespace();
+            let next_ok = j + 1 >= n || !s[j + 1].is_ascii_digit();
+            if prev_ok && next_ok {
+                return Some(j);
+            }
+        }
+        j += 1;
+    }
+    None
+}
 
 /// Parse every `![alt](url)` reference on `line`. Skips reference-style
 /// links and `[text](url)` (non-image) links. Returns `(alt, url)` pairs.
@@ -691,6 +1015,76 @@ mod tests {
     fn w002_orphan_close_fires() {
         let src = "spurious </details>\n";
         assert_codes(&check_mismatched_details(src), &["rustlab:W002"]);
+    }
+
+    #[test]
+    fn w002_inline_code_mention_no_false_positive() {
+        // The notebook_directives.md prose pattern that used to trip W002.
+        let src = "In Markdown output the section uses native `<details>`; in LaTeX/PDF it\n";
+        assert!(
+            check_mismatched_details(src).is_empty(),
+            "mentioning `<details>` in an inline code span must not warn"
+        );
+    }
+
+    #[test]
+    fn w002_fenced_code_mention_no_false_positive() {
+        let src = "# Demo\n\n```html\n<details>\n<summary>x</summary>\n```\n\nprose\n";
+        assert!(
+            check_mismatched_details(src).is_empty(),
+            "unmatched <details> inside a fence must not warn"
+        );
+    }
+
+    #[test]
+    fn w002_real_unmatched_still_fires_beside_code_mention() {
+        let src = "See `<details>` in the docs.\n\n<details>\nsummary body (no close)\n";
+        assert_codes(&check_mismatched_details(src), &["rustlab:W002"]);
+    }
+
+    // ── W005: multiline / unclosed same-line inline math ─────────────────
+
+    #[test]
+    fn w005_eigs_style_split_inline_math_fires() {
+        // Repro from examples/notebooks/eigs.md before the same-line fix.
+        let src = "For grid Laplacians, the largest eigenvalue lives at $(m, n) =\n(n_x, n_y)$ — the highest-frequency standing wave.\n";
+        let findings = check_multiline_inline_math(src);
+        assert_codes(&findings, &["rustlab:W005"]);
+        assert_eq!(findings[0].line, Some(1));
+    }
+
+    #[test]
+    fn w005_same_line_inline_math_clean() {
+        let src = "the value $x = 1$ is set and $(m, n) = (n_x, n_y)$ too\n";
+        assert!(check_multiline_inline_math(src).is_empty());
+    }
+
+    #[test]
+    fn w005_display_math_multiline_clean() {
+        let src = "before\n$$\nx = 1\\\\\ny = 2\n$$\nafter\n";
+        assert!(check_multiline_inline_math(src).is_empty());
+    }
+
+    #[test]
+    fn w005_currency_and_code_spans_skipped() {
+        let src = "costs $5 and $10, plus `let $x$ = 1` and \\$escaped\n";
+        assert!(check_multiline_inline_math(src).is_empty());
+    }
+
+
+    #[test]
+    fn w005_template_interpolation_not_flagged() {
+        let src = "rate ${fs:%,.0f} Hz and ${n_taps} taps; also ${bits}-bit.\n";
+        assert!(
+            check_multiline_inline_math(src).is_empty(),
+            "notebook `${{expr}}` templates must not trip W005"
+        );
+    }
+
+    #[test]
+    fn w005_math_inside_fence_skipped() {
+        let src = "```\n$x =\ny$\n```\n";
+        assert!(check_multiline_inline_math(src).is_empty());
     }
 
     // ── parser ───────────────────────────────────────────────────────────

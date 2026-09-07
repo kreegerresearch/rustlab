@@ -27,7 +27,7 @@ gallery_dir="$repo_root/gallery"
 #
 # Notebook rendering lives in the standalone `rustlab-notebook` binary
 # (per the keep-rustlab-small rule); we no longer build the main CLI here.
-cargo build -q --release -p rustlab-notebook --bin rustlab-notebook
+cargo build -q --release -p rustlab-notebook --bin rustlab-notebook --features mermaid
 notebook_bin="$repo_root/target/release/rustlab-notebook"
 
 mkdir -p "$gallery_dir"

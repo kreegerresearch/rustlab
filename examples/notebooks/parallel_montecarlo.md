@@ -1,7 +1,7 @@
 # Parallel Monte Carlo with `parmap`
 
 A canonical Monte Carlo workflow that scales linearly with CPU count, using
-[`parmap`](../docs/quickref.md) — rustlab's parallel-map primitive backed
+[`parmap`](../../docs/quickref.md) — rustlab's parallel-map primitive backed
 by rayon's thread pool.
 
 The script-side surface is small:
@@ -202,11 +202,11 @@ accident.
 
 ## See also
 
-- [`dev/plans/closed/parmap_parreduce.md`](../dev/plans/closed/parmap_parreduce.md) —
+- [`dev/plans/closed/parmap_parreduce.md`](../../dev/plans/closed/parmap_parreduce.md) —
   v1 implementation plan, deferred phases (`parreduce`, cluster backend),
   open design questions.
-- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../dev/plans/closed/parmap_nonscalar_outputs.md) —
+- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../../dev/plans/closed/parmap_nonscalar_outputs.md) —
   vector/matrix output extension (the "stacks into Matrix / Tensor3" rule
   used above).
-- [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
+- [`docs/quickref.md`](../../docs/quickref.md) — one-line reference card.
 - `help parmap` and `help nproc` in the REPL.
