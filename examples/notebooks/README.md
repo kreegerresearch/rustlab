@@ -63,7 +63,9 @@ created, KaTeX + Plotly load from the binary (works offline). Small
 edits ship as block-level partial diffs that preserve scroll
 position; structural edits fall back to a full refresh. Pass
 `--port <N>` to override the default port (8042 with auto-increment
-up to +10 if busy) or `--no-browser` to skip the auto-open. See
+up to +10 if busy), `--browser` to force-open from an IDE, or
+`--no-browser` to skip the auto-open (`$RUSTLAB_NOTEBOOK_BROWSER`
+persists the choice). See
 `rustlab-notebook watch --help` and
 [`docs/notebooks.md`](../../docs/notebooks.md) § "Live preview" for
 the full details.
