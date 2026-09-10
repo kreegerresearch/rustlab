@@ -197,6 +197,7 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
+rustlab-notebook watch analysis.md --browser             # force-open even from an IDE / non-TTY
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 ```
@@ -231,11 +232,17 @@ Behaviour:
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no
   in-place rewrite.
-- **Browser auto-opens** when stderr is a TTY and `CI` is unset;
-  `--no-browser` forces off. On Linux/WSL the server tries
-  `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
-  then `gio open` / `sensible-browser`, falling back to printing the
-  URL if none are present.
+- **Browser auto-opens** when stderr is a TTY and `CI` is unset.
+  `--browser` forces a launch even from an IDE (stderr is not a TTY);
+  `--no-browser` forces off. Persist the choice with
+  `$RUSTLAB_NOTEBOOK_BROWSER`: `1`/`true`/`on` always open, `0`/`false`/`off`
+  never, or a command (`firefox`, `google-chrome %s`) used as the opener.
+  `$BROWSER` is the standard Unix fallback when no command was given.
+  Openers, in order: macOS `open`; Windows `cmd /c start` then PowerShell
+  `Start-Process`; WSL `wslview` (Windows host browser), then
+  `cmd.exe /c start` / `explorer.exe`, then the Linux list (`xdg-open`,
+  `gio open`, `sensible-browser`, `x-www-browser`). If every candidate
+  is missing the URL is printed for a manual open. `CI` is a hard off.
 - **Source pane (split view).** A "Source" button in the top-right
   toolbar slides in a pane showing the raw `.md` (served from
   `/raw/<slug>`). The toolbar and pane live outside the rendered

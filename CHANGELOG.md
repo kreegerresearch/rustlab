@@ -35,6 +35,15 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- `rustlab-notebook watch` browser launch is now a setting.
+  `--browser` force-opens even from an IDE (stderr is not a TTY);
+  `--no-browser` still suppresses. Persist with
+  `$RUSTLAB_NOTEBOOK_BROWSER` (`1`/`true` always, `0`/`false` never,
+  or a command such as `firefox` / `google-chrome %s`). `$BROWSER` is
+  the Unix fallback opener. Openers cover macOS (`open`), Windows
+  (`cmd /c start`, PowerShell `Start-Process`), WSL (`wslview`, then
+  `cmd.exe` / `explorer.exe`), and Linux (`xdg-open`, `gio`,
+  `sensible-browser`, `x-www-browser`). `CI` remains a hard off.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).

@@ -14,6 +14,7 @@
 //! yet. Source `.md` is never modified.
 
 pub mod assets;
+pub mod browser;
 pub mod cell;
 pub mod diff;
 pub mod http;
@@ -24,7 +25,6 @@ pub mod ws;
 use anyhow::{Context, Result};
 use rustlab_plot::ThemeColors;
 use std::collections::{HashMap, HashSet};
-use std::io::IsTerminal;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,6 +47,9 @@ pub struct ServerOpts {
     pub port: Option<u16>,
     /// When true, never auto-open the browser even on a TTY.
     pub no_browser: bool,
+    /// When true, open the browser even if stderr is not a TTY (IDE /
+    /// launcher). `--no-browser` still wins. See [`browser`].
+    pub force_browser: bool,
     /// When true, mount the `/save/{slug}` write-back route and serve the
     /// in-browser editor. This is the one interactive path that modifies
     /// source `.md` files (parallels the "only `--obsidian` modifies"
@@ -91,8 +94,8 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             eprintln!("[watch] --editable: in-browser edits write back to source .md");
         }
 
-        if !opts.no_browser && should_auto_open_browser() {
-            if let Err(e) = open_browser(&url) {
+        if browser::should_auto_open_browser(opts.force_browser, opts.no_browser) {
+            if let Err(e) = browser::open_browser(&url) {
                 eprintln!("[watch] could not open browser automatically: {e}");
                 eprintln!("[watch] open {url} manually");
             }
@@ -573,80 +576,6 @@ fn log_bind(url: &str, explicit_port: Option<u16>) {
     }
 }
 
-/// Phase-1 policy (per locked-in #8): auto-open only when stderr is a
-/// TTY and `CI` is unset. Tests, CI, and pipe redirects never auto-open.
-fn should_auto_open_browser() -> bool {
-    if std::env::var_os("CI").is_some() {
-        return false;
-    }
-    std::io::stderr().is_terminal()
-}
-
-/// Shell out to the platform's URL opener. Errors propagate so the
-/// caller can log a hint instead of failing the server.
-///
-/// On Linux/WSL there is no single canonical opener, so we try a list
-/// in order and use the first that is present on PATH and exits 0:
-///
-/// - **`wslview`** (from `wslu`) — only attempted under WSL, where it
-///   launches the *Windows* host browser. `xdg-open` is usually absent
-///   or useless there, so trying it first is what makes WSL work.
-/// - **`xdg-open`** — the standard freedesktop opener.
-/// - **`gio open`** / **`sensible-browser`** — fallbacks for setups
-///   that ship one but not the other.
-///
-/// A "binary not found" spawn error is treated as "try the next
-/// candidate", not a failure. If every candidate is missing or errors,
-/// the overall call fails and the caller prints the manual-open hint.
-fn open_browser(url: &str) -> Result<()> {
-    let candidates: Vec<(&str, Vec<&str>)> = if cfg!(target_os = "macos") {
-        vec![("open", vec![url])]
-    } else if cfg!(target_os = "windows") {
-        // `cmd /c start "" <url>` — the empty "" is start's required
-        // window-title arg, otherwise start treats <url> as the title.
-        vec![("cmd", vec!["/c", "start", "", url])]
-    } else {
-        let mut c: Vec<(&str, Vec<&str>)> = Vec::new();
-        if is_wsl() {
-            c.push(("wslview", vec![url]));
-        }
-        c.push(("xdg-open", vec![url]));
-        c.push(("gio", vec!["open", url]));
-        c.push(("sensible-browser", vec![url]));
-        c
-    };
-
-    let mut last_err: Option<anyhow::Error> = None;
-    for (cmd, args) in &candidates {
-        match try_open(cmd, args) {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no URL opener available")))
-}
-
-/// Spawn one opener candidate. Returns `Err` if the binary is missing
-/// (so the caller falls through to the next candidate) or exits non-zero.
-fn try_open(cmd: &str, args: &[&str]) -> Result<()> {
-    let status = std::process::Command::new(cmd)
-        .args(args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .with_context(|| format!("spawning `{cmd}`"))?;
-    if !status.success() {
-        anyhow::bail!("`{cmd}` exited with {status}");
-    }
-    Ok(())
-}
-
-/// Best-effort WSL detection. WSL2 sets `WSL_DISTRO_NAME` and
-/// `WSL_INTEROP`; either is sufficient. Cheap env check — no file IO.
-fn is_wsl() -> bool {
-    std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some()
-}
-
 /// Resolve on Ctrl-C. Used as axum's graceful-shutdown trigger.
 async fn shutdown_signal() {
     if let Err(e) = tokio::signal::ctrl_c().await {
@@ -683,6 +612,7 @@ mod tests {
         let o = ServerOpts::default();
         assert!(o.port.is_none());
         assert!(!o.no_browser);
+        assert!(!o.force_browser);
         assert!(!o.editable);
     }
 
