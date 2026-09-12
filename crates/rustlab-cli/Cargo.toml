@@ -22,6 +22,7 @@ rustlab-cache.workspace    = true
 rustlab-dsp.workspace      = true
 rustlab-plot.workspace     = true
 rustlab-script.workspace   = true
+rustlab-proto.workspace    = true
 clap                     = { version = "4", features = ["derive"] }
 rustyline                = { version = "14", features = ["derive"] }
 anyhow.workspace         = true

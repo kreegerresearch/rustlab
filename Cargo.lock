@@ -3960,6 +3960,7 @@ dependencies = [
  "rustlab-core",
  "rustlab-dsp",
  "rustlab-plot",
+ "rustlab-proto",
  "rustlab-script",
  "rustyline",
  "serde",

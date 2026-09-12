@@ -55,6 +55,12 @@ pub use viewer_live::{
     connect_viewer, connect_viewer_named, disconnect_viewer, sync_viewer, viewer_active,
     viewer_close, viewer_new_figure, viewer_reset,
 };
+/// Socket-path helpers, re-exported so callers can *name* the socket in
+/// diagnostics without depending on rustlab-proto directly. The path is what
+/// you need to see when a connection fails — especially over an SSH forward,
+/// where `RUSTLAB_VIEWER_SOCK` points somewhere non-default.
+#[cfg(feature = "viewer")]
+pub use rustlab_proto::{default_socket_path, socket_path_for_name};
 
 use rustlab_core::{CMatrix, RMatrix, RVector};
 

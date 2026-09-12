@@ -16,7 +16,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Start the interactive REPL (default when no subcommand given)
-    Repl,
+    Repl(crate::commands::repl::ReplArgs),
     /// Execute a .rlab script file
     Run(crate::commands::run::RunArgs),
     /// Design and apply digital filters
@@ -30,6 +30,8 @@ pub enum Commands {
     Plot(crate::commands::plot::PlotArgs),
     /// Look up rustlab builtin function documentation (same data as the REPL `help` command)
     Docs(crate::commands::docs::DocsArgs),
+    /// Run rustlab on a remote machine with plots rendering in the local viewer
+    Remote(crate::commands::remote::RemoteArgs),
     /// Show version and feature information
     Info,
     /// Inspect, prune, or clear a persistent function-result cache
@@ -39,14 +41,18 @@ pub enum Commands {
 
 impl Cli {
     pub fn execute(self) -> Result<()> {
-        match self.command.unwrap_or(Commands::Repl) {
-            Commands::Repl => crate::commands::repl::execute(),
+        match self
+            .command
+            .unwrap_or_else(|| Commands::Repl(Default::default()))
+        {
+            Commands::Repl(args) => crate::commands::repl::execute(args),
             Commands::Run(args) => crate::commands::run::execute(args),
             Commands::Filter(cmd) => crate::commands::filter::execute(cmd),
             Commands::Convolve(args) => crate::commands::convolve::execute(args),
             Commands::Window(args) => crate::commands::window::execute(args),
             Commands::Plot(args) => crate::commands::plot::execute(args),
             Commands::Docs(args) => crate::commands::docs::execute(args),
+            Commands::Remote(args) => crate::commands::remote::execute(args),
             Commands::Info => crate::commands::info::execute(),
             Commands::Cache(cmd) => crate::commands::cache::execute(cmd),
         }
