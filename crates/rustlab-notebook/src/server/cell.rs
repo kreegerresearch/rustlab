@@ -98,11 +98,11 @@ fn cell_style(c: &ThemeColors) -> String {
   }}
 </style>
 "##,
-        code_bg = c.code_bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        border = c.border,
-        accent = c.accent_primary,
+        code_bg = c.css_var("code-bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        border = c.css_var("border"),
+        accent = c.css_var("accent-primary"),
     )
 }
 

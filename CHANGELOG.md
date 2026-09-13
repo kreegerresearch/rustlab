@@ -41,6 +41,9 @@ Workflow Rule 12).
   `pagecolor`) follows background luminance so custom dark palettes
   work without matching the Mocha static. Mapping documented in
   `docs/notebooks.md`.
+- Notebook HTML defines `:root { --rl-*: … }` tokens from the resolved
+  `ThemeColors` palette. Page CSS uses `var(--rl-…, <literal>)` so
+  visuals match the pre-token colors when a variable is missing.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).

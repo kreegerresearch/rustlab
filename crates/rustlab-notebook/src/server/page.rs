@@ -115,13 +115,13 @@ fn chrome_style(c: &ThemeColors) -> String {
   }}
 </style>
 "##,
-        bg = c.bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        accent = c.accent_primary,
-        code_bg = c.code_bg,
+        bg = c.css_var("bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        accent = c.css_var("accent-primary"),
+        code_bg = c.css_var("code-bg"),
     )
 }
 
@@ -144,12 +144,12 @@ fn editor_style(c: &ThemeColors) -> String {
   #rl-source-pane .cm-link {{ color: {accent}; }}
 </style>
 "##,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        code_bg = c.code_bg,
-        accent = c.accent_secondary,
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        code_bg = c.css_var("code-bg"),
+        accent = c.css_var("accent-secondary"),
     )
 }
 
