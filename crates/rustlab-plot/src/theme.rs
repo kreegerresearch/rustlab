@@ -8,6 +8,10 @@
 //! Light vs dark chrome (CSS `color-scheme`, LaTeX `pagecolor`) is derived
 //! from background luminance via [`ThemeColors::is_dark`] — not from which
 //! static the palette pointer equals.
+//!
+//! HTML emitters call [`ThemeColors::css_custom_properties`] for `:root`
+//! `--rl-*` tokens and [`ThemeColors::css_var`] for `var(--rl-…, literal)`
+//! fallbacks in the page stylesheet.
 
 /// Theme selection for rendered output (HTML, LaTeX, PDF).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +158,63 @@ impl ThemeColors {
             "dark"
         } else {
             "light"
+        }
+    }
+
+    /// Stable `--rl-*` custom properties derived from this palette.
+    ///
+    /// Names are kebab-case of the [`ThemeColors`] fields (`bg_secondary`
+    /// → `--rl-bg-secondary`). Order is the struct field order so HTML
+    /// tests and future theme files can pin a contract.
+    pub fn css_tokens(&self) -> [(&'static str, &'static str); 23] {
+        [
+            ("--rl-bg", self.bg),
+            ("--rl-bg-secondary", self.bg_secondary),
+            ("--rl-text", self.text),
+            ("--rl-text-dim", self.text_dim),
+            ("--rl-border", self.border),
+            ("--rl-border-subtle", self.border_subtle),
+            ("--rl-accent-primary", self.accent_primary),
+            ("--rl-accent-secondary", self.accent_secondary),
+            ("--rl-accent-tertiary", self.accent_tertiary),
+            ("--rl-code-bg", self.code_bg),
+            ("--rl-output-bg", self.output_bg),
+            ("--rl-inline-code-bg", self.inline_code_bg),
+            ("--rl-error-bg", self.error_bg),
+            ("--rl-error-text", self.error_text),
+            ("--rl-plot-bg", self.plot_bg),
+            ("--rl-plot-grid", self.plot_grid),
+            ("--rl-syn-keyword", self.syn_keyword),
+            ("--rl-syn-function", self.syn_function),
+            ("--rl-syn-number", self.syn_number),
+            ("--rl-syn-string", self.syn_string),
+            ("--rl-syn-comment", self.syn_comment),
+            ("--rl-syn-operator", self.syn_operator),
+            ("--rl-footer-text", self.footer_text),
+        ]
+    }
+
+    /// Indented `--rl-*` declarations for a `:root` block (no wrapping braces).
+    pub fn css_custom_properties(&self) -> String {
+        self.css_tokens()
+            .iter()
+            .map(|(name, value)| format!("    {name}: {value};"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `var(--rl-<role>, <literal>)` using this palette's value as the fallback.
+    ///
+    /// `role` is the kebab-case field name (`"bg-secondary"`, `"accent-primary"`).
+    /// Unknown roles are a programmer error and return a token with no fallback.
+    pub fn css_var(&self, role: &str) -> String {
+        let name = format!("--rl-{role}");
+        match self.css_tokens().into_iter().find(|(n, _)| *n == name) {
+            Some((_, value)) => format!("var({name}, {value})"),
+            None => {
+                debug_assert!(false, "unknown ThemeColors CSS role `{role}`");
+                format!("var({name})")
+            }
         }
     }
 }
@@ -363,6 +424,32 @@ mod tests {
         assert!(std::ptr::eq(theme_colors("light").unwrap(), &LATTE));
         assert!(theme_colors("nope").is_none());
         assert!(theme_colors("").is_none());
+    }
+
+    #[test]
+    fn mocha_css_tokens_match_palette_fields() {
+        let tokens = MOCHA.css_tokens();
+        assert_eq!(tokens.len(), 23);
+        assert_eq!(tokens[0], ("--rl-bg", "#1e1e2e"));
+        assert_eq!(tokens[2], ("--rl-text", "#cdd6f4"));
+        assert_eq!(tokens[6], ("--rl-accent-primary", "#cba6f7"));
+        assert_eq!(tokens[7], ("--rl-accent-secondary", "#89b4fa"));
+        assert!(MOCHA.css_custom_properties().contains("--rl-bg: #1e1e2e;"));
+        assert_eq!(
+            MOCHA.css_var("accent-secondary"),
+            "var(--rl-accent-secondary, #89b4fa)"
+        );
+        assert_eq!(
+            MOCHA.css_var("plot-grid"),
+            "var(--rl-plot-grid, rgba(150,150,180,0.3))"
+        );
+    }
+
+    #[test]
+    fn latte_css_tokens_use_light_palette() {
+        assert!(LATTE.css_custom_properties().contains("--rl-bg: #eff1f5;"));
+        assert_eq!(LATTE.css_var("bg"), "var(--rl-bg, #eff1f5)");
+        assert_eq!(LATTE.css_var("text"), "var(--rl-text, #4c4f69)");
     }
 
     #[test]

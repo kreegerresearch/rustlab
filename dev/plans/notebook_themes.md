@@ -1,6 +1,6 @@
 # Notebook color themes / schemes
 
-**Status:** F2 + F1 implemented on `feature/notebook-themes-f2` — remaining features not started.  
+**Status:** F2 + F1 + F5 implemented — remaining features not started.  
 **Created:** 2026-09-13  
 **Surfaces:** HTML, LaTeX/PDF, `watch` server (not committed `gallery/*.md` — GitHub owns that CSS).
 
@@ -12,7 +12,7 @@ Track feature completion here. Check the box when that feature’s PR is merged 
 ### Overall
 - [x] F2 — Luminance-based dark/light detection
 - [x] F1 — Named Catppuccin builtins + string CLI
-- [ ] F5 — HTML CSS custom properties
+- [x] F5 — HTML CSS custom properties
 - [ ] F3 — Theme files (`inherits` + palette + roles)
 - [ ] F4 — Theme discovery directories
 - [ ] F6 — Frontmatter `theme:`
@@ -37,10 +37,10 @@ Track feature completion here. Check the box when that feature’s PR is merged 
 - [x] CHANGELOG entry
 
 ### F5 — HTML CSS custom properties
-- [ ] Emit `--rl-*` tokens on `:root` from resolved theme
-- [ ] Stylesheet uses `var(--rl-…)` with safe fallbacks
-- [ ] Tests: HTML contains expected `--rl-` declarations
-- [ ] Visual output unchanged vs pre-token HTML
+- [x] Emit `--rl-*` tokens on `:root` from resolved theme
+- [x] Stylesheet uses `var(--rl-…)` with safe fallbacks
+- [x] Tests: HTML contains expected `--rl-` declarations
+- [x] Visual output unchanged vs pre-token HTML
 
 ### F3 — Theme files
 - [ ] TOML schema: `name`, `inherits`, `[palette]`, `[roles]`
@@ -205,7 +205,7 @@ Builtin aliases: `dark` → `mocha`, `light` → `latte`.
 
 ### F5 — HTML CSS custom properties
 
-**Status:** not started  
+**Status:** complete  
 **Depends on:** nothing strong; nicest after F1  
 **Ships alone as:** yes
 

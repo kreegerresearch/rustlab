@@ -1110,6 +1110,16 @@ The same role map is used for every flavor:
 
 `error_bg` and `plot_grid` are local tints (not named Catppuccin tokens).
 
+### HTML CSS custom properties
+
+HTML (notebook pages, the directory index, and `watch` chrome) emits the
+resolved palette on `:root` as `--rl-*` tokens — kebab-case of the
+`ThemeColors` fields (`bg_secondary` → `--rl-bg-secondary`). The page
+stylesheet prefers `var(--rl-bg, #1e1e2e)` (token first, literal
+fallback) so colors stay unchanged if a variable is missing. Plotly /
+SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`
+and `--rl-plot-grid` are declared for future chrome.
+
 ## Output Formats
 
 ### HTML (default)

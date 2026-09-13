@@ -1721,6 +1721,9 @@ pub fn generate_index_html(
 <title>{title} — Notebook Index</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  :root {{
+{theme_vars}
+  }}
   html {{ color-scheme: {color_scheme}; }}
   body {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -1807,15 +1810,16 @@ pub fn generate_index_html(
         intro = intro,
         links = links,
         color_scheme = c.color_scheme(),
-        bg = c.bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        accent_primary = c.accent_primary,
-        accent_secondary = c.accent_secondary,
-        accent_tertiary = c.accent_tertiary,
-        footer_text = c.footer_text,
+        theme_vars = c.css_custom_properties(),
+        bg = c.css_var("bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        accent_primary = c.css_var("accent-primary"),
+        accent_secondary = c.css_var("accent-secondary"),
+        accent_tertiary = c.css_var("accent-tertiary"),
+        footer_text = c.css_var("footer-text"),
     )
 }
 
@@ -3159,6 +3163,7 @@ More.\n";
         assert!(html.contains("notebooks"));
         assert!(html.contains("2 notebooks"));
         assert!(html.contains("color-scheme: dark"));
+        assert!(html.contains("--rl-bg: #1e1e2e;"));
         assert!(html.contains("href=\"filter.html\""));
         assert!(html.contains("Filter Analysis"));
         assert!(html.contains("href=\"quick.html\""));

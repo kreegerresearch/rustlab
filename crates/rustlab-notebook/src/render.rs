@@ -665,9 +665,13 @@ pub fn render_html(
     display: flex;
     min-height: 100vh;
   }}
-  /* Height of the fixed topbar; the sidebar and main both clear it. */
+  /* Height of the fixed topbar; the sidebar and main both clear it.
+     `--rl-*` tokens come from the resolved ThemeColors so chrome can
+     restyle without rewriting the whole stylesheet. Rules below use
+     var(--rl-…, <literal>) so missing tokens keep today's colors. */
   :root {{
     --topbar-h: 2.6rem;
+{theme_vars}
   }}
   /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
@@ -1168,27 +1172,28 @@ pub fn render_html(
         footer_nav = footer_nav,
         body = body,
         color_scheme = c.color_scheme(),
-        bg = c.bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        border_subtle = c.border_subtle,
-        accent_primary = c.accent_primary,
-        accent_secondary = c.accent_secondary,
-        accent_tertiary = c.accent_tertiary,
-        code_bg = c.code_bg,
-        output_bg = c.output_bg,
-        inline_code_bg = c.inline_code_bg,
-        error_bg = c.error_bg,
-        error_text = c.error_text,
-        footer_text = c.footer_text,
-        syn_keyword = c.syn_keyword,
-        syn_function = c.syn_function,
-        syn_number = c.syn_number,
-        syn_string = c.syn_string,
-        syn_comment = c.syn_comment,
-        syn_operator = c.syn_operator,
+        theme_vars = c.css_custom_properties(),
+        bg = c.css_var("bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        border_subtle = c.css_var("border-subtle"),
+        accent_primary = c.css_var("accent-primary"),
+        accent_secondary = c.css_var("accent-secondary"),
+        accent_tertiary = c.css_var("accent-tertiary"),
+        code_bg = c.css_var("code-bg"),
+        output_bg = c.css_var("output-bg"),
+        inline_code_bg = c.css_var("inline-code-bg"),
+        error_bg = c.css_var("error-bg"),
+        error_text = c.css_var("error-text"),
+        footer_text = c.css_var("footer-text"),
+        syn_keyword = c.css_var("syn-keyword"),
+        syn_function = c.css_var("syn-function"),
+        syn_number = c.css_var("syn-number"),
+        syn_string = c.css_var("syn-string"),
+        syn_comment = c.css_var("syn-comment"),
+        syn_operator = c.css_var("syn-operator"),
     )
 }
 
@@ -3201,7 +3206,7 @@ mod tests {
             "prose link rule missing"
         );
         assert!(
-            html.contains(&format!("color: {}", dark.accent_secondary)),
+            html.contains(&format!("color: {}", dark.css_var("accent-secondary"))),
             "unvisited link colour should be accent_secondary"
         );
         assert!(
@@ -3221,7 +3226,49 @@ mod tests {
             &LinkMode::single_file(),
         );
         assert!(html.contains("color-scheme: light"), "{html}");
-        assert!(html.contains(&format!("color: {}", light.accent_secondary)));
+        assert!(html.contains(&format!("color: {}", light.css_var("accent-secondary"))));
+    }
+
+    #[test]
+    fn render_html_emits_theme_css_custom_properties() {
+        let mocha = Theme::Mocha.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            mocha,
+            None,
+            &LinkMode::single_file(),
+        );
+        for (name, value) in mocha.css_tokens() {
+            assert!(
+                html.contains(&format!("{name}: {value};")),
+                "missing {name}: {value};"
+            );
+        }
+        // Stylesheet prefers the token with a literal fallback (visuals
+        // unchanged if :root vars are stripped).
+        assert!(html.contains(&format!("background: {}", mocha.css_var("bg"))));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("text"))));
+        assert!(html.contains(&format!(
+            "color: {}",
+            mocha.css_var("accent-secondary")
+        )));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("syn-keyword"))));
+
+        let latte = Theme::Latte.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            latte,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("--rl-bg: #eff1f5;"));
+        assert!(html.contains(&format!("background: {}", latte.css_var("bg"))));
     }
 
     #[test]
