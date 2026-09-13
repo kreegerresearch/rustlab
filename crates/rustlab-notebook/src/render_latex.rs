@@ -1,7 +1,7 @@
 use crate::execute::Rendered;
 use crate::render::{notebook_md_options, parse_single_tilde_safe, transform_wikilinks};
 use pulldown_cmark::{Event, HeadingLevel, Options, Tag, TagEnd};
-use rustlab_plot::theme::{Theme, ThemeColors};
+use rustlab_plot::theme::ThemeColors;
 use std::path::Path;
 
 /// Render executed notebook blocks into a LaTeX document string.
@@ -165,7 +165,7 @@ pub fn render_latex(
         }
     }
 
-    let is_dark = theme as *const ThemeColors == Theme::Dark.colors() as *const ThemeColors;
+    let is_dark = theme.is_dark();
     let link_hex = &theme.accent_secondary[1..]; // strip leading '#'
 
     let dark_preamble = if is_dark {
@@ -590,6 +590,7 @@ fn warn_mermaid_disabled_once_latex() {
 mod tests {
     use super::*;
     use crate::execute::Rendered;
+    use rustlab_plot::theme::Theme;
 
     fn light() -> &'static ThemeColors {
         Theme::Light.colors()
@@ -1170,4 +1171,65 @@ mod tests {
         assert!(tex.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn dark_theme_emits_pagecolor() {
+        let dir = std::env::temp_dir().join("rl_latex_dark_pagecolor");
+        let _ = std::fs::create_dir_all(&dir);
+        let tex = render_latex(
+            "T",
+            &[Rendered::Markdown("hi".into())],
+            &dir,
+            "plots/test",
+            Theme::Dark.colors(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\usepackage{pagecolor}"), "{tex}");
+        assert!(tex.contains("\\pagecolor{pagebg}"), "{tex}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn light_theme_omits_pagecolor() {
+        let dir = std::env::temp_dir().join("rl_latex_light_nopage");
+        let _ = std::fs::create_dir_all(&dir);
+        let tex = render_latex(
+            "T",
+            &[Rendered::Markdown("hi".into())],
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(!tex.contains("pagecolor"), "{tex}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_dark_bg_gets_pagecolor_without_mocha_pointer() {
+        // F2: luminance, not pointer equality against Theme::Dark.colors().
+        let custom = ThemeColors {
+            bg: "#111111",
+            ..*Theme::Light.colors()
+        };
+        assert!(custom.is_dark());
+        assert!(!std::ptr::eq(&custom, Theme::Dark.colors()));
+        let dir = std::env::temp_dir().join("rl_latex_custom_dark");
+        let _ = std::fs::create_dir_all(&dir);
+        let tex = render_latex(
+            "T",
+            &[Rendered::Markdown("hi".into())],
+            &dir,
+            "plots/test",
+            &custom,
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(
+            tex.contains("\\pagecolor{pagebg}"),
+            "expected pagecolor for custom dark bg: {tex}"
+        );
+        assert!(tex.contains("111111"), "{tex}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

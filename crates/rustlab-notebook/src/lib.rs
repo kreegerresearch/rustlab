@@ -1806,7 +1806,7 @@ pub fn generate_index_html(
         plural = if entries.len() == 1 { "" } else { "s" },
         intro = intro,
         links = links,
-        color_scheme = crate::render::css_color_scheme(c.bg),
+        color_scheme = c.color_scheme(),
         bg = c.bg,
         bg_secondary = c.bg_secondary,
         text = c.text,

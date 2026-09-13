@@ -35,6 +35,12 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Notebook themes: named Catppuccin builtins `mocha`, `macchiato`,
+  `frappe`, `latte` via `-t` / `--theme` (aliases `dark`→mocha,
+  `light`→latte). Dark vs light chrome (HTML `color-scheme`, LaTeX
+  `pagecolor`) follows background luminance so custom dark palettes
+  work without matching the Mocha static. Mapping documented in
+  `docs/notebooks.md`.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use rustlab_plot::Theme;
+use rustlab_plot::{builtin_theme_names, theme_colors, ThemeColors};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -24,7 +24,7 @@ use std::path::PathBuf;
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
         -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
-        -t, --theme  <THEME>   dark (default), light\n      \
+        -t, --theme  <THEME>   mocha|macchiato|frappe|latte (aliases: dark, light)\n      \
             --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
                                sibling .html so Obsidian renders the interactive\n                                   \
                                Plotly view inline. GitHub strips iframes, so the\n                                   \
@@ -36,8 +36,10 @@ use std::path::PathBuf;
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
                   committing alongside source, browsable on GitHub\n\n\
         Themes:\n  \
-        dark   Catppuccin Mocha — dark background, light text (default)\n  \
-        light  Catppuccin Latte — light background, dark text"
+        mocha / dark (default)  Catppuccin Mocha\n  \
+        macchiato               Catppuccin Macchiato\n  \
+        frappe                  Catppuccin Frappé\n  \
+        latte / light           Catppuccin Latte"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,12 +58,6 @@ enum CliFormat {
     Json,
 }
 
-#[derive(Clone, ValueEnum)]
-enum CliTheme {
-    Dark,
-    Light,
-}
-
 #[derive(Subcommand)]
 enum Command {
     /// Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF
@@ -69,7 +65,8 @@ enum Command {
         long_about = "Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF.\n\n\
             Examples:\n  \
             rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
-            rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
+            rustlab-notebook render analysis.md -t light           # → analysis.html (latte)\n  \
+            rustlab-notebook render analysis.md -t macchiato       # → Catppuccin Macchiato\n  \
             rustlab-notebook render analysis.md -f pdf             # → analysis.pdf\n  \
             rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
             rustlab-notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
@@ -79,14 +76,16 @@ enum Command {
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf\n  \
-            -t, --theme  <THEME>   dark (default), light\n\n\
+            -t, --theme  <THEME>   mocha|macchiato|frappe|latte (aliases: dark, light)\n\n\
             Formats:\n  \
             html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
             pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
             Themes:\n  \
-            dark   Catppuccin Mocha — dark background, light text (default)\n  \
-            light  Catppuccin Latte — light background, dark text"
+            mocha / dark (default)  Catppuccin Mocha\n  \
+            macchiato               Catppuccin Macchiato\n  \
+            frappe                  Catppuccin Frappé\n  \
+            latte / light           Catppuccin Latte"
     )]
     /// Watch a notebook (interactive server) or directory (re-render on save)
     #[command(
@@ -130,9 +129,9 @@ enum Command {
         /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Color theme: dark (default), light
-        #[arg(short, long, value_enum, default_value = "dark")]
-        theme: CliTheme,
+        /// Color theme: mocha|macchiato|frappe|latte (aliases: dark, light)
+        #[arg(short = 't', long, default_value = "dark", value_name = "THEME")]
+        theme: String,
         /// Obsidian-friendly markdown output (see `render --obsidian` for details)
         #[arg(long)]
         obsidian: bool,
@@ -216,9 +215,9 @@ enum Command {
         /// Output format: html (default), latex, pdf, markdown
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
-        /// Color theme: dark (default), light
-        #[arg(short, long, value_enum, default_value = "dark")]
-        theme: CliTheme,
+        /// Color theme: mocha|macchiato|frappe|latte (aliases: dark, light)
+        #[arg(short = 't', long, default_value = "dark", value_name = "THEME")]
+        theme: String,
         /// Index page title (directory mode only). Precedence:
         /// --title > index.md H1 > parent directory name.
         #[arg(long)]
@@ -405,6 +404,19 @@ fn parse_linter_override(s: &str) -> Result<(String, PathBuf), String> {
     Ok((key.to_string(), PathBuf::from(path)))
 }
 
+fn resolve_theme(name: &str) -> &'static ThemeColors {
+    match theme_colors(name) {
+        Some(c) => c,
+        None => {
+            eprintln!(
+                "error: unknown theme `{name}` (expected one of: {})",
+                builtin_theme_names().join(", ")
+            );
+            std::process::exit(2);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -420,11 +432,7 @@ fn main() {
             no_browser,
             editable,
         } => {
-            let theme = match theme {
-                CliTheme::Dark => Theme::Dark,
-                CliTheme::Light => Theme::Light,
-            };
-            let colors = theme.colors();
+            let colors = resolve_theme(&theme);
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
             // the interactive server: a single .md file serves one
@@ -490,11 +498,7 @@ fn main() {
             cwd,
             pretty,
         } => {
-            let theme = match theme {
-                CliTheme::Dark => Theme::Dark,
-                CliTheme::Light => Theme::Light,
-            };
-            let colors = theme.colors();
+            let colors = resolve_theme(&theme);
 
             // JSON has stdout-only IO semantics (no output path, optional
             // stdin) so it diverges from the file-based render pipeline

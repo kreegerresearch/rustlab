@@ -72,8 +72,9 @@ file to scrub it back to source, then restart the watcher.
 ## Other quick starts (non-Obsidian)
 
 ```
-rustlab-notebook render analysis.md              # → analysis.html (default, dark theme)
-rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
+rustlab-notebook render analysis.md              # → analysis.html (default: mocha / dark)
+rustlab-notebook render analysis.md -t light     # → latte (light alias)
+rustlab-notebook render analysis.md -t macchiato # → Catppuccin Macchiato
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
@@ -1067,12 +1068,55 @@ Compare the main-lobe width against a rectangular window of equal length.
 Solutions render as an HTML `<details>` widget (collapsed by default) so
 readers can attempt the exercise before revealing the answer.
 
+## Color themes
+
+Notebook HTML, LaTeX, and PDF share one palette type (`ThemeColors` in
+`rustlab-plot`). Built-in schemes are the four [Catppuccin](https://github.com/catppuccin/palette)
+flavors; CLI aliases keep the old flags working:
+
+| `-t` / `--theme` | Scheme | Mode |
+| --- | --- | --- |
+| `mocha` or `dark` (default) | Catppuccin Mocha | dark |
+| `macchiato` | Catppuccin Macchiato | dark |
+| `frappe` | Catppuccin Frappé | dark |
+| `latte` or `light` | Catppuccin Latte | light |
+
+Mode (CSS `color-scheme`, LaTeX `pagecolor`) is derived from the
+background's sRGB relative luminance (&lt; 0.5 → dark), not from
+pointer identity against the Mocha static.
+
+### Catppuccin → `ThemeColors` mapping
+
+The same role map is used for every flavor:
+
+| `ThemeColors` field | Catppuccin token |
+| --- | --- |
+| `bg`, `plot_bg` | `base` |
+| `bg_secondary`, `output_bg` | `mantle` |
+| `text` | `text` |
+| `text_dim` | `subtext0` |
+| `border`, `inline_code_bg` | `surface0` |
+| `border_subtle` | `surface1` |
+| `accent_primary`, `syn_keyword` | `mauve` |
+| `accent_secondary`, `syn_function` | `blue` |
+| `accent_tertiary` | `sapphire` |
+| `code_bg` | `crust` |
+| `error_text` | `red` |
+| `syn_number` | `peach` |
+| `syn_string` | `green` |
+| `syn_comment` | `overlay0` |
+| `syn_operator` | `sky` |
+| `footer_text` | `surface2` |
+
+`error_bg` and `plot_grid` are local tints (not named Catppuccin tokens).
+
 ## Output Formats
 
 ### HTML (default)
 
 Self-contained HTML with:
-- Catppuccin dark theme (default) or light theme (`-t light`)
+- Catppuccin themes via `-t` / `--theme`: `mocha` (default; alias `dark`),
+  `macchiato`, `frappe`, `latte` (alias `light`)
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
 - Navigation sidebar from headings
@@ -1123,9 +1167,12 @@ The `.tex` file uses `article` class with `amsmath`, `booktabs`,
 Compile with any LaTeX engine that supports `\includesvg` (e.g.,
 lualatex with inkscape, or pdflatex with the svg package).
 
-With `-t light` (default), the output is standard black-on-white LaTeX.
-With `-t dark`, the document uses `pagecolor` for a dark background with
-light text, matching the Catppuccin Mocha palette.
+With a light scheme (`-t latte` / `-t light`), the output is standard
+black-on-white LaTeX. With a dark scheme (`mocha` / `macchiato` /
+`frappe`, or aliases `dark`), the document uses `pagecolor` for a dark
+background with light text. Dark vs light is chosen from the theme
+background's luminance (not from the name alone), so custom dark
+palettes get `pagecolor` too.
 
 ### PDF (`--format pdf`)
 
@@ -1280,8 +1327,9 @@ my-project/
 Render an entire directory of notebooks at once:
 
 ```
-rustlab-notebook render notebooks/                # → *.html + index.html (dark)
-rustlab-notebook render notebooks/ -t light       # → *.html + index.html (light)
+rustlab-notebook render notebooks/                # → *.html + index.html (mocha)
+rustlab-notebook render notebooks/ -t light       # → *.html + index.html (latte)
+rustlab-notebook render notebooks/ -t frappe      # → Frappé
 rustlab-notebook render notebooks/ -f pdf         # → *.pdf
 rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
