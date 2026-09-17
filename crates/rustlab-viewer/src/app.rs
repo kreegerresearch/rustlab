@@ -90,8 +90,11 @@ impl ViewerApp {
                     if let Some(fig) = self.figures.get_mut(&fig_id) {
                         let idx = panel as usize;
                         if idx < fig.panels.len() {
-                            fig.panels[idx].xlim = xlim;
-                            fig.panels[idx].ylim = ylim;
+                            // `set_limits` only re-arms the apply latch
+                            // when the values actually changed, so a live
+                            // plot re-sending the same limits every redraw
+                            // doesn't clobber the user's zoom.
+                            fig.panels[idx].set_limits(xlim, ylim);
                         }
                     }
                 }
@@ -474,4 +477,611 @@ mod tests {
         run_frames_sized(&mut app, 3, egui::Vec2::new(120.0, 90.0));
         assert_eq!(app.figures.len(), 2);
     }
+
+    // ---------------------------------------------------------------
+    // Scroll zoom / pan / Home
+    //
+    // These drive the real widgets over a *persistent* `egui::Context`:
+    // egui_plot keeps a panel's bounds in context memory between frames,
+    // so a fresh context per frame (what `run_frames` builds) would hide
+    // exactly the bug this feature fixes.
+    // ---------------------------------------------------------------
+
+    /// One context, many frames, with synthetic pointer/wheel/key input.
+    struct Harness {
+        ctx: egui::Context,
+        size: egui::Vec2,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            Self {
+                ctx,
+                size: egui::Vec2::new(1024.0, 768.0),
+            }
+        }
+
+        fn frame(&self, app: &mut ViewerApp, events: Vec<egui::Event>) {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, self.size)),
+                events,
+                ..Default::default()
+            };
+            let output = self.ctx.run(input, |ctx| {
+                app.process_messages(ctx);
+                app.render_ui(ctx);
+            });
+            let _ = self.ctx.tessellate(output.shapes, output.pixels_per_point);
+        }
+
+        fn frames(&self, app: &mut ViewerApp, n: usize) {
+            for _ in 0..n {
+                self.frame(app, Vec::new());
+            }
+        }
+
+        fn plot_memory(&self, fig_id: u32) -> egui_plot::PlotMemory {
+            egui_plot::PlotMemory::load(&self.ctx, crate::figure::panel_plot_id(fig_id, 0, 0))
+                .expect("panel 0 should have plot memory after a frame")
+        }
+
+        fn bounds(&self, fig_id: u32) -> egui_plot::PlotBounds {
+            *self.plot_memory(fig_id).bounds()
+        }
+
+        /// A point inside the panel's plot area, for hover-sensitive input.
+        fn plot_center(&self, fig_id: u32) -> egui::Pos2 {
+            self.plot_memory(fig_id).transform().frame().center()
+        }
+
+        /// Scroll the wheel over the plot for `n` frames. Point units below
+        /// egui's 8-point threshold arrive unsmoothed, so the zoom is
+        /// deterministic frame to frame.
+        fn scroll_over_plot(&self, app: &mut ViewerApp, fig_id: u32, delta_y: f32, n: usize) {
+            for _ in 0..n {
+                let pos = self.plot_center(fig_id);
+                self.frame(
+                    app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::Vec2::new(0.0, delta_y),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+        }
+
+        /// Press and release the primary button over a widget, by id.
+        fn click_widget(&self, app: &mut ViewerApp, id: egui::Id) {
+            let rect = self
+                .ctx
+                .read_response(id)
+                .expect("widget should exist after a frame")
+                .rect;
+            let pos = rect.center();
+            self.frame(app, vec![egui::Event::PointerMoved(pos)]);
+            self.frame(
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            self.frame(
+                app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            // One more frame so the click's effect is drawn.
+            self.frames(app, 1);
+        }
+
+        /// Tap a key with the pointer parked over the plot.
+        fn key_over_plot(&self, app: &mut ViewerApp, fig_id: u32, key: egui::Key) {
+            let pos = self.plot_center(fig_id);
+            self.frame(
+                app,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            self.frames(app, 1);
+        }
+    }
+
+    /// A single-panel figure with a line and, optionally, script limits.
+    fn open_line_figure(
+        tx: &mpsc::Sender<ViewerMsg>,
+        id: u32,
+        limits: Option<(crate::view::AxisLimits, crate::view::AxisLimits)>,
+    ) {
+        tx.send(ViewerMsg::FigureOpen {
+            id,
+            rows: 1,
+            cols: 1,
+            title: "zoom".into(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelUpdate {
+            fig_id: id,
+            panel: 0,
+            series: vec![line_series()],
+        })
+        .unwrap();
+        if let Some((xlim, ylim)) = limits {
+            tx.send(ViewerMsg::PanelLimits {
+                fig_id: id,
+                panel: 0,
+                xlim,
+                ylim,
+            })
+            .unwrap();
+        }
+        tx.send(ViewerMsg::Redraw { fig_id: id }).unwrap();
+    }
+
+    const XLIM: crate::view::AxisLimits = (Some(0.0), Some(2.0));
+    const YLIM: crate::view::AxisLimits = (Some(0.0), Some(1.0));
+
+    fn approx(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn script_limits_are_applied_on_first_show() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 1u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+
+        let b = h.bounds(id);
+        assert!(
+            approx(b.min()[0], 0.0) && approx(b.max()[0], 2.0),
+            "x: {b:?}"
+        );
+        assert!(
+            approx(b.min()[1], 0.0) && approx(b.max()[1], 1.0),
+            "y: {b:?}"
+        );
+    }
+
+    /// The bug behind this feature: `set_plot_bounds` ran every frame, so a
+    /// scrolled view snapped back to the script's limits one frame later.
+    #[test]
+    fn scroll_zooms_and_the_zoom_sticks() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 2u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        let before = h.bounds(id);
+
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        let zoomed = h.bounds(id);
+        assert!(
+            zoomed.width() < before.width() * 0.99,
+            "scrolling up should zoom in: {} → {}",
+            before.width(),
+            zoomed.width()
+        );
+        assert!(
+            zoomed.height() < before.height() * 0.99,
+            "both axes zoom together: {} → {}",
+            before.height(),
+            zoomed.height()
+        );
+
+        // Idle frames (the script keeps redrawing) must not restore the
+        // limits over the top of the user's zoom.
+        h.frames(&mut app, 3);
+        let after = h.bounds(id);
+        assert!(
+            approx(after.width(), zoomed.width()) && approx(after.height(), zoomed.height()),
+            "zoom must survive later frames: {zoomed:?} → {after:?}"
+        );
+    }
+
+    #[test]
+    fn scrolling_down_zooms_out() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 3u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        let before = h.bounds(id);
+
+        h.scroll_over_plot(&mut app, id, -7.0, 3);
+        assert!(h.bounds(id).width() > before.width() * 1.01);
+    }
+
+    /// A live plot re-sends the same `plot_limits` on every redraw; that
+    /// must not count as "new limits" and wipe out the user's zoom.
+    #[test]
+    fn repeated_identical_limits_do_not_reset_the_view() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 4u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        let zoomed = h.bounds(id);
+
+        for _ in 0..3 {
+            tx.send(ViewerMsg::PanelLimits {
+                fig_id: id,
+                panel: 0,
+                xlim: XLIM,
+                ylim: YLIM,
+            })
+            .unwrap();
+            tx.send(ViewerMsg::Redraw { fig_id: id }).unwrap();
+            h.frames(&mut app, 1);
+        }
+        assert!(approx(h.bounds(id).width(), zoomed.width()));
+    }
+
+    /// Fresh limits from the script *do* re-frame the panel.
+    #[test]
+    fn changed_limits_reframe_the_panel() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 5u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+
+        tx.send(ViewerMsg::PanelLimits {
+            fig_id: id,
+            panel: 0,
+            xlim: (Some(-5.0), Some(5.0)),
+            ylim: (Some(-1.0), Some(3.0)),
+        })
+        .unwrap();
+        h.frames(&mut app, 2);
+
+        let b = h.bounds(id);
+        assert!(approx(b.min()[0], -5.0) && approx(b.max()[0], 5.0), "{b:?}");
+        assert!(approx(b.min()[1], -1.0) && approx(b.max()[1], 3.0), "{b:?}");
+    }
+
+    #[test]
+    fn home_button_restores_script_limits() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 6u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        assert!(h.bounds(id).width() < 2.0);
+
+        h.click_widget(&mut app, crate::figure::home_button_id(id, 0, 0));
+
+        let b = h.bounds(id);
+        assert!(
+            approx(b.min()[0], 0.0) && approx(b.max()[0], 2.0),
+            "x: {b:?}"
+        );
+        assert!(
+            approx(b.min()[1], 0.0) && approx(b.max()[1], 1.0),
+            "y: {b:?}"
+        );
+    }
+
+    #[test]
+    fn home_key_restores_script_limits() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 7u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        assert!(h.bounds(id).width() < 2.0);
+
+        h.key_over_plot(&mut app, id, egui::Key::Home);
+
+        let b = h.bounds(id);
+        assert!(
+            approx(b.min()[0], 0.0) && approx(b.max()[0], 2.0),
+            "x: {b:?}"
+        );
+    }
+
+    /// Without script limits, Home auto-fits the data instead.
+    #[test]
+    fn home_auto_fits_when_the_script_set_no_limits() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 8u32;
+        open_line_figure(&tx, id, None);
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        let fitted = h.bounds(id);
+        assert!(
+            h.plot_memory(id).auto_bounds.x,
+            "a limit-free panel auto-fits"
+        );
+
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        assert!(h.bounds(id).width() < fitted.width() * 0.99);
+        assert!(!h.plot_memory(id).auto_bounds.x, "zooming pins the bounds");
+
+        h.click_widget(&mut app, crate::figure::home_button_id(id, 0, 0));
+
+        assert!(
+            h.plot_memory(id).auto_bounds.x,
+            "Home hands x back to auto-fit"
+        );
+        assert!(
+            h.plot_memory(id).auto_bounds.y,
+            "Home hands y back to auto-fit"
+        );
+        let restored = h.bounds(id);
+        assert!(
+            approx(restored.width(), fitted.width()),
+            "Home should refit the data: {fitted:?} → {restored:?}"
+        );
+    }
+
+    /// Every subplot gets its own Home button, and using one leaves the
+    /// others alone.
+    #[test]
+    fn home_is_per_subplot() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 9u32;
+        tx.send(ViewerMsg::FigureOpen {
+            id,
+            rows: 1,
+            cols: 2,
+            title: String::new(),
+        })
+        .unwrap();
+        for panel in 0..2u16 {
+            tx.send(ViewerMsg::PanelUpdate {
+                fig_id: id,
+                panel,
+                series: vec![line_series()],
+            })
+            .unwrap();
+            tx.send(ViewerMsg::PanelLimits {
+                fig_id: id,
+                panel,
+                xlim: XLIM,
+                ylim: YLIM,
+            })
+            .unwrap();
+        }
+        tx.send(ViewerMsg::Redraw { fig_id: id }).unwrap();
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        for col in 0..2 {
+            assert!(
+                h.ctx
+                    .read_response(crate::figure::home_button_id(id, 0, col))
+                    .is_some(),
+                "subplot {col} should have its own Home button"
+            );
+        }
+
+        // Zoom the right-hand panel by hand (its own plot id), then Home
+        // the left one: the right panel must keep its zoom.
+        let right_id = crate::figure::panel_plot_id(id, 0, 1);
+        let right_center = egui_plot::PlotMemory::load(&h.ctx, right_id)
+            .unwrap()
+            .transform()
+            .frame()
+            .center();
+        for _ in 0..3 {
+            h.frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(right_center),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::Vec2::new(0.0, 7.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let right_zoomed = *egui_plot::PlotMemory::load(&h.ctx, right_id)
+            .unwrap()
+            .bounds();
+        assert!(right_zoomed.width() < 2.0);
+
+        h.click_widget(&mut app, crate::figure::home_button_id(id, 0, 0));
+
+        let left = *egui_plot::PlotMemory::load(&h.ctx, crate::figure::panel_plot_id(id, 0, 0))
+            .unwrap()
+            .bounds();
+        assert!(approx(left.width(), 2.0), "left panel reset: {left:?}");
+        let right = *egui_plot::PlotMemory::load(&h.ctx, right_id)
+            .unwrap()
+            .bounds();
+        assert!(
+            approx(right.width(), right_zoomed.width()),
+            "the other subplot keeps its zoom: {right:?}"
+        );
+    }
+
+    /// 3D surfaces get the same visible Home — equivalent to pressing `R`.
+    #[test]
+    fn home_button_resets_the_surface_camera() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 10u32;
+        tx.send(ViewerMsg::FigureOpen {
+            id,
+            rows: 1,
+            cols: 1,
+            title: "surf".into(),
+        })
+        .unwrap();
+        tx.send(ViewerMsg::PanelSurface {
+            fig_id: id,
+            panel: 0,
+            surface: WireSurface {
+                nrows: 2,
+                ncols: 2,
+                x: vec![0.0, 1.0],
+                y: vec![0.0, 1.0],
+                z: vec![0.0, 1.0, 1.0, 0.0],
+                colorscale: "viridis".into(),
+            },
+        })
+        .unwrap();
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+
+        // Rotate/zoom away from the default camera.
+        {
+            let (_, cam) = app.figures.get_mut(&id).unwrap().panels[0]
+                .surface
+                .as_mut()
+                .unwrap();
+            cam.yaw = 1.25;
+            cam.zoom = 3.0;
+        }
+        h.frames(&mut app, 1);
+
+        h.click_widget(&mut app, crate::figure::home_button_id(id, 0, 0));
+
+        let (_, cam) = app.figures[&id].panels[0].surface.as_ref().unwrap();
+        let default = crate::surface::SurfaceCamera::default();
+        assert!((cam.yaw - default.yaw).abs() < 1e-6, "yaw reset");
+        assert!((cam.zoom - default.zoom).abs() < 1e-6, "zoom reset");
+    }
+
+    /// Drag still pans (the wheel took over zoom, not pan), and the pan
+    /// survives later frames for the same reason a zoom does.
+    #[test]
+    fn drag_pans_and_the_pan_sticks() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 11u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        let before = h.bounds(id);
+
+        let start = h.plot_center(id);
+        let end = start + egui::Vec2::new(60.0, 0.0);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(start)]);
+        h.frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        h.frame(&mut app, vec![egui::Event::PointerMoved(end)]);
+        h.frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        h.frames(&mut app, 1);
+
+        let panned = h.bounds(id);
+        assert!(
+            approx(panned.width(), before.width()),
+            "panning must not change the zoom level: {before:?} → {panned:?}"
+        );
+        assert!(
+            panned.min()[0] < before.min()[0] - 1e-3,
+            "dragging right moves the view left along x: {before:?} → {panned:?}"
+        );
+
+        h.frames(&mut app, 3);
+        assert!(approx(h.bounds(id).min()[0], panned.min()[0]), "pan sticks");
+    }
+
+    /// egui_plot's built-in double-click reset goes through the same Home
+    /// path, so it restores the script's limits rather than auto-fitting.
+    #[test]
+    fn double_click_restores_script_limits() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 12u32;
+        open_line_figure(&tx, id, Some((XLIM, YLIM)));
+
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        h.scroll_over_plot(&mut app, id, 7.0, 3);
+        assert!(h.bounds(id).width() < 2.0);
+
+        let pos = h.plot_center(id);
+        h.frame(&mut app, vec![egui::Event::PointerMoved(pos)]);
+        for _ in 0..2 {
+            h.frame(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            h.frame(
+                &mut app,
+                vec![egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        h.frames(&mut app, 1);
+
+        let b = h.bounds(id);
+        assert!(
+            approx(b.min()[0], 0.0) && approx(b.max()[0], 2.0),
+            "x: {b:?}"
+        );
+    }
+
 }

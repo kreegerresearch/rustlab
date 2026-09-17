@@ -1964,6 +1964,25 @@ viewer             % status: "connected, current figure → rustlab-viewer (figu
 viewer off         % back to terminal
 ```
 
+**Mouse and keyboard in the viewer window.** Each subplot is navigated independently:
+
+| Gesture | 2-D panel | 3-D `surf` panel |
+|---|---|---|
+| Scroll wheel | zoom both axes about the pointer | zoom the camera |
+| Shift + scroll | — | scale the Z axis (relief exaggeration) |
+| Left-drag | pan | rotate (yaw / pitch) |
+| Right-drag | — | pan |
+| **Home** button (panel header) | reset the view | reset the camera |
+| `Home` key (pointer over the panel) | reset the view | reset the camera |
+| `R` key (pointer over the panel) | — | reset the camera |
+| Double-click | reset the view | — |
+
+"Reset the view" restores the script's `xlim`/`ylim` for that subplot when it set
+any (`plot_limits`, `xlim`, `ylim`), and otherwise re-fits the panel to its data.
+Those limits are applied when the panel first appears and whenever the script
+sends *changed* limits — a zoom is not undone by a live plot redrawing with the
+same limits.
+
 **Automatic fallback.** If the viewer is closed or crashes while still connected, the next plot command detects the broken connection, prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders the current figure in the TUI. Subsequent plots continue to render in the terminal until you run `viewer on` again.
 
 **Named sessions** allow multiple viewers to run simultaneously, each receiving plots from different rustlab instances:
@@ -2150,7 +2169,7 @@ Plot a Z-grid as a 3D surface. `Z` is a matrix (rows = Y samples, cols = X sampl
 Per-backend behaviour:
 
 - **Terminal** — heatmap of Z (no 3D interaction in a terminal).
-- **Viewer** (`viewer on`) — interactive 3D: left-drag rotate, scroll zoom, shift+scroll scale Z, right-drag pan, `R` to reset.
+- **Viewer** (`viewer on`) — interactive 3D: left-drag rotate, scroll zoom, shift+scroll scale Z, right-drag pan, and the panel's **Home** button (or the `Home` / `R` keys) to reset the camera.
 - **HTML** (`savefig("...html")`) — Plotly 3D surface (draggable in browser).
 - **SVG / PNG** — static isometric wireframe.
 - **Notebook** (`rustlab-notebook render`) — captured as a figure snapshot; HTML output embeds a Plotly 3D surface (rotate/zoom in browser), PDF output embeds the SVG wireframe.
