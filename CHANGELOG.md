@@ -80,8 +80,25 @@ Workflow Rule 12).
   them (`quiver(...); savefig(...)`) no longer emit stderr noise; a plot
   that never reaches a file warns once, at the end of the run (or REPL
   line), as one combined message naming the plot kinds.
+- **The viewer zooms with the plain scroll wheel, and every subplot has
+  a Home button.** In `rustlab-viewer`, rolling the wheel over a 2-D
+  panel now zooms both axes about the pointer (it used to pan the view;
+  zoom was ctrl+wheel only). Left-drag still pans. Each subplot carries
+  its own **Home** button in its header — plus the `Home` key while the
+  panel is hovered, and double-click — which restores the script's
+  `xlim`/`ylim` when it set any and otherwise re-fits the data. 3-D
+  `surf` panels get the same Home button and `Home` key as an alias for
+  the existing `R` reset; their scroll zoom and shift+scroll Z-scale are
+  unchanged.
 
 ### Fixed
+- **Zooming a viewer panel with script limits no longer snaps back.**
+  The viewer re-applied a panel's `xlim`/`ylim` on every frame, so any
+  zoom or pan of a panel whose script had called `plot_limits` (or
+  `xlim`/`ylim`) was undone on the next repaint. Limits are now applied
+  on the panel's first show, when *changed* limits arrive from the
+  script, and on Home — so a live plot re-sending the same limits each
+  redraw leaves the user's view alone.
 - Dark-mode notebook HTML no longer leaves prose links unstyled. Body,
   callout, and exercise `<a>` tags inherit the browser default
   (`#0000EE` / visited `#551A8B`) which is invisible on Catppuccin

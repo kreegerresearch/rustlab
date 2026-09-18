@@ -557,7 +557,7 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `imagesc(M)` / `imagesc(M, cmap)` | Matrix heatmap; colormaps: `"viridis"` `"jet"` `"hot"` `"gray"` |
 | `heatmap(M)` / `heatmap(M, "title")` / `heatmap(xlabels, ylabels, M [, "title" [, cmap]])` | Heatmap with categorical axis labels; row 0 at top; xlabels/ylabels are string arrays |
 | `image(M)` / `image(M, cmap)` / `image(R, G, B)` | Raw pixel display, values clamped 0..255, no normalisation; RGB form takes three real matrices |
-| `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, cmap)` | 3D surface; interactive rotate/zoom in viewer, Plotly 3D in HTML |
+| `surf(Z)` / `surf(X, Y, Z)` / `surf(X, Y, Z, cmap)` | 3D surface; interactive rotate/zoom in viewer (Home / `R` resets the camera), Plotly 3D in HTML |
 | `contour(Z)` / `contour(X, Y, Z [, n|levels [, "color"]])` | Line contours; honours `hold on` for overlay on `imagesc`. Terminal: not rendered. |
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
 | `quiver(X, Y, U, V [, scale | "normalized" | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; 95th-percentile auto-scale with per-arrow clamp (outliers cannot blank the plot); `"normalized"` = unit-length arrows; decimate via stride indexing. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
@@ -622,7 +622,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `figure(N)` | Switch to figure N (creates if it doesn't exist) |
 | `hold on` / `hold off` | Overlay series on current subplot (also `hold("on")`) |
 | `grid on` / `grid off` | Show / hide grid lines (also `grid("on")`) |
-| `viewer` / `viewer on` / `viewer on <name>` / `viewer off` | Bare `viewer` = status (connection state + current figure routing); `on`/`off` route plots to/from external rustlab-viewer. Auto-falls-back to TUI if the viewer dies. Requires `viewer` feature. |
+| `viewer` / `viewer on` / `viewer on <name>` / `viewer off` | Bare `viewer` = status (connection state + current figure routing); `on`/`off` route plots to/from external rustlab-viewer. In the viewer window: scroll = zoom, drag = pan, per-subplot **Home** button / `Home` key / double-click = reset view (script `xlim`/`ylim` if set, else fit data). Auto-falls-back to TUI if the viewer dies. Requires `viewer` feature. |
 | `title("text")` | Set subplot title |
 | `xlabel("text")` | Set x-axis label |
 | `ylabel("text")` | Set y-axis label |

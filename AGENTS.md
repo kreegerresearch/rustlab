@@ -959,9 +959,26 @@ rustlab-viewer --socket PATH    # custom socket path
 **Key files:**
 - `src/main.rs` — CLI arg parsing, eframe GUI launch, `--name`/`--socket` support, startup resilience (below)
 - `src/app.rs` — `ViewerApp` eframe application, drains messages from socket, renders figures in egui windows
-- `src/figure.rs` — `FigureWindow` and `PanelState`, subplot grid rendering with `egui_plot`, categorical x-axis label support
+- `src/figure.rs` — `FigureWindow` and `PanelState`, subplot grid rendering with `egui_plot`, categorical x-axis label support, per-panel header with the Home button (`home_button_id` / `panel_plot_id` give the widgets stable Ids so headless tests can drive them)
+- `src/view.rs` — per-panel view state: `PanelView` (apply-limits / Home latches), `bounds_action` (when to push the script's limits), `zoom_factor_from_scroll` (wheel → zoom factor). Pure functions, unit tested
 - `src/net.rs` — Unix socket listener, spawns per-connection threads, liveness check prevents clobbering an active viewer's socket
 - `src/render.rs` — converts `WireSeries` to egui_plot items (Line, Points, BarChart, Stem)
+
+**Interaction model (2-D panels):** plain scroll = zoom both axes about
+the pointer (`egui_plot`'s own `allow_scroll` pan is turned *off*; the wheel
+is handled in `figure.rs` via `PlotUi::zoom_bounds_around_hovered`),
+left-drag = pan, and Home (the per-subplot button, the `Home` key while
+hovered, or a double-click) resets the view. 3-D `surf` panels keep
+drag-rotate / scroll-zoom / shift+scroll Z-scale / right-drag pan and accept
+Home as an alias for `R`.
+
+**Never re-apply `set_plot_bounds` every frame.** A panel's script limits
+(`plot_limits`, `xlim`, `ylim`) go into `egui_plot`'s bounds memory only on
+first show, when *changed* limits arrive over the wire
+(`PanelState::set_limits` compares before re-arming the latch), and on Home
+— `crate::view::bounds_action` owns that decision. The pre-0.3.7 code pushed
+the bounds on every repaint, which silently undid the user's zoom one frame
+later.
 
 **Repaint model (event-driven, no polling):** the GUI never schedules
 periodic repaints — an idle viewer draws zero frames (continuous repaint
