@@ -161,7 +161,7 @@ impl Evaluator {
             stmt_call_nargout0: false,
             profiler: profile::Profiler::default(),
             color_output: false,
-            number_format: value::NumberFormat::Short,
+            number_format: value::default_number_format(),
             current_line: 0,
             cache_registry: CacheRegistry::new(),
             cached_entry_ids: HashMap::new(),

@@ -84,6 +84,25 @@ impl NumberFormat {
     }
 }
 
+thread_local! {
+    /// Process-wide default used by [`crate::eval::Evaluator::new`].
+    /// Set at binary startup from `~/.rustlabrc` `[display] format`.
+    /// Tests and library callers that never set this keep `Short`.
+    static DEFAULT_NUMBER_FORMAT: std::cell::Cell<NumberFormat> =
+        const { std::cell::Cell::new(NumberFormat::Short) };
+}
+
+/// Overwrite the per-thread default [`NumberFormat`]. Fresh evaluators
+/// created after this call start in `nf`.
+pub fn set_default_number_format(nf: NumberFormat) {
+    DEFAULT_NUMBER_FORMAT.with(|c| c.set(nf));
+}
+
+/// Return the current per-thread default [`NumberFormat`].
+pub fn default_number_format() -> NumberFormat {
+    DEFAULT_NUMBER_FORMAT.with(|c| c.get())
+}
+
 /// Internal dispatch for `Value::DspStreamState`. One variant per
 /// streaming builtin family. Holds the math-layer state struct
 /// directly; no `Clone` required because the outer `Arc<Mutex<...>>`

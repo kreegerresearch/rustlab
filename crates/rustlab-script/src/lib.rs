@@ -44,6 +44,7 @@ mod tests;
 
 pub use error::ScriptError;
 pub use eval::output::{capturing, start_capture, stop_capture};
+pub use eval::value::{default_number_format, set_default_number_format, NumberFormat};
 pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;

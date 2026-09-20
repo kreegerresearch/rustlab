@@ -23,6 +23,7 @@ stays 0 — check stderr, not the exit code.
 - [docs/notebooks.md](docs/notebooks.md): complete notebook reference — directives,
   widgets, embeds, template interpolation, render/watch/check/clean CLI
 - [docs/examples.md](docs/examples.md): annotated walkthroughs of the example scripts
+- [docs/rustlabrc.example.toml](docs/rustlabrc.example.toml): user-global settings template (`~/.rustlabrc` / XDG)
 - [README.md](README.md): install, quickstart, CLI usage
 
 ## Examples

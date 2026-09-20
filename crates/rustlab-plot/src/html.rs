@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use crate::error::PlotError;
 use crate::figure::{AxisScale, FigureState, LineStyle, PlotKind, SeriesColor, FIGURE};
-use crate::theme::{Theme, ThemeColors};
+use crate::theme::ThemeColors;
 
 thread_local! {
     /// When set, every FIGURE mutation re-writes the HTML file at this path.
@@ -55,7 +55,7 @@ pub fn render_figure_html(path: &str) -> Result<(), PlotError> {
 
 /// Render a `FigureState` to an HTML file with Plotly (default dark theme).
 pub fn render_figure_state_html(fig: &FigureState, path: &str) -> Result<(), PlotError> {
-    render_figure_state_html_themed(fig, path, Theme::default().colors())
+    render_figure_state_html_themed(fig, path, crate::theme::default_theme().colors())
 }
 
 /// Render a `FigureState` to an HTML file with Plotly using the given theme.

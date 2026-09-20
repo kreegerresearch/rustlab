@@ -39,6 +39,7 @@ rustlab/
 │   ├── rustlab-proto/      # IPC wire protocol for rustlab↔viewer communication
 │   ├── rustlab-viewer/     # standalone egui plot viewer (separate binary)
 │   ├── rustlab-script/     # .rlab language interpreter — depends on core, dsp, plot
+│   ├── rustlab-config/     # user-global TOML settings (~/.rustlabrc / XDG)
 │   └── rustlab-cli/        # binary `rustlab` — depends on all crates
 ├── dev/
 │   └── plans/              # multi-phase development plans (see section below)
@@ -70,6 +71,7 @@ rustlab/
     ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows
     ├── examples.md         # annotated walkthroughs of each example script
     ├── functions.md        # full function reference with signatures and examples
+    ├── rustlabrc.example.toml # annotated user-global settings template
     └── quickref.md         # concise capability index kept in sync with actual builtins
 ```
 
@@ -82,7 +84,9 @@ rustlab-dsp   rustlab-plot ←(optional viewer feature)── rustlab-proto
     └─────┬─────┘                                    rustlab-viewer
     rustlab-script                                   (separate binary)
           ↑
-    rustlab-cli
+    rustlab-config (leaf — toml + thiserror only)
+          ↑
+    rustlab-cli / rustlab-notebook
 ```
 
 ---
@@ -1038,6 +1042,15 @@ opens). Do not reintroduce `request_repaint_after` polling in
 
 ---
 
+### `rustlab-config`
+
+**Purpose:** User-global settings loader. Leaf crate — `toml` + `thiserror` only.
+
+**Key files:**
+- `src/lib.rs` — `load()` / `load_from_paths()` / `parse_toml()`. First existing file wins: `$XDG_CONFIG_HOME/rustlab/config.toml`, else `~/.rustlabrc`, else built-in defaults. Unknown keys are collected (callers warn once); invalid values return `ConfigError::Invalid` with path + key. v1 schema: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme`, `[repl] history_limit`, `[viewer] auto_connect` / `name`.
+
+Consumed by `rustlab-cli` (REPL / `run`) and `rustlab-notebook` (render/watch `-t` default). Process-wide plot theme / axis / number-format defaults are applied at those binary entry points — `Evaluator::new()` is not changed for library callers.
+
 ### `rustlab-cli`
 
 **Purpose:** Binary crate. Wires clap subcommands to the other crates.
@@ -1204,6 +1217,7 @@ primary     = NUMBER | STRING | IDENT
 | Underscore literals | `1_000_000`, `3.141_592` | Digit separators stripped at lex time; like Rust/Python/C++ |
 | Imaginary literals | `2j`, `1.5i`, `3e8j` | `Token::Imaginary` at lex time → `Expr::Imag` → `Value::Complex`; binds to the literal (immune to a shadowed `i`/`j` variable); printed complex values (`1+2j`) round-trip as input |
 | Format mode | `format commas` / `format default` | Bare command; toggles thousands separators in auto-print output |
+| User settings | `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml` | Optional declarative TOML (never executed). XDG wins if present. v1 keys: display.format, plot.theme / default_axis, notebook.theme, repl.history_limit, viewer.auto_connect / name. Precedence: CLI > in-script/REPL > rc > defaults. Unknown keys warn; invalid values abort. See `docs/rustlabrc.example.toml`. |
 
 ### All builtin functions
 

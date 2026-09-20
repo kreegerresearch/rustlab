@@ -47,7 +47,7 @@ pub use html::{
     sync_html_file,
 };
 pub use live::LiveFigure;
-pub use theme::{Theme, ThemeColors};
+pub use theme::{default_theme, set_default_theme, Theme, ThemeColors};
 #[cfg(feature = "viewer")]
 pub use viewer_live::ViewerFigure;
 #[cfg(feature = "viewer")]

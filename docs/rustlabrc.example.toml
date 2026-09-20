@@ -1,0 +1,65 @@
+# rustlab user-global settings (v1)
+#
+# Copy to one of:
+#   $XDG_CONFIG_HOME/rustlab/config.toml   (wins if it exists)
+#   ~/.rustlabrc
+#
+# Smallest useful file (a missing file is fine — built-in defaults apply):
+#
+#   [plot]
+#   theme = "dark"            # dark | light
+#   [notebook]
+#   theme = "dark"
+#
+# This is declarative TOML — rustlab never executes it as a script.
+# Every section and key is optional; omit a key to keep the built-in default.
+# Unknown keys warn once on stderr and are ignored. Invalid values abort
+# with the file path and key.
+#
+# Precedence (high → low):
+#   1. Explicit CLI flags   (e.g. rustlab-notebook -t light, rustlab run --plot none)
+#   2. In-script / REPL commands   (format commas, set_default_axis("xy"), viewer on)
+#   3. This file
+#   4. Built-in defaults
+#
+# Not this file:
+#   ~/.rustlab_history     — REPL command history (readline)
+#   .rustlab/cache.db      — per-project persistent function cache
+#
+# v1 is user-global only. Project-local .rustlab/config.toml and
+# startup.rlab are out of scope.
+
+[display]
+# Numeric auto-print mode for the REPL and `rustlab run` (and notebook
+# cell echo). Same values as the `format` command. `default` is an alias
+# for `short`.
+format = "short"          # short | long | hex | commas
+
+[plot]
+# Theme for un-themed savefig HTML/SVG/PNG, animation HTML/GIF, and
+# viewer pre-renders. Notebooks that pass an explicit -t/--theme still
+# use that theme for page chrome and inlined plots.
+theme = "dark"            # dark | light
+# Process-wide default y-axis for new heatmap panels (imagesc / image /
+# heatmap). Same values as set_default_axis(...).
+default_axis = "ij"       # ij | xy
+
+[viewer]
+# When true, the REPL and `rustlab run` (without an explicit --plot)
+# try to connect to rustlab-viewer at startup. Requires a rustlab build
+# with --features viewer. `--plot tui` / `--plot none` always win.
+auto_connect = false
+# Named session, matching `rustlab-viewer --name`. Used when auto_connect
+# is true, or as the default for `rustlab run --plot viewer` when
+# --viewer-name is omitted.
+# name = "work"
+
+[notebook]
+# Default for rustlab-notebook render/watch when -t/--theme is omitted.
+# If this key is omitted, [plot] theme is used, then dark.
+theme = "dark"            # dark | light
+
+[repl]
+# rustyline history cap (most recent N lines written back to
+# ~/.rustlab_history on a clean exit). Built-in default is 1000.
+history_limit = 1000

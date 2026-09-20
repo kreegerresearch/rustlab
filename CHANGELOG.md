@@ -35,6 +35,14 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Optional user-global settings file. rustlab reads
+  `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,
+  else built-in defaults. The file is declarative TOML (never executed).
+  v1 keys: `[display] format`, `[plot] theme` / `default_axis`,
+  `[notebook] theme`, `[repl] history_limit`, `[viewer] auto_connect` /
+  `name`. Precedence: CLI flags > in-script / REPL commands > rc >
+  defaults. Unknown keys warn once; invalid values abort with path + key.
+  Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).
