@@ -3245,6 +3245,19 @@ commands → user rc → built-in defaults.
 Unknown keys warn once on stderr and are ignored. Invalid values abort
 startup with the file path and key.
 
+**Minimal** — a missing file is fine (built-in defaults apply). Smallest
+useful `~/.rustlabrc`:
+
+```toml
+# missing file = defaults; this just sets plot / notebook theme
+[plot]
+theme = "dark"            # dark | light
+[notebook]
+theme = "dark"
+```
+
+**Typical** — display format plus plot and notebook defaults:
+
 ```toml
 [display]
 format = "commas"         # short | long | hex | commas
@@ -3255,16 +3268,10 @@ default_axis = "xy"       # ij | xy   (same as set_default_axis)
 
 [notebook]
 theme = "light"           # rustlab-notebook -t default
-
-[repl]
-history_limit = 1000
-
-[viewer]
-auto_connect = false
-# name = "work"
 ```
 
-Full annotated example: [`docs/rustlabrc.example.toml`](rustlabrc.example.toml).
+Full annotated template (every v1 key, with comments):
+[`docs/rustlabrc.example.toml`](rustlabrc.example.toml).
 In the REPL, `help rustlabrc` prints the same summary.
 
 ### Underscore digit separators

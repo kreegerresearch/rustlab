@@ -4,6 +4,13 @@
 #   $XDG_CONFIG_HOME/rustlab/config.toml   (wins if it exists)
 #   ~/.rustlabrc
 #
+# Smallest useful file (a missing file is fine — built-in defaults apply):
+#
+#   [plot]
+#   theme = "dark"            # dark | light
+#   [notebook]
+#   theme = "dark"
+#
 # This is declarative TOML — rustlab never executes it as a script.
 # Every section and key is optional; omit a key to keep the built-in default.
 # Unknown keys warn once on stderr and are ignored. Invalid values abort
