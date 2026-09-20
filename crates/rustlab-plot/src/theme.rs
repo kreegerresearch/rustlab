@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 /// Theme selection for rendered output (HTML, LaTeX, PDF).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
@@ -9,6 +11,25 @@ impl Default for Theme {
     fn default() -> Self {
         Theme::Dark
     }
+}
+
+thread_local! {
+    /// Per-thread default theme used by un-themed render paths
+    /// (`savefig` HTML/SVG/PNG, animation HTML/GIF, viewer pre-render).
+    /// Notebooks that pass an explicit theme to the themed APIs are
+    /// unaffected. Set at process start from `~/.rustlabrc` `[plot] theme`.
+    static DEFAULT_THEME: Cell<Theme> = const { Cell::new(Theme::Dark) };
+}
+
+/// Overwrite the per-thread default [`Theme`]. Subsequently un-themed
+/// renders pick up this palette.
+pub fn set_default_theme(theme: Theme) {
+    DEFAULT_THEME.with(|c| c.set(theme));
+}
+
+/// Return the current per-thread default [`Theme`].
+pub fn default_theme() -> Theme {
+    DEFAULT_THEME.with(|c| c.get())
 }
 
 impl Theme {

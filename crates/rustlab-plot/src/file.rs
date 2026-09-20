@@ -120,7 +120,7 @@ pub fn render_figure_file(path: &str) -> Result<(), PlotError> {
 /// Render a given FigureState to a file (PNG or SVG by extension) using the
 /// default theme (matches `render_figure_html`'s default).
 pub fn render_figure_state_to_file(fig: &FigureState, path: &str) -> Result<(), PlotError> {
-    render_figure_state_to_file_themed(fig, path, Theme::default().colors())
+    render_figure_state_to_file_themed(fig, path, crate::theme::default_theme().colors())
 }
 
 /// Render a given FigureState to a file with an explicit theme. Background,
@@ -3717,5 +3717,16 @@ mod tests {
         // Spot-check one concrete value end-to-end.
         let p = ThemePalette::from(crate::Theme::Dark.colors());
         assert_eq!(p.bg, RGBColor(0x1e, 0x1e, 0x2e));
+    }
+
+    #[test]
+    fn set_default_theme_is_read_by_default_theme() {
+        use crate::theme::{default_theme, set_default_theme, Theme};
+        let prior = default_theme();
+        set_default_theme(Theme::Light);
+        assert_eq!(default_theme(), Theme::Light);
+        set_default_theme(Theme::Dark);
+        assert_eq!(default_theme(), Theme::Dark);
+        set_default_theme(prior);
     }
 }

@@ -1,6 +1,7 @@
 mod cli;
 pub(crate) mod color;
 mod commands;
+mod user_config;
 
 use anyhow::Result;
 use clap::Parser;

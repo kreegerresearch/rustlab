@@ -1,0 +1,15 @@
+[package]
+name        = "rustlab-config"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+description = "User-global TOML settings loader (~/.rustlabrc / XDG) for rustlab"
+
+[dependencies]
+thiserror.workspace = true
+toml.workspace      = true
+
+[dev-dependencies]
+tempfile.workspace = true

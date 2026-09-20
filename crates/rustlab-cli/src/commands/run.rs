@@ -24,15 +24,18 @@ pub struct RunArgs {
     pub profile: bool,
 
     /// Where plot commands render: `tui` (default), `none`, or `viewer`.
-    #[arg(long, value_enum, default_value_t = PlotMode::Tui)]
-    pub plot: PlotMode,
+    /// When omitted, `[viewer] auto_connect` in ~/.rustlabrc selects
+    /// `viewer`; otherwise `tui`.
+    #[arg(long, value_enum)]
+    pub plot: Option<PlotMode>,
 
     /// When `--plot viewer`, connect to a named rustlab-viewer session.
+    /// Falls back to `[viewer] name` in ~/.rustlabrc when omitted.
     #[arg(long, value_name = "NAME")]
     pub viewer_name: Option<String>,
 }
 
-pub fn execute(args: RunArgs) -> Result<()> {
+pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result<()> {
     let script = args
         .script
         .canonicalize()
@@ -53,7 +56,18 @@ pub fn execute(args: RunArgs) -> Result<()> {
         std::env::set_current_dir(dir).with_context(|| format!("failed to chdir to {:?}", dir))?;
     }
 
-    apply_plot_mode(args.plot, args.viewer_name.as_deref());
+    let plot_mode = args.plot.unwrap_or_else(|| {
+        if settings.viewer_auto_connect() {
+            PlotMode::Viewer
+        } else {
+            PlotMode::Tui
+        }
+    });
+    let viewer_name = args
+        .viewer_name
+        .as_deref()
+        .or(settings.viewer.name.as_deref());
+    apply_plot_mode(plot_mode, viewer_name);
 
     // Use run_script_source to support report directives in scripts.
     // Fall back to direct run for profiling mode (no report support needed).

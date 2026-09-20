@@ -72,8 +72,8 @@ file to scrub it back to source, then restart the watcher.
 ## Other quick starts (non-Obsidian)
 
 ```
-rustlab-notebook render analysis.md              # → analysis.html (default, dark theme)
-rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
+rustlab-notebook render analysis.md              # → analysis.html (dark theme, or [notebook] theme from ~/.rustlabrc)
+rustlab-notebook render analysis.md -t light     # → analysis.html (light theme; CLI wins over rc)
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
@@ -1072,7 +1072,9 @@ readers can attempt the exercise before revealing the answer.
 ### HTML (default)
 
 Self-contained HTML with:
-- Catppuccin dark theme (default) or light theme (`-t light`)
+- Catppuccin dark theme (default) or light theme (`-t light`). The default
+  is overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
+  if the notebook key is omitted); `-t` / `--theme` always wins.
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
 - Navigation sidebar from headings

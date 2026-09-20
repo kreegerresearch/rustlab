@@ -49,6 +49,8 @@ Facts an agent must know (all verified against the current binary):
 
 `rustlab` with no arguments starts the REPL. Inside it: `help` lists builtins by category, `help <name>` shows detail, `whos` lists variables, `run file.rlab` executes a script into the current scope, `clear` resets. The REPL is for humans; agents should prefer `rustlab run` on a temp file so output is reproducible.
 
+Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml` (TOML, not a startup script). A missing file is fine. Agents running scripts should pass `--plot none` so an rc `[viewer] auto_connect` cannot open a viewer. See [`docs/rustlabrc.example.toml`](rustlabrc.example.toml) and `help rustlabrc`.
+
 ### 2.3 Notebooks
 
 `rustlab-notebook render note.md` executes every ` ```rustlab ` block in a Markdown file and emits HTML (default), `-f markdown` (GitHub-friendly with SVG plots), `-f latex`, `-f pdf`, or `-f json`. See §7.

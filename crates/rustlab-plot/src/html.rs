@@ -55,7 +55,7 @@ pub fn render_figure_html(path: &str) -> Result<(), PlotError> {
 
 /// Render a `FigureState` to an HTML file with Plotly (default dark theme).
 pub fn render_figure_state_html(fig: &FigureState, path: &str) -> Result<(), PlotError> {
-    render_figure_state_html_themed(fig, path, Theme::default().colors())
+    render_figure_state_html_themed(fig, path, crate::theme::default_theme().colors())
 }
 
 /// Render a `FigureState` to an HTML file with Plotly using the given theme.

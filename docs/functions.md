@@ -3221,6 +3221,52 @@ format default
 x                   % → 1234567
 ```
 
+The session starts in `short`, unless `[display] format` is set in the
+user rc file (see [User settings (`~/.rustlabrc`)](#user-settings-rustlabrc)
+below). An in-script or REPL `format` command always wins over the rc.
+
+### User settings (`~/.rustlabrc`)
+Optional **declarative TOML** file for user-global defaults. It is **not**
+an executable startup script — rustlab never runs code from it.
+
+Load order (first existing file wins):
+
+1. `$XDG_CONFIG_HOME/rustlab/config.toml` (XDG home defaults to `~/.config`)
+2. `~/.rustlabrc`
+3. Built-in defaults (a missing file is not an error)
+
+v1 is user-global only. There is no project `.rustlab/config.toml` yet.
+Do not confuse this file with `~/.rustlab_history` (REPL command history)
+or `.rustlab/cache.db` (per-project function cache).
+
+**Precedence** (high → low): explicit CLI flags → in-script / REPL
+commands → user rc → built-in defaults.
+
+Unknown keys warn once on stderr and are ignored. Invalid values abort
+startup with the file path and key.
+
+```toml
+[display]
+format = "commas"         # short | long | hex | commas
+
+[plot]
+theme = "dark"            # dark | light
+default_axis = "xy"       # ij | xy   (same as set_default_axis)
+
+[notebook]
+theme = "light"           # rustlab-notebook -t default
+
+[repl]
+history_limit = 1000
+
+[viewer]
+auto_connect = false
+# name = "work"
+```
+
+Full annotated example: [`docs/rustlabrc.example.toml`](rustlabrc.example.toml).
+In the REPL, `help rustlabrc` prints the same summary.
+
 ### Underscore digit separators
 Underscores can be used inside numeric literals for readability. They are stripped during parsing and have no effect on the value. Works like Rust, Python, and C++14.
 ```
