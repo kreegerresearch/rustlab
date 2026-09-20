@@ -4,7 +4,7 @@ use crate::figure::{
     colormap_rgb, plot_context, push_notebook_figure_snapshot, AxisScale, ContourData, FigureState,
     LineStyle, PlotContext, PlotKind, SeriesColor, SubplotState, SurfaceData, FIGURE,
 };
-use crate::theme::{Theme, ThemeColors};
+use crate::theme::ThemeColors;
 use plotters::prelude::*;
 
 const MARGIN: u32 = 20;
@@ -1837,6 +1837,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
     use crate::{push_xy_bar, push_xy_line, push_xy_scatter, push_xy_stem};
 
     fn rgba_at(rgba: &[u8], ncols: usize, row: usize, col: usize) -> (u8, u8, u8) {
