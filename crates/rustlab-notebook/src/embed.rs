@@ -157,7 +157,8 @@ pub(crate) enum EmbedError {
 
 /// Resolve an embed target (with or without `.md` extension) against the
 /// host directory first, then the notebook root, with case-insensitive
-/// basename fallback in each.
+/// basename fallback in each. Rejects paths that escape `root_dir` after
+/// canonicalization (symlink / `..` escapes).
 pub(crate) fn resolve_target(
     target: &str,
     host_dir: &Path,
@@ -168,11 +169,21 @@ pub(crate) fn resolve_target(
     } else {
         format!("{target}.md")
     };
+    // Reject obvious escapes early (including absolute paths outside root).
+    let probe = Path::new(&with_ext);
+    if probe
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(EmbedError::NotFound {
+            target: format!("{target} (path escapes notebook directory)"),
+        });
+    }
     // 1+2: exact-case, host then root.
     for dir in [host_dir, root_dir] {
         let candidate = dir.join(&with_ext);
         if candidate.is_file() {
-            return Ok(candidate);
+            return confirm_in_jail(candidate, root_dir, target);
         }
     }
     // 3+4: case-insensitive basename in each dir.
@@ -187,7 +198,7 @@ pub(crate) fn resolve_target(
                     == target_lc
                     && entry.path().is_file()
                 {
-                    return Ok(entry.path());
+                    return confirm_in_jail(entry.path(), root_dir, target);
                 }
             }
         }
@@ -195,6 +206,15 @@ pub(crate) fn resolve_target(
     Err(EmbedError::NotFound {
         target: target.to_string(),
     })
+}
+
+fn confirm_in_jail(candidate: PathBuf, root_dir: &Path, target: &str) -> Result<PathBuf, EmbedError> {
+    match rustlab_script::path_jail::check_under_root(&candidate, root_dir) {
+        Ok(p) => Ok(p),
+        Err(_) => Err(EmbedError::NotFound {
+            target: format!("{target} (path escapes notebook directory)"),
+        }),
+    }
 }
 
 // ─────────────────────────── Source loader ─────────────────────────────
@@ -947,47 +967,62 @@ mod tests {
 
     #[test]
     fn resolve_host_dir_first() {
-        let host = TempDir::new().unwrap();
+        // Jail root is the collection root; host must live under it.
         let root = TempDir::new().unwrap();
-        fs::write(host.path().join("setup.md"), "host").unwrap();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
+        fs::write(host.join("setup.md"), "host").unwrap();
         fs::write(root.path().join("setup.md"), "root").unwrap();
-        let resolved = resolve_target("setup", host.path(), root.path()).unwrap();
+        let resolved = resolve_target("setup", &host, root.path()).unwrap();
         assert_eq!(fs::read_to_string(resolved).unwrap(), "host");
     }
 
     #[test]
     fn resolve_root_dir_fallback() {
-        let host = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
         fs::write(root.path().join("setup.md"), "root").unwrap();
-        let resolved = resolve_target("setup", host.path(), root.path()).unwrap();
+        let resolved = resolve_target("setup", &host, root.path()).unwrap();
         assert_eq!(fs::read_to_string(resolved).unwrap(), "root");
     }
 
     #[test]
     fn resolve_case_insensitive_fallback() {
-        let host = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
         fs::write(root.path().join("Setup.md"), "actual").unwrap();
-        let resolved = resolve_target("setup", host.path(), root.path()).unwrap();
+        let resolved = resolve_target("setup", &host, root.path()).unwrap();
         assert_eq!(fs::read_to_string(resolved).unwrap(), "actual");
     }
 
     #[test]
     fn resolve_missing_returns_error() {
-        let host = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let err = resolve_target("nope", host.path(), root.path()).unwrap_err();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
+        let err = resolve_target("nope", &host, root.path()).unwrap_err();
         assert!(matches!(err, EmbedError::NotFound { .. }));
     }
 
     #[test]
     fn resolve_explicit_extension_used_as_is() {
-        let host = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        fs::write(host.path().join("note.txt"), "txt").unwrap();
-        let resolved = resolve_target("note.txt", host.path(), root.path()).unwrap();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
+        fs::write(host.join("note.txt"), "txt").unwrap();
+        let resolved = resolve_target("note.txt", &host, root.path()).unwrap();
         assert!(resolved.to_string_lossy().ends_with("note.txt"));
+    }
+
+    #[test]
+    fn resolve_parent_escape_rejected() {
+        let root = TempDir::new().unwrap();
+        let host = root.path().join("nested");
+        fs::create_dir(&host).unwrap();
+        let err = resolve_target("../secret", &host, root.path()).unwrap_err();
+        assert!(matches!(err, EmbedError::NotFound { .. }));
     }
 
     // ── Section slicer ──

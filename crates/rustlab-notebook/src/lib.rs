@@ -5,6 +5,7 @@ pub mod execute;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;
+pub mod pdf_compile;
 pub mod render;
 pub mod render_json;
 pub mod render_latex;
@@ -1325,6 +1326,12 @@ fn render_output(
             let tex =
                 render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme, link);
             write_output(out_path, tex.as_bytes());
+            // PDF companions so the user can compile without TeX shell-escape.
+            if plot_dir.is_dir() {
+                if let Err(e) = pdf_compile::convert_svgs_to_pdf(&plot_dir) {
+                    eprintln!("warning: SVG→PDF conversion for LaTeX plots: {e}");
+                }
+            }
         }
         Format::Pdf => {
             // PDFs are self-contained, so compilation happens inside a temp
@@ -1348,6 +1355,12 @@ fn render_output(
                 link,
             );
             write_output(&tex_path, tex.as_bytes());
+            // Convert plot SVGs → PDF with fixed-argv Inkscape before
+            // invoking TeX (no -shell-escape).
+            if let Err(e) = pdf_compile::convert_svgs_to_pdf(workdir.path()) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
             compile_pdf(&tex_path, out_path);
         }
     }
@@ -1600,26 +1613,23 @@ fn write_output(path: &PathBuf, data: &[u8]) {
 /// and copy the resulting PDF to `pdf_path`. On failure the build log is
 /// copied next to `pdf_path` as `<stem>.log` so it survives the temp dir's
 /// cleanup and the user has something to read.
+///
+/// **Security:** never passes `-shell-escape`. Plot SVGs must already have
+/// been converted to PDF via [`pdf_compile::convert_svgs_to_pdf`].
 fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) {
     let tex_dir = tex_path.parent().unwrap_or(std::path::Path::new("."));
 
-    let (cmd, args): (&str, Vec<&str>) = if which_exists("pdflatex") {
-        (
-            "pdflatex",
-            vec![
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                "-shell-escape",
-            ],
-        )
-    } else if which_exists("tectonic") {
-        ("tectonic", vec!["-Z", "shell-escape"])
-    } else {
-        eprintln!("error: neither pdflatex nor tectonic found in PATH");
-        eprintln!("  Install TeX Live: https://tug.org/texlive/");
-        eprintln!("  Or tectonic:      https://tectonic-typesetting.github.io/");
-        std::process::exit(1);
+    let (cmd, args) = match pdf_compile::select_pdf_engine() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     };
+    debug_assert!(
+        !pdf_compile::args_enable_shell_escape(&args),
+        "PDF engine args must not enable shell-escape: {args:?}"
+    );
 
     eprintln!("Compiling PDF with {cmd}...");
     let status = std::process::Command::new(cmd)
@@ -1660,16 +1670,6 @@ fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) {
             std::process::exit(1);
         }
     }
-}
-
-fn which_exists(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }
 
 pub fn extract_title(source: &str, path: &PathBuf) -> String {

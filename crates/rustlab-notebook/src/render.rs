@@ -1333,6 +1333,9 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    // Security: never emit raw HTML from notebook markdown (XSS on watch).
+    strip_raw_html_events(&mut events);
+    sanitize_dangerous_urls(&mut events);
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
@@ -1341,16 +1344,66 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     restore_math(&html, &math)
 }
 
+/// Drop HTML-block wrappers and turn raw HTML / inline HTML into escaped
+/// text so `<script>`, event handlers, etc. never reach the watch origin.
+fn strip_raw_html_events(events: &mut Vec<Event<'_>>) {
+    let mut out = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        match ev {
+            Event::Start(Tag::HtmlBlock) | Event::End(TagEnd::HtmlBlock) => {
+                // wrappers only — content arrives as Event::Html
+            }
+            Event::Html(s) | Event::InlineHtml(s) => {
+                out.push(Event::Text(escape_html(&s).into()));
+            }
+            other => out.push(other),
+        }
+    }
+    *events = out;
+}
+
+fn sanitize_dangerous_urls(events: &mut [Event<'_>]) {
+    for ev in events.iter_mut() {
+        match ev {
+            Event::Start(Tag::Link { dest_url, .. }) if is_dangerous_url(dest_url) => {
+                *dest_url = "#".into();
+            }
+            Event::Start(Tag::Image { dest_url, .. }) if is_dangerous_url(dest_url) => {
+                *dest_url = "".into();
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Apply [`LinkMode`] resolution to every link-open event in place. Shared
 /// with the index-page body renderer, which runs its own event pipeline.
 pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
     for ev in events.iter_mut() {
         if let Event::Start(Tag::Link { dest_url, .. }) = ev {
+            if is_dangerous_url(dest_url) {
+                *dest_url = "#".into();
+                continue;
+            }
             if let Some(new) = rewrite_link_dest(dest_url, mode) {
                 *dest_url = new.into();
             }
         }
     }
+}
+
+/// `javascript:`, `data:`, `vbscript:` — never emit as href/src.
+pub(crate) fn is_dangerous_url(url: &str) -> bool {
+    let trimmed = url.trim_start();
+    let lower: String = trimmed
+        .chars()
+        .take_while(|c| *c != ':' && *c != '/' && *c != '?')
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    matches!(
+        lower.as_str(),
+        "javascript" | "data" | "vbscript" | "blob"
+    ) && trimmed.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -2303,12 +2356,16 @@ fn protect_math(md: &str) -> (String, Vec<String>) {
 /// that doesn't look delimited is returned unchanged (defensive — every
 /// real stash entry carries its delimiters).
 fn to_katex_delimiters(original: &str) -> String {
+    // HTML-escape the math body so a notebook that puts raw HTML / script
+    // tags inside `$…$` cannot break out of the math span into executable
+    // markup. KaTeX reads textContent (entity-decoded), so LaTeX still sees
+    // the original characters.
     if original.len() >= 4 && original.starts_with("$$") && original.ends_with("$$") {
-        format!("\\[{}\\]", &original[2..original.len() - 2])
+        format!("\\[{}\\]", escape_html(&original[2..original.len() - 2]))
     } else if original.len() >= 2 && original.starts_with('$') && original.ends_with('$') {
-        format!("\\({}\\)", &original[1..original.len() - 1])
+        format!("\\({}\\)", escape_html(&original[1..original.len() - 1]))
     } else {
-        original.to_string()
+        escape_html(original)
     }
 }
 
@@ -4371,6 +4428,47 @@ mod tests {
         assert_eq!(to_katex_delimiters("$$$$"), r"\[\]");
         // Not delimited → unchanged.
         assert_eq!(to_katex_delimiters("plain"), "plain");
+    }
+
+    #[test]
+    fn to_katex_delimiters_escapes_html_in_math() {
+        let out = to_katex_delimiters("$a<script>alert(1)</script>$");
+        assert!(!out.contains("<script>"));
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(out.starts_with(r"\(") && out.ends_with(r"\)"));
+    }
+
+    #[test]
+    fn markdown_strips_raw_html_and_script_tags() {
+        let html = markdown_to_html("<script>alert(1)</script>\n\nhello <b>x</b>");
+        assert!(
+            !html.contains("<script>"),
+            "raw script must not survive: {html}"
+        );
+        assert!(
+            !html.contains("<b>x</b>"),
+            "raw HTML tags must not survive as live markup: {html}"
+        );
+        // Escaped form may use &lt; or be split across text nodes — either way
+        // the live tags are gone and the visible text remains.
+        assert!(html.contains("hello"), "{html}");
+        assert!(html.contains("alert(1)") || html.contains("x"), "{html}");
+    }
+
+    #[test]
+    fn markdown_strips_javascript_urls() {
+        let html = markdown_to_html("[click](javascript:alert(1))");
+        assert!(!html.to_lowercase().contains("javascript:"));
+        assert!(html.contains("href=\"#\"") || html.contains("href='#'"));
+    }
+
+    #[test]
+    fn is_dangerous_url_detects_schemes() {
+        assert!(is_dangerous_url("javascript:alert(1)"));
+        assert!(is_dangerous_url("DATA:text/html,x"));
+        assert!(is_dangerous_url("vbscript:msgbox"));
+        assert!(!is_dangerous_url("https://example.com"));
+        assert!(!is_dangerous_url("/relative/path"));
     }
 
     #[test]

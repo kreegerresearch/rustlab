@@ -7,11 +7,12 @@ use std::path::Path;
 /// Render executed notebook blocks into a LaTeX document string.
 ///
 /// Plot images are written to `plot_dir` as SVG files and referenced from
-/// the rendered `.tex` via `\includesvg{plot_href_prefix/plot-N}`. Splitting
-/// the on-disk write location from the include path lets callers nest plots
-/// under a single `plots/<stem>/` umbrella the same way the markdown emitter
-/// does, without coupling the path inside `\includesvg` to the directory the
-/// SVGs are written to.
+/// the rendered `.tex` via `\includegraphics{plot_href_prefix/plot-N}`
+/// (PDF companions are produced by fixed-argv Inkscape before TeX runs).
+/// Splitting the on-disk write location from the include path lets callers
+/// nest plots under a single `plots/<stem>/` umbrella the same way the
+/// markdown emitter does, without coupling the path inside
+/// `\includegraphics` to the directory the SVGs are written to.
 pub fn render_latex(
     title: &str,
     blocks: &[Rendered],
@@ -90,7 +91,7 @@ pub fn render_latex(
                         "0.9\\textwidth".to_string()
                     };
                     body.push_str(&format!(
-                        "\\begin{{center}}\n\\includesvg[width={width}]{{{}/plot-{plot_idx}}}\n\\end{{center}}\n\n",
+                        "\\begin{{center}}\n\\includegraphics[width={width}]{{{}/plot-{plot_idx}}}\n\\end{{center}}\n\n",
                         href_prefix,
                     ));
                 }
@@ -189,13 +190,6 @@ pub fn render_latex(
 \usepackage{{geometry}}
 \geometry{{margin=1in}}
 \usepackage{{graphicx}}
-\usepackage{{svg}}
-% Bypass inkscape's LaTeX text export. Default svg.sty invokes inkscape
-% with --export-latex, producing a `_svg-tex.pdf_tex` companion file that
-% re-typesets plot titles through pdflatex — which then chokes on `^`,
-% `_`, `×`, em-dash etc. in titles. inkscapelatex=false renders text as
-% embedded glyphs in the PDF instead.
-\svgsetup{{inkscapelatex=false}}
 \usepackage{{amsmath,amssymb}}
 \usepackage{{newunicodechar}}
 % Map common math / Greek / arrow Unicode characters that appear in
@@ -471,9 +465,10 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                 out.push_str(&math);
                 out.push_str("\n\\]\n");
             }
-            Event::Html(html) => {
-                // HTML comments / directives — skip
-                let _ = html;
+            Event::Html(html) | Event::InlineHtml(html) => {
+                // Raw HTML is never passed through to TeX (XSS / write18
+                // surface). Emit as escaped text so authors still see it.
+                out.push_str(&escape_latex(&html));
             }
             _ => {}
         }
@@ -533,9 +528,10 @@ fn escape_latex(s: &str) -> String {
 }
 
 /// Render a Mermaid block into the LaTeX body. On success, writes
-/// `<plot_dir>/diagram-<idx>.svg` and emits a `\begin{figure}…\includesvg…`
-/// float. On failure or with the `mermaid` feature disabled, falls back to
-/// `\begin{verbatim}` containing the source.
+/// `<plot_dir>/diagram-<idx>.svg` (converted to `.pdf` before TeX runs)
+/// and emits a `\begin{figure}…\includegraphics…` float. On failure or
+/// with the `mermaid` feature disabled, falls back to `\begin{verbatim}`
+/// containing the source.
 fn emit_mermaid_latex(
     body: &mut String,
     source: &str,
@@ -550,7 +546,7 @@ fn emit_mermaid_latex(
             Ok(_) => {
                 body.push_str("\\begin{figure}[htbp]\n  \\centering\n  ");
                 body.push_str(&format!(
-                    "\\includesvg[width=0.8\\linewidth]{{{href_prefix}/diagram-{diagram_idx}}}\n"
+                    "\\includegraphics[width=0.8\\linewidth]{{{href_prefix}/diagram-{diagram_idx}}}\n"
                 ));
                 if let Some(cap) = caption {
                     body.push_str(&format!("  \\caption{{{}}}\n", escape_latex(cap)));
@@ -863,7 +859,8 @@ mod tests {
         );
         assert!(tex.contains("\\documentclass"));
         assert!(tex.contains("\\usepackage{graphicx}"));
-        assert!(tex.contains("\\usepackage{svg}"));
+        assert!(tex.contains("\\usepackage{graphicx}"));
+        assert!(!tex.contains("\\usepackage{svg}"));
         assert!(tex.contains("\\usepackage{amsmath,amssymb}"));
         assert!(tex.contains("\\usepackage{booktabs}"));
         assert!(tex.contains("\\usepackage[normalem]{ulem}"));
@@ -872,12 +869,11 @@ mod tests {
         assert!(tex.contains("\\maketitle"));
     }
 
-    // Regression: Bug C — svg.sty must run inkscape WITHOUT --export-latex
-    // so plot titles containing `^`, `×`, em-dash, etc. don't get
-    // re-typeset by pdflatex through a `_svg-tex.pdf_tex` companion file.
-    // Previously this broke log_polar.md / masks.md / surface_plots.md.
+    // Security: TeX shell-escape / svg.sty are gone. SVGs are converted
+    // to PDF by fixed-argv Inkscape before pdflatex runs; the preamble
+    // must use graphicx only.
     #[test]
-    fn render_latex_preamble_disables_inkscape_latex_bridge() {
+    fn render_latex_preamble_has_no_svg_shell_escape() {
         let tex = render_latex(
             "x",
             &[],
@@ -886,10 +882,10 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(
-            tex.contains("\\svgsetup{inkscapelatex=false}"),
-            "preamble missing \\svgsetup{{inkscapelatex=false}}"
-        );
+        assert!(!tex.contains("\\usepackage{svg}"));
+        assert!(!tex.contains("\\svgsetup"));
+        assert!(!tex.contains("shell-escape"));
+        assert!(tex.contains("\\usepackage{graphicx}"));
     }
 
     // Regression: Bug D — preamble must declare common math/Greek Unicode
@@ -1094,7 +1090,7 @@ mod tests {
 
     #[cfg(feature = "mermaid")]
     #[test]
-    fn mermaid_emits_figure_with_includesvg() {
+    fn mermaid_emits_figure_with_includegraphics() {
         let dir = mermaid_plot_dir("fig");
         let blocks = vec![Rendered::Mermaid {
             source: "flowchart LR\n  A --> B\n".to_string(),
@@ -1104,7 +1100,8 @@ mod tests {
         }];
         let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
         assert!(tex.contains("\\begin{figure}[htbp]"));
-        assert!(tex.contains("\\includesvg[width=0.8\\linewidth]{plots/test/diagram-1}"));
+        assert!(tex.contains("\\includegraphics[width=0.8\\linewidth]{plots/test/diagram-1}"));
+        assert!(!tex.contains("\\includesvg"));
         assert!(tex.contains("\\end{figure}"));
         assert!(dir.join("diagram-1.svg").exists());
         let _ = std::fs::remove_dir_all(&dir);

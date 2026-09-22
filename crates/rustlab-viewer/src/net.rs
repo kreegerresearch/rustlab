@@ -72,6 +72,14 @@ fn run_listener(tx: mpsc::SyncSender<ViewerMsg>, wake: WakeFn) -> std::io::Resul
         use std::os::unix::net::UnixListener;
 
         let listener = UnixListener::bind(&path)?;
+        // Restrict the socket to the creating user (0600). The default
+        // umask often leaves world-readable sockets so any local account
+        // could attach and send plot/IPC traffic.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         eprintln!("rustlab-viewer: listening on {}", path.display());
 
         // Clean up socket on exit
@@ -294,6 +302,13 @@ mod tests {
             tries += 1;
         }
         assert!(sock.exists(), "listener never bound the socket");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "viewer socket must be mode 0600, got {mode:o}");
+        }
 
         client_session(&sock, (111u32 << 16) | 0);
         client_session(&sock, (222u32 << 16) | 0);

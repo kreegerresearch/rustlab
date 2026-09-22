@@ -195,6 +195,13 @@ fn execute_core(
 
     set_plot_context(PlotContext::Notebook);
 
+    // Jail file I/O to the notebook directory (process cwd is already the
+    // notebook parent via CwdGuard). Cleared when this guard drops.
+    let jail_root = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let _jail = rustlab_script::PathJailGuard::new(jail_root);
+
     // Widget value table for this render: declared defaults overlaid with
     // any live overrides. Drives both `widget(name)` resolution and the
     // cache's widget-aware validity check.
@@ -467,6 +474,11 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
     // Suppress TUI plot rendering — notebook captures FigureState directly.
     // PlotContext::Notebook is sticky: figure() calls cannot override it.
     set_plot_context(PlotContext::Notebook);
+
+    let jail_root = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let _jail = rustlab_script::PathJailGuard::new(jail_root);
 
     let widgets = Arc::new(build_widget_table(blocks, None));
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
@@ -1046,9 +1058,9 @@ mod tests {
     // ─── Notebook figure capture ──────────────────────────────────────────
 
     fn tmp_path(tag: &str) -> String {
-        let mut p = std::env::temp_dir();
-        p.push(format!("nb_figs_{}_{}.svg", std::process::id(), tag));
-        p.to_str().unwrap().to_string()
+        // Relative to the process cwd so path-jail (notebook directory)
+        // accepts the write. Absolute /tmp paths are rejected by design.
+        format!("nb_figs_{}_{}.svg", std::process::id(), tag)
     }
 
     /// Multiple `savefig()` calls in a single block produce separate snapshots.

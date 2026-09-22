@@ -194,11 +194,11 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 #### Interactive server (bare input)
 
 ```
-rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042
+rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/?token=…
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
-rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
+rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back; needs token)
 ```
 
 Behaviour:
@@ -324,7 +324,9 @@ rustlab-notebook watch notebooks/  --editable     # whole directory, every page 
 
 `--editable` turns the source pane into a [CodeMirror](https://codemirror.net/5/)
 editor (Markdown mode, line numbers) that **writes back to the
-`.md`**:
+`.md`**. Mutates require the per-run session token printed at startup
+(also in the `?token=` URL); non-loopback Origins are rejected — see
+[`docs/security.md`](security.md).
 
 - Click **Edit** to open the pane, change the source, then **Save**
   (or `Ctrl`/`Cmd`-S). The buffer is `POST`ed to `/save/<slug>`, the
@@ -1132,16 +1134,16 @@ light text, matching the Catppuccin Mocha palette.
 ### PDF (`--format pdf`)
 
 Generates LaTeX then compiles to PDF. Requires `pdflatex` or `tectonic`
-in PATH, plus `inkscape` (the `svg` LaTeX package shells out to it to
-convert plot SVGs). See `AGENTS.md` § *Testing dependencies* for
-per-platform install commands.
+in PATH, plus `inkscape` to convert plot SVGs to PDF with a fixed argv
+(**TeX shell-escape is not used** — see `docs/security.md`). The `.tex`
+references plots via `\includegraphics`, not `\includesvg`.
 
 ```
 rustlab-notebook render analysis.md -f pdf
 # → analysis.pdf   (single file — intermediates compile in a temp dir)
 ```
 
-The `.tex` source and SVG plots used during compilation live in a
+The `.tex` source and SVG/PDF plots used during compilation live in a
 temporary directory that is deleted on completion, so the only artifact
 left behind is the requested `.pdf`. If the build fails, the LaTeX log
 is preserved next to the requested PDF path as `<stem>.log` so the

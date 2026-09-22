@@ -14,6 +14,7 @@
 //! yet. Source `.md` is never modified.
 
 pub mod assets;
+pub mod auth;
 pub mod cell;
 pub mod diff;
 pub mod http;
@@ -65,7 +66,16 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
     let is_dir = canonical_input.is_dir();
 
     // ── 1+2. Discover + render every notebook, build server state ──
-    let state = build_state(&canonical_input, is_dir, theme, opts.editable)?;
+    let session_token = auth::generate_session_token();
+    let csp_nonce = auth::generate_csp_nonce();
+    let state = build_state(
+        &canonical_input,
+        is_dir,
+        theme,
+        opts.editable,
+        session_token,
+        csp_nonce,
+    )?;
 
     // ── 3. Bind ───────────────────────────────────────────────────
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -75,10 +85,17 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 
     rt.block_on(async move {
         let (listener, addr) = bind_with_policy(opts.port).await?;
-        let url = format!("http://{addr}");
+        state
+            .bind_port
+            .store(addr.port(), std::sync::atomic::Ordering::Relaxed);
+        let url = format!("http://{addr}/?token={}", state.session_token);
 
         // ── 4. Log + open browser ─────────────────────────────────
         log_bind(&url, opts.port);
+        eprintln!(
+            "[watch] session token (required for edits / WS mutates): {}",
+            state.session_token
+        );
         if is_dir {
             eprintln!(
                 "[watch] serving {} notebook{} from {}",
@@ -88,7 +105,10 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             );
         }
         if opts.editable {
-            eprintln!("[watch] --editable: in-browser edits write back to source .md");
+            eprintln!(
+                "[watch] --editable: in-browser edits write back to source .md \
+                 (Origin + session token required; see docs/security.md)"
+            );
         }
 
         if !opts.no_browser && should_auto_open_browser() {
@@ -99,9 +119,6 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
         }
 
         // ── 5. Spawn fs watcher + render coordinator ──────────────
-        // `_watcher` is held to keep the notify watcher alive; the
-        // task handle is dropped on shutdown. The watcher covers the
-        // directory (dir mode) or the single file's parent (file mode).
         let (_watcher, _coord) =
             render_loop::spawn(&canonical_input, is_dir, theme, state.clone())
                 .context("spawning render coordinator")?;
@@ -126,6 +143,8 @@ fn build_state(
     is_dir: bool,
     theme: &'static ThemeColors,
     editable: bool,
+    session_token: String,
+    csp_nonce: String,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
         // Same listing rule as the static build: partials are transcluded,
@@ -322,6 +341,9 @@ fn build_state(
         index_body: tokio::sync::RwLock::new(index_body),
         index_md_path,
         render_tx: std::sync::OnceLock::new(),
+        session_token,
+        csp_nonce,
+        bind_port: std::sync::atomic::AtomicU16::new(0),
     }))
 }
 
@@ -737,7 +759,7 @@ mod tests {
             )
             .unwrap();
         }
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false, "test-token".into(), "testnonce".into()).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -754,7 +776,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.md"), "# Welcome\n").unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false, "test-token".into(), "testnonce".into()).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -772,7 +794,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
         std::fs::write(dir.path().join("_partial.md"), "# Partial\n").unwrap();
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false, "test-token".into(), "testnonce".into()).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -794,7 +816,7 @@ mod tests {
             )
             .unwrap();
         }
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(dir.path(), true, Theme::default().colors(), false, "test-token".into(), "testnonce".into()).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -840,7 +862,7 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         std::fs::write(dir.path().join("gamma.md"), "# Gamma\n\nthird.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let app = http::router(state);
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
@@ -874,7 +896,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
         let canon = std::fs::canonicalize(&root).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         assert_eq!(state.order.len(), 1, "notebook hidden by an ancestor's underscore");
     }
 
@@ -894,7 +916,7 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -914,7 +936,7 @@ mod tests {
         std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
         std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
         match state.link_mode_for(deep_slug) {
             crate::render::LinkMode::Server {
@@ -953,7 +975,7 @@ mod tests {
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
         // Served listing.
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let served: Vec<String> = state
             .order
             .iter()
@@ -1004,7 +1026,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
         let app = http::router(state);
         let index = get_body(&app, "/").await;
@@ -1046,7 +1068,7 @@ mod tests {
         std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
 
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         // Read slugs from the state rather than hardcoding slugify/dedup
         // output — walk order decides which same-stem file carries `-2`.
         let slug_of = |rel: &str| -> String {
@@ -1119,7 +1141,7 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nonly one.\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false).unwrap();
+        let state = build_state(&canon, false, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         assert!(state.single, "single-file mode");
         let slug = state.order[0].clone();
         let app = http::router(state);
@@ -1144,7 +1166,7 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nSee [other](ch2/notes.md).\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false).unwrap();
+        let state = build_state(&canon, false, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let slug = state.order[0].clone();
         let app = http::router(state);
         let page = get_body(&app, &format!("/n/{slug}")).await;
@@ -1166,7 +1188,7 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         assert!(!state.single, "directory mode is not single");
         assert_eq!(state.order.len(), 2);
         assert!(state.notebook("alpha").is_some());
@@ -1218,7 +1240,7 @@ mod tests {
         std::fs::write(&beta, "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "test-token".into(), "testnonce".into()).unwrap();
         let nb_alpha = state.notebook("alpha").unwrap().clone();
         let nb_beta = state.notebook("beta").unwrap().clone();
         let mut sub_alpha = nb_alpha.broadcast.subscribe();

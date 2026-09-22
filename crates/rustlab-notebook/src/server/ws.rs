@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxPath, State};
+use axum::extract::{Path as AxPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rustlab_script::WidgetValue;
@@ -20,19 +20,38 @@ use super::render_loop::RenderRequest;
 /// Axum upgrade handler for `/n/{slug}/ws`. Resolves the notebook by
 /// slug, then hands the socket to [`handle_socket`] bound to that
 /// notebook's broadcast channel. Unknown slug → 404 (no upgrade).
+/// Requires a valid session token (query `?token=` or header) and a
+/// loopback Origin when Origin is present.
 pub async fn ws_upgrade(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    let port = if port == 0 { 8042 } else { port };
+    if headers.get(axum::http::header::ORIGIN).is_some()
+        && !super::auth::origin_allowed(&headers, port)
+    {
+        return (StatusCode::FORBIDDEN, "bad origin").into_response();
+    }
+    let provided = q
+        .get("token")
+        .cloned()
+        .or_else(|| super::auth::token_from_headers(&headers));
+    if !super::auth::token_matches(&state.session_token, provided.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+    }
     match state.notebook(&slug) {
         Some(nb) => {
             let nb = nb.clone();
-            // Clone the render-request sender so the widget_update handler
-            // can ask the coordinator to re-render this notebook.
             let render_tx = state.render_tx.get().cloned();
             let editable = state.editable;
-            ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx, editable))
+            let session_token = state.session_token.clone();
+            ws.on_upgrade(move |socket| {
+                handle_socket(socket, nb, slug, render_tx, editable, session_token)
+            })
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
@@ -57,8 +76,12 @@ async fn handle_socket(
     slug: String,
     render_tx: Option<UnboundedSender<RenderRequest>>,
     editable: bool,
+    session_token: String,
 ) {
     let mut rx = nb.broadcast.subscribe();
+    // Upgrade already required the session token; inbound mutates are
+    // therefore authenticated for this connection.
+    let _session_token = session_token;
 
     loop {
         tokio::select! {
@@ -420,7 +443,11 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   const slugMatch = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
   if (!slugMatch) return;
   const slug = slugMatch[1];
-  const url = `ws://${location.host}/n/${slug}/ws`;
+  const params = new URLSearchParams(location.search);
+  const token = (typeof window.__RL_TOKEN === 'string' && window.__RL_TOKEN)
+    || params.get('token')
+    || '';
+  const url = `ws://${location.host}/n/${slug}/ws?token=${encodeURIComponent(token)}`;
   let ws;
   let reconnectDelay = 500;
   let reconnectTries = 0;

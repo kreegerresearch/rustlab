@@ -58,6 +58,9 @@ fn single_state_with(
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
+        session_token: "test-token".to_string(),
+        csp_nonce: "testnonce".to_string(),
+        bind_port: std::sync::atomic::AtomicU16::new(0),
     })
 }
 
@@ -142,6 +145,7 @@ async fn ws_receives_full_envelope_on_file_save() {
     // ── 3. Bind ephemeral port ────────────────────────────────────
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
 
     // ── 4. Spawn the fs watcher + render coordinator ──────────────
     let (_watcher, _coord_handle) =
@@ -155,7 +159,7 @@ async fn ws_receives_full_envelope_on_file_save() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // ── 6. Open WebSocket client ──────────────────────────────────
-    let ws_url = format!("ws://{}/n/smoke/ws", addr);
+    let ws_url = format!("ws://{}/n/smoke/ws?token=test-token", addr);
     let (mut ws, _resp) = connect_async(&ws_url)
         .await
         .expect("ws connect failed");
@@ -239,12 +243,13 @@ async fn ws_receives_partial_envelope_when_one_of_many_blocks_changes() {
     // Bind, spawn coordinator, serve.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/phase3/ws", addr);
+    let ws_url = format!("ws://{}/n/phase3/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     // Edit only the middle prose block.
@@ -361,12 +366,13 @@ async fn ws_receives_reconcile_envelope_when_blocks_are_inserted() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/recon/ws", addr);
+    let ws_url = format!("ws://{}/n/recon/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -479,12 +485,13 @@ async fn ws_widget_update_triggers_rerender_with_new_value() {
     // Bind, spawn coordinator (publishes the render-request channel), serve.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/widget/ws", addr);
+    let ws_url = format!("ws://{}/n/widget/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     // Drag the slider to 7 → expect 7 * 100 = 700 on the re-render.
@@ -578,12 +585,13 @@ async fn ws_option_update_selects_choice_and_drives_output() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/opt/ws", addr);
+    let ws_url = format!("ws://{}/n/opt/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     ws.send(Message::Text(
@@ -684,12 +692,13 @@ async fn ws_run_block_forces_reexecution_of_unchanged_block() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/run/ws", addr);
+    let ws_url = format!("ws://{}/n/run/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     // ── Round 1: warm the render cache through the server path ──────
@@ -746,12 +755,13 @@ async fn ws_save_run_block_writes_file_and_rerenders() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/save/ws", addr);
+    let ws_url = format!("ws://{}/n/save/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     ws.send(Message::Text(
@@ -816,12 +826,13 @@ async fn ws_save_run_block_rejected_without_editable() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    state.bind_port.store(addr.port(), std::sync::atomic::Ordering::Relaxed);
     let (_watcher, _coord) = render_loop::spawn(&nb_path, false, theme, state.clone()).unwrap();
     let app = router(state.clone());
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let ws_url = format!("ws://{}/n/ro/ws", addr);
+    let ws_url = format!("ws://{}/n/ro/ws?token=test-token", addr);
     let (mut ws, _) = connect_async(&ws_url).await.expect("ws connect failed");
 
     ws.send(Message::Text(

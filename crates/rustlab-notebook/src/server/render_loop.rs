@@ -552,6 +552,9 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            session_token: "test-token".to_string(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(0),
         });
         (state, nb)
     }

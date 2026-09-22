@@ -762,15 +762,15 @@ See `dev/plans/closed/notebook_obsidian_alignment.md` for the design
 rationale (which Obsidian features were adopted and which were skipped).
 
 **PDF dependencies** (`--format pdf` only): `pdflatex` (or `tectonic`) plus
-the LaTeX packages `svg`, `transparent`, `trimspaces`, `pagecolor`, and
-Inkscape on PATH. rustlab invokes `pdflatex -shell-escape` so the `svg`
-package can launch Inkscape to convert each plot SVG to PDF. Install on
-macOS with:
+Inkscape on PATH (and graphicx / amsmath / etc. from a normal TeX Live
+install). Plot SVGs are converted to PDF with a **fixed-argv** Inkscape
+call before TeX runs; `pdflatex`/`tectonic` are **never** invoked with
+`-shell-escape` (see `docs/security.md`). The TeX `svg` / `shell-escape`
+path is gone — do not reintroduce it. Install on macOS with:
 
 ```sh
 brew install --cask inkscape
-sudo tlmgr install svg transparent trimspaces pagecolor
-# or: brew install --cask mactex-no-gui   # bundles all LaTeX packages
+# or: brew install --cask mactex-no-gui   # bundles TeX Live packages
 ```
 
 If HTML renders cleanly but PDF fails, the break is usually environmental

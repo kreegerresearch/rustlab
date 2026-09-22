@@ -15,6 +15,18 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **PDF compile no longer enables TeX shell-escape.** Plot SVGs are
+  converted to PDF via fixed-argv Inkscape before `pdflatex`/`tectonic`
+  runs; `\includegraphics` replaces `\includesvg`/`svg.sty`. Inkscape is
+  required whenever a notebook has SVG plots. Migration: install Inkscape;
+  do not rely on TeX packages that need `-shell-escape`.
+- **`notebook watch` requires a session token for mutates.** The startup
+  URL includes `?token=…`; `POST /save` and WebSocket upgrades reject
+  requests without it (and reject non-loopback `Origin`). See
+  `docs/security.md`.
+- **Notebook file I/O is jailed to the notebook directory.** Embeds,
+  `run` / `load` / `save` / `savefig` / `saveanim` that resolve outside
+  that directory error with `path escapes notebook directory`.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -43,6 +55,10 @@ Workflow Rule 12).
   `name`. Precedence: CLI flags > in-script / REPL commands > rc >
   defaults. Unknown keys warn once; invalid values abort with path + key.
   Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
+- Security hardening for notebooks / watch / PDF / viewer (see
+  `docs/security.md`): CSP on watch pages, HTML-escaped math restore,
+  dangerous URL scheme stripping, viewer Unix socket mode `0600`, and a
+  32 MiB IPC frame size cap.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).

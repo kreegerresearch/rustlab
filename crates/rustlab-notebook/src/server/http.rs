@@ -29,18 +29,25 @@ use rustlab_script::WidgetValue;
 
 use axum::{
     body::Body,
-    extract::{Path as AxPath, State},
-    http::{header, StatusCode},
+    extract::{Path as AxPath, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Router,
 };
 use rustlab_plot::ThemeColors;
+use serde::Deserialize;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, RwLock};
 
+use super::auth;
 use super::diff::{self, Block};
 use super::{assets, ws};
+
+#[derive(Debug, Deserialize, Default)]
+struct TokenQuery {
+    token: Option<String>,
+}
 
 /// Per-notebook live state. In single-file mode the [`ServerState`]
 /// holds exactly one of these; in directory mode, one per discovered
@@ -164,6 +171,13 @@ pub struct ServerState {
     /// WS `widget_update` / `run_block` handlers send requests here
     /// (reusing the same debounce + preemption path as a file save).
     pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<super::render_loop::RenderRequest>>,
+    /// Per-run secret required for mutating endpoints (POST /save, WS
+    /// mutates). Printed once at startup in the URL `?token=`.
+    pub session_token: String,
+    /// CSP `script-src` nonce applied to every served HTML page.
+    pub csp_nonce: String,
+    /// Bound TCP port (set after listen). Used for Origin allowlisting.
+    pub bind_port: std::sync::atomic::AtomicU16,
 }
 
 impl ServerState {
@@ -243,12 +257,15 @@ pub fn router(state: Arc<ServerState>) -> Router {
     r.with_state(state)
 }
 
-async fn root(State(state): State<Arc<ServerState>>) -> Response {
+async fn root(
+    State(state): State<Arc<ServerState>>,
+    Query(q): Query<TokenQuery>,
+) -> Response {
     if let Some(nb) = state.sole() {
-        return Redirect::temporary(&format!("/n/{}", nb.slug)).into_response();
+        let tok = q.token.as_deref().unwrap_or(&state.session_token);
+        let loc = format!("/n/{}?token={tok}", nb.slug);
+        return Redirect::temporary(&loc).into_response();
     }
-    // Directory mode: generated index listing, with the root index.md's
-    // rendered body above it — same page the static build produces.
     let entries: Vec<(String, String)> = state
         .order
         .iter()
@@ -257,14 +274,9 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         .collect();
     let body = state.index_body.read().await;
     let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
-    // Inject the WS client so a future "index refresh on add/remove"
-    // has a socket to push over; harmless today (no slug → no connect).
     let html = ws::inject_ws_client(&html);
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
-        .into_response()
+    let html = auth::prepare_served_html(&html, &state.csp_nonce, &state.session_token);
+    html_response(&state, html)
 }
 
 /// Phase 1–4 served the lone notebook at `/notebook.html`. Keep that
@@ -280,13 +292,57 @@ async fn notebook_page(
     match state.notebook(&slug) {
         Some(nb) => {
             let html = nb.html.read().await.clone();
-            (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                html,
-            )
-                .into_response()
+            let html = auth::prepare_served_html(&html, &state.csp_nonce, &state.session_token);
+            html_response(&state, html)
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
+    }
+}
+
+fn html_response(state: &ServerState, html: String) -> Response {
+    let csp = auth::csp_header(&state.csp_nonce);
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (header::HeaderName::from_static("content-security-policy"), csp),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+async fn save_source(
+    State(state): State<Arc<ServerState>>,
+    AxPath(slug): AxPath<String>,
+    Query(q): Query<TokenQuery>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    let port = if port == 0 { 8042 } else { port };
+    // Reject non-loopback Origin when present.
+    if headers.get(header::ORIGIN).is_some() && !auth::origin_allowed(&headers, port) {
+        return (StatusCode::FORBIDDEN, "bad origin").into_response();
+    }
+    let provided = q
+        .token
+        .clone()
+        .or_else(|| auth::token_from_headers(&headers));
+    if !auth::token_matches(&state.session_token, provided.as_deref()) {
+        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+    }
+
+    let Some(nb) = state.notebook(&slug) else {
+        return (StatusCode::NOT_FOUND, "notebook not found").into_response();
+    };
+    let _guard = nb.save_lock.lock().await;
+    match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
+        Ok(()) => (StatusCode::OK, "saved").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write error: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -306,30 +362,6 @@ async fn raw_source(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("read error: {e}"),
-        )
-            .into_response(),
-    }
-}
-
-/// `POST /save/{slug}` — write the request body back to the notebook's
-/// source `.md`. Only mounted under `--editable`. The fs watcher then
-/// picks up the change and pushes a re-render to the page.
-async fn save_source(
-    State(state): State<Arc<ServerState>>,
-    AxPath(slug): AxPath<String>,
-    body: String,
-) -> Response {
-    let Some(nb) = state.notebook(&slug) else {
-        return (StatusCode::NOT_FOUND, "notebook not found").into_response();
-    };
-    // Serialise with the WS cell editor's read-splice-write so a
-    // concurrent cell save can't interleave with this whole-doc write.
-    let _guard = nb.save_lock.lock().await;
-    match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
-        Ok(()) => (StatusCode::OK, "saved").into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write error: {e}"),
         )
             .into_response(),
     }
@@ -422,6 +454,9 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            session_token: "test-token".to_string(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
         })
     }
 
@@ -447,7 +482,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/n/nb");
+        let loc = res.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+        assert!(loc.starts_with("/n/nb"), "loc={loc}");
+        assert!(loc.contains("token="), "loc={loc}");
     }
 
     #[tokio::test]
@@ -464,7 +501,9 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
-        assert_eq!(body.as_ref(), b"<h1>hello</h1>");
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("<h1>hello</h1>"));
+        assert!(s.contains("__RL_TOKEN"));
     }
 
     #[tokio::test]
@@ -544,13 +583,17 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            session_token: "test-token".to_string(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(0),
         });
-        let app = router(editable_state);
+        let app = router(editable_state.clone());
         let res = app
             .oneshot(
                 axum::http::Request::builder()
                     .method("POST")
-                    .uri("/save/nb")
+                    .uri("/save/nb?token=test-token")
+                    .header("Origin", "http://127.0.0.1:8042")
                     .body(Body::from("# edited\n"))
                     .unwrap(),
             )
@@ -559,6 +602,121 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let on_disk = std::fs::read_to_string(&src).unwrap();
         assert_eq!(on_disk, "# edited\n");
+    }
+
+    #[tokio::test]
+    async fn save_route_rejects_missing_token() {
+        let state = single_state("<h1>hello</h1>");
+        let src = state.notebook("nb").unwrap().source_path.clone();
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let editable_state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            session_token: "test-token".to_string(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(0),
+        });
+        let app = router(editable_state);
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/save/nb")
+                    .header("Origin", "http://127.0.0.1:8042")
+                    .body(Body::from("# edited\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn save_route_rejects_bad_origin() {
+        let state = single_state("<h1>hello</h1>");
+        let src = state.notebook("nb").unwrap().source_path.clone();
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let editable_state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            session_token: "test-token".to_string(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(0),
+        });
+        let app = router(editable_state);
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/save/nb?token=test-token")
+                    .header("Origin", "http://evil.example")
+                    .body(Body::from("# edited\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn notebook_page_sets_csp_header() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/n/nb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let csp = res
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("nonce-testnonce"));
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("hello"));
+        assert!(s.contains("__RL_TOKEN"));
     }
 
     #[tokio::test]

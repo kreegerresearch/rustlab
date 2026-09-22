@@ -4619,6 +4619,8 @@ fn builtin_plotdb(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_savefig(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("savefig", &args, 1)?;
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
+    let path = path.to_string_lossy();
     render_figure_file(&path).map_err(|e| ScriptError::runtime(e.to_string()))?;
     // The figure reached a file — any pending "not rendered to the
     // terminal" note is moot.
@@ -4643,6 +4645,8 @@ fn builtin_frame(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("saveanim", &args, 1, 2)?;
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
+    let path = path.to_string_lossy().into_owned();
     let fps = if args.len() == 2 {
         match &args[1] {
             Value::Scalar(n) => *n,
@@ -4713,6 +4717,8 @@ fn builtin_figure(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError
         } else {
             // String arg → new HTML figure
             let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
+            let path = path.to_string_lossy();
             let id = rustlab_plot::figure_new_html(&path);
             eprintln!("HTML figure active: {}", path);
             id
@@ -6849,6 +6855,8 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
+    let path = path.to_string_lossy().into_owned();
 
     if path.ends_with(".npz") {
         let pairs = &args[1..];
@@ -6920,6 +6928,8 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("load", &args, 1, 2)?;
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
+    let path = path.to_string_lossy().into_owned();
 
     if path.ends_with(".npz") {
         if args.len() != 2 {

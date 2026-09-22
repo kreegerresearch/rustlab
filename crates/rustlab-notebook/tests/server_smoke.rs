@@ -80,6 +80,9 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
+        session_token: "test-token".to_string(),
+        csp_nonce: "testnonce".to_string(),
+        bind_port: std::sync::atomic::AtomicU16::new(0),
     });
     (state, src_dir, plot_dir)
 }
@@ -153,7 +156,9 @@ async fn root_redirects_to_sole_notebook() {
         .unwrap();
 
     assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-    assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/n/smoke");
+    let loc = res.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+    assert!(loc.starts_with("/n/smoke"), "loc={loc}");
+    assert!(loc.contains("token="), "redirect must carry session token: {loc}");
 }
 
 #[tokio::test]
