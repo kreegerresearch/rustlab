@@ -17,16 +17,17 @@ use std::path::PathBuf;
         Examples:\n  \
         rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
         rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
-        rustlab-notebook render analysis.md -f pdf             # → analysis.pdf\n  \
+        rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
         rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
-        rustlab-notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
         rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
         rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-        rustlab-notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
+        rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
         -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
-        -t, --theme  <THEME>   dark (default; ~/.rustlabrc [notebook] theme), light\n      \
+        -t, --theme  <THEME>   HTML/watch theme: dark (default; ~/.rustlabrc\n                             \
+                               [notebook] theme) or light. LaTeX and PDF are\n                             \
+                               always Catppuccin Latte on white paper.\n      \
             --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
                                sibling .html so Obsidian renders the interactive\n                                   \
                                Plotly view inline. GitHub strips iframes, so the\n                                   \
@@ -34,7 +35,7 @@ use std::path::PathBuf;
         Formats:\n  \
         html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
         latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-        pdf       Compile LaTeX to PDF (requires pdflatex or tectonic)\n  \
+        pdf       Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n  \
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
                   committing alongside source, browsable on GitHub\n\n\
         Themes:\n  \
@@ -72,20 +73,20 @@ enum Command {
             Examples:\n  \
             rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
             rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
-            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf\n  \
+            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
             rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
-            rustlab-notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab-notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
+            rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf\n  \
-            -t, --theme  <THEME>   dark (default; ~/.rustlabrc [notebook] theme), light\n\n\
+            -t, --theme  <THEME>   HTML/watch theme: dark (default) or light.\n                                 \
+                                   LaTeX and PDF are always Latte on white paper.\n\n\
             Formats:\n  \
             html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-            pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
+            pdf    Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n\n\
             Themes:\n  \
             dark   Catppuccin Mocha — dark background, light text (default)\n  \
             light  Catppuccin Latte — light background, dark text"
@@ -130,7 +131,9 @@ enum Command {
         /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Color theme: dark (default; overridable via ~/.rustlabrc), light
+        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
+        /// or light. LaTeX and PDF ignore this and always use Catppuccin
+        /// Latte on white paper.
         #[arg(short, long, value_enum)]
         theme: Option<CliTheme>,
         /// Obsidian-friendly markdown output (see `render --obsidian` for details)
@@ -216,7 +219,9 @@ enum Command {
         /// Output format: html (default), latex, pdf, markdown
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
-        /// Color theme: dark (default; overridable via ~/.rustlabrc), light
+        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
+        /// or light. LaTeX and PDF ignore this and always use Catppuccin
+        /// Latte on white paper.
         #[arg(short, long, value_enum)]
         theme: Option<CliTheme>,
         /// Index page title (directory mode only). Precedence:

@@ -15,6 +15,18 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **LaTeX and PDF are always Catppuccin Latte on white paper.** `-t` and
+  `~/.rustlabrc` `[notebook] theme` still theme HTML and `notebook watch`.
+  They no longer paint a dark PDF page. Body text is `#4c4f69`; headings
+  are unnumbered and colored (H1 mauve, H2 blue, H3 teal); the title has
+  no date. Source, printed output, and errors are breakable panels with
+  a mauve left rule and a small `rustlab` label above the source (omitted
+  when `<!-- hide -->` hides it). Callouts and exercises are cards; a
+  solution is printed, not collapsed. `<!-- grid: N -->` places plots in
+  a row. Mermaid figures stay with their heading. Migration: do not pass
+  `-t dark` expecting a dark PDF; install a normal TeX Live (the new
+  packages are `tcolorbox`, `fancyvrb`, `sectsty`, `float`, `lmodern`,
+  and `xcolor`'s `table` option). Shell-escape is still not used.
 - **PDF compile no longer enables TeX shell-escape.** Plot SVGs are
   converted to PDF via fixed-argv Inkscape before `pdflatex`/`tectonic`
   runs; `\includegraphics` replaces `\includesvg`/`svg.sty`. Inkscape is
@@ -50,14 +62,15 @@ Workflow Rule 12).
 - Notebook `` ```rustlab `` cells are syntax-colored in HTML (including
   `notebook watch` live updates) and in LaTeX/PDF. Highlighting follows
   the rustlab lexer (`#` and `%` comments, keywords, numbers, strings,
-  operators, call-like names) and uses the active Catppuccin theme.
+  operators, call-like names). HTML uses the active Catppuccin theme;
+  LaTeX/PDF always uses Latte (see Breaking, above).
   PDF color is `\textcolor` with escaped tokens (not `minted`). Markdown
   export still emits plain `` ```rustlab `` fences. Printed output is
-  not highlighted. In HTML, `notebook watch`, and LaTeX/PDF the source
-  is indented together with its printed output and errors, with a
-  theme-accent left rule. In LaTeX/PDF that rule is drawn on each
-  source and output line, including when a cell breaks across pages,
-  and the cell has a small gap above and below it. In HTML and
+  not highlighted. In HTML and `notebook watch` the source, printed
+  output, and errors share one indented block with a theme-accent left
+  rule. In LaTeX/PDF they are separate breakable panels; the accent
+  rule is the panel's left edge and continues when a panel breaks
+  across pages. In HTML and
   `notebook watch` the source alone is an open disclosure (a `rustlab`
   summary); collapsing it leaves output, errors, and plots visible.
   LaTeX/PDF always shows the source expanded. Plots and
