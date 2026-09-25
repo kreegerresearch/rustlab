@@ -559,8 +559,11 @@ Each code block produces up to three zones in the output:
 
 In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the
-theme accent color. The inline cell editor sits in that same block, so
-it lines up with the source. LaTeX/PDF uses the same grouping: a list
+theme accent color. The source alone is an open `<details>`
+(`rustlab` summary); collapsing it leaves that summary and the accent
+rule, and leaves printed output, errors, and plots visible. The inline
+cell editor sits inside that disclosure, so it lines up with the source.
+LaTeX/PDF always shows the source expanded. It uses the same grouping: a list
 environment (`rlcell`) indents the colored source and the verbatim
 output/error blocks, and draws the accent rule with `\textcolor` and a
 `\vrule` on each of those lines. The list breaks across pages, and the
@@ -825,7 +828,9 @@ from the hidden block (if any) still appears.
 
 Wraps a code block's output (text, errors, and plots) in a collapsible
 `<details>` disclosure widget with the given summary label. The source
-code remains visible above the widget, in its own indented cell. Printed
+stays above that widget, in its own indented cell, and can still be
+collapsed on its own. The two disclosures are siblings: the source
+disclosure is not nested inside the author's. Printed
 text and errors inside the disclosure use the same indent and left rule;
 plots stay full width inside the disclosure. Useful for long console
 output or galleries of diagnostic plots that would otherwise dominate
@@ -1159,7 +1164,8 @@ Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
 Catppuccin hex values as HTML. Each token is LaTeX-escaped. The colored
 source and its verbatim output/error blocks sit in one `rlcell` list
 (left indent, an accent `\vrule` on each source and output line, and a
-small gap above and below the cell). Figures follow that environment
+small gap above and below the cell). PDF does not collapse the source.
+Figures follow that environment
 at full text width. This path does not use `minted`
 (that package needs TeX shell-escape, which PDF builds do not enable)
 and does not add a package for the indent.

@@ -1363,6 +1363,10 @@ mod tests {
         assert!(tex.contains("\\rlverbatim"));
         assert!(!tex.contains("minted"));
         assert!(!tex.contains("shell-escape"));
+        assert!(
+            !tex.contains("<details") && !tex.contains("rl-src"),
+            "HTML source disclosure must not leak into LaTeX"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

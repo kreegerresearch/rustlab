@@ -57,7 +57,10 @@ Workflow Rule 12).
   is indented together with its printed output and errors, with a
   theme-accent left rule. In LaTeX/PDF that rule is drawn on each
   source and output line, including when a cell breaks across pages,
-  and the cell has a small gap above and below it. Plots and
+  and the cell has a small gap above and below it. In HTML and
+  `notebook watch` the source alone is an open disclosure (a `rustlab`
+  summary); collapsing it leaves output, errors, and plots visible.
+  LaTeX/PDF always shows the source expanded. Plots and
   animations stay full width.
 - Optional user-global settings file. rustlab reads
   `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,

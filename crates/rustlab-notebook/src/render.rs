@@ -443,9 +443,12 @@ pub fn render_html(
                 body.push_str("<div class=\"code-block\">\n");
 
                 // Source, printed text, and errors share one indent (`.rl-cell`).
+                // The source alone sits in `<details class="rl-src" open>` so
+                // a reader can collapse it; output and errors stay visible.
                 // Plots are emitted afterward, outside that wrapper, so they
-                // stay full width. `<!-- details: -->` keeps the source
-                // visible and puts output, errors, and plots in the
+                // stay full width. `<!-- details: -->` keeps that source
+                // disclosure above the author's disclosure (not nested inside
+                // it) and puts output, errors, and plots in the author's
                 // disclosure; the output inside it uses the same `.rl-cell`.
                 let trimmed_output = text_output.trim();
                 let show_source = !hidden;
@@ -453,7 +456,8 @@ pub fn render_html(
                 let show_error = error.is_some();
                 let source_html = if show_source {
                     format!(
-                        "<pre class=\"source\"><code>{}</code></pre>\n",
+                        "<details class=\"rl-src\" open>\n<summary>rustlab</summary>\n\
+                         <pre class=\"source\"><code>{}</code></pre>\n</details>\n",
                         highlight_rustlab(source)
                     )
                 } else {
@@ -742,6 +746,10 @@ pub fn render_html(
   /* Height of the fixed topbar; the sidebar and main both clear it. */
   :root {{
     --topbar-h: 2.6rem;
+    --rl-accent: {accent_primary};
+    --rl-text-dim: {text_dim};
+    --rl-code-bg: {code_bg};
+    --rl-border: {border};
   }}
   /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
@@ -988,6 +996,27 @@ pub fn render_html(
     margin: 0.2rem 0 0.35rem 0.15rem;
     padding: 0.05rem 0 0.05rem 0.85rem;
     border-left: 3px solid {accent_primary};
+  }}
+  /* Source only. Open by default; collapsing leaves the summary, and
+     the `.rl-cell` rule still marks output that follows. */
+  .rl-src > summary {{
+    cursor: pointer;
+    list-style: none;
+    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--rl-text-dim);
+    padding: 0.1rem 0 0.35rem;
+    user-select: none;
+  }}
+  .rl-src > summary::-webkit-details-marker {{ display: none; }}
+  .rl-src > summary::marker {{ content: ""; }}
+  .rl-src > summary::before {{
+    content: "▸";
+    display: inline-block;
+    width: 1.1em;
+    color: var(--rl-accent);
+  }}
+  .rl-src[open] > summary::before {{
+    content: "▾";
   }}
   .source {{
     background: {code_bg};
@@ -3568,7 +3597,118 @@ mod tests {
             assert!(cell.contains("class=\"error\""), "{cell}");
             assert!(cell.contains("ans = 1  2"), "{cell}");
             assert!(!cell.contains("<img"), "{cell}");
+            assert!(
+                html.contains("--rl-accent:"),
+                "summary caret uses the theme accent token"
+            );
         }
+    }
+
+    /// Source is an open disclosure inside `.rl-cell`. Output, errors, and
+    /// plots stay outside that disclosure.
+    #[test]
+    fn render_html_source_is_open_details_output_is_not() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let blocks = vec![Rendered::Code {
+            source: "x = 1:2\nplot(x)".to_string(),
+            text_output: "ans = 1  2".to_string(),
+            error: Some("plot warning".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+        let plot_at = html
+            .find("class=\"plot-container\"")
+            .expect("plot-container");
+        let cell = &html[cell_at..plot_at];
+        let open_at = cell
+            .find("<details class=\"rl-src\" open>")
+            .expect("open source disclosure");
+        let summary_at = cell.find("<summary>rustlab</summary>").expect("summary");
+        let close_at = cell.find("</details>").expect("details close");
+        assert!(open_at < summary_at && summary_at < close_at);
+        let inside = &cell[open_at..close_at];
+        assert!(inside.contains("class=\"source\""), "{inside}");
+        assert!(
+            inside.contains("syn-"),
+            "highlight spans stay inside the source disclosure: {inside}"
+        );
+        assert!(!inside.contains("class=\"output\""), "{inside}");
+        assert!(!inside.contains("class=\"error\""), "{inside}");
+        assert!(!inside.contains("plot-container"), "{inside}");
+        let after = &cell[close_at..];
+        assert!(after.contains("class=\"output\""), "{after}");
+        assert!(after.contains("class=\"error\""), "{after}");
+        assert!(after.contains("ans = 1  2"), "{after}");
+        assert!(!html[plot_at..].contains("class=\"rl-src\""));
+    }
+
+    /// `<!-- details: -->` still wraps output and plots in the author's
+    /// disclosure. The source disclosure sits above it and is not nested.
+    #[test]
+    fn render_html_details_directive_does_not_nest_source() {
+        let blocks = vec![Rendered::Code {
+            source: "x = 1".to_string(),
+            text_output: "ans = 1".to_string(),
+            error: Some("warn".to_string()),
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: Some("Show sweep".to_string()),
+            grid_cols: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let src_at = html
+            .find("<details class=\"rl-src\" open>")
+            .expect("source disclosure");
+        let author_at = html
+            .find("<details class=\"code-details\">")
+            .expect("author disclosure");
+        assert!(
+            src_at < author_at,
+            "source disclosure stays above the author's"
+        );
+        let author = &html[author_at..];
+        let author_end = author.find("</details>").expect("author close");
+        let author_body = &author[..author_end];
+        assert!(author_body.contains("<summary>Show sweep</summary>"));
+        assert!(author_body.contains("class=\"output\""));
+        assert!(author_body.contains("ans = 1"));
+        assert!(author_body.contains("class=\"error\""));
+        assert!(!author_body.contains("class=\"rl-src\""));
+        assert!(!author_body.contains("class=\"source\""));
+        let source_body = &html[src_at..author_at];
+        assert!(source_body.contains("class=\"source\""));
+        assert!(!source_body.contains("class=\"output\""));
     }
 
     #[test]
@@ -3620,6 +3760,7 @@ mod tests {
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
+        assert!(!html.contains("class=\"rl-src\""));
         // But output should still appear
         assert!(html.contains("ans = 42"));
     }

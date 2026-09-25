@@ -83,7 +83,7 @@ fn cell_style(c: &ThemeColors) -> String {
   main section.rl-block.rl-cell-editing {{
     outline: 1px solid {border}; outline-offset: 3px; border-radius: 2px;
   }}
-  /* Replaces pre.source inside .rl-cell, so it shares that indent and rule. */
+  /* Replaces pre.source inside details.rl-src, so it shares the indent. */
   .rl-cell .rl-cell-editor {{ margin-left: 0; margin-right: 0; }}
   .rl-cell-editor {{ border: 1px solid {border}; border-radius: 4px; margin: 4px 0; }}
   .rl-cell-editor .CodeMirror {{
@@ -150,6 +150,31 @@ fn cell_script(cell_edit: bool) -> String {
       bar.appendChild(err);
       sec.prepend(bar);
     }});
+    restoreClosedSrc();
+  }}
+
+  // Source disclosures the reader collapsed, keyed by executable ordinal.
+  // Partial and full updates replace section HTML, which always arrives
+  // open; decorate puts the closed ones back. Reconcile reuses unchanged
+  // sections, so those keep the attribute on their own. A structural edit
+  // that renumbers cells can reattach a closed flag to a different ordinal.
+  const closedSrc = new Set();
+  document.addEventListener('toggle', (ev) => {{
+    const d = ev.target;
+    if (!d || !d.classList || !d.classList.contains('rl-src')) return;
+    const sec = d.closest('main section.rl-block[data-code-idx]');
+    if (!sec) return;
+    const idx = sec.getAttribute('data-code-idx');
+    if (d.open) closedSrc.delete(idx);
+    else closedSrc.add(idx);
+    if (d.open && ed && ed.cm && d.contains(ed.host)) ed.cm.refresh();
+  }}, true);
+  function restoreClosedSrc() {{
+    closedSrc.forEach((idx) => {{
+      const d = document.querySelector(
+        'main section.rl-block[data-code-idx="' + idx + '"] details.rl-src');
+      if (d && d.open) d.open = false;
+    }});
   }}
 
   function sectionFor(el) {{
@@ -209,6 +234,11 @@ fn cell_script(cell_edit: bool) -> String {
     }}
     const pre = sec.querySelector('pre.source');
     if (!pre) return;
+    // The editor is inserted inside the source disclosure. Open it first
+    // so CodeMirror measures a visible box; collapsing and expanding
+    // later refreshes via the toggle listener above.
+    const disclosure = pre.closest('details.rl-src');
+    if (disclosure && !disclosure.open) disclosure.open = true;
     // The highlighted <pre> round-trips to the exact block source via
     // textContent (spans strip, entities unescape — pinned by a unit
     // test on highlight_rustlab).
@@ -381,6 +411,18 @@ mod tests {
         let out = inject_cell_client("<p>bare</p>", Theme::Dark.colors(), false);
         assert!(out.contains("rl-cell-bar"));
         assert!(out.contains("<p>bare</p>"));
+    }
+
+    #[test]
+    fn source_disclosure_state_and_editor_refresh_are_in_the_script() {
+        let out = page(true);
+        assert!(out.contains("details.rl-src"), "toggle target");
+        assert!(out.contains("closedSrc"), "collapsed ordinals");
+        assert!(out.contains("ed.cm.refresh"), "refresh when revealed");
+        assert!(
+            out.contains("disclosure.open = true"),
+            "edit opens the source"
+        );
     }
 
     /// The generated script must be syntactically valid JS. Uses
