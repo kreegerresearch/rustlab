@@ -62,17 +62,19 @@ pub fn render_latex(
                 }
 
                 // Text output. No extra `quote` indent — the cell list is
-                // the shared left edge.
+                // the shared left edge. `\rlverbatim` keeps the accent rule;
+                // `\@xverbatim` still requires the `\end{verbatim}` string.
                 if !trimmed.is_empty() {
-                    body.push_str("\\ttfamily\\small\n\\begin{verbatim}\n");
+                    body.push_str("\\rlverbatim\n");
                     body.push_str(trimmed);
                     body.push_str("\n\\end{verbatim}\n\n");
                 }
 
-                // Error
+                // Error. The color group tints the message; the rule is
+                // `\textcolor{rlrule}` so it stays the accent color.
                 if let Some(err) = error {
                     body.push_str(&format!(
-                        "{{\\color[HTML]{{{error_hex}}}\\ttfamily\\small\n\\begin{{verbatim}}\n",
+                        "{{\\color[HTML]{{{error_hex}}}\n\\rlverbatim\n",
                         error_hex = &theme.error_text[1..], // strip leading '#'
                     ));
                     body.push_str(err);
@@ -190,32 +192,58 @@ pub fn render_latex(
         html_hex(theme.syn_comment),
         html_hex(theme.syn_operator),
     );
-    // List indent plus a per-paragraph accent rule. `\everypar` draws a
-    // short `\vrule` on each line (source uses `\obeylines`; `verbatim`
-    // keeps the hook). Segments meet, and the list itself breaks across
-    // pages — the cell is not boxed. No extra package, no shell-escape.
+    // List indent plus a per-line accent rule. Source is not a nested
+    // list (`flushleft` would clear `\everypar`). Output uses
+    // `\rlverbatim`, which puts the same hook back after `\@verbatim`.
+    // The rule is `\smash`ed so it overlaps the next line instead of
+    // opening a `\lineskip` gap. The list breaks across pages. Space
+    // above and below comes from `\addvspace`, not from `\topsep`.
+    // No extra package, no shell-escape.
     let cell_env = format!(
         r#"\definecolor{{rlrule}}{{HTML}}{{{rule}}}
 \makeatletter
+\newcommand{{\rlhook}}{{%
+  \if@inlabel
+    \global\@inlabelfalse
+    {{\setbox\z@\lastbox\ifvoid\z@\kern-\itemindent\fi}}%
+    \box\@labels
+  \fi
+  \global\@newlistfalse
+  \llap{{\textcolor{{rlrule}}{{\smash{{\vrule width 2pt height 0.8\baselineskip depth 0.55\baselineskip}}}}\hspace{{0.5em}}}}%
+  \everypar{{\rlhook}}%
+}}
 \newenvironment{{rlcell}}{{%
+  \par\addvspace{{0.85em}}%
   \list{{}}{{%
     \setlength{{\leftmargin}}{{1.75em}}%
     \setlength{{\rightmargin}}{{0pt}}%
     \setlength{{\listparindent}}{{0pt}}%
     \setlength{{\itemindent}}{{0pt}}%
-    \setlength{{\parsep}}{{0.3em}}%
-    \setlength{{\topsep}}{{0.45em}}%
+    \setlength{{\parsep}}{{0pt}}%
+    \setlength{{\topsep}}{{0pt}}%
     \setlength{{\partopsep}}{{0pt}}%
-    \setlength{{\itemsep}}{{0.25em}}%
+    \setlength{{\itemsep}}{{0pt}}%
+    \setlength{{\parskip}}{{0pt}}%
     \setlength{{\labelwidth}}{{0pt}}%
     \setlength{{\labelsep}}{{0pt}}%
   }}%
   \item\relax
   \@newlistfalse
-  \everypar{{%
-    \llap{{\textcolor{{rlrule}}{{\vrule width 1.6pt height 0.95\baselineskip depth 0.45\baselineskip}}\hspace{{0.6em}}}}%
-  }}%
-}}{{\endlist}}
+  \everypar{{\rlhook}}%
+}}{{%
+  \endlist
+  \addvspace{{0.85em}}%
+}}
+\def\rlverbatim{{%
+  \begingroup
+  \def\@currenvir{{verbatim}}%
+  \@verbatim
+  \small
+  \everypar{{\rlhook}}%
+  \frenchspacing
+  \@vobeyspaces
+  \@xverbatim
+}}
 \makeatother
 "#,
         rule = html_hex(theme.accent_primary),
@@ -568,9 +596,12 @@ fn html_hex(color: &str) -> &str {
 /// inside `verbatim`). No `minted` / shell-escape.
 fn emit_highlighted_source(source: &str) -> String {
     use rustlab_script::highlight::HlKind;
+    // Not `flushleft`: that trivlist clears `\everypar`, which drops
+    // the cell's accent rule. Ragged right plus `\obeylines` keeps one
+    // paragraph per source line so the rule hook fires on each of them.
     let mut out = String::from(
-        "\\begin{flushleft}\n\
-         \\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}\\obeylines\\obeyspaces\n",
+        "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
+         \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
     );
     for span in rustlab_script::highlight::highlight(source) {
         let text = &source[span.start..span.end];
@@ -596,7 +627,7 @@ fn emit_highlighted_source(source: &str) -> String {
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str("\\end{flushleft}\n\n");
+    out.push_str("}\n\n");
     out
 }
 
@@ -1157,7 +1188,9 @@ mod tests {
             &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\begin{rlcell}"));
-        assert!(tex.contains("\\begin{verbatim}"));
+        assert!(tex.contains("\\rlverbatim"));
+        assert!(tex.contains("\\end{verbatim}"));
+        assert!(tex.contains("\\addvspace{0.85em}"));
         assert!(tex.contains("ans = 1"));
         let cell = tex
             .split("\\begin{rlcell}")
@@ -1218,7 +1251,8 @@ mod tests {
         assert!(tex.contains("\\#"), "{tex}");
         assert!(tex.contains("\\_"), "{tex}");
         assert!(tex.contains("\\%"), "{tex}");
-        assert!(tex.contains("\\end{flushleft}"), "{tex}");
+        assert!(tex.contains("\\obeylines"), "{tex}");
+        assert!(!tex.contains("flushleft"), "{tex}");
         assert!(!tex.contains("\\begin{verbatim}"), "{tex}");
         assert!(!tex.contains("minted"), "{tex}");
         assert!(!tex.contains("shell-escape"), "{tex}");
@@ -1324,6 +1358,9 @@ mod tests {
         );
         assert!(tex.contains("\\definecolor{rlrule}{HTML}{"));
         assert!(tex.contains("\\list{}{"));
+        assert!(tex.contains("\\newcommand{\\rlhook}"));
+        assert!(tex.contains("\\addvspace{0.85em}"));
+        assert!(tex.contains("\\rlverbatim"));
         assert!(!tex.contains("minted"));
         assert!(!tex.contains("shell-escape"));
         let _ = std::fs::remove_dir_all(&dir);

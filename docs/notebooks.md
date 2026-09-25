@@ -561,10 +561,11 @@ In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the
 theme accent color. The inline cell editor sits in that same block, so
 it lines up with the source. LaTeX/PDF uses the same grouping: a list
-environment (`rlcell`) indents the colored source and the `verbatim`
+environment (`rlcell`) indents the colored source and the verbatim
 output/error blocks, and draws the accent rule with `\textcolor` and a
-`\vrule`. The list breaks across pages. Plots and animations stay full
-width, outside that indent, in every format.
+`\vrule` on each of those lines. The list breaks across pages, and the
+cell has a small gap above and below it. Plots and animations stay
+full width, outside that indent, in every format.
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
@@ -1156,9 +1157,10 @@ light text, matching the Catppuccin Mocha palette.
 Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
 `rlnum`, `rlstr`, `rlcom`, `rlop`), using the same token classes and
 Catppuccin hex values as HTML. Each token is LaTeX-escaped. The colored
-source and its `verbatim` output/error blocks sit in one `rlcell` list
-(left indent plus an accent `\vrule` from the theme). Figures follow
-that environment at full text width. This path does not use `minted`
+source and its verbatim output/error blocks sit in one `rlcell` list
+(left indent, an accent `\vrule` on each source and output line, and a
+small gap above and below the cell). Figures follow that environment
+at full text width. This path does not use `minted`
 (that package needs TeX shell-escape, which PDF builds do not enable)
 and does not add a package for the indent.
 
