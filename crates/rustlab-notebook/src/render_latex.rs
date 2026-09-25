@@ -42,8 +42,16 @@ pub fn render_latex(
                 details,
                 grid_cols,
             } => {
-                // Source code (unless hidden). Colored with \textcolor —
-                // never minted, which would need shell-escape.
+                // Source, printed text, and errors share one list indent
+                // (`rlcell`) with a colored left rule. The list breaks
+                // across pages. Plots are emitted after `\end{rlcell}`.
+                let trimmed = text_output.trim();
+                let group = !hidden || !trimmed.is_empty() || error.is_some() || details.is_some();
+                if group {
+                    body.push_str("\\begin{rlcell}\n");
+                }
+                // Colored with \textcolor — never minted, which would need
+                // shell-escape.
                 if !hidden {
                     body.push_str(&emit_highlighted_source(source));
                 }
@@ -53,22 +61,25 @@ pub fn render_latex(
                     body.push_str(&format!("\\paragraph{{{}}}\n\n", escape_latex(title)));
                 }
 
-                // Text output
-                let trimmed = text_output.trim();
+                // Text output. No extra `quote` indent — the cell list is
+                // the shared left edge.
                 if !trimmed.is_empty() {
-                    body.push_str("\\begin{quote}\n\\ttfamily\\small\n\\begin{verbatim}\n");
+                    body.push_str("\\ttfamily\\small\n\\begin{verbatim}\n");
                     body.push_str(trimmed);
-                    body.push_str("\n\\end{verbatim}\n\\end{quote}\n\n");
+                    body.push_str("\n\\end{verbatim}\n\n");
                 }
 
                 // Error
                 if let Some(err) = error {
                     body.push_str(&format!(
-                        "\\begin{{quote}}\n{{\\color[HTML]{{{error_hex}}}\\ttfamily\\small\n\\begin{{verbatim}}\n",
+                        "{{\\color[HTML]{{{error_hex}}}\\ttfamily\\small\n\\begin{{verbatim}}\n",
                         error_hex = &theme.error_text[1..], // strip leading '#'
                     ));
                     body.push_str(err);
-                    body.push_str("\n\\end{verbatim}\n}\\end{quote}\n\n");
+                    body.push_str("\n\\end{verbatim}\n}\n\n");
+                }
+                if group {
+                    body.push_str("\\end{rlcell}\n\n");
                 }
 
                 // Plots (one per savefig call, or one final snapshot)
@@ -178,6 +189,36 @@ pub fn render_latex(
         html_hex(theme.syn_string),
         html_hex(theme.syn_comment),
         html_hex(theme.syn_operator),
+    );
+    // List indent plus a per-paragraph accent rule. `\everypar` draws a
+    // short `\vrule` on each line (source uses `\obeylines`; `verbatim`
+    // keeps the hook). Segments meet, and the list itself breaks across
+    // pages — the cell is not boxed. No extra package, no shell-escape.
+    let cell_env = format!(
+        r#"\definecolor{{rlrule}}{{HTML}}{{{rule}}}
+\makeatletter
+\newenvironment{{rlcell}}{{%
+  \list{{}}{{%
+    \setlength{{\leftmargin}}{{1.75em}}%
+    \setlength{{\rightmargin}}{{0pt}}%
+    \setlength{{\listparindent}}{{0pt}}%
+    \setlength{{\itemindent}}{{0pt}}%
+    \setlength{{\parsep}}{{0.3em}}%
+    \setlength{{\topsep}}{{0.45em}}%
+    \setlength{{\partopsep}}{{0pt}}%
+    \setlength{{\itemsep}}{{0.25em}}%
+    \setlength{{\labelwidth}}{{0pt}}%
+    \setlength{{\labelsep}}{{0pt}}%
+  }}%
+  \item\relax
+  \@newlistfalse
+  \everypar{{%
+    \llap{{\textcolor{{rlrule}}{{\vrule width 1.6pt height 0.95\baselineskip depth 0.45\baselineskip}}\hspace{{0.6em}}}}%
+  }}%
+}}{{\endlist}}
+\makeatother
+"#,
+        rule = html_hex(theme.accent_primary),
     );
 
     let is_dark = theme as *const ThemeColors == Theme::Dark.colors() as *const ThemeColors;
@@ -324,7 +365,7 @@ pub fn render_latex(
 \newunicodechar{{┴}}{{+}}
 \newunicodechar{{┼}}{{+}}
 \usepackage{{xcolor}}
-{syntax_colors}\usepackage{{booktabs}}
+{syntax_colors}{cell_env}\usepackage{{booktabs}}
 \usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
 \hypersetup{{colorlinks=true,linkcolor=[HTML]{{{link_hex}}},urlcolor=[HTML]{{{link_hex}}}}}
@@ -1115,8 +1156,17 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(tex.contains("\\begin{quote}"));
+        assert!(tex.contains("\\begin{rlcell}"));
+        assert!(tex.contains("\\begin{verbatim}"));
         assert!(tex.contains("ans = 1"));
+        let cell = tex
+            .split("\\begin{rlcell}")
+            .nth(1)
+            .unwrap()
+            .split("\\end{rlcell}")
+            .next()
+            .unwrap();
+        assert!(cell.contains("ans = 1"), "{cell}");
     }
 
     #[test]
@@ -1221,6 +1271,125 @@ mod tests {
             let log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
             panic!("pdflatex failed:\n{log}\n--- tex ---\n{tex}");
         }
+        assert!(dir.path().join("nb.pdf").exists());
+    }
+
+    #[test]
+    fn render_latex_indents_source_and_output_not_figures() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let dir = std::env::temp_dir().join(format!("rl_cell_plot_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blocks = vec![Rendered::Code {
+            source: "x = 1".to_string(),
+            text_output: "ans = 1".to_string(),
+            error: Some("nope".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let tex = render_latex(
+            "Test",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        let cell = tex
+            .split("\\begin{rlcell}")
+            .nth(1)
+            .expect("rlcell")
+            .split("\\end{rlcell}")
+            .next()
+            .unwrap();
+        assert!(cell.contains("\\textcolor{"), "{cell}");
+        assert!(cell.contains("ans = 1"), "{cell}");
+        assert!(cell.contains("nope"), "{cell}");
+        assert!(!cell.contains("\\includegraphics"), "{cell}");
+        let after = tex.split("\\end{rlcell}").nth(1).unwrap_or("");
+        assert!(
+            after.contains("\\includegraphics"),
+            "figure should follow the cell:\n{tex}"
+        );
+        assert!(tex.contains("\\definecolor{rlrule}{HTML}{"));
+        assert!(tex.contains("\\list{}{"));
+        assert!(!tex.contains("minted"));
+        assert!(!tex.contains("shell-escape"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_latex_long_cell_breaks_across_pages() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        let source = (0..80)
+            .map(|i| format!("x = {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text_output = (0..40)
+            .map(|i| format!("ans = {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let blocks = vec![Rendered::Code {
+            source,
+            text_output,
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let tex = render_latex(
+            "Long",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{rlcell}"));
+        assert!(!tex.contains("\\begin{minipage}"));
+        let args = crate::pdf_compile::pdf_engine_args("pdflatex").unwrap();
+        assert!(!crate::pdf_compile::args_enable_shell_escape(&args));
+        let dir = tempfile::tempdir().unwrap();
+        let tex_path = dir.path().join("nb.tex");
+        std::fs::write(&tex_path, &tex).unwrap();
+        let output = std::process::Command::new("pdflatex")
+            .args(args)
+            .arg(format!("-output-directory={}", dir.path().display()))
+            .arg(&tex_path)
+            .current_dir(dir.path())
+            .output()
+            .expect("pdflatex");
+        let log = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() {
+            let file_log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
+            panic!("pdflatex failed:\n{file_log}\n{log}");
+        }
+        let pages = log
+            .split("Output written on")
+            .nth(1)
+            .and_then(|s| s.split('(').nth(1))
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.trim_end_matches(',').parse::<u32>().ok())
+            .unwrap_or(0);
+        assert!(
+            pages >= 2,
+            "long cell should span a page, got {pages}: {log}"
+        );
         assert!(dir.path().join("nb.pdf").exists());
     }
 

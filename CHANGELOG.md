@@ -53,7 +53,9 @@ Workflow Rule 12).
   operators, call-like names) and uses the active Catppuccin theme.
   PDF color is `\textcolor` with escaped tokens (not `minted`). Markdown
   export still emits plain `` ```rustlab `` fences. Printed output is
-  not highlighted.
+  not highlighted. In HTML, `notebook watch`, and LaTeX/PDF the source
+  is indented together with its printed output and errors, with a
+  theme-accent left rule. Plots and animations stay full width.
 - Optional user-global settings file. rustlab reads
   `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,
   else built-in defaults. The file is declarative TOML (never executed).

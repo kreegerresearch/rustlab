@@ -83,6 +83,8 @@ fn cell_style(c: &ThemeColors) -> String {
   main section.rl-block.rl-cell-editing {{
     outline: 1px solid {border}; outline-offset: 3px; border-radius: 2px;
   }}
+  /* Replaces pre.source inside .rl-cell, so it shares that indent and rule. */
+  .rl-cell .rl-cell-editor {{ margin-left: 0; margin-right: 0; }}
   .rl-cell-editor {{ border: 1px solid {border}; border-radius: 4px; margin: 4px 0; }}
   .rl-cell-editor .CodeMirror {{
     height: auto; background: {code_bg}; color: {text};
@@ -397,7 +399,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("cell.js");
             std::fs::write(&path, js).unwrap();
-            match std::process::Command::new("node").arg("--check").arg(&path).output() {
+            match std::process::Command::new("node")
+                .arg("--check")
+                .arg(&path)
+                .output()
+            {
                 Ok(out) => assert!(
                     out.status.success(),
                     "node --check failed (cell_edit={edit}):\n{}",

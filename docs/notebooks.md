@@ -557,6 +557,15 @@ Each code block produces up to three zones in the output:
 2. **Text output** — anything the code prints (`disp()`, `ans =`, etc.)
 3. **Plot** — interactive Plotly chart (HTML) or static SVG (LaTeX/PDF)
 
+In HTML (including `notebook watch`) the source, printed output, and
+errors share one indented block (`.rl-cell`) with a left rule in the
+theme accent color. The inline cell editor sits in that same block, so
+it lines up with the source. LaTeX/PDF uses the same grouping: a list
+environment (`rlcell`) indents the colored source and the `verbatim`
+output/error blocks, and draws the accent rule with `\textcolor` and a
+`\vrule`. The list breaks across pages. Plots and animations stay full
+width, outside that indent, in every format.
+
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
 ### Variable persistence
@@ -815,8 +824,11 @@ from the hidden block (if any) still appears.
 
 Wraps a code block's output (text, errors, and plots) in a collapsible
 `<details>` disclosure widget with the given summary label. The source
-code remains visible above the widget. Useful for long console output
-or galleries of diagnostic plots that would otherwise dominate the page.
+code remains visible above the widget, in its own indented cell. Printed
+text and errors inside the disclosure use the same indent and left rule;
+plots stay full width inside the disclosure. Useful for long console
+output or galleries of diagnostic plots that would otherwise dominate
+the page.
 
 ````markdown
 <!-- details: Show sweep results -->
@@ -1143,9 +1155,12 @@ light text, matching the Catppuccin Mocha palette.
 
 Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
 `rlnum`, `rlstr`, `rlcom`, `rlop`), using the same token classes and
-Catppuccin hex values as HTML. Each token is LaTeX-escaped. Printed
-output and errors stay in `verbatim`. This path does not use `minted`
-(that package needs TeX shell-escape, which PDF builds do not enable).
+Catppuccin hex values as HTML. Each token is LaTeX-escaped. The colored
+source and its `verbatim` output/error blocks sit in one `rlcell` list
+(left indent plus an accent `\vrule` from the theme). Figures follow
+that environment at full text width. This path does not use `minted`
+(that package needs TeX shell-escape, which PDF builds do not enable)
+and does not add a package for the indent.
 
 ### PDF (`--format pdf`)
 

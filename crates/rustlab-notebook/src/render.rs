@@ -442,57 +442,61 @@ pub fn render_html(
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
 
-                // Source code (unless hidden)
-                if !hidden {
-                    body.push_str("<pre class=\"source\"><code>");
-                    body.push_str(&highlight_rustlab(source));
-                    body.push_str("</code></pre>\n");
-                }
-
-                // If details is set, wrap output section in a disclosure widget
-                if let Some(title) = details {
-                    body.push_str("<details class=\"code-details\">\n");
-                    body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
-                }
-
-                // Text output (if any)
+                // Source, printed text, and errors share one indent (`.rl-cell`).
+                // Plots are emitted afterward, outside that wrapper, so they
+                // stay full width. `<!-- details: -->` keeps the source
+                // visible and puts output, errors, and plots in the
+                // disclosure; the output inside it uses the same `.rl-cell`.
                 let trimmed_output = text_output.trim();
-                if !trimmed_output.is_empty() {
-                    body.push_str("<pre class=\"output\">");
-                    body.push_str(&escape_html(trimmed_output));
-                    body.push_str("</pre>\n");
+                let show_source = !hidden;
+                let show_output = !trimmed_output.is_empty();
+                let show_error = error.is_some();
+                let source_html = if show_source {
+                    format!(
+                        "<pre class=\"source\"><code>{}</code></pre>\n",
+                        highlight_rustlab(source)
+                    )
+                } else {
+                    String::new()
+                };
+                let mut text_html = String::new();
+                if show_output {
+                    text_html.push_str("<pre class=\"output\">");
+                    text_html.push_str(&escape_html(trimmed_output));
+                    text_html.push_str("</pre>\n");
+                }
+                if show_error {
+                    text_html.push_str("<pre class=\"error\">");
+                    text_html.push_str(&escape_html(error.as_deref().unwrap_or("")));
+                    text_html.push_str("</pre>\n");
                 }
 
-                // Error (if any)
-                if let Some(err) = error {
-                    body.push_str("<pre class=\"error\">");
-                    body.push_str(&escape_html(err));
-                    body.push_str("</pre>\n");
-                }
-
-                // Plots (one per savefig call, or one final snapshot)
+                // Plots (one per savefig call, or one final snapshot).
+                // Collected first so the disclosure can wrap them without
+                // pulling them into `.rl-cell`.
+                let mut plots_html = String::new();
                 if !figures.is_empty() {
                     if let Some(n) = grid_cols {
-                        body.push_str(&format!(
+                        plots_html.push_str(&format!(
                             "<div class=\"image-grid\" style=\"grid-template-columns:repeat({n},1fr)\">\n"
                         ));
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
-                            body.push('\n');
+                            plots_html.push_str(&render_figure_plotly_div(fig, &div_id, theme));
+                            plots_html.push('\n');
                         }
-                        body.push_str("</div>\n");
+                        plots_html.push_str("</div>\n");
                     } else {
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
                             let height = plot_container_height(fig.subplot_rows);
-                            body.push_str(&format!(
+                            plots_html.push_str(&format!(
                                 "<div class=\"plot-container\" style=\"height: {height}px\">\n"
                             ));
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
-                            body.push_str("\n</div>\n");
+                            plots_html.push_str(&render_figure_plotly_div(fig, &div_id, theme));
+                            plots_html.push_str("\n</div>\n");
                         }
                     }
                 }
@@ -505,14 +509,14 @@ pub fn render_html(
                     match anim.format {
                         NotebookAnimationFormat::Html => {
                             let div_id = format!("anim-{plot_idx}");
-                            body.push_str("<div class=\"plot-container\">\n");
-                            body.push_str(&render_animation_inline(
+                            plots_html.push_str("<div class=\"plot-container\">\n");
+                            plots_html.push_str(&render_animation_inline(
                                 &anim.frames,
                                 &div_id,
                                 anim.fps,
                                 theme,
                             ));
-                            body.push_str("\n</div>\n");
+                            plots_html.push_str("\n</div>\n");
                         }
                         NotebookAnimationFormat::Gif => {
                             let gif_path = plot_dir.join(format!("anim-{plot_idx}.gif"));
@@ -524,7 +528,7 @@ pub fn render_html(
                                 eprintln!("warning: could not write anim-{plot_idx}.gif: {e}");
                                 continue;
                             }
-                            body.push_str(&format!(
+                            plots_html.push_str(&format!(
                                 "<div class=\"plot-container\"><img src=\"{}/anim-{plot_idx}.gif\" alt=\"animation {plot_idx}\" /></div>\n",
                                 href_prefix
                             ));
@@ -532,9 +536,32 @@ pub fn render_html(
                     }
                 }
 
-                // Close details if open
-                if details.is_some() {
+                if let Some(title) = details {
+                    // Source stays visible above the disclosure. Printed
+                    // output inside the disclosure uses the same indent.
+                    // Plots stay in the disclosure and outside `.rl-cell`.
+                    if show_source {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&source_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str("<details class=\"code-details\">\n");
+                    body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
+                    if !text_html.is_empty() {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&text_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str(&plots_html);
                     body.push_str("</details>\n");
+                } else {
+                    if show_source || !text_html.is_empty() {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&source_html);
+                        body.push_str(&text_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str(&plots_html);
                 }
 
                 body.push_str("</div>\n");
@@ -954,6 +981,13 @@ pub fn render_html(
   }}
   .code-block {{
     margin-bottom: 1.5rem;
+  }}
+  /* Source, printed output, and errors. The accent rule marks the cell.
+     Plots are siblings of this wrapper, so they stay full width. */
+  .rl-cell {{
+    margin: 0.2rem 0 0.35rem 0.15rem;
+    padding: 0.05rem 0 0.05rem 0.85rem;
+    border-left: 3px solid {accent_primary};
   }}
   .source {{
     background: {code_bg};
@@ -3477,6 +3511,64 @@ mod tests {
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
+        assert!(html.contains("class=\"rl-cell\""));
+    }
+
+    /// Source and printed output share `.rl-cell`. Plot markup stays outside
+    /// that wrapper, in both Catppuccin themes. The rule color is the theme
+    /// accent baked into the stylesheet (no inline style on the cell).
+    #[test]
+    fn render_html_indents_source_and_output_not_plots() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let blocks = vec![Rendered::Code {
+            source: "x = 1:2\nplot(x)".to_string(),
+            text_output: "ans = 1  2".to_string(),
+            error: Some("plot warning".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        for (theme, accent) in [
+            (Theme::Dark.colors(), "#cba6f7"),
+            (Theme::Light.colors(), "#8839ef"),
+        ] {
+            let html = render_html(
+                "Test",
+                &blocks,
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                theme,
+                None,
+                &LinkMode::single_file(),
+            );
+            assert!(html.contains(".rl-cell {"), "stylesheet missing .rl-cell");
+            assert!(
+                html.contains(&format!("border-left: 3px solid {accent}")),
+                "accent rule for {accent} missing"
+            );
+            let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+            let plot_at = html
+                .find("class=\"plot-container\"")
+                .expect("plot-container");
+            assert!(cell_at < plot_at, "plot should follow the indented cell");
+            let cell = &html[cell_at..plot_at];
+            assert!(cell.contains("class=\"source\""), "{cell}");
+            assert!(cell.contains("class=\"output\""), "{cell}");
+            assert!(cell.contains("class=\"error\""), "{cell}");
+            assert!(cell.contains("ans = 1  2"), "{cell}");
+            assert!(!cell.contains("<img"), "{cell}");
+        }
     }
 
     #[test]
