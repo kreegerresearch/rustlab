@@ -58,6 +58,9 @@ it.
 - Watch-served pages send a Content-Security-Policy with
   `default-src 'self'`, nonce + `'strict-dynamic'` for scripts, and
   loopback-only `connect-src` for WebSockets.
+- Rustlab syntax highlighting is server-rendered escaped `<span class="syn-*">`
+  text in HTML and `\textcolor` in PDF — not `minted`, and not a CDN or
+  client-side highlighter.
 
 ## H4 — Path jail (notebook directory)
 

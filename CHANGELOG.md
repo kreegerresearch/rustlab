@@ -47,6 +47,13 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Notebook `` ```rustlab `` cells are syntax-colored in HTML (including
+  `notebook watch` live updates) and in LaTeX/PDF. Highlighting follows
+  the rustlab lexer (`#` and `%` comments, keywords, numbers, strings,
+  operators, call-like names) and uses the active Catppuccin theme.
+  PDF color is `\textcolor` with escaped tokens (not `minted`). Markdown
+  export still emits plain `` ```rustlab `` fences. Printed output is
+  not highlighted.
 - Optional user-global settings file. rustlab reads
   `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,
   else built-in defaults. The file is declarative TOML (never executed).

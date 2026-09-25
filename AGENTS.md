@@ -1016,6 +1016,7 @@ opens). Do not reintroduce `request_repaint_after` polling in
 
 **Key files:**
 - `src/lexer.rs` — hand-written lexer → `Vec<Spanned<Token>>`
+- `src/highlight.rs` — span-preserving highlighter used by notebook HTML and LaTeX. Same token rules as the lexer, but keeps comments/whitespace, records byte offsets, and recovers from lex errors instead of aborting. `tokenize()` itself is not suitable for highlighting (no spans, comments dropped).
 - `src/parser.rs` — recursive-descent parser → `Vec<Stmt>`
 - `src/ast.rs` — `Stmt` (Assign, Expr, FunctionDef, FieldAssign, Return, Hold, Grid, Viewer, For, While, IndexAssign, ...), `Expr` (Number, Str, Var, BinOp, UnaryMinus, Call, Matrix, Range, Transpose, Field, Lambda, FuncHandle, CellArray), `BinOp`
 - `src/eval/mod.rs` — `Evaluator` struct: holds `env`, `builtins`, `user_fns`, `in_function`, `profiler: profile::Profiler`; public API: `run()`, `run_script()`, `enable_profiling()`, `has_profile_data()`, `take_profile()`
@@ -1077,9 +1078,9 @@ Consumed by `rustlab-cli` (REPL / `run`) and `rustlab-notebook` (render/watch `-
 - `src/main.rs` — thin CLI wrapper (`rustlab-notebook render`)
 - `src/parse.rs` — parse notebook markdown into `Block` enum (Markdown / Code / Mermaid / Callout / Exercise / Solution)
 - `src/execute.rs` — execute code blocks through `Evaluator`, produce `Rendered` blocks
-- `src/render.rs` — HTML rendering with themed CSS (Catppuccin Mocha/Latte)
-- `src/server/` — interactive `watch` server (axum + WS; see the Interactive `notebook watch` and Notebook Cell Execution plan rows); `server/cell.rs` holds the ▶ Run / inline-cell UI
-- `src/render_latex.rs` — LaTeX rendering (also used to drive PDF compilation in a tempdir)
+- `src/render.rs` — HTML rendering with themed CSS (Catppuccin Mocha/Latte). `` ```rustlab `` source cells are highlighted by `rustlab_script::highlight` into escaped `<span class="syn-*">` (classes styled from `ThemeColors.syn_*`).
+- `src/server/` — interactive `watch` server (axum + WS; see the Interactive `notebook watch` and Notebook Cell Execution plan rows); `server/cell.rs` holds the ▶ Run / inline-cell UI. Watch reuses the HTML highlighter; cell and source-pane editors stay plain CodeMirror.
+- `src/render_latex.rs` — LaTeX rendering (also used to drive PDF compilation in a tempdir). Rustlab source cells use `\textcolor` + `escape_latex` (no `minted`, no shell-escape); output and errors stay `verbatim`.
 - `src/render_markdown.rs` — GitHub-flavored Markdown rendering with inline SVG plots
 - `src/mermaid.rs` — pure-Rust SVG rendering of ` ```mermaid ` blocks via `mermaid-rs-renderer` (gated behind the default-on `mermaid` Cargo feature). BLAKE3-hashed output cache lives under `plots/<notebook>/.cache/`. Wraps the upstream call in `catch_unwind` so a 0.2.x crate panic falls back to verbatim source instead of tearing down the render.
 

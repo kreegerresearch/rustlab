@@ -42,11 +42,10 @@ pub fn render_latex(
                 details,
                 grid_cols,
             } => {
-                // Source code (unless hidden)
+                // Source code (unless hidden). Colored with \textcolor —
+                // never minted, which would need shell-escape.
                 if !hidden {
-                    body.push_str("\\begin{verbatim}\n");
-                    body.push_str(source);
-                    body.push_str("\n\\end{verbatim}\n\n");
+                    body.push_str(&emit_highlighted_source(source));
                 }
 
                 // Details title (LaTeX has no collapsibility — just add a label)
@@ -165,6 +164,21 @@ pub fn render_latex(
             }
         }
     }
+
+    let syntax_colors = format!(
+        "\\definecolor{{rlkw}}{{HTML}}{{{}}}\n\
+         \\definecolor{{rlfn}}{{HTML}}{{{}}}\n\
+         \\definecolor{{rlnum}}{{HTML}}{{{}}}\n\
+         \\definecolor{{rlstr}}{{HTML}}{{{}}}\n\
+         \\definecolor{{rlcom}}{{HTML}}{{{}}}\n\
+         \\definecolor{{rlop}}{{HTML}}{{{}}}\n",
+        html_hex(theme.syn_keyword),
+        html_hex(theme.syn_function),
+        html_hex(theme.syn_number),
+        html_hex(theme.syn_string),
+        html_hex(theme.syn_comment),
+        html_hex(theme.syn_operator),
+    );
 
     let is_dark = theme as *const ThemeColors == Theme::Dark.colors() as *const ThemeColors;
     let link_hex = &theme.accent_secondary[1..]; // strip leading '#'
@@ -310,7 +324,7 @@ pub fn render_latex(
 \newunicodechar{{┴}}{{+}}
 \newunicodechar{{┼}}{{+}}
 \usepackage{{xcolor}}
-\usepackage{{booktabs}}
+{syntax_colors}\usepackage{{booktabs}}
 \usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
 \hypersetup{{colorlinks=true,linkcolor=[HTML]{{{link_hex}}},urlcolor=[HTML]{{{link_hex}}}}}
@@ -503,6 +517,48 @@ fn escape_href_dest(s: &str) -> String {
     out
 }
 
+fn html_hex(color: &str) -> &str {
+    color.strip_prefix('#').unwrap_or(color)
+}
+
+/// Colored rustlab source. Each token is passed through [`escape_latex`]
+/// and wrapped in `\textcolor`. Output stays in text mode so the
+/// preamble's `\newunicodechar` mappings still apply (they do not fire
+/// inside `verbatim`). No `minted` / shell-escape.
+fn emit_highlighted_source(source: &str) -> String {
+    use rustlab_script::highlight::HlKind;
+    let mut out = String::from(
+        "\\begin{flushleft}\n\
+         \\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}\\obeylines\\obeyspaces\n",
+    );
+    for span in rustlab_script::highlight::highlight(source) {
+        let text = &source[span.start..span.end];
+        let escaped = escape_latex(text);
+        let color = match span.kind {
+            HlKind::Keyword => "rlkw",
+            HlKind::Function => "rlfn",
+            HlKind::Number => "rlnum",
+            HlKind::String => "rlstr",
+            HlKind::Comment => "rlcom",
+            HlKind::Operator => "rlop",
+            HlKind::Text => {
+                out.push_str(&escaped);
+                continue;
+            }
+        };
+        out.push_str("\\textcolor{");
+        out.push_str(color);
+        out.push_str("}{");
+        out.push_str(&escaped);
+        out.push('}');
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("\\end{flushleft}\n\n");
+    out
+}
+
 /// Escape special LaTeX characters (no math preservation — math is
 /// delivered through `Event::InlineMath` / `Event::DisplayMath` with
 /// `Options::ENABLE_MATH`, so anything reaching us in a `Text` event is
@@ -646,7 +702,10 @@ mod tests {
     #[test]
     fn md_to_latex_strikethrough() {
         // Audit S3: double-tilde strikethrough must survive as \sout{…}.
-        let out = markdown_to_latex("this is ~~struck~~ text", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "this is ~~struck~~ text",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\sout{struck}"), "{out:?}");
     }
 
@@ -670,14 +729,20 @@ mod tests {
 
     #[test]
     fn md_to_latex_code_block() {
-        let out = markdown_to_latex("```\ncode here\n```", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "```\ncode here\n```",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{verbatim}"));
         assert!(out.contains("\\end{verbatim}"));
     }
 
     #[test]
     fn md_to_latex_unordered_list() {
-        let out = markdown_to_latex("- item one\n- item two", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "- item one\n- item two",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{itemize}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{itemize}"));
@@ -685,7 +750,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_ordered_list() {
-        let out = markdown_to_latex("1. first\n2. second", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "1. first\n2. second",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{enumerate}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{enumerate}"));
@@ -700,7 +768,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_link() {
-        let out = markdown_to_latex("[click](https://example.com)", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "[click](https://example.com)",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
     }
@@ -714,14 +785,23 @@ mod tests {
         // contexts.
         let single = crate::render::LinkMode::single_file();
         let out = markdown_to_latex("## Jump to [Setup](#setup)", &single);
-        assert!(out.contains("\\href{\\#setup}"), "unescaped # in heading: {out}");
+        assert!(
+            out.contains("\\href{\\#setup}"),
+            "unescaped # in heading: {out}"
+        );
         let out = markdown_to_latex("**[deal](https://ex.com/50%off)**", &single);
-        assert!(out.contains("\\href{https://ex.com/50\\%off}"), "unescaped %: {out}");
+        assert!(
+            out.contains("\\href{https://ex.com/50\\%off}"),
+            "unescaped %: {out}"
+        );
         let out = markdown_to_latex("[frag](https://ex.com/p#sec)", &single);
         assert!(out.contains("\\href{https://ex.com/p\\#sec}"), "{out}");
         // Underscores are fine everywhere — do not over-escape.
         let out = markdown_to_latex("[n](my_notes.md)", &single);
-        assert!(out.contains("\\href{my_notes.pdf}"), "over-escaped _: {out}");
+        assert!(
+            out.contains("\\href{my_notes.pdf}"),
+            "over-escaped _: {out}"
+        );
     }
 
     #[test]
@@ -756,7 +836,10 @@ mod tests {
         // valid PDF target (no index.pdf is generated).
         let single = crate::render::LinkMode::single_file();
         let out = markdown_to_latex("[readme](https://example.com/README.md)", &single);
-        assert!(out.contains("\\href{https://example.com/README.md}"), "{out}");
+        assert!(
+            out.contains("\\href{https://example.com/README.md}"),
+            "{out}"
+        );
         // Inline code with a link is verbatim, not a link.
         let out = markdown_to_latex("code `[x](a.md)` here", &single);
         assert!(!out.contains("\\href"), "code span became a link: {out}");
@@ -768,7 +851,10 @@ mod tests {
             current_rel_dir: String::new(),
         };
         let out = markdown_to_latex("[p](_setup.md) [g](nope.md) [h](index.md)", &dir_mode);
-        assert!(out.contains("\\href{_setup.md}"), "partial rewritten: {out}");
+        assert!(
+            out.contains("\\href{_setup.md}"),
+            "partial rewritten: {out}"
+        );
         assert!(out.contains("\\href{nope.md}"), "dangling rewritten: {out}");
         assert!(
             out.contains("\\href{index.md}"),
@@ -792,7 +878,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_inline_math() {
-        let out = markdown_to_latex("The value $x^2$ is large.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "The value $x^2$ is large.",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("$x^2$"));
     }
 
@@ -804,14 +893,20 @@ mod tests {
 
     #[test]
     fn md_to_latex_special_chars_escaped() {
-        let out = markdown_to_latex("Use 100% of the CPU & GPU", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "Use 100% of the CPU & GPU",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("100\\%"));
         assert!(out.contains("\\&"));
     }
 
     #[test]
     fn md_to_latex_paragraph() {
-        let out = markdown_to_latex("Para one.\n\nPara two.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "Para one.\n\nPara two.",
+            &crate::render::LinkMode::single_file(),
+        );
         // Paragraphs should be separated
         assert!(out.contains("Para one."));
         assert!(out.contains("Para two."));
@@ -819,7 +914,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_empty() {
-        assert_eq!(markdown_to_latex("", &crate::render::LinkMode::single_file()), "");
+        assert_eq!(
+            markdown_to_latex("", &crate::render::LinkMode::single_file()),
+            ""
+        );
     }
 
     // ── regression: Bug B — escaped `\$` in markdown prose stays literal in
@@ -828,7 +926,10 @@ mod tests {
     // template_interpolation.md at the `Use \${...}` paragraph.
     #[test]
     fn md_to_latex_escaped_dollar_stays_literal() {
-        let out = markdown_to_latex(r"literal: \${not_evaluated}.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            r"literal: \${not_evaluated}.",
+            &crate::render::LinkMode::single_file(),
+        );
         // Every `$` in the output must be preceded by a backslash —
         // otherwise it opens math mode and pdflatex fails with
         // "Missing $ inserted".
@@ -836,7 +937,8 @@ mod tests {
             if ch == '$' {
                 let prev = out[..i].chars().next_back();
                 assert_eq!(
-                    prev, Some('\\'),
+                    prev,
+                    Some('\\'),
                     "unescaped `$` at offset {i} in output: {out:?}"
                 );
             }
@@ -910,10 +1012,8 @@ mod tests {
         // fatals on any undeclared codepoint, so partial coverage is
         // brittle and easy to break.
         for ch in [
-            '≈', '∇', 'π', 'Ω', '⇒', '×',
-            'η', '┬', '₁', '↘', '⁵', '✓',
-            '⁰', '¹', '⁴', '⁹', '₀', '₉',
-            '↗', '↙', '✗', '┼',
+            '≈', '∇', 'π', 'Ω', '⇒', '×', 'η', '┬', '₁', '↘', '⁵', '✓', '⁰', '¹', '⁴', '⁹', '₀',
+            '₉', '↗', '↙', '✗', '┼',
         ] {
             assert!(
                 tex.contains(&format!("\\newunicodechar{{{ch}}}")),
@@ -956,7 +1056,17 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(tex.contains("\\begin{verbatim}\nx = 42\n\\end{verbatim}"));
+        assert!(tex.contains("\\textcolor{rlnum}{42}"), "{tex}");
+        assert!(tex.contains("\\textcolor{rlop}{=}"), "{tex}");
+        assert!(tex.contains("\\definecolor{rlkw}{HTML}{"), "{tex}");
+        // Source cells are colored text, not verbatim. Markdown fences
+        // elsewhere still use verbatim.
+        assert!(
+            !tex.contains("\\begin{verbatim}"),
+            "source cell must not be verbatim:\n{tex}"
+        );
+        assert!(!tex.contains("minted"));
+        assert!(!tex.contains("shell-escape"));
     }
 
     #[test]
@@ -1029,10 +1139,89 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        // Only one verbatim (source), no quote block for output
-        let verbatim_count = tex.matches("\\begin{verbatim}").count();
-        assert_eq!(verbatim_count, 1);
+        // Source is colored, not verbatim; empty output adds no quote.
+        assert_eq!(tex.matches("\\begin{verbatim}").count(), 0);
         assert!(!tex.contains("\\begin{quote}"));
+    }
+
+    #[test]
+    fn render_latex_source_escapes_specials_and_colors_comments() {
+        let blocks = vec![Rendered::Code {
+            source: "x_1 = 1 # comment % also\n</span><script>\n<img onerror=\"x\">".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let tex = render_latex(
+            "Test",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\textcolor{rlcom}{"), "{tex}");
+        assert!(tex.contains("\\#"), "{tex}");
+        assert!(tex.contains("\\_"), "{tex}");
+        assert!(tex.contains("\\%"), "{tex}");
+        assert!(tex.contains("\\end{flushleft}"), "{tex}");
+        assert!(!tex.contains("\\begin{verbatim}"), "{tex}");
+        assert!(!tex.contains("minted"), "{tex}");
+        assert!(!tex.contains("shell-escape"), "{tex}");
+        // The markup is escaped text, not a TeX command.
+        assert!(tex.contains("span"), "{tex}");
+        assert!(!tex.contains("</span><script>"), "{tex}");
+    }
+
+    #[test]
+    fn render_latex_colored_source_compiles_without_shell_escape() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        let blocks = vec![Rendered::Code {
+            source: "x_1 = 1 # comment % also\nhold on\nplot(x_1)\n".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let tex = render_latex(
+            "Color",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        let args = crate::pdf_compile::pdf_engine_args("pdflatex").unwrap();
+        assert!(
+            !crate::pdf_compile::args_enable_shell_escape(&args),
+            "{args:?}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let tex_path = dir.path().join("nb.tex");
+        std::fs::write(&tex_path, &tex).unwrap();
+        let status = std::process::Command::new("pdflatex")
+            .args(args)
+            .arg(format!("-output-directory={}", dir.path().display()))
+            .arg(&tex_path)
+            .current_dir(dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("pdflatex");
+        if !status.success() {
+            let log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
+            panic!("pdflatex failed:\n{log}\n--- tex ---\n{tex}");
+        }
+        assert!(dir.path().join("nb.pdf").exists());
     }
 
     #[test]
@@ -1098,7 +1287,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(tex.contains("\\begin{figure}[htbp]"));
         assert!(tex.contains("\\includegraphics[width=0.8\\linewidth]{plots/test/diagram-1}"));
         assert!(!tex.contains("\\includesvg"));
@@ -1117,7 +1313,14 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(tex.contains("\\caption{Signal flow}"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1132,7 +1335,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(!tex.contains("\\caption{"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1146,7 +1356,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(!tex.contains("\\begin{figure}"));
         assert!(!tex.contains("\\includesvg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1162,7 +1379,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(tex.contains("\\begin{verbatim}"));
         assert!(tex.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);

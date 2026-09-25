@@ -1400,10 +1400,7 @@ pub(crate) fn is_dangerous_url(url: &str) -> bool {
         .take_while(|c| *c != ':' && *c != '/' && *c != '?')
         .flat_map(|c| c.to_lowercase())
         .collect();
-    matches!(
-        lower.as_str(),
-        "javascript" | "data" | "vbscript" | "blob"
-    ) && trimmed.contains(':')
+    matches!(lower.as_str(), "javascript" | "data" | "vbscript" | "blob") && trimmed.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1862,175 +1859,36 @@ fn escape_html(s: &str) -> String {
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
 
-const KEYWORDS: &[&str] = &[
-    "function",
-    "end",
-    "return",
-    "if",
-    "elseif",
-    "else",
-    "for",
-    "while",
-    "switch",
-    "case",
-    "otherwise",
-];
-
 /// Produce syntax-highlighted HTML for a rustlab code snippet.
-/// Returns HTML with <span class="syn-*"> wrappers (already escaped).
+///
+/// Token classes come from [`rustlab_script::highlight`] (the same rules as
+/// the lexer). Token text is HTML-escaped before it is wrapped, so source
+/// cannot break out of a span.
 fn highlight_rustlab(source: &str) -> String {
+    use rustlab_script::highlight::HlKind;
     let mut out = String::with_capacity(source.len() * 2);
-    let chars: Vec<char> = source.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        let ch = chars[i];
-
-        // Comment: % to end of line
-        if ch == '%' {
-            out.push_str("<span class=\"syn-com\">");
-            while i < len && chars[i] != '\n' {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
+    for span in rustlab_script::highlight::highlight(source) {
+        let text = &source[span.start..span.end];
+        let escaped = escape_html(text);
+        let class = match span.kind {
+            HlKind::Keyword => "syn-kw",
+            HlKind::Function => "syn-fn",
+            HlKind::Number => "syn-num",
+            HlKind::String => "syn-str",
+            HlKind::Comment => "syn-com",
+            HlKind::Operator => "syn-op",
+            HlKind::Text => {
+                out.push_str(&escaped);
+                continue;
             }
-            out.push_str("</span>");
-            continue;
-        }
-
-        // String: "..." or '...' (single-char or multi-char)
-        if ch == '"' || (ch == '\'' && is_string_quote(&chars, i)) {
-            let quote = ch;
-            out.push_str("<span class=\"syn-str\">");
-            push_escaped_char(&mut out, ch);
-            i += 1;
-            while i < len && chars[i] != quote && chars[i] != '\n' {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            if i < len && chars[i] == quote {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Dot-operators: .* ./ .^ .'
-        if ch == '.' && i + 1 < len && matches!(chars[i + 1], '*' | '/' | '^' | '\'') {
-            out.push_str("<span class=\"syn-op\">");
-            push_escaped_char(&mut out, ch);
-            push_escaped_char(&mut out, chars[i + 1]);
-            out.push_str("</span>");
-            i += 2;
-            continue;
-        }
-
-        // Number: digits, optionally with . or e
-        if ch.is_ascii_digit() || (ch == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) {
-            out.push_str("<span class=\"syn-num\">");
-            while i < len
-                && (chars[i].is_ascii_digit()
-                    || chars[i] == '.'
-                    || chars[i] == 'e'
-                    || chars[i] == 'E'
-                    || ((chars[i] == '+' || chars[i] == '-')
-                        && i > 0
-                        && (chars[i - 1] == 'e' || chars[i - 1] == 'E')))
-            {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            // Trailing 'i' or 'j' for complex literals
-            if i < len && (chars[i] == 'i' || chars[i] == 'j') {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Identifier or keyword
-        if ch.is_ascii_alphabetic() || ch == '_' {
-            let start = i;
-            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-
-            if KEYWORDS.contains(&word.as_str()) {
-                out.push_str("<span class=\"syn-kw\">");
-                out.push_str(&escape_html(&word));
-                out.push_str("</span>");
-            } else if i < len && chars[i] == '(' {
-                // Function call
-                out.push_str("<span class=\"syn-fn\">");
-                out.push_str(&escape_html(&word));
-                out.push_str("</span>");
-            } else {
-                out.push_str(&escape_html(&word));
-            }
-            continue;
-        }
-
-        // Operators
-        if is_operator(ch) {
-            out.push_str("<span class=\"syn-op\">");
-            // Handle two-char operators
-            if i + 1 < len {
-                let next = chars[i + 1];
-                let two: String = [ch, next].iter().collect();
-                if matches!(two.as_str(), "==" | "~=" | "<=" | ">=" | "&&" | "||") {
-                    push_escaped_char(&mut out, ch);
-                    push_escaped_char(&mut out, next);
-                    i += 2;
-                    out.push_str("</span>");
-                    continue;
-                }
-            }
-            push_escaped_char(&mut out, ch);
-            i += 1;
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Everything else (whitespace, parens, etc.)
-        push_escaped_char(&mut out, ch);
-        i += 1;
+        };
+        out.push_str("<span class=\"");
+        out.push_str(class);
+        out.push_str("\">");
+        out.push_str(&escaped);
+        out.push_str("</span>");
     }
-
     out
-}
-
-/// Determine if a single quote at position `i` starts a string literal
-/// (as opposed to being the transpose operator).
-fn is_string_quote(chars: &[char], i: usize) -> bool {
-    if i == 0 {
-        return true;
-    }
-    let prev = chars[i - 1];
-    // After ), ], identifier char, or digit — it's transpose
-    if prev == ')' || prev == ']' || prev.is_ascii_alphanumeric() || prev == '_' || prev == '.' {
-        return false;
-    }
-    true
-}
-
-fn is_operator(ch: char) -> bool {
-    matches!(
-        ch,
-        '+' | '-' | '*' | '/' | '\\' | '^' | '=' | '<' | '>' | '~' | '&' | '|' | ':' | ';' | ','
-    )
-}
-
-fn push_escaped_char(out: &mut String, ch: char) {
-    match ch {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        '"' => out.push_str("&quot;"),
-        _ => out.push(ch),
-    }
 }
 
 /// Transform Obsidian-style wikilinks and embeds into standard markdown so
@@ -3065,38 +2923,6 @@ mod tests {
         assert!(nav.contains("Styled Title"));
     }
 
-    // ── is_string_quote ──
-
-    #[test]
-    fn string_quote_at_start() {
-        let chars: Vec<char> = "'hello'".chars().collect();
-        assert!(is_string_quote(&chars, 0));
-    }
-
-    #[test]
-    fn transpose_after_paren() {
-        let chars: Vec<char> = "x)'".chars().collect();
-        assert!(!is_string_quote(&chars, 2));
-    }
-
-    #[test]
-    fn transpose_after_identifier() {
-        let chars: Vec<char> = "A'".chars().collect();
-        assert!(!is_string_quote(&chars, 1));
-    }
-
-    #[test]
-    fn string_quote_after_operator() {
-        let chars: Vec<char> = "='hello'".chars().collect();
-        assert!(is_string_quote(&chars, 1));
-    }
-
-    #[test]
-    fn string_quote_after_space() {
-        let chars: Vec<char> = " 'hello'".chars().collect();
-        assert!(is_string_quote(&chars, 1));
-    }
-
     // ── highlight_rustlab ──
 
     #[test]
@@ -3108,7 +2934,7 @@ mod tests {
 
     #[test]
     fn highlight_all_keywords() {
-        for kw in KEYWORDS {
+        for kw in rustlab_script::highlight::KEYWORDS {
             let out = highlight_rustlab(kw);
             assert!(out.contains("syn-kw"), "keyword {kw} not highlighted");
         }
@@ -3192,7 +3018,9 @@ mod tests {
 
     #[test]
     fn highlight_two_char_operators() {
-        for op in &[".*", "./", ".^", "==", "~=", "<=", ">=", "&&", "||"] {
+        for op in &[
+            ".*", "./", ".^", ".'", "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=",
+        ] {
             let out = highlight_rustlab(op);
             // Should be a single span, not two separate ones
             assert!(
@@ -3219,6 +3047,37 @@ mod tests {
         let out = highlight_rustlab("x < y & z");
         assert!(out.contains("&lt;"));
         assert!(out.contains("&amp;"));
+    }
+
+    #[test]
+    fn highlight_hash_comment() {
+        let out = highlight_rustlab("# a comment");
+        assert!(out.contains("<span class=\"syn-com\"># a comment</span>"));
+    }
+
+    #[test]
+    fn highlight_cache_is_not_a_keyword() {
+        let out = highlight_rustlab("cache = 5");
+        assert!(!out.contains("syn-kw"));
+    }
+
+    /// Source that looks like markup must stay text. The cell editor
+    /// round-trips `textContent`, and the watch page assigns this HTML
+    /// with `innerHTML`.
+    #[test]
+    fn highlight_escapes_markup_breakout() {
+        let payloads = [
+            "\"</span><script>alert(1)</script>\"",
+            "</span><script>alert(1)</script>",
+            "<img onerror=\"alert(1)\">",
+        ];
+        for src in payloads {
+            let out = highlight_rustlab(src);
+            assert!(!out.contains("</span><script>"), "raw breakout in {out}");
+            assert!(!out.contains("<script>"), "raw script in {out}");
+            assert!(!out.contains("<img"), "raw img in {out}");
+            assert!(out.contains("&lt;"), "expected escaped lt in {out}");
+        }
     }
 
     #[test]
@@ -3780,6 +3639,33 @@ mod tests {
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
+    }
+
+    #[test]
+    fn render_html_hash_comment_is_syn_com() {
+        let blocks = vec![Rendered::Code {
+            source: "# comment\nx = 1".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("<span class=\"syn-com\"># comment</span>"),
+            "{html}"
+        );
     }
 
     #[test]

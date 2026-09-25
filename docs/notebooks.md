@@ -553,7 +553,7 @@ The passband ripple is well within spec.
 
 Each code block produces up to three zones in the output:
 
-1. **Source** — the rustlab code (syntax-highlighted in HTML)
+1. **Source** — the rustlab code (syntax-highlighted in HTML and in LaTeX/PDF)
 2. **Text output** — anything the code prints (`disp()`, `ans =`, etc.)
 3. **Plot** — interactive Plotly chart (HTML) or static SVG (LaTeX/PDF)
 
@@ -1080,7 +1080,12 @@ Self-contained HTML with:
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
 - Navigation sidebar from headings
-- Syntax-highlighted code blocks (colors adapt to theme)
+- Syntax-highlighted `` ```rustlab `` cells. Colors come from the same
+  lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
+  numbers, operators, call-like names) and follow the Catppuccin theme.
+  Token text is escaped HTML (`<span class="syn-*">`); there is no
+  client-side highlighter. Markdown fences that are not `rustlab`, inline
+  code, and printed output are not highlighted.
 - Responsive layout (sidebar collapses on mobile)
 
 ### Markdown (`--format markdown`)
@@ -1095,6 +1100,11 @@ rustlab-notebook render analysis.md -f markdown
 # → analysis.md
 # → plots/analysis/plot-1.svg, plot-2.svg, ...
 ```
+
+**Rustlab fences are not recolored on the way out.** `--format markdown`
+emits `` ```rustlab `` blocks. GitHub and Obsidian have no rustlab grammar,
+so those fences stay plain monospace until a Linguist grammar exists.
+HTML and PDF color the same cells.
 
 **Math passes through verbatim.** GitHub's math span handling does not
 apply CommonMark backslash-escape or emphasis-pairing inside `$…$` /
@@ -1130,6 +1140,12 @@ lualatex with inkscape, or pdflatex with the svg package).
 With `-t light` (default), the output is standard black-on-white LaTeX.
 With `-t dark`, the document uses `pagecolor` for a dark background with
 light text, matching the Catppuccin Mocha palette.
+
+Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
+`rlnum`, `rlstr`, `rlcom`, `rlop`), using the same token classes and
+Catppuccin hex values as HTML. Each token is LaTeX-escaped. Printed
+output and errors stay in `verbatim`. This path does not use `minted`
+(that package needs TeX shell-escape, which PDF builds do not enable).
 
 ### PDF (`--format pdf`)
 
