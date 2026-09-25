@@ -150,31 +150,39 @@ fn cell_script(cell_edit: bool) -> String {
       bar.appendChild(err);
       sec.prepend(bar);
     }});
-    restoreClosedSrc();
+    restoreSrcToggle();
   }}
 
-  // Source disclosures the reader collapsed, keyed by executable ordinal.
-  // Partial and full updates replace section HTML, which always arrives
-  // open; decorate puts the closed ones back. Reconcile reuses unchanged
-  // sections, so those keep the attribute on their own. A structural edit
-  // that renumbers cells can reattach a closed flag to a different ordinal.
-  const closedSrc = new Set();
+  // Source disclosures the reader has toggled, keyed by executable
+  // ordinal. The value is the open state they chose. Live updates
+  // replace section HTML with the resolved initial state (cell
+  // directive, else frontmatter, else rc, else open). Cells in this
+  // map keep the reader's choice; cells they have not touched pick up
+  // a changed directive or frontmatter. Reconcile reuses unchanged
+  // sections, so those keep the attribute on their own. A structural
+  // edit that renumbers cells can reattach a remembered toggle to a
+  // different ordinal. Opening the inline editor sets `open`, which
+  // this listener records. Toggle events before the first decorate
+  // are ignored so the initial HTML state is not treated as a choice.
+  const srcToggle = new Map();
+  let srcToggleLive = false;
   document.addEventListener('toggle', (ev) => {{
+    if (!srcToggleLive) return;
     const d = ev.target;
     if (!d || !d.classList || !d.classList.contains('rl-src')) return;
     const sec = d.closest('main section.rl-block[data-code-idx]');
     if (!sec) return;
     const idx = sec.getAttribute('data-code-idx');
-    if (d.open) closedSrc.delete(idx);
-    else closedSrc.add(idx);
+    srcToggle.set(idx, d.open);
     if (d.open && ed && ed.cm && d.contains(ed.host)) ed.cm.refresh();
   }}, true);
-  function restoreClosedSrc() {{
-    closedSrc.forEach((idx) => {{
+  function restoreSrcToggle() {{
+    srcToggle.forEach((open, idx) => {{
       const d = document.querySelector(
         'main section.rl-block[data-code-idx="' + idx + '"] details.rl-src');
-      if (d && d.open) d.open = false;
+      if (d && d.open !== open) d.open = open;
     }});
+    srcToggleLive = true;
   }}
 
   function sectionFor(el) {{
@@ -417,7 +425,7 @@ mod tests {
     fn source_disclosure_state_and_editor_refresh_are_in_the_script() {
         let out = page(true);
         assert!(out.contains("details.rl-src"), "toggle target");
-        assert!(out.contains("closedSrc"), "collapsed ordinals");
+        assert!(out.contains("srcToggle"), "remembered open/closed choice");
         assert!(out.contains("ed.cm.refresh"), "refresh when revealed");
         assert!(
             out.contains("disclosure.open = true"),

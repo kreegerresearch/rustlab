@@ -486,6 +486,7 @@ someone or that the renderer can't surface up-front.
 | `W002` | warning | `<details>` and `</details>` tag counts don't balance. | no |
 | `W003` | warning | `[text](other.md)` link whose target file doesn't exist. | no |
 | `W004` | warning | `[text](other.md#frag)` fragment that matches no anchor in the target — anchors are explicit `{#id}` attributes or heading slugs. | no |
+| `W005` | warning | `<!-- code: … -->` or frontmatter `code:` is not `open` or `collapsed`, or a `code:` directive is not followed by a ` ```rustlab ` block. | no |
 
 Findings are printed one per line in the form
 `<path>:<line> [<code>] <severity>: <message>`, sorted by source
@@ -559,12 +560,19 @@ Each code block produces up to three zones in the output:
 
 In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the
-theme accent color. The source alone is an open `<details>`
-(`rustlab` summary); collapsing it leaves that summary and the accent
-rule, and leaves printed output, errors, and plots visible. The inline
-cell editor sits inside that disclosure, so it lines up with the source.
-LaTeX/PDF always shows the source expanded. It uses the same grouping: a list
-environment (`rlcell`) indents the colored source and the verbatim
+theme accent color. The source alone is a `<details>` (`rustlab`
+summary). It starts open unless a cell `<!-- code: collapsed -->`,
+the notebook frontmatter `code: collapsed`, or `~/.rustlabrc`
+`[notebook] code = "collapsed"` says otherwise (most specific wins;
+see [Directives](#directives)). Collapsing it leaves that summary and
+the accent rule, and leaves printed output, errors, and plots visible.
+On `notebook watch`, a disclosure the reader has opened or closed
+keeps that choice across live updates; a cell they have not touched
+picks up a changed directive or frontmatter on the next render.
+Opening the inline cell editor expands the disclosure. The editor
+sits inside it, so it lines up with the source.
+LaTeX/PDF always shows the source expanded and ignores `code:`.
+It uses the same grouping: a list environment (`rlcell`) indents the colored source and the verbatim
 output/error blocks, and draws the accent rule with `\textcolor` and a
 `\vrule` on each of those lines. The list breaks across pages, and the
 cell has a small gap above and below it. Plots and animations stay
@@ -822,14 +830,62 @@ title("Spectrum")
 ````
 
 In the output, only the second block's source code is shown. The plot
-from the hidden block (if any) still appears.
+from the hidden block (if any) still appears. `<!-- hide -->` wins over
+`<!-- code: -->`: the source disclosure is omitted entirely.
+
+### `<!-- code: collapsed -->` / `<!-- code: open -->`
+
+Sets the initial state of that cell's source disclosure. `collapsed`
+omits the HTML `open` attribute; `open` forces it. The value is
+case-insensitive. Output, errors, and plots stay visible either way.
+
+The most specific setting wins:
+
+1. This directive, on the line immediately before the ` ```rustlab ` fence.
+2. Frontmatter `code: collapsed` or `code: open` (see [Frontmatter](#frontmatter)).
+3. `~/.rustlabrc` `[notebook] code = "collapsed"` or `"open"`.
+4. Built-in default: open.
+
+````markdown
+---
+code: collapsed
+---
+
+# Filter Analysis
+
+```rustlab
+fs = 16000
+```
+
+<!-- code: open -->
+```rustlab
+h = fir_lowpass(64, 3000, fs, "hamming")
+```
+````
+
+The first cell starts collapsed. The second starts open, overriding
+the frontmatter. An unrecognised value (`<!-- code: folded -->`, or
+frontmatter `code: maybe`) is a `notebook check` warning (`W005`) and
+does not change the state — the next level (frontmatter, rc, or open)
+still applies. A `<!-- code: -->` line that is not followed by a
+` ```rustlab ` block warns too. LaTeX/PDF ignore the setting and always
+show the source.
+
+On `notebook watch`, the resolved state is what the page first shows.
+If the reader toggles a disclosure, that choice is remembered for that
+cell across live updates (keyed by the cell's position). Cells they
+have not toggled follow a changed directive or frontmatter on the next
+render. A structural edit that inserts or removes a cell can attach a
+remembered toggle to a different cell. Opening the inline editor still
+expands the disclosure.
 
 ### `<!-- details: Title -->`
 
 Wraps a code block's output (text, errors, and plots) in a collapsible
 `<details>` disclosure widget with the given summary label. The source
 stays above that widget, in its own indented cell, and can still be
-collapsed on its own. The two disclosures are siblings: the source
+collapsed on its own. That sibling source disclosure uses the resolved
+`code:` state. The two disclosures are siblings: the source
 disclosure is not nested inside the author's. Printed
 text and errors inside the disclosure use the same indent and left rule;
 plots stay full width inside the disclosure. Useful for long console
@@ -862,9 +918,11 @@ figure; plot(angle(fft(x))); title("Phase")
 
 ### Stacking code-block directives
 
-`<!-- hide -->`, `<!-- details: ... -->`, and `<!-- grid: N -->` can all
-be stacked on consecutive lines immediately before a ```rustlab fence.
-Order within the stack does not matter.
+`<!-- hide -->`, `<!-- code: open|collapsed -->`, `<!-- details: ... -->`,
+`<!-- caption: ... -->`, and `<!-- grid: N -->` can all be stacked on
+consecutive lines immediately before a ```rustlab fence. Order within
+the stack does not matter. Two `code:` lines on the same stack: the
+uppermost recognised value wins.
 
 ````markdown
 <!-- hide -->
@@ -1094,7 +1152,11 @@ readers can attempt the exercise before revealing the answer.
 Self-contained HTML with:
 - Catppuccin dark theme (default) or light theme (`-t light`). The default
   is overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
-  if the notebook key is omitted); `-t` / `--theme` always wins.
+  if the notebook key is omitted); `-t` / `--theme` always wins. The
+  initial source-disclosure state is `[notebook] code` (`"open"` or
+  `"collapsed"`, default open), overridable per notebook and per cell
+  (see `<!-- code: -->` above). An invalid `code` value warns once and
+  falls back to open.
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
 - Navigation sidebar from headings
@@ -1279,7 +1341,7 @@ follow the same shape.
 
 ## Frontmatter
 
-Optional YAML frontmatter is parsed before rendering. Two keys are
+Optional YAML frontmatter is parsed before rendering. Three keys are
 recognised; unknown keys are ignored silently so the block is safe to
 use for arbitrary metadata.
 
@@ -1287,6 +1349,7 @@ use for arbitrary metadata.
 ---
 title: Filter Analysis
 order: 2
+code: collapsed
 author: Jane Doe      # ignored (unknown key)
 ---
 
@@ -1299,6 +1362,12 @@ author: Jane Doe      # ignored (unknown key)
 - `order:` (alias `weight:`) — signed integer that sorts entries on the
   directory index page, ascending. Ties break by filename. Entries
   without `order` sort after entries that have one.
+- `code:` — `open` or `collapsed` (case-insensitive; quotes optional).
+  Initial state of every rustlab source disclosure in this notebook
+  that does not set `<!-- code: -->`. Overrides `~/.rustlabrc`
+  `[notebook] code`. An unrecognised value warns (`W005`) and is
+  ignored, so the rc value or the built-in default (open) still applies.
+  LaTeX/PDF ignore it.
 - Quoted values (single or double) are unwrapped.
 
 ## Project Layout

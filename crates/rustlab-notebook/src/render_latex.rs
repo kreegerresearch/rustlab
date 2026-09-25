@@ -41,6 +41,8 @@ pub fn render_latex(
                 hidden,
                 details,
                 grid_cols,
+                // HTML-only. PDF always shows the source; `code:` is ignored.
+                source_open: _,
             } => {
                 // Source, printed text, and errors share one list indent
                 // (`rlcell`) with a colored left rule. The list breaks
@@ -1119,6 +1121,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1152,6 +1155,7 @@ mod tests {
             hidden: true,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1178,6 +1182,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1213,6 +1218,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1238,6 +1244,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1275,6 +1282,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Color",
@@ -1331,6 +1339,8 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            // Collapsed is an HTML-only initial state. PDF still shows the source.
+            source_open: Some(false),
         }];
         let tex = render_latex(
             "Test",
@@ -1392,6 +1402,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Long",
@@ -1445,6 +1456,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",

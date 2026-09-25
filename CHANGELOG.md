@@ -61,14 +61,24 @@ Workflow Rule 12).
   `notebook watch` the source alone is an open disclosure (a `rustlab`
   summary); collapsing it leaves output, errors, and plots visible.
   LaTeX/PDF always shows the source expanded. Plots and
-  animations stay full width.
+  animations stay full width. The disclosure's initial state is open
+  unless a cell `<!-- code: collapsed -->`, notebook frontmatter
+  `code: collapsed`, or `~/.rustlabrc` `[notebook] code = "collapsed"`
+  says otherwise (most specific wins; `<!-- code: open -->` forces
+  open). `<!-- hide -->` still removes the source. An unrecognised
+  value warns (`notebook check` W005, or once on stderr for the rc
+  key) and falls back to the next level. `notebook watch` keeps a
+  disclosure the reader has toggled; cells they have not touched pick
+  up a changed directive or frontmatter on re-render. LaTeX/PDF ignore
+  the setting.
 - Optional user-global settings file. rustlab reads
   `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,
   else built-in defaults. The file is declarative TOML (never executed).
   v1 keys: `[display] format`, `[plot] theme` / `default_axis`,
-  `[notebook] theme`, `[repl] history_limit`, `[viewer] auto_connect` /
+  `[notebook] theme` / `code`, `[repl] history_limit`, `[viewer] auto_connect` /
   `name`. Precedence: CLI flags > in-script / REPL commands > rc >
-  defaults. Unknown keys warn once; invalid values abort with path + key.
+  defaults. Unknown keys warn once; invalid values abort with path + key,
+  except `[notebook] code` (warns once and falls back to open).
   Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
 - Security hardening for notebooks / watch / PDF / viewer (see
   `docs/security.md`): CSP on watch pages, HTML-escaped math restore,

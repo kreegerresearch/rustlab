@@ -8,8 +8,9 @@
 //! 3. Built-in defaults (a missing file is not an error)
 //!
 //! Unknown keys warn (returned on [`LoadedConfig::unknown_keys`]); invalid
-//! values error with the file path and key. Project-local config and
-//! `startup.rlab` are out of scope for v1.
+//! values error with the file path and key, except `[notebook] code`, which
+//! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
+//! Project-local config and `startup.rlab` are out of scope for v1.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -125,9 +126,39 @@ pub struct ViewerSettings {
     pub name: Option<String>,
 }
 
+/// Initial open/collapsed state of a notebook's source disclosure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeFold {
+    Open,
+    Collapsed,
+}
+
+impl CodeFold {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Collapsed => "collapsed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "open" => Some(Self::Open),
+            "collapsed" => Some(Self::Collapsed),
+            _ => None,
+        }
+    }
+
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Open)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NotebookSettings {
     pub theme: Option<ColorTheme>,
+    /// `[notebook] code`. Missing key → built-in default open.
+    pub code: Option<CodeFold>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -153,6 +184,12 @@ impl UserSettings {
     /// Effective default axis, falling back to `ij`.
     pub fn default_axis(&self) -> DefaultAxis {
         self.plot.default_axis.unwrap_or(DefaultAxis::Ij)
+    }
+
+    /// Initial source disclosure. `[notebook] code`, else open.
+    /// An invalid rc value is dropped at parse time, so this stays open.
+    pub fn notebook_code_open(&self) -> bool {
+        self.notebook.code.map(CodeFold::is_open).unwrap_or(true)
     }
 
     /// Notebook page/plot theme: `[notebook] theme`, else `[plot] theme`,
@@ -201,6 +238,10 @@ pub struct LoadedConfig {
     /// Dotted keys that were present but not in the v1 schema.
     /// Callers should warn once per key and continue.
     pub unknown_keys: Vec<String>,
+    /// Soft warnings for recognised keys that fall back instead of aborting.
+    /// Today only an invalid `[notebook] code` (expected `"open"` or
+    /// `"collapsed"`). Callers should print each once and continue.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -296,6 +337,7 @@ pub fn load_from_paths(paths: &ConfigPaths) -> Result<LoadedConfig, ConfigError>
         settings: UserSettings::default(),
         source: ConfigSource::Defaults,
         unknown_keys: Vec::new(),
+        warnings: Vec::new(),
     })
 }
 
@@ -334,13 +376,16 @@ pub fn parse_toml(
 
     let mut settings = UserSettings::default();
     let mut unknown = Vec::new();
+    let mut warnings = Vec::new();
 
     for (key, val) in table {
         match key.as_str() {
             "display" => parse_display_section(&val, path, &mut settings, &mut unknown)?,
             "plot" => parse_plot_section(&val, path, &mut settings, &mut unknown)?,
             "viewer" => parse_viewer_section(&val, path, &mut settings, &mut unknown)?,
-            "notebook" => parse_notebook_section(&val, path, &mut settings, &mut unknown)?,
+            "notebook" => {
+                parse_notebook_section(&val, path, &mut settings, &mut unknown, &mut warnings)?
+            }
             "repl" => parse_repl_section(&val, path, &mut settings, &mut unknown)?,
             other => unknown.push(other.to_string()),
         }
@@ -353,6 +398,7 @@ pub fn parse_toml(
         settings,
         source,
         unknown_keys: unknown,
+        warnings,
     })
 }
 
@@ -467,6 +513,7 @@ fn parse_notebook_section(
     path: &Path,
     settings: &mut UserSettings,
     unknown: &mut Vec<String>,
+    warnings: &mut Vec<String>,
 ) -> Result<(), ConfigError> {
     let table = expect_table(val, path, "notebook")?;
     for (key, v) in table {
@@ -481,6 +528,20 @@ fn parse_notebook_section(
                     )
                 })?);
             }
+            // Soft-fail: a bad fold value must not abort startup. The
+            // built-in default (open) applies when `code` stays unset.
+            "code" => match v {
+                TomlValue::String(s) => match CodeFold::parse(s) {
+                    Some(fold) => settings.notebook.code = Some(fold),
+                    None => warnings.push(format!(
+                        "notebook.code: expected \"open\" or \"collapsed\"; got \"{s}\" (using open)"
+                    )),
+                },
+                other => warnings.push(format!(
+                    "notebook.code: expected a string, got {} (using open)",
+                    type_name(other)
+                )),
+            },
             other => unknown.push(format!("notebook.{other}")),
         }
     }
@@ -777,6 +838,57 @@ mod tests {
         // notebook.theme wins over plot.theme
         assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Dark);
         assert_eq!(loaded.settings.history_limit(), 250);
+        assert!(loaded.settings.notebook_code_open());
+        assert!(loaded.warnings.is_empty());
+    }
+
+    #[test]
+    fn notebook_code_collapsed_and_open() {
+        let collapsed = parse_toml(
+            "[notebook]\ncode = \"collapsed\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(collapsed.settings.notebook.code, Some(CodeFold::Collapsed));
+        assert!(!collapsed.settings.notebook_code_open());
+        assert!(collapsed.warnings.is_empty());
+
+        let open = parse_toml(
+            "[notebook]\ncode = \"OPEN\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(open.settings.notebook.code, Some(CodeFold::Open));
+        assert!(open.settings.notebook_code_open());
+    }
+
+    #[test]
+    fn notebook_code_invalid_warns_and_stays_open() {
+        let loaded = parse_toml(
+            "[notebook]\ncode = \"folded\"\ntheme = \"dark\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert!(loaded.settings.notebook.code.is_none());
+        assert!(loaded.settings.notebook_code_open());
+        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Dark));
+        assert!(loaded.unknown_keys.is_empty());
+        assert_eq!(loaded.warnings.len(), 1);
+        assert!(loaded.warnings[0].contains("folded"));
+        assert!(loaded.warnings[0].contains("using open"));
+
+        let bad_type = parse_toml(
+            "[notebook]\ncode = 1\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert!(bad_type.settings.notebook_code_open());
+        assert_eq!(bad_type.warnings.len(), 1);
+        assert!(bad_type.warnings[0].contains("expected a string"));
     }
 
     #[test]

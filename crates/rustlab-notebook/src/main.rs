@@ -735,17 +735,16 @@ fn run_cache_command(cmd: CacheCommands) -> anyhow::Result<()> {
 
 fn load_and_apply_user_config() -> anyhow::Result<UserSettings> {
     let loaded = rustlab_config::load()?;
-    if let Some(path) = loaded.source.path() {
-        for key in &loaded.unknown_keys {
-            eprintln!(
-                "warning: {}: unknown setting '{key}' (ignored)",
-                path.display()
-            );
-        }
-    } else {
-        for key in &loaded.unknown_keys {
-            eprintln!("warning: rustlab config: unknown setting '{key}' (ignored)");
-        }
+    let where_ = loaded
+        .source
+        .path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "rustlab config".to_string());
+    for key in &loaded.unknown_keys {
+        eprintln!("warning: {where_}: unknown setting '{key}' (ignored)");
+    }
+    for warning in &loaded.warnings {
+        eprintln!("warning: {where_}: {warning}");
     }
     apply_process_defaults(&loaded.settings);
     Ok(loaded.settings)
@@ -768,6 +767,8 @@ fn apply_process_defaults(settings: &UserSettings) {
         ColorTheme::Dark => Theme::Dark,
         ColorTheme::Light => Theme::Light,
     });
+    // `[notebook] code` — initial source disclosure. Missing key is open.
+    rustlab_notebook::render::set_rc_source_open(settings.notebook_code_open());
 }
 
 fn resolve_theme(cli: Option<CliTheme>, settings: &UserSettings) -> Theme {

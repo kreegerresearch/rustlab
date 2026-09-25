@@ -3243,7 +3243,8 @@ or `.rustlab/cache.db` (per-project function cache).
 commands → user rc → built-in defaults.
 
 Unknown keys warn once on stderr and are ignored. Invalid values abort
-startup with the file path and key.
+startup with the file path and key, except `[notebook] code`: an
+unrecognised value warns once and falls back to open.
 
 **Minimal** — a missing file is fine (built-in defaults apply). Smallest
 useful `~/.rustlabrc`:
@@ -3254,6 +3255,7 @@ useful `~/.rustlabrc`:
 theme = "dark"            # dark | light
 [notebook]
 theme = "dark"
+code = "open"             # open | collapsed
 ```
 
 **Typical** — display format plus plot and notebook defaults:
@@ -3268,6 +3270,7 @@ default_axis = "xy"       # ij | xy   (same as set_default_axis)
 
 [notebook]
 theme = "light"           # rustlab-notebook -t default
+code = "open"             # open | collapsed (source disclosure)
 ```
 
 Full annotated template (every v1 key, with comments):

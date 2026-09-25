@@ -7,10 +7,69 @@ use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
 use rustlab_script::WidgetValue;
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide `[notebook] code` from the user rc. Missing key stays open.
+/// Set once at notebook-binary startup; render threads read it.
+static RC_SOURCE_OPEN: AtomicBool = AtomicBool::new(true);
+
+thread_local! {
+    /// Notebook default for this render: frontmatter `code:`, else the rc
+    /// value, else open. Cell `<!-- code: -->` overrides it per block.
+    static NOTEBOOK_SOURCE_OPEN: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Record `[notebook] code` from a loaded rc. `true` is open.
+pub fn set_rc_source_open(open: bool) {
+    RC_SOURCE_OPEN.store(open, Ordering::Relaxed);
+}
+
+/// Effective rc fold. `true` when the key is missing or the process never
+/// loaded an rc (built-in default open).
+pub fn rc_source_open() -> bool {
+    RC_SOURCE_OPEN.load(Ordering::Relaxed)
+}
+
+fn notebook_source_open() -> bool {
+    NOTEBOOK_SOURCE_OPEN.with(|c| c.get())
+}
+
+/// Restores the previous notebook-level source-disclosure default on drop.
+pub struct NotebookSourceOpenGuard {
+    prev: bool,
+}
+
+impl NotebookSourceOpenGuard {
+    /// Install the notebook default used when a cell has no `<!-- code: -->`.
+    pub fn set(open: bool) -> Self {
+        let prev = NOTEBOOK_SOURCE_OPEN.with(|c| c.replace(open));
+        Self { prev }
+    }
+}
+
+impl Drop for NotebookSourceOpenGuard {
+    fn drop(&mut self) {
+        NOTEBOOK_SOURCE_OPEN.with(|c| c.set(self.prev));
+    }
+}
+
+/// Most-specific fold wins: cell directive, else frontmatter, else rc, else open.
+///
+/// `true` means the source disclosure starts open. Pass `None` for a level
+/// that was not set. An invalid value should already have been dropped
+/// (left as `None`) by the parser or rc loader.
+pub fn resolve_source_open(
+    cell: Option<bool>,
+    frontmatter: Option<bool>,
+    rc: Option<bool>,
+) -> bool {
+    cell.or(frontmatter).or(rc).unwrap_or(true)
+}
 
 /// How cross-notebook `.md` link destinations resolve in HTML output.
 ///
@@ -438,13 +497,15 @@ pub fn render_html(
                 hidden,
                 details,
                 grid_cols,
+                source_open,
             } => {
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
 
                 // Source, printed text, and errors share one indent (`.rl-cell`).
-                // The source alone sits in `<details class="rl-src" open>` so
-                // a reader can collapse it; output and errors stay visible.
+                // The source alone sits in `<details class="rl-src">` so a
+                // reader can collapse it; the `open` attribute follows the
+                // resolved initial state. Output and errors stay visible.
                 // Plots are emitted afterward, outside that wrapper, so they
                 // stay full width. `<!-- details: -->` keeps that source
                 // disclosure above the author's disclosure (not nested inside
@@ -455,8 +516,13 @@ pub fn render_html(
                 let show_output = !trimmed_output.is_empty();
                 let show_error = error.is_some();
                 let source_html = if show_source {
+                    // `open` omitted when the resolved state is collapsed.
+                    // Cell directive wins; otherwise the notebook default
+                    // (frontmatter, else rc, else open) installed by the caller.
+                    let open = source_open.unwrap_or_else(notebook_source_open);
+                    let open_attr = if open { " open" } else { "" };
                     format!(
-                        "<details class=\"rl-src\" open>\n<summary>rustlab</summary>\n\
+                        "<details class=\"rl-src\"{open_attr}>\n<summary>rustlab</summary>\n\
                          <pre class=\"source\"><code>{}</code></pre>\n</details>\n",
                         highlight_rustlab(source)
                     )
@@ -3384,6 +3450,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }
     }
 
@@ -3527,6 +3594,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3567,6 +3635,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         for (theme, accent) in [
             (Theme::Dark.colors(), "#cba6f7"),
@@ -3627,6 +3696,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3677,6 +3747,7 @@ mod tests {
             hidden: false,
             details: Some("Show sweep".to_string()),
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3712,6 +3783,91 @@ mod tests {
     }
 
     #[test]
+    fn resolve_source_open_cell_beats_frontmatter_beats_rc_beats_default() {
+        assert!(resolve_source_open(None, None, None));
+        assert!(!resolve_source_open(None, None, Some(false)));
+        assert!(resolve_source_open(None, Some(true), Some(false)));
+        assert!(!resolve_source_open(None, Some(false), Some(true)));
+        assert!(resolve_source_open(Some(true), Some(false), Some(false)));
+        assert!(!resolve_source_open(Some(false), Some(true), Some(true)));
+    }
+
+    /// Notebook default collapsed (frontmatter or rc). A cell directive
+    /// forces open, `hide` removes the disclosure, and `details` honors
+    /// the cell's open state on the sibling source disclosure.
+    #[test]
+    fn render_html_code_fold_respects_cell_notebook_hide_and_details() {
+        let src = "\
+<!-- code: open -->
+```rustlab
+x = 1
+```
+
+```rustlab
+y = 2
+```
+
+<!-- hide -->
+<!-- code: open -->
+```rustlab
+z = 3
+```
+
+<!-- details: More -->
+<!-- code: open -->
+```rustlab
+w = 4
+```
+";
+        let blocks = crate::parse::parse_notebook(src);
+        let rendered = crate::execute::execute_notebook(&blocks);
+        let _guard = NotebookSourceOpenGuard::set(false);
+        let html = render_html(
+            "Test",
+            &rendered,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let section = |idx: usize| {
+            let marker = format!("data-code-idx=\"{idx}\"");
+            let at = html
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing {marker}"));
+            let start = html[..at].rfind("<section").expect("section");
+            let rest = &html[start..];
+            let end = rest.find("</section>").expect("section end");
+            &rest[..end]
+        };
+        let open = section(0);
+        assert!(open.contains("<details class=\"rl-src\" open>"), "{open}");
+        let inherited = section(1);
+        assert!(
+            inherited.contains("<details class=\"rl-src\">"),
+            "cell without a directive inherits collapsed: {inherited}"
+        );
+        assert!(
+            !inherited.contains("<details class=\"rl-src\" open>"),
+            "{inherited}"
+        );
+        assert!(inherited.contains("class=\"source\""), "{inherited}");
+        let hidden = section(2);
+        assert!(!hidden.contains("class=\"rl-src\""), "hide wins: {hidden}");
+        assert!(!hidden.contains("class=\"source\""), "{hidden}");
+        let details = section(3);
+        assert!(
+            details.contains("<details class=\"rl-src\" open>"),
+            "{details}"
+        );
+        assert!(details.contains("<summary>More</summary>"), "{details}");
+        let src_at = details.find("class=\"rl-src\"").unwrap();
+        let author_at = details.find("class=\"code-details\"").unwrap();
+        assert!(src_at < author_at, "source disclosure stays above details");
+    }
+
+    #[test]
     fn render_html_error_block() {
         let blocks = vec![Rendered::Code {
             source: "bad".to_string(),
@@ -3722,6 +3878,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3747,6 +3904,7 @@ mod tests {
             hidden: true,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3776,6 +3934,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3859,6 +4018,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
@@ -3885,6 +4045,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let html = render_html(
             "Test",
