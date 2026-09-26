@@ -162,6 +162,13 @@ enum Command {
         /// (parallels --obsidian), so it is strictly opt-in.
         #[arg(long)]
         editable: bool,
+        /// Widen the path jail for notebook file I/O (`load`, `save`,
+        /// `savefig`, `saveanim`, `run`, embeds). Default: the watched
+        /// directory, or the notebook's own directory for a single file.
+        /// Paths that resolve outside the jail fail with
+        /// "path escapes notebook directory".
+        #[arg(long, value_name = "DIR")]
+        jail_root: Option<PathBuf>,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -250,6 +257,13 @@ enum Command {
         /// Indent JSON output for readability. Default: compact (one line).
         #[arg(long)]
         pretty: bool,
+        /// Widen the path jail for notebook file I/O (`load`, `save`,
+        /// `savefig`, `saveanim`, `run`, embeds). Default: the input
+        /// directory in directory mode, or the notebook's own directory
+        /// for a single file. Paths that resolve outside the jail fail
+        /// with "path escapes notebook directory".
+        #[arg(long, value_name = "DIR")]
+        jail_root: Option<PathBuf>,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -428,10 +442,14 @@ fn main() {
             port,
             no_browser,
             editable,
+            jail_root,
         } => {
             let theme = resolve_theme(theme, &settings);
             set_default_theme(theme);
             let colors = theme.colors();
+            // Explicit --jail-root: install on this thread for the re-render
+            // loop; the interactive server threads it through ServerOpts.
+            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
             // the interactive server: a single .md file serves one
@@ -453,6 +471,7 @@ fn main() {
                     port,
                     no_browser,
                     editable,
+                    jail_root,
                 };
                 if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -496,10 +515,15 @@ fn main() {
             stdin,
             cwd,
             pretty,
+            jail_root,
         } => {
             let theme = resolve_theme(theme, &settings);
             set_default_theme(theme);
             let colors = theme.colors();
+            // Explicit --jail-root applies to every render path below
+            // (single file, directory, JSON); directory renders otherwise
+            // default to the collection root inside cmd_render_dir.
+            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
 
             // JSON has stdout-only IO semantics (no output path, optional)
             // stdin) so it diverges from the file-based render pipeline
@@ -768,6 +792,40 @@ fn apply_process_defaults(settings: &UserSettings) {
         ColorTheme::Dark => Theme::Dark,
         ColorTheme::Light => Theme::Light,
     });
+}
+
+/// Install an explicit `--jail-root` for renders on this thread. The
+/// directory must exist (a typo here would otherwise silently fall back
+/// to the default jail and confuse the user later). Warns when `input`
+/// is not inside the root, because then even the notebooks' own relative
+/// paths (`savefig("x.svg")`) would be rejected.
+fn cli_jail_guard(
+    dir: Option<&PathBuf>,
+    input: &std::path::Path,
+) -> Option<rustlab_notebook::execute::JailRootGuard> {
+    let dir = dir?;
+    let root = match std::fs::canonicalize(dir) {
+        Ok(p) if p.is_dir() => p,
+        Ok(p) => {
+            eprintln!("error: --jail-root {} is not a directory", p.display());
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("error: --jail-root {}: {e}", dir.display());
+            std::process::exit(2);
+        }
+    };
+    if let Ok(ci) = std::fs::canonicalize(input) {
+        if !ci.starts_with(&root) {
+            eprintln!(
+                "warning: --jail-root {} does not contain {}; notebook-relative paths \
+                 (savefig, load, …) will be rejected — pass an ancestor of the notebooks",
+                root.display(),
+                ci.display()
+            );
+        }
+    }
+    Some(rustlab_notebook::execute::JailRootGuard::new(Some(root)))
 }
 
 fn resolve_theme(cli: Option<CliTheme>, settings: &UserSettings) -> Theme {

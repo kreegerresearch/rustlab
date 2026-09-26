@@ -30,7 +30,8 @@ pub async fn ws_upgrade(
 ) -> Response {
     let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
     if !super::auth::origin_allowed(&headers, port) {
-        return (StatusCode::FORBIDDEN, "bad origin").into_response();
+        let body = super::auth::origin_rejection_body(&headers, port);
+        return (StatusCode::FORBIDDEN, body).into_response();
     }
     match state.notebook(&slug) {
         Some(nb) => {
@@ -739,11 +740,22 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
 /// the page still gets the live-reload script in degenerate
 /// renders.
 pub fn inject_ws_client(html: &str) -> String {
+    inject_ws_client_nonced(html, None)
+}
+
+/// [`inject_ws_client`] with the server's CSP nonce on the injected
+/// `<script>` (the tag is ours, so stamping it here is safe).
+pub fn inject_ws_client_nonced(html: &str, nonce: Option<&str>) -> String {
+    let script = WS_CLIENT_SCRIPT.replacen(
+        "<script>",
+        &format!("<script{}>", crate::render::nonce_attr(nonce)),
+        1,
+    );
     if let Some(idx) = html.find("</head>") {
         let (head, rest) = html.split_at(idx);
-        format!("{head}{WS_CLIENT_SCRIPT}{rest}")
+        format!("{head}{script}{rest}")
     } else {
-        format!("{html}\n{WS_CLIENT_SCRIPT}")
+        format!("{html}\n{script}")
     }
 }
 

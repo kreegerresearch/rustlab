@@ -199,6 +199,7 @@ rustlab-notebook watch notebooks/                        # whole directory → i
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
+rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
 ```
 
 Behaviour:
@@ -1113,6 +1114,34 @@ wrong: the rewritten form rendered as a literal `\\;` on github.com.
 The rewriter has been removed; if the assumption ever needs to be
 revisited, do it with an actual GitHub round-trip, not a unit test.)
 
+#### Raw HTML in prose
+
+HTML output (files and `notebook watch`) sanitises raw HTML written in
+prose. Attribute-free formatting tags pass through unchanged — `<b>`,
+`<i>`, `<br>`, `<sub>`, `<sup>`, `<kbd>`, `<details>`/`<summary>`,
+`<div>`, `<span>`, `<hr>`, table tags, and similar. Any tag that carries
+an attribute (`<details open>`, `<span style=…>`, `<a href=…>`) and every
+tag off that list (`<script>`, `<iframe>`, `<img>`, `<style>`, …) is
+rendered as escaped text so you can see it did not apply; HTML comments
+are dropped. Links and images belong in markdown syntax; `javascript:` /
+`data:` / `vbscript:` / `blob:` link targets are neutralised, and images
+accept `data:image/*` only. Markdown output (`-f markdown`) passes raw
+HTML through untouched — GitHub and Obsidian apply their own filters.
+
+#### Path jail for notebook code
+
+Notebook code may only read and write under its jail root: `load`,
+`save`, `savefig`, `saveanim`, `run`, `figure("….html")` and
+`![[embeds]]` that resolve outside it fail with
+`path escapes notebook directory`. The root is the notebook's own
+directory for a single-file render, the collection root when you render
+or watch a directory (so `ch2/lesson.md` may `load("../data/x.csv")`),
+or whatever `--jail-root <DIR>` names (an ancestor of the notebooks — a
+root that does not contain them rejects their own relative paths).
+Relative paths still resolve
+against the notebook's own directory; `sub/../file` is fine when it stays
+inside. See `docs/security.md`.
+
 ### LaTeX (`--format latex`)
 
 Produces a `.tex` file and a `plots/<name>/` directory of SVG images.
@@ -1124,9 +1153,12 @@ rustlab-notebook render analysis.md -f latex
 ```
 
 The `.tex` file uses `article` class with `amsmath`, `booktabs`,
-`graphicx`, `svg`, `xcolor`, and `hyperref`. Formulas render natively.
-Compile with any LaTeX engine that supports `\includesvg` (e.g.,
-lualatex with inkscape, or pdflatex with the svg package).
+`graphicx`, `xcolor`, and `hyperref`. Formulas render natively. Plots
+are referenced with `\includegraphics{plots/<stem>/plot-N}`; rustlab
+writes a `.pdf` companion next to each `.svg` (via a fixed-argv Inkscape
+call, no TeX shell-escape) so the file compiles with plain `pdflatex` or
+`tectonic`. Without Inkscape the `.tex` is still written and a warning
+tells you which conversions were skipped.
 
 With `-t light` (default), the output is standard black-on-white LaTeX.
 With `-t dark`, the document uses `pagecolor` for a dark background with
@@ -1232,7 +1264,7 @@ Internally, both renderers take two arguments to support this:
 
 - `plot_dir: &Path` — where to write the SVGs on disk
 - `plot_href_prefix: &str` — what relative path to embed in the rendered
-  document (markdown `![alt](…)` and LaTeX `\includesvg{…}`)
+  document (markdown `![alt](…)` and LaTeX `\includegraphics{…}`)
 
 Splitting "where the bytes go" from "what the document references" is
 what lets the on-disk layout be reorganised without touching the

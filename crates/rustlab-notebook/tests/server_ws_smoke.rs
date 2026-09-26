@@ -63,6 +63,7 @@ fn single_state_with(
         render_tx: std::sync::OnceLock::new(),
         csp_nonce: "testnonce".to_string(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
+        jail_root: None,
     })
 }
 
@@ -1019,7 +1020,10 @@ fn render_linked(
     let expanded = rustlab_notebook::embed::expand_embeds(&source, parent, parent);
     let blocks = rustlab_notebook::parse::parse_notebook(&expanded);
     let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
-    let html = rustlab_notebook::render::render_html(
+    // Nonces are stamped at render time (never by the serve path), so the
+    // helper mirrors `render_for_server_cancellable` and passes the
+    // server's nonce into the renderer and the WS-client injector.
+    let html = rustlab_notebook::render::render_html_nonced(
         &title,
         &rendered,
         plot,
@@ -1027,10 +1031,15 @@ fn render_linked(
         theme,
         None,
         link,
+        Some(NAV_NONCE),
     );
     let html = rustlab_notebook::server::assets::rewrite_cdn_urls(&html);
-    rustlab_notebook::server::ws::inject_ws_client(&html)
+    rustlab_notebook::server::ws::inject_ws_client_nonced(&html, Some(NAV_NONCE))
 }
+
+/// CSP nonce the directory-navigation test installs on its server state
+/// and expects to find on the served page's own scripts.
+const NAV_NONCE: &str = "navnonce";
 
 /// Directory watch: `a.md` links to `b.md`. Following the rendered href
 /// and opening B's WebSocket with a browser Origin must succeed.
@@ -1089,8 +1098,9 @@ async fn directory_link_navigation_opens_target_websocket() {
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
-        csp_nonce: "navnonce".into(),
+        csp_nonce: NAV_NONCE.into(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
+        jail_root: None,
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1208,8 +1218,9 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
-        csp_nonce: "navnonce".into(),
+        csp_nonce: NAV_NONCE.into(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
+        jail_root: None,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

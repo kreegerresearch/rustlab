@@ -53,6 +53,19 @@ pub struct ServerOpts {
     /// source `.md` files (parallels the "only `--obsidian` modifies"
     /// rule), so it is strictly opt-in.
     pub editable: bool,
+    /// Explicit path-jail root (`--jail-root`). `None` → the collection
+    /// root in directory mode, the notebook's own directory otherwise.
+    pub jail_root: Option<PathBuf>,
+}
+
+/// Per-render page context the server threads into the renderer: the CSP
+/// nonce for renderer-owned `<script>` tags and the path-jail root for
+/// notebook file I/O. `Default` (no nonce, no root) is what tests and the
+/// static render path use.
+#[derive(Clone, Copy, Default)]
+pub(super) struct PageCtx<'a> {
+    pub nonce: Option<&'a str>,
+    pub jail_root: Option<&'a Path>,
 }
 
 /// Start the interactive server against `input` and block until
@@ -67,7 +80,27 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 
     // ── 1+2. Discover + render every notebook, build server state ──
     let csp_nonce = auth::generate_csp_nonce();
-    let state = build_state(&canonical_input, is_dir, theme, opts.editable, csp_nonce)?;
+    // Jail: explicit --jail-root, else the collection root (a directory
+    // is one trust unit), else each notebook's own directory.
+    let jail_root = match opts.jail_root.clone() {
+        Some(p) => Some(
+            std::fs::canonicalize(&p)
+                .with_context(|| format!("resolving --jail-root {}", p.display()))?,
+        ),
+        None if is_dir => Some(canonical_input.clone()),
+        None => None,
+    };
+    if let Some(root) = &jail_root {
+        eprintln!("[watch] notebook file I/O jailed to {}", root.display());
+    }
+    let state = build_state(
+        &canonical_input,
+        is_dir,
+        theme,
+        opts.editable,
+        csp_nonce,
+        jail_root,
+    )?;
 
     // ── 3. Bind ───────────────────────────────────────────────────
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -131,6 +164,7 @@ fn build_state(
     theme: &'static ThemeColors,
     editable: bool,
     csp_nonce: String,
+    jail_root: Option<PathBuf>,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
         // Same listing rule as the static build: partials are transcluded,
@@ -270,6 +304,10 @@ fn build_state(
             editable,
             nav.as_ref(),
             &link,
+            PageCtx {
+                nonce: Some(&csp_nonce),
+                jail_root: jail_root.as_deref(),
+            },
         )
         .with_context(|| format!("rendering {} for server", path.display()))?;
         if !is_dir {
@@ -338,6 +376,7 @@ fn build_state(
         render_tx: std::sync::OnceLock::new(),
         csp_nonce,
         bind_port: std::sync::atomic::AtomicU16::new(0),
+        jail_root,
     }))
 }
 
@@ -441,6 +480,10 @@ pub(super) struct ServerRender {
     pub widget_decls: Vec<crate::widget::WidgetDecl>,
 }
 
+// Mirrors `render_for_server_cancellable`'s parameter list minus the
+// cancel/cache/force trio; bundling into a params struct is a separate
+// refactor (the call sites read better positional for now).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_for_server(
     input: &Path,
     theme: &'static ThemeColors,
@@ -449,11 +492,12 @@ pub(super) fn render_for_server(
     editable: bool,
     nav: Option<&crate::NotebookNav>,
     link: &crate::render::LinkMode,
+    page: PageCtx<'_>,
 ) -> Result<ServerRender> {
     // A never-tripped flag → the cancellable path can't return `None`.
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
     Ok(render_for_server_cancellable(
-        input, theme, plot_root, slug, editable, nav, link, never, None, None, None,
+        input, theme, plot_root, slug, editable, nav, link, never, None, None, None, page,
     )?
     .expect("render with a never-set cancel flag cannot be cancelled"))
 }
@@ -462,6 +506,9 @@ pub(super) fn render_for_server(
 /// `cancel` trips mid-render (a newer save preempted this one); the
 /// coordinator discards that result. See `render_loop` for the
 /// preemption wiring.
+// Twelve parameters: the render inputs, the preemption trio, and the
+// per-render page context. See the note on `render_for_server`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_for_server_cancellable(
     input: &Path,
     theme: &'static ThemeColors,
@@ -474,8 +521,13 @@ pub(super) fn render_for_server_cancellable(
     widget_overrides: Option<&std::collections::BTreeMap<String, rustlab_script::WidgetValue>>,
     cache: Option<&mut crate::cache::NotebookCache>,
     force_from: Option<usize>,
+    page: PageCtx<'_>,
 ) -> Result<Option<ServerRender>> {
     use crate::{embed, execute, parse, render};
+
+    // Path jail for this render (thread-local; the render runs on a
+    // spawn_blocking thread, so it must be installed here, not in start()).
+    let _jail = execute::JailRootGuard::new(page.jail_root.map(Path::to_path_buf));
 
     // Match `cmd_render`/`cmd_render_cached`: change the process cwd to the
     // notebook's parent directory for the duration of execution so the
@@ -541,17 +593,20 @@ pub(super) fn render_for_server_cancellable(
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
-    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, nav, link);
+    let html = render::render_html_nonced(
+        &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
+    );
     let html = assets::rewrite_cdn_urls(&html);
-    let html = ws::inject_ws_client(&html);
-    let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
+    let html = ws::inject_ws_client_nonced(&html, page.nonce);
+    let html =
+        page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
     // Inline cell editing needs --editable AND an embed-free notebook:
     // cell saves splice the host `.md` by executable ordinal, which is
     // only sound when every rendered block comes from that file. The
     // check runs on the *host* source (pre-expansion), each render, so
     // an embed added mid-session revokes editing on the next push.
     let cell_edit = editable && !embed::has_markdown_embeds(&source);
-    let html = cell::inject_cell_client(&html, theme, cell_edit);
+    let html = cell::inject_cell_client_nonced(&html, theme, cell_edit, page.nonce);
     Ok(Some(ServerRender { html, widget_decls }))
 }
 
@@ -775,6 +830,7 @@ mod tests {
             Theme::default().colors(),
             false,
             "testnonce".into(),
+            None,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -799,6 +855,7 @@ mod tests {
             Theme::default().colors(),
             false,
             "testnonce".into(),
+            None,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -824,6 +881,7 @@ mod tests {
             Theme::default().colors(),
             false,
             "testnonce".into(),
+            None,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -853,6 +911,7 @@ mod tests {
             Theme::default().colors(),
             false,
             "testnonce".into(),
+            None,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -900,7 +959,7 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         std::fs::write(dir.path().join("gamma.md"), "# Gamma\n\nthird.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let app = serve_test(state);
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
@@ -952,7 +1011,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
         let canon = std::fs::canonicalize(&root).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         assert_eq!(
             state.order.len(),
             1,
@@ -976,7 +1035,7 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -996,7 +1055,7 @@ mod tests {
         std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
         std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
         match state.link_mode_for(deep_slug) {
             crate::render::LinkMode::Server {
@@ -1035,7 +1094,7 @@ mod tests {
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
         // Served listing.
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let served: Vec<String> = state
             .order
             .iter()
@@ -1093,7 +1152,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
         let app = serve_test(state);
         let index = get_body(&app, "/").await;
@@ -1135,7 +1194,7 @@ mod tests {
         std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
 
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         // Read slugs from the state rather than hardcoding slugify/dedup
         // output — walk order decides which same-stem file carries `-2`.
         let slug_of = |rel: &str| -> String {
@@ -1224,7 +1283,7 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nonly one.\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
         assert!(state.single, "single-file mode");
         let slug = state.order[0].clone();
         let app = serve_test(state);
@@ -1264,7 +1323,7 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nSee [other](ch2/notes.md).\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
         let slug = state.order[0].clone();
         let app = serve_test(state);
         let page = get_body(&app, &format!("/n/{slug}")).await;
@@ -1286,7 +1345,7 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         assert!(!state.single, "directory mode is not single");
         assert_eq!(state.order.len(), 2);
         assert!(state.notebook("alpha").is_some());
@@ -1349,7 +1408,7 @@ mod tests {
         std::fs::write(&beta, "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false, "testnonce".into()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let nb_alpha = state.notebook("alpha").unwrap().clone();
         let nb_beta = state.notebook("beta").unwrap().clone();
         let mut sub_alpha = nb_alpha.broadcast.subscribe();

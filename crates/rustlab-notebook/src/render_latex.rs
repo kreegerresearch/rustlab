@@ -467,8 +467,13 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
             }
             Event::Html(html) | Event::InlineHtml(html) => {
                 // Raw HTML is never passed through to TeX (XSS / write18
-                // surface). Emit as escaped text so authors still see it.
-                out.push_str(&escape_latex(&html));
+                // surface). HTML comments (author notes, directives that
+                // survived parsing) are dropped; other markup is emitted as
+                // escaped text so authors still see it.
+                let visible = strip_html_comments(&html);
+                if !visible.trim().is_empty() {
+                    out.push_str(&escape_latex(&visible));
+                }
             }
             _ => {}
         }
@@ -524,6 +529,21 @@ fn escape_latex(s: &str) -> String {
             _ => out.push(ch),
         }
     }
+    out
+}
+
+/// Remove `<!-- … -->` spans (an unterminated comment swallows the rest).
+fn strip_html_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        rest = match rest[start + 4..].find("-->") {
+            Some(end) => &rest[start + 4 + end + 3..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
     out
 }
 

@@ -49,7 +49,7 @@ pub use eval::value::{default_number_format, set_default_number_format, NumberFo
 pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;
-pub use path_jail::{check_path, path_jail, set_path_jail, PathJailGuard};
+pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuard};
 
 /// Parse a `.rlab` source file into a statement list. Thin convenience
 /// over `read_to_string` + `lexer::tokenize` + `parser::parse`; mirrors

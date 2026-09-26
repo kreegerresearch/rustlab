@@ -1,4 +1,5 @@
-//! Loopback Origin + Host checks for the interactive `notebook watch` server.
+//! Loopback Origin + Host checks and the CSP for the interactive
+//! `notebook watch` server.
 //!
 //! There is no per-run session token. Embedding a secret in every page
 //! (`window.__RL_TOKEN`) does not authenticate local callers — any process
@@ -15,6 +16,16 @@
 //!
 //! Bind remains `127.0.0.1` only. Other local processes can still reach
 //! that port; that residual risk is documented in `docs/security.md`.
+//!
+//! **CSP nonce.** One nonce is generated per server process and stamped
+//! at *render time* on the script tags the renderer and page chrome emit
+//! (`render::render_html_nonced`, `ws::inject_ws_client_nonced`,
+//! `page::inject_chrome_nonced`, `cell::inject_cell_client_nonced`). Served
+//! HTML is never post-processed to add nonces: doing that would bless any
+//! `<script>` that reached the document through author content. The nonce
+//! is per-process rather than per-response because pages are rendered once
+//! and cached; it is not a secret from local processes (they can GET the
+//! page), which is the accepted residual risk above.
 
 use axum::http::{header, HeaderMap, StatusCode};
 use rand::RngCore;
@@ -62,6 +73,33 @@ pub fn host_is_loopback(headers: &HeaderMap, port: u16) -> bool {
     loopback_hosts(port).iter().any(|h| h == &host)
 }
 
+/// Human-readable 403 body for a rejected `Host` (someone reached the
+/// server through a hostname alias, a proxy, or a rebinding attempt).
+pub fn host_rejection_body(headers: &HeaderMap, port: u16) -> String {
+    let got = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<missing>");
+    format!(
+        "rustlab-notebook watch only answers requests addressed to \
+         127.0.0.1:{port}, localhost:{port} or [::1]:{port} (got Host: {got}). \
+         Open the URL printed at startup; see docs/security.md.",
+    )
+}
+
+/// Human-readable 403 body for a rejected `Origin` on a mutate path.
+pub fn origin_rejection_body(headers: &HeaderMap, port: u16) -> String {
+    let got = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<missing>");
+    format!(
+        "this request must come from a page served by rustlab-notebook watch: \
+         Origin must be http://127.0.0.1:{port}, http://localhost:{port} or \
+         http://[::1]:{port} (got Origin: {got}). See docs/security.md.",
+    )
+}
+
 /// Build the Content-Security-Policy header value for watch-served pages.
 ///
 /// `connect-src` does not list `ws://[::1]:*`. Chromium treats that token
@@ -90,40 +128,6 @@ pub fn authorize_mutate(headers: &HeaderMap, port: u16) -> Result<(), StatusCode
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(())
-}
-
-/// Add `nonce="…"` to every `<script` opening tag that lacks one.
-pub fn prepare_served_html(html: &str, nonce: &str) -> String {
-    inject_script_nonces(html, nonce)
-}
-
-/// Add `nonce="…"` to every `<script` / `<script ` opening tag that lacks one.
-fn inject_script_nonces(html: &str, nonce: &str) -> String {
-    let mut out = String::with_capacity(html.len() + 64);
-    let bytes = html.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i..].starts_with(b"<script") {
-            // Find end of opening tag.
-            if let Some(rel) = html[i..].find('>') {
-                let tag = &html[i..i + rel + 1];
-                if tag.contains("nonce=") {
-                    out.push_str(tag);
-                } else if let Some(stripped) = tag.strip_suffix("/>") {
-                    // unlikely for script
-                    out.push_str(&format!("{} nonce=\"{}\"/>", stripped.trim_end(), nonce));
-                } else {
-                    out.push_str(&tag[..tag.len() - 1]);
-                    out.push_str(&format!(" nonce=\"{}\">", nonce));
-                }
-                i += rel + 1;
-                continue;
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
-    }
-    out
 }
 
 #[cfg(test)]
@@ -188,19 +192,29 @@ mod tests {
     }
 
     #[test]
+    fn rejection_bodies_name_the_expected_values() {
+        let h = headers_with(header::HOST, "evil.example:8042");
+        let body = host_rejection_body(&h, 8042);
+        assert!(body.contains("127.0.0.1:8042"), "{body}");
+        assert!(body.contains("evil.example:8042"), "{body}");
+        let body = origin_rejection_body(&HeaderMap::new(), 8042);
+        assert!(body.contains("http://localhost:8042"), "{body}");
+        assert!(body.contains("<missing>"), "{body}");
+    }
+
+    #[test]
+    fn csp_uses_nonce_and_strict_dynamic_without_unsafe_inline_scripts() {
+        let csp = csp_header("abc");
+        assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
+        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+    }
+
+    #[test]
     fn csp_omits_invalid_ipv6_wildcard() {
         let csp = csp_header("abc");
         assert!(!csp.contains("[::1]"));
         assert!(csp.contains("connect-src 'self' ws://127.0.0.1:* ws://localhost:*"));
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
-    }
-
-    #[test]
-    fn prepare_served_html_adds_nonce_not_token() {
-        let html = "<html><head></head><body><script>1</script></body></html>";
-        let out = prepare_served_html(html, "abc");
-        assert!(out.contains("nonce=\"abc\""));
-        assert!(!out.contains("__RL_TOKEN"));
-        assert!(!out.contains("rl-token"));
     }
 }

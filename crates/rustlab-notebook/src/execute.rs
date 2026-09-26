@@ -6,7 +6,60 @@ use rustlab_plot::{
 };
 use rustlab_script::{Evaluator, WidgetValue};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+thread_local! {
+    /// Jail root every notebook executed on this thread is confined to.
+    /// `None` means "the notebook's own directory" (the process cwd at
+    /// execute time, which the render entry points set via `CwdGuard`).
+    /// Directory renders and the watch server set this to the collection
+    /// root so nested notebooks can share `../data/`; `--jail-root` widens
+    /// it further. Thread-local rather than process-global so parallel
+    /// test renders cannot leak a root into each other.
+    static JAIL_ROOT_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that sets the jail root for notebooks executed on this
+/// thread and restores the previous value on drop. See
+/// [`JAIL_ROOT_OVERRIDE`].
+pub struct JailRootGuard {
+    prev: Option<PathBuf>,
+}
+
+impl JailRootGuard {
+    pub fn new(root: Option<PathBuf>) -> Self {
+        let prev = JAIL_ROOT_OVERRIDE.with(|j| j.replace(root));
+        Self { prev }
+    }
+}
+
+impl Drop for JailRootGuard {
+    fn drop(&mut self) {
+        JAIL_ROOT_OVERRIDE.with(|j| *j.borrow_mut() = self.prev.take());
+    }
+}
+
+/// The jail root currently installed on this thread, if any.
+pub fn jail_root_override() -> Option<PathBuf> {
+    JAIL_ROOT_OVERRIDE.with(|j| j.borrow().clone())
+}
+
+/// Install the script-level path jail for one notebook execution: root =
+/// the thread's override (collection root / `--jail-root`) or, failing
+/// that, the notebook directory; relative paths resolve against the
+/// notebook directory (the cwd *now*), captured once so a later cwd move
+/// by another thread cannot change the verdict mid-render.
+fn install_path_jail() -> rustlab_script::PathJailGuard {
+    let notebook_dir = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let root = jail_root_override()
+        .and_then(|p| p.canonicalize().ok())
+        .or_else(|| notebook_dir.clone());
+    rustlab_script::PathJailGuard::with_base(root, notebook_dir)
+}
 
 /// Build the widget value table for one render: every declared widget's
 /// default, with live `overrides` (slider drags from the interactive server)
@@ -195,12 +248,8 @@ fn execute_core(
 
     set_plot_context(PlotContext::Notebook);
 
-    // Jail file I/O to the notebook directory (process cwd is already the
-    // notebook parent via CwdGuard). Cleared when this guard drops.
-    let jail_root = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.canonicalize().ok());
-    let _jail = rustlab_script::PathJailGuard::new(jail_root);
+    // Jail file I/O (see `install_path_jail`). Cleared when this guard drops.
+    let _jail = install_path_jail();
 
     // Widget value table for this render: declared defaults overlaid with
     // any live overrides. Drives both `widget(name)` resolution and the
@@ -475,10 +524,7 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
     // PlotContext::Notebook is sticky: figure() calls cannot override it.
     set_plot_context(PlotContext::Notebook);
 
-    let jail_root = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.canonicalize().ok());
-    let _jail = rustlab_script::PathJailGuard::new(jail_root);
+    let _jail = install_path_jail();
 
     let widgets = Arc::new(build_widget_table(blocks, None));
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
@@ -1057,26 +1103,30 @@ mod tests {
 
     // ─── Notebook figure capture ──────────────────────────────────────────
 
-    fn tmp_path(tag: &str) -> String {
-        // Relative to the process cwd so path-jail (notebook directory)
-        // accepts the write. Absolute /tmp paths are rejected by design.
-        format!("nb_figs_{}_{}.svg", std::process::id(), tag)
+    /// Run `f` with the process cwd inside a fresh temp directory, holding
+    /// the render lock so no concurrent render moves cwd underneath us.
+    /// The path jail installed by `execute_notebook` is the cwd at
+    /// execute time, so `savefig("name.svg")` lands in the temp dir and
+    /// disappears with it — no absolute `/tmp` paths (rejected by the
+    /// jail) and no litter in the crate directory.
+    fn in_temp_cwd<T>(f: impl FnOnce() -> T) -> T {
+        let _cwd = crate::CwdGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        f()
     }
 
     /// Multiple `savefig()` calls in a single block produce separate snapshots.
     #[test]
     fn notebook_captures_every_savefig_in_block() {
-        let a = tmp_path("a");
-        let b = tmp_path("b");
-        let src =
-            format!("x = 0:10; plot(x, sin(x)); savefig('{a}'); plot(x, cos(x)); savefig('{b}');");
+        let src = "x = 0:10; plot(x, sin(x)); savefig('figs_a.svg'); \
+                   plot(x, cos(x)); savefig('figs_b.svg');"
+            .to_string();
         let blocks = vec![Block::Code {
             source: src,
             directives: crate::parse::CodeDirectives::default(),
         }];
-        let rendered = execute_notebook(&blocks);
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
+        let rendered = in_temp_cwd(|| execute_notebook(&blocks));
         match &rendered[0] {
             Rendered::Code { figures, error, .. } => {
                 assert!(error.is_none(), "unexpected error: {error:?}");
@@ -1415,18 +1465,14 @@ mod tests {
     /// the second `plot()` would block on a keypress.
     #[test]
     fn notebook_multiple_figures_in_block() {
-        let a = tmp_path("multi_a");
-        let b = tmp_path("multi_b");
-        let src = format!(
-            "figure(); plot(1:5); savefig('{a}'); figure(); plot(1:5, (1:5).^2); savefig('{b}');"
-        );
+        let src = "figure(); plot(1:5); savefig('multi_a.svg'); \
+                   figure(); plot(1:5, (1:5).^2); savefig('multi_b.svg');"
+            .to_string();
         let blocks = vec![Block::Code {
             source: src,
             directives: crate::parse::CodeDirectives::default(),
         }];
-        let rendered = execute_notebook(&blocks);
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
+        let rendered = in_temp_cwd(|| execute_notebook(&blocks));
         match &rendered[0] {
             Rendered::Code {
                 figures,

@@ -27,9 +27,24 @@ Workflow Rule 12).
   must present a matching loopback `Host` or it is rejected. There is
   no session token. Other processes on the same machine can still
   reach the loopback port. See `docs/security.md`.
-- **Notebook file I/O is jailed to the notebook directory.** Embeds,
-  `run` / `load` / `save` / `savefig` / `saveanim` that resolve outside
-  that directory error with `path escapes notebook directory`.
+- **Notebook file I/O is jailed.** Embeds, `run` / `load` / `save` /
+  `savefig` / `saveanim` / `figure("….html")` must resolve under the
+  jail root or error with `path escapes notebook directory`. The root is
+  the notebook's own directory for a single-file `render` / `watch`, the
+  collection root for a directory (nested notebooks may read
+  `../data/`), or `--jail-root <DIR>` on either command. `sub/../x` is
+  fine when it stays inside; absolute paths outside the root (including
+  `/tmp`) are rejected. REPL and `rustlab run` are unchanged.
+- **Raw HTML in notebook prose is sanitised in HTML output.** Only
+  attribute-free formatting tags (`<b>`, `<br>`, `<sub>`, `<kbd>`,
+  `<details>`/`<summary>`, `<div>`, table tags, …) pass through; any tag
+  with an attribute and every other tag (`<script>`, `<iframe>`,
+  `<img>`, `<a>`, …) renders as escaped text, and HTML comments are
+  dropped. `javascript:` / `data:` / `vbscript:` / `blob:` links are
+  neutralised; images keep `data:image/*` only. Migration: write links
+  and images in markdown; use `> [!NOTE]` callouts and the
+  `<!-- details: -->` directive instead of attributed HTML. Markdown
+  output (`-f markdown`) is unaffected.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -59,9 +74,14 @@ Workflow Rule 12).
   defaults. Unknown keys warn once; invalid values abort with path + key.
   Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
 - Security hardening for notebooks / watch / PDF / viewer (see
-  `docs/security.md`): CSP on watch pages, HTML-escaped math restore,
-  dangerous URL scheme stripping, viewer Unix socket mode `0600`, and a
-  32 MiB IPC frame size cap.
+  `docs/security.md`): CSP on watch pages with the nonce stamped at
+  render time on rustlab's own script tags (no inline event handlers
+  remain in rendered pages), HTML-escaped math restore, raw-HTML
+  allow-list and dangerous URL scheme stripping (index page included),
+  viewer Unix socket mode `0600`, and a 32 MiB IPC frame size cap.
+- `rustlab-notebook render` / `watch` gained `--jail-root <DIR>` to
+  widen the notebook file-I/O jail. Inkscape conversion failures now
+  report the tail of Inkscape's stderr.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).

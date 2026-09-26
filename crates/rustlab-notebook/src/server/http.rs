@@ -166,10 +166,15 @@ pub struct ServerState {
     /// WS `widget_update` / `run_block` handlers send requests here
     /// (reusing the same debounce + preemption path as a file save).
     pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<super::render_loop::RenderRequest>>,
-    /// CSP `script-src` nonce applied to every served HTML page.
+    /// CSP `script-src` nonce stamped at render time on the scripts the
+    /// renderer and page chrome emit (see `server::auth` module docs).
     pub csp_nonce: String,
     /// Bound TCP port (set after listen). Used for Origin allowlisting.
     pub bind_port: std::sync::atomic::AtomicU16,
+    /// Path-jail root for notebook file I/O: the collection root in
+    /// directory mode, `--jail-root` when given, `None` (= each notebook's
+    /// own directory) for a single-file serve.
+    pub jail_root: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -262,7 +267,8 @@ async fn require_loopback_host(
 ) -> Response {
     let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
     if !auth::host_is_loopback(request.headers(), port) {
-        return (StatusCode::FORBIDDEN, "bad host").into_response();
+        let body = auth::host_rejection_body(request.headers(), port);
+        return (StatusCode::FORBIDDEN, body).into_response();
     }
     next.run(request).await
 }
@@ -280,8 +286,9 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         .collect();
     let body = state.index_body.read().await;
     let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
-    let html = ws::inject_ws_client(&html);
-    let html = auth::prepare_served_html(&html, &state.csp_nonce);
+    // The WS client is the only script on the index page; it gets the
+    // nonce here. The index body itself was sanitised at render time.
+    let html = ws::inject_ws_client_nonced(&html, Some(&state.csp_nonce));
     html_response(&state, html)
 }
 
@@ -297,8 +304,9 @@ async fn notebook_page(
 ) -> Response {
     match state.notebook(&slug) {
         Some(nb) => {
+            // Nonces were stamped when this HTML was rendered
+            // (`render_for_server_cancellable`); nothing is added here.
             let html = nb.html.read().await.clone();
-            let html = auth::prepare_served_html(&html, &state.csp_nonce);
             html_response(&state, html)
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
@@ -330,7 +338,8 @@ async fn save_source(
     // Origin is required (missing or non-loopback → 403). Host was
     // already checked by `require_loopback_host`.
     if auth::authorize_mutate(&headers, port).is_err() {
-        return (StatusCode::FORBIDDEN, "bad origin").into_response();
+        let body = auth::origin_rejection_body(&headers, port);
+        return (StatusCode::FORBIDDEN, body).into_response();
     }
 
     let Some(nb) = state.notebook(&slug) else {
@@ -450,6 +459,7 @@ mod tests {
             render_tx: std::sync::OnceLock::new(),
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         })
     }
 
@@ -587,6 +597,7 @@ mod tests {
             render_tx: std::sync::OnceLock::new(),
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         });
         let app = router(editable_state.clone());
         let res = app
@@ -634,6 +645,7 @@ mod tests {
             render_tx: std::sync::OnceLock::new(),
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         });
         let app = router(editable_state);
         let res = app
@@ -678,6 +690,7 @@ mod tests {
             render_tx: std::sync::OnceLock::new(),
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         });
         let app = router(editable_state);
         let res = app
@@ -737,6 +750,91 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The CSP nonce must never be added to a `<script>` that arrived
+    /// through content: serving is not allowed to post-process nonces
+    /// in. Only the WS client the server injects on `/` carries one.
+    #[tokio::test]
+    async fn index_page_does_not_bless_content_scripts_with_nonce() {
+        let plot_dir = TempDir::new().unwrap();
+        let src = plot_dir.path().join("nb.md");
+        std::fs::write(&src, "# nb\n").unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: false,
+            link_slugs: HashMap::new(),
+            single: false,
+            theme: Theme::Dark.colors(),
+            index_title: "Collection".to_string(),
+            // Simulates a body that somehow still carries live markup —
+            // the sanitiser normally prevents this at render time.
+            index_body: tokio::sync::RwLock::new(
+                "<p>x</p><script>window.__evil=1</script>".to_string(),
+            ),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        let app = router(state);
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 256 * 1024).await.unwrap();
+        let s = String::from_utf8_lossy(&body);
+        assert!(
+            s.contains("<script>window.__evil=1</script>"),
+            "content script must be served exactly as stored, unnonced: {s:.300}"
+        );
+        assert!(
+            s.contains("<script nonce=\"testnonce\">"),
+            "server-injected WS client must carry the nonce"
+        );
+        assert_eq!(
+            s.matches("nonce=\"testnonce\"").count(),
+            1,
+            "exactly one nonced script on the index page"
+        );
+    }
+
+    #[tokio::test]
+    async fn notebook_page_is_served_verbatim_with_csp() {
+        // Rendered HTML is stored with nonces already stamped; serving
+        // adds the header and nothing else.
+        let app = router(single_state("<script nonce=\"testnonce\">1</script><script>2</script>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/n/nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get("content-security-policy").is_some());
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(
+            body.as_ref(),
+            b"<script nonce=\"testnonce\">1</script><script>2</script>"
+        );
     }
 
     #[tokio::test]
