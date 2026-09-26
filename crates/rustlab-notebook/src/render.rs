@@ -673,7 +673,7 @@ pub fn render_html(
     let body_class = if has_toc { "" } else { " class=\"no-toc\"" };
     let sidebar_block = if has_toc {
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar')?.classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+            "<button type=\"button\" class=\"nav-toggle\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
              <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
             title = escape_html(title),
             nav_items = nav_items,
@@ -695,13 +695,29 @@ pub fn render_html(
 <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.body, {{
-    delimiters: [
-      {{left: '\\[', right: '\\]', display: true}},
-      {{left: '\\(', right: '\\)', display: false}}
-    ]
-  }});"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"></script>
+<script>
+  // No inline event handlers: watch CSP uses a nonce + 'strict-dynamic',
+  // which blocks onload/onclick. Deferred scripts run before DOMContentLoaded,
+  // so renderMathInElement exists when this listener fires. The click
+  // listener is delegated so a live-reload swap of the hamburger keeps working.
+  document.addEventListener('DOMContentLoaded', function () {{
+    if (window.renderMathInElement) {{
+      window.renderMathInElement(document.body, {{
+        delimiters: [
+          {{left: '\\[', right: '\\]', display: true}},
+          {{left: '\\(', right: '\\)', display: false}}
+        ]
+      }});
+    }}
+  }});
+  document.addEventListener('click', function (ev) {{
+    var t = ev.target && ev.target.closest && ev.target.closest('button.nav-toggle');
+    if (!t) return;
+    var nav = document.querySelector('nav.sidebar');
+    if (nav) nav.classList.toggle('open');
+  }});
+</script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   html {{ color-scheme: {color_scheme}; }}
@@ -3712,6 +3728,15 @@ mod tests {
         );
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
+        // Watch CSP (nonce + strict-dynamic) blocks inline event handlers,
+        // so auto-render must start from a script body, not onload=.
+        assert!(html.contains("DOMContentLoaded"));
+        assert!(html.contains("renderMathInElement"));
+        assert!(!html.contains("onload="), "inline onload is blocked by CSP");
+        assert!(
+            !html.contains("onclick="),
+            "inline onclick is blocked by CSP"
+        );
     }
 
     #[test]
@@ -3740,6 +3765,8 @@ mod tests {
             &LinkMode::single_file(),
         );
         assert!(html.contains("nav-toggle"));
+        assert!(html.contains("button.nav-toggle"));
+        assert!(!html.contains("onclick="));
     }
 
     #[test]

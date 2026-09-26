@@ -64,7 +64,13 @@ on the watch origin can save; a page on another origin cannot.
   applied (breaks script/tag breakout inside `$…$`).
 - Watch-served pages send a Content-Security-Policy with
   `default-src 'self'`, nonce + `'strict-dynamic'` for scripts, and
-  loopback-only `connect-src` for WebSockets.
+  loopback-only `connect-src` for WebSockets (`'self'`,
+  `ws://127.0.0.1:*`, `ws://localhost:*`). A `ws://[::1]:*` source is
+  not valid CSP and is omitted; the listener binds `127.0.0.1`.
+- Pages do not use inline event handlers (`onload`, `onclick`). KaTeX
+  auto-render and the sidebar toggle are ordinary `<script>` bodies,
+  which receive the page nonce. `'strict-dynamic'` would block the
+  handlers even with a nonce on the surrounding tag.
 
 ## H4 — Path jail (notebook directory)
 

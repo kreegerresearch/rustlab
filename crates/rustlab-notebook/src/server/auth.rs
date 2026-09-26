@@ -63,6 +63,12 @@ pub fn host_is_loopback(headers: &HeaderMap, port: u16) -> bool {
 }
 
 /// Build the Content-Security-Policy header value for watch-served pages.
+///
+/// `connect-src` does not list `ws://[::1]:*`. Chromium treats that token
+/// as an invalid source (the port wildcard does not parse after an IPv6
+/// literal) and ignores it, which also logs an error on every page. The
+/// listener binds `127.0.0.1`, so `'self'` and `ws://127.0.0.1:*` cover
+/// the page's WebSocket.
 pub fn csp_header(nonce: &str) -> String {
     format!(
         "default-src 'self'; \
@@ -70,7 +76,7 @@ pub fn csp_header(nonce: &str) -> String {
          style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob:; \
          font-src 'self'; \
-         connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:*; \
+         connect-src 'self' ws://127.0.0.1:* ws://localhost:*; \
          object-src 'none'; \
          base-uri 'none'; \
          form-action 'self'; \
@@ -179,6 +185,14 @@ mod tests {
             &headers_with(header::HOST, "127.0.0.1:8042"),
             port
         ));
+    }
+
+    #[test]
+    fn csp_omits_invalid_ipv6_wildcard() {
+        let csp = csp_header("abc");
+        assert!(!csp.contains("[::1]"));
+        assert!(csp.contains("connect-src 'self' ws://127.0.0.1:* ws://localhost:*"));
+        assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
     }
 
     #[test]

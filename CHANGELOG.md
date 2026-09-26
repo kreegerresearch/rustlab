@@ -119,6 +119,12 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **`notebook watch` renders KaTeX math again.** The watch
+  Content-Security-Policy (`script-src` nonce + `'strict-dynamic'`)
+  blocks inline event handlers, so the auto-render `onload` and the
+  sidebar `onclick` never ran and display math stayed as raw `\[…\]`.
+  Both now run from nonce'd scripts. The invalid `connect-src` token
+  `ws://[::1]:*` is gone.
 - **Clicking a notebook link in `notebook watch` no longer sticks on
   "disconnected — reconnecting…".** The WebSocket client read
   `window.__RL_TOKEN` before that assignment ran, and cross-notebook
