@@ -6,7 +6,60 @@ use rustlab_plot::{
 };
 use rustlab_script::{Evaluator, WidgetValue};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+thread_local! {
+    /// Jail root every notebook executed on this thread is confined to.
+    /// `None` means "the notebook's own directory" (the process cwd at
+    /// execute time, which the render entry points set via `CwdGuard`).
+    /// Directory renders and the watch server set this to the collection
+    /// root so nested notebooks can share `../data/`; `--jail-root` widens
+    /// it further. Thread-local rather than process-global so parallel
+    /// test renders cannot leak a root into each other.
+    static JAIL_ROOT_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard that sets the jail root for notebooks executed on this
+/// thread and restores the previous value on drop. See
+/// [`JAIL_ROOT_OVERRIDE`].
+pub struct JailRootGuard {
+    prev: Option<PathBuf>,
+}
+
+impl JailRootGuard {
+    pub fn new(root: Option<PathBuf>) -> Self {
+        let prev = JAIL_ROOT_OVERRIDE.with(|j| j.replace(root));
+        Self { prev }
+    }
+}
+
+impl Drop for JailRootGuard {
+    fn drop(&mut self) {
+        JAIL_ROOT_OVERRIDE.with(|j| *j.borrow_mut() = self.prev.take());
+    }
+}
+
+/// The jail root currently installed on this thread, if any.
+pub fn jail_root_override() -> Option<PathBuf> {
+    JAIL_ROOT_OVERRIDE.with(|j| j.borrow().clone())
+}
+
+/// Install the script-level path jail for one notebook execution: root =
+/// the thread's override (collection root / `--jail-root`) or, failing
+/// that, the notebook directory; relative paths resolve against the
+/// notebook directory (the cwd *now*), captured once so a later cwd move
+/// by another thread cannot change the verdict mid-render.
+fn install_path_jail() -> rustlab_script::PathJailGuard {
+    let notebook_dir = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.canonicalize().ok());
+    let root = jail_root_override()
+        .and_then(|p| p.canonicalize().ok())
+        .or_else(|| notebook_dir.clone());
+    rustlab_script::PathJailGuard::with_base(root, notebook_dir)
+}
 
 /// Build the widget value table for one render: every declared widget's
 /// default, with live `overrides` (slider drags from the interactive server)
@@ -175,7 +228,13 @@ pub fn execute_notebook_scoped(
     widget_overrides: Option<&BTreeMap<String, WidgetValue>>,
     force_from: Option<usize>,
 ) -> Option<ExecutionOutcome> {
-    execute_core(blocks, Some(cache), Some(cancel), widget_overrides, force_from)
+    execute_core(
+        blocks,
+        Some(cache),
+        Some(cancel),
+        widget_overrides,
+        force_from,
+    )
 }
 
 /// Unified notebook execution. Walks the block list once, serving cached
@@ -199,12 +258,8 @@ fn execute_core(
 
     set_plot_context(PlotContext::Notebook);
 
-    // Jail file I/O to the notebook directory (process cwd is already the
-    // notebook parent via CwdGuard). Cleared when this guard drops.
-    let jail_root = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.canonicalize().ok());
-    let _jail = rustlab_script::PathJailGuard::new(jail_root);
+    // Jail file I/O (see `install_path_jail`). Cleared when this guard drops.
+    let _jail = install_path_jail();
 
     // Widget value table for this render: declared defaults overlaid with
     // any live overrides. Drives both `widget(name)` resolution and the
@@ -329,7 +384,11 @@ fn execute_core(
                     refresh(&mut ev);
                     cached_blocks += 1;
                 } else {
-                    let MermaidDirectives { hidden, details, caption } = directives.clone();
+                    let MermaidDirectives {
+                        hidden,
+                        details,
+                        caption,
+                    } = directives.clone();
                     let output = Rendered::Mermaid {
                         source: source.clone(),
                         hidden,
@@ -349,7 +408,11 @@ fn execute_core(
                 }
                 exec_idx += 1;
             }
-            Block::Callout { kind, title, content } => {
+            Block::Callout {
+                kind,
+                title,
+                content,
+            } => {
                 rendered.push(Rendered::Callout {
                     kind: *kind,
                     title: title.clone(),
@@ -480,10 +543,7 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
     // PlotContext::Notebook is sticky: figure() calls cannot override it.
     set_plot_context(PlotContext::Notebook);
 
-    let jail_root = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.canonicalize().ok());
-    let _jail = rustlab_script::PathJailGuard::new(jail_root);
+    let _jail = install_path_jail();
 
     let widgets = Arc::new(build_widget_table(blocks, None));
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
@@ -547,7 +607,11 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                 });
             }
             Block::Mermaid { source, directives } => {
-                let MermaidDirectives { hidden, details, caption } = directives.clone();
+                let MermaidDirectives {
+                    hidden,
+                    details,
+                    caption,
+                } = directives.clone();
                 rendered.push(Rendered::Mermaid {
                     source: source.clone(),
                     hidden,
@@ -693,8 +757,8 @@ fn consume_interp(
 
     // Math-wrap when followed by a single `$` (not `$$` or `${...}`) and we
     // aren't already inside an open math span.
-    let trailing_dollar = chars.get(next) == Some(&'$')
-        && !matches!(chars.get(next + 1), Some('$' | '{'));
+    let trailing_dollar =
+        chars.get(next) == Some(&'$') && !matches!(chars.get(next + 1), Some('$' | '{'));
     let math_wrap = !in_math && trailing_dollar;
 
     let (expr_str, fmt_spec) = split_expr_format(&inner);
@@ -917,10 +981,7 @@ mod tests {
         // `is now $\geq ${v}$ — no more` (lesson 05). The `\geq` requires the
         // value to stay inside the math span; trailing `$` closes it.
         let mut ev = make_ev("v = 0.333;");
-        let result = interpolate_markdown(
-            r"is now $\geq ${v:%.3f}$ — no more",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"is now $\geq ${v:%.3f}$ — no more", &mut ev);
         assert_eq!(result, r"is now $\geq 0.333$ — no more");
     }
 
@@ -929,10 +990,8 @@ mod tests {
         // `$H(a) = ${a}$ bits, $H(b) = ${b}$ bits` (lesson 05). Each
         // `$...${expr}$` is its own balanced math span.
         let mut ev = make_ev("a = 0.0; b = 1.0;");
-        let result = interpolate_markdown(
-            "$H(a) = ${a:%.3f}$ bits, $H(b) = ${b:%.3f}$ bits",
-            &mut ev,
-        );
+        let result =
+            interpolate_markdown("$H(a) = ${a:%.3f}$ bits, $H(b) = ${b:%.3f}$ bits", &mut ev);
         assert_eq!(result, "$H(a) = 0.000$ bits, $H(b) = 1.000$ bits");
     }
 
@@ -941,10 +1000,7 @@ mod tests {
         // `$3 \cdot ${a} \cdot ${b} = ${c}$` (lesson 08, post-fix). All
         // substitutions stay inside one math span — no extra `$` per value.
         let mut ev = make_ev("a = 6; b = 4; c = 72;");
-        let result = interpolate_markdown(
-            r"$3 \cdot ${a} \cdot ${b} = ${c}$",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"$3 \cdot ${a} \cdot ${b} = ${c}$", &mut ev);
         assert_eq!(result, r"$3 \cdot 6 \cdot 4 = 72$");
     }
 
@@ -1011,7 +1067,7 @@ mod tests {
             r"$\geq ${v:%.3f}$ — text",
             "$H(a) = ${a}$ bits, $H(b) = ${b}$ bits",
             r"$3 \cdot ${a} \cdot ${b} = ${c}$",
-            "${a}, ${b}, ${c}.",        // plain-text list, no `$`
+            "${a}, ${b}, ${c}.", // plain-text list, no `$`
             "no templates here",
             r"$X = ${v}$. Next $Y = ${b}$.",
             "${a}$ and ${b}$",
@@ -1054,35 +1110,36 @@ mod tests {
         // `: $\max| ... | = ${v:%.2e}$. Next sentence.` — value lives inside
         // an open math span and the trailing `$` closes it before a period.
         let mut ev = make_ev("v = 0.01;");
-        let result = interpolate_markdown(
-            r"diff: $\max|x| = ${v:%.2e}$. Next.",
-            &mut ev,
-        );
+        let result = interpolate_markdown(r"diff: $\max|x| = ${v:%.2e}$. Next.", &mut ev);
         assert_eq!(result, r"diff: $\max|x| = 1.00e-02$. Next.");
     }
 
     // ─── Notebook figure capture ──────────────────────────────────────────
 
-    fn tmp_path(tag: &str) -> String {
-        // Relative to the process cwd so path-jail (notebook directory)
-        // accepts the write. Absolute /tmp paths are rejected by design.
-        format!("nb_figs_{}_{}.svg", std::process::id(), tag)
+    /// Run `f` with the process cwd inside a fresh temp directory, holding
+    /// the render lock so no concurrent render moves cwd underneath us.
+    /// The path jail installed by `execute_notebook` is the cwd at
+    /// execute time, so `savefig("name.svg")` lands in the temp dir and
+    /// disappears with it — no absolute `/tmp` paths (rejected by the
+    /// jail) and no litter in the crate directory.
+    fn in_temp_cwd<T>(f: impl FnOnce() -> T) -> T {
+        let _cwd = crate::CwdGuard::new();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        f()
     }
 
     /// Multiple `savefig()` calls in a single block produce separate snapshots.
     #[test]
     fn notebook_captures_every_savefig_in_block() {
-        let a = tmp_path("a");
-        let b = tmp_path("b");
-        let src =
-            format!("x = 0:10; plot(x, sin(x)); savefig('{a}'); plot(x, cos(x)); savefig('{b}');");
+        let src = "x = 0:10; plot(x, sin(x)); savefig('figs_a.svg'); \
+                   plot(x, cos(x)); savefig('figs_b.svg');"
+            .to_string();
         let blocks = vec![Block::Code {
             source: src,
             directives: crate::parse::CodeDirectives::default(),
         }];
-        let rendered = execute_notebook(&blocks);
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
+        let rendered = in_temp_cwd(|| execute_notebook(&blocks));
         match &rendered[0] {
             Rendered::Code { figures, error, .. } => {
                 assert!(error.is_none(), "unexpected error: {error:?}");
@@ -1274,7 +1331,10 @@ mod tests {
         let result = execute_notebook_cancellable(&blocks, cancel, None);
         h.join().unwrap();
         assert!(result.is_none(), "infinite loop should have been cancelled");
-        assert!(start.elapsed() < std::time::Duration::from_secs(5), "took too long");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "took too long"
+        );
     }
 
     /// Drive the scoped (server) path with a cache and an optional
@@ -1288,8 +1348,7 @@ mod tests {
         use std::sync::Arc;
         let blocks = crate::parse::parse_notebook(source);
         let never = Arc::new(AtomicBool::new(false));
-        execute_notebook_scoped(&blocks, cache, never, None, force_from)
-            .expect("not cancelled")
+        execute_notebook_scoped(&blocks, cache, never, None, force_from).expect("not cancelled")
     }
 
     /// Overwrite every cached code output with a sentinel so a replayed
@@ -1313,8 +1372,7 @@ mod tests {
             .collect()
     }
 
-    const FORCE_SRC: &str =
-        "```rustlab\nprint(10)\n```\n\n```rustlab\nprint(20)\n```\n";
+    const FORCE_SRC: &str = "```rustlab\nprint(10)\n```\n\n```rustlab\nprint(20)\n```\n";
 
     /// `force_from: Some(k)` re-executes block k and the tail even when
     /// nothing changed; blocks before k still replay from cache.
@@ -1345,7 +1403,9 @@ mod tests {
         let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(0));
         assert_eq!(outcome.cached_blocks, 0, "everything re-executes");
         assert!(
-            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| !o.contains("SENTINEL")),
             "no cached output may survive a force-from-0"
         );
     }
@@ -1359,9 +1419,14 @@ mod tests {
         tamper_cache(&mut cache);
 
         let outcome = drive_scoped(FORCE_SRC, &mut cache, Some(99));
-        assert_eq!(outcome.cached_blocks, 2, "full hit — force index past the end");
+        assert_eq!(
+            outcome.cached_blocks, 2,
+            "full hit — force index past the end"
+        );
         assert!(
-            code_outputs(&outcome).iter().all(|o| o == "SENTINEL_TAMPERED"),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| o == "SENTINEL_TAMPERED"),
             "every block must replay from cache"
         );
     }
@@ -1378,7 +1443,9 @@ mod tests {
         let outcome = drive_scoped(FORCE_SRC, &mut cache, None);
         assert_eq!(outcome.cached_blocks, 2);
         assert!(
-            code_outputs(&outcome).iter().all(|o| !o.contains("SENTINEL")),
+            code_outputs(&outcome)
+                .iter()
+                .all(|o| !o.contains("SENTINEL")),
             "forced run must have replaced the tampered entries"
         );
     }
@@ -1421,18 +1488,14 @@ mod tests {
     /// the second `plot()` would block on a keypress.
     #[test]
     fn notebook_multiple_figures_in_block() {
-        let a = tmp_path("multi_a");
-        let b = tmp_path("multi_b");
-        let src = format!(
-            "figure(); plot(1:5); savefig('{a}'); figure(); plot(1:5, (1:5).^2); savefig('{b}');"
-        );
+        let src = "figure(); plot(1:5); savefig('multi_a.svg'); \
+                   figure(); plot(1:5, (1:5).^2); savefig('multi_b.svg');"
+            .to_string();
         let blocks = vec![Block::Code {
             source: src,
             directives: crate::parse::CodeDirectives::default(),
         }];
-        let rendered = execute_notebook(&blocks);
-        let _ = std::fs::remove_file(&a);
-        let _ = std::fs::remove_file(&b);
+        let rendered = in_temp_cwd(|| execute_notebook(&blocks));
         match &rendered[0] {
             Rendered::Code {
                 figures,

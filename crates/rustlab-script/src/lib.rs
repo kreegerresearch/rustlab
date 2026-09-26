@@ -50,7 +50,7 @@ pub use eval::value::{default_number_format, set_default_number_format, NumberFo
 pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;
-pub use path_jail::{check_path, path_jail, set_path_jail, PathJailGuard};
+pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuard};
 
 /// Parse a `.rlab` source file into a statement list. Thin convenience
 /// over `read_to_string` + `lexer::tokenize` + `parser::parse`; mirrors
@@ -62,9 +62,8 @@ pub use path_jail::{check_path, path_jail, set_path_jail, PathJailGuard};
 /// - Lex / parse errors propagate from the respective stages.
 pub fn parse_file(path: impl AsRef<std::path::Path>) -> Result<Vec<ast::Stmt>, ScriptError> {
     let path = path.as_ref();
-    let source = std::fs::read_to_string(path).map_err(|e| {
-        ScriptError::runtime(format!("read {}: {e}", path.display()))
-    })?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| ScriptError::runtime(format!("read {}: {e}", path.display())))?;
     let tokens = lexer::tokenize(&source)?;
     parser::parse(tokens)
 }

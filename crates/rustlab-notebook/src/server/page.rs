@@ -29,8 +29,19 @@ pub struct PageOpts {
 
 /// Inject the toolbar + source-pane chrome into a fully-rendered page.
 pub fn inject_chrome(html: &str, theme: &ThemeColors, opts: PageOpts) -> String {
+    inject_chrome_nonced(html, theme, opts, None)
+}
+
+/// [`inject_chrome`] with the server's CSP nonce on the chrome's own
+/// `<script>` tags (CodeMirror bundles + the pane controller).
+pub fn inject_chrome_nonced(
+    html: &str,
+    theme: &ThemeColors,
+    opts: PageOpts,
+    nonce: Option<&str>,
+) -> String {
     let head_extra = head_extra(theme, opts);
-    let body_extra = body_extra(opts);
+    let body_extra = body_extra(opts, nonce);
 
     let with_head = match html.find("</head>") {
         Some(idx) => {
@@ -54,9 +65,7 @@ pub fn inject_chrome(html: &str, theme: &ThemeColors, opts: PageOpts) -> String 
 fn head_extra(c: &ThemeColors, opts: PageOpts) -> String {
     let mut out = chrome_style(c);
     if opts.editable {
-        out.push_str(
-            "<link rel=\"stylesheet\" href=\"/assets/codemirror/codemirror.min.css\">\n",
-        );
+        out.push_str("<link rel=\"stylesheet\" href=\"/assets/codemirror/codemirror.min.css\">\n");
         out.push_str(&editor_style(c));
     }
     out
@@ -155,7 +164,8 @@ fn editor_style(c: &ThemeColors) -> String {
 
 /// `<body>` additions: toolbar + pane markup, the CodeMirror scripts
 /// (editable only), and the chrome controller script.
-fn body_extra(opts: PageOpts) -> String {
+fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
+    let nonce_attr = crate::render::nonce_attr(nonce);
     let editable_js = if opts.editable { "true" } else { "false" };
 
     // Toolbar: read-only mode shows just "Source"; editable mode shows
@@ -176,10 +186,12 @@ fn body_extra(opts: PageOpts) -> String {
     // CodeMirror bundle, loaded synchronously before the controller so
     // `CodeMirror` is defined when the script runs.
     let cm_scripts = if opts.editable {
-        "<script src=\"/assets/codemirror/codemirror.min.js\"></script>\n\
-         <script src=\"/assets/codemirror/mode/markdown/markdown.min.js\"></script>\n"
+        format!(
+            "<script src=\"/assets/codemirror/codemirror.min.js\"{nonce_attr}></script>\n\
+             <script src=\"/assets/codemirror/mode/markdown/markdown.min.js\"{nonce_attr}></script>\n"
+        )
     } else {
-        ""
+        String::new()
     };
 
     format!(
@@ -188,7 +200,7 @@ fn body_extra(opts: PageOpts) -> String {
   <div id="rl-source-head"><span id="rl-source-name">source</span><span id="rl-source-status"></span></div>
   {pane_body}
 </aside>
-{cm_scripts}<script>
+{cm_scripts}<script{nonce_attr}>
 (() => {{
   // Only notebook pages (`/n/<slug>`) have a source pane; the index has none.
   const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
@@ -291,6 +303,7 @@ fn body_extra(opts: PageOpts) -> String {
         pane_body = pane_body,
         cm_scripts = cm_scripts,
         editable_js = editable_js,
+        nonce_attr = nonce_attr,
     )
 }
 
@@ -309,11 +322,20 @@ mod tests {
         let out = render(false);
         assert!(out.contains("id=\"rl-toolbar\""));
         assert!(out.contains("id=\"rl-source-pane\""));
-        assert!(out.contains("id=\"rl-source-pre\""), "read-only pane uses a <pre>");
-        assert!(out.contains(">Source<"), "button reads Source in read-only mode");
+        assert!(
+            out.contains("id=\"rl-source-pre\""),
+            "read-only pane uses a <pre>"
+        );
+        assert!(
+            out.contains(">Source<"),
+            "button reads Source in read-only mode"
+        );
         assert!(out.contains("/raw/' + slug"));
         // No editor assets referenced.
-        assert!(!out.contains("/assets/codemirror/"), "no CodeMirror in read-only mode");
+        assert!(
+            !out.contains("/assets/codemirror/"),
+            "no CodeMirror in read-only mode"
+        );
         assert!(out.contains("<main><p>hi</p></main>"));
     }
 
@@ -325,16 +347,25 @@ mod tests {
         assert!(out.contains(">Edit<"), "button reads Edit in editable mode");
         assert!(out.contains("/assets/codemirror/codemirror.min.js"));
         assert!(out.contains("/assets/codemirror/codemirror.min.css"));
-        assert!(out.contains(".cm-link"), "dark-theme override for markdown links");
+        assert!(
+            out.contains(".cm-link"),
+            "dark-theme override for markdown links"
+        );
         assert!(out.contains("/assets/codemirror/mode/markdown/markdown.min.js"));
         assert!(out.contains("/save/' + slug"), "save POST target present");
         assert!(out.contains("CodeMirror("), "editor is constructed");
         // Reconnect-reload guard + clean-on-save protect unsaved edits.
-        assert!(out.contains("__rlBlockReload"), "reconnect-reload veto present");
+        assert!(
+            out.contains("__rlBlockReload"),
+            "reconnect-reload veto present"
+        );
         assert!(out.contains("markClean"), "buffer marked clean after save");
         // The read-only <pre> element is absent in editable mode (the JS
         // still defines a loadReadonly helper, so check the element markup).
-        assert!(!out.contains("id=\"rl-source-pre\""), "no read-only <pre> element in editable mode");
+        assert!(
+            !out.contains("id=\"rl-source-pre\""),
+            "no read-only <pre> element in editable mode"
+        );
     }
 
     #[test]
@@ -347,16 +378,28 @@ mod tests {
     fn style_lands_in_head_and_chrome_before_body_close() {
         let out = render(true);
         let head_close = out.find("</head>").unwrap();
-        assert!(out.find("#rl-source-pane {").unwrap() < head_close, "style in <head>");
-        assert!(out.find("/assets/codemirror/codemirror.min.css").unwrap() < head_close,
-            "editor stylesheet link in <head>");
+        assert!(
+            out.find("#rl-source-pane {").unwrap() < head_close,
+            "style in <head>"
+        );
+        assert!(
+            out.find("/assets/codemirror/codemirror.min.css").unwrap() < head_close,
+            "editor stylesheet link in <head>"
+        );
         let body_close = out.rfind("</body>").unwrap();
-        assert!(out.find("id=\"rl-toolbar\"").unwrap() < body_close, "chrome before </body>");
+        assert!(
+            out.find("id=\"rl-toolbar\"").unwrap() < body_close,
+            "chrome before </body>"
+        );
     }
 
     #[test]
     fn falls_back_when_no_head_or_body() {
-        let out = inject_chrome("<p>bare</p>", Theme::Dark.colors(), PageOpts { editable: false });
+        let out = inject_chrome(
+            "<p>bare</p>",
+            Theme::Dark.colors(),
+            PageOpts { editable: false },
+        );
         assert!(out.contains("rl-toolbar"));
         assert!(out.contains("<p>bare</p>"));
     }
