@@ -194,11 +194,11 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 #### Interactive server (bare input)
 
 ```
-rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/?token=…
+rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
-rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back; needs token)
+rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 ```
 
 Behaviour:
@@ -324,9 +324,10 @@ rustlab-notebook watch notebooks/  --editable     # whole directory, every page 
 
 `--editable` turns the source pane into a [CodeMirror](https://codemirror.net/5/)
 editor (Markdown mode, line numbers) that **writes back to the
-`.md`**. Mutates require the per-run session token printed at startup
-(also in the `?token=` URL); non-loopback Origins are rejected — see
-[`docs/security.md`](security.md).
+`.md`**. `POST /save` and the live-reload WebSocket require a loopback
+`Origin` for the bound port, and every request must present a loopback
+`Host` — see [`docs/security.md`](security.md). There is no session
+token; other processes on the same machine can still reach the port.
 
 - Click **Edit** to open the pane, change the source, then **Save**
   (or `Ctrl`/`Cmd`-S). The buffer is `POST`ed to `/save/<slug>`, the

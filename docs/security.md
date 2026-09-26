@@ -10,7 +10,7 @@ out of scope.
 | Asset | Threat | Trust boundary |
 |---|---|---|
 | Host filesystem / shell | Malicious notebook source that reaches TeX `write18` / shell-escape during PDF compile | PDF toolchain |
-| Notebook sources under `watch --editable` | Cross-site request forgery from another origin, or a local process without the session secret | Watch server (`127.0.0.1`) |
+| Notebook sources under `watch --editable` | Cross-site request forgery from another origin, or DNS rebinding onto the loopback port | Watch server (`127.0.0.1`) |
 | Browser origin of `notebook watch` | XSS via raw HTML or math-borne markup executing in the watch page | HTML render + CSP |
 | Files next to a notebook | Path traversal via embeds (`![[…]]`), `run` / `load` / `save` / `savefig` | Notebook directory jail |
 | Viewer Unix socket | Other local users attaching to a world-readable socket; oversized IPC frames | Viewer process |
@@ -31,22 +31,29 @@ If Inkscape is missing and the notebook has SVG plots, PDF/LaTeX render
 fails with a clear install hint. Do not work around this by restoring
 shell-escape.
 
-## H2 — Watch server session token + Origin
+## H2 — Watch server Origin + Host checks (no token)
 
 On `rustlab-notebook watch` startup the server:
 
 1. Binds **only** to `127.0.0.1` (unchanged).
-2. Generates a random session token and prints it once, also embedding it
-   in the opened URL as `?token=…`.
-3. Requires that token on mutate paths: `POST /save/{slug}`, WebSocket
-   upgrade, and therefore `save_run_block` / `run_block` / `widget_update`
-   over that socket.
-4. Rejects non-loopback `Origin` headers (`http://127.0.0.1:<port>` and
-   `http://localhost:<port>` only).
+2. Requires every request (pages, assets, raw source, save, WebSocket
+   upgrade) to present a loopback `Host` for the **bound** port:
+   `127.0.0.1:<port>`, `localhost:<port>`, or `[::1]:<port>`. Anything
+   else is 403. This is the DNS-rebinding defense.
+3. Requires `POST /save/{slug}` and the WebSocket upgrade to present an
+   `Origin` of `http://127.0.0.1:<port>`, `http://localhost:<port>`, or
+   `http://[::1]:<port>`. A missing `Origin` is 403 on those paths
+   (ordinary GET navigations may omit it). `save_run_block` /
+   `run_block` / `widget_update` ride the already-upgraded socket.
 
-`--editable` still writes notebook sources back to disk — treat the
-printed token like a password for that run. Closing the server invalidates
-it.
+There is **no session token**. A secret injected into every page is
+readable by any local process that can GET the HTML, and it does not
+stop another process on the same machine from talking to the loopback
+port. That residual risk is accepted: the watch server is a
+single-user localhost tool.
+
+`--editable` still writes notebook sources back to disk. A browser tab
+on the watch origin can save; a page on another origin cannot.
 
 ## H3 — HTML / XSS + CSP
 

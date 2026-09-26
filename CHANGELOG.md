@@ -20,10 +20,13 @@ Workflow Rule 12).
   runs; `\includegraphics` replaces `\includesvg`/`svg.sty`. Inkscape is
   required whenever a notebook has SVG plots. Migration: install Inkscape;
   do not rely on TeX packages that need `-shell-escape`.
-- **`notebook watch` requires a session token for mutates.** The startup
-  URL includes `?token=…`; `POST /save` and WebSocket upgrades reject
-  requests without it (and reject non-loopback `Origin`). See
-  `docs/security.md`.
+- **`notebook watch` checks loopback Origin and Host.** `POST /save`
+  and WebSocket upgrades require an `Origin` of
+  `http://127.0.0.1:<port>`, `http://localhost:<port>`, or
+  `http://[::1]:<port>` (a missing `Origin` is 403). Every request
+  must present a matching loopback `Host` or it is rejected. There is
+  no session token. Other processes on the same machine can still
+  reach the loopback port. See `docs/security.md`.
 - **Notebook file I/O is jailed to the notebook directory.** Embeds,
   `run` / `load` / `save` / `savefig` / `saveanim` that resolve outside
   that directory error with `path escapes notebook directory`.
@@ -116,6 +119,12 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **Clicking a notebook link in `notebook watch` no longer sticks on
+  "disconnected — reconnecting…".** The WebSocket client read
+  `window.__RL_TOKEN` before that assignment ran, and cross-notebook
+  links do not carry `?token=`, so the upgrade returned 401 and the
+  retry used the same empty secret. The token is gone; loopback
+  Origin and Host checks remain (see the behavior note above).
 - **Zooming a viewer panel with script limits no longer snaps back.**
   The viewer re-applied a panel's `xlim`/`ylim` on every frame, so any
   zoom or pan of a panel whose script had called `plot_limits` (or

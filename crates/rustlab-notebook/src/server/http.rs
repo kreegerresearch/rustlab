@@ -29,25 +29,20 @@ use rustlab_script::WidgetValue;
 
 use axum::{
     body::Body,
-    extract::{Path as AxPath, Query, State},
+    extract::{Path as AxPath, Request, State},
     http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Router,
 };
 use rustlab_plot::ThemeColors;
-use serde::Deserialize;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, RwLock};
 
 use super::auth;
 use super::diff::{self, Block};
 use super::{assets, ws};
-
-#[derive(Debug, Deserialize, Default)]
-struct TokenQuery {
-    token: Option<String>,
-}
 
 /// Per-notebook live state. In single-file mode the [`ServerState`]
 /// holds exactly one of these; in directory mode, one per discovered
@@ -171,9 +166,6 @@ pub struct ServerState {
     /// WS `widget_update` / `run_block` handlers send requests here
     /// (reusing the same debounce + preemption path as a file save).
     pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<super::render_loop::RenderRequest>>,
-    /// Per-run secret required for mutating endpoints (POST /save, WS
-    /// mutates). Printed once at startup in the URL `?token=`.
-    pub session_token: String,
     /// CSP `script-src` nonce applied to every served HTML page.
     pub csp_nonce: String,
     /// Bound TCP port (set after listen). Used for Origin allowlisting.
@@ -254,16 +246,30 @@ pub fn router(state: Arc<ServerState>) -> Router {
         r = r.route("/save/{slug}", post(save_source));
     }
 
-    r.with_state(state)
+    r.with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, require_loopback_host))
 }
 
-async fn root(
+/// DNS-rebinding defense: every request (pages, assets, raw source,
+/// save, WebSocket upgrade) must present a loopback `Host` for the
+/// port this server actually bound. The bound port is `ServerState::bind_port`
+/// — callers set it to the real listen port; there is no default-port
+/// fallback.
+async fn require_loopback_host(
     State(state): State<Arc<ServerState>>,
-    Query(q): Query<TokenQuery>,
+    request: Request,
+    next: Next,
 ) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    if !auth::host_is_loopback(request.headers(), port) {
+        return (StatusCode::FORBIDDEN, "bad host").into_response();
+    }
+    next.run(request).await
+}
+
+async fn root(State(state): State<Arc<ServerState>>) -> Response {
     if let Some(nb) = state.sole() {
-        let tok = q.token.as_deref().unwrap_or(&state.session_token);
-        let loc = format!("/n/{}?token={tok}", nb.slug);
+        let loc = format!("/n/{}", nb.slug);
         return Redirect::temporary(&loc).into_response();
     }
     let entries: Vec<(String, String)> = state
@@ -275,7 +281,7 @@ async fn root(
     let body = state.index_body.read().await;
     let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
     let html = ws::inject_ws_client(&html);
-    let html = auth::prepare_served_html(&html, &state.csp_nonce, &state.session_token);
+    let html = auth::prepare_served_html(&html, &state.csp_nonce);
     html_response(&state, html)
 }
 
@@ -292,7 +298,7 @@ async fn notebook_page(
     match state.notebook(&slug) {
         Some(nb) => {
             let html = nb.html.read().await.clone();
-            let html = auth::prepare_served_html(&html, &state.csp_nonce, &state.session_token);
+            let html = auth::prepare_served_html(&html, &state.csp_nonce);
             html_response(&state, html)
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
@@ -304,7 +310,10 @@ fn html_response(state: &ServerState, html: String) -> Response {
     (
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
-            (header::HeaderName::from_static("content-security-policy"), csp),
+            (
+                header::HeaderName::from_static("content-security-policy"),
+                csp,
+            ),
         ],
         html,
     )
@@ -314,22 +323,14 @@ fn html_response(state: &ServerState, html: String) -> Response {
 async fn save_source(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
-    Query(q): Query<TokenQuery>,
     headers: HeaderMap,
     body: String,
 ) -> Response {
     let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
-    let port = if port == 0 { 8042 } else { port };
-    // Reject non-loopback Origin when present.
-    if headers.get(header::ORIGIN).is_some() && !auth::origin_allowed(&headers, port) {
+    // Origin is required (missing or non-loopback → 403). Host was
+    // already checked by `require_loopback_host`.
+    if auth::authorize_mutate(&headers, port).is_err() {
         return (StatusCode::FORBIDDEN, "bad origin").into_response();
-    }
-    let provided = q
-        .token
-        .clone()
-        .or_else(|| auth::token_from_headers(&headers));
-    if !auth::token_matches(&state.session_token, provided.as_deref()) {
-        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
     }
 
     let Some(nb) = state.notebook(&slug) else {
@@ -369,19 +370,12 @@ async fn raw_source(
 
 async fn asset(AxPath(path): AxPath<String>) -> Response {
     match assets::asset_for_path(&path) {
-        Some(a) => (
-            [(header::CONTENT_TYPE, a.content_type)],
-            a.bytes,
-        )
-            .into_response(),
+        Some(a) => ([(header::CONTENT_TYPE, a.content_type)], a.bytes).into_response(),
         None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
 
-async fn plot(
-    State(state): State<Arc<ServerState>>,
-    AxPath(path): AxPath<String>,
-) -> Response {
+async fn plot(State(state): State<Arc<ServerState>>, AxPath(path): AxPath<String>) -> Response {
     // Reject traversal — path segments are joined relative to the
     // tempdir, so a `..` segment would escape the served root.
     if path.split('/').any(|seg| seg == ".." || seg.is_empty()) {
@@ -454,10 +448,14 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
-            session_token: "test-token".to_string(),
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
         })
+    }
+
+    /// Loopback Host for the port [`single_state`] records.
+    fn host(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+        builder.header(header::HOST, "127.0.0.1:8042")
     }
 
     #[test]
@@ -474,17 +472,21 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/")
+                host(axum::http::Request::builder().uri("/"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-        let loc = res.headers().get(header::LOCATION).unwrap().to_str().unwrap();
-        assert!(loc.starts_with("/n/nb"), "loc={loc}");
-        assert!(loc.contains("token="), "loc={loc}");
+        let loc = res
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(loc, "/n/nb", "loc={loc}");
+        assert!(!loc.contains("token="), "loc={loc}");
     }
 
     #[tokio::test]
@@ -492,8 +494,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/n/nb")
+                host(axum::http::Request::builder().uri("/n/nb"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -503,7 +504,8 @@ mod tests {
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         let s = String::from_utf8_lossy(&body);
         assert!(s.contains("<h1>hello</h1>"));
-        assert!(s.contains("__RL_TOKEN"));
+        assert!(!s.contains("__RL_TOKEN"));
+        assert!(!s.contains("rl-token"));
     }
 
     #[tokio::test]
@@ -511,8 +513,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/n/nope")
+                host(axum::http::Request::builder().uri("/n/nope"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -526,8 +527,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/raw/nb")
+                host(axum::http::Request::builder().uri("/raw/nb"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -545,11 +545,13 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -583,19 +585,20 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
-            session_token: "test-token".to_string(),
             csp_nonce: "testnonce".to_string(),
-            bind_port: std::sync::atomic::AtomicU16::new(0),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
         });
         let app = router(editable_state.clone());
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb?token=test-token")
-                    .header("Origin", "http://127.0.0.1:8042")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -605,7 +608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_route_rejects_missing_token() {
+    async fn save_route_rejects_missing_origin() {
         let state = single_state("<h1>hello</h1>");
         let src = state.notebook("nb").unwrap().source_path.clone();
         let plot_dir = TempDir::new().unwrap();
@@ -629,23 +632,23 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
-            session_token: "test-token".to_string(),
             csp_nonce: "testnonce".to_string(),
-            bind_port: std::sync::atomic::AtomicU16::new(0),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
         });
         let app = router(editable_state);
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb")
-                    .header("Origin", "http://127.0.0.1:8042")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -673,19 +676,20 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
-            session_token: "test-token".to_string(),
             csp_nonce: "testnonce".to_string(),
-            bind_port: std::sync::atomic::AtomicU16::new(0),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
         });
         let app = router(editable_state);
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb?token=test-token")
-                    .header("Origin", "http://evil.example")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .header("Origin", "http://evil.example")
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -697,8 +701,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/n/nb")
+                host(axum::http::Request::builder().uri("/n/nb"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -716,7 +719,38 @@ mod tests {
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         let s = String::from_utf8_lossy(&body);
         assert!(s.contains("hello"));
-        assert!(s.contains("__RL_TOKEN"));
+        assert!(!s.contains("__RL_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn get_rejects_bad_host() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/n/nb")
+                    .header(header::HOST, "evil.example:8042")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn get_rejects_missing_host() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/n/nb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -724,8 +758,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/assets/katex/katex.min.css")
+                host(axum::http::Request::builder().uri("/assets/katex/katex.min.css"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -741,8 +774,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/plots/../Cargo.toml")
+                host(axum::http::Request::builder().uri("/plots/../Cargo.toml"))
                     .body(Body::empty())
                     .unwrap(),
             )
