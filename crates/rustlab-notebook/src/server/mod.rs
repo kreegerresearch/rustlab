@@ -14,6 +14,7 @@
 //! yet. Source `.md` is never modified.
 
 pub mod assets;
+pub mod auth;
 pub mod cell;
 pub mod diff;
 pub mod http;
@@ -52,6 +53,19 @@ pub struct ServerOpts {
     /// source `.md` files (parallels the "only `--obsidian` modifies"
     /// rule), so it is strictly opt-in.
     pub editable: bool,
+    /// Explicit path-jail root (`--jail-root`). `None` → the collection
+    /// root in directory mode, the notebook's own directory otherwise.
+    pub jail_root: Option<PathBuf>,
+}
+
+/// Per-render page context the server threads into the renderer: the CSP
+/// nonce for renderer-owned `<script>` tags and the path-jail root for
+/// notebook file I/O. `Default` (no nonce, no root) is what tests and the
+/// static render path use.
+#[derive(Clone, Copy, Default)]
+pub(super) struct PageCtx<'a> {
+    pub nonce: Option<&'a str>,
+    pub jail_root: Option<&'a Path>,
 }
 
 /// Start the interactive server against `input` and block until
@@ -60,12 +74,33 @@ pub struct ServerOpts {
 /// runtime serves the page, accepts WebSocket connections, and
 /// (Phase 2) drives the render coordinator that re-renders on save.
 pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Result<()> {
-    let canonical_input = std::fs::canonicalize(input)
-        .with_context(|| format!("resolving {}", input.display()))?;
+    let canonical_input =
+        std::fs::canonicalize(input).with_context(|| format!("resolving {}", input.display()))?;
     let is_dir = canonical_input.is_dir();
 
     // ── 1+2. Discover + render every notebook, build server state ──
-    let state = build_state(&canonical_input, is_dir, theme, opts.editable)?;
+    let csp_nonce = auth::generate_csp_nonce();
+    // Jail: explicit --jail-root, else the collection root (a directory
+    // is one trust unit), else each notebook's own directory.
+    let jail_root = match opts.jail_root.clone() {
+        Some(p) => Some(
+            std::fs::canonicalize(&p)
+                .with_context(|| format!("resolving --jail-root {}", p.display()))?,
+        ),
+        None if is_dir => Some(canonical_input.clone()),
+        None => None,
+    };
+    if let Some(root) = &jail_root {
+        eprintln!("[watch] notebook file I/O jailed to {}", root.display());
+    }
+    let state = build_state(
+        &canonical_input,
+        is_dir,
+        theme,
+        opts.editable,
+        csp_nonce,
+        jail_root,
+    )?;
 
     // ── 3. Bind ───────────────────────────────────────────────────
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -75,7 +110,10 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
 
     rt.block_on(async move {
         let (listener, addr) = bind_with_policy(opts.port).await?;
-        let url = format!("http://{addr}");
+        state
+            .bind_port
+            .store(addr.port(), std::sync::atomic::Ordering::Relaxed);
+        let url = format!("http://{addr}/");
 
         // ── 4. Log + open browser ─────────────────────────────────
         log_bind(&url, opts.port);
@@ -88,7 +126,10 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             );
         }
         if opts.editable {
-            eprintln!("[watch] --editable: in-browser edits write back to source .md");
+            eprintln!(
+                "[watch] --editable: in-browser edits write back to source .md \
+                 (loopback Origin + Host required; see docs/security.md)"
+            );
         }
 
         if !opts.no_browser && should_auto_open_browser() {
@@ -99,12 +140,8 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
         }
 
         // ── 5. Spawn fs watcher + render coordinator ──────────────
-        // `_watcher` is held to keep the notify watcher alive; the
-        // task handle is dropped on shutdown. The watcher covers the
-        // directory (dir mode) or the single file's parent (file mode).
-        let (_watcher, _coord) =
-            render_loop::spawn(&canonical_input, is_dir, theme, state.clone())
-                .context("spawning render coordinator")?;
+        let (_watcher, _coord) = render_loop::spawn(&canonical_input, is_dir, theme, state.clone())
+            .context("spawning render coordinator")?;
 
         // ── 6. Serve until Ctrl-C ─────────────────────────────────
         let app = http::router(state.clone());
@@ -126,6 +163,8 @@ fn build_state(
     is_dir: bool,
     theme: &'static ThemeColors,
     editable: bool,
+    csp_nonce: String,
+    jail_root: Option<PathBuf>,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
         // Same listing rule as the static build: partials are transcluded,
@@ -140,7 +179,11 @@ fn build_state(
                 // the underscore rule on unrelated ancestors (`~/_work/…`)
                 // and silently hide the whole collection — include instead.
                 Err(_) => {
-                    debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                    debug_assert!(
+                        false,
+                        "walk produced a path outside its root: {}",
+                        p.display()
+                    );
                     true
                 }
             })
@@ -220,10 +263,7 @@ fn build_state(
         .collect();
 
     if entries.is_empty() {
-        anyhow::bail!(
-            "no readable notebooks in {}",
-            canonical_input.display()
-        );
+        anyhow::bail!("no readable notebooks in {}", canonical_input.display());
     }
 
     // Same ordering as the static build, so `watch` cannot show a different
@@ -256,8 +296,20 @@ fn build_state(
             current_rel_dir: crate::rel_dir_of(&rels[idx]),
             index_at_root: is_dir,
         };
-        let render = render_for_server(path, theme, plot_tempdir.path(), slug, editable, nav.as_ref(), &link)
-            .with_context(|| format!("rendering {} for server", path.display()))?;
+        let render = render_for_server(
+            path,
+            theme,
+            plot_tempdir.path(),
+            slug,
+            editable,
+            nav.as_ref(),
+            &link,
+            PageCtx {
+                nonce: Some(&csp_nonce),
+                jail_root: jail_root.as_deref(),
+            },
+        )
+        .with_context(|| format!("rendering {} for server", path.display()))?;
         if !is_dir {
             warn_unresolved_md_links(&render.html);
         }
@@ -322,6 +374,9 @@ fn build_state(
         index_body: tokio::sync::RwLock::new(index_body),
         index_md_path,
         render_tx: std::sync::OnceLock::new(),
+        csp_nonce,
+        bind_port: std::sync::atomic::AtomicU16::new(0),
+        jail_root,
     }))
 }
 
@@ -385,7 +440,11 @@ fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
 ///
 /// Hrefs are *server* paths, not the static filenames `cmd_render_dir`
 /// uses: the index lives at `/` and each notebook at `/n/{slug}`.
-fn server_nav(listing: &[(String, String)], idx: usize, single: bool) -> Option<crate::NotebookNav> {
+fn server_nav(
+    listing: &[(String, String)],
+    idx: usize,
+    single: bool,
+) -> Option<crate::NotebookNav> {
     if single {
         return None;
     }
@@ -421,6 +480,10 @@ pub(super) struct ServerRender {
     pub widget_decls: Vec<crate::widget::WidgetDecl>,
 }
 
+// Mirrors `render_for_server_cancellable`'s parameter list minus the
+// cancel/cache/force trio; bundling into a params struct is a separate
+// refactor (the call sites read better positional for now).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_for_server(
     input: &Path,
     theme: &'static ThemeColors,
@@ -429,21 +492,23 @@ pub(super) fn render_for_server(
     editable: bool,
     nav: Option<&crate::NotebookNav>,
     link: &crate::render::LinkMode,
+    page: PageCtx<'_>,
 ) -> Result<ServerRender> {
     // A never-tripped flag → the cancellable path can't return `None`.
     let never = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    Ok(
-        render_for_server_cancellable(
-            input, theme, plot_root, slug, editable, nav, link, never, None, None, None,
-        )?
-        .expect("render with a never-set cancel flag cannot be cancelled"),
-    )
+    Ok(render_for_server_cancellable(
+        input, theme, plot_root, slug, editable, nav, link, never, None, None, None, page,
+    )?
+    .expect("render with a never-set cancel flag cannot be cancelled"))
 }
 
 /// Cancellable form of [`render_for_server`]. Returns `Ok(None)` when
 /// `cancel` trips mid-render (a newer save preempted this one); the
 /// coordinator discards that result. See `render_loop` for the
 /// preemption wiring.
+// Twelve parameters: the render inputs, the preemption trio, and the
+// per-render page context. See the note on `render_for_server`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_for_server_cancellable(
     input: &Path,
     theme: &'static ThemeColors,
@@ -456,8 +521,13 @@ pub(super) fn render_for_server_cancellable(
     widget_overrides: Option<&std::collections::BTreeMap<String, rustlab_script::WidgetValue>>,
     cache: Option<&mut crate::cache::NotebookCache>,
     force_from: Option<usize>,
+    page: PageCtx<'_>,
 ) -> Result<Option<ServerRender>> {
     use crate::{embed, execute, parse, render};
+
+    // Path jail for this render (thread-local; the render runs on a
+    // spawn_blocking thread, so it must be installed here, not in start()).
+    let _jail = execute::JailRootGuard::new(page.jail_root.map(Path::to_path_buf));
 
     // Match `cmd_render`/`cmd_render_cached`: change the process cwd to the
     // notebook's parent directory for the duration of execution so the
@@ -469,8 +539,8 @@ pub(super) fn render_for_server_cancellable(
     // be relative to the original cwd.
     let _cwd_guard = crate::CwdGuard::new();
 
-    let source = std::fs::read_to_string(input)
-        .with_context(|| format!("reading {}", input.display()))?;
+    let source =
+        std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
     let source = crate::strip_render_artifacts(&source);
 
     // Canonicalize the host directory before the chdir so the embed expander
@@ -523,26 +593,27 @@ pub(super) fn render_for_server_cancellable(
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
-    let html = render::render_html(&title, &rendered, &plot_dir, &plot_href, theme, nav, link);
+    let html = render::render_html_nonced(
+        &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
+    );
     let html = assets::rewrite_cdn_urls(&html);
-    let html = ws::inject_ws_client(&html);
-    let html = page::inject_chrome(&html, theme, page::PageOpts { editable });
+    let html = ws::inject_ws_client_nonced(&html, page.nonce);
+    let html =
+        page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
     // Inline cell editing needs --editable AND an embed-free notebook:
     // cell saves splice the host `.md` by executable ordinal, which is
     // only sound when every rendered block comes from that file. The
     // check runs on the *host* source (pre-expansion), each render, so
     // an embed added mid-session revokes editing on the next push.
     let cell_edit = editable && !embed::has_markdown_embeds(&source);
-    let html = cell::inject_cell_client(&html, theme, cell_edit);
+    let html = cell::inject_cell_client_nonced(&html, theme, cell_edit, page.nonce);
     Ok(Some(ServerRender { html, widget_decls }))
 }
 
 /// Bind 127.0.0.1 on either the explicit user port (fail loud) or
 /// the default with auto-increment up to 10 attempts (per
 /// locked-in #12).
-async fn bind_with_policy(
-    port: Option<u16>,
-) -> Result<(tokio::net::TcpListener, SocketAddr)> {
+async fn bind_with_policy(port: Option<u16>) -> Result<(tokio::net::TcpListener, SocketAddr)> {
     let loopback = Ipv4Addr::LOCALHOST;
 
     // Explicit --port: try once, fail loud with a hint.
@@ -687,6 +758,18 @@ mod tests {
     use rustlab_plot::Theme;
     use tower::util::ServiceExt;
 
+    /// Port the test router allowlists. Production sets `bind_port` to
+    /// the real listen address; these tests never bind, so they record
+    /// this value explicitly (no `0 → 8042` fallback in the server).
+    const TEST_BIND_PORT: u16 = 8042;
+
+    fn serve_test(state: Arc<http::ServerState>) -> axum::Router {
+        state
+            .bind_port
+            .store(TEST_BIND_PORT, std::sync::atomic::Ordering::Relaxed);
+        http::router(state)
+    }
+
     /// GET `uri` against `app`, assert 200, return the body as a string.
     async fn get_body(app: &axum::Router, uri: &str) -> String {
         let res = app
@@ -694,6 +777,10 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri(uri)
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -737,7 +824,15 @@ mod tests {
             )
             .unwrap();
         }
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(
+            dir.path(),
+            true,
+            Theme::default().colors(),
+            false,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -754,7 +849,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.md"), "# Welcome\n").unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(
+            dir.path(),
+            true,
+            Theme::default().colors(),
+            false,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -772,7 +875,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("real.md"), "# Real\n").unwrap();
         std::fs::write(dir.path().join("_partial.md"), "# Partial\n").unwrap();
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(
+            dir.path(),
+            true,
+            Theme::default().colors(),
+            false,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -794,7 +905,15 @@ mod tests {
             )
             .unwrap();
         }
-        let state = build_state(dir.path(), true, Theme::default().colors(), false).unwrap();
+        let state = build_state(
+            dir.path(),
+            true,
+            Theme::default().colors(),
+            false,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -840,16 +959,28 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         std::fs::write(dir.path().join("gamma.md"), "# Gamma\n\nthird.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
-        let app = http::router(state);
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let app = serve_test(state);
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
         let beta = get_body(&app, "/n/beta").await;
-        assert!(beta.contains("class=\"topbar\""), "beta missing breadcrumb topbar");
+        assert!(
+            beta.contains("class=\"topbar\""),
+            "beta missing breadcrumb topbar"
+        );
         // The in-page TOC coexists with the cross-notebook nav.
-        assert!(beta.contains("<nav class=\"sidebar\">"), "beta lost its in-page TOC");
-        assert!(beta.contains("href=\"/\""), "beta breadcrumb missing index link");
-        assert!(beta.contains("class=\"page-nav\""), "beta missing footer nav");
+        assert!(
+            beta.contains("<nav class=\"sidebar\">"),
+            "beta lost its in-page TOC"
+        );
+        assert!(
+            beta.contains("href=\"/\""),
+            "beta breadcrumb missing index link"
+        );
+        assert!(
+            beta.contains("class=\"page-nav\""),
+            "beta missing footer nav"
+        );
         assert!(beta.contains("href=\"/n/alpha\""), "beta missing prev link");
         assert!(beta.contains("href=\"/n/gamma\""), "beta missing next link");
         // The source/edit toolbar still coexists with the new nav.
@@ -857,8 +988,14 @@ mod tests {
 
         // First page has a next but no prev (nothing precedes alpha).
         let alpha = get_body(&app, "/n/alpha").await;
-        assert!(alpha.contains("href=\"/n/beta\""), "alpha missing next link");
-        assert!(!alpha.contains("class=\"prev\""), "alpha should have no prev link");
+        assert!(
+            alpha.contains("href=\"/n/beta\""),
+            "alpha missing next link"
+        );
+        assert!(
+            !alpha.contains("class=\"prev\""),
+            "alpha should have no prev link"
+        );
     }
 
     #[test]
@@ -874,8 +1011,12 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
         let canon = std::fs::canonicalize(&root).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
-        assert_eq!(state.order.len(), 1, "notebook hidden by an ancestor's underscore");
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        assert_eq!(
+            state.order.len(),
+            1,
+            "notebook hidden by an ancestor's underscore"
+        );
     }
 
     #[test]
@@ -894,7 +1035,7 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -914,7 +1055,7 @@ mod tests {
         std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
         std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
         match state.link_mode_for(deep_slug) {
             crate::render::LinkMode::Server {
@@ -953,7 +1094,7 @@ mod tests {
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
         // Served listing.
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let served: Vec<String> = state
             .order
             .iter()
@@ -973,7 +1114,11 @@ mod tests {
         let built: Vec<String> = index
             .lines()
             .filter(|l| l.trim_start().starts_with("<li><a href="))
-            .filter_map(|l| l.split('>').nth(2).map(|s| s.trim_end_matches("</a").to_string()))
+            .filter_map(|l| {
+                l.split('>')
+                    .nth(2)
+                    .map(|s| s.trim_end_matches("</a").to_string())
+            })
             .collect();
 
         assert_eq!(
@@ -986,7 +1131,10 @@ mod tests {
             "order: frontmatter first, then rel path; partials/index/README hidden"
         );
         // The nested notebook was actually emitted by the static build.
-        assert!(out.path().join("ch1/deep.html").is_file(), "nested output missing");
+        assert!(
+            out.path().join("ch1/deep.html").is_file(),
+            "nested output missing"
+        );
     }
 
     #[tokio::test]
@@ -1004,9 +1152,9 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
-        let app = http::router(state);
+        let app = serve_test(state);
         let index = get_body(&app, "/").await;
         assert!(
             index.contains("Read <a href=\"/n/01\">the first lesson</a> first."),
@@ -1046,18 +1194,22 @@ mod tests {
         std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
 
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         // Read slugs from the state rather than hardcoding slugify/dedup
         // output — walk order decides which same-stem file carries `-2`.
         let slug_of = |rel: &str| -> String {
-            state.link_slugs.get(rel).unwrap_or_else(|| panic!("no slug for {rel}")).clone()
+            state
+                .link_slugs
+                .get(rel)
+                .unwrap_or_else(|| panic!("no slug for {rel}"))
+                .clone()
         };
         let root_intro = slug_of("01-intro.md");
         let ch1_intro = slug_of("ch1/01-intro.md");
         let filter = slug_of("02-filter.md");
         let notes = slug_of("ch2/notes.md");
         assert_ne!(root_intro, ch1_intro, "same-stem files need distinct slugs");
-        let app = http::router(state);
+        let app = serve_test(state);
 
         let intro = get_body(&app, &format!("/n/{root_intro}")).await;
         assert!(
@@ -1069,12 +1221,24 @@ mod tests {
             "fragment did not survive resolution"
         );
         // index.md has no slug — it is the index page's body at `/`.
-        assert!(intro.contains("href=\"/\""), "index.md link should land on /");
+        assert!(
+            intro.contains("href=\"/\""),
+            "index.md link should land on /"
+        );
         // Unresolvable targets stay exactly as written — visibly broken
         // beats a manufactured href that 404s while looking intentional.
-        assert!(intro.contains("href=\"_setup.md\""), "partial target rewritten");
-        assert!(intro.contains("href=\"nope.md\""), "dangling target rewritten");
-        assert!(!intro.contains(".html\""), "served page emitted a static .html href");
+        assert!(
+            intro.contains("href=\"_setup.md\""),
+            "partial target rewritten"
+        );
+        assert!(
+            intro.contains("href=\"nope.md\""),
+            "dangling target rewritten"
+        );
+        assert!(
+            !intro.contains(".html\""),
+            "served page emitted a static .html href"
+        );
 
         // Nested pages resolve by path, not stem: `01-intro.md` relative
         // to ch1/ is the ch1 file, `../01-intro.md` the root one. A
@@ -1119,19 +1283,34 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nonly one.\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
         assert!(state.single, "single-file mode");
         let slug = state.order[0].clone();
-        let app = http::router(state);
+        let app = serve_test(state);
 
         let page = get_body(&app, &format!("/n/{slug}")).await;
         // Same chrome as a collection page — a reader should not be able to
         // tell how the notebook was rendered — but with nothing to page to.
-        assert!(page.contains("class=\"topbar\""), "single file should still have the topbar");
-        assert!(page.contains("<nav class=\"sidebar\">"), "single file should keep its TOC");
-        assert!(!page.contains("class=\"page-nav\""), "single file should have no footer nav");
-        assert!(!page.contains("class=\"prev\""), "single file should have no prev link");
-        assert!(!page.contains("class=\"next\""), "single file should have no next link");
+        assert!(
+            page.contains("class=\"topbar\""),
+            "single file should still have the topbar"
+        );
+        assert!(
+            page.contains("<nav class=\"sidebar\">"),
+            "single file should keep its TOC"
+        );
+        assert!(
+            !page.contains("class=\"page-nav\""),
+            "single file should have no footer nav"
+        );
+        assert!(
+            !page.contains("class=\"prev\""),
+            "single file should have no prev link"
+        );
+        assert!(
+            !page.contains("class=\"next\""),
+            "single file should have no next link"
+        );
     }
 
     #[tokio::test]
@@ -1144,9 +1323,9 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nSee [other](ch2/notes.md).\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
         let slug = state.order[0].clone();
-        let app = http::router(state);
+        let app = serve_test(state);
         let page = get_body(&app, &format!("/n/{slug}")).await;
         assert!(
             page.contains("href=\"ch2/notes.md\""),
@@ -1166,13 +1345,13 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         assert!(!state.single, "directory mode is not single");
         assert_eq!(state.order.len(), 2);
         assert!(state.notebook("alpha").is_some());
         assert!(state.notebook("beta").is_some());
 
-        let app = http::router(state);
+        let app = serve_test(state);
 
         // `/` is the index listing both notebooks (no redirect).
         let res = app
@@ -1180,6 +1359,10 @@ mod tests {
             .oneshot(
                 axum::http::Request::builder()
                     .uri("/")
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1190,7 +1373,10 @@ mod tests {
         let html = std::str::from_utf8(&body).unwrap();
         assert!(html.contains("Alpha"), "index missing Alpha: {html:.400}");
         assert!(html.contains("Beta"), "index missing Beta");
-        assert!(html.contains("n/alpha") && html.contains("n/beta"), "index links missing");
+        assert!(
+            html.contains("n/alpha") && html.contains("n/beta"),
+            "index links missing"
+        );
 
         // Each notebook page renders.
         for slug in ["alpha", "beta"] {
@@ -1199,6 +1385,10 @@ mod tests {
                 .oneshot(
                     axum::http::Request::builder()
                         .uri(format!("/n/{slug}"))
+                        .header(
+                            axum::http::header::HOST,
+                            format!("127.0.0.1:{TEST_BIND_PORT}"),
+                        )
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -1218,7 +1408,7 @@ mod tests {
         std::fs::write(&beta, "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let nb_alpha = state.notebook("alpha").unwrap().clone();
         let nb_beta = state.notebook("beta").unwrap().clone();
         let mut sub_alpha = nb_alpha.broadcast.subscribe();
@@ -1250,7 +1440,10 @@ mod tests {
         let p = held.local_addr().unwrap().port();
         let err = bind_with_policy(Some(p)).await.unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains(&format!("port {p}")), "expected port mention in: {msg}");
+        assert!(
+            msg.contains(&format!("port {p}")),
+            "expected port mention in: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -1264,7 +1457,11 @@ mod tests {
             .ok();
         let (listener, addr) = bind_with_policy(None).await.expect("auto-bump failed");
         if _held.is_some() {
-            assert_ne!(addr.port(), DEFAULT_PORT, "should have bumped past held port");
+            assert_ne!(
+                addr.port(),
+                DEFAULT_PORT,
+                "should have bumped past held port"
+            );
         }
         drop(listener);
     }

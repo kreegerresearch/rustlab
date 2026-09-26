@@ -374,6 +374,26 @@ pub fn render_html(
     nav: Option<&NotebookNav>,
     link: &LinkMode,
 ) -> String {
+    render_html_nonced(title, blocks, plot_dir, plot_href_prefix, theme, nav, link, None)
+}
+
+/// [`render_html`] with a Content-Security-Policy nonce stamped on every
+/// `<script>` tag **the renderer itself emits** (head bundles, the KaTeX /
+/// sidebar init script, Plotly chart fragments). The watch server passes its
+/// per-process nonce so its `script-src 'nonce-…' 'strict-dynamic'` policy
+/// admits exactly these scripts and nothing that arrived through author
+/// content. Static renders pass `None` and emit no nonce attributes.
+#[allow(clippy::too_many_arguments)]
+pub fn render_html_nonced(
+    title: &str,
+    blocks: &[Rendered],
+    plot_dir: &Path,
+    plot_href_prefix: &str,
+    theme: &ThemeColors,
+    nav: Option<&NotebookNav>,
+    link: &LinkMode,
+    nonce: Option<&str>,
+) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
     let mut nav_items = String::new();
@@ -479,7 +499,10 @@ pub fn render_html(
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
+                            body.push_str(&add_nonce_to_scripts(
+                                &render_figure_plotly_div(fig, &div_id, theme),
+                                nonce,
+                            ));
                             body.push('\n');
                         }
                         body.push_str("</div>\n");
@@ -491,7 +514,10 @@ pub fn render_html(
                             body.push_str(&format!(
                                 "<div class=\"plot-container\" style=\"height: {height}px\">\n"
                             ));
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
+                            body.push_str(&add_nonce_to_scripts(
+                                &render_figure_plotly_div(fig, &div_id, theme),
+                                nonce,
+                            ));
                             body.push_str("\n</div>\n");
                         }
                     }
@@ -506,11 +532,9 @@ pub fn render_html(
                         NotebookAnimationFormat::Html => {
                             let div_id = format!("anim-{plot_idx}");
                             body.push_str("<div class=\"plot-container\">\n");
-                            body.push_str(&render_animation_inline(
-                                &anim.frames,
-                                &div_id,
-                                anim.fps,
-                                theme,
+                            body.push_str(&add_nonce_to_scripts(
+                                &render_animation_inline(&anim.frames, &div_id, anim.fps, theme),
+                                nonce,
                             ));
                             body.push_str("\n</div>\n");
                         }
@@ -673,7 +697,10 @@ pub fn render_html(
     let body_class = if has_toc { "" } else { " class=\"no-toc\"" };
     let sidebar_block = if has_toc {
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar')?.classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+            // No inline `onclick`: the watch server's CSP has no
+            // 'unsafe-inline', so the click is wired by the nonced init
+            // script in <head> (event delegation, survives re-renders).
+            "<button class=\"nav-toggle\" type=\"button\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
              <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
             title = escape_html(title),
             nav_items = nav_items,
@@ -692,16 +719,33 @@ pub fn render_html(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"{nonce_attr}></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.body, {{
-    delimiters: [
-      {{left: '\\[', right: '\\]', display: true}},
-      {{left: '\\(', right: '\\)', display: false}}
-    ]
-  }});"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"{nonce_attr}></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"{nonce_attr}></script>
+<script{nonce_attr}>
+// Page init. Lives in a real script element (not on* attributes) so it also
+// runs under the watch server's CSP, which forbids inline event handlers.
+// `defer` scripts finish before DOMContentLoaded, so KaTeX is loaded here.
+document.addEventListener('DOMContentLoaded', () => {{
+  if (window.renderMathInElement) {{
+    renderMathInElement(document.body, {{
+      delimiters: [
+        {{left: '\\[', right: '\\]', display: true}},
+        {{left: '\\(', right: '\\)', display: false}}
+      ]
+    }});
+  }}
+}});
+// Sidebar toggle (narrow viewports). Delegated so it survives the live
+// server swapping the button on re-render.
+document.addEventListener('click', (e) => {{
+  if (e.target && e.target.closest && e.target.closest('button.nav-toggle')) {{
+    const nav = document.querySelector('nav.sidebar');
+    if (nav) nav.classList.toggle('open');
+  }}
+}});
+</script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   html {{ color-scheme: {color_scheme}; }}
@@ -1209,6 +1253,7 @@ pub fn render_html(
 </html>
 "##,
         title = escape_html(title),
+        nonce_attr = nonce_attr(nonce),
         body_class = body_class,
         topbar_block = topbar_block,
         sidebar_block = sidebar_block,
@@ -1333,6 +1378,10 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    // Security: raw HTML from notebook markdown goes through the allow-list
+    // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
+    sanitize_raw_html_events(&mut events);
+    sanitize_dangerous_urls(&mut events);
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
@@ -1341,16 +1390,200 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     restore_math(&html, &math)
 }
 
+/// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
+/// so `<script>`, event handlers, `<iframe>`, etc. never reach the watch
+/// origin, while attribute-free formatting tags (`<b>`, `<br>`,
+/// `<details>`, …) keep working. The result is emitted as `Event::Html`
+/// because it is already safe markup (pushing it as `Event::Text` would
+/// escape it a second time and readers would see literal `&lt;b&gt;`).
+pub(crate) fn sanitize_raw_html_events(events: &mut Vec<Event<'_>>) {
+    let mut out = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        match ev {
+            Event::Html(s) => out.push(Event::Html(sanitize_html_fragment(&s).into())),
+            Event::InlineHtml(s) => out.push(Event::InlineHtml(sanitize_html_fragment(&s).into())),
+            other => out.push(other),
+        }
+    }
+    *events = out;
+}
+
+/// Tags that may pass through raw markdown HTML **without any attributes**.
+/// No attributes means no `on*` handlers, no `href`/`src`, no `style`; the
+/// names exclude anything that loads or executes (`script`, `style`,
+/// `iframe`, `object`, `embed`, `link`, `meta`, `base`, `form`, `img`,
+/// `a`, `svg`, `math`, `template`, …). Authors write markdown for links
+/// and images.
+const ALLOWED_RAW_TAGS: &[&str] = &[
+    "abbr",
+    "b",
+    "blockquote",
+    "br",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "wbr",
+];
+
+/// True for `<tag>`, `</tag>`, `<tag/>` and `<tag />` where `tag` is in
+/// [`ALLOWED_RAW_TAGS`] — and nothing else (no attributes at all).
+fn is_allowed_raw_tag(tag: &str) -> bool {
+    let inner = match tag.strip_prefix('<').and_then(|t| t.strip_suffix('>')) {
+        Some(i) => i,
+        None => return false,
+    };
+    let inner = inner.strip_prefix('/').unwrap_or(inner);
+    let inner = inner.trim_end();
+    let inner = inner.strip_suffix('/').unwrap_or(inner).trim_end();
+    if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let name = inner.to_ascii_lowercase();
+    ALLOWED_RAW_TAGS.contains(&name.as_str())
+}
+
+/// Sanitize one raw-HTML fragment: HTML comments are dropped, attribute-
+/// free tags from [`ALLOWED_RAW_TAGS`] pass through, and every other `<`
+/// (unknown tag, any tag carrying attributes, `<script>`, stray brackets)
+/// is escaped along with the surrounding text.
+pub(crate) fn sanitize_html_fragment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&escape_html(&rest[..lt]));
+        let tail = &rest[lt..];
+        if let Some(after) = tail.strip_prefix("<!--") {
+            // Comment: drop it entirely (an unterminated one swallows the
+            // remainder, matching how browsers treat it).
+            rest = match after.find("-->") {
+                Some(end) => &after[end + 3..],
+                None => "",
+            };
+            continue;
+        }
+        if let Some(gt) = tail.find('>') {
+            let tag = &tail[..=gt];
+            if is_allowed_raw_tag(tag) {
+                out.push_str(tag);
+                rest = &tail[gt + 1..];
+                continue;
+            }
+        }
+        out.push_str("&lt;");
+        rest = &tail[1..];
+    }
+    out.push_str(&escape_html(rest));
+    out
+}
+
+pub(crate) fn sanitize_dangerous_urls(events: &mut [Event<'_>]) {
+    for ev in events.iter_mut() {
+        match ev {
+            Event::Start(Tag::Link { dest_url, .. }) if is_dangerous_url(dest_url) => {
+                *dest_url = "#".into();
+            }
+            // Inline `data:image/*` is fine in an <img> (no script context);
+            // every other dangerous scheme is dropped.
+            Event::Start(Tag::Image { dest_url, .. })
+                if is_dangerous_url(dest_url) && !is_data_image_url(dest_url) =>
+            {
+                *dest_url = "".into();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `data:image/...` — safe as an `<img src>` (browsers never execute
+/// script from an image, SVG included).
+fn is_data_image_url(url: &str) -> bool {
+    scheme_normalised(url).starts_with("data:image/")
+}
+
+/// Lowercase `url` with ASCII whitespace and control characters removed,
+/// which is what browsers do to a URL before reading its scheme — so
+/// `java\tscript:` and `jav&#x0A;ascript:` cannot slip past a prefix test.
+fn scheme_normalised(url: &str) -> String {
+    url.chars()
+        .filter(|c| !c.is_ascii_control() && !c.is_ascii_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
 /// Apply [`LinkMode`] resolution to every link-open event in place. Shared
 /// with the index-page body renderer, which runs its own event pipeline.
 pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
     for ev in events.iter_mut() {
         if let Event::Start(Tag::Link { dest_url, .. }) = ev {
+            if is_dangerous_url(dest_url) {
+                *dest_url = "#".into();
+                continue;
+            }
             if let Some(new) = rewrite_link_dest(dest_url, mode) {
                 *dest_url = new.into();
             }
         }
     }
+}
+
+/// `javascript:`, `data:`, `vbscript:`, `blob:` — never emit as href (and
+/// only `data:image/*` as an image src, see [`sanitize_dangerous_urls`]).
+pub(crate) fn is_dangerous_url(url: &str) -> bool {
+    let cleaned = scheme_normalised(url);
+    let scheme: String = cleaned
+        .chars()
+        .take_while(|c| *c != ':' && *c != '/' && *c != '?' && *c != '#')
+        .collect();
+    matches!(
+        scheme.as_str(),
+        "javascript" | "data" | "vbscript" | "blob"
+    ) && cleaned.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1805,6 +2038,59 @@ fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// ` nonce="…"` for a `<script>` opening tag, or `""` when no CSP nonce
+/// is in play (static renders). The nonce is hex (see
+/// `server::auth::generate_csp_nonce`), so no attribute escaping is needed;
+/// anything else is rejected rather than quoted.
+pub(crate) fn nonce_attr(nonce: Option<&str>) -> String {
+    match nonce {
+        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            format!(" nonce=\"{n}\"")
+        }
+        _ => String::new(),
+    }
+}
+
+/// Stamp `nonce` onto every `<script …>` opening tag in a **renderer-owned**
+/// HTML fragment (a Plotly chart div, an animation player). Only call this
+/// on markup produced by rustlab itself — never on author content, or the
+/// CSP nonce would bless whatever the author injected. Operates on `&str`
+/// slices, so multi-byte text is copied verbatim.
+pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> String {
+    let attr = nonce_attr(nonce);
+    if attr.is_empty() {
+        return fragment.to_string();
+    }
+    let mut out = String::with_capacity(fragment.len() + 64);
+    let mut rest = fragment;
+    while let Some(start) = rest.find("<script") {
+        let after = &rest[start + "<script".len()..];
+        // `<scripts>` or `<scriptx` is not a script tag.
+        let is_tag = after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
+        if !is_tag {
+            out.push_str(&rest[..start + "<script".len()]);
+            rest = after;
+            continue;
+        }
+        let Some(gt) = after.find('>') else {
+            break;
+        };
+        let attrs = &after[..gt];
+        out.push_str(&rest[..start]);
+        out.push_str("<script");
+        if attrs.contains("nonce=") {
+            out.push_str(attrs);
+        } else {
+            out.push_str(&attr);
+            out.push_str(attrs);
+        }
+        out.push('>');
+        rest = &after[gt + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
@@ -2303,12 +2589,16 @@ fn protect_math(md: &str) -> (String, Vec<String>) {
 /// that doesn't look delimited is returned unchanged (defensive — every
 /// real stash entry carries its delimiters).
 fn to_katex_delimiters(original: &str) -> String {
+    // HTML-escape the math body so a notebook that puts raw HTML / script
+    // tags inside `$…$` cannot break out of the math span into executable
+    // markup. KaTeX reads textContent (entity-decoded), so LaTeX still sees
+    // the original characters.
     if original.len() >= 4 && original.starts_with("$$") && original.ends_with("$$") {
-        format!("\\[{}\\]", &original[2..original.len() - 2])
+        format!("\\[{}\\]", escape_html(&original[2..original.len() - 2]))
     } else if original.len() >= 2 && original.starts_with('$') && original.ends_with('$') {
-        format!("\\({}\\)", &original[1..original.len() - 1])
+        format!("\\({}\\)", escape_html(&original[1..original.len() - 1]))
     } else {
-        original.to_string()
+        escape_html(original)
     }
 }
 
@@ -3655,6 +3945,15 @@ mod tests {
         );
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
+        // Watch CSP (nonce + strict-dynamic) blocks inline event handlers,
+        // so auto-render must start from a script body, not onload=.
+        assert!(html.contains("DOMContentLoaded"));
+        assert!(html.contains("renderMathInElement"));
+        assert!(!html.contains("onload="), "inline onload is blocked by CSP");
+        assert!(
+            !html.contains("onclick="),
+            "inline onclick is blocked by CSP"
+        );
     }
 
     #[test]
@@ -3683,6 +3982,8 @@ mod tests {
             &LinkMode::single_file(),
         );
         assert!(html.contains("nav-toggle"));
+        assert!(html.contains("button.nav-toggle"));
+        assert!(!html.contains("onclick="));
     }
 
     #[test]
@@ -4371,6 +4672,154 @@ mod tests {
         assert_eq!(to_katex_delimiters("$$$$"), r"\[\]");
         // Not delimited → unchanged.
         assert_eq!(to_katex_delimiters("plain"), "plain");
+    }
+
+    #[test]
+    fn to_katex_delimiters_escapes_html_in_math() {
+        let out = to_katex_delimiters("$a<script>alert(1)</script>$");
+        assert!(!out.contains("<script>"));
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(out.starts_with(r"\(") && out.ends_with(r"\)"));
+    }
+
+    #[test]
+    fn markdown_strips_raw_script_but_keeps_plain_formatting_tags() {
+        let html = markdown_to_html("<script>alert(1)</script>\n\nhello <b>x</b>");
+        assert!(
+            !html.contains("<script>"),
+            "raw script must not survive: {html}"
+        );
+        // The script tag is escaped exactly once — readers see `<script>` as
+        // text, not `&lt;script&gt;`.
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(!html.contains("&amp;lt;"), "double-escaped: {html}");
+        // Attribute-free formatting tags are allowed through.
+        assert!(html.contains("hello <b>x</b>"), "{html}");
+    }
+
+    #[test]
+    fn sanitize_html_fragment_allowlist() {
+        // Allowed, attribute-free tags pass verbatim (case-insensitive).
+        assert_eq!(
+            sanitize_html_fragment("<details><summary>More</summary>hidden</details>"),
+            "<details><summary>More</summary>hidden</details>"
+        );
+        assert_eq!(sanitize_html_fragment("a<br>b<BR/>c<br />d"), "a<br>b<BR/>c<br />d");
+        assert_eq!(sanitize_html_fragment("x<sub>2</sub>"), "x<sub>2</sub>");
+        // Any attribute turns the tag into text.
+        assert_eq!(
+            sanitize_html_fragment("<b onclick=\"x()\">y</b>"),
+            "&lt;b onclick=&quot;x()&quot;&gt;y</b>"
+        );
+        assert_eq!(sanitize_html_fragment("<details open>"), "&lt;details open&gt;");
+        // Tags off the list are text, even without attributes.
+        assert_eq!(
+            sanitize_html_fragment("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+        assert_eq!(sanitize_html_fragment("<iframe>"), "&lt;iframe&gt;");
+        assert_eq!(sanitize_html_fragment("<img src=x>"), "&lt;img src=x&gt;");
+        // Comments vanish; stray brackets and text are escaped.
+        assert_eq!(sanitize_html_fragment("a <!-- note --> b"), "a  b");
+        assert_eq!(sanitize_html_fragment("<!-- unterminated"), "");
+        assert_eq!(sanitize_html_fragment("1 < 2 & 3 > 2"), "1 &lt; 2 &amp; 3 &gt; 2");
+    }
+
+    #[test]
+    fn markdown_drops_html_comments() {
+        let html = markdown_to_html("before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail");
+        assert!(!html.contains("author note"), "{html}");
+        assert!(!html.contains("block comment"), "{html}");
+        assert!(html.contains("before") && html.contains("after") && html.contains("tail"));
+    }
+
+    #[test]
+    fn markdown_strips_javascript_urls() {
+        let html = markdown_to_html("[click](javascript:alert(1))");
+        assert!(!html.to_lowercase().contains("javascript:"));
+        assert!(html.contains("href=\"#\"") || html.contains("href='#'"));
+    }
+
+    #[test]
+    fn markdown_keeps_data_image_src_but_not_data_links() {
+        let html = markdown_to_html("![t](data:image/gif;base64,R0lGODlhAQABAAAAACw=)");
+        assert!(html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""), "{html}");
+        let html = markdown_to_html("![t](data:text/html,<script>1</script>)");
+        assert!(html.contains("src=\"\""), "{html}");
+        let html = markdown_to_html("[t](data:image/svg+xml,x)");
+        assert!(html.contains("href=\"#\""), "{html}");
+    }
+
+    #[test]
+    fn is_dangerous_url_detects_schemes() {
+        assert!(is_dangerous_url("javascript:alert(1)"));
+        assert!(is_dangerous_url("DATA:text/html,x"));
+        assert!(is_dangerous_url("vbscript:msgbox"));
+        assert!(is_dangerous_url("data:image/png;base64,x"));
+        // Browsers strip tabs/newlines before parsing the scheme.
+        assert!(is_dangerous_url("java\tscript:alert(1)"));
+        assert!(is_dangerous_url(" java\nscript:alert(1)"));
+        assert!(!is_dangerous_url("https://example.com"));
+        assert!(!is_dangerous_url("/relative/path"));
+        assert!(!is_dangerous_url("notes.md#javascript:x"));
+    }
+
+    #[test]
+    fn add_nonce_to_scripts_stamps_renderer_fragments_and_keeps_utf8() {
+        let frag = "<div id=\"p\">→ ∇·E — π</div>\n<script>Plotly.newPlot('p', []);</script>\n<script type=\"text/plain\">x</script>";
+        let out = add_nonce_to_scripts(frag, Some("abc123"));
+        assert!(out.contains("<script nonce=\"abc123\">Plotly"), "{out}");
+        assert!(out.contains("<script nonce=\"abc123\" type=\"text/plain\">"), "{out}");
+        assert!(out.contains("→ ∇·E — π"), "utf-8 mangled: {out}");
+        // No nonce → byte-identical.
+        assert_eq!(add_nonce_to_scripts(frag, None), frag);
+        // Existing nonce is left alone; look-alike tags are not touched.
+        let keep = "<script nonce=\"zzz\">1</script><scripts>";
+        assert_eq!(add_nonce_to_scripts(keep, Some("abc")), keep);
+        // Only alphanumeric nonces are accepted.
+        assert_eq!(nonce_attr(Some("a\"b")), "");
+        assert_eq!(nonce_attr(Some("")), "");
+    }
+
+    #[test]
+    fn render_html_uses_no_inline_event_handlers() {
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("# H\n\nx".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(!html.contains("onload="), "inline onload survives CSP-incompatible: {html:.400}");
+        assert!(!html.contains("onclick="), "inline onclick survives: {html:.400}");
+        assert!(html.contains("DOMContentLoaded"), "KaTeX init script missing");
+        assert!(html.contains("button.nav-toggle"), "sidebar toggle wiring missing");
+        // Static output carries no nonce attributes.
+        assert!(!html.contains("nonce="), "{html:.400}");
+    }
+
+    #[test]
+    fn render_html_nonced_stamps_every_renderer_script() {
+        let html = render_html_nonced(
+            "T",
+            &[Rendered::Markdown("# H\n\nx".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+            Some("deadbeef"),
+        );
+        let tags: Vec<&str> = html.match_indices("<script").map(|(i, _)| {
+            let end = html[i..].find('>').unwrap();
+            &html[i..i + end + 1]
+        }).collect();
+        assert!(tags.len() >= 4, "expected head scripts: {tags:?}");
+        for t in &tags {
+            assert!(t.contains("nonce=\"deadbeef\""), "unnonced renderer script: {t}");
+        }
     }
 
     #[test]

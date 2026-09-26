@@ -15,6 +15,36 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **PDF compile no longer enables TeX shell-escape.** Plot SVGs are
+  converted to PDF via fixed-argv Inkscape before `pdflatex`/`tectonic`
+  runs; `\includegraphics` replaces `\includesvg`/`svg.sty`. Inkscape is
+  required whenever a notebook has SVG plots. Migration: install Inkscape;
+  do not rely on TeX packages that need `-shell-escape`.
+- **`notebook watch` checks loopback Origin and Host.** `POST /save`
+  and WebSocket upgrades require an `Origin` of
+  `http://127.0.0.1:<port>`, `http://localhost:<port>`, or
+  `http://[::1]:<port>` (a missing `Origin` is 403). Every request
+  must present a matching loopback `Host` or it is rejected. There is
+  no session token. Other processes on the same machine can still
+  reach the loopback port. See `docs/security.md`.
+- **Notebook file I/O is jailed.** Embeds, `run` / `load` / `save` /
+  `savefig` / `saveanim` / `figure("….html")` must resolve under the
+  jail root or error with `path escapes notebook directory`. The root is
+  the notebook's own directory for a single-file `render` / `watch`, the
+  collection root for a directory (nested notebooks may read
+  `../data/`), or `--jail-root <DIR>` on either command. `sub/../x` is
+  fine when it stays inside; absolute paths outside the root (including
+  `/tmp`) are rejected. REPL and `rustlab run` are unchanged.
+- **Raw HTML in notebook prose is sanitised in HTML output.** Only
+  attribute-free formatting tags (`<b>`, `<br>`, `<sub>`, `<kbd>`,
+  `<details>`/`<summary>`, `<div>`, table tags, …) pass through; any tag
+  with an attribute and every other tag (`<script>`, `<iframe>`,
+  `<img>`, `<a>`, …) renders as escaped text, and HTML comments are
+  dropped. `javascript:` / `data:` / `vbscript:` / `blob:` links are
+  neutralised; images keep `data:image/*` only. Migration: write links
+  and images in markdown; use `> [!NOTE]` callouts and the
+  `<!-- details: -->` directive instead of attributed HTML. Markdown
+  output (`-f markdown`) is unaffected.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -43,6 +73,15 @@ Workflow Rule 12).
   `name`. Precedence: CLI flags > in-script / REPL commands > rc >
   defaults. Unknown keys warn once; invalid values abort with path + key.
   Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
+- Security hardening for notebooks / watch / PDF / viewer (see
+  `docs/security.md`): CSP on watch pages with the nonce stamped at
+  render time on rustlab's own script tags (no inline event handlers
+  remain in rendered pages), HTML-escaped math restore, raw-HTML
+  allow-list and dangerous URL scheme stripping (index page included),
+  viewer Unix socket mode `0600`, and a 32 MiB IPC frame size cap.
+- `rustlab-notebook render` / `watch` gained `--jail-root <DIR>` to
+  widen the notebook file-I/O jail. Inkscape conversion failures now
+  report the tail of Inkscape's stderr.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).
@@ -100,6 +139,18 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **`notebook watch` renders KaTeX math again.** The watch
+  Content-Security-Policy (`script-src` nonce + `'strict-dynamic'`)
+  blocks inline event handlers, so the auto-render `onload` and the
+  sidebar `onclick` never ran and display math stayed as raw `\[…\]`.
+  Both now run from nonce'd scripts. The invalid `connect-src` token
+  `ws://[::1]:*` is gone.
+- **Clicking a notebook link in `notebook watch` no longer sticks on
+  "disconnected — reconnecting…".** The WebSocket client read
+  `window.__RL_TOKEN` before that assignment ran, and cross-notebook
+  links do not carry `?token=`, so the upgrade returned 401 and the
+  retry used the same empty secret. The token is gone; loopback
+  Origin and Host checks remain (see the behavior note above).
 - **Zooming a viewer panel with script limits no longer snaps back.**
   The viewer re-applied a panel's `xlim`/`ylim` on every frame, so any
   zoom or pan of a panel whose script had called `plot_limits` (or

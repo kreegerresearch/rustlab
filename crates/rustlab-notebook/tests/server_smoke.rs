@@ -29,7 +29,11 @@ Some prose with inline math $E = mc^2$.
 /// pieces we need to drive the router directly. The internal
 /// `render_for_server` is private to the server module; we replicate
 /// it here using the public render API.
-fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, TempDir) {
+fn build_state() -> (
+    Arc<rustlab_notebook::server::http::ServerState>,
+    TempDir,
+    TempDir,
+) {
     let src_dir = TempDir::new().unwrap();
     let plot_dir = TempDir::new().unwrap();
     let notebook = src_dir.path().join("smoke.md");
@@ -39,11 +43,7 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
     let source = std::fs::read_to_string(&notebook).unwrap();
     let source = rustlab_notebook::strip_render_artifacts(&source);
     let title = rustlab_notebook::extract_title(&source, &notebook);
-    let expanded = rustlab_notebook::embed::expand_embeds(
-        &source,
-        src_dir.path(),
-        src_dir.path(),
-    );
+    let expanded = rustlab_notebook::embed::expand_embeds(&source, src_dir.path(), src_dir.path());
     let blocks = rustlab_notebook::parse::parse_notebook(&expanded);
     let rendered = rustlab_notebook::execute::execute_notebook(&blocks);
 
@@ -80,6 +80,9 @@ fn build_state() -> (Arc<rustlab_notebook::server::http::ServerState>, TempDir, 
         index_body: tokio::sync::RwLock::new(String::new()),
         index_md_path: None,
         render_tx: std::sync::OnceLock::new(),
+        csp_nonce: "testnonce".to_string(),
+        bind_port: std::sync::atomic::AtomicU16::new(8042),
+        jail_root: None,
     });
     (state, src_dir, plot_dir)
 }
@@ -93,6 +96,7 @@ async fn notebook_html_renders_smoke_fixture() {
         .oneshot(
             Request::builder()
                 .uri("/n/smoke")
+                .header(header::HOST, "127.0.0.1:8042")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -104,7 +108,10 @@ async fn notebook_html_renders_smoke_fixture() {
     let html = std::str::from_utf8(&body).expect("html is utf-8");
 
     // 1. Prose content survived rendering.
-    assert!(html.contains("Some prose"), "prose missing from rendered HTML");
+    assert!(
+        html.contains("Some prose"),
+        "prose missing from rendered HTML"
+    );
 
     // 2. KaTeX is present (math span survived).
     assert!(html.contains("E = mc^2"), "math expression missing");
@@ -131,10 +138,7 @@ async fn notebook_html_renders_smoke_fixture() {
         !html.contains("cdn.jsdelivr.net"),
         "stray CDN URL: cdn.jsdelivr.net"
     );
-    assert!(
-        !html.contains("cdn.plot.ly"),
-        "stray CDN URL: cdn.plot.ly"
-    );
+    assert!(!html.contains("cdn.plot.ly"), "stray CDN URL: cdn.plot.ly");
 }
 
 #[tokio::test]
@@ -146,6 +150,7 @@ async fn root_redirects_to_sole_notebook() {
         .oneshot(
             Request::builder()
                 .uri("/")
+                .header(header::HOST, "127.0.0.1:8042")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -153,7 +158,13 @@ async fn root_redirects_to_sole_notebook() {
         .unwrap();
 
     assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-    assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/n/smoke");
+    let loc = res
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(loc, "/n/smoke", "loc={loc}");
 }
 
 #[tokio::test]
@@ -165,6 +176,7 @@ async fn katex_css_served_from_embedded_assets() {
         .oneshot(
             Request::builder()
                 .uri("/assets/katex/katex.min.css")
+                .header(header::HOST, "127.0.0.1:8042")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -198,6 +210,7 @@ async fn plotly_bundle_served_from_embedded_assets() {
         .oneshot(
             Request::builder()
                 .uri("/assets/plotly.min.js")
+                .header(header::HOST, "127.0.0.1:8042")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -216,7 +229,7 @@ async fn plotly_bundle_served_from_embedded_assets() {
 #[test]
 fn assets_module_resolves_a_known_font() {
     // Quick sanity check the embedded fonts actually compiled in.
-    let asset = asset_for_path("katex/fonts/KaTeX_Main-Regular.woff2")
-        .expect("KaTeX_Main-Regular missing");
+    let asset =
+        asset_for_path("katex/fonts/KaTeX_Main-Regular.woff2").expect("KaTeX_Main-Regular missing");
     assert_eq!(&asset.bytes[..4], b"wOF2", "not a woff2 file");
 }

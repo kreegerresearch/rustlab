@@ -1,10 +1,17 @@
 //! Wire protocol for rustlab ↔ rustlab-viewer IPC.
 //!
 //! Messages are length-prefixed msgpack: `[u32 BE length][msgpack bytes]`.
+//! Incoming frames larger than [`MAX_MSG_LEN`] are rejected without allocating
+//! the payload (OOM guard).
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
+
+/// Hard cap on a single framed IPC message (32 MiB). Large enough for a
+/// dense heatmap RGBA panel; small enough that a malicious peer cannot
+/// force a multi-GB allocation with a forged length prefix.
+pub const MAX_MSG_LEN: u32 = 32 * 1024 * 1024;
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
 
@@ -185,6 +192,7 @@ pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<
 }
 
 /// Read a length-prefixed msgpack message.  Returns `None` on clean EOF.
+/// Rejects frames whose declared length exceeds [`MAX_MSG_LEN`].
 pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> std::io::Result<Option<T>> {
     let mut len_buf = [0u8; 4];
     match r.read_exact(&mut len_buf) {
@@ -192,7 +200,16 @@ pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> std::io::Re
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e),
     }
-    let len = u32::from_be_bytes(len_buf) as usize;
+    let len = u32::from_be_bytes(len_buf);
+    if len > MAX_MSG_LEN {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "IPC frame length {len} exceeds maximum {MAX_MSG_LEN} bytes"
+            ),
+        ));
+    }
+    let len = len as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
     let msg = rmp_serde::from_slice(&buf)
@@ -634,5 +651,20 @@ mod tests {
         // Next read should be EOF
         let eof: Option<ViewerMsg> = read_msg(&mut cursor).unwrap();
         assert!(eof.is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_frame_without_allocating_payload() {
+        // Length prefix claims MAX_MSG_LEN + 1 bytes; read_msg must error
+        // before trying to allocate that buffer.
+        let mut buf = Vec::new();
+        let bogus = MAX_MSG_LEN.saturating_add(1).to_be_bytes();
+        buf.extend_from_slice(&bogus);
+        // No payload bytes follow — if we allocated and tried to read, we'd
+        // get UnexpectedEof instead of InvalidData.
+        let mut cursor = std::io::Cursor::new(&buf);
+        let err = read_msg::<_, ViewerMsg>(&mut cursor).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds maximum"));
     }
 }

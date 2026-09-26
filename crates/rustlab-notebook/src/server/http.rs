@@ -29,8 +29,9 @@ use rustlab_script::WidgetValue;
 
 use axum::{
     body::Body,
-    extract::{Path as AxPath, State},
-    http::{header, StatusCode},
+    extract::{Path as AxPath, Request, State},
+    http::{header, HeaderMap, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Router,
@@ -39,6 +40,7 @@ use rustlab_plot::ThemeColors;
 use tempfile::TempDir;
 use tokio::sync::{broadcast, RwLock};
 
+use super::auth;
 use super::diff::{self, Block};
 use super::{assets, ws};
 
@@ -164,6 +166,15 @@ pub struct ServerState {
     /// WS `widget_update` / `run_block` handlers send requests here
     /// (reusing the same debounce + preemption path as a file save).
     pub render_tx: OnceLock<tokio::sync::mpsc::UnboundedSender<super::render_loop::RenderRequest>>,
+    /// CSP `script-src` nonce stamped at render time on the scripts the
+    /// renderer and page chrome emit (see `server::auth` module docs).
+    pub csp_nonce: String,
+    /// Bound TCP port (set after listen). Used for Origin allowlisting.
+    pub bind_port: std::sync::atomic::AtomicU16,
+    /// Path-jail root for notebook file I/O: the collection root in
+    /// directory mode, `--jail-root` when given, `None` (= each notebook's
+    /// own directory) for a single-file serve.
+    pub jail_root: Option<PathBuf>,
 }
 
 impl ServerState {
@@ -240,15 +251,33 @@ pub fn router(state: Arc<ServerState>) -> Router {
         r = r.route("/save/{slug}", post(save_source));
     }
 
-    r.with_state(state)
+    r.with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, require_loopback_host))
+}
+
+/// DNS-rebinding defense: every request (pages, assets, raw source,
+/// save, WebSocket upgrade) must present a loopback `Host` for the
+/// port this server actually bound. The bound port is `ServerState::bind_port`
+/// — callers set it to the real listen port; there is no default-port
+/// fallback.
+async fn require_loopback_host(
+    State(state): State<Arc<ServerState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    if !auth::host_is_loopback(request.headers(), port) {
+        let body = auth::host_rejection_body(request.headers(), port);
+        return (StatusCode::FORBIDDEN, body).into_response();
+    }
+    next.run(request).await
 }
 
 async fn root(State(state): State<Arc<ServerState>>) -> Response {
     if let Some(nb) = state.sole() {
-        return Redirect::temporary(&format!("/n/{}", nb.slug)).into_response();
+        let loc = format!("/n/{}", nb.slug);
+        return Redirect::temporary(&loc).into_response();
     }
-    // Directory mode: generated index listing, with the root index.md's
-    // rendered body above it — same page the static build produces.
     let entries: Vec<(String, String)> = state
         .order
         .iter()
@@ -257,14 +286,10 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         .collect();
     let body = state.index_body.read().await;
     let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
-    // Inject the WS client so a future "index refresh on add/remove"
-    // has a socket to push over; harmless today (no slug → no connect).
-    let html = ws::inject_ws_client(&html);
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
-        .into_response()
+    // The WS client is the only script on the index page; it gets the
+    // nonce here. The index body itself was sanitised at render time.
+    let html = ws::inject_ws_client_nonced(&html, Some(&state.csp_nonce));
+    html_response(&state, html)
 }
 
 /// Phase 1–4 served the lone notebook at `/notebook.html`. Keep that
@@ -279,14 +304,55 @@ async fn notebook_page(
 ) -> Response {
     match state.notebook(&slug) {
         Some(nb) => {
+            // Nonces were stamped when this HTML was rendered
+            // (`render_for_server_cancellable`); nothing is added here.
             let html = nb.html.read().await.clone();
-            (
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-                html,
-            )
-                .into_response()
+            html_response(&state, html)
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
+    }
+}
+
+fn html_response(state: &ServerState, html: String) -> Response {
+    let csp = auth::csp_header(&state.csp_nonce);
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (
+                header::HeaderName::from_static("content-security-policy"),
+                csp,
+            ),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+async fn save_source(
+    State(state): State<Arc<ServerState>>,
+    AxPath(slug): AxPath<String>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    // Origin is required (missing or non-loopback → 403). Host was
+    // already checked by `require_loopback_host`.
+    if auth::authorize_mutate(&headers, port).is_err() {
+        let body = auth::origin_rejection_body(&headers, port);
+        return (StatusCode::FORBIDDEN, body).into_response();
+    }
+
+    let Some(nb) = state.notebook(&slug) else {
+        return (StatusCode::NOT_FOUND, "notebook not found").into_response();
+    };
+    let _guard = nb.save_lock.lock().await;
+    match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
+        Ok(()) => (StatusCode::OK, "saved").into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write error: {e}"),
+        )
+            .into_response(),
     }
 }
 
@@ -311,45 +377,14 @@ async fn raw_source(
     }
 }
 
-/// `POST /save/{slug}` — write the request body back to the notebook's
-/// source `.md`. Only mounted under `--editable`. The fs watcher then
-/// picks up the change and pushes a re-render to the page.
-async fn save_source(
-    State(state): State<Arc<ServerState>>,
-    AxPath(slug): AxPath<String>,
-    body: String,
-) -> Response {
-    let Some(nb) = state.notebook(&slug) else {
-        return (StatusCode::NOT_FOUND, "notebook not found").into_response();
-    };
-    // Serialise with the WS cell editor's read-splice-write so a
-    // concurrent cell save can't interleave with this whole-doc write.
-    let _guard = nb.save_lock.lock().await;
-    match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
-        Ok(()) => (StatusCode::OK, "saved").into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("write error: {e}"),
-        )
-            .into_response(),
-    }
-}
-
 async fn asset(AxPath(path): AxPath<String>) -> Response {
     match assets::asset_for_path(&path) {
-        Some(a) => (
-            [(header::CONTENT_TYPE, a.content_type)],
-            a.bytes,
-        )
-            .into_response(),
+        Some(a) => ([(header::CONTENT_TYPE, a.content_type)], a.bytes).into_response(),
         None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
 
-async fn plot(
-    State(state): State<Arc<ServerState>>,
-    AxPath(path): AxPath<String>,
-) -> Response {
+async fn plot(State(state): State<Arc<ServerState>>, AxPath(path): AxPath<String>) -> Response {
     // Reject traversal — path segments are joined relative to the
     // tempdir, so a `..` segment would escape the served root.
     if path.split('/').any(|seg| seg == ".." || seg.is_empty()) {
@@ -422,7 +457,15 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         })
+    }
+
+    /// Loopback Host for the port [`single_state`] records.
+    fn host(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+        builder.header(header::HOST, "127.0.0.1:8042")
     }
 
     #[test]
@@ -439,15 +482,21 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/")
+                host(axum::http::Request::builder().uri("/"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/n/nb");
+        let loc = res
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(loc, "/n/nb", "loc={loc}");
+        assert!(!loc.contains("token="), "loc={loc}");
     }
 
     #[tokio::test]
@@ -455,8 +504,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/n/nb")
+                host(axum::http::Request::builder().uri("/n/nb"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -464,7 +512,10 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
-        assert_eq!(body.as_ref(), b"<h1>hello</h1>");
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("<h1>hello</h1>"));
+        assert!(!s.contains("__RL_TOKEN"));
+        assert!(!s.contains("rl-token"));
     }
 
     #[tokio::test]
@@ -472,8 +523,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/n/nope")
+                host(axum::http::Request::builder().uri("/n/nope"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -487,8 +537,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/raw/nb")
+                host(axum::http::Request::builder().uri("/raw/nb"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -506,11 +555,13 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -544,15 +595,21 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
         });
-        let app = router(editable_state);
+        let app = router(editable_state.clone());
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .method("POST")
-                    .uri("/save/nb")
-                    .body(Body::from("# edited\n"))
-                    .unwrap(),
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .body(Body::from("# edited\n"))
+                .unwrap(),
             )
             .await
             .unwrap();
@@ -562,12 +619,245 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn katex_css_served() {
+    async fn save_route_rejects_missing_origin() {
+        let state = single_state("<h1>hello</h1>");
+        let src = state.notebook("nb").unwrap().source_path.clone();
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let editable_state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        let app = router(editable_state);
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .body(Body::from("# edited\n"))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn save_route_rejects_bad_origin() {
+        let state = single_state("<h1>hello</h1>");
+        let src = state.notebook("nb").unwrap().source_path.clone();
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let editable_state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        let app = router(editable_state);
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .header("Origin", "http://evil.example")
+                .body(Body::from("# edited\n"))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn notebook_page_sets_csp_header() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/n/nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let csp = res
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("nonce-testnonce"));
+        assert!(!csp.contains("[::1]"));
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("hello"));
+        assert!(!s.contains("__RL_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn get_rejects_bad_host() {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
                 axum::http::Request::builder()
-                    .uri("/assets/katex/katex.min.css")
+                    .uri("/n/nb")
+                    .header(header::HOST, "evil.example:8042")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// The CSP nonce must never be added to a `<script>` that arrived
+    /// through content: serving is not allowed to post-process nonces
+    /// in. Only the WS client the server injects on `/` carries one.
+    #[tokio::test]
+    async fn index_page_does_not_bless_content_scripts_with_nonce() {
+        let plot_dir = TempDir::new().unwrap();
+        let src = plot_dir.path().join("nb.md");
+        std::fs::write(&src, "# nb\n").unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src,
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: false,
+            link_slugs: HashMap::new(),
+            single: false,
+            theme: Theme::Dark.colors(),
+            index_title: "Collection".to_string(),
+            // Simulates a body that somehow still carries live markup —
+            // the sanitiser normally prevents this at render time.
+            index_body: tokio::sync::RwLock::new(
+                "<p>x</p><script>window.__evil=1</script>".to_string(),
+            ),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        let app = router(state);
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), 256 * 1024).await.unwrap();
+        let s = String::from_utf8_lossy(&body);
+        assert!(
+            s.contains("<script>window.__evil=1</script>"),
+            "content script must be served exactly as stored, unnonced: {s:.300}"
+        );
+        assert!(
+            s.contains("<script nonce=\"testnonce\">"),
+            "server-injected WS client must carry the nonce"
+        );
+        assert_eq!(
+            s.matches("nonce=\"testnonce\"").count(),
+            1,
+            "exactly one nonced script on the index page"
+        );
+    }
+
+    #[tokio::test]
+    async fn notebook_page_is_served_verbatim_with_csp() {
+        // Rendered HTML is stored with nonces already stamped; serving
+        // adds the header and nothing else.
+        let app = router(single_state("<script nonce=\"testnonce\">1</script><script>2</script>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/n/nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get("content-security-policy").is_some());
+        let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        assert_eq!(
+            body.as_ref(),
+            b"<script nonce=\"testnonce\">1</script><script>2</script>"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_rejects_missing_host() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/n/nb")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn katex_css_served() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/assets/katex/katex.min.css"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -583,8 +873,7 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                axum::http::Request::builder()
-                    .uri("/plots/../Cargo.toml")
+                host(axum::http::Request::builder().uri("/plots/../Cargo.toml"))
                     .body(Body::empty())
                     .unwrap(),
             )

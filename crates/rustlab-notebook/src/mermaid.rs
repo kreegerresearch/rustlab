@@ -2,7 +2,7 @@
 //!
 //! Pure-Rust SVG rendering — no browser, no Node, no shell-out. Used by
 //! both the HTML renderer (inline `<svg>`) and the LaTeX renderer
-//! (`\includesvg{...}`). Output is cached by source hash under
+//! (`\includegraphics{...}`, after a fixed-argv Inkscape SVG→PDF pass). Output is cached by source hash under
 //! `<plot_dir>/.cache/<blake3-hex>.svg` so unchanged diagrams aren't
 //! re-rendered.
 //!

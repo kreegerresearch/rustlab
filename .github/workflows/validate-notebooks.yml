@@ -11,7 +11,7 @@ name: validate-notebooks
 # regular crate test suite and is not duplicated here.
 #
 # PDF rendering needs pdflatex (~500 MB of TeX Live) plus inkscape for
-# `\includesvg`; skipping it keeps CI under a couple of minutes and
+# the fixed-argv SVG→PDF pass; skipping it keeps CI under a couple of minutes and
 # still validates 3 of 4 output formats. Run `make validate-notebooks`
 # locally for full PDF coverage, or extend this workflow when the
 # pdflatex install cost becomes worth paying in CI.

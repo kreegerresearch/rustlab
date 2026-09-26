@@ -4013,6 +4013,7 @@ dependencies = [
  "mermaid-rs-renderer",
  "notify",
  "pulldown-cmark",
+ "rand 0.8.5",
  "rustlab-cache",
  "rustlab-config",
  "rustlab-plot",
