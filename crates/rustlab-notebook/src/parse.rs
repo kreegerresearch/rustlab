@@ -9,6 +9,10 @@ pub struct CodeDirectives {
     pub grid_cols: Option<usize>,
     /// Caption text (used by formats that support figure captions, e.g. LaTeX).
     pub caption: Option<String>,
+    /// Initial source-disclosure state. `Some(true)` is open, `Some(false)`
+    /// is collapsed, `None` inherits the notebook frontmatter / rc / built-in
+    /// default (open). `<!-- hide -->` still removes the disclosure entirely.
+    pub source_open: Option<bool>,
 }
 
 /// Directives that modify how a Mermaid diagram is displayed.
@@ -435,6 +439,17 @@ fn parse_code_directive(trimmed: &str) -> Option<CodeDirectiveKind> {
             }
         }
     }
+    // `<!-- code: open|collapsed -->`. Any other value is still consumed so
+    // a bad token does not stop the directive stack; `notebook check` warns.
+    if let Some(rest) = trimmed.strip_prefix("<!-- code:") {
+        if let Some(val) = rest.strip_suffix("-->") {
+            return Some(match val.trim().to_ascii_lowercase().as_str() {
+                "open" => CodeDirectiveKind::CodeOpen(Some(true)),
+                "collapsed" => CodeDirectiveKind::CodeOpen(Some(false)),
+                _ => CodeDirectiveKind::CodeOpen(None),
+            });
+        }
+    }
     None
 }
 
@@ -443,6 +458,9 @@ enum CodeDirectiveKind {
     Details(String),
     Grid(usize),
     Caption(String),
+    /// `Some` is a recognised open/collapsed value. `None` is an
+    /// unrecognised token: consume the line, do not set the flag.
+    CodeOpen(Option<bool>),
 }
 
 /// Scan backward from the tail of the markdown buffer to collect stacked
@@ -461,6 +479,15 @@ fn extract_code_directives(markdown_buf: &mut String) -> CodeDirectives {
             Some(CodeDirectiveKind::Details(title)) => directives.details = Some(title),
             Some(CodeDirectiveKind::Grid(n)) => directives.grid_cols = Some(n),
             Some(CodeDirectiveKind::Caption(text)) => directives.caption = Some(text),
+            // Bottom-up scan, so the directive closest to the fence is seen
+            // first and wins. An unrecognised value is consumed but does not
+            // clear a valid one above or below it.
+            Some(CodeDirectiveKind::CodeOpen(Some(open))) => {
+                if directives.source_open.is_none() {
+                    directives.source_open = Some(open);
+                }
+            }
+            Some(CodeDirectiveKind::CodeOpen(None)) => {}
             None => break,
         }
         // Remove the directive line from the buffer
@@ -498,7 +525,10 @@ fn extract_mermaid_directives(markdown_buf: &mut String) -> MermaidDirectives {
             Some(CodeDirectiveKind::Details(title)) => directives.details = Some(title),
             Some(CodeDirectiveKind::Caption(text)) => directives.caption = Some(text),
             // Grid is meaningless for Mermaid (single SVG per block) — ignore but consume.
-            Some(CodeDirectiveKind::Grid(_)) => {}
+            // `code:` is a rustlab-cell directive; consume it so the stack
+            // continues, and leave the diagram unchanged. `notebook check`
+            // still warns that it is not followed by a rustlab fence.
+            Some(CodeDirectiveKind::Grid(_)) | Some(CodeDirectiveKind::CodeOpen(_)) => {}
             None => break,
         }
         if let Some(pos) = markdown_buf.rfind(&last_line) {
@@ -527,6 +557,11 @@ pub struct Frontmatter {
     pub title: Option<String>,
     /// Sort weight for the index page (ascending). Ties fall back to filename.
     pub order: Option<i64>,
+    /// Initial source-disclosure state for every rustlab cell that does not
+    /// set `<!-- code: -->`. `Some(true)` open, `Some(false)` collapsed.
+    /// An unrecognised value is left `None` (falls through to rc / open);
+    /// `notebook check` warns.
+    pub code_open: Option<bool>,
 }
 
 /// Extract YAML frontmatter and the remaining body from a notebook source.
@@ -702,6 +737,11 @@ fn parse_frontmatter(src: &str) -> Frontmatter {
                     fm.order = Some(n);
                 }
             }
+            "code" => match val.to_ascii_lowercase().as_str() {
+                "open" => fm.code_open = Some(true),
+                "collapsed" => fm.code_open = Some(false),
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -836,6 +876,86 @@ mod tests {
                 "directive should be stripped: {md:?}"
             );
         }
+    }
+
+    fn code_source_open(block: &Block) -> Option<bool> {
+        match block {
+            Block::Code { directives, .. } => directives.source_open,
+            other => panic!("expected code block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn code_directive_open_and_collapsed() {
+        let src = "\
+<!-- code: collapsed -->
+```rustlab
+x = 1
+```
+
+<!-- code: open -->
+```rustlab
+y = 2
+```
+";
+        let blocks = parse_notebook(src);
+        let codes: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Code { .. }))
+            .collect();
+        assert_eq!(code_source_open(codes[0]), Some(false));
+        assert_eq!(code_source_open(codes[1]), Some(true));
+    }
+
+    #[test]
+    fn code_directive_stacks_with_grid_details_and_caption() {
+        let src = "\
+<!-- grid: 2 -->
+<!-- details: Sweep -->
+<!-- caption: A plot -->
+<!-- code: collapsed -->
+```rustlab
+x = 1
+```
+";
+        let blocks = parse_notebook(src);
+        let Block::Code { directives, .. } = &blocks[0] else {
+            panic!("expected code");
+        };
+        assert_eq!(directives.grid_cols, Some(2));
+        assert_eq!(directives.details.as_deref(), Some("Sweep"));
+        assert_eq!(directives.caption.as_deref(), Some("A plot"));
+        assert_eq!(directives.source_open, Some(false));
+        assert!(!directives.hidden);
+    }
+
+    #[test]
+    fn code_directive_invalid_does_not_block_hide() {
+        let src = "\
+<!-- code: folded -->
+<!-- hide -->
+```rustlab
+x = 1
+```
+";
+        let blocks = parse_notebook(src);
+        let Block::Code { source, directives } = &blocks[0] else {
+            panic!("expected code");
+        };
+        assert_eq!(source, "x = 1");
+        assert!(directives.hidden);
+        assert_eq!(directives.source_open, None);
+    }
+
+    #[test]
+    fn frontmatter_code_open_and_collapsed() {
+        let (open, _) = extract_frontmatter("---\ncode: \"open\"\n---\n");
+        assert_eq!(open.code_open, Some(true));
+        let (collapsed, _) = extract_frontmatter("---\ncode: Collapsed\n---\n");
+        assert_eq!(collapsed.code_open, Some(false));
+        let (bad, _) = extract_frontmatter("---\ncode: maybe\ntitle: T\n---\n");
+        assert_eq!(bad.code_open, None);
+        assert_eq!(bad.title.as_deref(), Some("T"));
     }
 
     #[test]

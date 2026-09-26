@@ -23,9 +23,16 @@ pub fn render_latex(
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0;
+    let mut in_exercise = false;
 
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
+
+    // Printed pages are Catppuccin Latte on white paper. `-t` and the
+    // rc file still theme HTML and `notebook watch`; they do not theme
+    // LaTeX or PDF. A dark `pagecolor` left body text black and unreadable.
+    let _html_theme = theme;
+    let theme = Theme::Light.colors();
 
     for block in blocks {
         match block {
@@ -41,60 +48,51 @@ pub fn render_latex(
                 hidden,
                 details,
                 grid_cols,
+                // HTML-only. PDF always shows the source; `code:` is ignored.
+                source_open: _,
             } => {
-                // Source code (unless hidden)
-                if !hidden {
-                    body.push_str("\\begin{verbatim}\n");
-                    body.push_str(source);
-                    body.push_str("\n\\end{verbatim}\n\n");
-                }
-
-                // Details title (LaTeX has no collapsibility — just add a label)
-                if let Some(title) = details {
-                    body.push_str(&format!("\\paragraph{{{}}}\n\n", escape_latex(title)));
-                }
-
-                // Text output
+                // Source, printed text, and errors are separate breakable
+                // panels. Plots stay full width after the panels. `code:`
+                // is HTML-only; PDF always shows the source.
                 let trimmed = text_output.trim();
+                if !hidden {
+                    body.push_str(
+                        "\\noindent{\\sffamily\\footnotesize\\textcolor{rldim}{rustlab}}\\par\\nopagebreak\n",
+                    );
+                    body.push_str("\\begin{rlsource}\n");
+                    // Colored with \textcolor — never minted, which would
+                    // need shell-escape. Text mode, so the tokens stay escaped.
+                    body.push_str(&emit_highlighted_source(source));
+                    body.push_str("\\end{rlsource}\n\n");
+                }
+
+                // No collapsible disclosure. The title sits on its own line,
+                // outside the accent rule, so it does not notch the panel.
+                if let Some(title) = details {
+                    body.push_str(&emit_details_label(title));
+                }
+
                 if !trimmed.is_empty() {
-                    body.push_str("\\begin{quote}\n\\ttfamily\\small\n\\begin{verbatim}\n");
-                    body.push_str(trimmed);
-                    body.push_str("\n\\end{verbatim}\n\\end{quote}\n\n");
+                    body.push_str("\\begin{rloutput}\n\\begin{rlverb}\n");
+                    body.push_str(&neutralize_verb_end(trimmed));
+                    body.push_str("\n\\end{rlverb}\n\\end{rloutput}\n\n");
                 }
 
-                // Error
                 if let Some(err) = error {
-                    body.push_str(&format!(
-                        "\\begin{{quote}}\n{{\\color[HTML]{{{error_hex}}}\\ttfamily\\small\n\\begin{{verbatim}}\n",
-                        error_hex = &theme.error_text[1..], // strip leading '#'
-                    ));
-                    body.push_str(err);
-                    body.push_str("\n\\end{verbatim}\n}\\end{quote}\n\n");
+                    body.push_str("\\begin{rlerror}\n\\begin{rlverb}\n");
+                    body.push_str(&neutralize_verb_end(err));
+                    body.push_str("\n\\end{rlverb}\n\\end{rlerror}\n\n");
                 }
 
-                // Plots (one per savefig call, or one final snapshot)
-                for fig in figures {
-                    plot_idx += 1;
-                    let plot_file = plot_dir.join(format!("plot-{plot_idx}.svg"));
-                    if let Err(e) = rustlab_plot::render_figure_state_to_file_themed(
-                        fig,
-                        &plot_file.to_string_lossy(),
-                        theme,
-                    ) {
-                        eprintln!("warning: could not render plot-{plot_idx}: {e}");
-                        continue;
-                    }
-                    let width = if let Some(n) = grid_cols {
-                        let w = 0.9 / *n as f64;
-                        format!("{w:.2}\\textwidth")
-                    } else {
-                        "0.9\\textwidth".to_string()
-                    };
-                    body.push_str(&format!(
-                        "\\begin{{center}}\n\\includegraphics[width={width}]{{{}/plot-{plot_idx}}}\n\\end{{center}}\n\n",
-                        href_prefix,
-                    ));
-                }
+                emit_figures(
+                    &mut body,
+                    figures,
+                    grid_cols.as_ref().copied(),
+                    plot_dir,
+                    &href_prefix,
+                    theme,
+                    &mut plot_idx,
+                );
 
                 // Animations cannot embed in a static PDF — emit a note
                 // pointing the reader at the HTML / GIF version.
@@ -120,7 +118,7 @@ pub fn render_latex(
                     continue;
                 }
                 if let Some(title) = details {
-                    body.push_str(&format!("\\paragraph{{{}}}\n\n", escape_latex(title)));
+                    body.push_str(&emit_details_label(title));
                 }
                 plot_idx += 1;
                 emit_mermaid_latex(
@@ -151,42 +149,41 @@ pub fn render_latex(
                 content,
             } => {
                 let label = title.as_deref().unwrap_or(kind.default_label());
-                body.push_str(&format!("\\begin{{quote}}\n\\textbf{{{label}:}} "));
+                let frame = callout_frame(kind);
+                body.push_str(&format!(
+                    "\\begin{{rlcallout}}{{{frame}}}{{{}}}\n",
+                    escape_latex(label),
+                ));
                 body.push_str(&markdown_to_latex(content, link));
-                body.push_str("\\end{quote}\n\n");
+                body.push_str("\\end{rlcallout}\n\n");
             }
             Rendered::ExerciseStart { number } => {
+                if in_exercise {
+                    body.push_str("\\end{rlexercise}\n\n");
+                }
                 body.push_str(&format!(
-                    "\\medskip\\noindent\\textbf{{Exercise~{number}.}}\\quad\n"
+                    "\\begin{{rlexercise}}\n{{\\sffamily\\bfseries\\textcolor{{rlh1}}{{Exercise {number}.}}}}\\par\\smallskip\n"
                 ));
+                in_exercise = true;
             }
             Rendered::SolutionStart => {
-                body.push_str("\\medskip\\noindent\\textbf{Solution.}\\quad\n");
+                body.push_str(
+                    "\\par\\medskip\\noindent\\textcolor{rllink}{\\textbf{Solution}}\\par\\nopagebreak\\smallskip\n",
+                );
             }
         }
     }
+    if in_exercise {
+        body.push_str("\\end{rlexercise}\n\n");
+    }
 
-    let is_dark = theme as *const ThemeColors == Theme::Dark.colors() as *const ThemeColors;
-    let link_hex = &theme.accent_secondary[1..]; // strip leading '#'
-
-    let dark_preamble = if is_dark {
-        let bg_hex = &theme.bg[1..];
-        let text_hex = &theme.text[1..];
-        format!(
-            "\\usepackage{{pagecolor}}\n\
-             \\definecolor{{pagebg}}{{HTML}}{{{bg_hex}}}\n\
-             \\definecolor{{pagetext}}{{HTML}}{{{text_hex}}}\n\
-             \\pagecolor{{pagebg}}\n\
-             \\color{{pagetext}}\n"
-        )
-    } else {
-        String::new()
-    };
+    let palette = latex_palette(theme);
 
     format!(
         r#"\documentclass[11pt,a4paper]{{article}}
 \usepackage[utf8]{{inputenc}}
 \usepackage[T1]{{fontenc}}
+\usepackage{{lmodern}}
 \usepackage{{geometry}}
 \geometry{{margin=1in}}
 \usepackage{{graphicx}}
@@ -309,16 +306,67 @@ pub fn render_latex(
 \newunicodechar{{┬}}{{+}}
 \newunicodechar{{┴}}{{+}}
 \newunicodechar{{┼}}{{+}}
-\usepackage{{xcolor}}
+\usepackage[table]{{xcolor}}
+{palette}
+\usepackage{{tcolorbox}}
+\tcbuselibrary{{breakable,skins}}
+\usepackage{{fancyvrb}}
+\usepackage{{sectsty}}
+\usepackage{{float}}
 \usepackage{{booktabs}}
 \usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
-\hypersetup{{colorlinks=true,linkcolor=[HTML]{{{link_hex}}},urlcolor=[HTML]{{{link_hex}}}}}
-{dark_preamble}
+\hypersetup{{colorlinks=true,linkcolor=rllink,urlcolor=rllink}}
+\DefineVerbatimEnvironment{{rlverb}}{{Verbatim}}{{fontsize=\small}}
+\tcbset{{
+  rlbase/.style={{
+    breakable,
+    enhanced,
+    arc=1.5mm,
+    boxrule=0.4pt,
+    leftrule=3pt,
+    left=2.2mm,
+    right=2mm,
+    top=1.1mm,
+    bottom=1.1mm,
+    before skip=0.2em,
+    after skip=0.2em,
+    colframe=rlborder,
+    overlay unbroken and first={{
+      \draw[rlrule,line width=2.6pt] ([xshift=1.3pt]frame.north west) -- ([xshift=1.3pt]frame.south west);
+    }},
+    overlay middle and last={{
+      \draw[rlrule,line width=2.6pt] ([xshift=1.3pt]frame.north west) -- ([xshift=1.3pt]frame.south west);
+    }},
+  }},
+}}
+\newtcolorbox{{rlsource}}{{rlbase, colback=rlcodebg, colupper=rltext, after skip=0.28em}}
+\newtcolorbox{{rloutput}}{{rlbase, colback=rloutbg, colupper=rldim, before skip=0.22em}}
+\newtcolorbox{{rlerror}}{{rlbase, colback=rlerrbg, colupper=rlerrfg, colframe=rlerrfg, before skip=0.22em}}
+\newtcolorbox{{rlcallout}}[2]{{
+  breakable, enhanced, arc=1.5mm,
+  boxrule=0pt, leftrule=4pt,
+  colback=rlpanel, colframe=#1, coltitle=#1,
+  fonttitle=\bfseries\sffamily,
+  title={{#2}},
+  left=2.5mm, right=2.5mm, top=1.4mm, bottom=1.4mm,
+  before skip=0.75em, after skip=0.75em,
+}}
+\newtcolorbox{{rlexercise}}{{
+  breakable, enhanced, arc=2mm,
+  boxrule=0.6pt, colframe=rlborder, colback=rlpanel,
+  left=2.5mm, right=2.5mm, top=1.5mm, bottom=1.5mm,
+  before skip=0.9em, after skip=0.9em,
+}}
+\sectionfont{{\color{{rlh1}}\normalfont\Large\bfseries}}
+\subsectionfont{{\color{{rlh2}}\normalfont\large\bfseries}}
+\subsubsectionfont{{\color{{rlh3}}\normalfont\normalsize\bfseries}}
+\setcounter{{secnumdepth}}{{-1}}
 \title{{{title}}}
-\date{{\today}}
+\date{{}}
 
 \begin{{document}}
+\color{{rltext}}
 \maketitle
 
 {body}
@@ -326,9 +374,119 @@ pub fn render_latex(
 "#,
         title = escape_latex(title),
         body = body,
-        link_hex = link_hex,
-        dark_preamble = dark_preamble,
+        palette = palette,
     )
+}
+
+fn latex_palette(theme: &ThemeColors) -> String {
+    let colors = [
+        ("rltext", theme.text),
+        ("rldim", theme.text_dim),
+        ("rlh1", theme.accent_primary),
+        ("rlh2", theme.accent_secondary),
+        ("rlh3", theme.accent_tertiary),
+        ("rlrule", theme.accent_primary),
+        ("rllink", theme.accent_secondary),
+        ("rlkw", theme.syn_keyword),
+        ("rlfn", theme.syn_function),
+        ("rlnum", theme.syn_number),
+        ("rlstr", theme.syn_string),
+        ("rlcom", theme.syn_comment),
+        ("rlop", theme.syn_operator),
+        ("rlcodebg", theme.code_bg),
+        ("rloutbg", theme.output_bg),
+        ("rlpanel", theme.bg_secondary),
+        ("rlcodepill", theme.inline_code_bg),
+        ("rlthead", theme.inline_code_bg),
+        ("rlborder", theme.border),
+        ("rlerrbg", theme.error_bg),
+        ("rlerrfg", theme.error_text),
+    ];
+    let mut out = String::new();
+    for (name, hex) in colors {
+        out.push_str(&format!(
+            "\\definecolor{{{name}}}{{HTML}}{{{}}}\n",
+            html_hex(hex)
+        ));
+    }
+    out
+}
+
+fn callout_frame(kind: &crate::parse::CalloutKind) -> &'static str {
+    use crate::parse::CalloutKind;
+    match kind {
+        CalloutKind::Note => "rlh2",
+        CalloutKind::Tip => "rlh3",
+        CalloutKind::Important => "rlh1",
+        CalloutKind::Warning | CalloutKind::Caution => "rlerrfg",
+    }
+}
+
+/// Details title on its own line, in link blue, outside any panel rule.
+fn emit_details_label(title: &str) -> String {
+    format!(
+        "\\par\\noindent\\textcolor{{rllink}}{{\\textbf{{{}}}}}\\par\\nopagebreak\n\n",
+        escape_latex(title)
+    )
+}
+
+/// `fancyvrb` ends at the literal `\end{rlverb}`. Break that sequence in
+/// printed output so a notebook cannot close the environment early.
+fn neutralize_verb_end(text: &str) -> String {
+    text.replace("\\end{rlverb}", "\\end {rlverb}")
+}
+
+fn emit_figures(
+    body: &mut String,
+    figures: &[rustlab_plot::FigureState],
+    grid_cols: Option<usize>,
+    plot_dir: &Path,
+    href_prefix: &str,
+    theme: &ThemeColors,
+    plot_idx: &mut usize,
+) {
+    if figures.is_empty() {
+        return;
+    }
+    // Cap a requested row at 4. Wider requests wrap, and each cell shrinks
+    // so the row still fits. A short last row stays left-aligned because
+    // `\hfill` is only inserted between cells of a row.
+    let cols = grid_cols.map(|n| n.clamp(1, 4));
+    if cols.is_some() {
+        body.push_str("\\noindent\n");
+    }
+    for (i, fig) in figures.iter().enumerate() {
+        *plot_idx += 1;
+        let plot_file = plot_dir.join(format!("plot-{}.svg", *plot_idx));
+        if let Err(e) = rustlab_plot::render_figure_state_to_file_themed(
+            fig,
+            &plot_file.to_string_lossy(),
+            theme,
+        ) {
+            eprintln!("warning: could not render plot-{}: {e}", *plot_idx);
+            continue;
+        }
+        if let Some(n) = cols {
+            let width = 0.96 / n as f64;
+            if i > 0 && i % n == 0 {
+                body.push_str("\\par\\vspace{0.45em}\n\\noindent\n");
+            } else if i > 0 {
+                body.push_str("\\hfill\n");
+            }
+            body.push_str(&format!(
+                "\\begin{{minipage}}[t]{{{width:.3}\\textwidth}}\\centering\n\\includegraphics[width=\\linewidth]{{{href_prefix}/plot-{}}}\\end{{minipage}}%\n",
+                *plot_idx,
+            ));
+        } else {
+            body.push_str(&format!(
+                "\\begin{{center}}\n\\includegraphics[width=0.9\\textwidth]{{{href_prefix}/plot-{}}}\\end{{center}}\n\n",
+                *plot_idx,
+            ));
+        }
+    }
+    if cols.is_some() {
+        body.push_str("\\par\n\n");
+    }
 }
 
 /// Convert a markdown string to LaTeX using pulldown-cmark events.
@@ -394,6 +552,7 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                 Tag::TableHead => {
                     table_in_head = true;
                     table_cell_idx = 0;
+                    out.push_str("\\rowcolor{rlthead}");
                 }
                 Tag::TableRow => {
                     table_cell_idx = 0;
@@ -401,6 +560,9 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                 Tag::TableCell => {
                     if table_cell_idx > 0 {
                         out.push_str(" & ");
+                    }
+                    if table_in_head {
+                        out.push_str("\\textcolor{rlh1}{\\textbf{");
                     }
                 }
                 Tag::Link { dest_url, .. } => {
@@ -435,6 +597,9 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                     }
                 }
                 TagEnd::TableCell => {
+                    if table_in_head {
+                        out.push_str("}}");
+                    }
                     table_cell_idx += 1;
                 }
                 TagEnd::Link => out.push('}'),
@@ -451,7 +616,14 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
                 out.push_str(&escape_latex(&text));
             }
             Event::Code(code) => {
-                out.push_str(&format!("\\texttt{{{}}}", escape_latex(&code)));
+                let esc = escape_latex(&code);
+                // Bookmark text cannot carry a colorbox. The visible pill
+                // matches the HTML inline-code background.
+                out.push_str("\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{");
+                out.push_str(&esc);
+                out.push_str("}}}{\\texttt{");
+                out.push_str(&esc);
+                out.push_str("}}");
             }
             Event::SoftBreak => out.push('\n'),
             Event::HardBreak => out.push_str("\\\\\n"),
@@ -505,6 +677,58 @@ fn escape_href_dest(s: &str) -> String {
             _ => out.push(ch),
         }
     }
+    out
+}
+
+fn html_hex(color: &str) -> &str {
+    color.strip_prefix('#').unwrap_or(color)
+}
+
+/// Colored rustlab source. Each token is passed through [`escape_latex`]
+/// and wrapped in `\textcolor`. Output stays in text mode so the
+/// preamble's `\newunicodechar` mappings still apply (they do not fire
+/// inside `verbatim`). No `minted` / shell-escape.
+fn emit_highlighted_source(source: &str) -> String {
+    use rustlab_script::highlight::HlKind;
+    // Not `flushleft`: that trivlist clears `\everypar`, which drops
+    // the cell's accent rule. Ragged right plus `\obeylines` keeps one
+    // paragraph per source line so the rule hook fires on each of them.
+    let mut out = String::from(
+        "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
+         \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
+    );
+    for span in rustlab_script::highlight::highlight(source) {
+        let text = &source[span.start..span.end];
+        let escaped = escape_latex(text);
+        let color = match span.kind {
+            HlKind::Keyword => "rlkw",
+            HlKind::Function => "rlfn",
+            HlKind::Number => "rlnum",
+            HlKind::String => "rlstr",
+            HlKind::Comment => {
+                // Stay in the typewriter family. `\textit` would switch to
+                // roman italic and break the mono column.
+                out.push_str("{\\itshape\\textcolor{rlcom}{");
+                out.push_str(&escaped);
+                out.push_str("}}");
+                continue;
+            }
+            HlKind::Operator => "rlop",
+            HlKind::Text => {
+                out.push_str(&escaped);
+                continue;
+            }
+        };
+        out.push_str("\\textcolor{");
+        out.push_str(color);
+        out.push_str("}{");
+        out.push_str(&escaped);
+        out.push('}');
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("}\n\n");
     out
 }
 
@@ -564,7 +788,10 @@ fn emit_mermaid_latex(
     {
         match crate::mermaid::render_to_svg_file(source, plot_dir, diagram_idx) {
             Ok(_) => {
-                body.push_str("\\begin{figure}[htbp]\n  \\centering\n  ");
+                // `[H]` (float package) keeps the figure with its heading.
+                // `[htbp]` floated the diagram above the section that
+                // introduced it.
+                body.push_str("\\begin{figure}[H]\n  \\centering\n  ");
                 body.push_str(&format!(
                     "\\includegraphics[width=0.8\\linewidth]{{{href_prefix}/diagram-{diagram_idx}}}\n"
                 ));
@@ -666,7 +893,10 @@ mod tests {
     #[test]
     fn md_to_latex_strikethrough() {
         // Audit S3: double-tilde strikethrough must survive as \sout{…}.
-        let out = markdown_to_latex("this is ~~struck~~ text", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "this is ~~struck~~ text",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\sout{struck}"), "{out:?}");
     }
 
@@ -690,14 +920,20 @@ mod tests {
 
     #[test]
     fn md_to_latex_code_block() {
-        let out = markdown_to_latex("```\ncode here\n```", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "```\ncode here\n```",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{verbatim}"));
         assert!(out.contains("\\end{verbatim}"));
     }
 
     #[test]
     fn md_to_latex_unordered_list() {
-        let out = markdown_to_latex("- item one\n- item two", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "- item one\n- item two",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{itemize}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{itemize}"));
@@ -705,7 +941,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_ordered_list() {
-        let out = markdown_to_latex("1. first\n2. second", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "1. first\n2. second",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\begin{enumerate}"));
         assert!(out.contains("\\item"));
         assert!(out.contains("\\end{enumerate}"));
@@ -720,7 +959,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_link() {
-        let out = markdown_to_latex("[click](https://example.com)", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "[click](https://example.com)",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
     }
@@ -734,14 +976,23 @@ mod tests {
         // contexts.
         let single = crate::render::LinkMode::single_file();
         let out = markdown_to_latex("## Jump to [Setup](#setup)", &single);
-        assert!(out.contains("\\href{\\#setup}"), "unescaped # in heading: {out}");
+        assert!(
+            out.contains("\\href{\\#setup}"),
+            "unescaped # in heading: {out}"
+        );
         let out = markdown_to_latex("**[deal](https://ex.com/50%off)**", &single);
-        assert!(out.contains("\\href{https://ex.com/50\\%off}"), "unescaped %: {out}");
+        assert!(
+            out.contains("\\href{https://ex.com/50\\%off}"),
+            "unescaped %: {out}"
+        );
         let out = markdown_to_latex("[frag](https://ex.com/p#sec)", &single);
         assert!(out.contains("\\href{https://ex.com/p\\#sec}"), "{out}");
         // Underscores are fine everywhere — do not over-escape.
         let out = markdown_to_latex("[n](my_notes.md)", &single);
-        assert!(out.contains("\\href{my_notes.pdf}"), "over-escaped _: {out}");
+        assert!(
+            out.contains("\\href{my_notes.pdf}"),
+            "over-escaped _: {out}"
+        );
     }
 
     #[test]
@@ -776,7 +1027,10 @@ mod tests {
         // valid PDF target (no index.pdf is generated).
         let single = crate::render::LinkMode::single_file();
         let out = markdown_to_latex("[readme](https://example.com/README.md)", &single);
-        assert!(out.contains("\\href{https://example.com/README.md}"), "{out}");
+        assert!(
+            out.contains("\\href{https://example.com/README.md}"),
+            "{out}"
+        );
         // Inline code with a link is verbatim, not a link.
         let out = markdown_to_latex("code `[x](a.md)` here", &single);
         assert!(!out.contains("\\href"), "code span became a link: {out}");
@@ -788,7 +1042,10 @@ mod tests {
             current_rel_dir: String::new(),
         };
         let out = markdown_to_latex("[p](_setup.md) [g](nope.md) [h](index.md)", &dir_mode);
-        assert!(out.contains("\\href{_setup.md}"), "partial rewritten: {out}");
+        assert!(
+            out.contains("\\href{_setup.md}"),
+            "partial rewritten: {out}"
+        );
         assert!(out.contains("\\href{nope.md}"), "dangling rewritten: {out}");
         assert!(
             out.contains("\\href{index.md}"),
@@ -808,11 +1065,16 @@ mod tests {
         assert!(out.contains("\\bottomrule"));
         assert!(out.contains("\\end{tabular}"));
         assert!(out.contains(" & "));
+        assert!(out.contains("\\rowcolor{rlthead}"));
+        assert!(out.contains("\\textcolor{rlh1}{\\textbf{"));
     }
 
     #[test]
     fn md_to_latex_inline_math() {
-        let out = markdown_to_latex("The value $x^2$ is large.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "The value $x^2$ is large.",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("$x^2$"));
     }
 
@@ -824,14 +1086,20 @@ mod tests {
 
     #[test]
     fn md_to_latex_special_chars_escaped() {
-        let out = markdown_to_latex("Use 100% of the CPU & GPU", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "Use 100% of the CPU & GPU",
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(out.contains("100\\%"));
         assert!(out.contains("\\&"));
     }
 
     #[test]
     fn md_to_latex_paragraph() {
-        let out = markdown_to_latex("Para one.\n\nPara two.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            "Para one.\n\nPara two.",
+            &crate::render::LinkMode::single_file(),
+        );
         // Paragraphs should be separated
         assert!(out.contains("Para one."));
         assert!(out.contains("Para two."));
@@ -839,7 +1107,10 @@ mod tests {
 
     #[test]
     fn md_to_latex_empty() {
-        assert_eq!(markdown_to_latex("", &crate::render::LinkMode::single_file()), "");
+        assert_eq!(
+            markdown_to_latex("", &crate::render::LinkMode::single_file()),
+            ""
+        );
     }
 
     // ── regression: Bug B — escaped `\$` in markdown prose stays literal in
@@ -848,7 +1119,10 @@ mod tests {
     // template_interpolation.md at the `Use \${...}` paragraph.
     #[test]
     fn md_to_latex_escaped_dollar_stays_literal() {
-        let out = markdown_to_latex(r"literal: \${not_evaluated}.", &crate::render::LinkMode::single_file());
+        let out = markdown_to_latex(
+            r"literal: \${not_evaluated}.",
+            &crate::render::LinkMode::single_file(),
+        );
         // Every `$` in the output must be preceded by a backslash —
         // otherwise it opens math mode and pdflatex fails with
         // "Missing $ inserted".
@@ -856,7 +1130,8 @@ mod tests {
             if ch == '$' {
                 let prev = out[..i].chars().next_back();
                 assert_eq!(
-                    prev, Some('\\'),
+                    prev,
+                    Some('\\'),
                     "unescaped `$` at offset {i} in output: {out:?}"
                 );
             }
@@ -930,10 +1205,8 @@ mod tests {
         // fatals on any undeclared codepoint, so partial coverage is
         // brittle and easy to break.
         for ch in [
-            '≈', '∇', 'π', 'Ω', '⇒', '×',
-            'η', '┬', '₁', '↘', '⁵', '✓',
-            '⁰', '¹', '⁴', '⁹', '₀', '₉',
-            '↗', '↙', '✗', '┼',
+            '≈', '∇', 'π', 'Ω', '⇒', '×', 'η', '┬', '₁', '↘', '⁵', '✓', '⁰', '¹', '⁴', '⁹', '₀',
+            '₉', '↗', '↙', '✗', '┼',
         ] {
             assert!(
                 tex.contains(&format!("\\newunicodechar{{{ch}}}")),
@@ -967,6 +1240,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -976,7 +1250,17 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(tex.contains("\\begin{verbatim}\nx = 42\n\\end{verbatim}"));
+        assert!(tex.contains("\\textcolor{rlnum}{42}"), "{tex}");
+        assert!(tex.contains("\\textcolor{rlop}{=}"), "{tex}");
+        assert!(tex.contains("\\definecolor{rlkw}{HTML}{"), "{tex}");
+        // Source cells are colored text, not verbatim. Markdown fences
+        // elsewhere still use verbatim.
+        assert!(
+            !tex.contains("\\begin{verbatim}"),
+            "source cell must not be verbatim:\n{tex}"
+        );
+        assert!(!tex.contains("minted"));
+        assert!(!tex.contains("shell-escape"));
     }
 
     #[test]
@@ -990,6 +1274,7 @@ mod tests {
             hidden: true,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -999,8 +1284,9 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        // Source should not appear in verbatim
+        // Source should not appear, and neither should the rustlab label.
         assert!(!tex.contains("secret = 42"));
+        assert!(!tex.contains("rustlab"));
         // But text output should
         assert!(tex.contains("ans = 42"));
     }
@@ -1016,6 +1302,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1025,8 +1312,23 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(tex.contains("\\begin{quote}"));
+        assert!(tex.contains("\\begin{rlsource}"));
+        assert!(tex.contains("\\begin{rloutput}"));
+        assert!(tex.contains("\\begin{rlverb}"));
+        assert!(tex.contains("\\end{rlverb}"));
         assert!(tex.contains("ans = 1"));
+        let cell = tex
+            .split("\\begin{rloutput}")
+            .nth(1)
+            .unwrap()
+            .split("\\end{rloutput}")
+            .next()
+            .unwrap();
+        assert!(cell.contains("ans = 1"), "{cell}");
+        assert!(
+            tex.contains("rustlab"),
+            "source panel carries the rustlab label"
+        );
     }
 
     #[test]
@@ -1040,6 +1342,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1049,10 +1352,238 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        // Only one verbatim (source), no quote block for output
-        let verbatim_count = tex.matches("\\begin{verbatim}").count();
-        assert_eq!(verbatim_count, 1);
+        // Source is colored, not verbatim; empty output adds no quote.
+        assert_eq!(tex.matches("\\begin{verbatim}").count(), 0);
         assert!(!tex.contains("\\begin{quote}"));
+    }
+
+    #[test]
+    fn render_latex_source_escapes_specials_and_colors_comments() {
+        let blocks = vec![Rendered::Code {
+            source: "x_1 = 1 # comment % also\n</span><script>\n<img onerror=\"x\">".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Test",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("{\\itshape\\textcolor{rlcom}{"), "{tex}");
+        assert!(tex.contains("\\#"), "{tex}");
+        assert!(tex.contains("\\_"), "{tex}");
+        assert!(tex.contains("\\%"), "{tex}");
+        assert!(tex.contains("\\obeylines"), "{tex}");
+        assert!(!tex.contains("flushleft"), "{tex}");
+        assert!(!tex.contains("\\begin{verbatim}"), "{tex}");
+        assert!(!tex.contains("minted"), "{tex}");
+        assert!(!tex.contains("shell-escape"), "{tex}");
+        // The markup is escaped text, not a TeX command.
+        assert!(tex.contains("span"), "{tex}");
+        assert!(!tex.contains("</span><script>"), "{tex}");
+    }
+
+    #[test]
+    fn render_latex_colored_source_compiles_without_shell_escape() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        let blocks = vec![Rendered::Code {
+            source: "x_1 = 1 # comment % also\nhold on\nplot(x_1)\n".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Color",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        let args = crate::pdf_compile::pdf_engine_args("pdflatex").unwrap();
+        assert!(
+            !crate::pdf_compile::args_enable_shell_escape(&args),
+            "{args:?}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let tex_path = dir.path().join("nb.tex");
+        std::fs::write(&tex_path, &tex).unwrap();
+        let status = std::process::Command::new("pdflatex")
+            .args(args)
+            .arg(format!("-output-directory={}", dir.path().display()))
+            .arg(&tex_path)
+            .current_dir(dir.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("pdflatex");
+        if !status.success() {
+            let log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
+            panic!("pdflatex failed:\n{log}\n--- tex ---\n{tex}");
+        }
+        assert!(dir.path().join("nb.pdf").exists());
+    }
+
+    #[test]
+    fn render_latex_indents_source_and_output_not_figures() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let dir = std::env::temp_dir().join(format!("rl_cell_plot_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blocks = vec![Rendered::Code {
+            source: "x = 1".to_string(),
+            text_output: "ans = 1".to_string(),
+            error: Some("nope".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            // Collapsed is an HTML-only initial state. PDF still shows the source.
+            source_open: Some(false),
+        }];
+        let tex = render_latex(
+            "Test",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        let source_box = tex
+            .split("\\begin{rlsource}")
+            .nth(1)
+            .expect("rlsource")
+            .split("\\end{rlsource}")
+            .next()
+            .unwrap();
+        let output_box = tex
+            .split("\\begin{rloutput}")
+            .nth(1)
+            .expect("rloutput")
+            .split("\\end{rloutput}")
+            .next()
+            .unwrap();
+        let error_box = tex
+            .split("\\begin{rlerror}")
+            .nth(1)
+            .expect("rlerror")
+            .split("\\end{rlerror}")
+            .next()
+            .unwrap();
+        assert!(source_box.contains("\\textcolor{"), "{source_box}");
+        assert!(output_box.contains("ans = 1"), "{output_box}");
+        assert!(error_box.contains("nope"), "{error_box}");
+        assert!(!source_box.contains("\\includegraphics"), "{source_box}");
+        let after = tex.split("\\end{rlerror}").nth(1).unwrap_or("");
+        assert!(
+            after.contains("\\includegraphics"),
+            "figure should follow the panels:\n{tex}"
+        );
+        assert!(tex.contains("\\definecolor{rlrule}{HTML}{8839ef}"));
+        assert!(tex.contains("breakable"));
+        assert!(!tex.contains("\\begin{rlcell}"));
+        assert!(!tex.contains("minted"));
+        assert!(!tex.contains("shell-escape"));
+        assert!(
+            !tex.contains("<details") && !tex.contains("rl-src"),
+            "HTML source disclosure must not leak into LaTeX"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_latex_long_cell_breaks_across_pages() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        let source = (0..80)
+            .map(|i| format!("x = {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text_output = (0..40)
+            .map(|i| format!("ans = {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let blocks = vec![Rendered::Code {
+            source,
+            text_output,
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Long",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{rlsource}"));
+        assert!(tex.contains("\\begin{rloutput}"));
+        assert!(tex.contains("breakable"));
+        assert!(
+            !tex.contains("\\begin{minipage}"),
+            "a page-breaking cell must not be a minipage"
+        );
+        let args = crate::pdf_compile::pdf_engine_args("pdflatex").unwrap();
+        assert!(!crate::pdf_compile::args_enable_shell_escape(&args));
+        let dir = tempfile::tempdir().unwrap();
+        let tex_path = dir.path().join("nb.tex");
+        std::fs::write(&tex_path, &tex).unwrap();
+        let output = std::process::Command::new("pdflatex")
+            .args(args)
+            .arg(format!("-output-directory={}", dir.path().display()))
+            .arg(&tex_path)
+            .current_dir(dir.path())
+            .output()
+            .expect("pdflatex");
+        let log = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success() {
+            let file_log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
+            panic!("pdflatex failed:\n{file_log}\n{log}");
+        }
+        let pages = log
+            .split("Output written on")
+            .nth(1)
+            .and_then(|s| s.split('(').nth(1))
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.trim_end_matches(',').parse::<u32>().ok())
+            .unwrap_or(0);
+        assert!(
+            pages >= 2,
+            "long cell should span a page, got {pages}: {log}"
+        );
+        assert!(dir.path().join("nb.pdf").exists());
     }
 
     #[test]
@@ -1066,6 +1597,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let tex = render_latex(
             "Test",
@@ -1075,7 +1607,8 @@ mod tests {
             light(),
             &crate::render::LinkMode::single_file(),
         );
-        assert!(tex.contains("\\color[HTML]{"));
+        assert!(tex.contains("\\begin{rlerror}"));
+        assert!(tex.contains("\\definecolor{rlerrfg}{HTML}{d20f39}"));
         assert!(tex.contains("undefined variable"));
     }
 
@@ -1118,8 +1651,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
-        assert!(tex.contains("\\begin{figure}[htbp]"));
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{figure}[H]"));
         assert!(tex.contains("\\includegraphics[width=0.8\\linewidth]{plots/test/diagram-1}"));
         assert!(!tex.contains("\\includesvg"));
         assert!(tex.contains("\\end{figure}"));
@@ -1137,7 +1677,14 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(tex.contains("\\caption{Signal flow}"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1152,7 +1699,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(!tex.contains("\\caption{"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1166,7 +1720,14 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(!tex.contains("\\begin{figure}"));
         assert!(!tex.contains("\\includesvg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1182,9 +1743,320 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let tex = render_latex("T", &blocks, &dir, "plots/test", light(), &crate::render::LinkMode::single_file());
+        let tex = render_latex(
+            "T",
+            &blocks,
+            &dir,
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
         assert!(tex.contains("\\begin{verbatim}"));
         assert!(tex.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn dark() -> &'static ThemeColors {
+        Theme::Dark.colors()
+    }
+
+    fn compile_tex(tex: &str) -> u32 {
+        let args = crate::pdf_compile::pdf_engine_args("pdflatex").unwrap();
+        assert!(
+            !crate::pdf_compile::args_enable_shell_escape(&args),
+            "{args:?}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let tex_path = dir.path().join("nb.tex");
+        std::fs::write(&tex_path, tex).unwrap();
+        let output = std::process::Command::new("pdflatex")
+            .args(args)
+            .arg(format!("-output-directory={}", dir.path().display()))
+            .arg(&tex_path)
+            .current_dir(dir.path())
+            .output()
+            .expect("pdflatex");
+        if !output.status.success() {
+            let file_log = std::fs::read_to_string(dir.path().join("nb.log")).unwrap_or_default();
+            panic!(
+                "pdflatex failed:\n{file_log}\n{}\n--- tex ---\n{tex}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        assert!(dir.path().join("nb.pdf").exists());
+        let log = String::from_utf8_lossy(&output.stdout);
+        log.split("Output written on")
+            .nth(1)
+            .and_then(|s| s.split('(').nth(1))
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.trim_end_matches(',').parse::<u32>().ok())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn render_latex_always_light_on_white_paper() {
+        let tex = render_latex(
+            "Dark request",
+            &[],
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            dark(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\definecolor{rltext}{HTML}{4c4f69}"), "{tex}");
+        assert!(tex.contains("\\definecolor{rlkw}{HTML}{8839ef}"));
+        assert!(tex.contains("\\definecolor{rlcodebg}{HTML}{dce0e8}"));
+        assert!(tex.contains("\\definecolor{rloutbg}{HTML}{e6e9ef}"));
+        assert!(tex.contains("\\definecolor{rldim}{HTML}{6c6f85}"));
+        assert!(tex.contains("\\definecolor{rlerrbg}{HTML}{fce4e4}"));
+        assert!(tex.contains("\\definecolor{rlh2}{HTML}{1e66f5}"));
+        assert!(tex.contains("\\definecolor{rlh3}{HTML}{179299}"));
+        assert!(
+            !tex.contains("cba6f7"),
+            "dark Mocha keyword must not leak: {tex}"
+        );
+        assert!(!tex.contains("pagecolor"));
+        assert!(!tex.contains("\\today"));
+        assert!(tex.contains("\\date{}"));
+        assert!(tex.contains("\\setcounter{secnumdepth}{-1}"));
+        assert!(tex.contains("\\usepackage{lmodern}"));
+        assert!(tex.contains("\\usepackage[table]{xcolor}"));
+        assert!(tex.contains("tcolorbox"));
+        assert!(tex.contains("fancyvrb"));
+        assert!(tex.contains("sectsty"));
+        assert!(tex.contains("\\usepackage{float}"));
+        assert!(!tex.contains("shell-escape"));
+        assert!(!tex.contains("minted"));
+    }
+
+    #[test]
+    fn render_latex_callout_details_and_exercise() {
+        use crate::parse::CalloutKind;
+        let blocks = vec![
+            Rendered::Callout {
+                kind: CalloutKind::Warning,
+                title: Some("a_b & 100%".to_string()),
+                content: "See `x_1`.".to_string(),
+            },
+            Rendered::Code {
+                source: "hidden = 1".to_string(),
+                text_output: "value_1 = 50%\n\\end{rlverb}\n".to_string(),
+                error: None,
+                figures: Vec::new(),
+                animations: Vec::new(),
+                hidden: true,
+                details: Some("costs $5 & more".to_string()),
+                grid_cols: None,
+                source_open: Some(false),
+            },
+            Rendered::ExerciseStart { number: 2 },
+            Rendered::Markdown("What is `1 + 2`?".to_string()),
+            Rendered::SolutionStart,
+            Rendered::Markdown("Three.".to_string()),
+        ];
+        let tex = render_latex(
+            "T",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            dark(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{rlcallout}{rlerrfg}{a\\_b \\& 100\\%}"));
+        assert!(tex.contains("\\colorbox{rlcodepill}"));
+        assert!(
+            tex.contains("\\end {rlverb}"),
+            "verb end in output must be neutralized"
+        );
+        assert!(tex.contains("value_1 = 50%"));
+        assert!(!tex.contains("hidden = 1"));
+        assert!(tex.contains("\\textcolor{rllink}{\\textbf{costs \\$5 \\& more}}"));
+        assert!(tex.contains("\\begin{rlexercise}"));
+        assert!(tex.contains("Exercise 2."));
+        assert!(tex.contains("\\textbf{Solution}"));
+        assert!(tex.contains("\\end{rlexercise}"));
+        // Collapsed is HTML-only. This cell is hidden via `hide`, not `code:`.
+        assert!(tex.contains("source_open") == false);
+    }
+
+    #[test]
+    fn render_latex_grid_uses_capped_minipages() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let dir = std::env::temp_dir().join(format!("rl_grid_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blocks = vec![Rendered::Code {
+            source: "plot(x)".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: vec![fig.clone(), fig.clone(), fig.clone()],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: Some(2),
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Grid",
+            &blocks,
+            &dir,
+            "plots/grid",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert_eq!(tex.matches("\\begin{minipage}").count(), 3);
+        assert!(tex.contains("\\begin{minipage}[t]{0.480\\textwidth}"));
+        assert!(tex.contains("\\hfill"));
+        assert!(
+            tex.contains("\\par\\vspace{0.45em}"),
+            "the third plot wraps to a left-aligned second row:\n{tex}"
+        );
+        let capped = vec![Rendered::Code {
+            source: "plot(x)".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: vec![fig.clone()],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: Some(6),
+            source_open: None,
+        }];
+        let capped_tex = render_latex(
+            "Cap",
+            &capped,
+            &dir,
+            "plots/grid",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(
+            capped_tex.contains("\\begin{minipage}[t]{0.240\\textwidth}"),
+            "six columns shrink to four: {capped_tex}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_latex_long_output_box_breaks_across_pages() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        let text_output = (0..90)
+            .map(|i| format!("ans_{i} = {i}%"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let blocks = vec![Rendered::Code {
+            source: "x = 1".to_string(),
+            text_output,
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Long output",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            dark(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{rloutput}"));
+        assert!(tex.contains("breakable"));
+        let pages = compile_tex(&tex);
+        assert!(
+            pages >= 2,
+            "long printed output should span a page, got {pages}"
+        );
+    }
+
+    #[test]
+    fn render_latex_parity_sample_compiles_without_shell_escape() {
+        if !crate::pdf_compile::which_exists("pdflatex") {
+            return;
+        }
+        use crate::parse::CalloutKind;
+        let blocks = vec![
+            Rendered::Markdown(
+                "# Signal notebook\n\nInline `fft(x)` and a [link](https://example.com).\n\n\
+                 | Window | Taps |\n| --- | ---: |\n| Hann | 63 |\n\n\
+                 > quoted prose\n"
+                    .to_string(),
+            ),
+            Rendered::Callout {
+                kind: CalloutKind::Note,
+                title: None,
+                content: "DC gain is $1$.".to_string(),
+            },
+            Rendered::Callout {
+                kind: CalloutKind::Tip,
+                title: Some("Hint".to_string()),
+                content: "Call `seed(1)`.".to_string(),
+            },
+            Rendered::Callout {
+                kind: CalloutKind::Warning,
+                title: None,
+                content: "Rollett $K < 1$.".to_string(),
+            },
+            Rendered::Code {
+                source: "n = 64 # bins\nh = fir_lowpass(31, 1000, 8000, \"hann\")\n".to_string(),
+                text_output: "ans = -0.02\n".to_string(),
+                error: Some("intentional failure".to_string()),
+                figures: Vec::new(),
+                animations: Vec::new(),
+                hidden: false,
+                details: Some("Filter coefficients".to_string()),
+                grid_cols: None,
+                source_open: Some(false),
+            },
+            Rendered::ExerciseStart { number: 1 },
+            Rendered::Markdown("What is `1 + 2`?".to_string()),
+            Rendered::SolutionStart,
+            Rendered::Code {
+                source: "print(1 + 2)".to_string(),
+                text_output: "3".to_string(),
+                error: None,
+                figures: Vec::new(),
+                animations: Vec::new(),
+                hidden: false,
+                details: None,
+                grid_cols: None,
+                source_open: None,
+            },
+        ];
+        let tex = render_latex(
+            "PDF parity sample",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            dark(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(tex.contains("\\begin{rlsource}"));
+        assert!(tex.contains("\\begin{rloutput}"));
+        assert!(tex.contains("\\begin{rlerror}"));
+        assert!(tex.contains("\\begin{rlcallout}{rlh2}{Note}"));
+        assert!(tex.contains("\\begin{rlcallout}{rlh3}{Hint}"));
+        assert!(tex.contains("\\begin{rlcallout}{rlerrfg}{Warning}"));
+        assert!(tex.contains("rustlab"));
+        assert_eq!(
+            tex.matches("\\begin{rlsource}").count(),
+            2,
+            "code: collapsed is ignored; both cells show their source"
+        );
+        let pages = compile_tex(&tex);
+        assert!(pages >= 1, "parity sample produced no pages");
     }
 }

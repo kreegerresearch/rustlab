@@ -98,6 +98,8 @@ fn cell_style(c: &ThemeColors) -> String {
   main section.rl-block.rl-cell-editing {{
     outline: 1px solid {border}; outline-offset: 3px; border-radius: 2px;
   }}
+  /* Replaces pre.source inside details.rl-src, so it shares the indent. */
+  .rl-cell .rl-cell-editor {{ margin-left: 0; margin-right: 0; }}
   .rl-cell-editor {{ border: 1px solid {border}; border-radius: 4px; margin: 4px 0; }}
   .rl-cell-editor .CodeMirror {{
     height: auto; background: {code_bg}; color: {text};
@@ -163,6 +165,39 @@ fn cell_script(cell_edit: bool) -> String {
       bar.appendChild(err);
       sec.prepend(bar);
     }});
+    restoreSrcToggle();
+  }}
+
+  // Source disclosures the reader has toggled, keyed by executable
+  // ordinal. The value is the open state they chose. Live updates
+  // replace section HTML with the resolved initial state (cell
+  // directive, else frontmatter, else rc, else open). Cells in this
+  // map keep the reader's choice; cells they have not touched pick up
+  // a changed directive or frontmatter. Reconcile reuses unchanged
+  // sections, so those keep the attribute on their own. A structural
+  // edit that renumbers cells can reattach a remembered toggle to a
+  // different ordinal. Opening the inline editor sets `open`, which
+  // this listener records. Toggle events before the first decorate
+  // are ignored so the initial HTML state is not treated as a choice.
+  const srcToggle = new Map();
+  let srcToggleLive = false;
+  document.addEventListener('toggle', (ev) => {{
+    if (!srcToggleLive) return;
+    const d = ev.target;
+    if (!d || !d.classList || !d.classList.contains('rl-src')) return;
+    const sec = d.closest('main section.rl-block[data-code-idx]');
+    if (!sec) return;
+    const idx = sec.getAttribute('data-code-idx');
+    srcToggle.set(idx, d.open);
+    if (d.open && ed && ed.cm && d.contains(ed.host)) ed.cm.refresh();
+  }}, true);
+  function restoreSrcToggle() {{
+    srcToggle.forEach((open, idx) => {{
+      const d = document.querySelector(
+        'main section.rl-block[data-code-idx="' + idx + '"] details.rl-src');
+      if (d && d.open !== open) d.open = open;
+    }});
+    srcToggleLive = true;
   }}
 
   function sectionFor(el) {{
@@ -222,6 +257,11 @@ fn cell_script(cell_edit: bool) -> String {
     }}
     const pre = sec.querySelector('pre.source');
     if (!pre) return;
+    // The editor is inserted inside the source disclosure. Open it first
+    // so CodeMirror measures a visible box; collapsing and expanding
+    // later refreshes via the toggle listener above.
+    const disclosure = pre.closest('details.rl-src');
+    if (disclosure && !disclosure.open) disclosure.open = true;
     // The highlighted <pre> round-trips to the exact block source via
     // textContent (spans strip, entities unescape — pinned by a unit
     // test on highlight_rustlab).
@@ -396,6 +436,18 @@ mod tests {
         assert!(out.contains("<p>bare</p>"));
     }
 
+    #[test]
+    fn source_disclosure_state_and_editor_refresh_are_in_the_script() {
+        let out = page(true);
+        assert!(out.contains("details.rl-src"), "toggle target");
+        assert!(out.contains("srcToggle"), "remembered open/closed choice");
+        assert!(out.contains("ed.cm.refresh"), "refresh when revealed");
+        assert!(
+            out.contains("disclosure.open = true"),
+            "edit opens the source"
+        );
+    }
+
     /// The generated script must be syntactically valid JS. Uses
     /// `node --check` when node is available; skips (with a note)
     /// otherwise so the suite doesn't hard-depend on node.
@@ -412,7 +464,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("cell.js");
             std::fs::write(&path, js).unwrap();
-            match std::process::Command::new("node").arg("--check").arg(&path).output() {
+            match std::process::Command::new("node")
+                .arg("--check")
+                .arg(&path)
+                .output()
+            {
                 Ok(out) => assert!(
                     out.status.success(),
                     "node --check failed (cell_edit={edit}):\n{}",

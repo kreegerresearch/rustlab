@@ -593,13 +593,19 @@ pub(super) fn render_for_server_cancellable(
 
     let plot_dir = plot_root.join(slug);
     let plot_href = format!("/plots/{slug}");
+    // Same resolution as batch HTML: frontmatter, else rc, else open.
+    // A remembered reader toggle in the page script still wins on live
+    // updates for cells they have opened or closed.
+    let frontmatter = parse::extract_frontmatter(&source).0.code_open;
+    let notebook_open =
+        render::resolve_source_open(None, frontmatter, Some(render::rc_source_open()));
+    let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
     let html = render::render_html_nonced(
         &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
     );
     let html = assets::rewrite_cdn_urls(&html);
     let html = ws::inject_ws_client_nonced(&html, page.nonce);
-    let html =
-        page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
+    let html = page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
     // Inline cell editing needs --editable AND an embed-free notebook:
     // cell saves splice the host `.md` by executable ordinal, which is
     // only sound when every rendered block comes from that file. The

@@ -35,6 +35,7 @@ pub mod cache_registry;
 pub mod cache_value;
 pub mod error;
 pub mod eval;
+pub mod highlight;
 pub mod lexer;
 pub mod parser;
 pub mod path_jail;
@@ -61,9 +62,8 @@ pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuar
 /// - Lex / parse errors propagate from the respective stages.
 pub fn parse_file(path: impl AsRef<std::path::Path>) -> Result<Vec<ast::Stmt>, ScriptError> {
     let path = path.as_ref();
-    let source = std::fs::read_to_string(path).map_err(|e| {
-        ScriptError::runtime(format!("read {}: {e}", path.display()))
-    })?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| ScriptError::runtime(format!("read {}: {e}", path.display())))?;
     let tokens = lexer::tokenize(&source)?;
     parser::parse(tokens)
 }

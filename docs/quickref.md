@@ -41,7 +41,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs P
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
 | `format default` | Restore normal numeric display |
-| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme`, `[repl] history_limit`, `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. |
+| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` / `code`, `[repl] history_limit`, `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. |
 | `;` | Suppress output on a statement |
 | `#` / `%` | Comment |
 | `...` | Line continuation — rest of line ignored, statement continues on next line |

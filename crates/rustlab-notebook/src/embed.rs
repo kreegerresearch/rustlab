@@ -185,11 +185,7 @@ pub(crate) fn resolve_target(
     for dir in [host_dir, root_dir] {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    == target_lc
+                if entry.file_name().to_string_lossy().to_ascii_lowercase() == target_lc
                     && entry.path().is_file()
                 {
                     return confirm_in_jail(entry.path(), root_dir, target);
@@ -202,7 +198,11 @@ pub(crate) fn resolve_target(
     })
 }
 
-fn confirm_in_jail(candidate: PathBuf, root_dir: &Path, target: &str) -> Result<PathBuf, EmbedError> {
+fn confirm_in_jail(
+    candidate: PathBuf,
+    root_dir: &Path,
+    target: &str,
+) -> Result<PathBuf, EmbedError> {
     match rustlab_script::path_jail::check_under_root(&candidate, root_dir) {
         Ok(p) => Ok(p),
         Err(_) => Err(EmbedError::NotFound {
@@ -249,8 +249,7 @@ pub(crate) fn slice_section<'a>(src: &'a str, heading: &str) -> Option<&'a str> 
     for line in src.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -284,8 +283,7 @@ pub(crate) fn slice_section<'a>(src: &'a str, heading: &str) -> Option<&'a str> 
     for line in src[cursor..].split_inclusive('\n') {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -357,8 +355,7 @@ pub(crate) fn slice_block_id(src: &str, id: &str) -> Option<String> {
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -470,8 +467,7 @@ pub(crate) fn strip_block_ids(src: &str) -> String {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
             out.push_str(line);
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -544,8 +540,7 @@ pub(crate) fn demote_headings(src: &str, levels: usize) -> String {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
             out.push_str(line);
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -632,8 +627,7 @@ pub fn has_markdown_embeds(src: &str) -> bool {
     for line in body.split('\n') {
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 fence_marker = None;
             }
@@ -702,8 +696,7 @@ fn expand_recursive(
         let trimmed = line.trim_start();
         if let Some(c) = fence_marker {
             out.push_str(line);
-            if (c == '`' && trimmed.starts_with("```"))
-                || (c == '~' && trimmed.starts_with("~~~"))
+            if (c == '`' && trimmed.starts_with("```")) || (c == '~' && trimmed.starts_with("~~~"))
             {
                 _in_fence = false;
                 fence_marker = None;
@@ -733,8 +726,7 @@ fn expand_recursive(
         let mut cursor = 0;
         for (start, end, eref) in refs {
             out.push_str(&line[cursor..start]);
-            let expansion =
-                expand_one(&eref, host_dir, root_dir, depth, visiting, chain, cache);
+            let expansion = expand_one(&eref, host_dir, root_dir, depth, visiting, chain, cache);
             out.push_str(&expansion);
             cursor = end;
         }
@@ -773,10 +765,7 @@ fn expand_one(
     let path = match resolve_target(&eref.target, host_dir, root_dir) {
         Ok(p) => p,
         Err(_) => {
-            eprintln!(
-                "warning: embed error: target not found: {}",
-                eref.target
-            );
+            eprintln!("warning: embed error: target not found: {}", eref.target);
             return embed_error_block(&format!("target not found: {}", eref.target));
         }
     };
@@ -789,20 +778,17 @@ fn expand_one(
             "warning: embed error: cycle detected: {}",
             format_chain(&display_chain)
         );
-        return embed_error_block(&format!(
-            "cycle detected: {}",
-            format_chain(&display_chain)
-        ));
+        return embed_error_block(&format!("cycle detected: {}", format_chain(&display_chain)));
     }
 
     let raw = match load_source(&canonical, cache) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("warning: embed error: cannot read {}: {e}", canonical.display());
-            return embed_error_block(&format!(
-                "cannot read {}: {e}",
-                eref.target
-            ));
+            eprintln!(
+                "warning: embed error: cannot read {}: {e}",
+                canonical.display()
+            );
+            return embed_error_block(&format!("cannot read {}: {e}", eref.target));
         }
     };
     let (_, body) = extract_frontmatter(&raw);
@@ -816,10 +802,7 @@ fn expand_one(
                     "warning: embed error: heading '{}' not found in {}",
                     h, eref.target
                 );
-                return embed_error_block(&format!(
-                    "heading '{}' not found in {}",
-                    h, eref.target
-                ));
+                return embed_error_block(&format!("heading '{}' not found in {}", h, eref.target));
             }
         },
         EmbedAnchor::BlockId(id) => match slice_block_id(body, id) {
@@ -890,7 +873,10 @@ mod tests {
         let refs = find_embed_refs_in_line("See ![[Doc#Foo Bar]] inline.");
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].2.target, "Doc");
-        assert_eq!(refs[0].2.anchor, EmbedAnchor::Heading("Foo Bar".to_string()));
+        assert_eq!(
+            refs[0].2.anchor,
+            EmbedAnchor::Heading("Foo Bar".to_string())
+        );
     }
 
     #[test]
@@ -939,7 +925,9 @@ mod tests {
 
     #[test]
     fn frontmatter_is_ignored_for_embed_detection() {
-        assert!(!has_markdown_embeds("---\ntitle: \"![[x]]\"\n---\n\nbody\n"));
+        assert!(!has_markdown_embeds(
+            "---\ntitle: \"![[x]]\"\n---\n\nbody\n"
+        ));
     }
 
     #[test]
@@ -1424,4 +1412,3 @@ mod tests {
         assert!(out.contains("![[diagram.svg]]"));
     }
 }
-

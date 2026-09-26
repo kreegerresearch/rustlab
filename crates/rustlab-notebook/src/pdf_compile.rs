@@ -105,8 +105,16 @@ fn convert_one_svg(svg: &Path, pdf: &Path) -> Result<(), String> {
             "inkscape failed to convert {} → {}\n  inkscape 1.x CLI: {}\n  legacy -A CLI: {}",
             svg.display(),
             pdf.display(),
-            if modern_err.is_empty() { "(no output)" } else { &modern_err },
-            if legacy_err.is_empty() { "(no output)" } else { &legacy_err },
+            if modern_err.is_empty() {
+                "(no output)"
+            } else {
+                &modern_err
+            },
+            if legacy_err.is_empty() {
+                "(no output)"
+            } else {
+                &legacy_err
+            },
         ))
     }
 }
@@ -136,12 +144,10 @@ pub fn select_pdf_engine() -> Result<(&'static str, Vec<&'static str>), String> 
     } else if which_exists("tectonic") {
         Ok(("tectonic", pdf_engine_args("tectonic").unwrap()))
     } else {
-        Err(
-            "neither pdflatex nor tectonic found in PATH\n\
+        Err("neither pdflatex nor tectonic found in PATH\n\
              Install TeX Live: https://tug.org/texlive/\n\
              Or tectonic:      https://tectonic-typesetting.github.io/"
-                .to_string(),
-        )
+            .to_string())
     }
 }
 
@@ -202,8 +208,11 @@ mod tests {
             return; // soft-skip: cannot assert the missing-binary path
         }
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("plot.svg"), b"<svg xmlns='http://www.w3.org/2000/svg'/>")
-            .unwrap();
+        std::fs::write(
+            dir.path().join("plot.svg"),
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
         let err = convert_svgs_to_pdf(dir.path()).unwrap_err();
         assert!(
             err.to_lowercase().contains("inkscape"),

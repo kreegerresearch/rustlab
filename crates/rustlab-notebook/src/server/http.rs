@@ -819,7 +819,9 @@ mod tests {
     async fn notebook_page_is_served_verbatim_with_csp() {
         // Rendered HTML is stored with nonces already stamped; serving
         // adds the header and nothing else.
-        let app = router(single_state("<script nonce=\"testnonce\">1</script><script>2</script>"));
+        let app = router(single_state(
+            "<script nonce=\"testnonce\">1</script><script>2</script>",
+        ));
         let res = app
             .oneshot(
                 host(axum::http::Request::builder().uri("/n/nb"))

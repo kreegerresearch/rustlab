@@ -1258,6 +1258,16 @@ fn render_output(
     match format {
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            // Frontmatter `code:` overrides rc; a missing key stays at the
+            // rc value (open when unset). Cell directives are already on
+            // each `Rendered::Code` and win inside `render_html`.
+            let frontmatter = source_md.map(|s| parse::extract_frontmatter(s).0.code_open);
+            let notebook_open = render::resolve_source_open(
+                None,
+                frontmatter.flatten(),
+                Some(render::rc_source_open()),
+            );
+            let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
             let html =
                 render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
             write_output(out_path, html.as_bytes());

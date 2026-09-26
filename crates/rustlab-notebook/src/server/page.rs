@@ -248,7 +248,10 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     try {{
       const r = await fetch('/save/' + slug, {{
         method: 'POST',
-        headers: {{ 'Content-Type': 'text/markdown' }},
+        headers: {{
+          'Content-Type': 'text/markdown',
+          'X-Rustlab-Token': (window.__RL_TOKEN || ''),
+        }},
         body: cm.getValue(),
       }});
       if (r.ok) {{ cm.markClean(); setStatus('saved ✓'); }}

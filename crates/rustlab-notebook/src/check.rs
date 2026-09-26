@@ -78,6 +78,7 @@ pub fn check_source(
     findings.extend(check_unresolved_embeds(source, host_dir, root_dir));
     findings.extend(check_plot_urls_resolve(source, file));
     findings.extend(check_fragment_targets(source, host_dir));
+    findings.extend(check_code_fold(source));
     // Stable order: by (line, code).
     findings.sort_by_key(|f| (f.line.unwrap_or(0), f.code));
     findings
@@ -520,6 +521,155 @@ impl LintRun {
     }
 }
 
+/// **W005** — `<!-- code: open|collapsed -->` and frontmatter `code:` must
+/// use a recognised value, and a `code:` directive must sit in the stack
+/// immediately before a ` ```rustlab ` fence (blank lines and other code
+/// directives in between are fine).
+///
+/// Not auto-fixable: the author has to pick open or collapsed, or move
+/// the directive onto a rustlab cell.
+pub fn check_code_fold(source: &str) -> Vec<Finding> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut findings = Vec::new();
+
+    // Frontmatter only when the block is closed — an unclosed `---` is
+    // E004 and is not parsed as frontmatter.
+    if let Some(fm_lines) = closed_frontmatter_lines(&lines) {
+        for (idx, line) in fm_lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let Some((key, raw_val)) = trimmed.split_once(':') else {
+                continue;
+            };
+            if key.trim() != "code" {
+                continue;
+            }
+            let val = unquote_fold(raw_val.trim());
+            if !is_fold_value(val) {
+                let shown = if val.is_empty() { "(empty)" } else { val };
+                findings.push(Finding {
+                    severity: Severity::Warning,
+                    line: Some(idx + 1),
+                    code: "rustlab:W005",
+                    message: format!(
+                        "frontmatter code: unrecognised value '{shown}' (expected \"open\" or \"collapsed\")"
+                    ),
+                    auto_fixable: false,
+                });
+            }
+        }
+    }
+
+    let mut in_fence = false;
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        let Some(val) = code_directive_value(trimmed) else {
+            continue;
+        };
+        if !is_fold_value(val) {
+            let shown = if val.is_empty() { "(empty)" } else { val };
+            findings.push(Finding {
+                severity: Severity::Warning,
+                line: Some(idx + 1),
+                code: "rustlab:W005",
+                message: format!(
+                    "unrecognised code-fold value '{shown}' (expected \"open\" or \"collapsed\")"
+                ),
+                auto_fixable: false,
+            });
+        }
+        if !followed_by_rustlab(&lines, idx + 1) {
+            findings.push(Finding {
+                severity: Severity::Warning,
+                line: Some(idx + 1),
+                code: "rustlab:W005",
+                message: "code-fold directive is not followed by a rustlab code block".to_string(),
+                auto_fixable: false,
+            });
+        }
+    }
+    findings
+}
+
+fn is_fold_value(val: &str) -> bool {
+    val.eq_ignore_ascii_case("open") || val.eq_ignore_ascii_case("collapsed")
+}
+
+fn unquote_fold(s: &str) -> &str {
+    if s.len() >= 2 {
+        let b = s.as_bytes();
+        let first = b[0];
+        let last = b[s.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Value inside `<!-- code: ... -->`, or `None` when the line is not that directive.
+fn code_directive_value(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("<!-- code:")?;
+    let val = rest.trim().strip_suffix("-->")?.trim();
+    Some(val)
+}
+
+fn is_stackable_directive(trimmed: &str) -> bool {
+    trimmed == "<!-- hide -->"
+        || trimmed.starts_with("<!-- details:")
+        || trimmed.starts_with("<!-- grid:")
+        || trimmed.starts_with("<!-- caption:")
+        || trimmed.starts_with("<!-- code:")
+}
+
+fn followed_by_rustlab(lines: &[&str], start: usize) -> bool {
+    for line in lines.iter().skip(start) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || is_stackable_directive(trimmed) {
+            continue;
+        }
+        return trimmed == "```rustlab" || trimmed.starts_with("```rustlab ");
+    }
+    false
+}
+
+/// `(line_index, line)` for a closed frontmatter block, skipping the `---` markers.
+fn closed_frontmatter_lines<'a>(lines: &'a [&'a str]) -> Option<Vec<(usize, &'a str)>> {
+    let mut i = 0;
+    while i < lines.len() && lines[i].trim().is_empty() {
+        i += 1;
+    }
+    if i >= lines.len() || lines[i].trim() != "---" {
+        return None;
+    }
+    // Opening `---` must be the whole line (same rule as the parser).
+    i += 1;
+    let start = i;
+    while i < lines.len() {
+        if lines[i].trim() == "---" {
+            return Some(
+                lines[start..i]
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(n, l)| (start + n, l))
+                    .collect(),
+            );
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,5 +950,71 @@ mod tests {
         std::fs::write(dir.path().join("my note.md"), "# Note\n").unwrap();
         let findings = check_fragment_targets("[n](my%20note.md)", dir.path());
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    // ── W005: code-fold directive and frontmatter ────────────────────────
+
+    #[test]
+    fn w005_valid_directive_and_frontmatter_are_clean() {
+        let src = "\
+---
+code: collapsed
+---
+
+<!-- grid: 2 -->
+<!-- code: open -->
+```rustlab
+x = 1
+```
+";
+        assert!(
+            check_code_fold(src).is_empty(),
+            "{:?}",
+            check_code_fold(src)
+        );
+    }
+
+    #[test]
+    fn w005_bad_directive_value_before_a_cell() {
+        let src = "<!-- code: folded -->\n```rustlab\nx = 1\n```\n";
+        let findings = check_code_fold(src);
+        assert_codes(&findings, &["rustlab:W005"]);
+        assert!(findings[0].message.contains("folded"));
+        assert_eq!(findings[0].line, Some(1));
+    }
+
+    #[test]
+    fn w005_orphan_directive_and_bad_frontmatter() {
+        let src = "\
+---
+code: maybe
+---
+
+<!-- code: collapsed -->
+
+```mermaid
+graph LR
+```
+";
+        let findings = check_code_fold(src);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert!(findings.iter().all(|f| f.code == "rustlab:W005"));
+        assert!(findings[0].message.contains("maybe"));
+        assert!(findings[1].message.contains("not followed"));
+    }
+
+    #[test]
+    fn w005_bad_value_that_is_also_an_orphan_warns_twice() {
+        let src = "<!-- code: folded -->\n\nSome prose.\n";
+        let findings = check_code_fold(src);
+        assert_codes(&findings, &["rustlab:W005", "rustlab:W005"]);
+        assert!(findings[0].message.contains("folded"));
+        assert!(findings[1].message.contains("not followed"));
+    }
+
+    #[test]
+    fn w005_ignores_the_comment_inside_a_fence() {
+        let src = "```rustlab\n<!-- code: folded -->\n```\n";
+        assert!(check_code_fold(src).is_empty());
     }
 }

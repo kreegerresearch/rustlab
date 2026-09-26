@@ -58,6 +58,11 @@ auto_connect = false
 # Default for rustlab-notebook render/watch when -t/--theme is omitted.
 # If this key is omitted, [plot] theme is used, then dark.
 theme = "dark"            # dark | light
+# Initial state of rustlab source disclosures in HTML and notebook watch.
+# A notebook frontmatter `code:` or a cell `<!-- code: -->` overrides this.
+# Missing key, or an unrecognised value (warns once), means open.
+# LaTeX/PDF always show the source.
+# code = "open"           # open | collapsed
 
 [repl]
 # rustyline history cap (most recent N lines written back to
