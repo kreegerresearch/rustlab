@@ -13,6 +13,7 @@ mod figure;
 mod net;
 mod render;
 mod surface;
+mod view;
 
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -44,6 +45,16 @@ fn main() {
         println!("  --socket PATH  Custom Unix socket path (overrides --name)");
         println!("  -h, --help     Print help");
         println!("  -V, --version  Print version");
+        println!();
+        println!("Navigating a plot (each subplot independently):");
+        println!("  scroll         Zoom about the pointer (2D) / zoom the camera (3D)");
+        println!("  left-drag      Pan (2D) / rotate (3D)");
+        println!("  shift+scroll   3D only: scale the Z axis");
+        println!("  right-drag     3D only: pan");
+        println!("  Home           Reset the view — the panel's Home button, the Home key");
+        println!("                 while hovering it, or a double-click. Restores the");
+        println!("                 script's xlim/ylim if it set any, else fits the data");
+        println!("  R              3D only: restore the default camera (same as Home)");
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {

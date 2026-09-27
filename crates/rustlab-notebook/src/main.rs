@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use rustlab_plot::Theme;
+use rustlab_config::{ColorTheme, DefaultAxis, DisplayFormat, UserSettings};
+use rustlab_plot::{set_default_axis_y_direction, set_default_theme, AxisYDirection, Theme};
+use rustlab_script::{set_default_number_format, NumberFormat};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -15,16 +17,17 @@ use std::path::PathBuf;
         Examples:\n  \
         rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
         rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
-        rustlab-notebook render analysis.md -f pdf             # → analysis.pdf\n  \
+        rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
         rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
-        rustlab-notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
         rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
         rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-        rustlab-notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
+        rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
         -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
-        -t, --theme  <THEME>   dark (default), light\n      \
+        -t, --theme  <THEME>   HTML/watch theme: dark (default; ~/.rustlabrc\n                             \
+                               [notebook] theme) or light. LaTeX and PDF are\n                             \
+                               always Catppuccin Latte on white paper.\n      \
             --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
                                sibling .html so Obsidian renders the interactive\n                                   \
                                Plotly view inline. GitHub strips iframes, so the\n                                   \
@@ -32,7 +35,7 @@ use std::path::PathBuf;
         Formats:\n  \
         html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
         latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-        pdf       Compile LaTeX to PDF (requires pdflatex or tectonic)\n  \
+        pdf       Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n  \
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
                   committing alongside source, browsable on GitHub\n\n\
         Themes:\n  \
@@ -70,27 +73,26 @@ enum Command {
             Examples:\n  \
             rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
             rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
-            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf\n  \
+            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
             rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
-            rustlab-notebook render analysis.md -f pdf -t light    # light-themed PDF\n  \
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
             rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab-notebook render notebooks/ -f pdf -t light     # all notebooks → light PDF\n\n\
+            rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf\n  \
-            -t, --theme  <THEME>   dark (default), light\n\n\
+            -t, --theme  <THEME>   HTML/watch theme: dark (default) or light.\n                                 \
+                                   LaTeX and PDF are always Latte on white paper.\n\n\
             Formats:\n  \
             html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-            pdf    Compile LaTeX to PDF (requires pdflatex or tectonic)\n\n\
+            pdf    Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n\n\
             Themes:\n  \
             dark   Catppuccin Mocha — dark background, light text (default)\n  \
             light  Catppuccin Latte — light background, dark text"
     )]
     /// Watch a notebook (interactive server) or directory (re-render on save)
-    #[command(
-        long_about = "Watch a notebook source and react to saves.\n\n\
+    #[command(long_about = "Watch a notebook source and react to saves.\n\n\
             Two modes — picked by what you pass:\n\n  \
             Interactive server (a .md file or a directory, no --obsidian/--output):\n    \
             Spins up a local web server on http://127.0.0.1:8042 (auto-bumps\n    \
@@ -120,8 +122,7 @@ enum Command {
             rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
-            Re-render-on-save is markdown-only currently."
-    )]
+            Re-render-on-save is markdown-only currently.")]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
         /// files (with --obsidian / --output).
@@ -131,9 +132,11 @@ enum Command {
         /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Color theme: dark (default), light
-        #[arg(short, long, value_enum, default_value = "dark")]
-        theme: CliTheme,
+        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
+        /// or light. LaTeX and PDF ignore this and always use Catppuccin
+        /// Latte on white paper.
+        #[arg(short, long, value_enum)]
+        theme: Option<CliTheme>,
         /// Obsidian-friendly markdown output (see `render --obsidian` for details)
         #[arg(long)]
         obsidian: bool,
@@ -169,6 +172,13 @@ enum Command {
         /// (parallels --obsidian), so it is strictly opt-in.
         #[arg(long)]
         editable: bool,
+        /// Widen the path jail for notebook file I/O (`load`, `save`,
+        /// `savefig`, `saveanim`, `run`, embeds). Default: the watched
+        /// directory, or the notebook's own directory for a single file.
+        /// Paths that resolve outside the jail fail with
+        /// "path escapes notebook directory".
+        #[arg(long, value_name = "DIR")]
+        jail_root: Option<PathBuf>,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -223,9 +233,11 @@ enum Command {
         /// Output format: html (default), latex, pdf, markdown
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
-        /// Color theme: dark (default), light
-        #[arg(short, long, value_enum, default_value = "dark")]
-        theme: CliTheme,
+        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
+        /// or light. LaTeX and PDF ignore this and always use Catppuccin
+        /// Latte on white paper.
+        #[arg(short, long, value_enum)]
+        theme: Option<CliTheme>,
         /// Index page title (directory mode only). Precedence:
         /// --title > index.md H1 > parent directory name.
         #[arg(long)]
@@ -257,6 +269,13 @@ enum Command {
         /// Indent JSON output for readability. Default: compact (one line).
         #[arg(long)]
         pretty: bool,
+        /// Widen the path jail for notebook file I/O (`load`, `save`,
+        /// `savefig`, `saveanim`, `run`, embeds). Default: the input
+        /// directory in directory mode, or the notebook's own directory
+        /// for a single file. Paths that resolve outside the jail fail
+        /// with "path escapes notebook directory".
+        #[arg(long, value_name = "DIR")]
+        jail_root: Option<PathBuf>,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -413,7 +432,16 @@ fn parse_linter_override(s: &str) -> Result<(String, PathBuf), String> {
 }
 
 fn main() {
+    // Parse first so `--help` / `--version` still work when the rc file
+    // is missing or invalid. Settings load after clap returns.
     let cli = Cli::parse();
+    let settings = match load_and_apply_user_config() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("rustlab-notebook: {e:#}");
+            std::process::exit(2);
+        }
+    };
     match cli.command {
         Command::Watch {
             input,
@@ -427,12 +455,14 @@ fn main() {
             browser,
             no_browser,
             editable,
+            jail_root,
         } => {
-            let theme = match theme {
-                CliTheme::Dark => Theme::Dark,
-                CliTheme::Light => Theme::Light,
-            };
+            let theme = resolve_theme(theme, &settings);
+            set_default_theme(theme);
             let colors = theme.colors();
+            // Explicit --jail-root: install on this thread for the re-render
+            // loop; the interactive server threads it through ServerOpts.
+            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
 
             // Bare `watch <input>` (no --obsidian, no --output) spins up
             // the interactive server: a single .md file serves one
@@ -455,6 +485,7 @@ fn main() {
                     no_browser,
                     force_browser: browser,
                     editable,
+                    jail_root,
                 };
                 if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -498,14 +529,17 @@ fn main() {
             stdin,
             cwd,
             pretty,
+            jail_root,
         } => {
-            let theme = match theme {
-                CliTheme::Dark => Theme::Dark,
-                CliTheme::Light => Theme::Light,
-            };
+            let theme = resolve_theme(theme, &settings);
+            set_default_theme(theme);
             let colors = theme.colors();
+            // Explicit --jail-root applies to every render path below
+            // (single file, directory, JSON); directory renders otherwise
+            // default to the collection root inside cmd_render_dir.
+            let _jail = cli_jail_guard(jail_root.as_ref(), &input);
 
-            // JSON has stdout-only IO semantics (no output path, optional
+            // JSON has stdout-only IO semantics (no output path, optional)
             // stdin) so it diverges from the file-based render pipeline
             // before any of the markdown-specific option-validation runs.
             if format == CliFormat::Json {
@@ -526,7 +560,9 @@ fn main() {
             }
 
             if stdin || cwd.is_some() || pretty {
-                eprintln!("warning: --stdin / --cwd / --pretty only apply to --format json; ignored");
+                eprintln!(
+                    "warning: --stdin / --cwd / --pretty only apply to --format json; ignored"
+                );
             }
 
             if obsidian && !matches!(format, CliFormat::Markdown) {
@@ -567,7 +603,11 @@ fn main() {
                 rustlab_notebook::cmd_render(input, output, format, colors);
             }
         }
-        Command::Clean { input, output, check } => {
+        Command::Clean {
+            input,
+            output,
+            check,
+        } => {
             let changed = rustlab_notebook::cmd_clean(input, output, check);
             if check && changed > 0 {
                 std::process::exit(1);
@@ -589,9 +629,7 @@ fn main() {
             keep_tmp,
             linter_overrides,
         } => {
-            use rustlab_notebook::validate::{
-                cmd_validate, ReportFormat, ValidateOpts,
-            };
+            use rustlab_notebook::validate::{cmd_validate, ReportFormat, ValidateOpts};
             let opts = ValidateOpts {
                 formats: format.iter().map(|f| f.to_format()).collect(),
                 report: match report {
@@ -731,4 +769,120 @@ fn run_cache_command(cmd: CacheCommands) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn load_and_apply_user_config() -> anyhow::Result<UserSettings> {
+    let loaded = rustlab_config::load()?;
+    let where_ = loaded
+        .source
+        .path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "rustlab config".to_string());
+    for key in &loaded.unknown_keys {
+        eprintln!("warning: {where_}: unknown setting '{key}' (ignored)");
+    }
+    for warning in &loaded.warnings {
+        eprintln!("warning: {where_}: {warning}");
+    }
+    apply_process_defaults(&loaded.settings);
+    Ok(loaded.settings)
+}
+
+fn apply_process_defaults(settings: &UserSettings) {
+    set_default_number_format(match settings.display_format() {
+        DisplayFormat::Short => NumberFormat::Short,
+        DisplayFormat::Long => NumberFormat::Long,
+        DisplayFormat::Hex => NumberFormat::Hex,
+        DisplayFormat::Commas => NumberFormat::Commas,
+    });
+    set_default_axis_y_direction(match settings.default_axis() {
+        DefaultAxis::Ij => AxisYDirection::Ij,
+        DefaultAxis::Xy => AxisYDirection::Xy,
+    });
+    // Notebook binary: page theme and un-themed savefig share notebook_theme
+    // (`[notebook] theme`, else `[plot] theme`, else dark).
+    set_default_theme(match settings.notebook_theme() {
+        ColorTheme::Dark => Theme::Dark,
+        ColorTheme::Light => Theme::Light,
+    });
+    // `[notebook] code` — initial source disclosure. Missing key is open.
+    rustlab_notebook::render::set_rc_source_open(settings.notebook_code_open());
+}
+
+/// Install an explicit `--jail-root` for renders on this thread. The
+/// directory must exist (a typo here would otherwise silently fall back
+/// to the default jail and confuse the user later). Warns when `input`
+/// is not inside the root, because then even the notebooks' own relative
+/// paths (`savefig("x.svg")`) would be rejected.
+fn cli_jail_guard(
+    dir: Option<&PathBuf>,
+    input: &std::path::Path,
+) -> Option<rustlab_notebook::execute::JailRootGuard> {
+    let dir = dir?;
+    let root = match std::fs::canonicalize(dir) {
+        Ok(p) if p.is_dir() => p,
+        Ok(p) => {
+            eprintln!("error: --jail-root {} is not a directory", p.display());
+            std::process::exit(2);
+        }
+        Err(e) => {
+            eprintln!("error: --jail-root {}: {e}", dir.display());
+            std::process::exit(2);
+        }
+    };
+    if let Ok(ci) = std::fs::canonicalize(input) {
+        if !ci.starts_with(&root) {
+            eprintln!(
+                "warning: --jail-root {} does not contain {}; notebook-relative paths \
+                 (savefig, load, …) will be rejected — pass an ancestor of the notebooks",
+                root.display(),
+                ci.display()
+            );
+        }
+    }
+    Some(rustlab_notebook::execute::JailRootGuard::new(Some(root)))
+}
+
+fn resolve_theme(cli: Option<CliTheme>, settings: &UserSettings) -> Theme {
+    match cli {
+        Some(CliTheme::Dark) => Theme::Dark,
+        Some(CliTheme::Light) => Theme::Light,
+        None => match settings.notebook_theme() {
+            ColorTheme::Dark => Theme::Dark,
+            ColorTheme::Light => Theme::Light,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings_with_notebook_theme(theme: ColorTheme) -> UserSettings {
+        let mut s = UserSettings::default();
+        s.notebook.theme = Some(theme);
+        s
+    }
+
+    #[test]
+    fn cli_theme_overrides_rc() {
+        let dark_rc = settings_with_notebook_theme(ColorTheme::Dark);
+        assert_eq!(resolve_theme(Some(CliTheme::Light), &dark_rc), Theme::Light);
+        assert_eq!(resolve_theme(Some(CliTheme::Dark), &dark_rc), Theme::Dark);
+    }
+
+    #[test]
+    fn omitted_cli_uses_notebook_theme() {
+        let light_rc = settings_with_notebook_theme(ColorTheme::Light);
+        assert_eq!(resolve_theme(None, &light_rc), Theme::Light);
+        let dark_rc = settings_with_notebook_theme(ColorTheme::Dark);
+        assert_eq!(resolve_theme(None, &dark_rc), Theme::Dark);
+    }
+
+    #[test]
+    fn omitted_cli_falls_back_to_plot_theme() {
+        let mut s = UserSettings::default();
+        s.plot.theme = Some(ColorTheme::Light);
+        assert_eq!(resolve_theme(None, &s), Theme::Light);
+    }
 }
