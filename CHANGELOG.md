@@ -90,13 +90,18 @@ Workflow Rule 12).
 ### Added
 - `rustlab remote <host>` (in `--features viewer` builds, which `make
   install` produces): run rustlab on another machine with plots in the
-  local `rustlab-viewer`. Checks a viewer is listening, probes the remote
-  once (uid, rustlab on PATH, stale socket), then runs `ssh -t -o
-  ExitOnForwardFailure=yes -R <remote>:<local>` with `RUSTLAB_VIEWER_SOCK`
-  set inline; `--print` shows the command instead of running it. `rustlab
+  local `rustlab-viewer`. Checks a viewer is listening, then runs `ssh -t
+  -o ExitOnForwardFailure=yes -R <remote>:<local>` with a fresh
+  per-session socket name; the remote script exports `RUSTLAB_VIEWER_SOCK`
+  and removes the socket when the command exits, so a stale file never
+  blocks the next session and sessions never collide. No probe of the
+  remote. `--print` shows the command instead of running it. `rustlab
   repl --viewer [--viewer-name NAME]` connects at startup and wins over
   `[viewer] auto_connect` / `name` in `~/.rustlabrc`; both go through one
-  connect routine. Failed viewer connections now name the socket path they
+  connect routine. The rc `[viewer] name` is ignored whenever
+  `RUSTLAB_VIEWER_SOCK` is set (named sessions bypass that variable, so
+  honouring it would defeat a forward); this applies to `run --plot
+  viewer` too. Failed viewer connections now name the socket path they
   tried. Guide: `docs/remote-viewer.md`.
 - Notebook themes: named Catppuccin builtins `mocha`, `macchiato`,
   `frappe`, `latte` via `-t` / `--theme` (aliases `dark`→mocha,

@@ -49,6 +49,8 @@ default_axis = "ij"       # ij | xy
 # try to connect to rustlab-viewer at startup. Requires a rustlab build
 # with --features viewer. `--plot tui` / `--plot none` always win.
 # `rustlab repl --viewer` (and `--viewer-name`) override these for one session.
+# `name` is ignored while RUSTLAB_VIEWER_SOCK is set: named sessions bypass that
+# variable, so it would defeat an SSH forward (`rustlab remote`).
 auto_connect = false
 # Named session, matching `rustlab-viewer --name`. Used when auto_connect
 # is true, or as the default for `rustlab run --plot viewer` when

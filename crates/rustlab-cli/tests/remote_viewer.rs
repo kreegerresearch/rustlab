@@ -362,9 +362,11 @@ fn remote_round_trip_through_a_local_sshd() {
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("p.rlab");
     std::fs::write(&script, "plot(sin(linspace(0, 6.28, 64)))\n").expect("write script");
-    // The "remote" is this machine, so the freshly built binary is on its path.
+    // The "remote" is this machine, so the freshly built binary is on its
+    // path. `ls -l` on the forwarded socket runs inside the session, where
+    // it still exists, and its mode string lands on stdout.
     let remote_cmd = format!(
-        "{} run {} --plot viewer",
+        "ls -l \"$RUSTLAB_VIEWER_SOCK\" && {} run {} --plot viewer",
         env!("CARGO_BIN_EXE_rustlab"),
         script.display()
     );
@@ -404,13 +406,16 @@ fn remote_round_trip_through_a_local_sshd() {
 
     // sshd creates the forwarded socket owner-only by default
     // (StreamLocalBindMask 0177) — the property the guide's security note
-    // rests on.
-    use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(&fwd_sock.0)
-        .map(|m| m.permissions().mode() & 0o777)
-        .expect("forwarded socket should still exist after the session");
-    assert_eq!(
-        mode, 0o600,
-        "forwarded socket must be owner-only, got {mode:o}"
+    // rests on. Observed from inside the session, before cleanup.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("srw-------"),
+        "forwarded socket must be owner-only; ls said:\n{stdout}"
+    );
+    // The session's EXIT trap removed the socket, so nothing stale is left
+    // behind for the next session to trip over.
+    assert!(
+        !fwd_sock.0.exists(),
+        "forwarded socket should be removed when the session ends"
     );
 }

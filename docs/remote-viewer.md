@@ -18,14 +18,16 @@ rustlab remote user@host    # drops you into a remote REPL
 ```
 
 ```
-viewer: forwarding /tmp/rustlab-viewer-501.sock → user@host:/tmp/rustlab-fwd-1001.sock
+viewer: forwarding /tmp/rustlab-viewer-501.sock → user@host:/tmp/rustlab-fwd-48213-1f3a9c.sock
 rustlab 0.3.7 — type 'help' or '?' for help, 'exit' or Ctrl+D to quit
 >> A = randn(2000, 2000);      % computed on the remote box
 >> plot(svd(A))                % drawn on your desktop
 ```
 
 The REPL arrives already connected, so the first plot just appears. `Ctrl+D`
-ends the session and tears the forward down.
+ends the session, tears the forward down, and removes the remote socket file.
+Every session gets a fresh socket name, so a crashed session leaves nothing
+that can block the next one.
 
 To run a script instead of the REPL:
 
@@ -45,7 +47,7 @@ local:  rustlab-viewer ──binds──> /tmp/rustlab-viewer-501.sock
                                         ▲
                                    ssh -R tunnel
                                         │
-remote: rustlab ──connects──> /tmp/rustlab-fwd-1001.sock
+remote: rustlab ──connects──> /tmp/rustlab-fwd-<session>.sock
                               (RUSTLAB_VIEWER_SOCK)
 ```
 
@@ -66,7 +68,7 @@ rustlab remote user@host --remote-socket /tmp/rustlab-fwd.sock --print
 
 ```sh
 ssh -t -o ExitOnForwardFailure=yes -R /tmp/rustlab-fwd.sock:/tmp/rustlab-viewer-501.sock \
-    user@host 'RUSTLAB_VIEWER_SOCK='\''/tmp/rustlab-fwd.sock'\'' exec rustlab repl --viewer'
+    user@host 'RUSTLAB_VIEWER_SOCK='\''/tmp/rustlab-fwd.sock'\''; export RUSTLAB_VIEWER_SOCK; trap … EXIT; rustlab repl --viewer'
 ```
 
 Three details in there matter:
@@ -75,7 +77,9 @@ Three details in there matter:
   forwards the wrong way.
 - **`ExitOnForwardFailure=yes`** — without it a refused forward is *silent*,
   and you find out much later via a puzzling "could not connect".
-- **The variable is set inline**, not with `SetEnv`. `SetEnv` needs
+- **The `trap … EXIT`** removes the socket file when the command exits;
+  sshd would otherwise leave it behind (the real output spells out its quoting).
+- **The variable is set by the remote script**, not with `SetEnv`. `SetEnv` needs
   `AcceptEnv RUSTLAB_VIEWER_SOCK` in the remote `sshd_config`, which you
   probably don't control.
 
@@ -129,8 +133,9 @@ AllowStreamLocalForwarding yes
 StreamLocalBindUnlink yes      # lets sshd replace a leftover socket
 ```
 
-`StreamLocalBindUnlink` is a nicety — `rustlab remote` clears a stale socket
-before connecting, so it works without it.
+`StreamLocalBindUnlink` only matters for the hand-written recipe with a fixed
+socket name. `rustlab remote` uses a fresh name per session and removes it on
+exit, so it never needs sshd to replace a leftover socket.
 
 ### macOS
 
@@ -164,8 +169,8 @@ ssh -R 19847:localhost:19847 user@host
 | `no viewer listening on /tmp/...` | The local viewer isn't running. `rustlab-viewer &` first. |
 | `viewer: not available in this build` | The **remote** `rustlab` was built without the viewer feature. Build it there with `make install`, or `cargo install --path crates/rustlab-cli --features viewer` — a plain `cargo install` leaves it out. |
 | `viewer: could not connect — is rustlab-viewer running?` | The message names the socket it tried. If that path looks wrong, `RUSTLAB_VIEWER_SOCK` isn't set (or is stale) on the remote. |
-| Connection closes immediately with a forwarding error | A leftover socket on the remote, or the server forbids Unix forwards. `ssh user@host rm -f /tmp/rustlab-fwd-*.sock`, then see the Linux notes above. |
-| `viewer on <name>` won't connect over a forward | **Named sessions ignore `RUSTLAB_VIEWER_SOCK`** — the path is derived from the uid and name, so it resolves on the *remote* box and finds nothing. Use plain `viewer on` for forwarded sessions. |
+| Connection closes immediately with a forwarding error | The server forbids Unix forwards (see the Linux notes), or, with the hand-written recipe, a leftover socket at your fixed path: `ssh user@host rm -f /tmp/rustlab-fwd.sock`. `rustlab remote` picks a fresh name per session, so it cannot hit a stale one. |
+| `viewer on <name>` won't connect over a forward | **Named sessions ignore `RUSTLAB_VIEWER_SOCK`** — the path is derived from the uid and name, so it resolves on the *remote* box and finds nothing. Use plain `viewer on` for forwarded sessions. For the same reason, `rustlab` ignores a `[viewer] name` from the remote `~/.rustlabrc` whenever `RUSTLAB_VIEWER_SOCK` is set. |
 | `path must be shorter than SUN_LEN` | The socket path exceeds the ~104-byte limit. Use a short `/tmp` path. |
 | Plots go to the terminal instead | The session isn't connected. `viewer` (bare) reports the connection state and where figures are currently routed. |
 
@@ -173,11 +178,22 @@ ssh -R 19847:localhost:19847 user@host
 
 | Option | Effect |
 |---|---|
-| `--remote-socket PATH` | Socket to create on the remote. Default `/tmp/rustlab-fwd-<remote-uid>.sock`, keyed on the remote user so two people on one box don't collide. Two sessions by the *same* remote user share that default and each new session removes it, so give concurrent sessions distinct paths. |
+| `--remote-socket PATH` | Socket to create on the remote. Default: a fresh `/tmp/rustlab-fwd-<pid>-<hex>.sock` per session, removed when the remote command exits, so sessions never collide and a crash cannot leave a blocking file. |
 | `--command CMD` | What to run remotely. Default `rustlab repl --viewer`. |
 | `--ssh-opt OPT` | Passed verbatim to ssh, repeatable: `--ssh-opt -p --ssh-opt 2222`. For anything involved, an `~/.ssh/config` entry is easier. |
-| `--print` | Print the ssh command instead of running it. |
+| `--print` | Print the ssh command instead of running it. Contacts nothing. |
 | `--no-check` | Skip the "is a viewer listening?" check. |
+
+## Security
+
+Nothing listens on a network port; the plot data rides inside the SSH
+connection. The local socket is created owner-only by `rustlab-viewer`
+(see `docs/security.md`, H5), and sshd creates the forwarded socket on the
+remote owner-only as well (its `StreamLocalBindMask` defaults to `0177`),
+so other users of a shared remote box cannot connect to it. Remote root
+can. The viewer protocol has no authentication of its own, which is why
+this guide keeps the Unix socket rather than a TCP port forward: a
+forwarded TCP port would be reachable by every user of the remote host.
 
 ## See also
 

@@ -2113,8 +2113,9 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
 
 /// Which viewer to connect to at REPL startup, if any: `--viewer` /
 /// `--viewer-name` on the command line win; otherwise `[viewer]
-/// auto_connect` / `name` from ~/.rustlabrc. `None` = stay in the TUI;
-/// `Some(None)` = default session; `Some(Some(name))` = named session.
+/// auto_connect` / `name` from ~/.rustlabrc (the rc name is ignored when
+/// `RUSTLAB_VIEWER_SOCK` is set — see `run::rc_viewer_name`). `None` = stay
+/// in the TUI; `Some(None)` = default session; `Some(Some(name))` = named.
 fn viewer_startup_choice<'a>(
     args: &'a ReplArgs,
     settings: &'a rustlab_config::UserSettings,
@@ -2125,7 +2126,7 @@ fn viewer_startup_choice<'a>(
     Some(
         args.viewer_name
             .as_deref()
-            .or(settings.viewer.name.as_deref()),
+            .or(crate::commands::run::rc_viewer_name(settings)),
     )
 }
 
@@ -2150,6 +2151,8 @@ mod viewer_startup_tests {
 
     #[test]
     fn cli_flag_wins_over_rc_and_rc_applies_when_flag_absent() {
+        // The rc-name rule reads RUSTLAB_VIEWER_SOCK; pin it unset here.
+        std::env::remove_var("RUSTLAB_VIEWER_SOCK");
         let none = ReplArgs::default();
         assert_eq!(viewer_startup_choice(&none, &rc(false, None)), None);
         assert_eq!(viewer_startup_choice(&none, &rc(true, None)), Some(None));

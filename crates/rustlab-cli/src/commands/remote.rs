@@ -5,9 +5,8 @@
 //! local, the socket has to travel the other way down the SSH connection —
 //! a **remote** forward (`ssh -R`), not the local one people reach for first.
 //!
-//! This subcommand runs on the machine with the screen. It resolves the local
-//! viewer socket, checks something is actually listening, clears a stale socket
-//! on the far side, then hands off to `ssh` with the forward set up and
+//! This subcommand runs on the machine with the screen. It checks a viewer
+//! is listening, then hands off to `ssh` with the forward set up and
 //! `RUSTLAB_VIEWER_SOCK` pointed at the forwarded path:
 //!
 //! ```text
@@ -15,9 +14,14 @@
 //!                                            ▲
 //!                                       ssh -R tunnel
 //!                                            │
-//!   remote: rustlab ──connects──> /tmp/rustlab-fwd-1001.sock
+//!   remote: rustlab ──connects──> /tmp/rustlab-fwd-<session>.sock
 //!                                 (RUSTLAB_VIEWER_SOCK)
 //! ```
+//!
+//! Every session gets a fresh socket name and removes it when the remote
+//! command exits, so a leftover file from a crashed session can never block
+//! the next one and two sessions never collide. That is what makes the
+//! wrapper small: no probe of the remote, no stale-socket cleanup up front.
 //!
 //! See `docs/remote-viewer.md` for the manual `ssh` recipe and per-platform
 //! notes (Linux, macOS, WSL).
@@ -30,13 +34,14 @@ pub struct RemoteArgs {
     /// SSH destination, e.g. `user@host` or a `~/.ssh/config` host alias.
     pub destination: String,
 
-    /// Socket path to create on the remote machine. Defaults to
-    /// `/tmp/rustlab-fwd-<remote-uid>.sock`, which is keyed on the remote
-    /// user so two people forwarding to the same box don't collide.
+    /// Socket path to create on the remote machine. Default: a fresh
+    /// `/tmp/rustlab-fwd-<session>.sock` per session, removed when the
+    /// remote command exits.
     #[arg(long, value_name = "PATH")]
     pub remote_socket: Option<String>,
 
-    /// Command to run on the remote machine.
+    /// Command to run on the remote machine (through its login shell, which
+    /// must be POSIX-compatible: sh, bash, zsh).
     #[arg(long, value_name = "CMD", default_value = "rustlab repl --viewer")]
     pub command: String,
 
@@ -49,9 +54,7 @@ pub struct RemoteArgs {
     #[arg(long = "ssh-opt", value_name = "OPT", allow_hyphen_values = true)]
     pub ssh_opt: Vec<String>,
 
-    /// Print the ssh command instead of running it. Skips the local viewer
-    /// check; still asks the remote for its uid unless `--remote-socket` says
-    /// which path to use, in which case it contacts nothing at all.
+    /// Print the ssh command instead of running it. Contacts nothing.
     #[arg(long)]
     pub print: bool,
 
@@ -65,17 +68,29 @@ pub struct RemoteArgs {
 /// path that works on Linux doesn't fail only on a Mac.
 const MAX_SOCKET_PATH: usize = 103;
 
-/// Default socket path to create on the remote side.
-///
-/// Keyed on the *remote* uid, not the local one: the file lands in the remote
-/// `/tmp`, so it's the remote user that has to be unique there.
-pub(crate) fn default_remote_socket(remote_uid: &str) -> String {
-    format!("/tmp/rustlab-fwd-{remote_uid}.sock")
+/// A socket path no other session will pick: this process id plus the clock.
+/// Uniqueness is all that is needed — the socket itself is created owner-only
+/// by sshd (`StreamLocalBindMask` defaults to 0177).
+pub(crate) fn session_socket() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("/tmp/rustlab-fwd-{}-{:x}.sock", std::process::id(), nanos)
 }
 
 /// Single-quote a string for safe interpolation into the remote shell command.
 pub(crate) fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The script the remote login shell runs: export the socket path, arrange
+/// for the socket file to go away when the command exits (sshd leaves it
+/// behind otherwise), then run the command.
+pub(crate) fn remote_script(remote_socket: &str, command: &str) -> String {
+    let q = shell_quote(remote_socket);
+    let cleanup = shell_quote(&format!("rm -f {q}"));
+    format!("RUSTLAB_VIEWER_SOCK={q}; export RUSTLAB_VIEWER_SOCK; trap {cleanup} EXIT; {command}")
 }
 
 /// Build the argv for the session ssh call.
@@ -100,13 +115,9 @@ pub(crate) fn build_ssh_args(
     args.push(format!("{remote_socket}:{local_socket}"));
     args.extend(ssh_opts.iter().cloned());
     args.push(destination.to_string());
-    // Set the variable inline rather than with `SetEnv`, which would need
-    // `AcceptEnv RUSTLAB_VIEWER_SOCK` in the remote sshd_config.
-    args.push(format!(
-        "RUSTLAB_VIEWER_SOCK={} exec {}",
-        shell_quote(remote_socket),
-        command
-    ));
+    // The variable is set in the script rather than with `SetEnv`, which
+    // would need `AcceptEnv RUSTLAB_VIEWER_SOCK` in the remote sshd_config.
+    args.push(remote_script(remote_socket, command));
     args
 }
 
@@ -122,62 +133,6 @@ fn render(args: &[String]) -> String {
         }
     }
     out
-}
-
-/// Ask the remote for its uid, confirm rustlab is installed, and remove a
-/// leftover socket — one round trip, because each of these on its own would
-/// otherwise cost a connection.
-///
-/// A stale socket is worth the trip: sshd refuses to bind over an existing
-/// file unless the server sets `StreamLocalBindUnlink yes`, and the resulting
-/// failure is far from obvious.
-fn probe_remote(dest: &str, ssh_opts: &[String], remote_socket: Option<&str>) -> Result<Probe> {
-    // When the caller named a socket we can clear it in this same trip;
-    // otherwise the uid isn't known yet and cleanup happens on the next line.
-    let rm = match remote_socket {
-        Some(p) => format!("rm -f {}", shell_quote(p)),
-        None => "rm -f \"/tmp/rustlab-fwd-$(id -u).sock\"".to_string(),
-    };
-    let script = format!(
-        "echo RL_UID=$(id -u); command -v rustlab >/dev/null && echo RL_RUSTLAB=yes || echo RL_RUSTLAB=no; {rm}"
-    );
-
-    let mut cmd = std::process::Command::new("ssh");
-    cmd.args(ssh_opts).arg(dest).arg(&script);
-    let out = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("could not run ssh: {e}"))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!(
-            "ssh {dest} failed: {}",
-            stderr.trim().lines().last().unwrap_or("(no output)")
-        );
-    }
-    parse_probe(&String::from_utf8_lossy(&out.stdout), dest)
-}
-
-/// Read the probe's answers by sentinel, so a login shell that prints a
-/// banner or an rc-file echo on non-interactive sessions cannot be
-/// mistaken for the uid.
-pub(crate) fn parse_probe(stdout: &str, dest: &str) -> Result<Probe> {
-    let uid = stdout
-        .lines()
-        .map(str::trim)
-        .find_map(|l| l.strip_prefix("RL_UID="))
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
-        bail!("unexpected reply from `ssh {dest} id -u`: {stdout:?}");
-    }
-    let has_rustlab = stdout.lines().any(|l| l.trim() == "RL_RUSTLAB=yes");
-    Ok(Probe { uid, has_rustlab })
-}
-
-pub(crate) struct Probe {
-    pub(crate) uid: String,
-    pub(crate) has_rustlab: bool,
 }
 
 /// Verify a viewer is listening locally before we open an SSH connection.
@@ -229,37 +184,7 @@ pub fn execute(args: RemoteArgs) -> Result<()> {
         );
     }
 
-    // Skip the round trip when there is nothing to learn from it: a print with
-    // an explicit socket path needs neither the remote uid nor the cleanup.
-    let probe = if args.print && args.remote_socket.is_some() {
-        None
-    } else {
-        Some(probe_remote(
-            &args.destination,
-            &args.ssh_opt,
-            args.remote_socket.as_deref(),
-        )?)
-    };
-
-    if let Some(p) = &probe {
-        if !p.has_rustlab {
-            eprintln!(
-                "warning: no `rustlab` found on {} — the session will open but the command may fail",
-                args.destination
-            );
-            eprintln!("  install it there, and make sure it has the viewer feature:");
-            eprintln!(
-                "    make install     (or: cargo install --path crates/rustlab-cli --features viewer)"
-            );
-        }
-    }
-
-    let remote_socket = match (args.remote_socket.clone(), &probe) {
-        (Some(p), _) => p,
-        (None, Some(p)) => default_remote_socket(&p.uid),
-        // Unreachable: the probe is only skipped when a socket was given.
-        (None, None) => unreachable!("probe is required when --remote-socket is absent"),
-    };
+    let remote_socket = args.remote_socket.clone().unwrap_or_else(session_socket);
 
     for (which, path) in [("local", &local_display), ("remote", &remote_socket)] {
         if path.len() > MAX_SOCKET_PATH {
@@ -306,16 +231,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_socket_is_keyed_on_the_remote_uid() {
-        assert_eq!(default_remote_socket("1001"), "/tmp/rustlab-fwd-1001.sock");
-        // Two users on one box must not land on the same path.
-        assert_ne!(default_remote_socket("1001"), default_remote_socket("1002"));
+    fn session_sockets_are_unique_and_fit_in_sockaddr_un() {
+        let a = session_socket();
+        let b = session_socket();
+        assert!(a.starts_with("/tmp/rustlab-fwd-"), "{a}");
+        assert!(a.ends_with(".sock"), "{a}");
+        assert!(a.len() <= MAX_SOCKET_PATH, "{a}");
+        // Two sessions started back to back must not share a path.
+        assert_ne!(a, b);
     }
 
     #[test]
-    fn default_socket_paths_fit_in_sockaddr_un() {
-        // A generous uid still leaves plenty of headroom.
-        assert!(default_remote_socket("4294967295").len() <= MAX_SOCKET_PATH);
+    fn remote_script_exports_the_socket_and_cleans_up_on_exit() {
+        let s = remote_script("/tmp/f.sock", "rustlab repl --viewer");
+        assert_eq!(
+            s,
+            "RUSTLAB_VIEWER_SOCK='/tmp/f.sock'; export RUSTLAB_VIEWER_SOCK; \
+             trap 'rm -f '\\''/tmp/f.sock'\\''' EXIT; rustlab repl --viewer"
+        );
     }
 
     #[test]
@@ -323,7 +256,7 @@ mod tests {
         let args = build_ssh_args(
             "me@host",
             "/tmp/rustlab-viewer-501.sock",
-            "/tmp/rustlab-fwd-1001.sock",
+            "/tmp/rustlab-fwd-1.sock",
             "rustlab repl --viewer",
             &[],
         );
@@ -331,17 +264,16 @@ mod tests {
         // Remote forward, in remote:local order — the direction is the whole
         // point, so pin it.
         assert!(
-            joined.contains("-R /tmp/rustlab-fwd-1001.sock:/tmp/rustlab-viewer-501.sock"),
+            joined.contains("-R /tmp/rustlab-fwd-1.sock:/tmp/rustlab-viewer-501.sock"),
             "{joined}"
         );
         assert!(joined.contains("ExitOnForwardFailure=yes"), "{joined}");
         assert!(joined.contains("-t"), "{joined}");
         assert!(
-            joined.contains(
-                "RUSTLAB_VIEWER_SOCK='/tmp/rustlab-fwd-1001.sock' exec rustlab repl --viewer"
-            ),
+            joined.contains("RUSTLAB_VIEWER_SOCK='/tmp/rustlab-fwd-1.sock'; export"),
             "{joined}"
         );
+        assert!(joined.ends_with("EXIT; rustlab repl --viewer"), "{joined}");
         // Destination precedes the remote command.
         let dest = args.iter().position(|a| a == "me@host").unwrap();
         let cmd = args
@@ -378,21 +310,10 @@ mod tests {
             &[],
         );
         let cmd = args.last().unwrap();
-        // The quote is escaped, so the injected text stays one argument.
+        // The quote is escaped, so the injected text stays one argument —
+        // both in the export and inside the cleanup trap.
         assert!(cmd.contains(r"'\''"), "{cmd}");
         assert!(!cmd.contains("; rm -rf ~; echo ;"), "{cmd}");
-    }
-
-    #[test]
-    fn probe_parsing_uses_sentinels_and_ignores_shell_noise() {
-        let p = parse_probe("Welcome to bigbox!\nRL_UID=1001\nRL_RUSTLAB=yes\n", "h").unwrap();
-        assert_eq!(p.uid, "1001");
-        assert!(p.has_rustlab);
-        let p = parse_probe("RL_UID=7\nRL_RUSTLAB=no\n", "h").unwrap();
-        assert_eq!(p.uid, "7");
-        assert!(!p.has_rustlab);
-        assert!(parse_probe("motd only\n", "h").is_err());
-        assert!(parse_probe("RL_UID=abc\n", "h").is_err());
     }
 
     #[test]
