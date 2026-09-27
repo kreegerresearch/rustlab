@@ -63,10 +63,7 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
             PlotMode::Tui
         }
     });
-    let viewer_name = args
-        .viewer_name
-        .as_deref()
-        .or(settings.viewer.name.as_deref());
+    let viewer_name = args.viewer_name.as_deref().or(rc_viewer_name(settings));
     apply_plot_mode(plot_mode, viewer_name);
 
     // Use run_script_source to support report directives in scripts.
@@ -97,7 +94,22 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
     }
 }
 
-fn apply_plot_mode(mode: PlotMode, viewer_name: Option<&str>) {
+/// The rc `[viewer] name` fallback — unless `RUSTLAB_VIEWER_SOCK` is set.
+/// Named sessions derive their socket from the uid and name and ignore that
+/// variable, so honouring the rc name there would silently bypass an SSH
+/// forward (`rustlab remote` sets the variable on the remote side).
+pub(crate) fn rc_viewer_name(settings: &rustlab_config::UserSettings) -> Option<&str> {
+    if std::env::var_os("RUSTLAB_VIEWER_SOCK").is_some() {
+        return None;
+    }
+    settings.viewer.name.as_deref()
+}
+
+/// Route plot output for a non-interactive run — also used by the REPL's
+/// `--viewer` startup flag, so the connect / fallback / message behaviour is
+/// identical whether you asked for the viewer on the command line or with
+/// `viewer on` once you were inside.
+pub(crate) fn apply_plot_mode(mode: PlotMode, viewer_name: Option<&str>) {
     use rustlab_plot::{set_plot_context, PlotContext};
     match mode {
         PlotMode::Tui => { /* default */ }
@@ -121,9 +133,24 @@ fn apply_plot_mode(mode: PlotMode, viewer_name: Option<&str>) {
                         }
                     }
                     Ok(false) => {
+                        // See the matching arm in rustlab-script's `viewer on`
+                        // handler: naming the socket is what makes a failed
+                        // SSH forward diagnosable.
                         match viewer_name {
-                            Some(n) => eprintln!("viewer: could not connect to session '{}' — is rustlab-viewer --name {} running?", n, n),
-                            None    => eprintln!("viewer: could not connect — is rustlab-viewer running?"),
+                            Some(n) => {
+                                eprintln!("viewer: could not connect to session '{}' — is rustlab-viewer --name {} running?", n, n);
+                                eprintln!(
+                                    "  tried: {}",
+                                    rustlab_plot::socket_path_for_name(n).display()
+                                );
+                            }
+                            None => {
+                                eprintln!("viewer: could not connect — is rustlab-viewer running?");
+                                eprintln!(
+                                    "  tried: {} (override with RUSTLAB_VIEWER_SOCK)",
+                                    rustlab_plot::default_socket_path().display()
+                                );
+                            }
                         }
                         eprintln!("  falling back to TUI rendering");
                     }

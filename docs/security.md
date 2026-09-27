@@ -129,6 +129,15 @@ On platforms that use TCP `127.0.0.1` instead of a Unix socket, traffic
 remains loopback-only with **no application-level auth** — local-user
 trust applies.
 
+`rustlab remote` (viewer-feature builds) exposes the same socket through
+an SSH remote forward: sshd on the far end creates
+`/tmp/rustlab-fwd-<session>.sock` owner-only (its `StreamLocalBindMask`
+defaults to `0177`) and the remote `rustlab` connects to it. The 0600
+invariant on that end depends on the remote sshd's configuration, and
+remote root can reach the local viewer for the life of the session. The
+socket name is fresh per session and the remote script removes it when
+the command exits. Nothing listens on a network port.
+
 ## Reporting
 
 Please open a private security report or GitHub security advisory against

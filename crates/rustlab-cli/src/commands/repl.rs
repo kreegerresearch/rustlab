@@ -1,4 +1,5 @@
 use anyhow::Result;
+use clap::Args;
 use rustlab_script::{lexer, parser, Evaluator};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
@@ -1855,7 +1856,24 @@ impl Completer for ReplHelper {
 
 // ─── REPL ─────────────────────────────────────────────────────────────────────
 
-pub fn execute(settings: &rustlab_config::UserSettings) -> Result<()> {
+#[derive(Args, Default)]
+pub struct ReplArgs {
+    /// Connect to a running rustlab-viewer at startup, so plots render there
+    /// from the first command (same as typing `viewer on`). Falls back to the
+    /// TUI with a warning if no viewer answers.
+    #[arg(long)]
+    pub viewer: bool,
+
+    /// With `--viewer`, connect to a named viewer session.
+    ///
+    /// Note: named sessions derive their socket from the uid and name, so they
+    /// ignore RUSTLAB_VIEWER_SOCK — over an SSH forward, use the plain
+    /// `--viewer` form.
+    #[arg(long, value_name = "NAME", requires = "viewer")]
+    pub viewer_name: Option<String>,
+}
+
+pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Result<()> {
     println!(
         "rustlab {} — type {} or {} for help, {} or Ctrl+D to quit",
         color::bold_green(env!("CARGO_PKG_VERSION")),
@@ -1881,7 +1899,7 @@ pub fn execute(settings: &rustlab_config::UserSettings) -> Result<()> {
     let mut ev = Evaluator::new();
     ev.color_output = color::is_color_enabled();
 
-    maybe_auto_connect_viewer(settings);
+    connect_viewer_at_startup(&args, settings);
 
     let hist_path = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".rustlab_history"))
@@ -2093,42 +2111,72 @@ pub fn execute(settings: &rustlab_config::UserSettings) -> Result<()> {
     Ok(())
 }
 
-fn maybe_auto_connect_viewer(settings: &rustlab_config::UserSettings) {
-    if !settings.viewer_auto_connect() {
-        return;
+/// Which viewer to connect to at REPL startup, if any: `--viewer` /
+/// `--viewer-name` on the command line win; otherwise `[viewer]
+/// auto_connect` / `name` from ~/.rustlabrc (the rc name is ignored when
+/// `RUSTLAB_VIEWER_SOCK` is set — see `run::rc_viewer_name`). `None` = stay
+/// in the TUI; `Some(None)` = default session; `Some(Some(name))` = named.
+fn viewer_startup_choice<'a>(
+    args: &'a ReplArgs,
+    settings: &'a rustlab_config::UserSettings,
+) -> Option<Option<&'a str>> {
+    if !(args.viewer || settings.viewer_auto_connect()) {
+        return None;
     }
-    #[cfg(feature = "viewer")]
-    {
-        let result = match settings.viewer.name.as_deref() {
-            Some(name) => rustlab_plot::connect_viewer_named(name),
-            None => rustlab_plot::connect_viewer(),
+    Some(
+        args.viewer_name
+            .as_deref()
+            .or(crate::commands::run::rc_viewer_name(settings)),
+    )
+}
+
+/// Connect through the run command's routine so `repl --viewer`, the rc
+/// key, and `run --plot viewer` connect, fall back, and report identically.
+fn connect_viewer_at_startup(args: &ReplArgs, settings: &rustlab_config::UserSettings) {
+    if let Some(name) = viewer_startup_choice(args, settings) {
+        crate::commands::run::apply_plot_mode(crate::commands::run::PlotMode::Viewer, name);
+    }
+}
+
+#[cfg(test)]
+mod viewer_startup_tests {
+    use super::*;
+
+    fn rc(auto: bool, name: Option<&str>) -> rustlab_config::UserSettings {
+        let mut s = rustlab_config::UserSettings::default();
+        s.viewer.auto_connect = Some(auto);
+        s.viewer.name = name.map(str::to_string);
+        s
+    }
+
+    #[test]
+    fn cli_flag_wins_over_rc_and_rc_applies_when_flag_absent() {
+        // The rc-name rule reads RUSTLAB_VIEWER_SOCK; pin it unset here.
+        std::env::remove_var("RUSTLAB_VIEWER_SOCK");
+        let none = ReplArgs::default();
+        assert_eq!(viewer_startup_choice(&none, &rc(false, None)), None);
+        assert_eq!(viewer_startup_choice(&none, &rc(true, None)), Some(None));
+        assert_eq!(
+            viewer_startup_choice(&none, &rc(true, Some("work"))),
+            Some(Some("work"))
+        );
+        let flag = ReplArgs {
+            viewer: true,
+            viewer_name: None,
         };
-        match result {
-            Ok(true) => {
-                let fig_id = rustlab_plot::viewer_live::get_viewer_fig_id().unwrap_or(1);
-                rustlab_plot::set_current_figure_output(rustlab_plot::FigureOutput::Viewer(fig_id));
-                match settings.viewer.name.as_deref() {
-                    Some(n) => {
-                        eprintln!("viewer: auto-connected to session '{n}' (from rustlabrc)")
-                    }
-                    None => eprintln!("viewer: auto-connected (from rustlabrc)"),
-                }
-            }
-            Ok(false) => match settings.viewer.name.as_deref() {
-                Some(n) => eprintln!(
-                    "viewer: rustlabrc auto_connect: could not reach session '{n}' — is rustlab-viewer --name {n} running?"
-                ),
-                None => eprintln!(
-                    "viewer: rustlabrc auto_connect: could not connect — is rustlab-viewer running?"
-                ),
-            },
-            Err(e) => eprintln!("viewer: rustlabrc auto_connect failed — {e}"),
-        }
-    }
-    #[cfg(not(feature = "viewer"))]
-    {
-        eprintln!(
-            "viewer: rustlabrc auto_connect ignored (rebuild rustlab with --features viewer)"
+        assert_eq!(viewer_startup_choice(&flag, &rc(false, None)), Some(None));
+        // rc name still fills in when --viewer has no --viewer-name
+        assert_eq!(
+            viewer_startup_choice(&flag, &rc(false, Some("work"))),
+            Some(Some("work"))
+        );
+        let named = ReplArgs {
+            viewer: true,
+            viewer_name: Some("lab".into()),
+        };
+        assert_eq!(
+            viewer_startup_choice(&named, &rc(true, Some("work"))),
+            Some(Some("lab"))
         );
     }
 }

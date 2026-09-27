@@ -624,6 +624,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `hold on` / `hold off` | Overlay series on current subplot (also `hold("on")`) |
 | `grid on` / `grid off` | Show / hide grid lines (also `grid("on")`) |
 | `viewer` / `viewer on` / `viewer on <name>` / `viewer off` | Bare `viewer` = status (connection state + current figure routing); `on`/`off` route plots to/from external rustlab-viewer. In the viewer window: scroll = zoom, drag = pan, per-subplot **Home** button / `Home` key / double-click = reset view (script `xlim`/`ylim` if set, else fit data). Auto-falls-back to TUI if the viewer dies. Requires `viewer` feature. |
+| Remote viewer (viewer-feature builds; `make install`) | `rustlab remote <host>` runs rustlab on another machine with plots in your local viewer (SSH forward of the viewer socket; `RUSTLAB_VIEWER_SOCK` is the hook). See docs/remote-viewer.md |
 | `title("text")` | Set subplot title |
 | `xlabel("text")` | Set x-axis label |
 | `ylabel("text")` | Set y-axis label |

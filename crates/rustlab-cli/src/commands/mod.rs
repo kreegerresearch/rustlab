@@ -4,6 +4,8 @@ pub mod docs;
 pub mod filter;
 pub mod info;
 pub mod plot;
+#[cfg(feature = "viewer")]
+pub mod remote;
 pub mod repl;
 pub mod run;
 pub mod window;
