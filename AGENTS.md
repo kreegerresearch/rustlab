@@ -1057,7 +1057,7 @@ opens). Do not reintroduce `request_repaint_after` polling in
 **Purpose:** User-global settings loader. Leaf crate — `toml` + `thiserror` only.
 
 **Key files:**
-- `src/lib.rs` — `load()` / `load_from_paths()` / `parse_toml()`. First existing file wins: `$XDG_CONFIG_HOME/rustlab/config.toml`, else `~/.rustlabrc`, else built-in defaults. Unknown keys are collected (callers warn once); invalid values return `ConfigError::Invalid` with path + key, except `[notebook] code`, which warns (`LoadedConfig::warnings`) and falls back to open. v1 schema: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` / `code` (`open`|`collapsed`), `[repl] history_limit`, `[viewer] auto_connect` / `name`.
+- `src/lib.rs` — `load()` / `load_from_paths()` / `parse_toml()`. First existing file wins: `$XDG_CONFIG_HOME/rustlab/config.toml`, else `~/.rustlabrc`, else built-in defaults. Unknown keys are collected (callers warn once); invalid values return `ConfigError::Invalid` with path + key, except `[notebook] code` and `[notebook] browser`, which warn (`LoadedConfig::warnings`) and fall back to open / auto. v1 schema: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` / `code` (`open`|`collapsed`) / `browser` (`auto`|`always`|`never`|`"<command>"`, booleans accepted; `BrowserOpen` is also the parser for `$RUSTLAB_NOTEBOOK_BROWSER`), `[repl] history_limit`, `[viewer] auto_connect` / `name`.
 
 Consumed by `rustlab-cli` (REPL / `run`) and `rustlab-notebook` (render/watch `-t` default). Process-wide plot theme / axis / number-format defaults are applied at those binary entry points — `Evaluator::new()` is not changed for library callers.
 

@@ -188,6 +188,7 @@ rustlab-notebook render note.md                 # → note.html (self-contained,
 rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + plots/<stem>/*.svg
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042
+rustlab-notebook watch note.md --browser        # force-open the browser from a non-TTY (IDE); --no-browser, $RUSTLAB_NOTEBOOK_BROWSER, or ~/.rustlabrc [notebook] browser also control this
 rustlab-notebook check note.md                  # lint (exit 2 errors / 1 warnings / 0 clean)
 rustlab-notebook clean note.md                  # strip generated output sentinels from source
 ```

@@ -51,6 +51,9 @@ pub struct ServerOpts {
     /// When true, open the browser even if stderr is not a TTY (IDE /
     /// launcher). `--no-browser` still wins. See [`browser`].
     pub force_browser: bool,
+    /// `~/.rustlabrc` `[notebook] browser`, threaded through so the
+    /// opener policy can honour it (CLI flags and the env var win).
+    pub rc_browser: Option<rustlab_config::BrowserOpen>,
     /// When true, mount the `/save/{slug}` write-back route and serve the
     /// in-browser editor. This is the one interactive path that modifies
     /// source `.md` files (parallels the "only `--obsidian` modifies"
@@ -135,8 +138,12 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             );
         }
 
-        if browser::should_auto_open_browser(opts.force_browser, opts.no_browser) {
-            if let Err(e) = browser::open_browser(&url) {
+        if browser::should_auto_open_browser(
+            opts.force_browser,
+            opts.no_browser,
+            opts.rc_browser.as_ref(),
+        ) {
+            if let Err(e) = browser::open_browser(&url, opts.rc_browser.as_ref()) {
                 eprintln!("[watch] could not open browser automatically: {e}");
                 eprintln!("[watch] open {url} manually");
             }
@@ -736,6 +743,7 @@ mod tests {
         assert!(o.port.is_none());
         assert!(!o.no_browser);
         assert!(!o.force_browser);
+        assert!(o.rc_browser.is_none());
         assert!(!o.editable);
     }
 

@@ -235,15 +235,20 @@ Behaviour:
   in-place rewrite.
 - **Browser auto-opens** when stderr is a TTY and `CI` is unset.
   `--browser` forces a launch even from an IDE (stderr is not a TTY);
-  `--no-browser` forces off. Persist the choice with
-  `$RUSTLAB_NOTEBOOK_BROWSER`: `1`/`true`/`on` always open, `0`/`false`/`off`
-  never, or a command (`firefox`, `google-chrome %s`) used as the opener.
-  `$BROWSER` is the standard Unix fallback when no command was given.
-  Openers, in order: macOS `open`; Windows `cmd /c start` then PowerShell
+  `--no-browser` forces off. Persist the choice in `~/.rustlabrc` with
+  `[notebook] browser = "auto" | "always" | "never" | "<command>"`
+  (booleans accepted), or per process with `$RUSTLAB_NOTEBOOK_BROWSER`
+  (`1`/`true`/`on` always, `0`/`false`/`off` never, `auto`, or a command
+  such as `firefox` / `google-chrome %s` used as the opener). Precedence:
+  CLI flags, then the env var, then the rc key, then auto. `$BROWSER` is
+  the standard Unix fallback when neither names a command. Openers, in
+  order: macOS `open`; Windows `cmd /c start` then PowerShell
   `Start-Process`; WSL `wslview` (Windows host browser), then
   `cmd.exe /c start` / `explorer.exe`, then the Linux list (`xdg-open`,
-  `gio open`, `sensible-browser`, `x-www-browser`). If every candidate
-  is missing the URL is printed for a manual open. `CI` is a hard off.
+  `gio open`, `sensible-browser`, `x-www-browser`). Each opener is waited
+  on for at most about one second, so a browser binary that keeps running
+  never blocks the server from starting. If every candidate is missing the
+  URL is printed for a manual open. `CI` is a hard off.
 - **Source pane (split view).** A "Source" button in the top-right
   toolbar slides in a pane showing the raw `.md` (served from
   `/raw/<slug>`). The toolbar and pane live outside the rendered

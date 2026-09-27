@@ -158,7 +158,8 @@ enum Command {
         /// (interactive server mode only) Force-open the browser even
         /// when stderr is not a TTY (IDE / launcher). Default is to
         /// auto-open on a TTY. Also set by `$RUSTLAB_NOTEBOOK_BROWSER=1`
-        /// (or a command); `$BROWSER` selects the opener.
+        /// (or a command) or `~/.rustlabrc` `[notebook] browser`;
+        /// `$BROWSER` selects the opener.
         #[arg(long, conflicts_with = "no_browser")]
         browser: bool,
         /// (interactive server mode only) Do not auto-open the browser.
@@ -484,6 +485,7 @@ fn main() {
                     port,
                     no_browser,
                     force_browser: browser,
+                    rc_browser: settings.notebook.browser.clone(),
                     editable,
                     jail_root,
                 };
