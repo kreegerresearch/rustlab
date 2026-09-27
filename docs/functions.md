@@ -1971,6 +1971,25 @@ viewer             % status: "connected, current figure → rustlab-viewer (figu
 viewer off         % back to terminal
 ```
 
+**Mouse and keyboard in the viewer window.** Each subplot is navigated independently:
+
+| Gesture | 2-D panel | 3-D `surf` panel |
+|---|---|---|
+| Scroll wheel | zoom both axes about the pointer | zoom the camera |
+| Shift + scroll | — | scale the Z axis (relief exaggeration) |
+| Left-drag | pan | rotate (yaw / pitch) |
+| Right-drag | — | pan |
+| **Home** button (panel header) | reset the view | reset the camera |
+| `Home` key (pointer over the panel) | reset the view | reset the camera |
+| `R` key (pointer over the panel) | — | reset the camera |
+| Double-click | reset the view | — |
+
+"Reset the view" restores the script's `xlim`/`ylim` for that subplot when it set
+any (`plot_limits`, `xlim`, `ylim`), and otherwise re-fits the panel to its data.
+Those limits are applied when the panel first appears and whenever the script
+sends *changed* limits — a zoom is not undone by a live plot redrawing with the
+same limits.
+
 **Automatic fallback.** If the viewer is closed or crashes while still connected, the next plot command detects the broken connection, prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders the current figure in the TUI. Subsequent plots continue to render in the terminal until you run `viewer on` again.
 
 **Named sessions** allow multiple viewers to run simultaneously, each receiving plots from different rustlab instances:
@@ -2157,7 +2176,7 @@ Plot a Z-grid as a 3D surface. `Z` is a matrix (rows = Y samples, cols = X sampl
 Per-backend behaviour:
 
 - **Terminal** — heatmap of Z (no 3D interaction in a terminal).
-- **Viewer** (`viewer on`) — interactive 3D: left-drag rotate, scroll zoom, shift+scroll scale Z, right-drag pan, `R` to reset.
+- **Viewer** (`viewer on`) — interactive 3D: left-drag rotate, scroll zoom, shift+scroll scale Z, right-drag pan, and the panel's **Home** button (or the `Home` / `R` keys) to reset the camera.
 - **HTML** (`savefig("...html")`) — Plotly 3D surface (draggable in browser).
 - **SVG / PNG** — static isometric wireframe.
 - **Notebook** (`rustlab-notebook render`) — captured as a figure snapshot; HTML output embeds a Plotly 3D surface (rotate/zoom in browser), PDF output embeds the SVG wireframe.
@@ -3208,6 +3227,62 @@ x = 1234567         % → x = 1,234,567
 format default
 x                   % → 1234567
 ```
+
+The session starts in `short`, unless `[display] format` is set in the
+user rc file (see [User settings (`~/.rustlabrc`)](#user-settings-rustlabrc)
+below). An in-script or REPL `format` command always wins over the rc.
+
+### User settings (`~/.rustlabrc`)
+Optional **declarative TOML** file for user-global defaults. It is **not**
+an executable startup script — rustlab never runs code from it.
+
+Load order (first existing file wins):
+
+1. `$XDG_CONFIG_HOME/rustlab/config.toml` (XDG home defaults to `~/.config`)
+2. `~/.rustlabrc`
+3. Built-in defaults (a missing file is not an error)
+
+v1 is user-global only. There is no project `.rustlab/config.toml` yet.
+Do not confuse this file with `~/.rustlab_history` (REPL command history)
+or `.rustlab/cache.db` (per-project function cache).
+
+**Precedence** (high → low): explicit CLI flags → in-script / REPL
+commands → user rc → built-in defaults.
+
+Unknown keys warn once on stderr and are ignored. Invalid values abort
+startup with the file path and key, except `[notebook] code`: an
+unrecognised value warns once and falls back to open.
+
+**Minimal** — a missing file is fine (built-in defaults apply). Smallest
+useful `~/.rustlabrc`:
+
+```toml
+# missing file = defaults; this just sets plot / notebook theme
+[plot]
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
+[notebook]
+theme = "dark"
+code = "open"             # open | collapsed
+```
+
+**Typical** — display format plus plot and notebook defaults:
+
+```toml
+[display]
+format = "commas"         # short | long | hex | commas
+
+[plot]
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
+default_axis = "xy"       # ij | xy   (same as set_default_axis)
+
+[notebook]
+theme = "light"           # rustlab-notebook -t default
+code = "open"             # open | collapsed (source disclosure)
+```
+
+Full annotated template (every v1 key, with comments):
+[`docs/rustlabrc.example.toml`](rustlabrc.example.toml).
+In the REPL, `help rustlabrc` prints the same summary.
 
 ### Underscore digit separators
 Underscores can be used inside numeric literals for readability. They are stripped during parsing and have no effect on the value. Works like Rust, Python, and C++14.

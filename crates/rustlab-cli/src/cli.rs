@@ -31,6 +31,8 @@ pub enum Commands {
     /// Look up rustlab builtin function documentation (same data as the REPL `help` command)
     Docs(crate::commands::docs::DocsArgs),
     /// Run rustlab on a remote machine with plots rendering in the local viewer
+    /// (viewer-feature builds only — `make install` produces one)
+    #[cfg(feature = "viewer")]
     Remote(crate::commands::remote::RemoteArgs),
     /// Show version and feature information
     Info,
@@ -41,17 +43,19 @@ pub enum Commands {
 
 impl Cli {
     pub fn execute(self) -> Result<()> {
+        let settings = crate::user_config::load_and_apply()?;
         match self
             .command
             .unwrap_or_else(|| Commands::Repl(Default::default()))
         {
-            Commands::Repl(args) => crate::commands::repl::execute(args),
-            Commands::Run(args) => crate::commands::run::execute(args),
+            Commands::Repl(args) => crate::commands::repl::execute(args, &settings),
+            Commands::Run(args) => crate::commands::run::execute(args, &settings),
             Commands::Filter(cmd) => crate::commands::filter::execute(cmd),
             Commands::Convolve(args) => crate::commands::convolve::execute(args),
             Commands::Window(args) => crate::commands::window::execute(args),
             Commands::Plot(args) => crate::commands::plot::execute(args),
             Commands::Docs(args) => crate::commands::docs::execute(args),
+            #[cfg(feature = "viewer")]
             Commands::Remote(args) => crate::commands::remote::execute(args),
             Commands::Info => crate::commands::info::execute(),
             Commands::Cache(cmd) => crate::commands::cache::execute(cmd),

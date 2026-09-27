@@ -76,6 +76,11 @@ rustlab run examples/dsp/lowpass.rlab
 
 Run `rustlab` with no arguments to enter the interactive REPL. Readline history and editing are supported.
 
+Optional user-global defaults can live in `~/.rustlabrc` or
+`$XDG_CONFIG_HOME/rustlab/config.toml` (declarative TOML — not a startup
+script). See [`docs/rustlabrc.example.toml`](docs/rustlabrc.example.toml)
+or type `help rustlabrc` in the REPL.
+
 ```sh
 rustlab
 ```
@@ -546,7 +551,7 @@ rustlab remote user@host --command "rustlab run /data/sim.rlab --plot viewer"
 rustlab remote user@host --print       # show the ssh command instead of running it
 ```
 
-Works on Linux, macOS and WSL; needs nothing but SSH. Full setup, manual `ssh -R`
+Works on Linux, macOS and WSL; needs SSH and a viewer-feature build of rustlab (`make install`). Full setup, manual `ssh -R`
 recipe, per-platform notes and troubleshooting: [docs/remote-viewer.md](docs/remote-viewer.md).
 
 ### `rustlab filter fir [OPTIONS]`

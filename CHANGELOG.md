@@ -15,6 +15,59 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **`rustlab-notebook watch` always opens the browser** unless
+  `--no-browser` is passed or `CI` is set. The old rule opened only when
+  stderr was a TTY, so IDE, launcher, and piped launches never opened.
+  There is no opener override; the OS default browser is used. Openers
+  now cover macOS (`open`), Windows (`cmd /c start`, then PowerShell
+  `Start-Process`), WSL (`wslview`, then `cmd.exe` / `explorer.exe`, then
+  the Linux list), and Linux (`xdg-open`, `gio open`, `sensible-browser`,
+  `x-www-browser`). Each is waited on for at most about a second, so a
+  browser binary that keeps running no longer blocks the server from
+  starting. Migration: scripts that run `watch` in the background and do
+  not want a window pass `--no-browser`.
+- **LaTeX and PDF are always Catppuccin Latte on white paper.** `-t` and
+  `~/.rustlabrc` `[notebook] theme` still theme HTML and `notebook watch`.
+  They no longer paint a dark PDF page. Body text is `#4c4f69`; headings
+  are unnumbered and colored (H1 mauve, H2 blue, H3 teal); the title has
+  no date. Source, printed output, and errors are breakable panels with
+  a mauve left rule and a small `rustlab` label above the source (omitted
+  when `<!-- hide -->` hides it). Callouts and exercises are cards; a
+  solution is printed, not collapsed. `<!-- grid: N -->` places plots in
+  a row. Mermaid figures stay with their heading. Migration: do not pass
+  `-t dark` expecting a dark PDF; install a normal TeX Live (the new
+  packages are `tcolorbox`, `fancyvrb`, `sectsty`, `float`, `lmodern`,
+  and `xcolor`'s `table` option). Shell-escape is still not used.
+- **PDF compile no longer enables TeX shell-escape.** Plot SVGs are
+  converted to PDF via fixed-argv Inkscape before `pdflatex`/`tectonic`
+  runs; `\includegraphics` replaces `\includesvg`/`svg.sty`. Inkscape is
+  required whenever a notebook has SVG plots. Migration: install Inkscape;
+  do not rely on TeX packages that need `-shell-escape`.
+- **`notebook watch` checks loopback Origin and Host.** `POST /save`
+  and WebSocket upgrades require an `Origin` of
+  `http://127.0.0.1:<port>`, `http://localhost:<port>`, or
+  `http://[::1]:<port>` (a missing `Origin` is 403). Every request
+  must present a matching loopback `Host` or it is rejected. There is
+  no session token. Other processes on the same machine can still
+  reach the loopback port. See `docs/security.md`.
+- **Notebook file I/O is jailed.** Embeds, `run` / `load` / `save` /
+  `savefig` / `saveanim` / `figure("….html")` must resolve under the
+  jail root or error with `path escapes notebook directory`. The root is
+  the notebook's own directory for a single-file `render` / `watch`, the
+  collection root for a directory (nested notebooks may read
+  `../data/`), or `--jail-root <DIR>` on either command. `sub/../x` is
+  fine when it stays inside; absolute paths outside the root (including
+  `/tmp`) are rejected. REPL and `rustlab run` are unchanged.
+- **Raw HTML in notebook prose is sanitised in HTML output.** Only
+  attribute-free formatting tags (`<b>`, `<br>`, `<sub>`, `<kbd>`,
+  `<details>`/`<summary>`, `<div>`, table tags, …) pass through; any tag
+  with an attribute and every other tag (`<script>`, `<iframe>`,
+  `<img>`, `<a>`, …) renders as escaped text, and HTML comments are
+  dropped. `javascript:` / `data:` / `vbscript:` / `blob:` links are
+  neutralised; images keep `data:image/*` only. Migration: write links
+  and images in markdown; use `> [!NOTE]` callouts and the
+  `<!-- details: -->` directive instead of attributed HTML. Markdown
+  output (`-f markdown`) is unaffected.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -35,6 +88,69 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- `rustlab remote <host>` (in `--features viewer` builds, which `make
+  install` produces): run rustlab on another machine with plots in the
+  local `rustlab-viewer`. Checks a viewer is listening, probes the remote
+  once (uid, rustlab on PATH, stale socket), then runs `ssh -t -o
+  ExitOnForwardFailure=yes -R <remote>:<local>` with `RUSTLAB_VIEWER_SOCK`
+  set inline; `--print` shows the command instead of running it. `rustlab
+  repl --viewer [--viewer-name NAME]` connects at startup and wins over
+  `[viewer] auto_connect` / `name` in `~/.rustlabrc`; both go through one
+  connect routine. Failed viewer connections now name the socket path they
+  tried. Guide: `docs/remote-viewer.md`.
+- Notebook themes: named Catppuccin builtins `mocha`, `macchiato`,
+  `frappe`, `latte` via `-t` / `--theme` (aliases `dark`→mocha,
+  `light`→latte) and via `~/.rustlabrc` `[notebook] theme` / `[plot]
+  theme`, which accept the same names. HTML `color-scheme` follows
+  background luminance so custom dark palettes work without matching the
+  Mocha static; LaTeX/PDF stay Latte (see Breaking, above). Mapping
+  documented in `docs/notebooks.md`.
+- Notebook HTML defines `:root { --rl-*: … }` tokens from the resolved
+  `ThemeColors` palette. Page CSS uses `var(--rl-…, <literal>)` so
+  visuals match the pre-token colors when a variable is missing.
+- Notebook `` ```rustlab `` cells are syntax-colored in HTML (including
+  `notebook watch` live updates) and in LaTeX/PDF. Highlighting follows
+  the rustlab lexer (`#` and `%` comments, keywords, numbers, strings,
+  operators, call-like names). HTML uses the active Catppuccin theme;
+  LaTeX/PDF always uses Latte (see Breaking, above).
+  PDF color is `\textcolor` with escaped tokens (not `minted`). Markdown
+  export still emits plain `` ```rustlab `` fences. Printed output is
+  not highlighted. In HTML and `notebook watch` the source, printed
+  output, and errors share one indented block with a theme-accent left
+  rule. In LaTeX/PDF they are separate breakable panels; the accent
+  rule is the panel's left edge and continues when a panel breaks
+  across pages. In HTML and
+  `notebook watch` the source alone is an open disclosure (a `rustlab`
+  summary); collapsing it leaves output, errors, and plots visible.
+  LaTeX/PDF always shows the source expanded. Plots and
+  animations stay full width. The disclosure's initial state is open
+  unless a cell `<!-- code: collapsed -->`, notebook frontmatter
+  `code: collapsed`, or `~/.rustlabrc` `[notebook] code = "collapsed"`
+  says otherwise (most specific wins; `<!-- code: open -->` forces
+  open). `<!-- hide -->` still removes the source. An unrecognised
+  value warns (`notebook check` W005, or once on stderr for the rc
+  key) and falls back to the next level. `notebook watch` keeps a
+  disclosure the reader has toggled; cells they have not touched pick
+  up a changed directive or frontmatter on re-render. LaTeX/PDF ignore
+  the setting.
+- Optional user-global settings file. rustlab reads
+  `$XDG_CONFIG_HOME/rustlab/config.toml` if it exists, else `~/.rustlabrc`,
+  else built-in defaults. The file is declarative TOML (never executed).
+  v1 keys: `[display] format`, `[plot] theme` / `default_axis`,
+  `[notebook] theme` / `code`, `[repl] history_limit`, `[viewer] auto_connect` /
+  `name`. Precedence: CLI flags > in-script / REPL commands > rc >
+  defaults. Unknown keys warn once; invalid values abort with path + key,
+  except `[notebook] code` (warns once and falls back to open).
+  Example: `docs/rustlabrc.example.toml`. REPL: `help rustlabrc`.
+- Security hardening for notebooks / watch / PDF / viewer (see
+  `docs/security.md`): CSP on watch pages with the nonce stamped at
+  render time on rustlab's own script tags (no inline event handlers
+  remain in rendered pages), HTML-escaped math restore, raw-HTML
+  allow-list and dangerous URL scheme stripping (index page included),
+  viewer Unix socket mode `0600`, and a 32 MiB IPC frame size cap.
+- `rustlab-notebook render` / `watch` gained `--jail-root <DIR>` to
+  widen the notebook file-I/O jail. Inkscape conversion failures now
+  report the tail of Inkscape's stderr.
 - Plot color names now include `gray`/`grey` and hex `"#RRGGBB"`
   everywhere a color string is accepted (`plot(..., "color", c)`,
   `hline`/`yline`, contour/quiver/streamplot color args).
@@ -80,8 +196,64 @@ Workflow Rule 12).
   them (`quiver(...); savefig(...)`) no longer emit stderr noise; a plot
   that never reaches a file warns once, at the end of the run (or REPL
   line), as one combined message naming the plot kinds.
+- **The viewer zooms with the plain scroll wheel, and every subplot has
+  a Home button.** In `rustlab-viewer`, rolling the wheel over a 2-D
+  panel now zooms both axes about the pointer (it used to pan the view;
+  zoom was ctrl+wheel only). Left-drag still pans. Each subplot carries
+  its own **Home** button in its header — plus the `Home` key while the
+  panel is hovered, and double-click — which restores the script's
+  `xlim`/`ylim` when it set any and otherwise re-fits the data. 3-D
+  `surf` panels get the same Home button and `Home` key as an alias for
+  the existing `R` reset; their scroll zoom and shift+scroll Z-scale are
+  unchanged.
 
 ### Fixed
+- **PDF builds no longer fail on Unicode in prose.** When `pdflatex`
+  rejects a character the preamble does not declare (`2ⁿ`, `Aᵀ`, `ħ`, an
+  emoji), `render -f pdf` recompiles with a fallback per rejected
+  character: sub/superscript and modifier letters, Greek, and common math
+  and arrow symbols map to the LaTeX macro; anything else prints as
+  `[U+XXXX]`. A stderr warning lists the characters and placeholders.
+- **Directory-mode PDF renders continue past a failing notebook.** The
+  PDF compile step used to call `exit(1)` from inside the library, so one
+  bad notebook stopped the whole `render <dir> -f pdf` build with nothing
+  after it produced. Each failure is now reported (with its `<stem>.log`),
+  the remaining notebooks render, and the command exits 1 at the end.
+- **`notebook watch` renders KaTeX math again.** The watch
+  Content-Security-Policy (`script-src` nonce + `'strict-dynamic'`)
+  blocks inline event handlers, so the auto-render `onload` and the
+  sidebar `onclick` never ran and display math stayed as raw `\[…\]`.
+  Both now run from nonce'd scripts. The invalid `connect-src` token
+  `ws://[::1]:*` is gone.
+- **Clicking a notebook link in `notebook watch` no longer sticks on
+  "disconnected — reconnecting…".** The WebSocket client read
+  `window.__RL_TOKEN` before that assignment ran, and cross-notebook
+  links do not carry `?token=`, so the upgrade returned 401 and the
+  retry used the same empty secret. The token is gone; loopback
+  Origin and Host checks remain (see the behavior note above).
+- **Zooming a viewer panel with script limits no longer snaps back.**
+  The viewer re-applied a panel's `xlim`/`ylim` on every frame, so any
+  zoom or pan of a panel whose script had called `plot_limits` (or
+  `xlim`/`ylim`) was undone on the next repaint. Limits are now applied
+  on the panel's first show, when *changed* limits arrive from the
+  script, and on Home — so a live plot re-sending the same limits each
+  redraw leaves the user's view alone.
+- Dark-mode notebook HTML no longer leaves prose links unstyled. Body,
+  callout, and exercise `<a>` tags inherit the browser default
+  (`#0000EE` / visited `#551A8B`) which is invisible on Catppuccin
+  Mocha (`#1e1e2e`). They now use the theme accents (`#89b4fa` /
+  `#cba6f7` in dark, the Latte blues/purples in light), with
+  `color-scheme` set on `<html>` so UA chrome matches the page. The
+  index intro links and the `--editable` CodeMirror `.cm-link` token
+  get the same treatment.
+- `notebook watch` (and directory `render`) now resolve
+  collection-root paths and unique basenames from nested notebooks.
+  `[x](ch2/notes.md)` and `[[ch2/notes]]` written from `ch1/` used to
+  stay as `.md` hrefs — the watch server has no `*.md` route, so
+  clicks 404'd. Lookup is still page-relative first; `./` and `../`
+  spellings do not take the fallback; two files sharing a basename
+  stay unresolved rather than picking a winner. Static HTML emits the
+  climbed path (`../ch2/notes.html`) for a fallback hit.
 - Bare `figure()` and `histogram(v)` / `hist(v)` statements no longer
   echo their return values (a meaningless figure-handle integer above
   every plot in notebook output — churning with global figure count

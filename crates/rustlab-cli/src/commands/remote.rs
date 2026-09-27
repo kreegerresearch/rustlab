@@ -136,7 +136,7 @@ fn probe_remote(dest: &str, ssh_opts: &[String], remote_socket: Option<&str>) ->
         None => "rm -f \"/tmp/rustlab-fwd-$(id -u).sock\"".to_string(),
     };
     let script = format!(
-        "id -u; command -v rustlab >/dev/null && echo HAVE_RUSTLAB || echo NO_RUSTLAB; {rm}"
+        "echo RL_UID=$(id -u); command -v rustlab >/dev/null && echo RL_RUSTLAB=yes || echo RL_RUSTLAB=no; {rm}"
     );
 
     let mut cmd = std::process::Command::new("ssh");
@@ -151,19 +151,30 @@ fn probe_remote(dest: &str, ssh_opts: &[String], remote_socket: Option<&str>) ->
             stderr.trim().lines().last().unwrap_or("(no output)")
         );
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
-    let uid = lines.next().unwrap_or("").to_string();
-    let has_rustlab = stdout.contains("HAVE_RUSTLAB");
+    parse_probe(&String::from_utf8_lossy(&out.stdout), dest)
+}
+
+/// Read the probe's answers by sentinel, so a login shell that prints a
+/// banner or an rc-file echo on non-interactive sessions cannot be
+/// mistaken for the uid.
+pub(crate) fn parse_probe(stdout: &str, dest: &str) -> Result<Probe> {
+    let uid = stdout
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("RL_UID="))
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
-        bail!("unexpected reply from `ssh {dest} id -u`: {:?}", stdout);
+        bail!("unexpected reply from `ssh {dest} id -u`: {stdout:?}");
     }
+    let has_rustlab = stdout.lines().any(|l| l.trim() == "RL_RUSTLAB=yes");
     Ok(Probe { uid, has_rustlab })
 }
 
-struct Probe {
-    uid: String,
-    has_rustlab: bool,
+pub(crate) struct Probe {
+    pub(crate) uid: String,
+    pub(crate) has_rustlab: bool,
 }
 
 /// Verify a viewer is listening locally before we open an SSH connection.
@@ -179,7 +190,10 @@ fn viewer_is_listening(path: &std::path::Path) -> bool {
     if write_msg(&mut stream, &ViewerMsg::Ping).is_err() {
         return false;
     }
-    matches!(read_msg::<_, ViewerReply>(&mut stream), Ok(Some(ViewerReply::Pong)))
+    matches!(
+        read_msg::<_, ViewerReply>(&mut stream),
+        Ok(Some(ViewerReply::Pong))
+    )
 }
 
 #[cfg(not(unix))]
@@ -320,12 +334,17 @@ mod tests {
         assert!(joined.contains("ExitOnForwardFailure=yes"), "{joined}");
         assert!(joined.contains("-t"), "{joined}");
         assert!(
-            joined.contains("RUSTLAB_VIEWER_SOCK='/tmp/rustlab-fwd-1001.sock' exec rustlab repl --viewer"),
+            joined.contains(
+                "RUSTLAB_VIEWER_SOCK='/tmp/rustlab-fwd-1001.sock' exec rustlab repl --viewer"
+            ),
             "{joined}"
         );
         // Destination precedes the remote command.
         let dest = args.iter().position(|a| a == "me@host").unwrap();
-        let cmd = args.iter().position(|a| a.starts_with("RUSTLAB_VIEWER_SOCK=")).unwrap();
+        let cmd = args
+            .iter()
+            .position(|a| a.starts_with("RUSTLAB_VIEWER_SOCK="))
+            .unwrap();
         assert!(dest < cmd, "destination must come before the command");
     }
 
@@ -340,7 +359,10 @@ mod tests {
         );
         let port = args.iter().position(|a| a == "2222").unwrap();
         let dest = args.iter().position(|a| a == "me@host").unwrap();
-        assert!(port < dest, "ssh options must precede the destination: {args:?}");
+        assert!(
+            port < dest,
+            "ssh options must precede the destination: {args:?}"
+        );
     }
 
     #[test]
@@ -356,6 +378,18 @@ mod tests {
         // The quote is escaped, so the injected text stays one argument.
         assert!(cmd.contains(r"'\''"), "{cmd}");
         assert!(!cmd.contains("; rm -rf ~; echo ;"), "{cmd}");
+    }
+
+    #[test]
+    fn probe_parsing_uses_sentinels_and_ignores_shell_noise() {
+        let p = parse_probe("Welcome to bigbox!\nRL_UID=1001\nRL_RUSTLAB=yes\n", "h").unwrap();
+        assert_eq!(p.uid, "1001");
+        assert!(p.has_rustlab);
+        let p = parse_probe("RL_UID=7\nRL_RUSTLAB=no\n", "h").unwrap();
+        assert_eq!(p.uid, "7");
+        assert!(!p.has_rustlab);
+        assert!(parse_probe("motd only\n", "h").is_err());
+        assert!(parse_probe("RL_UID=abc\n", "h").is_err());
     }
 
     #[test]

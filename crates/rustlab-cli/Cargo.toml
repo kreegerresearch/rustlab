@@ -10,7 +10,7 @@ default-run = "rustlab"
 
 [features]
 default = []
-viewer  = ["rustlab-script/viewer"]
+viewer  = ["rustlab-script/viewer", "dep:rustlab-proto"]
 
 [[bin]]
 name = "rustlab"
@@ -19,10 +19,11 @@ path = "src/main.rs"
 [dependencies]
 rustlab-core.workspace     = true
 rustlab-cache.workspace    = true
+rustlab-config.workspace   = true
 rustlab-dsp.workspace      = true
 rustlab-plot.workspace     = true
 rustlab-script.workspace   = true
-rustlab-proto.workspace    = true
+rustlab-proto              = { workspace = true, optional = true }
 clap                     = { version = "4", features = ["derive"] }
 rustyline                = { version = "14", features = ["derive"] }
 anyhow.workspace         = true

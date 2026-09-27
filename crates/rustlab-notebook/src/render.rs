@@ -2,15 +2,74 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
-use rustlab_script::WidgetValue;
 use pulldown_cmark::{html::push_html, Event, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
+use rustlab_script::WidgetValue;
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide `[notebook] code` from the user rc. Missing key stays open.
+/// Set once at notebook-binary startup; render threads read it.
+static RC_SOURCE_OPEN: AtomicBool = AtomicBool::new(true);
+
+thread_local! {
+    /// Notebook default for this render: frontmatter `code:`, else the rc
+    /// value, else open. Cell `<!-- code: -->` overrides it per block.
+    static NOTEBOOK_SOURCE_OPEN: Cell<bool> = const { Cell::new(true) };
+}
+
+/// Record `[notebook] code` from a loaded rc. `true` is open.
+pub fn set_rc_source_open(open: bool) {
+    RC_SOURCE_OPEN.store(open, Ordering::Relaxed);
+}
+
+/// Effective rc fold. `true` when the key is missing or the process never
+/// loaded an rc (built-in default open).
+pub fn rc_source_open() -> bool {
+    RC_SOURCE_OPEN.load(Ordering::Relaxed)
+}
+
+fn notebook_source_open() -> bool {
+    NOTEBOOK_SOURCE_OPEN.with(|c| c.get())
+}
+
+/// Restores the previous notebook-level source-disclosure default on drop.
+pub struct NotebookSourceOpenGuard {
+    prev: bool,
+}
+
+impl NotebookSourceOpenGuard {
+    /// Install the notebook default used when a cell has no `<!-- code: -->`.
+    pub fn set(open: bool) -> Self {
+        let prev = NOTEBOOK_SOURCE_OPEN.with(|c| c.replace(open));
+        Self { prev }
+    }
+}
+
+impl Drop for NotebookSourceOpenGuard {
+    fn drop(&mut self) {
+        NOTEBOOK_SOURCE_OPEN.with(|c| c.set(self.prev));
+    }
+}
+
+/// Most-specific fold wins: cell directive, else frontmatter, else rc, else open.
+///
+/// `true` means the source disclosure starts open. Pass `None` for a level
+/// that was not set. An invalid value should already have been dropped
+/// (left as `None`) by the parser or rc loader.
+pub fn resolve_source_open(
+    cell: Option<bool>,
+    frontmatter: Option<bool>,
+    rc: Option<bool>,
+) -> bool {
+    cell.or(frontmatter).or(rc).unwrap_or(true)
+}
 
 /// How cross-notebook `.md` link destinations resolve in HTML output.
 ///
@@ -25,10 +84,17 @@ use std::path::Path;
 /// Only destinations that are relative (no URL scheme, no leading `/`) and
 /// end in `.md` before an optional `#fragment` are candidates. Everything
 /// else — external URLs, absolute paths, images, anchors — passes through
-/// untouched. A candidate that cannot be resolved (dangling target, a
-/// `_partial.md`, a path outside the collection) is left exactly as
-/// written: a visibly broken `.md` link beats a manufactured `.html` one
-/// that 404s while looking intentional.
+/// untouched. Lookup is page-relative first (CommonMark). If that misses
+/// and the dest is not `./`/`../`, a collection-root-relative key is
+/// tried (`[x](ch2/notes.md)` / `[[ch2/notes]]` from a nested page), then
+/// a unique-basename match for a bare filename (two files sharing the
+/// name → leave as written). Static fallback hits emit via
+/// `href_between`, not the author's spelling — otherwise a nested
+/// page would 404 looking for `ch1/ch2/notes.html`. A candidate that still
+/// cannot be resolved (dangling target, a `_partial.md`, a path outside
+/// the collection) is left exactly as written: a visibly broken `.md`
+/// link beats a manufactured `.html` one that 404s while looking
+/// intentional.
 #[derive(Clone, Debug)]
 pub enum LinkMode {
     /// Static HTML render: `foo.md` → `foo.html`, preserving the path as
@@ -115,14 +181,29 @@ fn rewrite_link_dest_to(
             current_rel_dir,
         } => {
             if let Some(known) = known {
-                // Membership checks against literal on-disk names: decode
-                // %XX first — `foo%20bar.md` is the standard spelling for
-                // a link to `foo bar.md` and must resolve like it.
-                let normalized =
-                    normalize_rel_path(current_rel_dir, &percent_decode(path))?;
-                if !known.contains(&normalized) {
-                    return None;
+                let decoded = percent_decode(path);
+                let resolved = resolve_collection_md(
+                    current_rel_dir,
+                    &decoded,
+                    &|k| known.contains(k),
+                    &|filename| {
+                        unique_basename_key(known.iter().map(|s| s.as_str()), filename)
+                            .map(str::to_string)
+                    },
+                )?;
+                // Page-relative hits keep the author's spelling (`../ch2/a.md`
+                // → `../ch2/a.html`). Fallback hits (collection-root path or
+                // unique basename) must climb out of the page dir — emitting
+                // the dest as written would 404 from a nested page.
+                let page_rel = normalize_rel_path(current_rel_dir, &decoded);
+                if page_rel.as_deref() == Some(resolved.as_str()) {
+                    return Some(format!("{stem}.{target_ext}{fragment}"));
                 }
+                let target = swap_md_ext(&resolved, target_ext);
+                return Some(format!(
+                    "{}{fragment}",
+                    crate::href_between(current_rel_dir, &target)
+                ));
             }
             // known: None (single-file render) rewrites unconditionally —
             // including `../sibling.md`, which may well be rendered
@@ -137,15 +218,90 @@ fn rewrite_link_dest_to(
             current_rel_dir,
             index_at_root,
         } => {
-            let normalized = normalize_rel_path(current_rel_dir, &percent_decode(path))?;
-            if *index_at_root && normalized == "index.md" {
+            let decoded = percent_decode(path);
+            let resolved = resolve_collection_md(
+                current_rel_dir,
+                &decoded,
+                &|k| (*index_at_root && k == "index.md") || slugs.contains_key(k),
+                &|filename| {
+                    unique_basename_key(slugs.keys().map(|s| s.as_str()), filename)
+                        .map(str::to_string)
+                },
+            )?;
+            if *index_at_root && resolved == "index.md" {
                 // The index page's body, hoisted to the server root.
                 return Some(format!("/{fragment}"));
             }
-            let slug = slugs.get(&normalized)?;
+            let slug = slugs.get(&resolved)?;
             Some(format!("/n/{slug}{fragment}"))
         }
     }
+}
+
+/// Swap a `.md` suffix for `ext` (`"html"` / `"pdf"`). `path` is a
+/// collection-root-relative key that already ends in `.md`.
+fn swap_md_ext(path: &str, ext: &str) -> String {
+    match path.strip_suffix(".md") {
+        Some(stem) => format!("{stem}.{ext}"),
+        None => format!("{path}.{ext}"),
+    }
+}
+
+/// `./foo.md` / `../ch2/foo.md` — the author opted into CommonMark
+/// page-relative resolution, including the "escapes the collection"
+/// failure. Those must not take the root-relative / unique-basename
+/// fallbacks.
+fn dest_is_dot_relative(path: &str) -> bool {
+    path == "." || path == ".." || path.starts_with("./") || path.starts_with("../")
+}
+
+/// First collection-root-relative key whose basename equals `filename`.
+/// `None` when zero or more than one key matches — collision stays
+/// visibly unresolved rather than picking a winner.
+fn unique_basename_key<'a>(keys: impl Iterator<Item = &'a str>, filename: &str) -> Option<&'a str> {
+    let mut found: Option<&'a str> = None;
+    for k in keys {
+        let base = k.rsplit_once('/').map(|(_, n)| n).unwrap_or(k);
+        if base == filename {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(k);
+        }
+    }
+    found
+}
+
+/// Resolve a decoded `.md` path against a collection.
+///
+/// Order: page-relative (CommonMark) → collection-root-relative → unique
+/// basename for a bare filename. `./` and `../` destinations skip the
+/// fallbacks. `None` when nothing matches or `../` escapes the root.
+fn resolve_collection_md(
+    current_rel_dir: &str,
+    decoded_path: &str,
+    has: &dyn Fn(&str) -> bool,
+    unique_base: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    match normalize_rel_path(current_rel_dir, decoded_path) {
+        Some(page_rel) if has(&page_rel) => return Some(page_rel),
+        None if dest_is_dot_relative(decoded_path) => return None,
+        _ => {}
+    }
+    if dest_is_dot_relative(decoded_path) {
+        return None;
+    }
+    // Collection-root-relative: `[x](ch2/notes.md)` from `ch1/` and
+    // `[[ch2/notes]]` (wikilinks are vault-relative) both land here.
+    if !decoded_path.contains("..") && has(decoded_path) {
+        return Some(decoded_path.to_string());
+    }
+    if !decoded_path.contains('/') {
+        if let Some(key) = unique_base(decoded_path) {
+            return Some(key);
+        }
+    }
+    None
 }
 
 /// Decode `%XX` escapes so href spellings compare against the literal
@@ -230,6 +386,26 @@ pub fn render_html(
     nav: Option<&NotebookNav>,
     link: &LinkMode,
 ) -> String {
+    render_html_nonced(title, blocks, plot_dir, plot_href_prefix, theme, nav, link, None)
+}
+
+/// [`render_html`] with a Content-Security-Policy nonce stamped on every
+/// `<script>` tag **the renderer itself emits** (head bundles, the KaTeX /
+/// sidebar init script, Plotly chart fragments). The watch server passes its
+/// per-process nonce so its `script-src 'nonce-…' 'strict-dynamic'` policy
+/// admits exactly these scripts and nothing that arrived through author
+/// content. Static renders pass `None` and emit no nonce attributes.
+#[allow(clippy::too_many_arguments)]
+pub fn render_html_nonced(
+    title: &str,
+    blocks: &[Rendered],
+    plot_dir: &Path,
+    plot_href_prefix: &str,
+    theme: &ThemeColors,
+    nav: Option<&NotebookNav>,
+    link: &LinkMode,
+    nonce: Option<&str>,
+) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
     let mut nav_items = String::new();
@@ -294,61 +470,82 @@ pub fn render_html(
                 hidden,
                 details,
                 grid_cols,
+                source_open,
             } => {
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
 
-                // Source code (unless hidden)
-                if !hidden {
-                    body.push_str("<pre class=\"source\"><code>");
-                    body.push_str(&highlight_rustlab(source));
-                    body.push_str("</code></pre>\n");
-                }
-
-                // If details is set, wrap output section in a disclosure widget
-                if let Some(title) = details {
-                    body.push_str("<details class=\"code-details\">\n");
-                    body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
-                }
-
-                // Text output (if any)
+                // Source, printed text, and errors share one indent (`.rl-cell`).
+                // The source alone sits in `<details class="rl-src">` so a
+                // reader can collapse it; the `open` attribute follows the
+                // resolved initial state. Output and errors stay visible.
+                // Plots are emitted afterward, outside that wrapper, so they
+                // stay full width. `<!-- details: -->` keeps that source
+                // disclosure above the author's disclosure (not nested inside
+                // it) and puts output, errors, and plots in the author's
+                // disclosure; the output inside it uses the same `.rl-cell`.
                 let trimmed_output = text_output.trim();
-                if !trimmed_output.is_empty() {
-                    body.push_str("<pre class=\"output\">");
-                    body.push_str(&escape_html(trimmed_output));
-                    body.push_str("</pre>\n");
+                let show_source = !hidden;
+                let show_output = !trimmed_output.is_empty();
+                let show_error = error.is_some();
+                let source_html = if show_source {
+                    // `open` omitted when the resolved state is collapsed.
+                    // Cell directive wins; otherwise the notebook default
+                    // (frontmatter, else rc, else open) installed by the caller.
+                    let open = source_open.unwrap_or_else(notebook_source_open);
+                    let open_attr = if open { " open" } else { "" };
+                    format!(
+                        "<details class=\"rl-src\"{open_attr}>\n<summary>rustlab</summary>\n\
+                         <pre class=\"source\"><code>{}</code></pre>\n</details>\n",
+                        highlight_rustlab(source)
+                    )
+                } else {
+                    String::new()
+                };
+                let mut text_html = String::new();
+                if show_output {
+                    text_html.push_str("<pre class=\"output\">");
+                    text_html.push_str(&escape_html(trimmed_output));
+                    text_html.push_str("</pre>\n");
+                }
+                if show_error {
+                    text_html.push_str("<pre class=\"error\">");
+                    text_html.push_str(&escape_html(error.as_deref().unwrap_or("")));
+                    text_html.push_str("</pre>\n");
                 }
 
-                // Error (if any)
-                if let Some(err) = error {
-                    body.push_str("<pre class=\"error\">");
-                    body.push_str(&escape_html(err));
-                    body.push_str("</pre>\n");
-                }
-
-                // Plots (one per savefig call, or one final snapshot)
+                // Plots (one per savefig call, or one final snapshot).
+                // Collected first so the disclosure can wrap them without
+                // pulling them into `.rl-cell`.
+                let mut plots_html = String::new();
                 if !figures.is_empty() {
                     if let Some(n) = grid_cols {
-                        body.push_str(&format!(
+                        plots_html.push_str(&format!(
                             "<div class=\"image-grid\" style=\"grid-template-columns:repeat({n},1fr)\">\n"
                         ));
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
-                            body.push('\n');
+                            plots_html.push_str(&add_nonce_to_scripts(
+                                &render_figure_plotly_div(fig, &div_id, theme),
+                                nonce,
+                            ));
+                            plots_html.push('\n');
                         }
-                        body.push_str("</div>\n");
+                        plots_html.push_str("</div>\n");
                     } else {
                         for fig in figures {
                             plot_idx += 1;
                             let div_id = format!("plot-{plot_idx}");
                             let height = plot_container_height(fig.subplot_rows);
-                            body.push_str(&format!(
+                            plots_html.push_str(&format!(
                                 "<div class=\"plot-container\" style=\"height: {height}px\">\n"
                             ));
-                            body.push_str(&render_figure_plotly_div(fig, &div_id, theme));
-                            body.push_str("\n</div>\n");
+                            plots_html.push_str(&add_nonce_to_scripts(
+                                &render_figure_plotly_div(fig, &div_id, theme),
+                                nonce,
+                            ));
+                            plots_html.push_str("\n</div>\n");
                         }
                     }
                 }
@@ -361,29 +558,24 @@ pub fn render_html(
                     match anim.format {
                         NotebookAnimationFormat::Html => {
                             let div_id = format!("anim-{plot_idx}");
-                            body.push_str("<div class=\"plot-container\">\n");
-                            body.push_str(&render_animation_inline(
-                                &anim.frames,
-                                &div_id,
-                                anim.fps,
-                                theme,
+                            plots_html.push_str("<div class=\"plot-container\">\n");
+                            plots_html.push_str(&add_nonce_to_scripts(
+                                &render_animation_inline(&anim.frames, &div_id, anim.fps, theme),
+                                nonce,
                             ));
-                            body.push_str("\n</div>\n");
+                            plots_html.push_str("\n</div>\n");
                         }
                         NotebookAnimationFormat::Gif => {
-                            let gif_path =
-                                plot_dir.join(format!("anim-{plot_idx}.gif"));
+                            let gif_path = plot_dir.join(format!("anim-{plot_idx}.gif"));
                             if let Err(e) = rustlab_plot::write_animation_gif(
                                 &gif_path.to_string_lossy(),
                                 &anim.frames,
                                 anim.fps,
                             ) {
-                                eprintln!(
-                                    "warning: could not write anim-{plot_idx}.gif: {e}"
-                                );
+                                eprintln!("warning: could not write anim-{plot_idx}.gif: {e}");
                                 continue;
                             }
-                            body.push_str(&format!(
+                            plots_html.push_str(&format!(
                                 "<div class=\"plot-container\"><img src=\"{}/anim-{plot_idx}.gif\" alt=\"animation {plot_idx}\" /></div>\n",
                                 href_prefix
                             ));
@@ -391,9 +583,32 @@ pub fn render_html(
                     }
                 }
 
-                // Close details if open
-                if details.is_some() {
+                if let Some(title) = details {
+                    // Source stays visible above the disclosure. Printed
+                    // output inside the disclosure uses the same indent.
+                    // Plots stay in the disclosure and outside `.rl-cell`.
+                    if show_source {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&source_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str("<details class=\"code-details\">\n");
+                    body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
+                    if !text_html.is_empty() {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&text_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str(&plots_html);
                     body.push_str("</details>\n");
+                } else {
+                    if show_source || !text_html.is_empty() {
+                        body.push_str("<div class=\"rl-cell\">\n");
+                        body.push_str(&source_html);
+                        body.push_str(&text_html);
+                        body.push_str("</div>\n");
+                    }
+                    body.push_str(&plots_html);
                 }
 
                 body.push_str("</div>\n");
@@ -421,10 +636,7 @@ pub fn render_html(
                 body.push_str("<figure class=\"mermaid\">\n");
                 emit_mermaid_html(&mut body, source, plot_dir);
                 if let Some(cap) = caption {
-                    body.push_str(&format!(
-                        "<figcaption>{}</figcaption>\n",
-                        escape_html(cap)
-                    ));
+                    body.push_str(&format!("<figcaption>{}</figcaption>\n", escape_html(cap)));
                 }
                 body.push_str("</figure>\n");
                 if details.is_some() {
@@ -535,7 +747,10 @@ pub fn render_html(
     let body_class = if has_toc { "" } else { " class=\"no-toc\"" };
     let sidebar_block = if has_toc {
         format!(
-            "<button class=\"nav-toggle\" onclick=\"document.querySelector('nav.sidebar')?.classList.toggle('open')\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
+            // No inline `onclick`: the watch server's CSP has no
+            // 'unsafe-inline', so the click is wired by the nonced init
+            // script in <head> (event delegation, survives re-renders).
+            "<button class=\"nav-toggle\" type=\"button\" aria-label=\"Toggle navigation\">&#9776;</button>\n\
              <nav class=\"sidebar\">\n  <div class=\"nav-title\">{title}</div>\n{nav_items}</nav>\n",
             title = escape_html(title),
             nav_items = nav_items,
@@ -554,18 +769,36 @@ pub fn render_html(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"{nonce_attr}></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
-  onload="renderMathInElement(document.body, {{
-    delimiters: [
-      {{left: '\\[', right: '\\]', display: true}},
-      {{left: '\\(', right: '\\)', display: false}}
-    ]
-  }});"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"{nonce_attr}></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"{nonce_attr}></script>
+<script{nonce_attr}>
+// Page init. Lives in a real script element (not on* attributes) so it also
+// runs under the watch server's CSP, which forbids inline event handlers.
+// `defer` scripts finish before DOMContentLoaded, so KaTeX is loaded here.
+document.addEventListener('DOMContentLoaded', () => {{
+  if (window.renderMathInElement) {{
+    renderMathInElement(document.body, {{
+      delimiters: [
+        {{left: '\\[', right: '\\]', display: true}},
+        {{left: '\\(', right: '\\)', display: false}}
+      ]
+    }});
+  }}
+}});
+// Sidebar toggle (narrow viewports). Delegated so it survives the live
+// server swapping the button on re-render.
+document.addEventListener('click', (e) => {{
+  if (e.target && e.target.closest && e.target.closest('button.nav-toggle')) {{
+    const nav = document.querySelector('nav.sidebar');
+    if (nav) nav.classList.toggle('open');
+  }}
+}});
+</script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  html {{ color-scheme: {color_scheme}; }}
   body {{
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     background: {bg};
@@ -573,9 +806,14 @@ pub fn render_html(
     display: flex;
     min-height: 100vh;
   }}
-  /* Height of the fixed topbar; the sidebar and main both clear it. */
+  /* Height of the fixed topbar; the sidebar and main both clear it.
+     `--rl-*` tokens come from the resolved ThemeColors so chrome can
+     restyle without rewriting the whole stylesheet. Rules below use
+     var(--rl-…, <literal>) so missing tokens keep today's colors. */
   :root {{
     --topbar-h: 2.6rem;
+{theme_vars}
+    --rl-accent: {accent_primary};
   }}
   /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
@@ -766,6 +1004,21 @@ pub fn render_html(
   .prose p {{
     margin-bottom: 1rem;
   }}
+  /* Prose/callout/exercise links. Without this, UA-default `#0000EE` /
+     visited `#551A8B` sit on the dark page background at ~2:1 contrast.
+     More-specific `.topbar a` / `.page-nav a` / `nav.sidebar a` keep
+     their own colors. */
+  .prose a, .callout a, .exercise a {{
+    color: {accent_secondary};
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }}
+  .prose a:visited, .callout a:visited, .exercise a:visited {{
+    color: {accent_primary};
+  }}
+  .prose a:hover, .callout a:hover, .exercise a:hover {{
+    color: {accent_tertiary};
+  }}
   .prose code {{
     background: {inline_code_bg};
     padding: 0.15rem 0.4rem;
@@ -800,6 +1053,34 @@ pub fn render_html(
   }}
   .code-block {{
     margin-bottom: 1.5rem;
+  }}
+  /* Source, printed output, and errors. The accent rule marks the cell.
+     Plots are siblings of this wrapper, so they stay full width. */
+  .rl-cell {{
+    margin: 0.2rem 0 0.35rem 0.15rem;
+    padding: 0.05rem 0 0.05rem 0.85rem;
+    border-left: 3px solid {accent_primary};
+  }}
+  /* Source only. Open by default; collapsing leaves the summary, and
+     the `.rl-cell` rule still marks output that follows. */
+  .rl-src > summary {{
+    cursor: pointer;
+    list-style: none;
+    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--rl-text-dim);
+    padding: 0.1rem 0 0.35rem;
+    user-select: none;
+  }}
+  .rl-src > summary::-webkit-details-marker {{ display: none; }}
+  .rl-src > summary::marker {{ content: ""; }}
+  .rl-src > summary::before {{
+    content: "▸";
+    display: inline-block;
+    width: 1.1em;
+    color: var(--rl-accent);
+  }}
+  .rl-src[open] > summary::before {{
+    content: "▾";
   }}
   .source {{
     background: {code_bg};
@@ -1055,32 +1336,35 @@ pub fn render_html(
 </html>
 "##,
         title = escape_html(title),
+        nonce_attr = nonce_attr(nonce),
         body_class = body_class,
         topbar_block = topbar_block,
         sidebar_block = sidebar_block,
         footer_nav = footer_nav,
         body = body,
-        bg = c.bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        border_subtle = c.border_subtle,
-        accent_primary = c.accent_primary,
-        accent_secondary = c.accent_secondary,
-        accent_tertiary = c.accent_tertiary,
-        code_bg = c.code_bg,
-        output_bg = c.output_bg,
-        inline_code_bg = c.inline_code_bg,
-        error_bg = c.error_bg,
-        error_text = c.error_text,
-        footer_text = c.footer_text,
-        syn_keyword = c.syn_keyword,
-        syn_function = c.syn_function,
-        syn_number = c.syn_number,
-        syn_string = c.syn_string,
-        syn_comment = c.syn_comment,
-        syn_operator = c.syn_operator,
+        color_scheme = c.color_scheme(),
+        theme_vars = c.css_custom_properties(),
+        bg = c.css_var("bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        border_subtle = c.css_var("border-subtle"),
+        accent_primary = c.css_var("accent-primary"),
+        accent_secondary = c.css_var("accent-secondary"),
+        accent_tertiary = c.css_var("accent-tertiary"),
+        code_bg = c.css_var("code-bg"),
+        output_bg = c.css_var("output-bg"),
+        inline_code_bg = c.css_var("inline-code-bg"),
+        error_bg = c.css_var("error-bg"),
+        error_text = c.css_var("error-text"),
+        footer_text = c.css_var("footer-text"),
+        syn_keyword = c.css_var("syn-keyword"),
+        syn_function = c.css_var("syn-function"),
+        syn_number = c.css_var("syn-number"),
+        syn_string = c.css_var("syn-string"),
+        syn_comment = c.css_var("syn-comment"),
+        syn_operator = c.css_var("syn-operator"),
     )
 }
 
@@ -1178,6 +1462,10 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    // Security: raw HTML from notebook markdown goes through the allow-list
+    // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
+    sanitize_raw_html_events(&mut events);
+    sanitize_dangerous_urls(&mut events);
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
@@ -1186,16 +1474,200 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     restore_math(&html, &math)
 }
 
+/// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
+/// so `<script>`, event handlers, `<iframe>`, etc. never reach the watch
+/// origin, while attribute-free formatting tags (`<b>`, `<br>`,
+/// `<details>`, …) keep working. The result is emitted as `Event::Html`
+/// because it is already safe markup (pushing it as `Event::Text` would
+/// escape it a second time and readers would see literal `&lt;b&gt;`).
+pub(crate) fn sanitize_raw_html_events(events: &mut Vec<Event<'_>>) {
+    let mut out = Vec::with_capacity(events.len());
+    for ev in events.drain(..) {
+        match ev {
+            Event::Html(s) => out.push(Event::Html(sanitize_html_fragment(&s).into())),
+            Event::InlineHtml(s) => out.push(Event::InlineHtml(sanitize_html_fragment(&s).into())),
+            other => out.push(other),
+        }
+    }
+    *events = out;
+}
+
+/// Tags that may pass through raw markdown HTML **without any attributes**.
+/// No attributes means no `on*` handlers, no `href`/`src`, no `style`; the
+/// names exclude anything that loads or executes (`script`, `style`,
+/// `iframe`, `object`, `embed`, `link`, `meta`, `base`, `form`, `img`,
+/// `a`, `svg`, `math`, `template`, …). Authors write markdown for links
+/// and images.
+const ALLOWED_RAW_TAGS: &[&str] = &[
+    "abbr",
+    "b",
+    "blockquote",
+    "br",
+    "caption",
+    "center",
+    "cite",
+    "code",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "figcaption",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "ins",
+    "kbd",
+    "li",
+    "mark",
+    "ol",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "tr",
+    "tt",
+    "u",
+    "ul",
+    "var",
+    "wbr",
+];
+
+/// True for `<tag>`, `</tag>`, `<tag/>` and `<tag />` where `tag` is in
+/// [`ALLOWED_RAW_TAGS`] — and nothing else (no attributes at all).
+fn is_allowed_raw_tag(tag: &str) -> bool {
+    let inner = match tag.strip_prefix('<').and_then(|t| t.strip_suffix('>')) {
+        Some(i) => i,
+        None => return false,
+    };
+    let inner = inner.strip_prefix('/').unwrap_or(inner);
+    let inner = inner.trim_end();
+    let inner = inner.strip_suffix('/').unwrap_or(inner).trim_end();
+    if inner.is_empty() || !inner.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let name = inner.to_ascii_lowercase();
+    ALLOWED_RAW_TAGS.contains(&name.as_str())
+}
+
+/// Sanitize one raw-HTML fragment: HTML comments are dropped, attribute-
+/// free tags from [`ALLOWED_RAW_TAGS`] pass through, and every other `<`
+/// (unknown tag, any tag carrying attributes, `<script>`, stray brackets)
+/// is escaped along with the surrounding text.
+pub(crate) fn sanitize_html_fragment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(lt) = rest.find('<') {
+        out.push_str(&escape_html(&rest[..lt]));
+        let tail = &rest[lt..];
+        if let Some(after) = tail.strip_prefix("<!--") {
+            // Comment: drop it entirely (an unterminated one swallows the
+            // remainder, matching how browsers treat it).
+            rest = match after.find("-->") {
+                Some(end) => &after[end + 3..],
+                None => "",
+            };
+            continue;
+        }
+        if let Some(gt) = tail.find('>') {
+            let tag = &tail[..=gt];
+            if is_allowed_raw_tag(tag) {
+                out.push_str(tag);
+                rest = &tail[gt + 1..];
+                continue;
+            }
+        }
+        out.push_str("&lt;");
+        rest = &tail[1..];
+    }
+    out.push_str(&escape_html(rest));
+    out
+}
+
+pub(crate) fn sanitize_dangerous_urls(events: &mut [Event<'_>]) {
+    for ev in events.iter_mut() {
+        match ev {
+            Event::Start(Tag::Link { dest_url, .. }) if is_dangerous_url(dest_url) => {
+                *dest_url = "#".into();
+            }
+            // Inline `data:image/*` is fine in an <img> (no script context);
+            // every other dangerous scheme is dropped.
+            Event::Start(Tag::Image { dest_url, .. })
+                if is_dangerous_url(dest_url) && !is_data_image_url(dest_url) =>
+            {
+                *dest_url = "".into();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// `data:image/...` — safe as an `<img src>` (browsers never execute
+/// script from an image, SVG included).
+fn is_data_image_url(url: &str) -> bool {
+    scheme_normalised(url).starts_with("data:image/")
+}
+
+/// Lowercase `url` with ASCII whitespace and control characters removed,
+/// which is what browsers do to a URL before reading its scheme — so
+/// `java\tscript:` and `jav&#x0A;ascript:` cannot slip past a prefix test.
+fn scheme_normalised(url: &str) -> String {
+    url.chars()
+        .filter(|c| !c.is_ascii_control() && !c.is_ascii_whitespace())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
 /// Apply [`LinkMode`] resolution to every link-open event in place. Shared
 /// with the index-page body renderer, which runs its own event pipeline.
 pub(crate) fn rewrite_link_events(events: &mut [Event<'_>], mode: &LinkMode) {
     for ev in events.iter_mut() {
         if let Event::Start(Tag::Link { dest_url, .. }) = ev {
+            if is_dangerous_url(dest_url) {
+                *dest_url = "#".into();
+                continue;
+            }
             if let Some(new) = rewrite_link_dest(dest_url, mode) {
                 *dest_url = new.into();
             }
         }
     }
+}
+
+/// `javascript:`, `data:`, `vbscript:`, `blob:` — never emit as href (and
+/// only `data:image/*` as an image src, see [`sanitize_dangerous_urls`]).
+pub(crate) fn is_dangerous_url(url: &str) -> bool {
+    let cleaned = scheme_normalised(url);
+    let scheme: String = cleaned
+        .chars()
+        .take_while(|c| *c != ':' && *c != '/' && *c != '?' && *c != '#')
+        .collect();
+    matches!(
+        scheme.as_str(),
+        "javascript" | "data" | "vbscript" | "blob"
+    ) && cleaned.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1652,177 +2124,91 @@ fn escape_html(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-// ── Syntax highlighting ─────────────────────────────────────────────────────
-
-const KEYWORDS: &[&str] = &[
-    "function",
-    "end",
-    "return",
-    "if",
-    "elseif",
-    "else",
-    "for",
-    "while",
-    "switch",
-    "case",
-    "otherwise",
-];
-
-/// Produce syntax-highlighted HTML for a rustlab code snippet.
-/// Returns HTML with <span class="syn-*"> wrappers (already escaped).
-fn highlight_rustlab(source: &str) -> String {
-    let mut out = String::with_capacity(source.len() * 2);
-    let chars: Vec<char> = source.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        let ch = chars[i];
-
-        // Comment: % to end of line
-        if ch == '%' {
-            out.push_str("<span class=\"syn-com\">");
-            while i < len && chars[i] != '\n' {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            out.push_str("</span>");
-            continue;
+/// ` nonce="…"` for a `<script>` opening tag, or `""` when no CSP nonce
+/// is in play (static renders). The nonce is hex (see
+/// `server::auth::generate_csp_nonce`), so no attribute escaping is needed;
+/// anything else is rejected rather than quoted.
+pub(crate) fn nonce_attr(nonce: Option<&str>) -> String {
+    match nonce {
+        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            format!(" nonce=\"{n}\"")
         }
-
-        // String: "..." or '...' (single-char or multi-char)
-        if ch == '"' || (ch == '\'' && is_string_quote(&chars, i)) {
-            let quote = ch;
-            out.push_str("<span class=\"syn-str\">");
-            push_escaped_char(&mut out, ch);
-            i += 1;
-            while i < len && chars[i] != quote && chars[i] != '\n' {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            if i < len && chars[i] == quote {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Dot-operators: .* ./ .^ .'
-        if ch == '.' && i + 1 < len && matches!(chars[i + 1], '*' | '/' | '^' | '\'') {
-            out.push_str("<span class=\"syn-op\">");
-            push_escaped_char(&mut out, ch);
-            push_escaped_char(&mut out, chars[i + 1]);
-            out.push_str("</span>");
-            i += 2;
-            continue;
-        }
-
-        // Number: digits, optionally with . or e
-        if ch.is_ascii_digit() || (ch == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) {
-            out.push_str("<span class=\"syn-num\">");
-            while i < len
-                && (chars[i].is_ascii_digit()
-                    || chars[i] == '.'
-                    || chars[i] == 'e'
-                    || chars[i] == 'E'
-                    || ((chars[i] == '+' || chars[i] == '-')
-                        && i > 0
-                        && (chars[i - 1] == 'e' || chars[i - 1] == 'E')))
-            {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            // Trailing 'i' or 'j' for complex literals
-            if i < len && (chars[i] == 'i' || chars[i] == 'j') {
-                push_escaped_char(&mut out, chars[i]);
-                i += 1;
-            }
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Identifier or keyword
-        if ch.is_ascii_alphabetic() || ch == '_' {
-            let start = i;
-            while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-
-            if KEYWORDS.contains(&word.as_str()) {
-                out.push_str("<span class=\"syn-kw\">");
-                out.push_str(&escape_html(&word));
-                out.push_str("</span>");
-            } else if i < len && chars[i] == '(' {
-                // Function call
-                out.push_str("<span class=\"syn-fn\">");
-                out.push_str(&escape_html(&word));
-                out.push_str("</span>");
-            } else {
-                out.push_str(&escape_html(&word));
-            }
-            continue;
-        }
-
-        // Operators
-        if is_operator(ch) {
-            out.push_str("<span class=\"syn-op\">");
-            // Handle two-char operators
-            if i + 1 < len {
-                let next = chars[i + 1];
-                let two: String = [ch, next].iter().collect();
-                if matches!(two.as_str(), "==" | "~=" | "<=" | ">=" | "&&" | "||") {
-                    push_escaped_char(&mut out, ch);
-                    push_escaped_char(&mut out, next);
-                    i += 2;
-                    out.push_str("</span>");
-                    continue;
-                }
-            }
-            push_escaped_char(&mut out, ch);
-            i += 1;
-            out.push_str("</span>");
-            continue;
-        }
-
-        // Everything else (whitespace, parens, etc.)
-        push_escaped_char(&mut out, ch);
-        i += 1;
+        _ => String::new(),
     }
+}
 
+/// Stamp `nonce` onto every `<script …>` opening tag in a **renderer-owned**
+/// HTML fragment (a Plotly chart div, an animation player). Only call this
+/// on markup produced by rustlab itself — never on author content, or the
+/// CSP nonce would bless whatever the author injected. Operates on `&str`
+/// slices, so multi-byte text is copied verbatim.
+pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> String {
+    let attr = nonce_attr(nonce);
+    if attr.is_empty() {
+        return fragment.to_string();
+    }
+    let mut out = String::with_capacity(fragment.len() + 64);
+    let mut rest = fragment;
+    while let Some(start) = rest.find("<script") {
+        let after = &rest[start + "<script".len()..];
+        // `<scripts>` or `<scriptx` is not a script tag.
+        let is_tag = after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
+        if !is_tag {
+            out.push_str(&rest[..start + "<script".len()]);
+            rest = after;
+            continue;
+        }
+        let Some(gt) = after.find('>') else {
+            break;
+        };
+        let attrs = &after[..gt];
+        out.push_str(&rest[..start]);
+        out.push_str("<script");
+        if attrs.contains("nonce=") {
+            out.push_str(attrs);
+        } else {
+            out.push_str(&attr);
+            out.push_str(attrs);
+        }
+        out.push('>');
+        rest = &after[gt + 1..];
+    }
+    out.push_str(rest);
     out
 }
 
-/// Determine if a single quote at position `i` starts a string literal
-/// (as opposed to being the transpose operator).
-fn is_string_quote(chars: &[char], i: usize) -> bool {
-    if i == 0 {
-        return true;
-    }
-    let prev = chars[i - 1];
-    // After ), ], identifier char, or digit — it's transpose
-    if prev == ')' || prev == ']' || prev.is_ascii_alphanumeric() || prev == '_' || prev == '.' {
-        return false;
-    }
-    true
-}
+// ── Syntax highlighting ─────────────────────────────────────────────────────
 
-fn is_operator(ch: char) -> bool {
-    matches!(
-        ch,
-        '+' | '-' | '*' | '/' | '\\' | '^' | '=' | '<' | '>' | '~' | '&' | '|' | ':' | ';' | ','
-    )
-}
-
-fn push_escaped_char(out: &mut String, ch: char) {
-    match ch {
-        '&' => out.push_str("&amp;"),
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        '"' => out.push_str("&quot;"),
-        _ => out.push(ch),
+/// Produce syntax-highlighted HTML for a rustlab code snippet.
+///
+/// Token classes come from [`rustlab_script::highlight`] (the same rules as
+/// the lexer). Token text is HTML-escaped before it is wrapped, so source
+/// cannot break out of a span.
+fn highlight_rustlab(source: &str) -> String {
+    use rustlab_script::highlight::HlKind;
+    let mut out = String::with_capacity(source.len() * 2);
+    for span in rustlab_script::highlight::highlight(source) {
+        let text = &source[span.start..span.end];
+        let escaped = escape_html(text);
+        let class = match span.kind {
+            HlKind::Keyword => "syn-kw",
+            HlKind::Function => "syn-fn",
+            HlKind::Number => "syn-num",
+            HlKind::String => "syn-str",
+            HlKind::Comment => "syn-com",
+            HlKind::Operator => "syn-op",
+            HlKind::Text => {
+                out.push_str(&escaped);
+                continue;
+            }
+        };
+        out.push_str("<span class=\"");
+        out.push_str(class);
+        out.push_str("\">");
+        out.push_str(&escaped);
+        out.push_str("</span>");
     }
+    out
 }
 
 /// Transform Obsidian-style wikilinks and embeds into standard markdown so
@@ -1943,7 +2329,9 @@ fn render_wikilink(inner: &str) -> String {
     } else {
         format!("{path}.md")
     };
-    let anchor_url = anchor.map(|a| format!("#{}", slugify(a))).unwrap_or_default();
+    let anchor_url = anchor
+        .map(|a| format!("#{}", slugify(a)))
+        .unwrap_or_default();
     let text = match (alias, anchor) {
         (Some(a), _) => a.to_string(),
         (None, Some(a)) => format!("{path} § {a}"),
@@ -2146,12 +2534,16 @@ fn protect_math(md: &str) -> (String, Vec<String>) {
 /// that doesn't look delimited is returned unchanged (defensive — every
 /// real stash entry carries its delimiters).
 fn to_katex_delimiters(original: &str) -> String {
+    // HTML-escape the math body so a notebook that puts raw HTML / script
+    // tags inside `$…$` cannot break out of the math span into executable
+    // markup. KaTeX reads textContent (entity-decoded), so LaTeX still sees
+    // the original characters.
     if original.len() >= 4 && original.starts_with("$$") && original.ends_with("$$") {
-        format!("\\[{}\\]", &original[2..original.len() - 2])
+        format!("\\[{}\\]", escape_html(&original[2..original.len() - 2]))
     } else if original.len() >= 2 && original.starts_with('$') && original.ends_with('$') {
-        format!("\\({}\\)", &original[1..original.len() - 1])
+        format!("\\({}\\)", escape_html(&original[1..original.len() - 1]))
     } else {
-        original.to_string()
+        escape_html(original)
     }
 }
 
@@ -2476,7 +2868,12 @@ mod tests {
     fn inject_heading_ids_h1() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1>Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<h1>Title</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         // Generated ids are GitHub-style slugs of the heading text.
         assert!(result.contains("id=\"title\""));
         assert!(nav.contains("href=\"#title\""));
@@ -2489,7 +2886,12 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let html = "<h1>A</h1><h2>B</h2><h3>C</h3>";
-        let result = inject_heading_ids(html, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            html,
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(result.contains("id=\"a\""));
         assert!(result.contains("id=\"b\""));
         assert!(result.contains("id=\"c\""));
@@ -2530,9 +2932,14 @@ mod tests {
             &mut used,
         );
         assert!(out.contains("id=\"setup\""), "{out}");
-        assert!(out.contains("id=\"setup-1\""), "generated must skip the explicit id: {out}");
+        assert!(
+            out.contains("id=\"setup-1\""),
+            "generated must skip the explicit id: {out}"
+        );
         assert!(out.contains("id=\"setup-2\""), "{out}");
-        assert!(nav.contains("#setup\"") && nav.contains("#setup-1\"") && nav.contains("#setup-2\""));
+        assert!(
+            nav.contains("#setup\"") && nav.contains("#setup-1\"") && nav.contains("#setup-2\"")
+        );
     }
 
     #[test]
@@ -2545,7 +2952,10 @@ mod tests {
             &mut idx,
             &mut std::collections::HashSet::new(),
         );
-        assert!(out.contains("id=\"heading-1\""), "math-only fallback: {out}");
+        assert!(
+            out.contains("id=\"heading-1\""),
+            "math-only fallback: {out}"
+        );
         assert!(out.contains("id=\"real-words\""), "{out}");
     }
 
@@ -2579,7 +2989,12 @@ mod tests {
         // were non-monotonic down the page.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h1>Title</h1><h2>Section A</h2><h3>A.1</h3><h2>Section B</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         let labels: Vec<&str> = nav
             .lines()
             .filter_map(|l| l.split('>').nth(1).and_then(|s| s.split('<').next()))
@@ -2595,9 +3010,17 @@ mod tests {
         // Level ascending within one block (h2 before h1) must also hold.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h2>Sub</h2><h1>Main</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            "<h2>Sub</h2><h1>Main</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         let first = nav.lines().next().unwrap_or_default();
-        assert!(first.contains("Sub"), "h2 emitted first in doc order: {nav}");
+        assert!(
+            first.contains("Sub"),
+            "h2 emitted first in doc order: {nav}"
+        );
     }
 
     #[test]
@@ -2608,7 +3031,12 @@ mod tests {
         // lost its id and TOC entry.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 x=\">A</h2><h2>B</h2><h1>C</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 x=\">A</h2><h2>B</h2><h1>C</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(out.contains("<h2 id=\"b\">B</h2>"), "B lost its id: {out}");
         assert!(nav.contains(">B</a>"), "B missing from TOC: {nav}");
         assert!(nav.contains(">C</a>"), "{nav}");
@@ -2629,7 +3057,12 @@ mod tests {
         let mut nav = String::new();
         let mut idx = 0;
         let t = std::time::Instant::now();
-        inject_heading_ids(&doc, &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            &doc,
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert_eq!(nav.lines().count(), 2000);
         assert!(
             t.elapsed() < std::time::Duration::from_secs(5),
@@ -2644,7 +3077,12 @@ mod tests {
         // no injected id and the TOC linked to an anchor nothing carries.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 data-id=\"zzz\">Data attr</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 data-id=\"zzz\">Data attr</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             out.contains("id=\"data-attr\""),
             "generated id missing — data-id stole the anchor: {out}"
@@ -2662,12 +3100,20 @@ mod tests {
         // leaking `b">` into the heading text.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 title=\"a > b\">Raw attr heading</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let out = inject_heading_ids(
+            "<h2 title=\"a > b\">Raw attr heading</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             out.contains("<h2 title=\"a > b\" id=\"raw-attr-heading\">Raw attr heading</h2>"),
             "id must be appended after the quoted attribute: {out}"
         );
-        assert!(nav.contains(">Raw attr heading</a>"), "label corrupted: {nav}");
+        assert!(
+            nav.contains(">Raw attr heading</a>"),
+            "label corrupted: {nav}"
+        );
     }
 
     #[test]
@@ -2703,9 +3149,20 @@ mod tests {
         // outright, making the TOC assert the opposite of the heading.
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
-        assert!(nav.contains("Regime \\(T < T_c\\)"), "math truncated: {nav}");
-        assert!(nav.contains("Threshold \\(E > 0\\)"), "operator lost: {nav}");
+        inject_heading_ids(
+            "<h2>Regime \\(T < T_c\\)</h2><h2>Threshold \\(E > 0\\)</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
+        assert!(
+            nav.contains("Regime \\(T < T_c\\)"),
+            "math truncated: {nav}"
+        );
+        assert!(
+            nav.contains("Threshold \\(E > 0\\)"),
+            "operator lost: {nav}"
+        );
     }
 
     #[test]
@@ -2715,9 +3172,20 @@ mod tests {
         // and overwriting the id would break cross-notebook deep links.
         let mut nav = String::new();
         let mut idx = 0;
-        let out = inject_heading_ids("<h2 id=\"filters\">Filter Analysis</h2>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
-        assert!(out.contains("id=\"filters\""), "explicit id was overwritten");
-        assert!(nav.contains("href=\"#filters\""), "anchor heading missing from TOC: {nav}");
+        let out = inject_heading_ids(
+            "<h2 id=\"filters\">Filter Analysis</h2>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
+        assert!(
+            out.contains("id=\"filters\""),
+            "explicit id was overwritten"
+        );
+        assert!(
+            nav.contains("href=\"#filters\""),
+            "anchor heading missing from TOC: {nav}"
+        );
         assert!(nav.contains("Filter Analysis"));
     }
 
@@ -2729,7 +3197,12 @@ mod tests {
         // "Hyperfine Structure & Qubit Selection".
         let mut nav = String::new();
         let mut idx = 0;
-        inject_heading_ids("<h1>Structure &amp; Selection</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        inject_heading_ids(
+            "<h1>Structure &amp; Selection</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(
             nav.contains("Structure &amp; Selection"),
             "nav label lost its single-escaped entity: {nav}"
@@ -2744,7 +3217,12 @@ mod tests {
     fn inject_heading_ids_no_headings() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<p>no headings</p>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<p>no headings</p>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert_eq!(result, "<p>no headings</p>");
         assert!(nav.is_empty());
         assert_eq!(idx, 0);
@@ -2754,42 +3232,15 @@ mod tests {
     fn inject_heading_ids_with_inner_tags() {
         let mut nav = String::new();
         let mut idx = 0;
-        let result = inject_heading_ids("<h1><em>Styled</em> Title</h1>", &mut nav, &mut idx, &mut std::collections::HashSet::new());
+        let result = inject_heading_ids(
+            "<h1><em>Styled</em> Title</h1>",
+            &mut nav,
+            &mut idx,
+            &mut std::collections::HashSet::new(),
+        );
         assert!(result.contains("id=\"styled-title\""), "{result}");
         // Nav text should be stripped of tags
         assert!(nav.contains("Styled Title"));
-    }
-
-    // ── is_string_quote ──
-
-    #[test]
-    fn string_quote_at_start() {
-        let chars: Vec<char> = "'hello'".chars().collect();
-        assert!(is_string_quote(&chars, 0));
-    }
-
-    #[test]
-    fn transpose_after_paren() {
-        let chars: Vec<char> = "x)'".chars().collect();
-        assert!(!is_string_quote(&chars, 2));
-    }
-
-    #[test]
-    fn transpose_after_identifier() {
-        let chars: Vec<char> = "A'".chars().collect();
-        assert!(!is_string_quote(&chars, 1));
-    }
-
-    #[test]
-    fn string_quote_after_operator() {
-        let chars: Vec<char> = "='hello'".chars().collect();
-        assert!(is_string_quote(&chars, 1));
-    }
-
-    #[test]
-    fn string_quote_after_space() {
-        let chars: Vec<char> = " 'hello'".chars().collect();
-        assert!(is_string_quote(&chars, 1));
     }
 
     // ── highlight_rustlab ──
@@ -2803,7 +3254,7 @@ mod tests {
 
     #[test]
     fn highlight_all_keywords() {
-        for kw in KEYWORDS {
+        for kw in rustlab_script::highlight::KEYWORDS {
             let out = highlight_rustlab(kw);
             assert!(out.contains("syn-kw"), "keyword {kw} not highlighted");
         }
@@ -2887,7 +3338,9 @@ mod tests {
 
     #[test]
     fn highlight_two_char_operators() {
-        for op in &[".*", "./", ".^", "==", "~=", "<=", ">=", "&&", "||"] {
+        for op in &[
+            ".*", "./", ".^", ".'", "==", "!=", "<=", ">=", "&&", "||", "+=", "-=", "*=", "/=",
+        ] {
             let out = highlight_rustlab(op);
             // Should be a single span, not two separate ones
             assert!(
@@ -2914,6 +3367,50 @@ mod tests {
         let out = highlight_rustlab("x < y & z");
         assert!(out.contains("&lt;"));
         assert!(out.contains("&amp;"));
+    }
+
+    #[test]
+    fn highlight_hash_comment() {
+        let out = highlight_rustlab("# a comment");
+        assert!(out.contains("<span class=\"syn-com\"># a comment</span>"));
+    }
+
+    /// `'` after `)` or `]` is a transpose, not a string opener
+    /// (`v(2:5)'`, `[1, 2, 3]'`), so the rest of the line keeps its colors.
+    #[test]
+    fn highlight_transpose_after_paren_and_bracket() {
+        for src in ["v(2:5)'", "[1, 2, 3]'"] {
+            let out = highlight_rustlab(src);
+            assert!(out.ends_with("<span class=\"syn-op\">'</span>"), "{src}: {out}");
+            assert!(!out.contains("syn-str"), "{src}: {out}");
+        }
+        let out = highlight_rustlab("y = [1, 2]'; % note");
+        assert!(out.contains("<span class=\"syn-com\">% note</span>"), "{out}");
+    }
+
+    #[test]
+    fn highlight_cache_is_not_a_keyword() {
+        let out = highlight_rustlab("cache = 5");
+        assert!(!out.contains("syn-kw"));
+    }
+
+    /// Source that looks like markup must stay text. The cell editor
+    /// round-trips `textContent`, and the watch page assigns this HTML
+    /// with `innerHTML`.
+    #[test]
+    fn highlight_escapes_markup_breakout() {
+        let payloads = [
+            "\"</span><script>alert(1)</script>\"",
+            "</span><script>alert(1)</script>",
+            "<img onerror=\"alert(1)\">",
+        ];
+        for src in payloads {
+            let out = highlight_rustlab(src);
+            assert!(!out.contains("</span><script>"), "raw breakout in {out}");
+            assert!(!out.contains("<script>"), "raw script in {out}");
+            assert!(!out.contains("<img"), "raw img in {out}");
+            assert!(out.contains("&lt;"), "expected escaped lt in {out}");
+        }
     }
 
     #[test]
@@ -2967,12 +3464,169 @@ mod tests {
     #[test]
     fn render_html_basic_structure() {
         let blocks = vec![Rendered::Markdown("# Hello".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
         assert!(html.contains("Generated by rustlab-notebook"));
     }
+
+    #[test]
+    fn render_html_styles_prose_links_and_sets_color_scheme() {
+        let dark = Theme::Dark.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("[x](https://example.com)".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            dark,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("color-scheme: dark"), "{html}");
+        assert!(
+            html.contains(".prose a, .callout a, .exercise a"),
+            "prose link rule missing"
+        );
+        assert!(
+            html.contains(&format!("color: {}", dark.css_var("accent-secondary"))),
+            "unvisited link colour should be accent_secondary"
+        );
+        assert!(
+            html.contains("class=\"prose\""),
+            "body link must sit in .prose"
+        );
+        assert!(html.contains("href=\"https://example.com\""), "{html}");
+
+        let light = Theme::Light.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            light,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("color-scheme: light"), "{html}");
+        assert!(html.contains(&format!("color: {}", light.css_var("accent-secondary"))));
+    }
+
+    #[test]
+    fn render_html_emits_theme_css_custom_properties() {
+        let mocha = Theme::Mocha.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            mocha,
+            None,
+            &LinkMode::single_file(),
+        );
+        for (name, value) in mocha.css_tokens() {
+            assert!(
+                html.contains(&format!("{name}: {value};")),
+                "missing {name}: {value};"
+            );
+        }
+        // Stylesheet prefers the token with a literal fallback (visuals
+        // unchanged if :root vars are stripped).
+        assert!(html.contains(&format!("background: {}", mocha.css_var("bg"))));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("text"))));
+        assert!(html.contains(&format!(
+            "color: {}",
+            mocha.css_var("accent-secondary")
+        )));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("syn-keyword"))));
+
+        let latte = Theme::Latte.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            latte,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("--rl-bg: #eff1f5;"));
+        assert!(html.contains(&format!("background: {}", latte.css_var("bg"))));
+    }
+
+    #[test]
+    fn theme_link_contrast_meets_wcag_aa() {
+        // Pins the original bug: UA-default `#0000EE` on Mocha `#1e1e2e`
+        // is ~2:1. Dark-theme accents must stay at or above 4.5:1 against
+        // bg. Light (Latte `#1e66f5` on `#eff1f5`) is the official
+        // palette at ~4.3:1 — don't retune it here.
+        let dark = Theme::Dark.colors();
+        let unvisited = rustlab_plot::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
+        assert!(
+            unvisited >= 4.5,
+            "dark unvisited link contrast {unvisited:.2} < 4.5 ({} on {})",
+            dark.accent_secondary,
+            dark.bg
+        );
+        let visited = rustlab_plot::contrast_ratio(dark.accent_primary, dark.bg).unwrap_or(0.0);
+        assert!(
+            visited >= 4.5,
+            "dark visited link contrast {visited:.2} < 4.5 ({} on {})",
+            dark.accent_primary,
+            dark.bg
+        );
+        let ua = rustlab_plot::contrast_ratio("#0000EE", "#1e1e2e").unwrap_or(99.0);
+        assert!(
+            ua < 4.5,
+            "UA-default blue on Mocha should fail WCAG — if this passes, the regression test is stale"
+        );
+    }
+
+    #[test]
+    fn builtin_themes_set_color_scheme_and_dark_accents_meet_wcag() {
+        use rustlab_plot::{builtin_theme_names, theme_colors};
+        for name in ["mocha", "macchiato", "frappe", "latte", "dark", "light"] {
+            let c = theme_colors(name).expect(name);
+            let html = render_html(
+                "T",
+                &[Rendered::Markdown("hi".to_string())],
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                c,
+                None,
+                &LinkMode::single_file(),
+            );
+            let expected = c.color_scheme();
+            assert!(
+                html.contains(&format!("color-scheme: {expected}")),
+                "{name}: missing color-scheme: {expected}"
+            );
+            if c.is_dark() {
+                let u = rustlab_plot::contrast_ratio(c.accent_secondary, c.bg).unwrap_or(0.0);
+                let v = rustlab_plot::contrast_ratio(c.accent_primary, c.bg).unwrap_or(0.0);
+                assert!(
+                    u >= 4.5,
+                    "{name} accent_secondary contrast {u:.2} < 4.5"
+                );
+                assert!(
+                    v >= 4.5,
+                    "{name} accent_primary contrast {v:.2} < 4.5"
+                );
+            }
+        }
+        // Aliases resolve.
+        assert!(builtin_theme_names().contains(&"dark"));
+        assert!(builtin_theme_names().contains(&"mocha"));
+    }
+
 
     // ── Phase 3: stable block-id wrapping ──
 
@@ -2982,10 +3636,24 @@ mod tests {
             Rendered::Markdown("hello".to_string()),
             Rendered::Markdown("world".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Each prose block lives inside a rl-block section.
-        let opens: Vec<_> = html.matches("<section class=\"rl-block\" id=\"b-").collect();
-        assert_eq!(opens.len(), 2, "expected 2 block wrappers, full html:\n{html}");
+        let opens: Vec<_> = html
+            .matches("<section class=\"rl-block\" id=\"b-")
+            .collect();
+        assert_eq!(
+            opens.len(),
+            2,
+            "expected 2 block wrappers, full html:\n{html}"
+        );
         // The pre-existing prose div is preserved inside the section.
         assert!(html.contains("class=\"prose\""));
     }
@@ -2997,7 +3665,15 @@ mod tests {
             Rendered::Markdown("dup".to_string()),
             Rendered::Markdown("unique".to_string()),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // The two `dup` blocks have identical content → identical
         // 8-char hashes → second gets the "-1" suffix.
         let suffixed = html.matches("\" id=\"b-").count();
@@ -3011,10 +3687,38 @@ mod tests {
     #[test]
     fn render_html_block_ids_stable_across_renders() {
         let blocks = vec![Rendered::Markdown("stable content".to_string())];
-        let h1 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        let h2 = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        let id1 = h1.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
-        let id2 = h2.split("id=\"b-").nth(1).unwrap().split('"').next().unwrap();
+        let h1 = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let h2 = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let id1 = h1
+            .split("id=\"b-")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let id2 = h2
+            .split("id=\"b-")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
         assert_eq!(id1, id2, "block id changed between identical renders");
     }
 
@@ -3030,6 +3734,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }
     }
 
@@ -3041,9 +3746,23 @@ mod tests {
             Rendered::Markdown("more prose".to_string()),
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(html.contains("data-code-idx=\"0\""), "first code block is idx 0");
-        assert!(html.contains("data-code-idx=\"1\""), "second code block is idx 1");
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("data-code-idx=\"0\""),
+            "first code block is idx 0"
+        );
+        assert!(
+            html.contains("data-code-idx=\"1\""),
+            "second code block is idx 1"
+        );
         // Prose sections carry no ordinal.
         assert_eq!(html.matches("data-code-idx=").count(), 2);
     }
@@ -3062,13 +3781,24 @@ mod tests {
             },
             code("b = 2"),
         ];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("data-code-idx=\"0\""));
         assert!(
             html.contains("data-code-idx=\"2\""),
             "code after hidden mermaid must be idx 2, not 1:\n{html}"
         );
-        assert!(!html.contains("data-code-idx=\"1\""), "slot 1 is the hidden mermaid");
+        assert!(
+            !html.contains("data-code-idx=\"1\""),
+            "slot 1 is the hidden mermaid"
+        );
     }
 
     #[test]
@@ -3079,8 +3809,19 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(!html.contains("data-code-idx="), "mermaid gets no Run affordance");
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("data-code-idx="),
+            "mermaid gets no Run affordance"
+        );
     }
 
     #[test]
@@ -3093,7 +3834,15 @@ mod tests {
         // Identifiers survive `highlight_rustlab` verbatim; operators and
         // numbers get wrapped in spans, so match on the bare name only.
         let plot = std::path::PathBuf::from("/tmp/rustlab_test_plots");
-        let solo = render_html("T", &[code("xyzzy = 1")], &plot, "plots", test_theme(), None, &LinkMode::single_file());
+        let solo = render_html(
+            "T",
+            &[code("xyzzy = 1")],
+            &plot,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         let shifted = render_html(
             "T",
             &[code("unrelated = 2"), code("xyzzy = 1")],
@@ -3129,11 +3878,280 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"source\""));
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
+        assert!(html.contains("class=\"rl-cell\""));
+    }
+
+    /// Source and printed output share `.rl-cell`. Plot markup stays outside
+    /// that wrapper, in both Catppuccin themes. The rule color is the theme
+    /// accent baked into the stylesheet (no inline style on the cell).
+    #[test]
+    fn render_html_indents_source_and_output_not_plots() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let blocks = vec![Rendered::Code {
+            source: "x = 1:2\nplot(x)".to_string(),
+            text_output: "ans = 1  2".to_string(),
+            error: Some("plot warning".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        for (theme, accent) in [
+            (Theme::Dark.colors(), "#cba6f7"),
+            (Theme::Light.colors(), "#8839ef"),
+        ] {
+            let html = render_html(
+                "Test",
+                &blocks,
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                theme,
+                None,
+                &LinkMode::single_file(),
+            );
+            assert!(html.contains(".rl-cell {"), "stylesheet missing .rl-cell");
+            // The rule is token-first with the palette literal as fallback.
+            let accent_var = theme.css_var("accent-primary");
+            assert!(accent_var.contains(accent), "{accent_var}");
+            assert!(
+                html.contains(&format!("border-left: 3px solid {accent_var}")),
+                "accent rule for {accent} missing"
+            );
+            let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+            let plot_at = html
+                .find("class=\"plot-container\"")
+                .expect("plot-container");
+            assert!(cell_at < plot_at, "plot should follow the indented cell");
+            let cell = &html[cell_at..plot_at];
+            assert!(cell.contains("class=\"source\""), "{cell}");
+            assert!(cell.contains("class=\"output\""), "{cell}");
+            assert!(cell.contains("class=\"error\""), "{cell}");
+            assert!(cell.contains("ans = 1  2"), "{cell}");
+            assert!(!cell.contains("<img"), "{cell}");
+            assert!(
+                html.contains("--rl-accent:"),
+                "summary caret uses the theme accent token"
+            );
+        }
+    }
+
+    /// Source is an open disclosure inside `.rl-cell`. Output, errors, and
+    /// plots stay outside that disclosure.
+    #[test]
+    fn render_html_source_is_open_details_output_is_not() {
+        use rustlab_plot::{FigureState, LineStyle, PlotKind, Series, SeriesColor};
+        let mut fig = FigureState::new();
+        fig.subplots[0].series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let blocks = vec![Rendered::Code {
+            source: "x = 1:2\nplot(x)".to_string(),
+            text_output: "ans = 1  2".to_string(),
+            error: Some("plot warning".to_string()),
+            figures: vec![fig],
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");
+        let plot_at = html
+            .find("class=\"plot-container\"")
+            .expect("plot-container");
+        let cell = &html[cell_at..plot_at];
+        let open_at = cell
+            .find("<details class=\"rl-src\" open>")
+            .expect("open source disclosure");
+        let summary_at = cell.find("<summary>rustlab</summary>").expect("summary");
+        let close_at = cell.find("</details>").expect("details close");
+        assert!(open_at < summary_at && summary_at < close_at);
+        let inside = &cell[open_at..close_at];
+        assert!(inside.contains("class=\"source\""), "{inside}");
+        assert!(
+            inside.contains("syn-"),
+            "highlight spans stay inside the source disclosure: {inside}"
+        );
+        assert!(!inside.contains("class=\"output\""), "{inside}");
+        assert!(!inside.contains("class=\"error\""), "{inside}");
+        assert!(!inside.contains("plot-container"), "{inside}");
+        let after = &cell[close_at..];
+        assert!(after.contains("class=\"output\""), "{after}");
+        assert!(after.contains("class=\"error\""), "{after}");
+        assert!(after.contains("ans = 1  2"), "{after}");
+        assert!(!html[plot_at..].contains("class=\"rl-src\""));
+    }
+
+    /// `<!-- details: -->` still wraps output and plots in the author's
+    /// disclosure. The source disclosure sits above it and is not nested.
+    #[test]
+    fn render_html_details_directive_does_not_nest_source() {
+        let blocks = vec![Rendered::Code {
+            source: "x = 1".to_string(),
+            text_output: "ans = 1".to_string(),
+            error: Some("warn".to_string()),
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: Some("Show sweep".to_string()),
+            grid_cols: None,
+            source_open: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let src_at = html
+            .find("<details class=\"rl-src\" open>")
+            .expect("source disclosure");
+        let author_at = html
+            .find("<details class=\"code-details\">")
+            .expect("author disclosure");
+        assert!(
+            src_at < author_at,
+            "source disclosure stays above the author's"
+        );
+        let author = &html[author_at..];
+        let author_end = author.find("</details>").expect("author close");
+        let author_body = &author[..author_end];
+        assert!(author_body.contains("<summary>Show sweep</summary>"));
+        assert!(author_body.contains("class=\"output\""));
+        assert!(author_body.contains("ans = 1"));
+        assert!(author_body.contains("class=\"error\""));
+        assert!(!author_body.contains("class=\"rl-src\""));
+        assert!(!author_body.contains("class=\"source\""));
+        let source_body = &html[src_at..author_at];
+        assert!(source_body.contains("class=\"source\""));
+        assert!(!source_body.contains("class=\"output\""));
+    }
+
+    #[test]
+    fn resolve_source_open_cell_beats_frontmatter_beats_rc_beats_default() {
+        assert!(resolve_source_open(None, None, None));
+        assert!(!resolve_source_open(None, None, Some(false)));
+        assert!(resolve_source_open(None, Some(true), Some(false)));
+        assert!(!resolve_source_open(None, Some(false), Some(true)));
+        assert!(resolve_source_open(Some(true), Some(false), Some(false)));
+        assert!(!resolve_source_open(Some(false), Some(true), Some(true)));
+    }
+
+    /// Notebook default collapsed (frontmatter or rc). A cell directive
+    /// forces open, `hide` removes the disclosure, and `details` honors
+    /// the cell's open state on the sibling source disclosure.
+    #[test]
+    fn render_html_code_fold_respects_cell_notebook_hide_and_details() {
+        let src = "\
+<!-- code: open -->
+```rustlab
+x = 1
+```
+
+```rustlab
+y = 2
+```
+
+<!-- hide -->
+<!-- code: open -->
+```rustlab
+z = 3
+```
+
+<!-- details: More -->
+<!-- code: open -->
+```rustlab
+w = 4
+```
+";
+        let blocks = crate::parse::parse_notebook(src);
+        let rendered = crate::execute::execute_notebook(&blocks);
+        let _guard = NotebookSourceOpenGuard::set(false);
+        let html = render_html(
+            "Test",
+            &rendered,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        let section = |idx: usize| {
+            let marker = format!("data-code-idx=\"{idx}\"");
+            let at = html
+                .find(&marker)
+                .unwrap_or_else(|| panic!("missing {marker}"));
+            let start = html[..at].rfind("<section").expect("section");
+            let rest = &html[start..];
+            let end = rest.find("</section>").expect("section end");
+            &rest[..end]
+        };
+        let open = section(0);
+        assert!(open.contains("<details class=\"rl-src\" open>"), "{open}");
+        let inherited = section(1);
+        assert!(
+            inherited.contains("<details class=\"rl-src\">"),
+            "cell without a directive inherits collapsed: {inherited}"
+        );
+        assert!(
+            !inherited.contains("<details class=\"rl-src\" open>"),
+            "{inherited}"
+        );
+        assert!(inherited.contains("class=\"source\""), "{inherited}");
+        let hidden = section(2);
+        assert!(!hidden.contains("class=\"rl-src\""), "hide wins: {hidden}");
+        assert!(!hidden.contains("class=\"source\""), "{hidden}");
+        let details = section(3);
+        assert!(
+            details.contains("<details class=\"rl-src\" open>"),
+            "{details}"
+        );
+        assert!(details.contains("<summary>More</summary>"), "{details}");
+        let src_at = details.find("class=\"rl-src\"").unwrap();
+        let author_at = details.find("class=\"code-details\"").unwrap();
+        assert!(src_at < author_at, "source disclosure stays above details");
     }
 
     #[test]
@@ -3147,8 +4165,17 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"error\""));
         assert!(html.contains("undefined variable"));
     }
@@ -3164,11 +4191,21 @@ mod tests {
             hidden: true,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Source should not appear
         assert!(!html.contains("secret = 42"));
         assert!(!html.contains("class=\"source\""));
+        assert!(!html.contains("class=\"rl-src\""));
         // But output should still appear
         assert!(html.contains("ans = 42"));
     }
@@ -3184,8 +4221,17 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Source shown, but no output div
         assert!(html.contains("class=\"source\""));
         assert!(!html.contains("class=\"output\""));
@@ -3193,26 +4239,69 @@ mod tests {
 
     #[test]
     fn render_html_katex_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("katex"));
         assert!(html.contains("auto-render"));
+        // Watch CSP (nonce + strict-dynamic) blocks inline event handlers,
+        // so auto-render must start from a script body, not onload=.
+        assert!(html.contains("DOMContentLoaded"));
+        assert!(html.contains("renderMathInElement"));
+        assert!(!html.contains("onload="), "inline onload is blocked by CSP");
+        assert!(
+            !html.contains("onclick="),
+            "inline onclick is blocked by CSP"
+        );
     }
 
     #[test]
     fn render_html_plotly_included() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("plotly"));
     }
 
     #[test]
     fn render_html_nav_toggle() {
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("nav-toggle"));
+        assert!(html.contains("button.nav-toggle"));
+        assert!(!html.contains("onclick="));
     }
 
     #[test]
     fn render_html_title_escaped() {
-        let html = render_html("A <script> & \"test\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "A <script> & \"test\"",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &lt;script&gt; &amp; &quot;test&quot;"));
     }
 
@@ -3227,11 +4316,48 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("syn-kw"));
         assert!(html.contains("syn-fn"));
         assert!(html.contains("syn-num"));
+    }
+
+    #[test]
+    fn render_html_hash_comment_is_syn_com() {
+        let blocks = vec![Rendered::Code {
+            source: "# comment\nx = 1".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            html.contains("<span class=\"syn-com\"># comment</span>"),
+            "{html}"
+        );
     }
 
     #[test]
@@ -3239,7 +4365,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Section One\n\n## Sub Section".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("id=\"section-one\""));
         assert!(html.contains("id=\"sub-section\""));
         assert!(html.contains("Section One"));
@@ -3353,7 +4487,10 @@ mod tests {
 
     #[test]
     fn link_dest_server_resolves_to_slug_routes() {
-        let mode = server_mode(&[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")], "");
+        let mode = server_mode(
+            &[("01-intro.md", "01-intro"), ("02-filter.md", "02-filter")],
+            "",
+        );
         assert_eq!(
             rewrite_link_dest("02-filter.md", &mode).as_deref(),
             Some("/n/02-filter")
@@ -3398,6 +4535,88 @@ mod tests {
         );
         // `..` escaping the collection root cannot resolve — left alone.
         assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_server_falls_back_to_collection_root_and_unique_basename() {
+        // Nested authors (and wikilinks, which are vault-relative) write
+        // `ch2/notes.md` without a `../`. Page-relative that is
+        // `ch1/ch2/notes.md` — a miss. Root-relative and unique-basename
+        // fallbacks are what make watch navigation work.
+        let mode = server_mode(
+            &[
+                ("01-intro.md", "01-intro"),
+                ("ch1/01-intro.md", "01-intro-2"),
+                ("ch2/notes.md", "notes"),
+            ],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &mode).as_deref(),
+            Some("/n/notes"),
+            "collection-root path from a nested page"
+        );
+        assert_eq!(
+            rewrite_link_dest("notes.md", &mode).as_deref(),
+            Some("/n/notes"),
+            "unique basename when the name exists once"
+        );
+        // Same-dir still wins over a root file of the same name.
+        assert_eq!(
+            rewrite_link_dest("01-intro.md", &mode).as_deref(),
+            Some("/n/01-intro-2")
+        );
+        // Explicit `./` / `../` do not take the fallback.
+        assert_eq!(rewrite_link_dest("./ch2/notes.md", &mode), None);
+        assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
+    }
+
+    #[test]
+    fn link_dest_unique_basename_refuses_collision() {
+        let mode = server_mode(
+            &[
+                ("ch1/a.md", "a"),
+                ("ch2/dup.md", "dup"),
+                ("ch3/dup.md", "dup-2"),
+            ],
+            "ch1",
+        );
+        // Bare name is ambiguous — leave as written rather than pick a
+        // winner. Same-dir still wins when the page actually has the file.
+        assert_eq!(rewrite_link_dest("dup.md", &mode), None);
+        let same_dir = server_mode(
+            &[("ch1/dup.md", "dup-ch1"), ("ch2/dup.md", "dup-ch2")],
+            "ch1",
+        );
+        assert_eq!(
+            rewrite_link_dest("dup.md", &same_dir).as_deref(),
+            Some("/n/dup-ch1")
+        );
+    }
+
+    #[test]
+    fn link_dest_static_fallback_climbs_out_of_nested_dir() {
+        let known: HashSet<String> = ["01-intro.md".to_string(), "ch2/notes.md".to_string()]
+            .into_iter()
+            .collect();
+        let nested = LinkMode::Static {
+            known: Some(known),
+            current_rel_dir: "ch1".to_string(),
+        };
+        assert_eq!(
+            rewrite_link_dest("ch2/notes.md", &nested).as_deref(),
+            Some("../ch2/notes.html"),
+            "fallback must emit href_between, not the dest as written"
+        );
+        assert_eq!(
+            rewrite_link_dest("notes.md", &nested).as_deref(),
+            Some("../ch2/notes.html")
+        );
+        // Page-relative form is unchanged.
+        assert_eq!(
+            rewrite_link_dest("../01-intro.md", &nested).as_deref(),
+            Some("../01-intro.html")
+        );
     }
 
     #[test]
@@ -3453,9 +4672,16 @@ mod tests {
             current_rel_dir: String::new(),
             index_at_root: false,
         };
-        assert_eq!(rewrite_link_dest("index.md", &mode), None, "left as written");
+        assert_eq!(
+            rewrite_link_dest("index.md", &mode),
+            None,
+            "left as written"
+        );
         // Self-link still resolves.
-        assert_eq!(rewrite_link_dest("solo.md", &mode).as_deref(), Some("/n/solo"));
+        assert_eq!(
+            rewrite_link_dest("solo.md", &mode).as_deref(),
+            Some("/n/solo")
+        );
     }
 
     /// Render one markdown block through the full HTML pipeline in `mode`.
@@ -3517,10 +4743,7 @@ mod tests {
         // `` `[link](a.md)` `` displayed as `[link](a.html)` — a rendered
         // code example asserting a rewrite the reader never wrote.
         let src = "Inline `[link](a.md)` span.\n\n```text\nsee [x](a.md)\n```\n";
-        for mode in [
-            LinkMode::single_file(),
-            server_mode(&[("a.md", "a")], ""),
-        ] {
+        for mode in [LinkMode::single_file(), server_mode(&[("a.md", "a")], "")] {
             let html = render_md_linked(src, &mode);
             assert!(
                 html.contains("[link](a.md)"),
@@ -3530,7 +4753,10 @@ mod tests {
                 html.contains("see [x](a.md)"),
                 "fenced block was rewritten: {html}"
             );
-            assert!(!html.contains("a.html"), "code content leaked a rewrite: {html}");
+            assert!(
+                !html.contains("a.html"),
+                "code content leaked a rewrite: {html}"
+            );
         }
     }
 
@@ -3554,7 +4780,10 @@ mod tests {
         // text, not a link. Pinned so nobody "fixes" it with string
         // matching later.
         let html = render_md_linked("see <02-filter.md> here", &LinkMode::single_file());
-        assert!(!html.contains("href=\"02-filter"), "text became a link: {html}");
+        assert!(
+            !html.contains("href=\"02-filter"),
+            "text became a link: {html}"
+        );
         assert!(
             html.contains("&lt;02-filter.md&gt;"),
             "angle reference should render as literal text: {html}"
@@ -3577,6 +4806,33 @@ mod tests {
         assert!(
             html.contains(r#"href="/n/02-filter#setup""#),
             "wikilink not resolved to slug route: {html}"
+        );
+    }
+
+    #[test]
+    fn pipeline_nested_wikilink_uses_vault_relative_path() {
+        // `[[ch2/notes]]` → `[ch2/notes](ch2/notes.md)`. From ch1/ that
+        // is not page-relative; the root-relative fallback must fire or
+        // watch navigation 404s.
+        let html = render_md_linked(
+            "see [[ch2/notes]]",
+            &server_mode(&[("ch2/notes.md", "notes")], "ch1"),
+        );
+        assert!(
+            html.contains(r#"href="/n/notes""#),
+            "nested wikilink not resolved to slug route: {html}"
+        );
+        let known: HashSet<String> = ["ch2/notes.md".to_string()].into_iter().collect();
+        let html = render_md_linked(
+            "see [[ch2/notes]]",
+            &LinkMode::Static {
+                known: Some(known),
+                current_rel_dir: "ch1".to_string(),
+            },
+        );
+        assert!(
+            html.contains(r#"href="../ch2/notes.html""#),
+            "nested static wikilink must climb out of ch1/: {html}"
         );
     }
 
@@ -3621,7 +4877,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "See [other](other.md) for details".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("other.html"));
         assert!(!html.contains("other.md"));
     }
@@ -3728,7 +4992,10 @@ mod tests {
         assert!(stash.is_empty(), "currency must not be stashed as math");
         let restored = restore_math(&rewritten, &stash);
         assert_eq!(restored, src);
-        assert!(!restored.contains(r"\("), "no inline math delimiter injected");
+        assert!(
+            !restored.contains(r"\("),
+            "no inline math delimiter injected"
+        );
     }
 
     #[test]
@@ -3742,11 +5009,167 @@ mod tests {
     }
 
     #[test]
+    fn to_katex_delimiters_escapes_html_in_math() {
+        let out = to_katex_delimiters("$a<script>alert(1)</script>$");
+        assert!(!out.contains("<script>"));
+        assert!(out.contains("&lt;script&gt;"));
+        assert!(out.starts_with(r"\(") && out.ends_with(r"\)"));
+    }
+
+    #[test]
+    fn markdown_strips_raw_script_but_keeps_plain_formatting_tags() {
+        let html = markdown_to_html("<script>alert(1)</script>\n\nhello <b>x</b>");
+        assert!(
+            !html.contains("<script>"),
+            "raw script must not survive: {html}"
+        );
+        // The script tag is escaped exactly once — readers see `<script>` as
+        // text, not `&lt;script&gt;`.
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(!html.contains("&amp;lt;"), "double-escaped: {html}");
+        // Attribute-free formatting tags are allowed through.
+        assert!(html.contains("hello <b>x</b>"), "{html}");
+    }
+
+    #[test]
+    fn sanitize_html_fragment_allowlist() {
+        // Allowed, attribute-free tags pass verbatim (case-insensitive).
+        assert_eq!(
+            sanitize_html_fragment("<details><summary>More</summary>hidden</details>"),
+            "<details><summary>More</summary>hidden</details>"
+        );
+        assert_eq!(sanitize_html_fragment("a<br>b<BR/>c<br />d"), "a<br>b<BR/>c<br />d");
+        assert_eq!(sanitize_html_fragment("x<sub>2</sub>"), "x<sub>2</sub>");
+        // Any attribute turns the tag into text.
+        assert_eq!(
+            sanitize_html_fragment("<b onclick=\"x()\">y</b>"),
+            "&lt;b onclick=&quot;x()&quot;&gt;y</b>"
+        );
+        assert_eq!(sanitize_html_fragment("<details open>"), "&lt;details open&gt;");
+        // Tags off the list are text, even without attributes.
+        assert_eq!(
+            sanitize_html_fragment("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
+        assert_eq!(sanitize_html_fragment("<iframe>"), "&lt;iframe&gt;");
+        assert_eq!(sanitize_html_fragment("<img src=x>"), "&lt;img src=x&gt;");
+        // Comments vanish; stray brackets and text are escaped.
+        assert_eq!(sanitize_html_fragment("a <!-- note --> b"), "a  b");
+        assert_eq!(sanitize_html_fragment("<!-- unterminated"), "");
+        assert_eq!(sanitize_html_fragment("1 < 2 & 3 > 2"), "1 &lt; 2 &amp; 3 &gt; 2");
+    }
+
+    #[test]
+    fn markdown_drops_html_comments() {
+        let html = markdown_to_html("before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail");
+        assert!(!html.contains("author note"), "{html}");
+        assert!(!html.contains("block comment"), "{html}");
+        assert!(html.contains("before") && html.contains("after") && html.contains("tail"));
+    }
+
+    #[test]
+    fn markdown_strips_javascript_urls() {
+        let html = markdown_to_html("[click](javascript:alert(1))");
+        assert!(!html.to_lowercase().contains("javascript:"));
+        assert!(html.contains("href=\"#\"") || html.contains("href='#'"));
+    }
+
+    #[test]
+    fn markdown_keeps_data_image_src_but_not_data_links() {
+        let html = markdown_to_html("![t](data:image/gif;base64,R0lGODlhAQABAAAAACw=)");
+        assert!(html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""), "{html}");
+        let html = markdown_to_html("![t](data:text/html,<script>1</script>)");
+        assert!(html.contains("src=\"\""), "{html}");
+        let html = markdown_to_html("[t](data:image/svg+xml,x)");
+        assert!(html.contains("href=\"#\""), "{html}");
+    }
+
+    #[test]
+    fn is_dangerous_url_detects_schemes() {
+        assert!(is_dangerous_url("javascript:alert(1)"));
+        assert!(is_dangerous_url("DATA:text/html,x"));
+        assert!(is_dangerous_url("vbscript:msgbox"));
+        assert!(is_dangerous_url("data:image/png;base64,x"));
+        // Browsers strip tabs/newlines before parsing the scheme.
+        assert!(is_dangerous_url("java\tscript:alert(1)"));
+        assert!(is_dangerous_url(" java\nscript:alert(1)"));
+        assert!(!is_dangerous_url("https://example.com"));
+        assert!(!is_dangerous_url("/relative/path"));
+        assert!(!is_dangerous_url("notes.md#javascript:x"));
+    }
+
+    #[test]
+    fn add_nonce_to_scripts_stamps_renderer_fragments_and_keeps_utf8() {
+        let frag = "<div id=\"p\">→ ∇·E — π</div>\n<script>Plotly.newPlot('p', []);</script>\n<script type=\"text/plain\">x</script>";
+        let out = add_nonce_to_scripts(frag, Some("abc123"));
+        assert!(out.contains("<script nonce=\"abc123\">Plotly"), "{out}");
+        assert!(out.contains("<script nonce=\"abc123\" type=\"text/plain\">"), "{out}");
+        assert!(out.contains("→ ∇·E — π"), "utf-8 mangled: {out}");
+        // No nonce → byte-identical.
+        assert_eq!(add_nonce_to_scripts(frag, None), frag);
+        // Existing nonce is left alone; look-alike tags are not touched.
+        let keep = "<script nonce=\"zzz\">1</script><scripts>";
+        assert_eq!(add_nonce_to_scripts(keep, Some("abc")), keep);
+        // Only alphanumeric nonces are accepted.
+        assert_eq!(nonce_attr(Some("a\"b")), "");
+        assert_eq!(nonce_attr(Some("")), "");
+    }
+
+    #[test]
+    fn render_html_uses_no_inline_event_handlers() {
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("# H\n\nx".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(!html.contains("onload="), "inline onload survives CSP-incompatible: {html:.400}");
+        assert!(!html.contains("onclick="), "inline onclick survives: {html:.400}");
+        assert!(html.contains("DOMContentLoaded"), "KaTeX init script missing");
+        assert!(html.contains("button.nav-toggle"), "sidebar toggle wiring missing");
+        // Static output carries no nonce attributes.
+        assert!(!html.contains("nonce="), "{html:.400}");
+    }
+
+    #[test]
+    fn render_html_nonced_stamps_every_renderer_script() {
+        let html = render_html_nonced(
+            "T",
+            &[Rendered::Markdown("# H\n\nx".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+            Some("deadbeef"),
+        );
+        let tags: Vec<&str> = html.match_indices("<script").map(|(i, _)| {
+            let end = html[i..].find('>').unwrap();
+            &html[i..i + end + 1]
+        }).collect();
+        assert!(tags.len() >= 4, "expected head scripts: {tags:?}");
+        for t in &tags {
+            assert!(t.contains("nonce=\"deadbeef\""), "unnonced renderer script: {t}");
+        }
+    }
+
+    #[test]
     fn render_html_preserves_matrix_row_separator() {
         let blocks = vec![Rendered::Markdown(
             r"$$\begin{pmatrix}0 & 1 \\ 1 & 0\end{pmatrix}$$".to_string(),
         )];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // The `\\` must reach the rendered HTML so KaTeX can split rows.
         assert!(
             html.contains(r"\\"),
@@ -3761,7 +5184,15 @@ mod tests {
             title: None,
             content: r"see $$a \\ b$$".to_string(),
         }];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains(r"\\"));
     }
 
@@ -3832,7 +5263,10 @@ mod tests {
             ("func(~x~)", "func(~x~)"),
         ] {
             let html = markdown_to_html(src);
-            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+            assert!(
+                !html.contains("<del>"),
+                "struck through: {src:?} → {html:?}"
+            );
             assert!(html.contains(tilde_text), "tildes lost: {src:?} → {html:?}");
         }
     }
@@ -3859,7 +5293,10 @@ mod tests {
             "intraword a~b here",
         ] {
             let html = markdown_to_html(src);
-            assert!(!html.contains("<del>"), "struck through: {src:?} → {html:?}");
+            assert!(
+                !html.contains("<del>"),
+                "struck through: {src:?} → {html:?}"
+            );
         }
     }
 
@@ -3910,7 +5347,15 @@ mod tests {
     #[test]
     fn render_html_no_nav_for_single_file() {
         let blocks = vec![Rendered::Markdown("# Alpha\n\n## Beta\n".to_string())];
-        let html = render_html("Test", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         // Same chrome as a collection page — there is just nothing to page to.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("<nav class=\"sidebar\">"));
@@ -3934,8 +5379,19 @@ mod tests {
             next: None,
         };
         for n in [None, Some(&nav)] {
-            let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), n, &LinkMode::single_file());
-            assert!(!html.contains("topbar-layout"), "stale layout class emitted");
+            let html = render_html(
+                "T",
+                &blocks,
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                test_theme(),
+                n,
+                &LinkMode::single_file(),
+            );
+            assert!(
+                !html.contains("topbar-layout"),
+                "stale layout class emitted"
+            );
         }
     }
 
@@ -3947,7 +5403,15 @@ mod tests {
             next: None,
         };
         let blocks = vec![Rendered::Markdown("# Filter Analysis\n".to_string())];
-        let html = render_html("Filter Analysis", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Filter Analysis",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         // Topbar present with breadcrumb.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"index.html\""));
@@ -3965,8 +5429,19 @@ mod tests {
         // Emitting the sidebar unconditionally cost 220px of chrome holding
         // nothing but the title. `no-toc` gives that width back to content.
         let blocks = vec![Rendered::Markdown("just prose, no headings.\n".to_string())];
-        let html = render_html("Solo", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
-        assert!(!html.contains("<nav class=\"sidebar\">"), "empty sidebar emitted");
+        let html = render_html(
+            "Solo",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(
+            !html.contains("<nav class=\"sidebar\">"),
+            "empty sidebar emitted"
+        );
         assert!(html.contains("<body class=\"no-toc\">"));
         // The topbar is still there — chrome stays consistent.
         assert!(html.contains("class=\"topbar\""));
@@ -4001,12 +5476,18 @@ mod tests {
             !html.contains("margin-right: auto"),
             "the inert auto-margin rule is back"
         );
-        assert!(html.contains(".topbar a.index"), "Index link flex guard missing");
+        assert!(
+            html.contains(".topbar a.index"),
+            "Index link flex guard missing"
+        );
         assert!(
             html.contains("body:not(.no-toc) .topbar"),
             "no-toc pages must not reserve hamburger space"
         );
-        assert!(html.contains("overflow-x: hidden"), "sidebar clipping rule missing");
+        assert!(
+            html.contains("overflow-x: hidden"),
+            "sidebar clipping rule missing"
+        );
     }
 
     #[test]
@@ -4015,7 +5496,15 @@ mod tests {
         // y=0, behind the fixed topbar — the heading you clicked is the one
         // thing you cannot see.
         let blocks = vec![Rendered::Markdown("# Alpha\n".to_string())];
-        let html = render_html("T", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(
             html.contains("scroll-margin-top"),
             "heading anchors would land under the topbar"
@@ -4036,7 +5525,15 @@ mod tests {
         let blocks = vec![Rendered::Markdown(
             "# Alpha\n\n## Beta\n\n## Gamma\n".to_string(),
         )];
-        let html = render_html("Lesson 09", &blocks, &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Lesson 09",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         // Between-notebook nav.
         assert!(html.contains("class=\"topbar\""));
         assert!(html.contains("href=\"08.html\""), "prev link missing");
@@ -4057,7 +5554,15 @@ mod tests {
             prev: None,
             next: None,
         };
-        let html = render_html("A <script> & \"x\"", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "A <script> & \"x\"",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &lt;script&gt; &amp; &quot;x&quot;"));
     }
 
@@ -4068,7 +5573,15 @@ mod tests {
             prev: Some(("Intro".to_string(), "intro.html".to_string())),
             next: Some(("Analysis".to_string(), "analysis.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"page-nav\""));
         assert!(html.contains("class=\"prev\""));
         assert!(html.contains("href=\"intro.html\""));
@@ -4086,7 +5599,15 @@ mod tests {
             prev: None,
             next: Some(("Next One".to_string(), "next.html".to_string())),
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"page-nav\""));
         assert!(!html.contains("class=\"prev\""));
         assert!(html.contains("class=\"next\""));
@@ -4099,7 +5620,15 @@ mod tests {
             prev: Some(("Earlier".to_string(), "earlier.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"prev\""));
         assert!(!html.contains("class=\"next\""));
     }
@@ -4111,7 +5640,15 @@ mod tests {
             prev: Some(("A & <b>".to_string(), "p.html".to_string())),
             next: None,
         };
-        let html = render_html("Test", &[], &std::path::PathBuf::from("/tmp/rustlab_test_plots"), "plots", test_theme(), Some(&nav), &LinkMode::single_file());
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            Some(&nav),
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("A &amp; &lt;b&gt;"));
         assert!(!html.contains("<b>"));
     }
@@ -4138,7 +5675,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<figure class=\"mermaid\">"));
         assert!(html.contains("<svg"), "expected inline <svg> tag");
         assert!(!html.contains("<?xml"), "XML decl should be stripped");
@@ -4155,7 +5700,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(!html.contains("cdn.jsdelivr.net/npm/mermaid"));
         assert!(!html.contains("mermaid.initialize("));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4171,7 +5724,15 @@ mod tests {
             details: None,
             caption: Some("Signal flow".to_string()),
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<figcaption>Signal flow</figcaption>"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4186,7 +5747,15 @@ mod tests {
             details: Some("Architecture".to_string()),
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("<details class=\"code-details\">"));
         assert!(html.contains("<summary>Architecture</summary>"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4201,7 +5770,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(!html.contains("<figure class=\"mermaid\">"));
         assert!(!html.contains("<svg"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4225,7 +5802,15 @@ mod tests {
                 caption: None,
             },
         ];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         let figs = html.matches("<figure class=\"mermaid\">").count();
         assert_eq!(figs, 2, "expected two mermaid figures, got {figs}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -4241,7 +5826,15 @@ mod tests {
             details: None,
             caption: None,
         }];
-        let html = render_html("T", &blocks, &dir, "plots", test_theme(), None, &LinkMode::single_file());
+        let html = render_html(
+            "T",
+            &blocks,
+            &dir,
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
         assert!(html.contains("class=\"mermaid-source\""));
         assert!(html.contains("flowchart LR"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4304,7 +5897,10 @@ mod tests {
     #[test]
     fn render_html_task_list_checked() {
         let html = render_md("- [x] done");
-        assert!(html.contains("type=\"checkbox\""), "checkbox missing: {html}");
+        assert!(
+            html.contains("type=\"checkbox\""),
+            "checkbox missing: {html}"
+        );
         assert!(html.contains("checked"), "checked attr missing: {html}");
     }
 
@@ -4406,10 +6002,7 @@ mod tests {
 
     #[test]
     fn embed_simple() {
-        assert_eq!(
-            transform_wikilinks("![[image.png]]"),
-            "![](image.png)"
-        );
+        assert_eq!(transform_wikilinks("![[image.png]]"), "![](image.png)");
     }
 
     #[test]
@@ -4459,7 +6052,10 @@ mod tests {
             None,
             &LinkMode::single_file(),
         );
-        assert!(html.contains(r#"href="Foo.html""#), "expected .html href: {html}");
+        assert!(
+            html.contains(r#"href="Foo.html""#),
+            "expected .html href: {html}"
+        );
         assert!(html.contains(">Foo</a>"));
     }
 

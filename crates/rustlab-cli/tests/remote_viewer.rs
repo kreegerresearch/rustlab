@@ -8,7 +8,9 @@
 //! client is genuinely talking through a proxy rather than straight to the
 //! listener.
 
-#![cfg(unix)]
+// `rustlab remote` is compiled only with the viewer feature (`make install`
+// builds it); the default CI build has no such subcommand to test.
+#![cfg(all(unix, feature = "viewer"))]
 
 use rustlab_proto::{read_msg, write_msg, ViewerMsg, ViewerReply};
 use std::io::{Read, Write};
@@ -125,7 +127,6 @@ fn collect(rx: &mpsc::Receiver<String>) -> Vec<String> {
 /// The end-to-end shape of a remote session, minus SSH: plot data reaches a
 /// viewer at a non-default socket path, through a relay.
 #[test]
-#[cfg_attr(not(feature = "viewer"), ignore = "requires the viewer feature")]
 fn plots_reach_a_viewer_through_a_forwarded_socket() {
     let viewer_sock = SockPath::new("viewer");
     let fwd_sock = SockPath::new("fwd");
@@ -139,12 +140,7 @@ fn plots_reach_a_viewer_through_a_forwarded_socket() {
     let out = rustlab()
         // The forwarded path, not the default — this is the mechanism under test.
         .env("RUSTLAB_VIEWER_SOCK", fwd_sock.as_str())
-        .args([
-            "run",
-            script.to_str().unwrap(),
-            "--plot",
-            "viewer",
-        ])
+        .args(["run", script.to_str().unwrap(), "--plot", "viewer"])
         .output()
         .expect("run script");
 
@@ -166,7 +162,6 @@ fn plots_reach_a_viewer_through_a_forwarded_socket() {
 /// Without a viewer at the other end, the client says so and names the path it
 /// tried — the detail that makes a broken forward diagnosable.
 #[test]
-#[cfg_attr(not(feature = "viewer"), ignore = "requires the viewer feature")]
 fn a_dead_socket_reports_the_path_it_tried() {
     let missing = "/tmp/rl-test-nonexistent.sock";
     let _ = std::fs::remove_file(missing);
@@ -228,7 +223,10 @@ fn remote_print_renders_the_ssh_command() {
 fn remote_without_a_local_viewer_fails_early() {
     let out = rustlab()
         .args(["remote", "me@host"])
-        .env("RUSTLAB_VIEWER_SOCK", "/tmp/rl-test-definitely-not-here.sock")
+        .env(
+            "RUSTLAB_VIEWER_SOCK",
+            "/tmp/rl-test-definitely-not-here.sock",
+        )
         .output()
         .expect("remote runs");
     assert!(!out.status.success(), "should have failed");

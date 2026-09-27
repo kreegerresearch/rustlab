@@ -72,10 +72,11 @@ file to scrub it back to source, then restart the watcher.
 ## Other quick starts (non-Obsidian)
 
 ```
-rustlab-notebook render analysis.md              # → analysis.html (default, dark theme)
-rustlab-notebook render analysis.md -t light     # → analysis.html (light theme)
+rustlab-notebook render analysis.md              # → analysis.html (default: mocha / dark, or [notebook] theme from ~/.rustlabrc)
+rustlab-notebook render analysis.md -t light     # → latte (light alias; CLI wins over rc)
+rustlab-notebook render analysis.md -t macchiato # → Catppuccin Macchiato
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
-rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (requires pdflatex)
+rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (always light; requires pdflatex)
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
 rustlab-notebook render analysis.md -f markdown --obsidian  # vault-native in-place rewrite
 rustlab-notebook render analysis.md -o out.html  # explicit output path
@@ -194,11 +195,12 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 #### Interactive server (bare input)
 
 ```
-rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042
+rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
+rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
 ```
 
 Behaviour:
@@ -231,11 +233,16 @@ Behaviour:
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no
   in-place rewrite.
-- **Browser auto-opens** when stderr is a TTY and `CI` is unset;
-  `--no-browser` forces off. On Linux/WSL the server tries
-  `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
-  then `gio open` / `sensible-browser`, falling back to printing the
-  URL if none are present.
+- **Browser auto-opens** unless `--no-browser` is passed or `CI` is set.
+  There is no TTY check, so launches from an IDE, a launcher, or a piped
+  shell open the browser too, and no opener override: the OS default
+  browser is used. Openers, in order: macOS `open`; Windows `cmd /c start`
+  then PowerShell `Start-Process`; WSL `wslview` (Windows host browser),
+  then `cmd.exe /c start` / `explorer.exe`, then the Linux list
+  (`xdg-open`, `gio open`, `sensible-browser`, `x-www-browser`). Each is
+  waited on for at most about a second, so a browser binary that keeps
+  running never delays the server. If none works the URL is printed for a
+  manual open.
 - **Source pane (split view).** A "Source" button in the top-right
   toolbar slides in a pane showing the raw `.md` (served from
   `/raw/<slug>`). The toolbar and pane live outside the rendered
@@ -324,7 +331,10 @@ rustlab-notebook watch notebooks/  --editable     # whole directory, every page 
 
 `--editable` turns the source pane into a [CodeMirror](https://codemirror.net/5/)
 editor (Markdown mode, line numbers) that **writes back to the
-`.md`**:
+`.md`**. `POST /save` and the live-reload WebSocket require a loopback
+`Origin` for the bound port, and every request must present a loopback
+`Host` — see [`docs/security.md`](security.md). There is no session
+token; other processes on the same machine can still reach the port.
 
 - Click **Edit** to open the pane, change the source, then **Save**
   (or `Ctrl`/`Cmd`-S). The buffer is `POST`ed to `/save/<slug>`, the
@@ -484,6 +494,7 @@ someone or that the renderer can't surface up-front.
 | `W002` | warning | `<details>` and `</details>` tag counts don't balance. | no |
 | `W003` | warning | `[text](other.md)` link whose target file doesn't exist. | no |
 | `W004` | warning | `[text](other.md#frag)` fragment that matches no anchor in the target — anchors are explicit `{#id}` attributes or heading slugs. | no |
+| `W005` | warning | `<!-- code: … -->` or frontmatter `code:` is not `open` or `collapsed`, or a `code:` directive is not followed by a ` ```rustlab ` block. | no |
 
 Findings are printed one per line in the form
 `<path>:<line> [<code>] <severity>: <message>`, sorted by source
@@ -551,9 +562,33 @@ The passband ripple is well within spec.
 
 Each code block produces up to three zones in the output:
 
-1. **Source** — the rustlab code (syntax-highlighted in HTML)
+1. **Source** — the rustlab code (syntax-highlighted in HTML and in LaTeX/PDF)
 2. **Text output** — anything the code prints (`disp()`, `ans =`, etc.)
 3. **Plot** — interactive Plotly chart (HTML) or static SVG (LaTeX/PDF)
+
+In HTML (including `notebook watch`) the source, printed output, and
+errors share one indented block (`.rl-cell`) with a left rule in the
+theme accent color. The source alone is a `<details>` (`rustlab`
+summary). It starts open unless a cell `<!-- code: collapsed -->`,
+the notebook frontmatter `code: collapsed`, or `~/.rustlabrc`
+`[notebook] code = "collapsed"` says otherwise (most specific wins;
+see [Directives](#directives)). Collapsing it leaves that summary and
+the accent rule, and leaves printed output, errors, and plots visible.
+On `notebook watch`, a disclosure the reader has opened or closed
+keeps that choice across live updates; a cell they have not touched
+picks up a changed directive or frontmatter on the next render.
+Opening the inline cell editor expands the disclosure. The editor
+sits inside it, so it lines up with the source.
+LaTeX/PDF always shows the source expanded and ignores `code:`.
+The source, printed output, and errors are separate breakable panels
+(a `tcolorbox`, not `minted`) with a mauve left rule. A small
+`rustlab` label sits above the source and is omitted when
+`<!-- hide -->` hides it. Printed output is `fancyvrb` so `_` and `%`
+stay literal. The panels break across pages. `<!-- details: -->` is a
+link-blue title on its own line between the panels. Plots and
+animations stay full width, outside the panels, in every format.
+`<!-- grid: N -->` lays plots out in a row of minipages (at most four
+across; a short last row stays left-aligned).
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
@@ -807,14 +842,67 @@ title("Spectrum")
 ````
 
 In the output, only the second block's source code is shown. The plot
-from the hidden block (if any) still appears.
+from the hidden block (if any) still appears. `<!-- hide -->` wins over
+`<!-- code: -->`: the source disclosure is omitted entirely.
+
+### `<!-- code: collapsed -->` / `<!-- code: open -->`
+
+Sets the initial state of that cell's source disclosure. `collapsed`
+omits the HTML `open` attribute; `open` forces it. The value is
+case-insensitive. Output, errors, and plots stay visible either way.
+
+The most specific setting wins:
+
+1. This directive, on the line immediately before the ` ```rustlab ` fence.
+2. Frontmatter `code: collapsed` or `code: open` (see [Frontmatter](#frontmatter)).
+3. `~/.rustlabrc` `[notebook] code = "collapsed"` or `"open"`.
+4. Built-in default: open.
+
+````markdown
+---
+code: collapsed
+---
+
+# Filter Analysis
+
+```rustlab
+fs = 16000
+```
+
+<!-- code: open -->
+```rustlab
+h = fir_lowpass(64, 3000, fs, "hamming")
+```
+````
+
+The first cell starts collapsed. The second starts open, overriding
+the frontmatter. An unrecognised value (`<!-- code: folded -->`, or
+frontmatter `code: maybe`) is a `notebook check` warning (`W005`) and
+does not change the state — the next level (frontmatter, rc, or open)
+still applies. A `<!-- code: -->` line that is not followed by a
+` ```rustlab ` block warns too. LaTeX/PDF ignore the setting and always
+show the source.
+
+On `notebook watch`, the resolved state is what the page first shows.
+If the reader toggles a disclosure, that choice is remembered for that
+cell across live updates (keyed by the cell's position). Cells they
+have not toggled follow a changed directive or frontmatter on the next
+render. A structural edit that inserts or removes a cell can attach a
+remembered toggle to a different cell. Opening the inline editor still
+expands the disclosure.
 
 ### `<!-- details: Title -->`
 
 Wraps a code block's output (text, errors, and plots) in a collapsible
 `<details>` disclosure widget with the given summary label. The source
-code remains visible above the widget. Useful for long console output
-or galleries of diagnostic plots that would otherwise dominate the page.
+stays above that widget, in its own indented cell, and can still be
+collapsed on its own. That sibling source disclosure uses the resolved
+`code:` state. The two disclosures are siblings: the source
+disclosure is not nested inside the author's. Printed
+text and errors inside the disclosure use the same indent and left rule;
+plots stay full width inside the disclosure. Useful for long console
+output or galleries of diagnostic plots that would otherwise dominate
+the page.
 
 ````markdown
 <!-- details: Show sweep results -->
@@ -842,9 +930,11 @@ figure; plot(angle(fft(x))); title("Phase")
 
 ### Stacking code-block directives
 
-`<!-- hide -->`, `<!-- details: ... -->`, and `<!-- grid: N -->` can all
-be stacked on consecutive lines immediately before a ```rustlab fence.
-Order within the stack does not matter.
+`<!-- hide -->`, `<!-- code: open|collapsed -->`, `<!-- details: ... -->`,
+`<!-- caption: ... -->`, and `<!-- grid: N -->` can all be stacked on
+consecutive lines immediately before a ```rustlab fence. Order within
+the stack does not matter. Two `code:` lines on the same stack: the
+recognised value closest to the fence wins.
 
 ````markdown
 <!-- hide -->
@@ -1035,7 +1125,10 @@ emits the GFM-native syntax regardless of which form the source used,
 so legacy notebooks auto-migrate on the next render.
 
 In HTML output, each callout renders as a titled box coloured by kind.
-In LaTeX/PDF output, callouts render as labelled paragraphs.
+In LaTeX/PDF output, callouts are the same kind of titled card (a
+breakable box, coloured title, 4pt left border). Exercises are a card
+too; the solution is printed under a Solution label rather than
+collapsed, because a PDF has no disclosure.
 
 ### Exercises and solutions: `<!-- exercise -->`, `<!-- solution -->`
 
@@ -1067,16 +1160,82 @@ Compare the main-lobe width against a rectangular window of equal length.
 Solutions render as an HTML `<details>` widget (collapsed by default) so
 readers can attempt the exercise before revealing the answer.
 
+## Color themes
+
+Notebook HTML, LaTeX, and PDF share one palette type (`ThemeColors` in
+`rustlab-plot`). Built-in schemes are the four [Catppuccin](https://github.com/catppuccin/palette)
+flavors; CLI aliases keep the old flags working:
+
+| `-t` / `--theme` | Scheme | Mode |
+| --- | --- | --- |
+| `mocha` or `dark` (default) | Catppuccin Mocha | dark |
+| `macchiato` | Catppuccin Macchiato | dark |
+| `frappe` | Catppuccin Frappé | dark |
+| `latte` or `light` | Catppuccin Latte | light |
+
+Mode (CSS `color-scheme`) is derived from the background's sRGB relative
+luminance (&lt; 0.5 → dark), not from pointer identity against the Mocha
+static. LaTeX and PDF ignore the theme and are always Latte on white
+paper. Without `-t`, `~/.rustlabrc` `[notebook] theme` (then `[plot]
+theme`) supplies the default using the same names.
+
+### Catppuccin → `ThemeColors` mapping
+
+The same role map is used for every flavor:
+
+| `ThemeColors` field | Catppuccin token |
+| --- | --- |
+| `bg`, `plot_bg` | `base` |
+| `bg_secondary`, `output_bg` | `mantle` |
+| `text` | `text` |
+| `text_dim` | `subtext0` |
+| `border`, `inline_code_bg` | `surface0` |
+| `border_subtle` | `surface1` |
+| `accent_primary`, `syn_keyword` | `mauve` |
+| `accent_secondary`, `syn_function` | `blue` |
+| `accent_tertiary` | `sapphire` |
+| `code_bg` | `crust` |
+| `error_text` | `red` |
+| `syn_number` | `peach` |
+| `syn_string` | `green` |
+| `syn_comment` | `overlay0` |
+| `syn_operator` | `sky` |
+| `footer_text` | `surface2` |
+
+`error_bg` and `plot_grid` are local tints (not named Catppuccin tokens).
+
+### HTML CSS custom properties
+
+HTML (notebook pages, the directory index, and `watch` chrome) emits the
+resolved palette on `:root` as `--rl-*` tokens — kebab-case of the
+`ThemeColors` fields (`bg_secondary` → `--rl-bg-secondary`). The page
+stylesheet prefers `var(--rl-bg, #1e1e2e)` (token first, literal
+fallback) so colors stay unchanged if a variable is missing. Plotly /
+SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`
+and `--rl-plot-grid` are declared for future chrome.
+
 ## Output Formats
 
 ### HTML (default)
 
 Self-contained HTML with:
-- Catppuccin dark theme (default) or light theme (`-t light`)
+- Catppuccin themes via `-t` / `--theme`: `mocha` (default; alias `dark`),
+  `macchiato`, `frappe`, `latte` (alias `light`). The default is
+  overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
+  if the notebook key is omitted; same names); `-t` / `--theme` always
+  wins. The initial source-disclosure state is `[notebook] code` (`"open"` or
+  `"collapsed"`, default open), overridable per notebook and per cell
+  (see `<!-- code: -->` above). An invalid `code` value warns once and
+  falls back to open.
 - Interactive Plotly charts (zoom, pan, hover) — chart colors match the theme
 - KaTeX formula rendering
 - Navigation sidebar from headings
-- Syntax-highlighted code blocks (colors adapt to theme)
+- Syntax-highlighted `` ```rustlab `` cells. Colors come from the same
+  lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
+  numbers, operators, call-like names) and follow the Catppuccin theme.
+  Token text is escaped HTML (`<span class="syn-*">`); there is no
+  client-side highlighter. Markdown fences that are not `rustlab`, inline
+  code, and printed output are not highlighted.
 - Responsive layout (sidebar collapses on mobile)
 
 ### Markdown (`--format markdown`)
@@ -1091,6 +1250,11 @@ rustlab-notebook render analysis.md -f markdown
 # → analysis.md
 # → plots/analysis/plot-1.svg, plot-2.svg, ...
 ```
+
+**Rustlab fences are not recolored on the way out.** `--format markdown`
+emits `` ```rustlab `` blocks. GitHub and Obsidian have no rustlab grammar,
+so those fences stay plain monospace until a Linguist grammar exists.
+HTML and PDF color the same cells.
 
 **Math passes through verbatim.** GitHub's math span handling does not
 apply CommonMark backslash-escape or emphasis-pairing inside `$…$` /
@@ -1108,6 +1272,34 @@ wrong: the rewritten form rendered as a literal `\\;` on github.com.
 The rewriter has been removed; if the assumption ever needs to be
 revisited, do it with an actual GitHub round-trip, not a unit test.)
 
+#### Raw HTML in prose
+
+HTML output (files and `notebook watch`) sanitises raw HTML written in
+prose. Attribute-free formatting tags pass through unchanged — `<b>`,
+`<i>`, `<br>`, `<sub>`, `<sup>`, `<kbd>`, `<details>`/`<summary>`,
+`<div>`, `<span>`, `<hr>`, table tags, and similar. Any tag that carries
+an attribute (`<details open>`, `<span style=…>`, `<a href=…>`) and every
+tag off that list (`<script>`, `<iframe>`, `<img>`, `<style>`, …) is
+rendered as escaped text so you can see it did not apply; HTML comments
+are dropped. Links and images belong in markdown syntax; `javascript:` /
+`data:` / `vbscript:` / `blob:` link targets are neutralised, and images
+accept `data:image/*` only. Markdown output (`-f markdown`) passes raw
+HTML through untouched — GitHub and Obsidian apply their own filters.
+
+#### Path jail for notebook code
+
+Notebook code may only read and write under its jail root: `load`,
+`save`, `savefig`, `saveanim`, `run`, `figure("….html")` and
+`![[embeds]]` that resolve outside it fail with
+`path escapes notebook directory`. The root is the notebook's own
+directory for a single-file render, the collection root when you render
+or watch a directory (so `ch2/lesson.md` may `load("../data/x.csv")`),
+or whatever `--jail-root <DIR>` names (an ancestor of the notebooks — a
+root that does not contain them rejects their own relative paths).
+Relative paths still resolve
+against the notebook's own directory; `sub/../file` is fine when it stays
+inside. See `docs/security.md`.
+
 ### LaTeX (`--format latex`)
 
 Produces a `.tex` file and a `plots/<name>/` directory of SVG images.
@@ -1118,32 +1310,65 @@ rustlab-notebook render analysis.md -f latex
 # → plots/analysis/plot-1.svg, plot-2.svg, ...
 ```
 
-The `.tex` file uses `article` class with `amsmath`, `booktabs`,
-`graphicx`, `svg`, `xcolor`, and `hyperref`. Formulas render natively.
-Compile with any LaTeX engine that supports `\includesvg` (e.g.,
-lualatex with inkscape, or pdflatex with the svg package).
+The `.tex` file uses `article` class with `lmodern`, `amsmath`,
+`booktabs`, `graphicx`, `xcolor` (with the `table` option), `tcolorbox`,
+`fancyvrb`, `sectsty`, `float`, and `hyperref`. Formulas render
+natively. Plot SVGs are converted to PDF by a fixed-argv Inkscape call
+before the engine runs (no TeX shell-escape); the `.tex` includes them
+with `\includegraphics` (no `svg` package). rustlab writes a `.pdf`
+companion next to each `.svg` so the file compiles with plain `pdflatex`
+or `tectonic`. Without Inkscape the `.tex` is still written and a
+warning tells you which conversions were skipped. A failing conversion
+reports the tail of Inkscape's stderr.
 
-With `-t light` (default), the output is standard black-on-white LaTeX.
-With `-t dark`, the document uses `pagecolor` for a dark background with
-light text, matching the Catppuccin Mocha palette.
+LaTeX and PDF are always Catppuccin Latte on white paper, whatever
+`-t` or `~/.rustlabrc` says. `-t` themes HTML and `notebook watch`
+only. There is no dark `pagecolor`. Body text is `#4c4f69`. Headings
+are unnumbered: H1 `#8839ef`, H2 `#1e66f5`, H3 `#179299`. The title
+block has no date.
+
+Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
+`rlnum`, `rlstr`, `rlcom`, `rlop`), using the Latte hex values. Comments
+are italic typewriter. Each token is LaTeX-escaped. Source, printed
+output, and errors sit in breakable `tcolorbox` panels (code background
+`#dce0e8`, output `#e6e9ef` with dim text `#6c6f85`, errors `#fce4e4` /
+`#d20f39`) with a mauve left rule. PDF does not collapse the source.
+A single plot is centered; `<!-- grid: N -->` uses a row of minipages.
+Mermaid figures use the `float` package's `[H]` so they stay with the
+heading that introduces them. This path does not use `minted`.
 
 ### PDF (`--format pdf`)
 
 Generates LaTeX then compiles to PDF. Requires `pdflatex` or `tectonic`
-in PATH, plus `inkscape` (the `svg` LaTeX package shells out to it to
-convert plot SVGs). See `AGENTS.md` § *Testing dependencies* for
-per-platform install commands.
+in PATH, plus `inkscape` to convert plot SVGs to PDF with a fixed argv
+(**TeX shell-escape is not used** — see `docs/security.md`). The `.tex`
+references plots via `\includegraphics`, not `\includesvg`.
 
 ```
 rustlab-notebook render analysis.md -f pdf
 # → analysis.pdf   (single file — intermediates compile in a temp dir)
 ```
 
-The `.tex` source and SVG plots used during compilation live in a
+The `.tex` source and SVG/PDF plots used during compilation live in a
 temporary directory that is deleted on completion, so the only artifact
 left behind is the requested `.pdf`. If the build fails, the LaTeX log
 is preserved next to the requested PDF path as `<stem>.log` so the
 failure is debuggable.
+
+**Unicode in prose.** `pdflatex` only accepts the characters its
+preamble declares. rustlab ships a table of common math, Greek, arrow,
+sub/superscript and box-drawing characters, and when `pdflatex` still
+rejects one it recompiles with a fallback for every rejected character:
+superscript, subscript and modifier letters (`2ⁿ`, `Aᵀ`), the remaining
+Greek letters, `ħ`, set and arrow symbols map to the matching LaTeX
+macro; anything else prints as `[U+XXXX]`. A warning on stderr names the
+characters and which ones got a placeholder, so you can move those into
+`$…$` math or ASCII in the source. A character in prose never fails a
+build.
+
+**Directory mode.** One notebook's PDF failure no longer aborts the
+build. The error and its `<stem>.log` are reported, the remaining
+notebooks still render, and the command exits 1 at the end.
 
 ### JSON (`--format json`, for tooling)
 
@@ -1227,7 +1452,7 @@ Internally, both renderers take two arguments to support this:
 
 - `plot_dir: &Path` — where to write the SVGs on disk
 - `plot_href_prefix: &str` — what relative path to embed in the rendered
-  document (markdown `![alt](…)` and LaTeX `\includesvg{…}`)
+  document (markdown `![alt](…)` and LaTeX `\includegraphics{…}`)
 
 Splitting "where the bytes go" from "what the document references" is
 what lets the on-disk layout be reorganised without touching the
@@ -1236,7 +1461,7 @@ follow the same shape.
 
 ## Frontmatter
 
-Optional YAML frontmatter is parsed before rendering. Two keys are
+Optional YAML frontmatter is parsed before rendering. Three keys are
 recognised; unknown keys are ignored silently so the block is safe to
 use for arbitrary metadata.
 
@@ -1244,6 +1469,7 @@ use for arbitrary metadata.
 ---
 title: Filter Analysis
 order: 2
+code: collapsed
 author: Jane Doe      # ignored (unknown key)
 ---
 
@@ -1256,6 +1482,12 @@ author: Jane Doe      # ignored (unknown key)
 - `order:` (alias `weight:`) — signed integer that sorts entries on the
   directory index page, ascending. Ties break by filename. Entries
   without `order` sort after entries that have one.
+- `code:` — `open` or `collapsed` (case-insensitive; quotes optional).
+  Initial state of every rustlab source disclosure in this notebook
+  that does not set `<!-- code: -->`. Overrides `~/.rustlabrc`
+  `[notebook] code`. An unrecognised value warns (`W005`) and is
+  ignored, so the rc value or the built-in default (open) still applies.
+  LaTeX/PDF ignore it.
 - Quoted values (single or double) are unwrapped.
 
 ## Project Layout
@@ -1280,8 +1512,9 @@ my-project/
 Render an entire directory of notebooks at once:
 
 ```
-rustlab-notebook render notebooks/                # → *.html + index.html (dark)
-rustlab-notebook render notebooks/ -t light       # → *.html + index.html (light)
+rustlab-notebook render notebooks/                # → *.html + index.html (mocha)
+rustlab-notebook render notebooks/ -t light       # → *.html + index.html (latte)
+rustlab-notebook render notebooks/ -t frappe      # → Frappé
 rustlab-notebook render notebooks/ -f pdf         # → *.pdf
 rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
@@ -1334,6 +1567,19 @@ survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
 `/n/filter_design#anchor`), titled and reference-style links resolve the
 same way, and `[[wikilinks]]` go through the same resolver.
 
+Lookup order, for both `render` and `watch`:
+
+1. **Page-relative** (CommonMark) — `[x](../ch2/notes.md)` from `ch1/`
+   resolves against the linking notebook's directory.
+2. **Collection-root-relative** — if that misses and the dest is not
+   `./` or `../`, `[x](ch2/notes.md)` and `[[ch2/notes]]` (Obsidian
+   wikilinks are vault-relative) are tried from the collection root.
+   Static HTML emits the climbed path (`../ch2/notes.html`), not the
+   dest as written.
+3. **Unique basename** — a bare `[x](notes.md)` that still misses
+   matches the one notebook in the collection with that filename. Two
+   files sharing the name stay unresolved rather than picking a winner.
+
 PDF and LaTeX output resolves the same links to the sibling `.pdf`
 files a directory PDF build emits (`filter_design.md` →
 `\href{filter_design.pdf}`), dropping `#anchor` fragments — PDFs have
@@ -1349,7 +1595,9 @@ In a directory render, only links to notebooks the build actually emits
 are rewritten. A link to a partial (`_setup.md`), or to a target that
 does not exist, is left exactly as written — a visibly broken `.md` link
 is easier to notice and fix than a generated `.html` one that 404s while
-looking intentional.
+looking intentional. `watch <file.md>` (single-file) has no collection
+to resolve against; leftover `.md` hrefs 404 on the server — watch the
+parent directory to enable cross-notebook navigation.
 
 ### Page navigation
 

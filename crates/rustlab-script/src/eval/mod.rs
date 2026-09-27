@@ -161,7 +161,7 @@ impl Evaluator {
             stmt_call_nargout0: false,
             profiler: profile::Profiler::default(),
             color_output: false,
-            number_format: value::NumberFormat::Short,
+            number_format: value::default_number_format(),
             current_line: 0,
             cache_registry: CacheRegistry::new(),
             cached_entry_ids: HashMap::new(),
@@ -628,7 +628,9 @@ impl Evaluator {
                 }
             }
             StmtKind::Run { path } => {
-                let source = std::fs::read_to_string(path)
+                let safe = crate::path_jail::check_path(path)
+                    .map_err(ScriptError::runtime)?;
+                let source = std::fs::read_to_string(&safe)
                     .map_err(|e| ScriptError::runtime(format!("run: {}: {}", path, e)))?;
                 let tokens = crate::lexer::tokenize(&source)?;
                 let stmts = crate::parser::parse(tokens)?;

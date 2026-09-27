@@ -3957,6 +3957,7 @@ dependencies = [
  "ndarray",
  "num-complex",
  "rustlab-cache",
+ "rustlab-config",
  "rustlab-core",
  "rustlab-dsp",
  "rustlab-plot",
@@ -3966,6 +3967,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "rustlab-config"
+version = "0.3.7"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml",
 ]
 
 [[package]]
@@ -4004,7 +4014,9 @@ dependencies = [
  "mermaid-rs-renderer",
  "notify",
  "pulldown-cmark",
+ "rand 0.8.5",
  "rustlab-cache",
+ "rustlab-config",
  "rustlab-plot",
  "rustlab-script",
  "serde",

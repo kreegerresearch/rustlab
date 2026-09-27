@@ -4,7 +4,9 @@ Run `rustlab` on a remote machine and have its plots open in a
 `rustlab-viewer` window on your own desktop. Useful when the data lives on a
 big box and the screen doesn't.
 
-Works on Linux, macOS and WSL. All you need is SSH.
+Works on Linux, macOS and WSL. You need SSH and a `rustlab` built with the
+viewer feature on both ends: `make install` does that; a plain `cargo install`
+leaves `rustlab remote` out.
 
 ## Quickstart
 
@@ -98,6 +100,20 @@ export RUSTLAB_VIEWER_SOCK=/tmp/rustlab-fwd.sock
 
 After that, `viewer on` inside a remote REPL connects to your local viewer.
 
+### Already inside a session?
+
+A forward has to be requested when the connection is made, but OpenSSH lets
+you add one to a live session: press `Enter`, then `~C` to open the ssh
+command line, and type the same `-R` you would have passed on the command
+line:
+
+```
+ssh> -R /tmp/rustlab-fwd.sock:/tmp/rustlab-viewer-501.sock
+```
+
+Then, in that shell, `export RUSTLAB_VIEWER_SOCK=/tmp/rustlab-fwd.sock` and
+start `rustlab repl --viewer`. The viewer must already be running locally.
+
 Note the hardcoded `501` — that's *your* local uid (`id -u`). The wrapper looks
 this up for you; a config file can't.
 
@@ -157,7 +173,7 @@ ssh -R 19847:localhost:19847 user@host
 
 | Option | Effect |
 |---|---|
-| `--remote-socket PATH` | Socket to create on the remote. Default `/tmp/rustlab-fwd-<remote-uid>.sock`, keyed on the remote user so two people on one box don't collide. |
+| `--remote-socket PATH` | Socket to create on the remote. Default `/tmp/rustlab-fwd-<remote-uid>.sock`, keyed on the remote user so two people on one box don't collide. Two sessions by the *same* remote user share that default and each new session removes it, so give concurrent sessions distinct paths. |
 | `--command CMD` | What to run remotely. Default `rustlab repl --viewer`. |
 | `--ssh-opt OPT` | Passed verbatim to ssh, repeatable: `--ssh-opt -p --ssh-opt 2222`. For anything involved, an `~/.ssh/config` entry is easier. |
 | `--print` | Print the ssh command instead of running it. |

@@ -35,8 +35,10 @@ pub mod cache_registry;
 pub mod cache_value;
 pub mod error;
 pub mod eval;
+pub mod highlight;
 pub mod lexer;
 pub mod parser;
+pub mod path_jail;
 pub mod purity;
 
 #[cfg(test)]
@@ -44,9 +46,11 @@ mod tests;
 
 pub use error::ScriptError;
 pub use eval::output::{capturing, start_capture, stop_capture};
+pub use eval::value::{default_number_format, set_default_number_format, NumberFormat};
 pub use eval::Evaluator;
 pub use eval::Value;
 pub use eval::WidgetValue;
+pub use path_jail::{check_path, path_jail, set_path_jail, PathJail, PathJailGuard};
 
 /// Parse a `.rlab` source file into a statement list. Thin convenience
 /// over `read_to_string` + `lexer::tokenize` + `parser::parse`; mirrors

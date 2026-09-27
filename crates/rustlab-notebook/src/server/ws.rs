@@ -20,16 +20,22 @@ use super::render_loop::RenderRequest;
 /// Axum upgrade handler for `/n/{slug}/ws`. Resolves the notebook by
 /// slug, then hands the socket to [`handle_socket`] bound to that
 /// notebook's broadcast channel. Unknown slug → 404 (no upgrade).
+/// Requires a loopback `Origin` for the bound port (missing Origin is
+/// 403). The Host check lives in the router middleware.
 pub async fn ws_upgrade(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    if !super::auth::origin_allowed(&headers, port) {
+        let body = super::auth::origin_rejection_body(&headers, port);
+        return (StatusCode::FORBIDDEN, body).into_response();
+    }
     match state.notebook(&slug) {
         Some(nb) => {
             let nb = nb.clone();
-            // Clone the render-request sender so the widget_update handler
-            // can ask the coordinator to re-render this notebook.
             let render_tx = state.render_tx.get().cloned();
             let editable = state.editable;
             ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx, editable))
@@ -59,6 +65,8 @@ async fn handle_socket(
     editable: bool,
 ) {
     let mut rx = nb.broadcast.subscribe();
+    // Upgrade already required a loopback Origin; inbound mutates on
+    // this socket are therefore same-origin for this connection.
 
     loop {
         tokio::select! {
@@ -317,11 +325,7 @@ fn locate_code_block(
 /// `save_lock` across the whole read-modify-write so concurrent cell
 /// saves (another tab) and whole-doc `POST /save` writes serialise.
 /// Every rejection path leaves the file untouched.
-async fn handle_cell_save(
-    nb: &Notebook,
-    editable: bool,
-    req: SaveRunBlock,
-) -> Result<(), String> {
+async fn handle_cell_save(nb: &Notebook, editable: bool, req: SaveRunBlock) -> Result<(), String> {
     if !editable {
         return Err("cell editing requires --editable".to_string());
     }
@@ -736,11 +740,22 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
 /// the page still gets the live-reload script in degenerate
 /// renders.
 pub fn inject_ws_client(html: &str) -> String {
+    inject_ws_client_nonced(html, None)
+}
+
+/// [`inject_ws_client`] with the server's CSP nonce on the injected
+/// `<script>` (the tag is ours, so stamping it here is safe).
+pub fn inject_ws_client_nonced(html: &str, nonce: Option<&str>) -> String {
+    let script = WS_CLIENT_SCRIPT.replacen(
+        "<script>",
+        &format!("<script{}>", crate::render::nonce_attr(nonce)),
+        1,
+    );
     if let Some(idx) = html.find("</head>") {
         let (head, rest) = html.split_at(idx);
-        format!("{head}{WS_CLIENT_SCRIPT}{rest}")
+        format!("{head}{script}{rest}")
     } else {
-        format!("{html}\n{WS_CLIENT_SCRIPT}")
+        format!("{html}\n{script}")
     }
 }
 
@@ -782,9 +797,7 @@ mod tests {
         assert!(parse_widget_update(r#"{"kind":"full","html":"x"}"#).is_none());
         assert!(parse_widget_update(r#"{"kind":"widget_update","name":"a"}"#).is_none());
         assert!(parse_widget_update(r#"{"kind":"widget_update","value":1}"#).is_none());
-        assert!(
-            parse_widget_update(r#"{"kind":"widget_update","name":" ","value":1}"#).is_none()
-        );
+        assert!(parse_widget_update(r#"{"kind":"widget_update","name":" ","value":1}"#).is_none());
         assert!(
             parse_widget_update(r#"{"kind":"widget_update","name":"a","value":null}"#).is_none()
         );
@@ -794,7 +807,10 @@ mod tests {
     #[test]
     fn parse_run_block_accepts_plain_index() {
         assert_eq!(parse_run_block(r#"{"kind":"run_block","idx":0}"#), Some(0));
-        assert_eq!(parse_run_block(r#"{"kind":"run_block","idx":42}"#), Some(42));
+        assert_eq!(
+            parse_run_block(r#"{"kind":"run_block","idx":42}"#),
+            Some(42)
+        );
     }
 
     #[test]
@@ -828,10 +844,9 @@ mod tests {
     fn parse_save_run_block_rejects_garbage() {
         assert!(parse_save_run_block(r#"{"kind":"run_block","idx":1}"#).is_none());
         assert!(parse_save_run_block(r#"{"kind":"save_run_block","idx":1}"#).is_none());
-        assert!(parse_save_run_block(
-            r#"{"kind":"save_run_block","idx":1,"source":"x"}"#
-        )
-        .is_none());
+        assert!(
+            parse_save_run_block(r#"{"kind":"save_run_block","idx":1,"source":"x"}"#).is_none()
+        );
         assert!(parse_save_run_block(
             r#"{"kind":"save_run_block","idx":-1,"source":"x","prev_source":"y"}"#
         )
@@ -845,8 +860,7 @@ mod tests {
 
     #[test]
     fn cell_saved_envelope_shapes() {
-        let ok: serde_json::Value =
-            serde_json::from_str(&cell_saved_envelope(4, Ok(()))).unwrap();
+        let ok: serde_json::Value = serde_json::from_str(&cell_saved_envelope(4, Ok(()))).unwrap();
         assert_eq!(ok["kind"], "cell_saved");
         assert_eq!(ok["idx"], 4);
         assert_eq!(ok["ok"], true);
@@ -869,7 +883,9 @@ mod tests {
             (0, "a = 1;".to_string())
         );
         assert!(
-            locate_code_block(&blocks, 1).unwrap_err().contains("mermaid"),
+            locate_code_block(&blocks, 1)
+                .unwrap_err()
+                .contains("mermaid"),
             "exec slot 1 is the diagram"
         );
         assert_eq!(
@@ -877,7 +893,9 @@ mod tests {
             (1, "b = 2;".to_string()),
             "second code block is fence ordinal 1"
         );
-        assert!(locate_code_block(&blocks, 3).unwrap_err().contains("out of range"));
+        assert!(locate_code_block(&blocks, 3)
+            .unwrap_err()
+            .contains("out of range"));
     }
 
     /// Async save-path units: every rejection leaves the file untouched;
@@ -973,8 +991,7 @@ mod tests {
         assert_eq!(running["state"], "running");
         assert_eq!(running["idx"], 3);
 
-        let done: serde_json::Value =
-            serde_json::from_str(&cell_status_done_envelope()).unwrap();
+        let done: serde_json::Value = serde_json::from_str(&cell_status_done_envelope()).unwrap();
         assert_eq!(done["kind"], "cell_status");
         assert_eq!(done["state"], "done");
         assert!(done.get("idx").is_none(), "done is whole-document, no idx");
@@ -1024,7 +1041,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ws.js");
         std::fs::write(&path, js).unwrap();
-        match std::process::Command::new("node").arg("--check").arg(&path).output() {
+        match std::process::Command::new("node")
+            .arg("--check")
+            .arg(&path)
+            .output()
+        {
             Ok(out) => assert!(
                 out.status.success(),
                 "node --check failed:\n{}",
