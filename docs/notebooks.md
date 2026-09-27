@@ -1252,11 +1252,13 @@ rustlab-notebook render analysis.md -f latex
 The `.tex` file uses `article` class with `lmodern`, `amsmath`,
 `booktabs`, `graphicx`, `xcolor` (with the `table` option), `tcolorbox`,
 `fancyvrb`, `sectsty`, `float`, and `hyperref`. Formulas render
-natively. Plots are referenced with `\includegraphics{plots/<stem>/plot-N}`;
-rustlab writes a `.pdf` companion next to each `.svg` (via a fixed-argv
-Inkscape call, no TeX shell-escape, no `svg` package) so the file compiles
-with plain `pdflatex` or `tectonic`. Without Inkscape the `.tex` is still
-written and a warning tells you which conversions were skipped.
+natively. Plot SVGs are converted to PDF by a fixed-argv Inkscape call
+before the engine runs (no TeX shell-escape); the `.tex` includes them
+with `\includegraphics` (no `svg` package). rustlab writes a `.pdf`
+companion next to each `.svg` so the file compiles with plain `pdflatex`
+or `tectonic`. Without Inkscape the `.tex` is still written and a
+warning tells you which conversions were skipped. A failing conversion
+reports the tail of Inkscape's stderr.
 
 LaTeX and PDF are always Catppuccin Latte on white paper, whatever
 `-t` or `~/.rustlabrc` says. `-t` themes HTML and `notebook watch`
