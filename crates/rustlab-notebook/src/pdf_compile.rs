@@ -68,7 +68,9 @@ fn collect_svgs(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Fixed-argv Inkscape conversion. Tries the Inkscape 1.x CLI first, then
-/// the legacy `-A` form.
+/// the legacy `-A` form. On failure the error carries the tail of
+/// Inkscape's stderr so the user can see *why* (bad SVG, missing plugin,
+/// sandboxing) instead of a bare "failed".
 fn convert_one_svg(svg: &Path, pdf: &Path) -> Result<(), String> {
     // Prefer Inkscape 1.x: inkscape in.svg --export-type=pdf --export-filename=out.pdf
     let modern = Command::new("inkscape")
@@ -76,13 +78,14 @@ fn convert_one_svg(svg: &Path, pdf: &Path) -> Result<(), String> {
         .arg("--export-type=pdf")
         .arg(format!("--export-filename={}", pdf.display()))
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .stderr(std::process::Stdio::piped())
+        .output();
 
-    match modern {
-        Ok(s) if s.success() && pdf.exists() => return Ok(()),
-        _ => {}
-    }
+    let modern_err = match modern {
+        Ok(out) if out.status.success() && pdf.exists() => return Ok(()),
+        Ok(out) => stderr_tail(&out.stderr),
+        Err(e) => format!("failed to run inkscape: {e}"),
+    };
 
     // Legacy: inkscape -A out.pdf in.svg
     let legacy = Command::new("inkscape")
@@ -90,19 +93,30 @@ fn convert_one_svg(svg: &Path, pdf: &Path) -> Result<(), String> {
         .arg(pdf)
         .arg(svg)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::piped())
+        .output()
         .map_err(|e| format!("failed to run inkscape: {e}"))?;
 
-    if legacy.success() && pdf.exists() {
+    if legacy.status.success() && pdf.exists() {
         Ok(())
     } else {
+        let legacy_err = stderr_tail(&legacy.stderr);
         Err(format!(
-            "inkscape failed to convert {} → {}",
+            "inkscape failed to convert {} → {}\n  inkscape 1.x CLI: {}\n  legacy -A CLI: {}",
             svg.display(),
-            pdf.display()
+            pdf.display(),
+            if modern_err.is_empty() { "(no output)" } else { &modern_err },
+            if legacy_err.is_empty() { "(no output)" } else { &legacy_err },
         ))
     }
+}
+
+/// Last few non-empty stderr lines, single-spaced, for error messages.
+fn stderr_tail(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(4);
+    lines[start..].join(" | ")
 }
 
 pub(crate) fn which_exists(cmd: &str) -> bool {

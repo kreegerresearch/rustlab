@@ -28,8 +28,23 @@ use rustlab_plot::ThemeColors;
 /// `page::inject_chrome`'s injection points: `<style>` before `</head>`,
 /// `<script>` before `</body>`, appending when the tags are absent.
 pub fn inject_cell_client(html: &str, theme: &ThemeColors, cell_edit: bool) -> String {
+    inject_cell_client_nonced(html, theme, cell_edit, None)
+}
+
+/// [`inject_cell_client`] with the server's CSP nonce on the injected
+/// `<script>`.
+pub fn inject_cell_client_nonced(
+    html: &str,
+    theme: &ThemeColors,
+    cell_edit: bool,
+    nonce: Option<&str>,
+) -> String {
     let style = cell_style(theme);
-    let script = cell_script(cell_edit);
+    let script = cell_script(cell_edit).replacen(
+        "<script>",
+        &format!("<script{}>", crate::render::nonce_attr(nonce)),
+        1,
+    );
 
     let with_head = match html.find("</head>") {
         Some(idx) => {

@@ -109,7 +109,10 @@ impl<'a> Scanner<'a> {
                 let start = self.i;
                 self.bump();
                 self.push(start, HlKind::Text);
-                self.transpose_base = false;
+                // The lexer reads `'` after `)` or `]` as a transpose
+                // (`v(2:5)'`, `[1, 2, 3]'`). Every other delimiter or
+                // stray character puts the next quote in string context.
+                self.transpose_base = matches!(ch, ')' | ']');
             }
         }
     }
@@ -466,6 +469,22 @@ mod tests {
         // `...` swallows the newline and keeps the ident as the previous token.
         let after_cont = kinds("x ...\n'");
         assert_eq!(after_cont.last().unwrap().0, HlKind::Operator);
+        // `)` and `]` are transpose bases (lexer: RParen / RBracket), so
+        // the rest of the line is not swallowed as a string.
+        for src in ["v(2:5)'", "[1, 2, 3]'", "a(end)'", "x(1)''"] {
+            let last = kinds(src).into_iter().last().unwrap();
+            assert_eq!(last, (HlKind::Operator, "'".to_string()), "{src}");
+        }
+        let ks = kinds("y = [1, 2]'; % note");
+        assert!(
+            ks.iter()
+                .any(|(k, t)| *k == HlKind::Comment && t == "% note"),
+            "{ks:?}"
+        );
+        // Other delimiters still start a string.
+        assert_eq!(kinds("f('a')")[2].0, HlKind::String);
+        assert_eq!(kinds("{'a'}")[1].0, HlKind::String);
+        assert_eq!(kinds("x, 'a'").last().unwrap().0, HlKind::String);
         // IntLit is not a transpose base.
         assert_eq!(kinds("0xFF'")[1].0, HlKind::String);
         // A float is.

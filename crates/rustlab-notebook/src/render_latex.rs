@@ -639,8 +639,13 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
             }
             Event::Html(html) | Event::InlineHtml(html) => {
                 // Raw HTML is never passed through to TeX (XSS / write18
-                // surface). Emit as escaped text so authors still see it.
-                out.push_str(&escape_latex(&html));
+                // surface). HTML comments (author notes, directives that
+                // survived parsing) are dropped; other markup is emitted as
+                // escaped text so authors still see it.
+                let visible = strip_html_comments(&html);
+                if !visible.trim().is_empty() {
+                    out.push_str(&escape_latex(&visible));
+                }
             }
             _ => {}
         }
@@ -683,18 +688,21 @@ fn html_hex(color: &str) -> &str {
 /// and wrapped in `\textcolor`. Output stays in text mode so the
 /// preamble's `\newunicodechar` mappings still apply (they do not fire
 /// inside `verbatim`). No `minted` / shell-escape.
+///
+/// `\obeylines` makes every source line its own paragraph (so the
+/// panel's accent rule fires on each). Two things need help under that
+/// regime: TeX drops a `\par` that directly follows another `\par`, so an
+/// empty line gets an empty `\mbox{}` to keep its height; and active
+/// spaces at the start of a line are lost while TeX is still in vertical
+/// mode, so a line that begins with whitespace is prefixed with
+/// `\leavevmode{}`. Tabs become four spaces (only the space character is
+/// made active, a tab would be skipped at the line start).
 fn emit_highlighted_source(source: &str) -> String {
     use rustlab_script::highlight::HlKind;
-    // Not `flushleft`: that trivlist clears `\everypar`, which drops
-    // the cell's accent rule. Ragged right plus `\obeylines` keeps one
-    // paragraph per source line so the rule hook fires on each of them.
-    let mut out = String::from(
-        "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
-         \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
-    );
+    let mut body = String::with_capacity(source.len() * 2);
     for span in rustlab_script::highlight::highlight(source) {
         let text = &source[span.start..span.end];
-        let escaped = escape_latex(text);
+        let escaped = escape_latex(&text.replace('\t', "    "));
         let color = match span.kind {
             HlKind::Keyword => "rlkw",
             HlKind::Function => "rlfn",
@@ -703,25 +711,47 @@ fn emit_highlighted_source(source: &str) -> String {
             HlKind::Comment => {
                 // Stay in the typewriter family. `\textit` would switch to
                 // roman italic and break the mono column.
-                out.push_str("{\\itshape\\textcolor{rlcom}{");
-                out.push_str(&escaped);
-                out.push_str("}}");
+                body.push_str("{\\itshape\\textcolor{rlcom}{");
+                body.push_str(&escaped);
+                body.push_str("}}");
                 continue;
             }
             HlKind::Operator => "rlop",
             HlKind::Text => {
-                out.push_str(&escaped);
+                body.push_str(&escaped);
                 continue;
             }
         };
-        out.push_str("\\textcolor{");
-        out.push_str(color);
-        out.push_str("}{");
-        out.push_str(&escaped);
-        out.push('}');
+        body.push_str("\\textcolor{");
+        body.push_str(color);
+        body.push_str("}{");
+        body.push_str(&escaped);
+        body.push('}');
     }
-    if !out.ends_with('\n') {
-        out.push('\n');
+    // Not `flushleft`: that trivlist clears `\everypar`, which drops
+    // the cell's accent rule. Ragged right plus `\obeylines` keeps one
+    // paragraph per source line so the rule hook fires on each of them.
+    let mut out = String::from(
+        "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
+         \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
+    );
+    // Only `Text` spans carry newlines (comments and strings stop before
+    // one), so an empty line here is exactly an empty source line.
+    let lines: Vec<&str> = body.split('\n').collect();
+    let n = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            // A trailing empty segment is the end of the source, not a line.
+            if i + 1 < n {
+                out.push_str("\\mbox{}\n");
+            }
+        } else {
+            if line.starts_with(' ') {
+                out.push_str("\\leavevmode{}");
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
     }
     out.push_str("}\n\n");
     out
@@ -748,6 +778,21 @@ fn escape_latex(s: &str) -> String {
             _ => out.push(ch),
         }
     }
+    out
+}
+
+/// Remove `<!-- … -->` spans (an unterminated comment swallows the rest).
+fn strip_html_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        rest = match rest[start + 4..].find("-->") {
+            Some(end) => &rest[start + 4 + end + 3..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1372,13 +1417,68 @@ mod tests {
         assert!(!tex.contains("</span><script>"), "{tex}");
     }
 
+    /// `\obeylines` alone drops empty lines (a `\par` after a `\par`)
+    /// and leading spaces (active spaces in vertical mode). The emitter
+    /// keeps both, and treats a tab as four spaces.
+    #[test]
+    fn render_latex_source_keeps_blank_lines_and_indentation() {
+        let blocks = vec![Rendered::Code {
+            source: "a = 1\n\n\tb = 2\n   c = 3\n\n\nd = 4".to_string(),
+            text_output: String::new(),
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let tex = render_latex(
+            "Blank",
+            &blocks,
+            std::path::Path::new("/tmp/test_plots"),
+            "plots/test",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        let cell = tex
+            .split("\\begin{rlsource}")
+            .nth(1)
+            .expect("rlsource")
+            .split("\\end{rlsource}")
+            .next()
+            .unwrap();
+        assert!(
+            cell.contains("\\textcolor{rlnum}{1}\n\\mbox{}\n\\leavevmode{}    b "),
+            "empty line kept and tab indent kept: {cell}"
+        );
+        assert!(
+            cell.contains("\n\\leavevmode{}   c "),
+            "space indent kept: {cell}"
+        );
+        assert!(
+            cell.contains("\\textcolor{rlnum}{3}\n\\mbox{}\n\\mbox{}\nd "),
+            "two empty lines stay two: {cell}"
+        );
+        assert!(
+            !cell.contains("\\leavevmode{}a "),
+            "flush line needs no prefix: {cell}"
+        );
+        assert!(
+            !cell.trim_end().ends_with("\\mbox{}"),
+            "no phantom trailing line: {cell}"
+        );
+        assert!(!cell.contains('\t'), "{cell}");
+    }
+
     #[test]
     fn render_latex_colored_source_compiles_without_shell_escape() {
         if !crate::pdf_compile::which_exists("pdflatex") {
             return;
         }
         let blocks = vec![Rendered::Code {
-            source: "x_1 = 1 # comment % also\nhold on\nplot(x_1)\n".to_string(),
+            source: "x_1 = 1 # comment % also\n\n   hold on\n\tplot(x_1)\n\n\ny = [1, 2]'\n"
+                .to_string(),
             text_output: String::new(),
             error: None,
             figures: Vec::new(),

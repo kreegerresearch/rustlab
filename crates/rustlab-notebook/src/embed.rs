@@ -169,16 +169,10 @@ pub(crate) fn resolve_target(
     } else {
         format!("{target}.md")
     };
-    // Reject obvious escapes early (including absolute paths outside root).
-    let probe = Path::new(&with_ext);
-    if probe
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(EmbedError::NotFound {
-            target: format!("{target} (path escapes notebook directory)"),
-        });
-    }
+    // `..` is allowed as long as the resolved file stays under `root_dir`
+    // (`confirm_in_jail` normalises lexically, then canonicalises — so a
+    // nested notebook can transclude `../_shared` but nothing above the
+    // collection root, and symlinks pointing out are rejected too).
     // 1+2: exact-case, host then root.
     for dir in [host_dir, root_dir] {
         let candidate = dir.join(&with_ext);
@@ -1018,11 +1012,30 @@ mod tests {
 
     #[test]
     fn resolve_parent_escape_rejected() {
+        // The file exists one level above the collection root, so only the
+        // jail can be the reason it is not found.
+        let outer = TempDir::new().unwrap();
+        fs::write(outer.path().join("secret.md"), "nope").unwrap();
+        let root = outer.path().join("root");
+        let host = root.join("nested");
+        fs::create_dir_all(&host).unwrap();
+        let err = resolve_target("../../secret", &host, &root).unwrap_err();
+        let EmbedError::NotFound { target } = err else {
+            panic!("expected NotFound");
+        };
+        assert!(target.contains("escapes"), "{target}");
+    }
+
+    #[test]
+    fn resolve_parent_inside_root_allowed() {
+        // `../_shared` from a nested notebook stays under the collection
+        // root and must resolve.
         let root = TempDir::new().unwrap();
         let host = root.path().join("nested");
         fs::create_dir(&host).unwrap();
-        let err = resolve_target("../secret", &host, root.path()).unwrap_err();
-        assert!(matches!(err, EmbedError::NotFound { .. }));
+        fs::write(root.path().join("_shared.md"), "shared").unwrap();
+        let resolved = resolve_target("../_shared", &host, root.path()).unwrap();
+        assert_eq!(fs::read_to_string(resolved).unwrap(), "shared");
     }
 
     // ── Section slicer ──

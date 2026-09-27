@@ -948,6 +948,34 @@ x = 1
     }
 
     #[test]
+    fn code_directive_closest_to_fence_wins_and_skips_bad_values() {
+        let src = "\
+<!-- code: open -->
+<!-- code: collapsed -->
+```rustlab
+x = 1
+```
+
+<!-- code: collapsed -->
+<!-- code: folded -->
+```rustlab
+y = 2
+```
+";
+        let blocks = parse_notebook(src);
+        let codes: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Code { .. }))
+            .collect();
+        assert_eq!(code_source_open(codes[0]), Some(false), "closest to the fence wins");
+        assert_eq!(
+            code_source_open(codes[1]),
+            Some(false),
+            "an unrecognised value nearest the fence is skipped"
+        );
+    }
+
+    #[test]
     fn frontmatter_code_open_and_collapsed() {
         let (open, _) = extract_frontmatter("---\ncode: \"open\"\n---\n");
         assert_eq!(open.code_open, Some(true));

@@ -815,6 +815,14 @@ pub fn cmd_render_dir(
 ) {
     let _cwd_guard = CwdGuard::new();
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    // A collection is one trust unit: jail every notebook's file I/O to
+    // the collection root (not its own subdirectory) so nested notebooks
+    // can share `../data/`. An explicit `--jail-root` already installed
+    // by the CLI wins.
+    let _jail = match execute::jail_root_override() {
+        Some(_) => None,
+        None => Some(execute::JailRootGuard::new(Some(dir.clone()))),
+    };
     let out_dir = output
         .map(|o| std::path::absolute(&o).unwrap_or(o))
         .unwrap_or_else(|| dir.clone());
@@ -1149,6 +1157,10 @@ pub(crate) fn read_and_render_index_md(
     // notebook HTML pipeline (the index page has no KaTeX, so no math
     // protection is needed here).
     let mut events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    // Same raw-HTML / URL sanitisation as notebook prose: the index body is
+    // author content served on the watch origin too.
+    render::sanitize_raw_html_events(&mut events);
+    render::sanitize_dangerous_urls(&mut events);
     // The index body links to the notebooks it introduces — resolve its
     // `.md` references exactly like any notebook page's.
     render::rewrite_link_events(&mut events, link);
@@ -3306,6 +3318,35 @@ More.\n";
         let body = generate_obsidian_index_md("T", &entries);
         assert!(body.contains("- [[foo]]"));
         assert!(!body.contains("[[foo|foo]]"));
+    }
+
+    // Security: the directory index body is author content served on the
+    // watch origin; it must go through the same raw-HTML sanitiser as
+    // notebook prose (a raw <script> here used to be served live).
+    #[test]
+    fn index_md_body_is_sanitised() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.md");
+        std::fs::write(
+            &index,
+            "# Welcome\n\nIntro <script>window.__x=1</script> with <b>bold</b> and \
+             [bad](javascript:alert(1)).\n<!-- private note -->\n",
+        )
+        .unwrap();
+        let dir_buf = dir.path().to_path_buf();
+        let (html, title) = read_and_render_index_md(
+            &index,
+            &dir_buf,
+            rustlab_plot::Theme::Dark.colors(),
+            &render::LinkMode::single_file(),
+        )
+        .expect("index rendered");
+        assert_eq!(title.as_deref(), Some("Welcome"));
+        assert!(!html.contains("<script>"), "live script survived: {html}");
+        assert!(html.contains("&lt;script&gt;window.__x=1&lt;/script&gt;"), "{html}");
+        assert!(html.contains("<b>bold</b>"), "plain formatting tag lost: {html}");
+        assert!(!html.to_lowercase().contains("javascript:"), "{html}");
+        assert!(!html.contains("private note"), "comment leaked: {html}");
     }
 
     // ── Attachments layout ──
