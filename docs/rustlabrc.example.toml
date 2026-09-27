@@ -7,7 +7,7 @@
 # Smallest useful file (a missing file is fine — built-in defaults apply):
 #
 #   [plot]
-#   theme = "dark"            # dark | light
+#   theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
 #   [notebook]
 #   theme = "dark"
 #
@@ -39,7 +39,7 @@ format = "short"          # short | long | hex | commas
 # Theme for un-themed savefig HTML/SVG/PNG, animation HTML/GIF, and
 # viewer pre-renders. Notebooks that pass an explicit -t/--theme still
 # use that theme for page chrome and inlined plots.
-theme = "dark"            # dark | light
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
 # Process-wide default y-axis for new heatmap panels (imagesc / image /
 # heatmap). Same values as set_default_axis(...).
 default_axis = "ij"       # ij | xy
@@ -57,7 +57,7 @@ auto_connect = false
 [notebook]
 # Default for rustlab-notebook render/watch when -t/--theme is omitted.
 # If this key is omitted, [plot] theme is used, then dark.
-theme = "dark"            # dark | light
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
 # Initial state of rustlab source disclosures in HTML and notebook watch.
 # A notebook frontmatter `code:` or a cell `<!-- code: -->` overrides this.
 # Missing key, or an unrecognised value (warns once), means open.

@@ -3252,7 +3252,7 @@ useful `~/.rustlabrc`:
 ```toml
 # missing file = defaults; this just sets plot / notebook theme
 [plot]
-theme = "dark"            # dark | light
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
 [notebook]
 theme = "dark"
 code = "open"             # open | collapsed
@@ -3265,7 +3265,7 @@ code = "open"             # open | collapsed
 format = "commas"         # short | long | hex | commas
 
 [plot]
-theme = "dark"            # dark | light
+theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, light)
 default_axis = "xy"       # ij | xy   (same as set_default_axis)
 
 [notebook]

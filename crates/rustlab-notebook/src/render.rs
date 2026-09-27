@@ -329,53 +329,6 @@ pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| s.to_string())
 }
 
-/// CSS `color-scheme` for the page: dark when the background is closer to
-/// black than white. Drives UA chrome (scrollbars, form controls) and is
-/// a backstop if any `<a>` ever ships unstyled again.
-pub(crate) fn css_color_scheme(bg: &str) -> &'static str {
-    match relative_luminance(bg) {
-        Some(l) if l >= 0.5 => "light",
-        _ => "dark",
-    }
-}
-
-/// sRGB relative luminance of `#RRGGBB`. `None` on a non-hex swatch.
-fn relative_luminance(hex: &str) -> Option<f64> {
-    let (r, g, b) = parse_hex_rgb(hex)?;
-    Some(0.2126 * srgb_lin(r) + 0.7152 * srgb_lin(g) + 0.0722 * srgb_lin(b))
-}
-
-fn parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
-    let h = s.strip_prefix('#')?;
-    if h.len() != 6 {
-        return None;
-    }
-    let n = u32::from_str_radix(h, 16).ok()?;
-    Some((
-        ((n >> 16) & 0xff) as u8,
-        ((n >> 8) & 0xff) as u8,
-        (n & 0xff) as u8,
-    ))
-}
-
-fn srgb_lin(c: u8) -> f64 {
-    let x = f64::from(c) / 255.0;
-    if x <= 0.04045 {
-        x / 12.92
-    } else {
-        ((x + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// WCAG contrast ratio of two `#RRGGBB` swatches.
-#[cfg(test)]
-fn contrast_ratio(fg: &str, bg: &str) -> Option<f64> {
-    let l1 = relative_luminance(fg)?;
-    let l2 = relative_luminance(bg)?;
-    let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
-    Some((hi + 0.05) / (lo + 0.05))
-}
-
 /// Does `dest` start with a URL scheme (`scheme:` per RFC 3986) before any
 /// path character?
 pub(crate) fn has_url_scheme(dest: &str) -> bool {
@@ -853,13 +806,14 @@ document.addEventListener('click', (e) => {{
     display: flex;
     min-height: 100vh;
   }}
-  /* Height of the fixed topbar; the sidebar and main both clear it. */
+  /* Height of the fixed topbar; the sidebar and main both clear it.
+     `--rl-*` tokens come from the resolved ThemeColors so chrome can
+     restyle without rewriting the whole stylesheet. Rules below use
+     var(--rl-…, <literal>) so missing tokens keep today's colors. */
   :root {{
     --topbar-h: 2.6rem;
+{theme_vars}
     --rl-accent: {accent_primary};
-    --rl-text-dim: {text_dim};
-    --rl-code-bg: {code_bg};
-    --rl-border: {border};
   }}
   /* ── Navigation sidebar (in-page TOC) ── */
   nav.sidebar {{
@@ -1388,28 +1342,29 @@ document.addEventListener('click', (e) => {{
         sidebar_block = sidebar_block,
         footer_nav = footer_nav,
         body = body,
-        color_scheme = css_color_scheme(c.bg),
-        bg = c.bg,
-        bg_secondary = c.bg_secondary,
-        text = c.text,
-        text_dim = c.text_dim,
-        border = c.border,
-        border_subtle = c.border_subtle,
-        accent_primary = c.accent_primary,
-        accent_secondary = c.accent_secondary,
-        accent_tertiary = c.accent_tertiary,
-        code_bg = c.code_bg,
-        output_bg = c.output_bg,
-        inline_code_bg = c.inline_code_bg,
-        error_bg = c.error_bg,
-        error_text = c.error_text,
-        footer_text = c.footer_text,
-        syn_keyword = c.syn_keyword,
-        syn_function = c.syn_function,
-        syn_number = c.syn_number,
-        syn_string = c.syn_string,
-        syn_comment = c.syn_comment,
-        syn_operator = c.syn_operator,
+        color_scheme = c.color_scheme(),
+        theme_vars = c.css_custom_properties(),
+        bg = c.css_var("bg"),
+        bg_secondary = c.css_var("bg-secondary"),
+        text = c.css_var("text"),
+        text_dim = c.css_var("text-dim"),
+        border = c.css_var("border"),
+        border_subtle = c.css_var("border-subtle"),
+        accent_primary = c.css_var("accent-primary"),
+        accent_secondary = c.css_var("accent-secondary"),
+        accent_tertiary = c.css_var("accent-tertiary"),
+        code_bg = c.css_var("code-bg"),
+        output_bg = c.css_var("output-bg"),
+        inline_code_bg = c.css_var("inline-code-bg"),
+        error_bg = c.css_var("error-bg"),
+        error_text = c.css_var("error-text"),
+        footer_text = c.css_var("footer-text"),
+        syn_keyword = c.css_var("syn-keyword"),
+        syn_function = c.css_var("syn-function"),
+        syn_number = c.css_var("syn-number"),
+        syn_string = c.css_var("syn-string"),
+        syn_comment = c.css_var("syn-comment"),
+        syn_operator = c.css_var("syn-operator"),
     )
 }
 
@@ -3542,7 +3497,7 @@ mod tests {
             "prose link rule missing"
         );
         assert!(
-            html.contains(&format!("color: {}", dark.accent_secondary)),
+            html.contains(&format!("color: {}", dark.css_var("accent-secondary"))),
             "unvisited link colour should be accent_secondary"
         );
         assert!(
@@ -3562,7 +3517,49 @@ mod tests {
             &LinkMode::single_file(),
         );
         assert!(html.contains("color-scheme: light"), "{html}");
-        assert!(html.contains(&format!("color: {}", light.accent_secondary)));
+        assert!(html.contains(&format!("color: {}", light.css_var("accent-secondary"))));
+    }
+
+    #[test]
+    fn render_html_emits_theme_css_custom_properties() {
+        let mocha = Theme::Mocha.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            mocha,
+            None,
+            &LinkMode::single_file(),
+        );
+        for (name, value) in mocha.css_tokens() {
+            assert!(
+                html.contains(&format!("{name}: {value};")),
+                "missing {name}: {value};"
+            );
+        }
+        // Stylesheet prefers the token with a literal fallback (visuals
+        // unchanged if :root vars are stripped).
+        assert!(html.contains(&format!("background: {}", mocha.css_var("bg"))));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("text"))));
+        assert!(html.contains(&format!(
+            "color: {}",
+            mocha.css_var("accent-secondary")
+        )));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("syn-keyword"))));
+
+        let latte = Theme::Latte.colors();
+        let html = render_html(
+            "T",
+            &[Rendered::Markdown("hi".to_string())],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            latte,
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("--rl-bg: #eff1f5;"));
+        assert!(html.contains(&format!("background: {}", latte.css_var("bg"))));
     }
 
     #[test]
@@ -3572,26 +3569,64 @@ mod tests {
         // bg. Light (Latte `#1e66f5` on `#eff1f5`) is the official
         // palette at ~4.3:1 — don't retune it here.
         let dark = Theme::Dark.colors();
-        let unvisited = super::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
+        let unvisited = rustlab_plot::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
         assert!(
             unvisited >= 4.5,
             "dark unvisited link contrast {unvisited:.2} < 4.5 ({} on {})",
             dark.accent_secondary,
             dark.bg
         );
-        let visited = super::contrast_ratio(dark.accent_primary, dark.bg).unwrap_or(0.0);
+        let visited = rustlab_plot::contrast_ratio(dark.accent_primary, dark.bg).unwrap_or(0.0);
         assert!(
             visited >= 4.5,
             "dark visited link contrast {visited:.2} < 4.5 ({} on {})",
             dark.accent_primary,
             dark.bg
         );
-        let ua = super::contrast_ratio("#0000EE", "#1e1e2e").unwrap_or(99.0);
+        let ua = rustlab_plot::contrast_ratio("#0000EE", "#1e1e2e").unwrap_or(99.0);
         assert!(
             ua < 4.5,
             "UA-default blue on Mocha should fail WCAG — if this passes, the regression test is stale"
         );
     }
+
+    #[test]
+    fn builtin_themes_set_color_scheme_and_dark_accents_meet_wcag() {
+        use rustlab_plot::{builtin_theme_names, theme_colors};
+        for name in ["mocha", "macchiato", "frappe", "latte", "dark", "light"] {
+            let c = theme_colors(name).expect(name);
+            let html = render_html(
+                "T",
+                &[Rendered::Markdown("hi".to_string())],
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                c,
+                None,
+                &LinkMode::single_file(),
+            );
+            let expected = c.color_scheme();
+            assert!(
+                html.contains(&format!("color-scheme: {expected}")),
+                "{name}: missing color-scheme: {expected}"
+            );
+            if c.is_dark() {
+                let u = rustlab_plot::contrast_ratio(c.accent_secondary, c.bg).unwrap_or(0.0);
+                let v = rustlab_plot::contrast_ratio(c.accent_primary, c.bg).unwrap_or(0.0);
+                assert!(
+                    u >= 4.5,
+                    "{name} accent_secondary contrast {u:.2} < 4.5"
+                );
+                assert!(
+                    v >= 4.5,
+                    "{name} accent_primary contrast {v:.2} < 4.5"
+                );
+            }
+        }
+        // Aliases resolve.
+        assert!(builtin_theme_names().contains(&"dark"));
+        assert!(builtin_theme_names().contains(&"mocha"));
+    }
+
 
     // ── Phase 3: stable block-id wrapping ──
 
@@ -3900,8 +3935,11 @@ mod tests {
                 &LinkMode::single_file(),
             );
             assert!(html.contains(".rl-cell {"), "stylesheet missing .rl-cell");
+            // The rule is token-first with the palette literal as fallback.
+            let accent_var = theme.css_var("accent-primary");
+            assert!(accent_var.contains(accent), "{accent_var}");
             assert!(
-                html.contains(&format!("border-left: 3px solid {accent}")),
+                html.contains(&format!("border-left: 3px solid {accent_var}")),
                 "accent rule for {accent} missing"
             );
             let cell_at = html.find("<div class=\"rl-cell\">").expect("rl-cell");

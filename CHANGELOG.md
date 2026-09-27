@@ -88,6 +88,16 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Notebook themes: named Catppuccin builtins `mocha`, `macchiato`,
+  `frappe`, `latte` via `-t` / `--theme` (aliases `dark`→mocha,
+  `light`→latte) and via `~/.rustlabrc` `[notebook] theme` / `[plot]
+  theme`, which accept the same names. HTML `color-scheme` follows
+  background luminance so custom dark palettes work without matching the
+  Mocha static; LaTeX/PDF stay Latte (see Breaking, above). Mapping
+  documented in `docs/notebooks.md`.
+- Notebook HTML defines `:root { --rl-*: … }` tokens from the resolved
+  `ThemeColors` palette. Page CSS uses `var(--rl-…, <literal>)` so
+  visuals match the pre-token colors when a variable is missing.
 - Notebook `` ```rustlab `` cells are syntax-colored in HTML (including
   `notebook watch` live updates) and in LaTeX/PDF. Highlighting follows
   the rustlab lexer (`#` and `%` comments, keywords, numbers, strings,

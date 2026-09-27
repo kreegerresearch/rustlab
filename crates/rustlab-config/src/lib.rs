@@ -73,22 +73,35 @@ pub struct PlotSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorTheme {
-    Dark,
-    Light,
+    /// Catppuccin Mocha (alias `dark`).
+    Mocha,
+    Macchiato,
+    Frappe,
+    /// Catppuccin Latte (alias `light`).
+    Latte,
 }
 
 impl ColorTheme {
+    /// Canonical scheme name (`"mocha"`, …), never the `dark`/`light` alias.
+    /// Consumers map it with `rustlab_plot::parse_theme`.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Dark => "dark",
-            Self::Light => "light",
+            Self::Mocha => "mocha",
+            Self::Macchiato => "macchiato",
+            Self::Frappe => "frappe",
+            Self::Latte => "latte",
         }
     }
 
+    /// Accepted values for the `theme` keys.
+    pub const NAMES: &'static str = "mocha, macchiato, frappe, latte (aliases: dark, light)";
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "dark" => Some(Self::Dark),
-            "light" => Some(Self::Light),
+            "mocha" | "dark" => Some(Self::Mocha),
+            "macchiato" => Some(Self::Macchiato),
+            "frappe" | "frappé" => Some(Self::Frappe),
+            "latte" | "light" => Some(Self::Latte),
             _ => None,
         }
     }
@@ -178,7 +191,7 @@ impl UserSettings {
 
     /// Effective plot theme, falling back to `dark`.
     pub fn plot_theme(&self) -> ColorTheme {
-        self.plot.theme.unwrap_or(ColorTheme::Dark)
+        self.plot.theme.unwrap_or(ColorTheme::Mocha)
     }
 
     /// Effective default axis, falling back to `ij`.
@@ -198,7 +211,7 @@ impl UserSettings {
         self.notebook
             .theme
             .or(self.plot.theme)
-            .unwrap_or(ColorTheme::Dark)
+            .unwrap_or(ColorTheme::Mocha)
     }
 
     /// Effective REPL history cap.
@@ -459,7 +472,7 @@ fn parse_plot_section(
                     ConfigError::invalid(
                         path,
                         "plot.theme",
-                        format!("expected \"dark\" or \"light\"; got \"{s}\""),
+                        format!("expected one of {}; got \"{s}\"", ColorTheme::NAMES),
                     )
                 })?);
             }
@@ -524,7 +537,7 @@ fn parse_notebook_section(
                     ConfigError::invalid(
                         path,
                         "notebook.theme",
-                        format!("expected \"dark\" or \"light\"; got \"{s}\""),
+                        format!("expected one of {}; got \"{s}\"", ColorTheme::NAMES),
                     )
                 })?);
             }
@@ -654,9 +667,9 @@ mod tests {
         assert!(loaded.unknown_keys.is_empty());
         assert_eq!(loaded.settings, UserSettings::default());
         assert_eq!(loaded.settings.display_format(), DisplayFormat::Short);
-        assert_eq!(loaded.settings.plot_theme(), ColorTheme::Dark);
+        assert_eq!(loaded.settings.plot_theme(), ColorTheme::Mocha);
         assert_eq!(loaded.settings.default_axis(), DefaultAxis::Ij);
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Dark);
+        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Mocha);
         assert_eq!(loaded.settings.history_limit(), DEFAULT_HISTORY_LIMIT);
         assert!(!loaded.settings.viewer_auto_connect());
     }
@@ -727,7 +740,7 @@ mod tests {
             ]
         );
         assert_eq!(loaded.settings.display.format, Some(DisplayFormat::Short));
-        assert_eq!(loaded.settings.plot.theme, Some(ColorTheme::Dark));
+        assert_eq!(loaded.settings.plot.theme, Some(ColorTheme::Mocha));
     }
 
     #[test]
@@ -829,14 +842,14 @@ mod tests {
         let loaded = parse_toml(text, Path::new("example"), ConfigSource::Defaults).unwrap();
         assert!(loaded.unknown_keys.is_empty());
         assert_eq!(loaded.settings.display.format, Some(DisplayFormat::Hex));
-        assert_eq!(loaded.settings.plot.theme, Some(ColorTheme::Light));
+        assert_eq!(loaded.settings.plot.theme, Some(ColorTheme::Latte));
         assert_eq!(loaded.settings.plot.default_axis, Some(DefaultAxis::Xy));
         assert_eq!(loaded.settings.viewer.auto_connect, Some(true));
         assert_eq!(loaded.settings.viewer.name.as_deref(), Some("work"));
-        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Dark));
+        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Mocha));
         assert_eq!(loaded.settings.repl.history_limit, Some(250));
         // notebook.theme wins over plot.theme
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Dark);
+        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Mocha);
         assert_eq!(loaded.settings.history_limit(), 250);
         assert!(loaded.settings.notebook_code_open());
         assert!(loaded.warnings.is_empty());
@@ -874,7 +887,7 @@ mod tests {
         .unwrap();
         assert!(loaded.settings.notebook.code.is_none());
         assert!(loaded.settings.notebook_code_open());
-        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Dark));
+        assert_eq!(loaded.settings.notebook.theme, Some(ColorTheme::Mocha));
         assert!(loaded.unknown_keys.is_empty());
         assert_eq!(loaded.warnings.len(), 1);
         assert!(loaded.warnings[0].contains("folded"));
@@ -892,6 +905,38 @@ mod tests {
     }
 
     #[test]
+    fn theme_keys_accept_four_names_and_aliases() {
+        for (src, want) in [
+            ("mocha", ColorTheme::Mocha),
+            ("DARK", ColorTheme::Mocha),
+            ("macchiato", ColorTheme::Macchiato),
+            ("frappe", ColorTheme::Frappe),
+            ("latte", ColorTheme::Latte),
+            ("light", ColorTheme::Latte),
+        ] {
+            let loaded = parse_toml(
+                &format!("[plot]\ntheme = \"{src}\"\n[notebook]\ntheme = \"{src}\"\n"),
+                Path::new("rc"),
+                ConfigSource::Defaults,
+            )
+            .unwrap();
+            assert_eq!(loaded.settings.plot_theme(), want, "{src}");
+            assert_eq!(loaded.settings.notebook_theme(), want, "{src}");
+        }
+        // as_str is canonical, never the alias
+        assert_eq!(ColorTheme::parse("dark").unwrap().as_str(), "mocha");
+        assert_eq!(ColorTheme::parse("light").unwrap().as_str(), "latte");
+        let err = parse_toml(
+            "[notebook]\ntheme = \"solarized\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("macchiato"), "{err}");
+    }
+
+    #[test]
     fn notebook_theme_falls_back_to_plot_theme() {
         let loaded = parse_toml(
             "[plot]\ntheme = \"light\"\n",
@@ -899,8 +944,8 @@ mod tests {
             ConfigSource::Defaults,
         )
         .unwrap();
-        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Light);
-        assert_eq!(loaded.settings.plot_theme(), ColorTheme::Light);
+        assert_eq!(loaded.settings.notebook_theme(), ColorTheme::Latte);
+        assert_eq!(loaded.settings.plot_theme(), ColorTheme::Latte);
     }
 
     #[test]

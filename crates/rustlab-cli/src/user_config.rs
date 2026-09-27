@@ -1,10 +1,8 @@
 //! Load `~/.rustlabrc` / XDG config and apply process-wide defaults.
 
 use anyhow::{Context, Result};
-use rustlab_config::{
-    ColorTheme, ConfigSource, DefaultAxis, DisplayFormat, LoadedConfig, UserSettings,
-};
-use rustlab_plot::{set_default_axis_y_direction, set_default_theme, AxisYDirection, Theme};
+use rustlab_config::{ConfigSource, DefaultAxis, DisplayFormat, LoadedConfig, UserSettings};
+use rustlab_plot::{parse_theme, set_default_axis_y_direction, set_default_theme, AxisYDirection};
 use rustlab_script::{set_default_number_format, NumberFormat};
 
 /// Load the user rc, warn about unknown keys, apply process defaults.
@@ -29,10 +27,8 @@ pub fn apply_process_defaults(settings: &UserSettings) {
         DefaultAxis::Ij => AxisYDirection::Ij,
         DefaultAxis::Xy => AxisYDirection::Xy,
     });
-    set_default_theme(match settings.plot_theme() {
-        ColorTheme::Dark => Theme::Dark,
-        ColorTheme::Light => Theme::Light,
-    });
+    // rc names are the plot crate's names; one parser, no second table.
+    set_default_theme(parse_theme(settings.plot_theme().as_str()).unwrap_or_default());
 }
 
 fn warn_unknown(loaded: &LoadedConfig) {

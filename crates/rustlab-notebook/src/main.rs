@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use rustlab_config::{ColorTheme, DefaultAxis, DisplayFormat, UserSettings};
-use rustlab_plot::{set_default_axis_y_direction, set_default_theme, AxisYDirection, Theme};
+use rustlab_plot::{
+    builtin_theme_names, parse_theme, set_default_axis_y_direction, set_default_theme,
+    AxisYDirection, Theme,
+};
 use rustlab_script::{set_default_number_format, NumberFormat};
 use std::path::PathBuf;
 
@@ -25,9 +28,10 @@ use std::path::PathBuf;
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
         -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
-        -t, --theme  <THEME>   HTML/watch theme: dark (default; ~/.rustlabrc\n                             \
-                               [notebook] theme) or light. LaTeX and PDF are\n                             \
-                               always Catppuccin Latte on white paper.\n      \
+        -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                             \
+                               (aliases: dark, light). Default dark, or ~/.rustlabrc\n                             \
+                               [notebook] theme. LaTeX and PDF are always Catppuccin\n                             \
+                               Latte on white paper.\n      \
             --obsidian         (markdown only) append an <iframe> pointing at the\n                                   \
                                sibling .html so Obsidian renders the interactive\n                                   \
                                Plotly view inline. GitHub strips iframes, so the\n                                   \
@@ -39,8 +43,10 @@ use std::path::PathBuf;
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
                   committing alongside source, browsable on GitHub\n\n\
         Themes:\n  \
-        dark   Catppuccin Mocha — dark background, light text (default)\n  \
-        light  Catppuccin Latte — light background, dark text"
+        mocha / dark (default)  Catppuccin Mocha\n  \
+        macchiato               Catppuccin Macchiato\n  \
+        frappe                  Catppuccin Frappé\n  \
+        latte / light           Catppuccin Latte"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -59,12 +65,6 @@ enum CliFormat {
     Json,
 }
 
-#[derive(Clone, ValueEnum)]
-enum CliTheme {
-    Dark,
-    Light,
-}
-
 #[derive(Subcommand)]
 enum Command {
     /// Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF
@@ -72,7 +72,8 @@ enum Command {
         long_about = "Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF.\n\n\
             Examples:\n  \
             rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
-            rustlab-notebook render analysis.md -t light           # → analysis.html (light theme)\n  \
+            rustlab-notebook render analysis.md -t light           # → analysis.html (latte)\n  \
+            rustlab-notebook render analysis.md -t macchiato       # → Catppuccin Macchiato\n  \
             rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
             rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
             rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
@@ -81,15 +82,18 @@ enum Command {
             Options:\n  \
             -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
             -f, --format <FMT>     html (default), latex, pdf\n  \
-            -t, --theme  <THEME>   HTML/watch theme: dark (default) or light.\n                                 \
+            -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                                 \
+                                   (aliases: dark, light); default dark or ~/.rustlabrc.\n                                 \
                                    LaTeX and PDF are always Latte on white paper.\n\n\
             Formats:\n  \
             html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
             latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
             pdf    Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n\n\
             Themes:\n  \
-            dark   Catppuccin Mocha — dark background, light text (default)\n  \
-            light  Catppuccin Latte — light background, dark text"
+            mocha / dark (default)  Catppuccin Mocha\n  \
+            macchiato               Catppuccin Macchiato\n  \
+            frappe                  Catppuccin Frappé\n  \
+            latte / light           Catppuccin Latte"
     )]
     /// Watch a notebook (interactive server) or directory (re-render on save)
     #[command(long_about = "Watch a notebook source and react to saves.\n\n\
@@ -131,11 +135,12 @@ enum Command {
         /// existing re-render-on-save flow instead.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
-        /// or light. LaTeX and PDF ignore this and always use Catppuccin
-        /// Latte on white paper.
-        #[arg(short, long, value_enum)]
-        theme: Option<CliTheme>,
+        /// HTML and watch theme: mocha|macchiato|frappe|latte (aliases:
+        /// dark, light). Default dark, overridable via ~/.rustlabrc
+        /// [notebook] theme. LaTeX and PDF ignore this and always use
+        /// Catppuccin Latte on white paper.
+        #[arg(short = 't', long, value_name = "THEME")]
+        theme: Option<String>,
         /// Obsidian-friendly markdown output (see `render --obsidian` for details)
         #[arg(long)]
         obsidian: bool,
@@ -227,11 +232,12 @@ enum Command {
         /// Output format: html (default), latex, pdf, markdown
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
-        /// HTML and watch theme: dark (default; overridable via ~/.rustlabrc)
-        /// or light. LaTeX and PDF ignore this and always use Catppuccin
-        /// Latte on white paper.
-        #[arg(short, long, value_enum)]
-        theme: Option<CliTheme>,
+        /// HTML and watch theme: mocha|macchiato|frappe|latte (aliases:
+        /// dark, light). Default dark, overridable via ~/.rustlabrc
+        /// [notebook] theme. LaTeX and PDF ignore this and always use
+        /// Catppuccin Latte on white paper.
+        #[arg(short = 't', long, value_name = "THEME")]
+        theme: Option<String>,
         /// Index page title (directory mode only). Precedence:
         /// --title > index.md H1 > parent directory name.
         #[arg(long)]
@@ -450,7 +456,7 @@ fn main() {
             editable,
             jail_root,
         } => {
-            let theme = resolve_theme(theme, &settings);
+            let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
             // Explicit --jail-root: install on this thread for the re-render
@@ -523,7 +529,7 @@ fn main() {
             pretty,
             jail_root,
         } => {
-            let theme = resolve_theme(theme, &settings);
+            let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
             // Explicit --jail-root applies to every render path below
@@ -797,10 +803,7 @@ fn apply_process_defaults(settings: &UserSettings) {
     });
     // Notebook binary: page theme and un-themed savefig share notebook_theme
     // (`[notebook] theme`, else `[plot] theme`, else dark).
-    set_default_theme(match settings.notebook_theme() {
-        ColorTheme::Dark => Theme::Dark,
-        ColorTheme::Light => Theme::Light,
-    });
+    set_default_theme(rc_theme(settings.notebook_theme()));
     // `[notebook] code` — initial source disclosure. Missing key is open.
     rustlab_notebook::render::set_rc_source_open(settings.notebook_code_open());
 }
@@ -839,15 +842,25 @@ fn cli_jail_guard(
     Some(rustlab_notebook::execute::JailRootGuard::new(Some(root)))
 }
 
-fn resolve_theme(cli: Option<CliTheme>, settings: &UserSettings) -> Theme {
+/// `-t NAME` wins; otherwise `~/.rustlabrc` `[notebook] theme` (then
+/// `[plot] theme`, then mocha). Both spell the same names, so the rc value
+/// maps through the plot crate's parser rather than a second table.
+fn resolve_theme(cli: Option<&str>, settings: &UserSettings) -> Theme {
     match cli {
-        Some(CliTheme::Dark) => Theme::Dark,
-        Some(CliTheme::Light) => Theme::Light,
-        None => match settings.notebook_theme() {
-            ColorTheme::Dark => Theme::Dark,
-            ColorTheme::Light => Theme::Light,
-        },
+        Some(name) => parse_theme(name).unwrap_or_else(|| {
+            eprintln!(
+                "error: unknown theme `{name}` (expected one of: {})",
+                builtin_theme_names().join(", ")
+            );
+            std::process::exit(2);
+        }),
+        None => rc_theme(settings.notebook_theme()),
     }
+}
+
+/// Map an rc `ColorTheme` onto the plot crate's `Theme` by name.
+fn rc_theme(theme: ColorTheme) -> Theme {
+    parse_theme(theme.as_str()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -862,23 +875,26 @@ mod tests {
 
     #[test]
     fn cli_theme_overrides_rc() {
-        let dark_rc = settings_with_notebook_theme(ColorTheme::Dark);
-        assert_eq!(resolve_theme(Some(CliTheme::Light), &dark_rc), Theme::Light);
-        assert_eq!(resolve_theme(Some(CliTheme::Dark), &dark_rc), Theme::Dark);
+        let dark_rc = settings_with_notebook_theme(ColorTheme::Mocha);
+        assert_eq!(resolve_theme(Some("light"), &dark_rc), Theme::Light);
+        assert_eq!(resolve_theme(Some("dark"), &dark_rc), Theme::Dark);
+        assert_eq!(resolve_theme(Some("frappe"), &dark_rc), Theme::Frappe);
     }
 
     #[test]
     fn omitted_cli_uses_notebook_theme() {
-        let light_rc = settings_with_notebook_theme(ColorTheme::Light);
-        assert_eq!(resolve_theme(None, &light_rc), Theme::Light);
-        let dark_rc = settings_with_notebook_theme(ColorTheme::Dark);
-        assert_eq!(resolve_theme(None, &dark_rc), Theme::Dark);
+        let light_rc = settings_with_notebook_theme(ColorTheme::Latte);
+        assert_eq!(resolve_theme(None, &light_rc), Theme::Latte);
+        let dark_rc = settings_with_notebook_theme(ColorTheme::Mocha);
+        assert_eq!(resolve_theme(None, &dark_rc), Theme::Mocha);
+        let macchiato_rc = settings_with_notebook_theme(ColorTheme::Macchiato);
+        assert_eq!(resolve_theme(None, &macchiato_rc), Theme::Macchiato);
     }
 
     #[test]
     fn omitted_cli_falls_back_to_plot_theme() {
         let mut s = UserSettings::default();
-        s.plot.theme = Some(ColorTheme::Light);
-        assert_eq!(resolve_theme(None, &s), Theme::Light);
+        s.plot.theme = Some(ColorTheme::Latte);
+        assert_eq!(resolve_theme(None, &s), Theme::Latte);
     }
 }

@@ -72,8 +72,9 @@ file to scrub it back to source, then restart the watcher.
 ## Other quick starts (non-Obsidian)
 
 ```
-rustlab-notebook render analysis.md              # → analysis.html (dark theme, or [notebook] theme from ~/.rustlabrc)
-rustlab-notebook render analysis.md -t light     # → analysis.html (light theme; CLI wins over rc)
+rustlab-notebook render analysis.md              # → analysis.html (default: mocha / dark, or [notebook] theme from ~/.rustlabrc)
+rustlab-notebook render analysis.md -t light     # → latte (light alias; CLI wins over rc)
+rustlab-notebook render analysis.md -t macchiato # → Catppuccin Macchiato
 rustlab-notebook render analysis.md -f latex     # → analysis.tex + SVG plots
 rustlab-notebook render analysis.md -f pdf       # → analysis.pdf (always light; requires pdflatex)
 rustlab-notebook render analysis.md -f markdown -o rendered.md  # explicit destination
@@ -1159,15 +1160,70 @@ Compare the main-lobe width against a rectangular window of equal length.
 Solutions render as an HTML `<details>` widget (collapsed by default) so
 readers can attempt the exercise before revealing the answer.
 
+## Color themes
+
+Notebook HTML, LaTeX, and PDF share one palette type (`ThemeColors` in
+`rustlab-plot`). Built-in schemes are the four [Catppuccin](https://github.com/catppuccin/palette)
+flavors; CLI aliases keep the old flags working:
+
+| `-t` / `--theme` | Scheme | Mode |
+| --- | --- | --- |
+| `mocha` or `dark` (default) | Catppuccin Mocha | dark |
+| `macchiato` | Catppuccin Macchiato | dark |
+| `frappe` | Catppuccin Frappé | dark |
+| `latte` or `light` | Catppuccin Latte | light |
+
+Mode (CSS `color-scheme`) is derived from the background's sRGB relative
+luminance (&lt; 0.5 → dark), not from pointer identity against the Mocha
+static. LaTeX and PDF ignore the theme and are always Latte on white
+paper. Without `-t`, `~/.rustlabrc` `[notebook] theme` (then `[plot]
+theme`) supplies the default using the same names.
+
+### Catppuccin → `ThemeColors` mapping
+
+The same role map is used for every flavor:
+
+| `ThemeColors` field | Catppuccin token |
+| --- | --- |
+| `bg`, `plot_bg` | `base` |
+| `bg_secondary`, `output_bg` | `mantle` |
+| `text` | `text` |
+| `text_dim` | `subtext0` |
+| `border`, `inline_code_bg` | `surface0` |
+| `border_subtle` | `surface1` |
+| `accent_primary`, `syn_keyword` | `mauve` |
+| `accent_secondary`, `syn_function` | `blue` |
+| `accent_tertiary` | `sapphire` |
+| `code_bg` | `crust` |
+| `error_text` | `red` |
+| `syn_number` | `peach` |
+| `syn_string` | `green` |
+| `syn_comment` | `overlay0` |
+| `syn_operator` | `sky` |
+| `footer_text` | `surface2` |
+
+`error_bg` and `plot_grid` are local tints (not named Catppuccin tokens).
+
+### HTML CSS custom properties
+
+HTML (notebook pages, the directory index, and `watch` chrome) emits the
+resolved palette on `:root` as `--rl-*` tokens — kebab-case of the
+`ThemeColors` fields (`bg_secondary` → `--rl-bg-secondary`). The page
+stylesheet prefers `var(--rl-bg, #1e1e2e)` (token first, literal
+fallback) so colors stay unchanged if a variable is missing. Plotly /
+SVG plots still take colors from `ThemeColors` directly; `--rl-plot-bg`
+and `--rl-plot-grid` are declared for future chrome.
+
 ## Output Formats
 
 ### HTML (default)
 
 Self-contained HTML with:
-- Catppuccin dark theme (default) or light theme (`-t light`). The default
-  is overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
-  if the notebook key is omitted); `-t` / `--theme` always wins. The
-  initial source-disclosure state is `[notebook] code` (`"open"` or
+- Catppuccin themes via `-t` / `--theme`: `mocha` (default; alias `dark`),
+  `macchiato`, `frappe`, `latte` (alias `light`). The default is
+  overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`
+  if the notebook key is omitted; same names); `-t` / `--theme` always
+  wins. The initial source-disclosure state is `[notebook] code` (`"open"` or
   `"collapsed"`, default open), overridable per notebook and per cell
   (see `<!-- code: -->` above). An invalid `code` value warns once and
   falls back to open.
@@ -1456,8 +1512,9 @@ my-project/
 Render an entire directory of notebooks at once:
 
 ```
-rustlab-notebook render notebooks/                # → *.html + index.html (dark)
-rustlab-notebook render notebooks/ -t light       # → *.html + index.html (light)
+rustlab-notebook render notebooks/                # → *.html + index.html (mocha)
+rustlab-notebook render notebooks/ -t light       # → *.html + index.html (latte)
+rustlab-notebook render notebooks/ -t frappe      # → Frappé
 rustlab-notebook render notebooks/ -f pdf         # → *.pdf
 rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 ```
