@@ -753,6 +753,31 @@ end
 
 ---
 
+## `examples/plot/remote_viewer.sh` — Remote session, local plots
+
+A launcher for `rustlab remote`: starts `rustlab-viewer` on this machine if
+none is running, then opens an ssh session to the host with the viewer socket
+forwarded back here and drops you into a remote REPL that is already
+connected. Anything you plot there appears in the local viewer window.
+
+```sh
+./examples/plot/remote_viewer.sh user@gpu-box              # remote REPL, plots appear locally
+./examples/plot/remote_viewer.sh user@gpu-box --print      # show the ssh command instead
+./examples/plot/remote_viewer.sh user@gpu-box \
+    --command "rustlab run /data/sim.rlab --plot viewer"  # run a script there instead
+```
+
+```
+>> A = randn(2000, 2000);      % computed on gpu-box
+>> plot(svd(A))                % drawn in the viewer window on your desk
+```
+
+Needs a viewer-feature rustlab on both ends (`make install`) and ssh access
+to the host. Every session gets a fresh remote socket name and removes it on
+exit. Full guide: [docs/remote-viewer.md](remote-viewer.md).
+
+---
+
 ## `examples/pde/vector_calc.rlab`
 
 **Full script:**

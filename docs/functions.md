@@ -1971,6 +1971,26 @@ viewer             % status: "connected, current figure → rustlab-viewer (figu
 viewer off         % back to terminal
 ```
 
+#### `rustlab remote <host>` — plots from a remote machine in your local viewer
+CLI subcommand (viewer-feature builds, which `make install` produces). The viewer is the server, so a remote compute box needs an SSH *remote* forward (`ssh -R`) of the viewer socket back to your desk. `rustlab remote` checks a local viewer is listening, opens the ssh session with that forward and a fresh per-session socket name, and starts `rustlab repl --viewer` on the far side already connected. Exiting the REPL ends the session and removes the remote socket.
+
+```
+local$  rustlab-viewer &
+local$  rustlab remote user@gpu-box
+viewer: forwarding /tmp/rustlab-viewer-501.sock → user@gpu-box:/tmp/rustlab-fwd-48213-1f3a9c.sock
+>> A = randn(2000, 2000);      % computed on gpu-box
+>> plot(svd(A))                % drawn in the viewer window on your desk
+>> exit
+```
+
+```sh
+rustlab remote user@gpu-box --command "rustlab run /data/sim.rlab --plot viewer"   # a script instead of the REPL
+rustlab remote user@gpu-box --print                                                # show the ssh command, run nothing
+rustlab remote user@gpu-box --ssh-opt -p --ssh-opt 2222                            # extra ssh options
+```
+
+`help remote` in the REPL prints the same summary; the full guide (manual `ssh -R` recipe, `~/.ssh/config` entry, platform notes, troubleshooting) is [remote-viewer.md](remote-viewer.md), and `examples/plot/remote_viewer.sh` is a one-line launcher.
+
 **Mouse and keyboard in the viewer window.** Each subplot is navigated independently:
 
 | Gesture | 2-D panel | 3-D `surf` panel |
