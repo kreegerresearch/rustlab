@@ -586,13 +586,17 @@ fn main() {
                 },
                 CliFormat::Json => unreachable!("--format json branched to cmd_render_json above"),
             };
-            if input.is_dir() {
-                rustlab_notebook::cmd_render_dir(input, output, format, colors, title);
+            let result = if input.is_dir() {
+                rustlab_notebook::cmd_render_dir(input, output, format, colors, title)
             } else {
                 if title.is_some() {
                     eprintln!("warning: --title is only used when rendering a directory; ignored for single-file input");
                 }
-                rustlab_notebook::cmd_render(input, output, format, colors);
+                rustlab_notebook::cmd_render(input, output, format, colors)
+            };
+            if let Err(e) = result {
+                eprintln!("error: {e}");
+                std::process::exit(1);
             }
         }
         Command::Clean {

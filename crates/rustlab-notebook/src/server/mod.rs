@@ -1046,7 +1046,7 @@ mod tests {
             crate::Format::Html,
             theme,
             None,
-        );
+        ).expect("render");
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         let built: Vec<String> = index
             .lines()
