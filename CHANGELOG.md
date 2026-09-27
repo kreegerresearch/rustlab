@@ -188,6 +188,17 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **PDF builds no longer fail on Unicode in prose.** When `pdflatex`
+  rejects a character the preamble does not declare (`2ⁿ`, `Aᵀ`, `ħ`, an
+  emoji), `render -f pdf` recompiles with a fallback per rejected
+  character: sub/superscript and modifier letters, Greek, and common math
+  and arrow symbols map to the LaTeX macro; anything else prints as
+  `[U+XXXX]`. A stderr warning lists the characters and placeholders.
+- **Directory-mode PDF renders continue past a failing notebook.** The
+  PDF compile step used to call `exit(1)` from inside the library, so one
+  bad notebook stopped the whole `render <dir> -f pdf` build with nothing
+  after it produced. Each failure is now reported (with its `<stem>.log`),
+  the remaining notebooks render, and the command exits 1 at the end.
 - **`notebook watch` renders KaTeX math again.** The watch
   Content-Security-Policy (`script-src` nonce + `'strict-dynamic'`)
   blocks inline event handlers, so the auto-render `onload` and the

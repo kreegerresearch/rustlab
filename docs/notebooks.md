@@ -1299,6 +1299,21 @@ left behind is the requested `.pdf`. If the build fails, the LaTeX log
 is preserved next to the requested PDF path as `<stem>.log` so the
 failure is debuggable.
 
+**Unicode in prose.** `pdflatex` only accepts the characters its
+preamble declares. rustlab ships a table of common math, Greek, arrow,
+sub/superscript and box-drawing characters, and when `pdflatex` still
+rejects one it recompiles with a fallback for every rejected character:
+superscript, subscript and modifier letters (`2ⁿ`, `Aᵀ`), the remaining
+Greek letters, `ħ`, set and arrow symbols map to the matching LaTeX
+macro; anything else prints as `[U+XXXX]`. A warning on stderr names the
+characters and which ones got a placeholder, so you can move those into
+`$…$` math or ASCII in the source. A character in prose never fails a
+build.
+
+**Directory mode.** One notebook's PDF failure no longer aborts the
+build. The error and its `<stem>.log` are reported, the remaining
+notebooks still render, and the command exits 1 at the end.
+
 ### JSON (`--format json`, for tooling)
 
 Emits a single JSON document on stdout describing every block plus
