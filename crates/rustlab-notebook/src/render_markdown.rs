@@ -107,6 +107,7 @@ pub fn render_markdown(
                 hidden,
                 details,
                 grid_cols: _,
+                source_open: _,
             } => {
                 if !hidden {
                     body.push_str("```rustlab\n");
@@ -761,6 +762,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("```rustlab\nx = 42\n```"));
@@ -777,6 +779,7 @@ mod tests {
             hidden: true,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(!md.contains("secret = 42"));
@@ -794,6 +797,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("error: undefined variable 'x'"));
@@ -903,6 +907,7 @@ mod tests {
             hidden: false,
             details: None,
             grid_cols: None,
+            source_open: None,
         }];
         let plot_dir = tmp_plot_dir();
         // Use a multi-segment relative href to verify the prefix is taken

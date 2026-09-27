@@ -90,6 +90,10 @@ on the watch origin can save; a page on another origin cannot.
   `'strict-dynamic'` blocks them even with a nonce on the surrounding
   tag. KaTeX auto-render and the sidebar toggle are ordinary `<script>`
   bodies, which receive the page nonce.
+- Rustlab syntax highlighting is server-rendered escaped `<span class="syn-*">`
+  text in HTML and `\textcolor` in PDF — not `minted`, and not a CDN or
+  client-side highlighter. The spans are emitted by the renderer (they
+  do not pass through the raw-HTML allow-list).
 
 ## H4 — Path jail
 

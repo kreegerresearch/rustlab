@@ -126,6 +126,10 @@ pub enum Rendered {
         details: Option<String>,
         /// If set, tile image outputs N-across.
         grid_cols: Option<usize>,
+        /// Cell `<!-- code: -->` override. `None` inherits the notebook
+        /// default installed for the HTML render (frontmatter, else rc,
+        /// else open). LaTeX/PDF ignore this field.
+        source_open: Option<bool>,
     },
     /// A Mermaid diagram block. Renderers turn `source` into SVG.
     Mermaid {
@@ -487,6 +491,7 @@ fn run_code_block_capturing(
         hidden: directives.hidden,
         details: directives.details.clone(),
         grid_cols: directives.grid_cols,
+        source_open: directives.source_open,
     }
 }
 
@@ -584,6 +589,7 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                     hidden: directives.hidden,
                     details: directives.details.clone(),
                     grid_cols: directives.grid_cols,
+                    source_open: directives.source_open,
                 });
             }
             Block::Mermaid { source, directives } => {
