@@ -50,28 +50,32 @@ impl Drop for SockPath {
 fn spawn_mock_viewer(path: &Path) -> mpsc::Receiver<String> {
     let listener = UnixListener::bind(path).expect("bind mock viewer socket");
     let (tx, rx) = mpsc::channel();
+    // Connections are served one after another: `rustlab remote` pings the
+    // viewer first, then the remote `rustlab` connects through the forward.
     std::thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        while let Ok(Some(msg)) = read_msg::<_, ViewerMsg>(&mut stream) {
-            let name = match &msg {
-                ViewerMsg::Ping => "Ping",
-                ViewerMsg::Reset => "Reset",
-                ViewerMsg::FigureOpen { .. } => "FigureOpen",
-                ViewerMsg::PanelUpdate { .. } => "PanelUpdate",
-                _ => "Other",
-            };
-            if tx.send(name.to_string()).is_err() {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
                 return;
-            }
-            let reply = if matches!(msg, ViewerMsg::Ping) {
-                ViewerReply::Pong
-            } else {
-                ViewerReply::Ok
             };
-            if write_msg(&mut stream, &reply).is_err() {
-                return;
+            while let Ok(Some(msg)) = read_msg::<_, ViewerMsg>(&mut stream) {
+                let name = match &msg {
+                    ViewerMsg::Ping => "Ping",
+                    ViewerMsg::Reset => "Reset",
+                    ViewerMsg::FigureOpen { .. } => "FigureOpen",
+                    ViewerMsg::PanelUpdate { .. } => "PanelUpdate",
+                    _ => "Other",
+                };
+                if tx.send(name.to_string()).is_err() {
+                    return;
+                }
+                let reply = if matches!(msg, ViewerMsg::Ping) {
+                    ViewerReply::Pong
+                } else {
+                    ViewerReply::Ok
+                };
+                if write_msg(&mut stream, &reply).is_err() {
+                    return;
+                }
             }
         }
     });
@@ -199,6 +203,11 @@ fn remote_print_renders_the_ssh_command() {
             "/tmp/fwd.sock",
             "--print",
             "--no-check",
+            // Options start with a dash; the parser must take them as values.
+            "--ssh-opt",
+            "-p",
+            "--ssh-opt",
+            "2222",
         ])
         .env("RUSTLAB_VIEWER_SOCK", "/tmp/local-viewer.sock")
         .output()
@@ -215,6 +224,7 @@ fn remote_print_renders_the_ssh_command() {
     assert!(stdout.contains("ExitOnForwardFailure=yes"), "{stdout}");
     assert!(stdout.contains("me@host"), "{stdout}");
     assert!(stdout.contains("RUSTLAB_VIEWER_SOCK="), "{stdout}");
+    assert!(stdout.contains("-p 2222 me@host"), "{stdout}");
 }
 
 /// Forgetting to start the viewer is the common mistake; it should be caught
@@ -236,4 +246,171 @@ fn remote_without_a_local_viewer_fails_early() {
         "expected the missing-viewer message, got:\n{stderr}"
     );
     assert!(stderr.contains("rustlab-viewer"), "{stderr}");
+}
+
+/// A throwaway sshd running as the current user on a free loopback port,
+/// with its own host key and a fresh client key, all inside a temp dir.
+/// Killed on drop. `None` when no sshd binary is available.
+struct LocalSshd {
+    child: std::process::Child,
+    port: u16,
+    key: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl LocalSshd {
+    fn start() -> Option<Self> {
+        let sshd = ["/usr/sbin/sshd", "/usr/bin/sshd", "/usr/local/sbin/sshd"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())?;
+        let dir = tempfile::tempdir().ok()?;
+        let keygen = |name: &str| {
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", ""])
+                .arg("-f")
+                .arg(dir.path().join(name))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        if !keygen("hostkey") || !keygen("clientkey") {
+            return None;
+        }
+        std::fs::copy(
+            dir.path().join("clientkey.pub"),
+            dir.path().join("authorized_keys"),
+        )
+        .ok()?;
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .ok()?
+            .local_addr()
+            .ok()?
+            .port();
+        let d = dir.path().display();
+        let cfg = format!(
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/hostkey\nPidFile {d}/sshd.pid\n\
+             AuthorizedKeysFile {d}/authorized_keys\nPasswordAuthentication no\n\
+             KbdInteractiveAuthentication no\nPubkeyAuthentication yes\nStrictModes no\n\
+             UsePAM no\nAllowStreamLocalForwarding yes\nStreamLocalBindUnlink yes\nLogLevel ERROR\n"
+        );
+        std::fs::write(dir.path().join("sshd_config"), cfg).ok()?;
+        let child = Command::new(sshd)
+            .arg("-f")
+            .arg(dir.path().join("sshd_config"))
+            .args(["-D", "-e"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let me = Self {
+            child,
+            port,
+            key: dir.path().join("clientkey"),
+            _dir: dir,
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::net::TcpStream::connect(("127.0.0.1", me.port)).is_err() {
+            if std::time::Instant::now() > deadline {
+                return None; // drops `me`, killing sshd
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Some(me)
+    }
+
+    /// `--ssh-opt` values that reach this sshd non-interactively.
+    fn ssh_opts(&self) -> Vec<String> {
+        vec![
+            "-p".into(),
+            self.port.to_string(),
+            "-i".into(),
+            self.key.display().to_string(),
+            "-oStrictHostKeyChecking=no".into(),
+            "-oUserKnownHostsFile=/dev/null".into(),
+            "-oBatchMode=yes".into(),
+            "-oLogLevel=ERROR".into(),
+        ]
+    }
+}
+
+impl Drop for LocalSshd {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Opt-in proof through a real sshd: `rustlab remote` against a throwaway
+/// user-level sshd on loopback, with the mock viewer at the local end of
+/// the forward. Run with `RUSTLAB_SSH_LOOPBACK=1`; skipped otherwise (and
+/// when no sshd binary exists) so CI and ordinary runs never touch ssh.
+#[test]
+fn remote_round_trip_through_a_local_sshd() {
+    if std::env::var_os("RUSTLAB_SSH_LOOPBACK").is_none() {
+        eprintln!("skipping: set RUSTLAB_SSH_LOOPBACK=1 to run the ssh loopback");
+        return;
+    }
+    let Some(sshd) = LocalSshd::start() else {
+        eprintln!("skipping: could not start a local sshd");
+        return;
+    };
+    let viewer_sock = SockPath::new("lb-viewer");
+    let fwd_sock = SockPath::new("lb-fwd");
+    let rx = spawn_mock_viewer(&viewer_sock.0);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("p.rlab");
+    std::fs::write(&script, "plot(sin(linspace(0, 6.28, 64)))\n").expect("write script");
+    // The "remote" is this machine, so the freshly built binary is on its path.
+    let remote_cmd = format!(
+        "{} run {} --plot viewer",
+        env!("CARGO_BIN_EXE_rustlab"),
+        script.display()
+    );
+
+    let mut cmd = rustlab();
+    cmd.env("RUSTLAB_VIEWER_SOCK", viewer_sock.as_str()).args([
+        "remote",
+        "127.0.0.1",
+        "--remote-socket",
+        fwd_sock.as_str(),
+        "--command",
+        &remote_cmd,
+    ]);
+    for opt in sshd.ssh_opts() {
+        cmd.arg("--ssh-opt").arg(opt);
+    }
+    let out = cmd.output().expect("run rustlab remote");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "rustlab remote exited with {}:\n{stderr}",
+        out.status
+    );
+    assert!(stderr.contains("viewer: forwarding"), "{stderr}");
+    assert!(
+        stderr.contains("viewer: connected"),
+        "the remote rustlab should have connected through the forward:\n{stderr}"
+    );
+
+    let got = collect(&rx);
+    for expected in ["Ping", "FigureOpen", "PanelUpdate"] {
+        assert!(
+            got.iter().any(|m| m == expected),
+            "expected {expected} at the viewer end, got {got:?}\nstderr:\n{stderr}"
+        );
+    }
+
+    // sshd creates the forwarded socket owner-only by default
+    // (StreamLocalBindMask 0177) — the property the guide's security note
+    // rests on.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&fwd_sock.0)
+        .map(|m| m.permissions().mode() & 0o777)
+        .expect("forwarded socket should still exist after the session");
+    assert_eq!(
+        mode, 0o600,
+        "forwarded socket must be owner-only, got {mode:o}"
+    );
 }

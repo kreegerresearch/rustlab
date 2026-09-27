@@ -43,7 +43,10 @@ pub struct RemoteArgs {
     /// Extra option passed verbatim to ssh (repeatable), e.g.
     /// `--ssh-opt -p --ssh-opt 2222`. For anything involved, a `~/.ssh/config`
     /// entry is easier to live with.
-    #[arg(long = "ssh-opt", value_name = "OPT")]
+    // ssh options start with a dash, which clap would otherwise read as an
+    // unknown flag; `allow_hyphen_values` makes `--ssh-opt -p` work as
+    // documented.
+    #[arg(long = "ssh-opt", value_name = "OPT", allow_hyphen_values = true)]
     pub ssh_opt: Vec<String>,
 
     /// Print the ssh command instead of running it. Skips the local viewer
