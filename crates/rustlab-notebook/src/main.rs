@@ -155,6 +155,7 @@ enum Command {
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
         /// (interactive server mode only) Do not auto-open the browser.
+        /// The default opens it unless `CI` is set (no TTY check).
         #[arg(long)]
         no_browser: bool,
         /// (interactive server mode only) Enable the in-browser editor:

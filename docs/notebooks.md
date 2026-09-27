@@ -232,11 +232,16 @@ Behaviour:
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no
   in-place rewrite.
-- **Browser auto-opens** when stderr is a TTY and `CI` is unset;
-  `--no-browser` forces off. On Linux/WSL the server tries
-  `wslview` (under WSL, opens the Windows browser), then `xdg-open`,
-  then `gio open` / `sensible-browser`, falling back to printing the
-  URL if none are present.
+- **Browser auto-opens** unless `--no-browser` is passed or `CI` is set.
+  There is no TTY check, so launches from an IDE, a launcher, or a piped
+  shell open the browser too, and no opener override: the OS default
+  browser is used. Openers, in order: macOS `open`; Windows `cmd /c start`
+  then PowerShell `Start-Process`; WSL `wslview` (Windows host browser),
+  then `cmd.exe /c start` / `explorer.exe`, then the Linux list
+  (`xdg-open`, `gio open`, `sensible-browser`, `x-www-browser`). Each is
+  waited on for at most about a second, so a browser binary that keeps
+  running never delays the server. If none works the URL is printed for a
+  manual open.
 - **Source pane (split view).** A "Source" button in the top-right
   toolbar slides in a pane showing the raw `.md` (served from
   `/raw/<slug>`). The toolbar and pane live outside the rendered

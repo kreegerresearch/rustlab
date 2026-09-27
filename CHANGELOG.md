@@ -15,6 +15,17 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **`rustlab-notebook watch` always opens the browser** unless
+  `--no-browser` is passed or `CI` is set. The old rule opened only when
+  stderr was a TTY, so IDE, launcher, and piped launches never opened.
+  There is no opener override; the OS default browser is used. Openers
+  now cover macOS (`open`), Windows (`cmd /c start`, then PowerShell
+  `Start-Process`), WSL (`wslview`, then `cmd.exe` / `explorer.exe`, then
+  the Linux list), and Linux (`xdg-open`, `gio open`, `sensible-browser`,
+  `x-www-browser`). Each is waited on for at most about a second, so a
+  browser binary that keeps running no longer blocks the server from
+  starting. Migration: scripts that run `watch` in the background and do
+  not want a window pass `--no-browser`.
 - **LaTeX and PDF are always Catppuccin Latte on white paper.** `-t` and
   `~/.rustlabrc` `[notebook] theme` still theme HTML and `notebook watch`.
   They no longer paint a dark PDF page. Body text is `#4c4f69`; headings
