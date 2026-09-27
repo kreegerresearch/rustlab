@@ -116,7 +116,6 @@ enum Command {
             rustlab-notebook watch analysis.md                             # interactive server (one notebook)\n  \
             rustlab-notebook watch notebooks/                              # interactive server (whole directory + index)\n  \
             rustlab-notebook watch analysis.md --port 9000                 # custom port (fails loud on collision)\n  \
-            rustlab-notebook watch analysis.md --browser                   # force-open the browser (even from an IDE)\n  \
             rustlab-notebook watch analysis.md --no-browser                # don't auto-open the browser\n  \
             rustlab-notebook watch analysis.md --editable                  # edit the .md in the browser (writes back)\n  \
             rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
@@ -155,14 +154,8 @@ enum Command {
         /// collision).
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
-        /// (interactive server mode only) Force-open the browser even
-        /// when stderr is not a TTY (IDE / launcher). Default is to
-        /// auto-open on a TTY. Also set by `$RUSTLAB_NOTEBOOK_BROWSER=1`
-        /// (or a command) or `~/.rustlabrc` `[notebook] browser`;
-        /// `$BROWSER` selects the opener.
-        #[arg(long, conflicts_with = "no_browser")]
-        browser: bool,
         /// (interactive server mode only) Do not auto-open the browser.
+        /// The default opens it unless `CI` is set (no TTY check).
         #[arg(long)]
         no_browser: bool,
         /// (interactive server mode only) Enable the in-browser editor:
@@ -453,7 +446,6 @@ fn main() {
             no_iframe,
             debounce_ms,
             port,
-            browser,
             no_browser,
             editable,
             jail_root,
@@ -484,8 +476,6 @@ fn main() {
                 let opts = rustlab_notebook::server::ServerOpts {
                     port,
                     no_browser,
-                    force_browser: browser,
-                    rc_browser: settings.notebook.browser.clone(),
                     editable,
                     jail_root,
                 };
@@ -496,9 +486,9 @@ fn main() {
                 return;
             }
 
-            if port.is_some() || browser || no_browser || editable {
+            if port.is_some() || no_browser || editable {
                 eprintln!(
-                    "warning: --port / --browser / --no-browser / --editable only apply to the bare-input interactive server; ignored",
+                    "warning: --port / --no-browser / --editable only apply to the bare-input interactive server; ignored",
                 );
             }
 

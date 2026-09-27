@@ -15,6 +15,17 @@ version where the number and the behavior match again (see AGENTS.md
 Workflow Rule 12).
 
 ### Breaking / behavior changes
+- **`rustlab-notebook watch` always opens the browser** unless
+  `--no-browser` is passed or `CI` is set. The old rule opened only when
+  stderr was a TTY, so IDE, launcher, and piped launches never opened.
+  There is no opener override; the OS default browser is used. Openers
+  now cover macOS (`open`), Windows (`cmd /c start`, then PowerShell
+  `Start-Process`), WSL (`wslview`, then `cmd.exe` / `explorer.exe`, then
+  the Linux list), and Linux (`xdg-open`, `gio open`, `sensible-browser`,
+  `x-www-browser`). Each is waited on for at most about a second, so a
+  browser binary that keeps running no longer blocks the server from
+  starting. Migration: scripts that run `watch` in the background and do
+  not want a window pass `--no-browser`.
 - **LaTeX and PDF are always Catppuccin Latte on white paper.** `-t` and
   `~/.rustlabrc` `[notebook] theme` still theme HTML and `notebook watch`.
   They no longer paint a dark PDF page. Body text is `#4c4f69`; headings
@@ -77,20 +88,6 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
-- `rustlab-notebook watch` browser launch is now a setting.
-  `--browser` force-opens even from an IDE (stderr is not a TTY);
-  `--no-browser` still suppresses. Persist the choice in `~/.rustlabrc`
-  with `[notebook] browser = "auto" | "always" | "never" | "<command>"`
-  (booleans accepted), or per process with `$RUSTLAB_NOTEBOOK_BROWSER`
-  (`1`/`true` always, `0`/`false` never, or a command such as `firefox`
-  / `google-chrome %s`). Precedence: CLI > env > rc > auto. `$BROWSER`
-  is the Unix fallback opener. Openers cover macOS (`open`), Windows
-  (`cmd /c start`, PowerShell `Start-Process`), WSL (`wslview`, then
-  `cmd.exe` / `explorer.exe`), and Linux (`xdg-open`, `gio`,
-  `sensible-browser`, `x-www-browser`). Each opener is waited on for at
-  most about one second, so a browser binary that stays running (for
-  example `firefox` with no window open) no longer blocks the server
-  from starting. `CI` remains a hard off.
 - Notebook `` ```rustlab `` cells are syntax-colored in HTML (including
   `notebook watch` live updates) and in LaTeX/PDF. Highlighting follows
   the rustlab lexer (`#` and `%` comments, keywords, numbers, strings,

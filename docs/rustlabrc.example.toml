@@ -63,12 +63,6 @@ theme = "dark"            # dark | light
 # Missing key, or an unrecognised value (warns once), means open.
 # LaTeX/PDF always show the source.
 # code = "open"           # open | collapsed
-# When `rustlab-notebook watch` opens a browser. auto = only when stderr
-# is a TTY and CI is unset; always | never; or an opener command such as
-# "firefox" or "google-chrome %s" (implies always). Booleans work too.
-# --browser / --no-browser and $RUSTLAB_NOTEBOOK_BROWSER win over this key;
-# $BROWSER is the Unix fallback opener. Missing key means auto.
-# browser = "auto"        # auto | always | never | "<command>"
 
 [repl]
 # rustyline history cap (most recent N lines written back to

@@ -197,7 +197,6 @@ rustlab-notebook render notebooks/ -f markdown --obsidian --no-iframe
 rustlab-notebook watch analysis.md                       # one notebook → opens http://127.0.0.1:8042/
 rustlab-notebook watch notebooks/                        # whole directory → index page at /
 rustlab-notebook watch analysis.md --port 9000           # custom port (fails loud on collision)
-rustlab-notebook watch analysis.md --browser             # force-open even from an IDE / non-TTY
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
@@ -233,22 +232,16 @@ Behaviour:
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no
   in-place rewrite.
-- **Browser auto-opens** when stderr is a TTY and `CI` is unset.
-  `--browser` forces a launch even from an IDE (stderr is not a TTY);
-  `--no-browser` forces off. Persist the choice in `~/.rustlabrc` with
-  `[notebook] browser = "auto" | "always" | "never" | "<command>"`
-  (booleans accepted), or per process with `$RUSTLAB_NOTEBOOK_BROWSER`
-  (`1`/`true`/`on` always, `0`/`false`/`off` never, `auto`, or a command
-  such as `firefox` / `google-chrome %s` used as the opener). Precedence:
-  CLI flags, then the env var, then the rc key, then auto. `$BROWSER` is
-  the standard Unix fallback when neither names a command. Openers, in
-  order: macOS `open`; Windows `cmd /c start` then PowerShell
-  `Start-Process`; WSL `wslview` (Windows host browser), then
-  `cmd.exe /c start` / `explorer.exe`, then the Linux list (`xdg-open`,
-  `gio open`, `sensible-browser`, `x-www-browser`). Each opener is waited
-  on for at most about one second, so a browser binary that keeps running
-  never blocks the server from starting. If every candidate is missing the
-  URL is printed for a manual open. `CI` is a hard off.
+- **Browser auto-opens** unless `--no-browser` is passed or `CI` is set.
+  There is no TTY check, so launches from an IDE, a launcher, or a piped
+  shell open the browser too, and no opener override: the OS default
+  browser is used. Openers, in order: macOS `open`; Windows `cmd /c start`
+  then PowerShell `Start-Process`; WSL `wslview` (Windows host browser),
+  then `cmd.exe /c start` / `explorer.exe`, then the Linux list
+  (`xdg-open`, `gio open`, `sensible-browser`, `x-www-browser`). Each is
+  waited on for at most about a second, so a browser binary that keeps
+  running never delays the server. If none works the URL is printed for a
+  manual open.
 - **Source pane (split view).** A "Source" button in the top-right
   toolbar slides in a pane showing the raw `.md` (served from
   `/raw/<slug>`). The toolbar and pane live outside the rendered

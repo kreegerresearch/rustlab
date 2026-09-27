@@ -8,9 +8,8 @@
 //! 3. Built-in defaults (a missing file is not an error)
 //!
 //! Unknown keys warn (returned on [`LoadedConfig::unknown_keys`]); invalid
-//! values error with the file path and key, except `[notebook] code` and
-//! `[notebook] browser`, which warn (returned on [`LoadedConfig::warnings`])
-//! and fall back to open / auto.
+//! values error with the file path and key, except `[notebook] code`, which
+//! warns (returned on [`LoadedConfig::warnings`]) and falls back to open.
 //! Project-local config and `startup.rlab` are out of scope for v1.
 
 use std::env;
@@ -155,53 +154,11 @@ impl CodeFold {
     }
 }
 
-/// `[notebook] browser`: when `rustlab-notebook watch` opens a browser.
-///
-/// Same grammar as `$RUSTLAB_NOTEBOOK_BROWSER`: `auto` (open when stderr
-/// is a TTY and `CI` is unset), `always` / `true` / `1` / `on` / `yes`,
-/// `never` / `false` / `0` / `off` / `no`; anything else is an opener
-/// command (`firefox`, `google-chrome %s`), which also implies `always`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum BrowserOpen {
-    #[default]
-    Auto,
-    Always,
-    Never,
-    Command(String),
-}
-
-impl BrowserOpen {
-    /// Parse a setting value. Whitespace is trimmed; an empty value is
-    /// `None` so callers fall through to the next precedence level.
-    pub fn parse(s: &str) -> Option<Self> {
-        let s = s.trim();
-        if s.is_empty() {
-            return None;
-        }
-        Some(match s.to_ascii_lowercase().as_str() {
-            "auto" => Self::Auto,
-            "always" | "true" | "1" | "on" | "yes" => Self::Always,
-            "never" | "false" | "0" | "off" | "no" => Self::Never,
-            _ => Self::Command(s.to_string()),
-        })
-    }
-
-    /// The opener command, if this value names one.
-    pub fn command(&self) -> Option<&str> {
-        match self {
-            Self::Command(c) => Some(c),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NotebookSettings {
     pub theme: Option<ColorTheme>,
     /// `[notebook] code`. Missing key → built-in default open.
     pub code: Option<CodeFold>,
-    /// `[notebook] browser`. Missing key → auto.
-    pub browser: Option<BrowserOpen>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -233,12 +190,6 @@ impl UserSettings {
     /// An invalid rc value is dropped at parse time, so this stays open.
     pub fn notebook_code_open(&self) -> bool {
         self.notebook.code.map(CodeFold::is_open).unwrap_or(true)
-    }
-
-    /// Browser launch policy for `notebook watch`: `[notebook] browser`,
-    /// else auto (open when stderr is a TTY and `CI` is unset).
-    pub fn notebook_browser(&self) -> BrowserOpen {
-        self.notebook.browser.clone().unwrap_or_default()
     }
 
     /// Notebook page/plot theme: `[notebook] theme`, else `[plot] theme`,
@@ -591,20 +542,6 @@ fn parse_notebook_section(
                     type_name(other)
                 )),
             },
-            // Soft-fail like `code`: a bad value must not abort `watch`.
-            "browser" => match v {
-                TomlValue::String(s) => match BrowserOpen::parse(s) {
-                    Some(b) => settings.notebook.browser = Some(b),
-                    None => warnings
-                        .push("notebook.browser: empty string (using auto)".to_string()),
-                },
-                TomlValue::Boolean(true) => settings.notebook.browser = Some(BrowserOpen::Always),
-                TomlValue::Boolean(false) => settings.notebook.browser = Some(BrowserOpen::Never),
-                other => warnings.push(format!(
-                    "notebook.browser: expected a string or boolean, got {} (using auto)",
-                    type_name(other)
-                )),
-            },
             other => unknown.push(format!("notebook.{other}")),
         }
     }
@@ -952,68 +889,6 @@ mod tests {
         assert!(bad_type.settings.notebook_code_open());
         assert_eq!(bad_type.warnings.len(), 1);
         assert!(bad_type.warnings[0].contains("expected a string"));
-    }
-
-    #[test]
-    fn notebook_browser_values() {
-        for (src, want) in [
-            ("\"auto\"", BrowserOpen::Auto),
-            ("\"always\"", BrowserOpen::Always),
-            ("\"NEVER\"", BrowserOpen::Never),
-            ("true", BrowserOpen::Always),
-            ("false", BrowserOpen::Never),
-            (
-                "\" google-chrome %s \"",
-                BrowserOpen::Command("google-chrome %s".into()),
-            ),
-        ] {
-            let loaded = parse_toml(
-                &format!("[notebook]\nbrowser = {src}\n"),
-                Path::new("rc"),
-                ConfigSource::Defaults,
-            )
-            .unwrap();
-            assert_eq!(
-                loaded.settings.notebook.browser,
-                Some(want.clone()),
-                "{src}"
-            );
-            assert_eq!(loaded.settings.notebook_browser(), want, "{src}");
-            assert!(loaded.warnings.is_empty(), "{src}");
-        }
-        assert_eq!(
-            BrowserOpen::Command("firefox".into()).command(),
-            Some("firefox")
-        );
-        assert_eq!(BrowserOpen::Always.command(), None);
-    }
-
-    #[test]
-    fn notebook_browser_missing_or_invalid_is_auto() {
-        let missing = parse_toml("[notebook]\n", Path::new("rc"), ConfigSource::Defaults).unwrap();
-        assert!(missing.settings.notebook.browser.is_none());
-        assert_eq!(missing.settings.notebook_browser(), BrowserOpen::Auto);
-
-        let empty = parse_toml(
-            "[notebook]\nbrowser = \"  \"\n",
-            Path::new("rc"),
-            ConfigSource::Defaults,
-        )
-        .unwrap();
-        assert_eq!(empty.settings.notebook_browser(), BrowserOpen::Auto);
-        assert_eq!(empty.warnings.len(), 1);
-        assert!(empty.warnings[0].contains("using auto"));
-
-        let bad_type = parse_toml(
-            "[notebook]\nbrowser = 1\n",
-            Path::new("rc"),
-            ConfigSource::Defaults,
-        )
-        .unwrap();
-        assert_eq!(bad_type.settings.notebook_browser(), BrowserOpen::Auto);
-        assert_eq!(bad_type.warnings.len(), 1);
-        assert!(bad_type.warnings[0].contains("expected a string or boolean"));
-        assert!(bad_type.unknown_keys.is_empty());
     }
 
     #[test]
