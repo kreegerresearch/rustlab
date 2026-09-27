@@ -9,7 +9,8 @@ use rustlab_script::{set_default_number_format, NumberFormat};
 
 /// Load the user rc, warn about unknown keys, apply process defaults.
 ///
-/// A missing file is fine (built-in defaults). Invalid values abort.
+/// A missing file is fine (built-in defaults). Invalid values abort, except
+/// `[notebook] code`, which warns once and falls back to open.
 pub fn load_and_apply() -> Result<UserSettings> {
     let loaded = rustlab_config::load().context("failed to load rustlab user settings")?;
     warn_unknown(&loaded);
@@ -35,7 +36,7 @@ pub fn apply_process_defaults(settings: &UserSettings) {
 }
 
 fn warn_unknown(loaded: &LoadedConfig) {
-    if loaded.unknown_keys.is_empty() {
+    if loaded.unknown_keys.is_empty() && loaded.warnings.is_empty() {
         return;
     }
     let where_ = match &loaded.source {
@@ -44,5 +45,8 @@ fn warn_unknown(loaded: &LoadedConfig) {
     };
     for key in &loaded.unknown_keys {
         eprintln!("warning: {where_}: unknown setting '{key}' (ignored)");
+    }
+    for warning in &loaded.warnings {
+        eprintln!("warning: {where_}: {warning}");
     }
 }

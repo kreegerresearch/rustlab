@@ -614,7 +614,9 @@ impl Evaluator {
                 }
             }
             StmtKind::Run { path } => {
-                let source = std::fs::read_to_string(path)
+                let safe = crate::path_jail::check_path(path)
+                    .map_err(ScriptError::runtime)?;
+                let source = std::fs::read_to_string(&safe)
                     .map_err(|e| ScriptError::runtime(format!("run: {}: {}", path, e)))?;
                 let tokens = crate::lexer::tokenize(&source)?;
                 let stmts = crate::parser::parse(tokens)?;

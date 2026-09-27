@@ -72,7 +72,10 @@ pub struct RenderRequest {
 impl RenderRequest {
     /// Plain hash-scoped render request (file save / widget change).
     pub fn rerender(slug: String) -> Self {
-        Self { slug, force_from: None }
+        Self {
+            slug,
+            force_from: None,
+        }
     }
 
     /// Refresh the served index page's `index.md` body. The empty slug is
@@ -353,6 +356,8 @@ fn schedule_render(
         // the lock is fine: a newer render preempts the in-flight one (via
         // the cancel flag set above), which then drops the lock promptly.
         let nb_cache = nb.clone();
+        let nonce = state.csp_nonce.clone();
+        let jail_root = state.jail_root.clone();
         let render_result = tokio::task::spawn_blocking(move || {
             let mut cache = nb_cache.render_cache.lock().unwrap();
             super::render_for_server_cancellable(
@@ -367,6 +372,10 @@ fn schedule_render(
                 Some(&widget_overrides),
                 Some(&mut cache),
                 force_from,
+                super::PageCtx {
+                    nonce: Some(&nonce),
+                    jail_root: jail_root.as_deref(),
+                },
             )
         })
         .await;
@@ -392,12 +401,16 @@ fn schedule_render(
                 // A failed render still terminates the run — clear any
                 // ▶ Run spinners so they don't hang on an error.
                 eprintln!("[watch] render error ({}): {e:#}", nb.slug);
-                let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
+                let _ = nb
+                    .broadcast
+                    .send(Arc::from(ws::cell_status_done_envelope()));
                 return;
             }
             Err(e) => {
                 eprintln!("[watch] render task panicked ({}): {e}", nb.slug);
-                let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
+                let _ = nb
+                    .broadcast
+                    .send(Arc::from(ws::cell_status_done_envelope()));
                 return;
             }
         };
@@ -487,7 +500,9 @@ fn schedule_render(
         // ▶ Run spinners once the new output is already applied. Sent on
         // every completed latest-generation render (a forced run merged
         // with a save still ends exactly once).
-        let _ = nb.broadcast.send(Arc::from(ws::cell_status_done_envelope()));
+        let _ = nb
+            .broadcast
+            .send(Arc::from(ws::cell_status_done_envelope()));
     });
 }
 
@@ -512,9 +527,9 @@ mod tests {
         let create = notify::Event::new(EventKind::Create(notify::event::CreateKind::File));
         assert!(is_relevant_event(&create));
 
-        let mtime_only = notify::Event::new(EventKind::Modify(notify::event::ModifyKind::Metadata(
-            MetadataKind::WriteTime,
-        )));
+        let mtime_only = notify::Event::new(EventKind::Modify(
+            notify::event::ModifyKind::Metadata(MetadataKind::WriteTime),
+        ));
         assert!(is_relevant_event(&mtime_only));
     }
 
@@ -552,6 +567,9 @@ mod tests {
             index_body: tokio::sync::RwLock::new(String::new()),
             index_md_path: None,
             render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(0),
+            jail_root: None,
         });
         (state, nb)
     }
@@ -564,10 +582,18 @@ mod tests {
         let nb_path = dir.path().join("nb.md");
         std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
 
-        let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
-                .unwrap()
-                .html;
+        let html0 = super::super::render_for_server(
+            &nb_path,
+            theme,
+            dir.path(),
+            "nb",
+            false,
+            None,
+            &crate::render::LinkMode::single_file(),
+            super::super::PageCtx::default(),
+        )
+        .unwrap()
+        .html;
         let (state, nb) = single_state(&nb_path, html0);
 
         let mut sub = nb.broadcast.subscribe();
@@ -586,9 +612,18 @@ mod tests {
         // Single prose edit on a 1-block doc → kind may be full or partial;
         // either way the new marker must be present.
         let text = parsed.to_string();
-        assert!(text.contains("XYZ"), "re-render missing marker: {text:.256}");
+        assert!(
+            text.contains("XYZ"),
+            "re-render missing marker: {text:.256}"
+        );
 
-        assert!(state.notebook("nb").unwrap().html.read().await.contains("XYZ"));
+        assert!(state
+            .notebook("nb")
+            .unwrap()
+            .html
+            .read()
+            .await
+            .contains("XYZ"));
 
         drop(tx);
         let _ = tokio::time::timeout(Duration::from_secs(1), coord).await;
@@ -607,10 +642,18 @@ mod tests {
         // Start benign so the *initial* (non-cancellable) render is fast.
         std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
 
-        let html0 =
-            super::super::render_for_server(&nb_path, theme, dir.path(), "nb", false, None, &crate::render::LinkMode::single_file())
-                .unwrap()
-                .html;
+        let html0 = super::super::render_for_server(
+            &nb_path,
+            theme,
+            dir.path(),
+            "nb",
+            false,
+            None,
+            &crate::render::LinkMode::single_file(),
+            super::super::PageCtx::default(),
+        )
+        .unwrap()
+        .html;
         let (state, nb) = single_state(&nb_path, html0);
 
         // Now make the source a runaway and kick off a render; it spins on
@@ -633,6 +676,12 @@ mod tests {
             msg.contains("PREEMPT_MARKER"),
             "winning render missing the new marker"
         );
-        assert!(state.notebook("nb").unwrap().html.read().await.contains("PREEMPT_MARKER"));
+        assert!(state
+            .notebook("nb")
+            .unwrap()
+            .html
+            .read()
+            .await
+            .contains("PREEMPT_MARKER"));
     }
 }

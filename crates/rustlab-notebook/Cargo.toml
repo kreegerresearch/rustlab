@@ -44,10 +44,13 @@ blake3                   = { version = "1",   optional = true }
 
 # Interactive `notebook watch` server (see dev/plans/notebook_interactive_server.md).
 # Feature set deliberately trimmed per the trade-off doc: HTTP/1.1 only (loopback),
-# current-thread tokio runtime, no compression / CORS / auth (loopback server).
+# current-thread tokio runtime, no compression / CORS. Auth is loopback
+# Origin + Host checks, no session token (see `server/auth.rs` and
+# `docs/security.md`).
 axum                     = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws", "json", "query"] }
 tokio                    = { version = "1",   default-features = false, features = ["rt", "macros", "net", "io-util", "time", "sync", "signal"] }
 tower-http               = { version = "0.6", default-features = false, features = ["fs"] }
+rand.workspace           = true
 
 [dev-dependencies]
 # `tower::util::ServiceExt::oneshot` is the idiomatic way to drive a
