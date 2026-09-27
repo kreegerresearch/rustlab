@@ -75,6 +75,11 @@ rustlab run examples/dsp/lowpass.rlab
 
 Run `rustlab` with no arguments to enter the interactive REPL. Readline history and editing are supported.
 
+Optional user-global defaults can live in `~/.rustlabrc` or
+`$XDG_CONFIG_HOME/rustlab/config.toml` (declarative TOML — not a startup
+script). See [`docs/rustlabrc.example.toml`](docs/rustlabrc.example.toml)
+or type `help rustlabrc` in the REPL.
+
 ```sh
 rustlab
 ```

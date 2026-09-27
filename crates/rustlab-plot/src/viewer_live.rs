@@ -441,7 +441,7 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
         let needs_prerender =
             !panel.contours.is_empty() || !panel.quivers.is_empty() || !panel.streamlines.is_empty();
         if needs_prerender {
-            let theme = crate::theme::Theme::default();
+            let theme = crate::theme::default_theme();
             // High-resolution pre-render so quiver/streamline/contour panels
             // stay legible under several stops of zoom in the viewer. Paired
             // with `smooth: true` so egui samples the texture with linear

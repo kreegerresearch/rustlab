@@ -39,9 +39,10 @@ pub enum Commands {
 
 impl Cli {
     pub fn execute(self) -> Result<()> {
+        let settings = crate::user_config::load_and_apply()?;
         match self.command.unwrap_or(Commands::Repl) {
-            Commands::Repl => crate::commands::repl::execute(),
-            Commands::Run(args) => crate::commands::run::execute(args),
+            Commands::Repl => crate::commands::repl::execute(&settings),
+            Commands::Run(args) => crate::commands::run::execute(args, &settings),
             Commands::Filter(cmd) => crate::commands::filter::execute(cmd),
             Commands::Convolve(args) => crate::commands::convolve::execute(args),
             Commands::Window(args) => crate::commands::window::execute(args),

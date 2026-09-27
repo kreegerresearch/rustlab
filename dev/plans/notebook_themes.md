@@ -1,6 +1,6 @@
 # Notebook color themes / schemes
 
-**Status:** F2 + F1 + F5 implemented — remaining features not started.  
+**Status:** F2 + F1 + F5 implemented; F8's user-default half shipped via `~/.rustlabrc` (2026-09-27). F3, F4, F6, F7 and project-level config not started.  
 **Created:** 2026-09-13  
 **Surfaces:** HTML, LaTeX/PDF, `watch` server (not committed `gallery/*.md` — GitHub owns that CSS).
 
@@ -16,7 +16,7 @@ Track feature completion here. Check the box when that feature’s PR is merged 
 - [ ] F3 — Theme files (`inherits` + palette + roles)
 - [ ] F4 — Theme discovery directories
 - [ ] F6 — Frontmatter `theme:`
-- [ ] F8 — Project / user default theme config
+- [ ] F8 — Project default theme config (user default done via `~/.rustlabrc`)
 - [ ] F7 — Watch-server theme picker
 
 ### F2 — Luminance-based dark/light detection
@@ -69,9 +69,9 @@ Track feature completion here. Check the box when that feature’s PR is merged 
 
 ### F8 — Project / user default theme config
 - [ ] Project config key (e.g. `rustlab.toml` / `.rustlab/config.toml`)
-- [ ] User config default theme
-- [ ] Precedence locked + tested (CLI > frontmatter > project > user > env > default)
-- [ ] Docs + CHANGELOG
+- [x] User config default theme — `~/.rustlabrc` `[notebook] theme` / `[plot] theme` accept the four names + aliases; mapped via `rustlab_plot::parse_theme` (2026-09-27)
+- [x] Precedence locked + tested: CLI > rc > default. No env var (dropped, KISS)
+- [x] Docs + CHANGELOG (user half)
 
 ### F7 — Watch-server theme picker
 - [ ] UI lists builtins (+ discovered themes if F4 present)
@@ -105,7 +105,7 @@ Track feature completion here. Check the box when that feature’s PR is merged 
 3. **Inherits + partial override** — don’t require dumping all ~25 `ThemeColors` fields.
 4. **Validate early** — hex `#RRGGBB`, unknown keys error, WCAG contrast for text/accents vs `bg`.
 5. **HTML runtime tokens** — emit CSS variables (`--rl-*`) from the resolved palette so chrome can share one contract.
-6. **Precedence:** CLI (`--theme` / `--theme-file`) > notebook frontmatter > project/user config > env `RUSTLAB_NOTEBOOK_THEME` > default `dark` (= mocha).
+6. **Precedence:** CLI (`--theme` / `--theme-file`) > notebook frontmatter > project config > user rc (`~/.rustlabrc`) > default `dark` (= mocha). No env var.
 
 ## Internal model (shared by all features)
 
@@ -250,7 +250,7 @@ Builtin aliases: `dark` → `mocha`, `light` → `latte`.
 
 ### F8 — Project / user default theme config
 
-**Status:** not started  
+**Status:** in progress — user default shipped via `~/.rustlabrc` `[notebook] theme` / `[plot] theme` (2026-09-27); project-level config not started  
 **Depends on:** F1; F3/F4 if defaults point at files  
 **Ships alone as:** yes
 

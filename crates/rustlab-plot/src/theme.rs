@@ -13,6 +13,8 @@
 //! `--rl-*` tokens and [`ThemeColors::css_var`] for `var(--rl-…, literal)`
 //! fallbacks in the page stylesheet.
 
+use std::cell::Cell;
+
 /// Theme selection for rendered output (HTML, LaTeX, PDF).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
@@ -30,6 +32,25 @@ impl Default for Theme {
     fn default() -> Self {
         Theme::Dark
     }
+}
+
+thread_local! {
+    /// Per-thread default theme used by un-themed render paths
+    /// (`savefig` HTML/SVG/PNG, animation HTML/GIF, viewer pre-render).
+    /// Notebooks that pass an explicit theme to the themed APIs are
+    /// unaffected. Set at process start from `~/.rustlabrc` `[plot] theme`.
+    static DEFAULT_THEME: Cell<Theme> = const { Cell::new(Theme::Dark) };
+}
+
+/// Overwrite the per-thread default [`Theme`]. Subsequently un-themed
+/// renders pick up this palette.
+pub fn set_default_theme(theme: Theme) {
+    DEFAULT_THEME.with(|c| c.set(theme));
+}
+
+/// Return the current per-thread default [`Theme`].
+pub fn default_theme() -> Theme {
+    DEFAULT_THEME.with(|c| c.get())
 }
 
 impl Theme {
@@ -84,14 +105,7 @@ pub fn parse_theme(name: &str) -> Option<Theme> {
 
 /// Names accepted by [`theme_colors`] / CLI `-t` (builtins first, then aliases).
 pub fn builtin_theme_names() -> &'static [&'static str] {
-    &[
-        "mocha",
-        "macchiato",
-        "frappe",
-        "latte",
-        "dark",
-        "light",
-    ]
+    &["mocha", "macchiato", "frappe", "latte", "dark", "light"]
 }
 
 fn normalize_theme_name(name: &str) -> Option<String> {
@@ -146,10 +160,7 @@ impl ThemeColors {
     /// (sRGB relative luminance &lt; 0.5). Used for CSS `color-scheme` and
     /// LaTeX `pagecolor` — not pointer identity against a builtin static.
     pub fn is_dark(&self) -> bool {
-        match relative_luminance(self.bg) {
-            Some(l) if l >= 0.5 => false,
-            _ => true,
-        }
+        !matches!(relative_luminance(self.bg), Some(l) if l >= 0.5)
     }
 
     /// CSS `color-scheme` value: `"dark"` or `"light"`.
@@ -461,14 +472,8 @@ mod tests {
         ] {
             let u = contrast_ratio(colors.accent_secondary, colors.bg).unwrap();
             let v = contrast_ratio(colors.accent_primary, colors.bg).unwrap();
-            assert!(
-                u >= 4.5,
-                "{name} accent_secondary contrast {u:.2} < 4.5"
-            );
-            assert!(
-                v >= 4.5,
-                "{name} accent_primary contrast {v:.2} < 4.5"
-            );
+            assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
+            assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
         }
     }
 }

@@ -280,7 +280,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "image",    brief: "Raw pixel display (no normalisation, values 0–255)",
         detail: "image(M)              — grayscale (values 0..255)\nimage(M, \"colormap\")  — single channel mapped through colormap\nimage(R, G, B)        — true-colour RGB (each channel 0..255, real-valued)\n\n  Values are clamped to [0, 255]; no min/max normalisation (unlike imagesc).\n  RGB form requires three real matrices of identical shape.\n  Row 0 is rendered at the top." },
     HelpEntry { name: "surf",     brief: "3D surface plot of a Z matrix",
-        detail: "surf(Z)              — plot Z with x=1..cols, y=1..rows\nsurf(X, Y, Z)        — X, Y may be vectors or meshgrid matrices\nsurf(X, Y, Z, cmap)  — with colormap \"viridis\"|\"jet\"|\"hot\"|\"gray\"\n\nTerminal:  renders as a heatmap of Z.\nViewer:    interactive 3D surface — left-drag rotate, scroll zoom,\n           shift+scroll scale Z, right-drag pan, R resets.\nHTML:      Plotly 3D surface (draggable in browser).\nSVG/PNG:   static isometric wireframe.\n\nExample:\n  [X, Y] = meshgrid(linspace(-3, 3, 40), linspace(-3, 3, 40));\n  Z = sin(X.^2 + Y.^2); surf(X, Y, Z);" },
+        detail: "surf(Z)              — plot Z with x=1..cols, y=1..rows\nsurf(X, Y, Z)        — X, Y may be vectors or meshgrid matrices\nsurf(X, Y, Z, cmap)  — with colormap \"viridis\"|\"jet\"|\"hot\"|\"gray\"\n\nTerminal:  renders as a heatmap of Z.\nViewer:    interactive 3D surface — left-drag rotate, scroll zoom,\n           shift+scroll scale Z, right-drag pan; the panel's Home\n           button (or the Home / R keys) restores the camera.\nHTML:      Plotly 3D surface (draggable in browser).\nSVG/PNG:   static isometric wireframe.\n\nExample:\n  [X, Y] = meshgrid(linspace(-3, 3, 40), linspace(-3, 3, 40));\n  Z = sin(X.^2 + Y.^2); surf(X, Y, Z);" },
     HelpEntry { name: "contour",  brief: "Line contour plot of a 2-D scalar field",
         detail: "contour(Z)\ncontour(X, Y, Z)\ncontour(X, Y, Z, nlevels)\ncontour(X, Y, Z, levels)         — explicit level vector\ncontour(X, Y, Z, [..], \"k\")     — single line colour (k/r/g/b/c/m/y/w)\ncontour(X, Y, Z, \"title\")\n\n  X, Y may be 1-D vectors or meshgrid matrices.\n  Default is 10 auto-spaced round-number levels.\n  Honours hold on so contour can overlay imagesc heatmaps and other contour layers.\n\n  Terminal: not rendered — a deferred warning prints at end of run\n            unless savefig/saveanim consumed the figure.\n  HTML:     Plotly contour trace (exact).\n  SVG/PNG:  marching-squares line segments.\n\nExample:\n  [X, Y] = meshgrid(linspace(-2, 2, 41), linspace(-2, 2, 41));\n  Z = X .^ 2 + Y .^ 2;\n  contour(X, Y, Z);  savefig(\"contour.svg\");" },
     HelpEntry { name: "contourf", brief: "Filled contour plot of a 2-D scalar field",
@@ -297,7 +297,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "grid",     brief: "Show or hide grid lines",
         detail: "grid(\"on\")   — enable grid lines (default)\ngrid(\"off\")  — disable grid lines\ngrid(1) / grid(0) also accepted" },
     HelpEntry { name: "viewer",   brief: "Connect/disconnect the external rustlab-viewer GUI",
-        detail: "Route plots from the REPL or a script to a separate egui window\n(zoom, pan, crosshairs, point readout) instead of the terminal.\n\nBasic workflow:\n  1. In a second terminal:   rustlab-viewer\n  2. In the REPL:            viewer on\n  3. Plot as normal:         plot(sin(linspace(0,10,200)))\n                             — the figure opens in the viewer window\n  4. To return to the TUI:   viewer off\n\nForms:\n  viewer            — print current status (terminal / viewer / which session)\n  viewer on         — connect to the default viewer\n  viewer on <name>  — connect to a named session (e.g. `viewer on work`)\n  viewer off        — disconnect; subsequent plots render in the terminal\n\nNamed sessions let multiple viewers coexist:\n  Terminal A:  rustlab-viewer --name filters\n  Terminal B:  rustlab-viewer --name analysis\n  REPL A:      viewer on filters\n  REPL B:      viewer on analysis\n\nFrom a script you can skip the explicit `viewer on` by launching with\n  rustlab run --plot viewer my_script.rlab\n  rustlab run --plot viewer --viewer-name work my_script.rlab\n\nIf the viewer window is closed while connected, the next plot call\ndetects the lost socket, disconnects with a warning, and falls back to\nterminal rendering until the next `viewer on`.\n\nRequires the `viewer` feature (built in by `make install`). See also\nthe `rustlab-viewer` binary's `--help` for `--socket` / `--name` flags." },
+        detail: "Route plots from the REPL or a script to a separate egui window\n(zoom, pan, crosshairs, point readout) instead of the terminal.\n\nIn the viewer window, each subplot navigates on its own:\n  scroll             — zoom both axes about the pointer\n  left-drag          — pan\n  Home button / key  — reset the view: back to the script's xlim/ylim\n                       if it set any, otherwise fit the data\n  double-click       — same reset as Home\n3D surf panels: left-drag rotates, scroll zooms, shift+scroll scales Z,\nright-drag pans, and Home (or R) restores the default camera.\n\nBasic workflow:\n  1. In a second terminal:   rustlab-viewer\n  2. In the REPL:            viewer on\n  3. Plot as normal:         plot(sin(linspace(0,10,200)))\n                             — the figure opens in the viewer window\n  4. To return to the TUI:   viewer off\n\nForms:\n  viewer            — print current status (terminal / viewer / which session)\n  viewer on         — connect to the default viewer\n  viewer on <name>  — connect to a named session (e.g. `viewer on work`)\n  viewer off        — disconnect; subsequent plots render in the terminal\n\nNamed sessions let multiple viewers coexist:\n  Terminal A:  rustlab-viewer --name filters\n  Terminal B:  rustlab-viewer --name analysis\n  REPL A:      viewer on filters\n  REPL B:      viewer on analysis\n\nFrom a script you can skip the explicit `viewer on` by launching with\n  rustlab run --plot viewer my_script.rlab\n  rustlab run --plot viewer --viewer-name work my_script.rlab\n\nIf the viewer window is closed while connected, the next plot call\ndetects the lost socket, disconnects with a warning, and falls back to\nterminal rendering until the next `viewer on`.\n\nRequires the `viewer` feature (built in by `make install`). See also\nthe `rustlab-viewer` binary's `--help` for `--socket` / `--name` flags." },
     HelpEntry { name: "xlabel",   brief: "Set x-axis label",
         detail: "xlabel(\"text\")  — sets the x-axis label on the current subplot" },
     HelpEntry { name: "ylabel",   brief: "Set y-axis label",
@@ -311,7 +311,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "axis",     brief: "Aspect lock, limits, or y-axis orientation",
         detail: "axis(\"equal\")                       — lock visual aspect to 1:1 (one data unit on x = one data unit on y)\naxis(\"auto\")                        — release the aspect lock (default)\naxis([xmin, xmax, ymin, ymax])      — set both axis limits at once\naxis(\"xy\")                          — physics y for heatmaps on this panel: row 0 at the bottom\naxis(\"ij\")                          — image-pixel y for heatmaps on this panel: row 0 at the top (default)\n\n  axis(\"equal\") is honored across all four rendering backends.\n  axis(\"xy\")/axis(\"ij\") affects imagesc/image/heatmap panels only. The\n  default is ij (matches MATLAB / Octave imagesc). Use xy for physics /\n  meshgrid / GIS notebooks where y points up.\n\n  For a process-wide y-axis default, see set_default_axis(...)." },
     HelpEntry { name: "set_default_axis", brief: "Process-wide default y-axis orientation for heatmap panels",
-        detail: "set_default_axis(\"xy\")  — every panel uses physics y (row 0 at bottom)\nset_default_axis(\"ij\")  — every panel uses image y (row 0 at top, default)\n\n  Best used once in a notebook preamble — e.g. an EM / heat-transfer\n  curriculum calls set_default_axis(\"xy\") at the top of every notebook so\n  imagesc renders with y pointing up by default. Per-panel axis(\"xy\")/\n  axis(\"ij\") still overrides this for individual plots.\n\n  Updates the per-thread default AND retro-applies to every panel in the\n  current figure, so the call is effective from a notebook preamble\n  without first creating a new subplot." },
+        detail: "set_default_axis(\"xy\")  — every panel uses physics y (row 0 at bottom)\nset_default_axis(\"ij\")  — every panel uses image y (row 0 at top, default)\n\n  Best used once in a notebook preamble — e.g. an EM / heat-transfer\n  curriculum calls set_default_axis(\"xy\") at the top of every notebook so\n  imagesc renders with y pointing up by default. Per-panel axis(\"xy\")/\n  axis(\"ij\") still overrides this for individual plots.\n\n  A user-global default can also be set in ~/.rustlabrc as\n  `[plot] default_axis = \"xy\"` (see rustlabrc). An in-script call still\n  wins for the rest of the session.\n\n  Updates the per-thread default AND retro-applies to every panel in the\n  current figure, so the call is effective from a notebook preamble\n  without first creating a new subplot." },
     HelpEntry { name: "subplot",  brief: "Switch to a subplot panel",
         detail: "subplot(rows, cols, idx)  — divides the figure into rows×cols panels\n  idx is 1-based, counts left-to-right then top-to-bottom\n  Example: subplot(2, 1, 1)  — top panel of a 2-row layout" },
     HelpEntry { name: "legend",   brief: "Label series in the current subplot",
@@ -368,7 +368,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "commas(x)  — format number with comma separators, returns string\n  commas(1234567)       →  \"1,234,567\"\n  commas(1234567.89)    →  \"1,234,567.89\"\n  commas(1234567.89, 2) →  \"1,234,567.89\"  (with precision)\n  commas(1234567, 0)    →  \"1,234,567\"" },
     // Formatting
     HelpEntry { name: "format", brief: "Set display format (short, long, hex, commas)",
-        detail: "format short    — default display (4-6 digits)\n  format long     — full f64 precision (15 digits)\n  format hex      — IEEE-754 hex encoding of float bits\n  format commas   — thousands separators\n  format default  — alias for short\n  format          — show current mode\n  Example:\n    format long\n    x = pi\n    x = 3.141592653589793" },
+        detail: "format short    — default display (4-6 digits)\n  format long     — full f64 precision (15 digits)\n  format hex      — IEEE-754 hex encoding of float bits\n  format commas   — thousands separators\n  format default  — alias for short\n  format          — show current mode\n\n  The session starts in short, or in whatever [display] format is set\n  in ~/.rustlabrc / $XDG_CONFIG_HOME/rustlab/config.toml (see rustlabrc).\n  An in-script or REPL `format` command always wins over the rc file.\n  Example:\n    format long\n    x = pi\n    x = 3.141592653589793" },
     // Aggregates
     HelpEntry { name: "all", brief: "True if all elements are nonzero",
         detail: "all(v)  — true if every element of v is nonzero\n  Works on scalars, bools, and vectors." },
@@ -536,7 +536,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "pwd", brief: "Print working directory",
         detail: "pwd  — show the current working directory" },
     HelpEntry { name: "history", brief: "Show previously entered commands",
-        detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines. After `history clear` that saved file is emptied too, on the\n  next clean exit.\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
+        detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines (override with `[repl] history_limit` in ~/.rustlabrc).\n  After `history clear` that saved file is emptied too, on the\n  next clean exit.\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
+    HelpEntry { name: "rustlabrc", brief: "User-global settings file (~/.rustlabrc or XDG)",
+        detail: "Optional TOML config — not a startup script. First existing file wins:\n\n  1. $XDG_CONFIG_HOME/rustlab/config.toml   (XDG home defaults to ~/.config)\n  2. ~/.rustlabrc\n  3. built-in defaults (missing file is OK)\n\n  Do not confuse this with ~/.rustlab_history (REPL command history) or\n  the project cache at .rustlab/cache.db. v1 is user-global only; there\n  is no project .rustlab/config.toml, and the file is never executed.\n\n  Precedence (high → low): CLI flags > in-script / REPL commands > rc >\n  built-in defaults. Unknown keys warn once and are ignored; invalid\n  values abort with the file path and key, except [notebook] code,\n  which warns once and falls back to open.\n\nExample ~/.rustlabrc:\n  [display]\n  format = \"commas\"          % short | long | hex | commas\n\n  [plot]\n  theme = \"dark\"             % mocha | macchiato | frappe | latte (dark, light)\n  default_axis = \"ij\"        % ij | xy\n\n  [notebook]\n  theme = \"dark\"             % rustlab-notebook -t default\n  code = \"open\"              % open | collapsed (source disclosure)\n\n  [repl]\n  history_limit = 1000\n\n  [viewer]\n  auto_connect = false       % REPL / rustlab run without --plot\n  name = \"work\"              % rustlab-viewer --name\n\n  Full example: docs/rustlabrc.example.toml" },
     // Math (additional)
     HelpEntry { name: "atan2", brief: "Two-argument inverse tangent  atan2(y, x)",
         detail: "atan2(y, x)  — angle in radians in the range (-π, π]\n  Element-wise; accepts scalars, vectors, or matrices.\n  atan2(1, 1)   →  π/4\n  atan2(0, -1)  →  π" },
@@ -1210,7 +1212,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "language", subcategory: "Filesystem",
         names: &["run", "ls", "cd", "pwd"] },
     CategoryRow { toolbox: "language", subcategory: "Session",
-        names: &["history"] },
+        names: &["history", "rustlabrc"] },
     CategoryRow { toolbox: "language", subcategory: "Higher-order",
         names: &["arrayfun", "feval"] },
     CategoryRow { toolbox: "language", subcategory: "Profiling",
@@ -1853,7 +1855,7 @@ impl Completer for ReplHelper {
 
 // ─── REPL ─────────────────────────────────────────────────────────────────────
 
-pub fn execute() -> Result<()> {
+pub fn execute(settings: &rustlab_config::UserSettings) -> Result<()> {
     println!(
         "rustlab {} — type {} or {} for help, {} or Ctrl+D to quit",
         color::bold_green(env!("CARGO_PKG_VERSION")),
@@ -1866,16 +1868,20 @@ pub fn execute() -> Result<()> {
         color::dim("Tip: end a line with ; to suppress output")
     );
 
+    let history_limit = settings.history_limit();
     let config = Config::builder()
         .completion_type(CompletionType::List)
         // rustyline defaults to 100 remembered lines, which `history` makes
         // visible — and 100 is a short memory for a session that spans days.
-        .max_history_size(1000)?
+        // Override via `[repl] history_limit` in ~/.rustlabrc.
+        .max_history_size(history_limit)?
         .build();
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(ReplHelper::new()));
     let mut ev = Evaluator::new();
     ev.color_output = color::is_color_enabled();
+
+    maybe_auto_connect_viewer(settings);
 
     let hist_path = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".rustlab_history"))
@@ -2085,4 +2091,44 @@ pub fn execute() -> Result<()> {
     let _ = rl.save_history(&hist_path);
     println!("{}", color::dim("bye"));
     Ok(())
+}
+
+fn maybe_auto_connect_viewer(settings: &rustlab_config::UserSettings) {
+    if !settings.viewer_auto_connect() {
+        return;
+    }
+    #[cfg(feature = "viewer")]
+    {
+        let result = match settings.viewer.name.as_deref() {
+            Some(name) => rustlab_plot::connect_viewer_named(name),
+            None => rustlab_plot::connect_viewer(),
+        };
+        match result {
+            Ok(true) => {
+                let fig_id = rustlab_plot::viewer_live::get_viewer_fig_id().unwrap_or(1);
+                rustlab_plot::set_current_figure_output(rustlab_plot::FigureOutput::Viewer(fig_id));
+                match settings.viewer.name.as_deref() {
+                    Some(n) => {
+                        eprintln!("viewer: auto-connected to session '{n}' (from rustlabrc)")
+                    }
+                    None => eprintln!("viewer: auto-connected (from rustlabrc)"),
+                }
+            }
+            Ok(false) => match settings.viewer.name.as_deref() {
+                Some(n) => eprintln!(
+                    "viewer: rustlabrc auto_connect: could not reach session '{n}' — is rustlab-viewer --name {n} running?"
+                ),
+                None => eprintln!(
+                    "viewer: rustlabrc auto_connect: could not connect — is rustlab-viewer running?"
+                ),
+            },
+            Err(e) => eprintln!("viewer: rustlabrc auto_connect failed — {e}"),
+        }
+    }
+    #[cfg(not(feature = "viewer"))]
+    {
+        eprintln!(
+            "viewer: rustlabrc auto_connect ignored (rebuild rustlab with --features viewer)"
+        );
+    }
 }

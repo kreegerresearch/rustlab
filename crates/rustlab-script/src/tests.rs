@@ -10868,6 +10868,19 @@ mod comma_tests {
     }
 
     #[test]
+    fn default_number_format_seeds_new_evaluator() {
+        use crate::eval::value::{default_number_format, set_default_number_format, NumberFormat};
+        let prior = default_number_format();
+        set_default_number_format(NumberFormat::Commas);
+        let ev = Evaluator::new();
+        assert_eq!(ev.number_format, NumberFormat::Commas);
+        set_default_number_format(NumberFormat::Short);
+        let ev2 = Evaluator::new();
+        assert_eq!(ev2.number_format, NumberFormat::Short);
+        set_default_number_format(prior);
+    }
+
+    #[test]
     fn format_default_mode() {
         let ev = eval_str("format commas\nformat default");
         assert_eq!(ev.number_format, crate::eval::value::NumberFormat::Short);

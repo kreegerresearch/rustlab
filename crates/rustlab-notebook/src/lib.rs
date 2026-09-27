@@ -5,6 +5,7 @@ pub mod execute;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;
+pub mod pdf_compile;
 pub mod render;
 pub mod render_json;
 pub mod render_latex;
@@ -650,7 +651,7 @@ pub fn cmd_render_cached(
         };
     }
 
-    render_output(
+    if let Err(e) = render_output(
         &out_path,
         &format,
         &title,
@@ -660,7 +661,9 @@ pub fn cmd_render_cached(
         link,
         Some(&source),
         Some(&input),
-    );
+    ) {
+        eprintln!("error: {}: {e}", input.display());
+    }
     print_summary(&input, &out_path, &outcome.rendered);
     CachedRenderSummary {
         cached_blocks: outcome.cached_blocks,
@@ -668,7 +671,12 @@ pub fn cmd_render_cached(
     }
 }
 
-pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme: &ThemeColors) {
+pub fn cmd_render(
+    input: PathBuf,
+    output: Option<PathBuf>,
+    format: Format,
+    theme: &ThemeColors,
+) -> Result<(), String> {
     let _cwd_guard = CwdGuard::new();
     // Capture the canonical input BEFORE the chdir so the markdown-
     // overwrite guard can compare it against the resolved output.
@@ -725,8 +733,9 @@ pub fn cmd_render(input: PathBuf, output: Option<PathBuf>, format: Format, theme
         &render::LinkMode::single_file(),
         Some(&source),
         Some(&input),
-    );
+    )?;
     print_summary(&input, &out_path, &rendered);
+    Ok(())
 }
 
 /// Render a single notebook to JSON on stdout — the Phase-1 surface
@@ -805,22 +814,44 @@ pub fn cmd_render_json(
 /// `index.md` exists in `dir`, it is treated specially: its body is rendered as
 /// the top of the generated `index.html` (above the notebook listing), and its
 /// title supplies the default index title when `index_title` is `None`.
+/// Outcome of a directory render: `Ok` when every notebook rendered,
+/// otherwise the tally the CLI prints before exiting 1.
+fn dir_render_result(failed: &[String], total: usize) -> Result<(), String> {
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} of {} notebook(s) failed to render: {}",
+            failed.len(),
+            total,
+            failed.join(", ")
+        ))
+    }
+}
+
 pub fn cmd_render_dir(
     dir: PathBuf,
     output: Option<PathBuf>,
     format: Format,
     theme: &ThemeColors,
     index_title: Option<String>,
-) {
+) -> Result<(), String> {
     let _cwd_guard = CwdGuard::new();
     let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    // A collection is one trust unit: jail every notebook's file I/O to
+    // the collection root (not its own subdirectory) so nested notebooks
+    // can share `../data/`. An explicit `--jail-root` already installed
+    // by the CLI wins.
+    let _jail = match execute::jail_root_override() {
+        Some(_) => None,
+        None => Some(execute::JailRootGuard::new(Some(dir.clone()))),
+    };
     let out_dir = output
         .map(|o| std::path::absolute(&o).unwrap_or(o))
         .unwrap_or_else(|| dir.clone());
 
     if let Err(e) = std::fs::read_dir(&dir) {
-        eprintln!("error: cannot read directory {}: {e}", dir.display());
-        std::process::exit(1);
+        return Err(format!("cannot read directory {}: {e}", dir.display()));
     }
     // Recursive, with the same listing rule as the watch server — the two
     // walked different depths before, so `watch` served nested notebooks
@@ -862,7 +893,7 @@ pub fn cmd_render_dir(
             "warning: no notebooks found in {} (README.md, index.md and _partials are not listable)",
             dir.display()
         );
-        return;
+        return Ok(());
     }
 
     let ext = format.extension();
@@ -942,6 +973,9 @@ pub fn cmd_render_dir(
     };
 
     let n = pending.len();
+    // One bad notebook must not abort the collection: record it, keep
+    // rendering the rest, and report the tally at the end (exit 1).
+    let mut failed: Vec<String> = Vec::new();
     for i in 0..n {
         // Nav and link targets are collection-root-relative; this page may
         // sit in a subdirectory, so hrefs to them climb out of it first.
@@ -985,7 +1019,7 @@ pub fn cmd_render_dir(
         let expanded = embed::expand_embeds(&p.source, host_dir, &dir);
         let blocks = parse::parse_notebook(&expanded);
         let rendered = execute::execute_notebook(&blocks);
-        render_output(
+        if let Err(e) = render_output(
             &p.out_file,
             &format,
             &p.title,
@@ -995,7 +1029,11 @@ pub fn cmd_render_dir(
             &page_link_mode,
             Some(&p.source),
             Some(&p.md_path),
-        );
+        ) {
+            eprintln!("error: {}: {e}", p.md_path.display());
+            failed.push(p.rel_md.clone());
+            continue;
+        }
         print_summary(&p.md_path, &p.out_file, &rendered);
     }
 
@@ -1040,7 +1078,7 @@ pub fn cmd_render_dir(
                     Ok(s) => s,
                     Err(e) => {
                         eprintln!("warning: cannot read {}: {e}", src_index.display());
-                        return;
+                        return dir_render_result(&failed, n);
                     }
                 };
                 let host_dir = src_index.parent().unwrap_or(&dir);
@@ -1049,7 +1087,7 @@ pub fn cmd_render_dir(
                 let blocks = parse::parse_notebook(&expanded);
                 let rendered = execute::execute_notebook(&blocks);
                 let title = extract_title(&source, src_index);
-                render_output(
+                if let Err(e) = render_output(
                     &index_path,
                     &format,
                     &title,
@@ -1060,7 +1098,10 @@ pub fn cmd_render_dir(
                     &render::LinkMode::single_file(),
                     Some(&source),
                     Some(src_index),
-                );
+                ) {
+                    eprintln!("error: {}: {e}", src_index.display());
+                    failed.push("index.md".to_string());
+                }
                 print_summary(src_index, &index_path, &rendered);
             }
             None => {
@@ -1086,6 +1127,7 @@ pub fn cmd_render_dir(
             }
         }
     }
+    dir_render_result(&failed, n)
 }
 
 /// Build the body of an autogenerated `index.md` for vault mode: an H1
@@ -1148,6 +1190,10 @@ pub(crate) fn read_and_render_index_md(
     // notebook HTML pipeline (the index page has no KaTeX, so no math
     // protection is needed here).
     let mut events = render::parse_single_tilde_safe(&body_without_h1, opts);
+    // Same raw-HTML / URL sanitisation as notebook prose: the index body is
+    // author content served on the watch origin too.
+    render::sanitize_raw_html_events(&mut events);
+    render::sanitize_dangerous_urls(&mut events);
     // The index body links to the notebooks it introduces — resolve its
     // `.md` references exactly like any notebook page's.
     render::rewrite_link_events(&mut events, link);
@@ -1241,10 +1287,20 @@ fn render_output(
     link: &render::LinkMode,
     source_md: Option<&str>,
     input: Option<&Path>,
-) {
+) -> Result<(), String> {
     match format {
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
+            // Frontmatter `code:` overrides rc; a missing key stays at the
+            // rc value (open when unset). Cell directives are already on
+            // each `Rendered::Code` and win inside `render_html`.
+            let frontmatter = source_md.map(|s| parse::extract_frontmatter(s).0.code_open);
+            let notebook_open = render::resolve_source_open(
+                None,
+                frontmatter.flatten(),
+                Some(render::rc_source_open()),
+            );
+            let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
             let html =
                 render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
             write_output(out_path, html.as_bytes());
@@ -1325,18 +1381,19 @@ fn render_output(
             let tex =
                 render_latex::render_latex(title, rendered, &plot_dir, &href_prefix, theme, link);
             write_output(out_path, tex.as_bytes());
+            // PDF companions so the user can compile without TeX shell-escape.
+            if plot_dir.is_dir() {
+                if let Err(e) = pdf_compile::convert_svgs_to_pdf(&plot_dir) {
+                    eprintln!("warning: SVG→PDF conversion for LaTeX plots: {e}");
+                }
+            }
         }
         Format::Pdf => {
             // PDFs are self-contained, so compilation happens inside a temp
             // directory: the .tex source and SVG plots are intermediates the
             // user did not ask for. Only the final .pdf is copied out.
-            let workdir = match tempfile::tempdir() {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("error: cannot create temp directory for PDF build: {e}");
-                    std::process::exit(1);
-                }
-            };
+            let workdir = tempfile::tempdir()
+                .map_err(|e| format!("cannot create temp directory for PDF build: {e}"))?;
             let tex_path = workdir.path().join("notebook.tex");
             let plot_dir = workdir.path().join("plots").join("notebook");
             let tex = render_latex::render_latex(
@@ -1348,9 +1405,13 @@ fn render_output(
                 link,
             );
             write_output(&tex_path, tex.as_bytes());
-            compile_pdf(&tex_path, out_path);
+            // Convert plot SVGs → PDF with fixed-argv Inkscape before
+            // invoking TeX (no -shell-escape).
+            pdf_compile::convert_svgs_to_pdf(workdir.path())?;
+            compile_pdf(&tex_path, out_path)?;
         }
     }
+    Ok(())
 }
 
 /// Where to write plot SVGs and what relative path to embed in the rendered
@@ -1600,76 +1661,89 @@ fn write_output(path: &PathBuf, data: &[u8]) {
 /// and copy the resulting PDF to `pdf_path`. On failure the build log is
 /// copied next to `pdf_path` as `<stem>.log` so it survives the temp dir's
 /// cleanup and the user has something to read.
-fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) {
+///
+/// A Unicode rejection ("Unicode character … not set up for use with
+/// LaTeX") is not a failure: one diagnostic pass without `-halt-on-error`
+/// collects every rejected code point, `pdf_compile::fallback_declarations`
+/// declares them (LaTeX macro, or a visible `[U+XXXX]` placeholder plus a
+/// stderr warning), and the document is compiled once more.
+///
+/// **Security:** never passes `-shell-escape`. Plot SVGs must already have
+/// been converted to PDF via [`pdf_compile::convert_svgs_to_pdf`].
+fn compile_pdf(tex_path: &PathBuf, pdf_path: &PathBuf) -> Result<(), String> {
     let tex_dir = tex_path.parent().unwrap_or(std::path::Path::new("."));
-
-    let (cmd, args): (&str, Vec<&str>) = if which_exists("pdflatex") {
-        (
-            "pdflatex",
-            vec![
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                "-shell-escape",
-            ],
-        )
-    } else if which_exists("tectonic") {
-        ("tectonic", vec!["-Z", "shell-escape"])
-    } else {
-        eprintln!("error: neither pdflatex nor tectonic found in PATH");
-        eprintln!("  Install TeX Live: https://tug.org/texlive/");
-        eprintln!("  Or tectonic:      https://tectonic-typesetting.github.io/");
-        std::process::exit(1);
+    let (cmd, args) = pdf_compile::select_pdf_engine()?;
+    debug_assert!(
+        !pdf_compile::args_enable_shell_escape(&args),
+        "PDF engine args must not enable shell-escape: {args:?}"
+    );
+    let run = |args: &[&str]| -> Result<std::process::ExitStatus, String> {
+        std::process::Command::new(cmd)
+            .args(args)
+            .arg(tex_path.file_name().unwrap())
+            .current_dir(tex_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| format!("failed to run {cmd}: {e}"))
     };
+    let log_src = tex_path.with_extension("log");
+    let read_log =
+        || String::from_utf8_lossy(&std::fs::read(&log_src).unwrap_or_default()).into_owned();
 
     eprintln!("Compiling PDF with {cmd}...");
-    let status = std::process::Command::new(cmd)
-        .args(&args)
-        .arg(tex_path.file_name().unwrap())
-        .current_dir(tex_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            let generated = tex_path.with_extension("pdf");
-            if let Some(parent) = pdf_path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-            }
-            if let Err(e) = std::fs::copy(&generated, pdf_path) {
-                eprintln!("error: cannot write {}: {e}", pdf_path.display());
-                std::process::exit(1);
-            }
+    let mut status = run(&args)?;
+    if !status.success() && !pdf_compile::rejected_unicode(&read_log()).is_empty() {
+        // Diagnostic pass: without -halt-on-error the engine reports every
+        // rejected character, not just the first one.
+        let _ = run(&pdf_compile::args_without_halt(&args))?;
+        let rejected = pdf_compile::rejected_unicode(&read_log());
+        let (decls, unmapped) = pdf_compile::fallback_declarations(&rejected);
+        let list = |cs: &[char]| {
+            cs.iter()
+                .map(|c| format!("{c} (U+{:04X})", *c as u32))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        eprintln!(
+            "warning: {cmd} cannot set {} character(s) in prose: {}; retrying with fallbacks",
+            rejected.len(),
+            list(&rejected)
+        );
+        if !unmapped.is_empty() {
+            eprintln!(
+                "  no LaTeX mapping for {}: shown as [U+XXXX] — use $…$ math or ASCII in the source",
+                list(&unmapped)
+            );
         }
-        Ok(s) => {
-            let log_src = tex_path.with_extension("log");
-            let log_dst = pdf_path.with_extension("log");
-            let copied = std::fs::copy(&log_src, &log_dst).is_ok();
-            eprintln!("error: {cmd} exited with status {s}");
-            if copied {
-                eprintln!("  Build log saved to {}", log_dst.display());
-            } else {
-                eprintln!("  (build log was not preserved)");
-            }
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("error: failed to run {cmd}: {e}");
-            std::process::exit(1);
+        let tex = std::fs::read_to_string(tex_path)
+            .map_err(|e| format!("cannot read {}: {e}", tex_path.display()))?;
+        std::fs::write(tex_path, pdf_compile::insert_declarations(&tex, &decls))
+            .map_err(|e| format!("cannot write {}: {e}", tex_path.display()))?;
+        status = run(&args)?;
+    }
+    // The output directory may not exist yet (fresh `-o out/`); both the
+    // preserved build log and the PDF land inside it.
+    if let Some(parent) = pdf_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
         }
     }
-}
-
-fn which_exists(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    if !status.success() {
+        let log_dst = pdf_path.with_extension("log");
+        return Err(if std::fs::copy(&log_src, &log_dst).is_ok() {
+            format!(
+                "{cmd} exited with status {status}; build log saved to {}",
+                log_dst.display()
+            )
+        } else {
+            format!("{cmd} exited with status {status} (build log was not preserved)")
+        });
+    }
+    let generated = tex_path.with_extension("pdf");
+    std::fs::copy(&generated, pdf_path)
+        .map_err(|e| format!("cannot write {}: {e}", pdf_path.display()))?;
+    Ok(())
 }
 
 pub fn extract_title(source: &str, path: &PathBuf) -> String {
@@ -2005,7 +2079,7 @@ mod tests {
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
             None,
-        );
+        ).expect("render");
         let a = std::fs::read_to_string(out.path().join("ch1/a.md")).unwrap();
         let r = std::fs::read_to_string(out.path().join("root.md")).unwrap();
         assert!(a.contains("[root](../root.md)"), "link rewritten: {a}");
@@ -2028,7 +2102,7 @@ mod tests {
                 Format::Html,
                 Theme::Dark.colors(),
                 None,
-            );
+            ).expect("render");
             let mut hashes = Vec::new();
             for f in ["ch1/a.html", "root.html", "index.html"] {
                 hashes.push(hash_bytes(&std::fs::read(dir.path().join(f)).unwrap()));
@@ -2281,6 +2355,63 @@ More.\n";
         assert!(stripped.contains("no end here"), "truncated region preserved: {stripped:?}");
     }
 
+    fn pdflatex_available() -> bool {
+        crate::pdf_compile::which_exists("pdflatex")
+    }
+
+    #[test]
+    fn pdf_unicode_prose_compiles_with_fallbacks() {
+        if !pdflatex_available() {
+            eprintln!("skipping: pdflatex not installed");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let md = dir.path().join("u.md");
+        // ⁿ / ᵀ / ħ get LaTeX fallbacks; the emoji gets a [U+XXXX] placeholder.
+        std::fs::write(&md, "# Probe\n\nProse: 2ⁿ and Aᵀ and 🔬 and ħ end.\n").unwrap();
+        let pdf = dir.path().join("u.pdf");
+        cmd_render(md, Some(pdf.clone()), Format::Pdf, Theme::Light.colors())
+            .expect("unicode prose must not fail a PDF build");
+        assert!(pdf.is_file(), "PDF not written");
+        assert!(std::fs::metadata(&pdf).unwrap().len() > 1000);
+    }
+
+    #[test]
+    fn render_dir_pdf_continues_after_one_failure() {
+        if !pdflatex_available() {
+            eprintln!("skipping: pdflatex not installed");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        // Sorted first, so a real abort would leave nothing behind.
+        std::fs::write(
+            dir.path().join("a-bad.md"),
+            "# Bad\n\n$$\\begin{bogusenv} x \\end{bogusenv}$$\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("b-good.md"), "# Good\n\nFine prose.\n").unwrap();
+        let out = dir.path().join("out");
+        let err = cmd_render_dir(
+            dir.path().to_path_buf(),
+            Some(out.clone()),
+            Format::Pdf,
+            Theme::Light.colors(),
+            None,
+        )
+        .expect_err("one notebook must fail");
+        assert!(err.contains("1 of 2"), "{err}");
+        assert!(err.contains("a-bad.md"), "{err}");
+        assert!(
+            out.join("b-good.pdf").is_file(),
+            "good notebook must still render"
+        );
+        assert!(!out.join("a-bad.pdf").exists());
+        assert!(
+            out.join("a-bad.log").is_file(),
+            "build log must be preserved"
+        );
+    }
+
     // ── Obsidian end-to-end pipeline coverage ─────────────────────────────
     //
     // These tests drive `cmd_render` through the full Obsidian path
@@ -2312,7 +2443,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2348,7 +2479,7 @@ More.\n";
             Some(out.clone()),
             Format::Markdown { obsidian: Some(opts) },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2388,7 +2519,7 @@ More.\n";
             Some(out.clone()),
             Format::Markdown { obsidian: Some(opts) },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2412,7 +2543,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         // Regression: an earlier fix used `plot-1.svg?v=hash` which works
@@ -2460,7 +2591,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         // User-authored title and the user's existing tags entries must be
@@ -2491,7 +2622,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         let rendered = std::fs::read_to_string(&out).unwrap();
         assert!(rendered.contains("<iframe "), "test pre-condition: render emitted an iframe");
 
@@ -2529,7 +2660,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         cmd_clean(out.clone(), None, false);
         let cleaned = std::fs::read_to_string(&out).unwrap();
 
@@ -2650,10 +2781,10 @@ More.\n";
         let format = Format::Markdown {
             obsidian: Some(ObsidianOpts::default()),
         };
-        cmd_render(path.clone(), Some(path.clone()), format.clone(), Theme::Dark.colors());
+        cmd_render(path.clone(), Some(path.clone()), format.clone(), Theme::Dark.colors()).expect("render");
         let after_first = std::fs::read_to_string(&path).unwrap();
 
-        cmd_render(path.clone(), Some(path.clone()), format, Theme::Dark.colors());
+        cmd_render(path.clone(), Some(path.clone()), format, Theme::Dark.colors()).expect("render");
         let after_second = std::fs::read_to_string(&path).unwrap();
 
         assert_eq!(
@@ -2697,7 +2828,7 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let rendered = std::fs::read_to_string(&out_path).unwrap();
         assert_eq!(
@@ -2728,7 +2859,7 @@ More.\n";
             Some(path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         let after_first = std::fs::read_to_string(&path).unwrap();
 
         // Second pass: re-read the rendered output and render again.
@@ -2737,7 +2868,7 @@ More.\n";
             Some(path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         let after_second = std::fs::read_to_string(&path).unwrap();
 
         assert_eq!(
@@ -2768,7 +2899,7 @@ More.\n";
             Some(out_path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let rendered = std::fs::read_to_string(&out_path).unwrap();
         assert_eq!(
@@ -2980,13 +3111,13 @@ More.\n";
             Some(src_a.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         cmd_render(
             src_b.clone(),
             Some(src_b.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md_a = std::fs::read_to_string(&src_a).unwrap();
         let md_b = std::fs::read_to_string(&src_b).unwrap();
@@ -3014,13 +3145,13 @@ More.\n";
             Some(s1.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
         cmd_render(
             s2.clone(),
             Some(s2.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        );
+        ).expect("render");
 
         let md1 = std::fs::read_to_string(&s1).unwrap();
         let md2 = std::fs::read_to_string(&s2).unwrap();
@@ -3301,6 +3432,35 @@ More.\n";
         let body = generate_obsidian_index_md("T", &entries);
         assert!(body.contains("- [[foo]]"));
         assert!(!body.contains("[[foo|foo]]"));
+    }
+
+    // Security: the directory index body is author content served on the
+    // watch origin; it must go through the same raw-HTML sanitiser as
+    // notebook prose (a raw <script> here used to be served live).
+    #[test]
+    fn index_md_body_is_sanitised() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = dir.path().join("index.md");
+        std::fs::write(
+            &index,
+            "# Welcome\n\nIntro <script>window.__x=1</script> with <b>bold</b> and \
+             [bad](javascript:alert(1)).\n<!-- private note -->\n",
+        )
+        .unwrap();
+        let dir_buf = dir.path().to_path_buf();
+        let (html, title) = read_and_render_index_md(
+            &index,
+            &dir_buf,
+            rustlab_plot::Theme::Dark.colors(),
+            &render::LinkMode::single_file(),
+        )
+        .expect("index rendered");
+        assert_eq!(title.as_deref(), Some("Welcome"));
+        assert!(!html.contains("<script>"), "live script survived: {html}");
+        assert!(html.contains("&lt;script&gt;window.__x=1&lt;/script&gt;"), "{html}");
+        assert!(html.contains("<b>bold</b>"), "plain formatting tag lost: {html}");
+        assert!(!html.to_lowercase().contains("javascript:"), "{html}");
+        assert!(!html.contains("private note"), "comment leaked: {html}");
     }
 
     // ── Attachments layout ──

@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 rustlab-core.workspace     = true
 rustlab-cache.workspace    = true
+rustlab-config.workspace   = true
 rustlab-dsp.workspace      = true
 rustlab-plot.workspace     = true
 rustlab-script.workspace   = true

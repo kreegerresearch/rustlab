@@ -47,7 +47,10 @@ pub use html::{
     sync_html_file,
 };
 pub use live::LiveFigure;
-pub use theme::{builtin_theme_names, contrast_ratio, parse_theme, relative_luminance, theme_colors, Theme, ThemeColors};
+pub use theme::{
+    builtin_theme_names, contrast_ratio, default_theme, parse_theme, relative_luminance,
+    set_default_theme, theme_colors, Theme, ThemeColors,
+};
 #[cfg(feature = "viewer")]
 pub use viewer_live::ViewerFigure;
 #[cfg(feature = "viewer")]

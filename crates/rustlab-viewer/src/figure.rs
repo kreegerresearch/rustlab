@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::render;
 use crate::surface::{Surface3dData, SurfaceCamera};
+use crate::view::{bounds_action, zoom_factor_from_scroll, AxisLimits, BoundsAction, PanelView};
 
 /// Pre-rendered heatmap image ready for egui display.
 pub struct HeatmapImage {
@@ -43,13 +44,17 @@ pub struct PanelState {
     pub xlabel: String,
     pub ylabel: String,
     pub series: Vec<WireSeries>,
-    pub xlim: (Option<f64>, Option<f64>),
-    pub ylim: (Option<f64>, Option<f64>),
+    pub xlim: AxisLimits,
+    pub ylim: AxisLimits,
     pub axis_equal: bool,
     pub heatmap: Option<HeatmapImage>,
     /// 3D surface data + camera. When present, the panel renders a rotatable
     /// surface instead of the 2D egui_plot chart.
     pub surface: Option<(Surface3dData, SurfaceCamera)>,
+    /// Zoom/pan bookkeeping: whether the script's limits still need to be
+    /// pushed into the plot, and whether a Home reset is pending. See
+    /// [`crate::view`].
+    pub view: PanelView,
 }
 
 impl PanelState {
@@ -64,8 +69,72 @@ impl PanelState {
             axis_equal: false,
             heatmap: None,
             surface: None,
+            view: PanelView::default(),
         }
     }
+
+    /// Record new axis limits from the script. Only *changed* limits
+    /// re-arm the apply latch: live plots re-send the same
+    /// `plot_limits` on every redraw, and re-applying them each time
+    /// would fight the user's zoom exactly like the old every-frame
+    /// `set_plot_bounds` did.
+    pub fn set_limits(&mut self, xlim: AxisLimits, ylim: AxisLimits) {
+        if self.xlim != xlim || self.ylim != ylim {
+            self.xlim = xlim;
+            self.ylim = ylim;
+            self.view.pending_limits = true;
+        }
+    }
+}
+
+/// Height of the per-panel header strip (title + Home button).
+const HEADER_H: f32 = 20.0;
+
+/// Footprint of a panel's Home button.
+const HOME_BUTTON_SIZE: egui::Vec2 = egui::Vec2::new(46.0, 18.0);
+
+/// Stable widget id for a panel's egui_plot chart. Explicit (rather than
+/// egui's auto-generated id) so headless tests can read the plot's bounds
+/// memory back and assert on what zoom and Home actually did.
+pub(crate) fn panel_plot_id(fig_id: u32, row: usize, col: usize) -> egui::Id {
+    egui::Id::new(("rustlab_panel_plot", fig_id, row, col))
+}
+
+/// Stable widget id for a panel's Home button — same reasoning as
+/// [`panel_plot_id`]; tests click it by id.
+pub(crate) fn home_button_id(fig_id: u32, row: usize, col: usize) -> egui::Id {
+    egui::Id::new(("rustlab_panel_home", fig_id, row, col))
+}
+
+/// Draw a panel's Home button and report whether it was clicked.
+///
+/// Painted by hand rather than through `ui.add(Button::new(..))` so the
+/// widget carries a caller-chosen `Id`.
+fn home_button(ui: &mut egui::Ui, id: egui::Id) -> bool {
+    let (rect, _) = ui.allocate_exact_size(HOME_BUTTON_SIZE, egui::Sense::hover());
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        3.0,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Home",
+        egui::FontId::proportional(11.0),
+        visuals.fg_stroke.color,
+    );
+    response
+        .on_hover_text(
+            "Reset this subplot's view — back to the script's xlim/ylim \
+             if it set any, otherwise fit the data (shortcut: Home)",
+        )
+        .clicked()
 }
 
 /// A figure window containing a grid of subplot panels.
@@ -107,20 +176,45 @@ impl FigureWindow {
                     }
                     let panel = &mut self.panels[idx];
 
-                    let title_h = if panel.title.is_empty() { 0.0 } else { 20.0 };
+                    // Every panel gets a header strip, titled or not, so
+                    // the Home button sits in the same place on all of
+                    // them (one per subplot, not one per figure).
+                    let header_h = HEADER_H;
 
                     ui.vertical(|ui| {
-                        if !panel.title.is_empty() {
-                            ui.vertical_centered(|ui| {
-                                ui.label(egui::RichText::new(&panel.title).strong().size(14.0));
-                            });
+                        let mut home_clicked = false;
+                        let header_w = (cell_w - 8.0).max(HOME_BUTTON_SIZE.x);
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(header_w, header_h),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                home_clicked = home_button(ui, home_button_id(fig_id, row, col));
+                                if !panel.title.is_empty() {
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&panel.title).strong().size(14.0),
+                                        );
+                                    });
+                                }
+                            },
+                        );
+                        if home_clicked {
+                            panel.view.home_requested = true;
                         }
 
                         // 3D surface panel: render via the custom software
                         // renderer instead of egui_plot so users can rotate,
-                        // tilt, and zoom.
+                        // tilt, and zoom. Home is the same reset as the `R`
+                        // key — back to the default camera. (The latch is
+                        // consumed up front so it isn't still borrowed from
+                        // `panel` when the surface is.)
+                        let surface_home = panel.surface.is_some()
+                            && std::mem::take(&mut panel.view.home_requested);
                         if let Some((data, cam)) = panel.surface.as_mut() {
-                            let size = egui::Vec2::new(cell_w - 8.0, cell_h - 8.0 - title_h);
+                            if surface_home {
+                                *cam = SurfaceCamera::default();
+                            }
+                            let size = egui::Vec2::new(cell_w - 8.0, cell_h - 8.0 - header_h);
                             crate::surface::draw(ui, size, data, cam);
                             return;
                         }
@@ -143,17 +237,21 @@ impl FigureWindow {
                             .unwrap_or((None, None, String::new()));
                         let cbar_w = if cbar_vmin.is_some() { 56.0_f32 } else { 0.0 };
                         let plot_width = (cell_w - 8.0 - cbar_w).max(40.0);
-                        let plot_height = cell_h - 8.0 - title_h;
+                        let plot_height = cell_h - 8.0 - header_h;
 
                         let plot_id = format!("fig_{}_panel_{}_{}", fig_id, row, col);
                         let mut plot = Plot::new(&plot_id)
+                            .id(panel_plot_id(fig_id, row, col))
                             .width(plot_width)
                             .height(plot_height)
                             .show_axes([true, true])
                             .show_grid([true, true])
                             .allow_zoom(true)
                             .allow_drag(true)
-                            .allow_scroll(true)
+                            // Plain scroll zooms (handled below), so
+                            // egui_plot's own scroll-to-pan is off —
+                            // leaving it on would pan and zoom at once.
+                            .allow_scroll(false)
                             .x_axis_label(&panel.xlabel)
                             .y_axis_label(&panel.ylabel)
                             .label_formatter(|name, value| {
@@ -228,6 +326,12 @@ impl FigureWindow {
                             ]);
                         }
 
+                        // Whether the script's limits get pushed this
+                        // frame. Once applied they are *not* re-applied
+                        // every frame — that is what used to snap a
+                        // scrolled/dragged view straight back.
+                        let action = bounds_action(panel.xlim, panel.ylim, panel.view);
+
                         // Ensure heatmap texture is created before entering plot closure
                         if let Some(ref mut hm) = panel.heatmap {
                             if hm.texture.is_none() && !hm.rgba.is_empty() {
@@ -275,28 +379,66 @@ impl FigureWindow {
 
                         ui.horizontal(|ui| {
                         plot.show(ui, |plot_ui| {
-                            // Apply explicit bounds (x and y independently)
+                            let hovered = plot_ui.response().hovered();
+                            // The Home key is the keyboard twin of the
+                            // panel's Home button (and of `R` on 3D
+                            // surfaces). egui_plot's built-in double-click
+                            // reset is routed through the same path so it
+                            // restores the script's limits too, instead of
+                            // always auto-fitting.
+                            let home_gesture = (hovered
+                                && plot_ui.ctx().input(|i| i.key_pressed(egui::Key::Home)))
+                                || plot_ui.response().double_clicked();
+                            let action = if home_gesture {
+                                bounds_action(
+                                    panel.xlim,
+                                    panel.ylim,
+                                    PanelView {
+                                        home_requested: true,
+                                        ..panel.view
+                                    },
+                                )
+                            } else {
+                                action
+                            };
+
+                            // Apply explicit bounds (x and y independently).
+                            // Axes the script left open are handed back to
+                            // auto-fit rather than frozen at whatever the
+                            // previous frame happened to show.
                             let cur = plot_ui.plot_bounds();
-                            match (panel.xlim, panel.ylim) {
-                                ((Some(x0), Some(x1)), (Some(y0), Some(y1))) => {
+                            match action {
+                                BoundsAction::Keep => {}
+                                BoundsAction::AutoFit => plot_ui.set_auto_bounds(true),
+                                BoundsAction::Apply { auto_x, auto_y } => {
+                                    let (x0, x1) = match panel.xlim {
+                                        (Some(a), Some(b)) => (a, b),
+                                        _ => (*cur.range_x().start(), *cur.range_x().end()),
+                                    };
+                                    let (y0, y1) = match panel.ylim {
+                                        (Some(a), Some(b)) => (a, b),
+                                        _ => (*cur.range_y().start(), *cur.range_y().end()),
+                                    };
                                     plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                                         [x0, y0],
                                         [x1, y1],
                                     ));
+                                    if auto_x || auto_y {
+                                        plot_ui.set_auto_bounds([auto_x, auto_y]);
+                                    }
                                 }
-                                ((Some(x0), Some(x1)), _) => {
-                                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                        [x0, *cur.range_y().start()],
-                                        [x1, *cur.range_y().end()],
-                                    ));
+                            }
+
+                            // Plain scroll wheel = zoom about the pointer,
+                            // both axes together. Drag still pans, and
+                            // ctrl+scroll / pinch keep working through
+                            // egui_plot's own zoom path.
+                            if hovered {
+                                let scroll = plot_ui.ctx().input(|i| i.smooth_scroll_delta.y);
+                                let factor = zoom_factor_from_scroll(scroll);
+                                if factor != 1.0 {
+                                    plot_ui.zoom_bounds_around_hovered(egui::Vec2::splat(factor));
                                 }
-                                (_, (Some(y0), Some(y1))) => {
-                                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                        [*cur.range_x().start(), y0],
-                                        [*cur.range_x().end(), y1],
-                                    ));
-                                }
-                                _ => {}
                             }
 
                             // Render heatmap as a texture image, placed
@@ -318,6 +460,12 @@ impl FigureWindow {
                                 render::render_series(plot_ui, series);
                             }
                         });
+
+                        // Latches cleared once the frame has drawn: the
+                        // limits now live in egui_plot's bounds memory, so
+                        // from here on the panel is the user's to zoom.
+                        panel.view.pending_limits = false;
+                        panel.view.home_requested = false;
 
                         // Colorbar legend: thin gradient strip to the
                         // right of the plot, painted only when the sender

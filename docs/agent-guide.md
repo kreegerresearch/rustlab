@@ -49,6 +49,8 @@ Facts an agent must know (all verified against the current binary):
 
 `rustlab` with no arguments starts the REPL. Inside it: `help` lists builtins by category, `help <name>` shows detail, `whos` lists variables, `run file.rlab` executes a script into the current scope, `clear` resets. The REPL is for humans; agents should prefer `rustlab run` on a temp file so output is reproducible.
 
+Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml` (TOML, not a startup script). A missing file is fine. Agents running scripts should pass `--plot none` so an rc `[viewer] auto_connect` cannot open a viewer. See [`docs/rustlabrc.example.toml`](rustlabrc.example.toml) and `help rustlabrc`.
+
 ### 2.3 Notebooks
 
 `rustlab-notebook render note.md` executes every ` ```rustlab ` block in a Markdown file and emits HTML (default), `-f markdown` (GitHub-friendly with SVG plots), `-f latex`, `-f pdf`, or `-f json`. See §7.
@@ -133,7 +135,7 @@ Ordered roughly by how often they matter:
 | `butterworth_lowpass`/`_highpass` return numerator (`b`) coefficients only | Apply with `filtfilt(b, [1], x)`; these are FIR-style approximations, not full IIR `[b, a]` pairs |
 | `contour`, `quiver`, `streamplot` are not rendered in the terminal TUI | Always pair with `savefig("file.svg")` (or `.html`) to see them |
 | `loglog`/`semilogx`/`semilogy` require strictly positive data on the log axes | Clamp or shift data first |
-| `savefig`/`save`/`load` paths are script-relative | Generate output paths relative to the script, or use absolute paths |
+| `savefig`/`save`/`load` paths are script-relative | Generate output paths relative to the script, or use absolute paths. Inside a notebook every path is jailed to the notebook directory (collection root in directory mode) — an absolute path outside it fails with `path escapes notebook directory`; widen with `rustlab-notebook … --jail-root <DIR>` |
 | Figure state is global and stateful (`figure`, `subplot`, `hold on`) | Call `figure()` (or `clf`) before building a new multi-panel plot; `frame()`/`saveanim` for animations |
 | `parmap` lambdas must be pure | No plotting, file I/O, `seed`, or audio calls inside the lambda body |
 | String arrays `{"a","b"}` only hold strings | There is no general cell-array type |

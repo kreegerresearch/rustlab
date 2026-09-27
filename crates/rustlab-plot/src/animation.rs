@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use crate::error::PlotError;
 use crate::figure::{FigureState, FIGURE};
 use crate::html::render_figure_plotly_div;
-use crate::theme::{Theme, ThemeColors};
+use crate::theme::ThemeColors;
 
 /// Output format requested by a notebook `saveanim()` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +113,7 @@ pub fn render_animation_html(path: &str, fps: f64) -> Result<(), PlotError> {
             "render_animation_html: frame buffer is empty".to_string(),
         ));
     }
-    let theme = Theme::default();
+    let theme = crate::theme::default_theme();
     let html = render_animation_doc(&frames, fps, theme.colors());
     std::fs::write(path, html).map_err(|e| PlotError::FileOutput(e.to_string()))
 }
@@ -314,7 +314,7 @@ pub fn write_animation_gif(
             "write_animation_gif: no frames".to_string(),
         ));
     }
-    let theme = Theme::default();
+    let theme = crate::theme::default_theme();
     let theme_colors = theme.colors();
 
     // Render the first frame to capture canvas dimensions; subsequent frames

@@ -2,7 +2,8 @@
 //!
 //! Accepts a `Surface3dData` (grid of z values + x/y axes) and paints it
 //! inside an egui `Ui` with mouse-driven rotate (left-drag), zoom (scroll),
-//! pan (right-drag), and reset (`R` key). Rendering is software: each grid
+//! pan (right-drag), and reset (the panel's Home button, the `Home` key, or
+//! the `R` key — all three restore the default camera). Rendering is software: each grid
 //! cell becomes a colored quad depth-sorted via painter's algorithm.
 //!
 //! Per-figure state lives in `PanelState.surface` alongside a `SurfaceCamera`
@@ -156,8 +157,12 @@ fn handle_input(ui: &Ui, response: &Response, cam: &mut SurfaceCamera) {
             }
         }
     }
-    // Press R to reset.
-    if response.hovered() && ui.ctx().input(|i| i.key_pressed(egui::Key::R)) {
+    // Press R (or Home, matching the 2D panels' Home button) to reset.
+    if response.hovered()
+        && ui
+            .ctx()
+            .input(|i| i.key_pressed(egui::Key::R) || i.key_pressed(egui::Key::Home))
+    {
         *cam = SurfaceCamera::default();
     }
 }
@@ -341,7 +346,7 @@ fn paint_surface(painter: &Painter, rect: Rect, data: &Surface3dData, cam: &Surf
     label(pc[4].0, format!("z={:.3}", b.zmax));
 
     // On-screen hint (top-left, tiny).
-    let hint = "drag=rotate  scroll=zoom  shift+scroll=z  right-drag=pan  R=reset";
+    let hint = "drag=rotate  scroll=zoom  shift+scroll=z  right-drag=pan  Home/R=reset";
     painter.text(
         rect.left_top() + Vec2::new(6.0, 4.0),
         egui::Align2::LEFT_TOP,
