@@ -14,7 +14,7 @@
 5. Small toolbox adds: C7, C9, C10, then C1, C2
 6. Approved plans with no code yet: C8, C11 — each needs an explicit go before work starts
 7. Park D1–D3 unless they are redefined
-8. Housekeeping H1–H4 whenever a session already touches the file in question
+8. Housekeeping H1–H3 whenever a session already touches the file in question
 
 ## Tier A — Fix soon (bugs / broken teaching materials)
 
@@ -119,7 +119,6 @@ Marked complete. Do not reopen unless asked. Pointers added where the shipping a
 | H1 | Move completed plans to `dev/plans/closed/` | `notebook_cell_execution`, `notebook_interactive_widgets`, `notebook_interactive_server` (+ its `-tradeoff`), `notebook_future`, `em_lesson_review_2026_07`, `time_frequency`, `examples_notebooks_bug_hunt`, `integer_types`, `log_axis_and_legend_fix` — all complete per `AGENTS.md` or their own logs. |
 | H2 | `dev/plans/waterfall.md` still says "proposed, awaiting approval" | The builtins are on main; update the status line and close. |
 | H3 | `dev/plans/em_requests_plan.md` says "Item 4 next" while `em_requests_queue.md` (2026-04-26) says all upstream items shipped and `eigs` is registered | Reconcile both files and the `AGENTS.md` Active Plans row. |
-| H4 | Stray `docs/lectures/week3.rcache` in the working tree | Function-result cache from a lecture run. `.gitignore` only covers `.rustlab/`; delete it or add an ignore rule. |
 
 ## Process
 
