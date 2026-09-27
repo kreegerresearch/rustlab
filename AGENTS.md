@@ -166,7 +166,7 @@ together whenever a phase finishes.
 
 | Plan | File | Status |
 |------|------|--------|
-| Living backlog / roadmap | `dev/plans/roadmap.md` | Living planning doc (organized 2026-09-24). Ranks pending clarifications. Not an implementation phase — do not start items from this row without an explicit ask. |
+| Living backlog / roadmap | `dev/plans/roadmap.md` | Living planning doc (organized 2026-09-24, refreshed 2026-09-26 against main). Folds in open `dev/requests/` and `dev/plans/` items; ranks pending clarifications. Not an implementation phase — do not start items from this row without an explicit ask. |
 | Control Systems Toolbox | `dev/plans/closed/controls.md` | Complete — all 6 phases |
 | Controls Bootcamp Functions | `dev/plans/closed/controls_bootcamp.md` | Complete — logspace, rk4, lyap, gram, care, dare, place, freqresp, svd |
 | Lambda / Anonymous Functions | `dev/plans/closed/lambda.md` | Complete — both phases (lambdas, arrayfun, feval) |
