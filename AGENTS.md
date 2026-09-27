@@ -55,7 +55,7 @@ rustlab/
 │   ├── controls/           # transfer functions, bode, nyquist, root locus, PID, LQR (15)
 │   ├── rf/                 # S-parameters, Smith chart, cascade, amplifier stability (6)
 │   ├── pde/                # laplacian / BCs, electrostatics, dielectric, vector_calc (5)
-│   ├── plot/               # contour, quiver, surf, heatmap, masks, animation (8)
+│   ├── plot/               # contour, quiver, surf, heatmap, masks, animation (8) + remote_viewer.sh launcher
 │   ├── audio/              # real-time PCM: filter, spectrum monitor, platform launchers (4)
 │   │   ├── filter.rlab          # FIR lowpass script used by all launchers
 │   │   ├── passthrough.rlab     # minimal stdin→stdout loopback
