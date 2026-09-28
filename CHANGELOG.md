@@ -62,12 +62,14 @@ Workflow Rule 12).
   attribute-free formatting tags (`<b>`, `<br>`, `<sub>`, `<kbd>`,
   `<details>`/`<summary>`, `<div>`, table tags, …) pass through; any tag
   with an attribute and every other tag (`<script>`, `<iframe>`,
-  `<img>`, `<a>`, …) renders as escaped text, and HTML comments are
-  dropped. `javascript:` / `data:` / `vbscript:` / `blob:` links are
-  neutralised; images keep `data:image/*` only. Migration: write links
-  and images in markdown; use `> [!NOTE]` callouts and the
-  `<!-- details: -->` directive instead of attributed HTML. Markdown
-  output (`-f markdown`) is unaffected.
+  `<a>`, …) renders as escaped text, and HTML comments are dropped.
+  One exception: an `<img>` whose only attributes are a quoted `src`
+  and an optional quoted `alt` is embedded (see Fixed). Extra
+  attributes, including `on*` handlers, stay escaped. `javascript:` /
+  `data:` / `vbscript:` / `blob:` links are neutralised; images keep
+  `data:image/*` only. Migration: write links in markdown; use
+  `> [!NOTE]` callouts and the `<!-- details: -->` directive instead of
+  attributed HTML. Markdown output (`-f markdown`) is unaffected.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -213,6 +215,18 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **Notebook prose figures, wide tables, and in-page links.**
+  Markdown images and a safe raw `<img src alt>` in prose are copied
+  into the plot directory (path-jailed; png/jpg/jpeg/gif/svg/webp) and
+  shown in static HTML, `notebook watch`, and PDF. PDF scales the
+  graphic to the line width; gif/webp, remote URLs, and missing files
+  become a visible placeholder and a stderr warning instead of a broken
+  `\includegraphics`. HTML tables sit in a horizontally scrolling
+  wrapper; PDF tables use `tabularx` fitted to `\linewidth`. Same-page
+  `#heading` links are emitted only when the page has that anchor
+  (HTML `id`, PDF `\hypertarget`); a fragment with no target is plain
+  text. Wikilink fragments use the same heading slug as those anchors.
+  A link to another notebook's PDF still drops its fragment.
 - **PDF builds no longer fail on Unicode in prose.** When `pdflatex`
   rejects a character the preamble does not declare (`2ⁿ`, `Aᵀ`, `ħ`, an
   emoji), `render -f pdf` recompiles with a fallback per rejected

@@ -2,7 +2,7 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
-use pulldown_cmark::{html::push_html, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html::push_html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
@@ -408,6 +408,7 @@ pub fn render_html_nonced(
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
+    let mut prose_assets = crate::prose_media::ProseAssets::new(plot_dir, &href_prefix);
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
@@ -450,7 +451,7 @@ pub fn render_html_nonced(
                 let md = transform_wikilinks(md);
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
 
                 // Extract headings for nav and inject IDs
                 let html =
@@ -663,7 +664,9 @@ pub fn render_html_nonced(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
+                let html =
+                    inject_heading_ids(&html, &mut nav_items, &mut heading_idx, &mut heading_ids);
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -762,7 +765,7 @@ pub fn render_html_nonced(
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
     let c = theme;
-    format!(
+    let page = format!(
         r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1038,6 +1041,35 @@ document.addEventListener('click', (e) => {{
     background: {border};
     color: {accent_primary};
     font-weight: 600;
+  }}
+  .table-scroll {{
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    margin: 1rem 0;
+  }}
+  .table-scroll > table {{
+    margin: 0;
+  }}
+  .prose th, .prose td, .callout th, .callout td, .exercise th, .exercise td {{
+    overflow-wrap: anywhere;
+  }}
+  .prose img, .callout img, .exercise img, figure.prose-figure img {{
+    max-width: 100%;
+    height: auto;
+  }}
+  figure.prose-figure {{
+    margin: 1rem 0;
+  }}
+  figure.prose-figure figcaption {{
+    color: {text_dim};
+    font-size: 0.9rem;
+    margin-top: 0.35rem;
+  }}
+  .missing-figure {{
+    color: {text_dim};
+    font-style: italic;
   }}
   .prose ul, .prose ol {{
     margin: 0.5rem 0 1rem 1.5rem;
@@ -1365,7 +1397,8 @@ document.addEventListener('click', (e) => {{
         syn_string = c.css_var("syn-string"),
         syn_comment = c.css_var("syn-comment"),
         syn_operator = c.css_var("syn-operator"),
-    )
+    );
+    crate::prose_media::drop_dangling_fragment_links(&page)
 }
 
 /// Pixel height for the `.plot-container` so that stacked subplots are not
@@ -1448,7 +1481,7 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
-    markdown_to_html_linked(md, None)
+    markdown_to_html_linked(md, None, None)
 }
 
 /// [`markdown_to_html`] with cross-notebook link resolution.
@@ -1456,12 +1489,30 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 /// Destinations are rewritten on `Event::Start(Tag::Link)` — after the
 /// parser has resolved reference-style definitions and separated titles,
 /// and only for real links: text, code spans, and fenced blocks never
-/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Images
-/// (`Tag::Image`) are deliberately untouched — `.md` is not an image
-/// format, and embeds were already expanded upstream.
-pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
+/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Markdown
+/// images are copied into the plot directory when `assets` is set.
+/// `.md` is not an image format, and file embeds were already expanded
+/// upstream.
+pub(crate) fn markdown_to_html_linked(
+    md: &str,
+    link: Option<&LinkMode>,
+    mut assets: Option<&mut crate::prose_media::ProseAssets<'_>>,
+) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    // Safe `<img src alt>` is stashed BEFORE the sanitiser, which escapes
+    // every tag that carries an attribute. The placeholder has no `<`.
+    if let Some(assets) = assets.as_mut() {
+        for ev in events.iter_mut() {
+            match ev {
+                Event::Html(s) | Event::InlineHtml(s) => {
+                    let rewritten = assets.stash_safe_imgs(s);
+                    *s = rewritten.into();
+                }
+                _ => {}
+            }
+        }
+    }
     // Security: raw HTML from notebook markdown goes through the allow-list
     // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
     sanitize_raw_html_events(&mut events);
@@ -1469,9 +1520,21 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
+    let events = if let Some(assets) = assets.as_mut() {
+        crate::prose_media::rewrite_markdown_images(events, assets)
+    } else {
+        events
+    };
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
-    restore_math(&html, &math)
+    let html = restore_math(&html, &math);
+    let html = if let Some(assets) = assets.as_mut() {
+        assets.restore_stashed(&html)
+    } else {
+        html
+    };
+    let html = crate::prose_media::unwrap_paragraph_figures(&html);
+    crate::prose_media::wrap_scroll_tables(&html)
 }
 
 /// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
@@ -1626,7 +1689,7 @@ pub(crate) fn sanitize_dangerous_urls(events: &mut [Event<'_>]) {
 
 /// `data:image/...` — safe as an `<img src>` (browsers never execute
 /// script from an image, SVG included).
-fn is_data_image_url(url: &str) -> bool {
+pub(crate) fn is_data_image_url(url: &str) -> bool {
     scheme_normalised(url).starts_with("data:image/")
 }
 
@@ -1770,6 +1833,136 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// prose block with more than one heading (the common case: contiguous
 /// prose between code fences is a single block) got a sidebar whose order
 /// and implied nesting contradicted the page.
+
+/// Pick the anchor id for one heading.
+///
+/// An explicit id wins and is recorded in `used` (h1–h3 only — callers
+/// that walk h4–h6 must not pass those through here). Otherwise the id is
+/// [`slugify_heading`] of `plain`, then positional `heading-N` when that
+/// slug is empty, then a `-n` suffix when the id is already taken.
+pub(crate) fn assign_heading_id(
+    explicit: Option<&str>,
+    plain: &str,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) -> String {
+    if let Some(existing) = explicit {
+        let id = existing.to_string();
+        used.insert(id.clone());
+        return id;
+    }
+    let base = slugify_heading(plain);
+    let id = if base.is_empty() {
+        *empty_idx += 1;
+        format!("heading-{empty_idx}")
+    } else {
+        base
+    };
+    let id = if used.contains(&id) {
+        let mut n = 1;
+        loop {
+            let cand = format!("{id}-{n}");
+            if !used.contains(&cand) {
+                break cand;
+            }
+            n += 1;
+        }
+    } else {
+        id
+    };
+    used.insert(id.clone());
+    id
+}
+
+/// Anchor id a LaTeX heading should emit, if any.
+///
+/// h1–h3 always get an id when the heading has text, code, or math (or an
+/// explicit id). h4–h6 get one only when the author wrote `{#id}`, and
+/// that id does not occupy the generated-slug dedup set — HTML inject only
+/// walks h1–h3, and `check` treats generated h4–h6 anchors as missing.
+pub(crate) fn heading_anchor(
+    level: HeadingLevel,
+    explicit: Option<&str>,
+    plain: &str,
+    saw: bool,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) -> Option<String> {
+    let tracked = matches!(
+        level,
+        HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3
+    );
+    if let Some(id) = explicit {
+        if tracked {
+            return Some(assign_heading_id(Some(id), plain, used, empty_idx));
+        }
+        return Some(id.to_string());
+    }
+    if !tracked || !saw {
+        return None;
+    }
+    Some(assign_heading_id(None, plain, used, empty_idx))
+}
+
+/// Record every heading anchor `md` will emit, in document order.
+///
+/// `used` / `empty_idx` carry dedup state across blocks so the second
+/// `## Setup` on a later block is `setup-1`, matching [`inject_heading_ids`].
+/// Math source is omitted from the slug (HTML strips `\(…\)` before
+/// slugging). Wikilinks are expanded first so `[[#Heading]]` is a link,
+/// not heading text.
+pub(crate) fn collect_prose_anchors(
+    md: &str,
+    anchors: &mut HashSet<String>,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) {
+    let md = transform_wikilinks(md);
+    let mut opts = notebook_md_options();
+    opts.insert(Options::ENABLE_MATH);
+    let events = parse_single_tilde_safe(&md, opts);
+    let mut heading: Option<(HeadingLevel, Option<String>, String, bool)> = None;
+    for event in events {
+        match event {
+            Event::Start(Tag::Heading { level, id, .. }) => {
+                heading = Some((level, id.map(|s| s.to_string()), String::new(), false));
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, explicit, plain, saw)) = heading.take() {
+                    if let Some(id) = heading_anchor(
+                        level,
+                        explicit.as_deref(),
+                        &plain,
+                        saw,
+                        used,
+                        empty_idx,
+                    ) {
+                        anchors.insert(id);
+                    }
+                }
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some((_, _, plain, saw)) = heading.as_mut() {
+                    plain.push_str(&t);
+                    *saw = true;
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, _, plain, saw)) = heading.as_mut() {
+                    plain.push(' ');
+                    *saw = true;
+                }
+            }
+            Event::InlineMath(_) | Event::DisplayMath(_) => {
+                if let Some((_, _, _, saw)) = heading.as_mut() {
+                    *saw = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn inject_heading_ids(
     html: &str,
     nav: &mut String,
@@ -1849,42 +2042,16 @@ fn inject_heading_ids(
             // An explicit `{#anchor}` already produced an id, and other
             // pages may link to it — keep it and point the TOC there
             // rather than overwriting someone's stable anchor.
-            let (id, new_open) = match existing_id(&open_tag) {
-                Some(existing) => {
-                    used.insert(existing.clone());
-                    (existing, open_tag.clone())
-                }
-                None => {
-                    let base = slugify_heading(&clean);
-                    let id = if base.is_empty() {
-                        // Math-only / punctuation-only label: positional
-                        // fallback (still deduped — an explicit
-                        // `{#heading-3}` could exist).
-                        *idx += 1;
-                        format!("heading-{idx}")
-                    } else {
-                        base
-                    };
-                    // GitHub-style dedup: second `## Setup` → `setup-1`.
-                    let id = if used.contains(&id) {
-                        let mut n = 1;
-                        loop {
-                            let cand = format!("{id}-{n}");
-                            if !used.contains(&cand) {
-                                break cand;
-                            }
-                            n += 1;
-                        }
-                    } else {
-                        id
-                    };
-                    used.insert(id.clone());
-                    let inner = open_tag
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string();
-                    (id.clone(), format!("<{inner} id=\"{id}\">"))
-                }
+            let explicit = existing_id(&open_tag);
+            let id = assign_heading_id(explicit.as_deref(), &clean, used, idx);
+            let new_open = if explicit.is_some() {
+                open_tag.clone()
+            } else {
+                let inner = open_tag
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_string();
+                format!("<{inner} id=\"{id}\">")
             };
             let delta = new_open.len() as isize - open_len as isize;
             result.replace_range(abs_open..abs_open + open_len, &new_open);
@@ -2221,6 +2388,8 @@ fn highlight_rustlab(source: &str) -> String {
 /// - `[[Foo|Bar]]`          → `[Bar](Foo.md)`
 /// - `[[Foo#Section]]`      → `[Foo § Section](Foo.md#section)`
 /// - `[[Foo#Section|Bar]]`  → `[Bar](Foo.md#section)`
+/// - `[[#Heading]]`         → `[Heading](#heading)` (same page; the
+///   fragment is [`slugify_heading`], the same slug the heading gets)
 /// - `![[image.png]]`       → `![](image.png)`
 /// - `![[image.png|alt]]`   → `![alt](image.png)`
 ///
@@ -2324,16 +2493,21 @@ fn render_wikilink(inner: &str) -> String {
         Some((p, a)) => (p.trim(), Some(a.trim())),
         None => (target, None),
     };
-    let dest = if path_has_extension(path) {
+    // `[[#Heading]]` is a same-page link. An empty path must not become
+    // the file `.md`.
+    let dest = if path.is_empty() {
+        String::new()
+    } else if path_has_extension(path) {
         path.to_string()
     } else {
         format!("{path}.md")
     };
     let anchor_url = anchor
-        .map(|a| format!("#{}", slugify(a)))
+        .map(|a| format!("#{}", slugify_heading(a)))
         .unwrap_or_default();
     let text = match (alias, anchor) {
         (Some(a), _) => a.to_string(),
+        (None, Some(a)) if path.is_empty() => a.to_string(),
         (None, Some(a)) => format!("{path} § {a}"),
         (None, None) => path.to_string(),
     };
@@ -2355,29 +2529,6 @@ fn render_embed(inner: &str) -> String {
 fn path_has_extension(path: &str) -> bool {
     let tail = path.rsplit('/').next().unwrap_or(path);
     tail.contains('.')
-}
-
-/// Lowercase + replace runs of non-alphanumerics with `-`. Matches how
-/// pulldown-cmark / GitHub generate heading anchors so `[[Foo#My Section]]`
-/// resolves to the same `#my-section` the heading produces.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_was_dash = false;
-    for c in s.chars() {
-        if c.is_alphanumeric() {
-            for lc in c.to_lowercase() {
-                out.push(lc);
-            }
-            last_was_dash = false;
-        } else if !last_was_dash && !out.is_empty() {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 // ── Math protection ─────────────────────────────────────────────────────────
@@ -2828,6 +2979,23 @@ mod tests {
 
     fn test_theme() -> &'static ThemeColors {
         Theme::Dark.colors()
+    }
+
+    /// Every pure `#fragment` href in rendered HTML names an `id` on the page.
+    fn assert_fragment_hrefs_have_ids(html: &str) {
+        let mut rest = html;
+        while let Some(rel) = rest.find("href=\"#") {
+            rest = &rest[rel + 7..];
+            let end = rest.find('"').unwrap_or(rest.len());
+            let frag = percent_decode(&rest[..end]).replace("&amp;", "&");
+            if !frag.is_empty() {
+                assert!(
+                    html.contains(&format!("id=\"{frag}\"")),
+                    "href=\"#{frag}\" has no matching id"
+                );
+            }
+            rest = &rest[end..];
+        }
     }
 
     // ── escape_html ──
@@ -3477,6 +3645,60 @@ mod tests {
         assert!(html.contains("<title>Test</title>"));
         assert!(html.contains("class=\"prose\""));
         assert!(html.contains("Generated by rustlab-notebook"));
+    }
+
+    #[test]
+    fn render_html_prose_figures_tables_and_link_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let plots = dir.path().join("plots").join("repro");
+        std::fs::create_dir_all(&plots).unwrap();
+        let img = dir.path().join("dot.png");
+        std::fs::write(&img, crate::prose_media::TINY_PNG).unwrap();
+        let _jail = crate::execute::JailRootGuard::new(Some(dir.path().to_path_buf()));
+        let md = include_str!("../tests/fixtures/prose_media/repro.md")
+            .replace("dot.png", &img.display().to_string());
+        let blocks = vec![
+            Rendered::Markdown(md),
+            Rendered::Callout {
+                kind: CalloutKind::Note,
+                title: None,
+                content: "## Inside the note\n\n[back](#inside-the-note)\n".to_string(),
+            },
+        ];
+        let html = render_html(
+            "Repro",
+            &blocks,
+            &plots,
+            "plots/repro",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(plots.join("prose-1.png").is_file(), "markdown image copied");
+        assert!(plots.join("prose-2.png").is_file(), "raw img copied");
+        assert!(
+            html.contains("plots/repro/prose-1.png"),
+            "copied image src missing: {html}"
+        );
+        assert!(html.contains("<figcaption>Scope diagram</figcaption>"), "{html}");
+        assert!(html.contains("alt=\"Raw scope\""), "{html}");
+        assert!(
+            !html.contains("onerror=\""),
+            "unsafe img handler survived: {html}"
+        );
+        assert!(html.contains("class=\"table-scroll\""), "{html}");
+        for id in ["a-captured-trace", "regime--limits", "inside-the-note"] {
+            assert!(
+                html.contains(&format!("id=\"{id}\"")),
+                "missing id {id}: {html}"
+            );
+        }
+        assert!(
+            !html.contains("#not-a-heading"),
+            "dangling fragment kept: {html}"
+        );
+        assert!(html.contains("missing section"), "{html}");
+        assert_fragment_hrefs_have_ids(&html);
     }
 
     #[test]
@@ -6070,11 +6292,21 @@ w = 4
     }
 
     #[test]
-    fn slugify_matches_github_anchor_style() {
-        assert_eq!(slugify("Hello World"), "hello-world");
-        assert_eq!(slugify("Already-dashed"), "already-dashed");
-        assert_eq!(slugify("with punctuation!?"), "with-punctuation");
-        assert_eq!(slugify("multi   spaces"), "multi-spaces");
+    fn wikilink_anchor_uses_heading_slug() {
+        // Same slug `slugify_heading` gives the heading, including a
+        // doubled dash where punctuation was dropped and a kept `_`.
+        assert_eq!(
+            transform_wikilinks("[[Note#Structure & Selection]]"),
+            "[Note § Structure & Selection](Note.md#structure--selection)"
+        );
+        assert_eq!(
+            transform_wikilinks("[[Note#under_score]]"),
+            "[Note § under_score](Note.md#under_score)"
+        );
+        assert_eq!(
+            transform_wikilinks("[[#A captured trace]]"),
+            "[A captured trace](#a-captured-trace)"
+        );
     }
 
     #[test]

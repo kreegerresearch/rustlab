@@ -1,7 +1,12 @@
 use crate::execute::Rendered;
-use crate::render::{notebook_md_options, parse_single_tilde_safe, transform_wikilinks};
+use crate::prose_media::ProseAssets;
+use crate::render::{
+    collect_prose_anchors, heading_anchor, notebook_md_options, parse_single_tilde_safe,
+    percent_decode, transform_wikilinks,
+};
 use pulldown_cmark::{Event, HeadingLevel, Options, Tag, TagEnd};
 use rustlab_plot::theme::{Theme, ThemeColors};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Render executed notebook blocks into a LaTeX document string.
@@ -28,6 +33,27 @@ pub fn render_latex(
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
 
+    // Heading ids are collected before emission so a same-page `#anchor`
+    // can be dropped when nothing on this page targets it. Dedup state is
+    // replayed from empty on the emit walk so the ids match.
+    let mut anchors = HashSet::new();
+    let mut collect_used = HashSet::new();
+    let mut collect_idx = 0usize;
+    for block in blocks {
+        match block {
+            Rendered::Markdown(md) => {
+                collect_prose_anchors(md, &mut anchors, &mut collect_used, &mut collect_idx);
+            }
+            Rendered::Callout { content, .. } => {
+                collect_prose_anchors(content, &mut anchors, &mut collect_used, &mut collect_idx);
+            }
+            _ => {}
+        }
+    }
+    let mut emit_used = HashSet::new();
+    let mut emit_idx = 0usize;
+    let mut prose_assets = ProseAssets::new(plot_dir, &href_prefix);
+
     // Printed pages are Catppuccin Latte on white paper. `-t` and the
     // rc file still theme HTML and `notebook watch`; they do not theme
     // LaTeX or PDF. A dark `pagecolor` left body text black and unreadable.
@@ -37,7 +63,14 @@ pub fn render_latex(
     for block in blocks {
         match block {
             Rendered::Markdown(md) => {
-                body.push_str(&markdown_to_latex(md, link));
+                body.push_str(&markdown_to_latex_in(
+                    md,
+                    link,
+                    Some(&mut prose_assets),
+                    &anchors,
+                    &mut emit_used,
+                    &mut emit_idx,
+                ));
             }
             Rendered::Code {
                 source,
@@ -154,7 +187,14 @@ pub fn render_latex(
                     "\\begin{{rlcallout}}{{{frame}}}{{{}}}\n",
                     escape_latex(label),
                 ));
-                body.push_str(&markdown_to_latex(content, link));
+                body.push_str(&markdown_to_latex_in(
+                    content,
+                    link,
+                    Some(&mut prose_assets),
+                    &anchors,
+                    &mut emit_used,
+                    &mut emit_idx,
+                ));
                 body.push_str("\\end{rlcallout}\n\n");
             }
             Rendered::ExerciseStart { number } => {
@@ -314,6 +354,7 @@ pub fn render_latex(
 \usepackage{{sectsty}}
 \usepackage{{float}}
 \usepackage{{booktabs}}
+\usepackage{{tabularx}}
 \usepackage[normalem]{{ulem}}
 \usepackage{{hyperref}}
 \hypersetup{{colorlinks=true,linkcolor=rllink,urlcolor=rllink}}
@@ -493,10 +534,44 @@ fn emit_figures(
 ///
 /// Cross-notebook `.md` links resolve through the shared [`LinkMode`]
 /// contract, but to sibling `.pdf` artifacts (the files a directory PDF
-/// build emits) and with fragments dropped — the generated PDFs carry no
-/// named destinations for markdown anchors. `\href{a.md}` pointed a PDF
-/// reader at the raw source file, which ships nowhere.
+/// build emits) and with fragments dropped — a sibling PDF does not share
+/// this page's hypertargets. Same-page `#heading` links stay, and only
+/// when that id was emitted as a `\hypertarget`.
+#[cfg(test)]
 fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
+    let mut anchors = HashSet::new();
+    let mut used = HashSet::new();
+    let mut idx = 0usize;
+    collect_prose_anchors(md, &mut anchors, &mut used, &mut idx);
+    let mut emit_used = HashSet::new();
+    let mut emit_idx = 0usize;
+    markdown_to_latex_in(
+        md,
+        link,
+        None,
+        &anchors,
+        &mut emit_used,
+        &mut emit_idx,
+    )
+}
+
+struct HeadingCap {
+    cmd: &'static str,
+    level: HeadingLevel,
+    explicit: Option<String>,
+    plain: String,
+    saw: bool,
+    body: String,
+}
+
+fn markdown_to_latex_in(
+    md: &str,
+    link: &crate::render::LinkMode,
+    mut assets: Option<&mut ProseAssets<'_>>,
+    anchors: &HashSet<String>,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) -> String {
     let md = transform_wikilinks(md);
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
@@ -505,146 +580,263 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     let events = parse_single_tilde_safe(&md, opts);
 
     let mut out = String::new();
-    #[allow(unused_assignments)]
-    let mut table_alignments: Vec<pulldown_cmark::Alignment> = Vec::new();
     let mut table_cell_idx: usize = 0;
     let mut table_in_head = false;
+    let mut heading: Option<HeadingCap> = None;
+    let mut image: Option<(String, String)> = None;
+    let mut link_live: Vec<bool> = Vec::new();
 
     for event in events {
+        if image.is_some() {
+            match event {
+                Event::Text(t) | Event::Code(t) => {
+                    if let Some((_, alt)) = image.as_mut() {
+                        alt.push_str(&t);
+                    }
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    if let Some((_, alt)) = image.as_mut() {
+                        alt.push(' ');
+                    }
+                }
+                Event::End(TagEnd::Image) => {
+                    let (src, alt) = image.take().unwrap();
+                    let fig = if let Some(assets) = assets.as_mut() {
+                        assets.latex_for(&src, &alt)
+                    } else {
+                        "\\textit{[missing figure: image not embedded]}\\par\n".to_string()
+                    };
+                    if let Some(h) = heading.as_mut() {
+                        h.plain.push_str(&alt);
+                        h.saw = true;
+                        h.body.push_str(&fig);
+                    } else {
+                        out.push_str(&fig);
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match event {
             Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
+                Tag::Heading { level, id, .. } => {
                     let cmd = match level {
                         HeadingLevel::H1 => "section",
                         HeadingLevel::H2 => "subsection",
                         HeadingLevel::H3 => "subsubsection",
                         _ => "paragraph",
                     };
-                    out.push_str(&format!("\\{cmd}{{"));
+                    heading = Some(HeadingCap {
+                        cmd,
+                        level,
+                        explicit: id.map(|s| s.to_string()),
+                        plain: String::new(),
+                        saw: false,
+                        body: String::new(),
+                    });
                 }
                 Tag::Paragraph => {}
-                Tag::Emphasis => out.push_str("\\emph{"),
-                Tag::Strong => out.push_str("\\textbf{"),
-                Tag::Strikethrough => out.push_str("\\sout{"),
+                Tag::Emphasis => emit(&mut heading, &mut out, "\\emph{"),
+                Tag::Strong => emit(&mut heading, &mut out, "\\textbf{"),
+                Tag::Strikethrough => emit(&mut heading, &mut out, "\\sout{"),
                 Tag::CodeBlock(_) => {
-                    // Fenced code blocks in markdown (non-rustlab) treated as verbatim
-                    out.push_str("\\begin{verbatim}\n");
+                    emit(&mut heading, &mut out, "\\begin{verbatim}\n");
                 }
-                Tag::BlockQuote(_) => out.push_str("\\begin{quote}\n"),
-                Tag::List(Some(1)) => out.push_str("\\begin{enumerate}\n"),
-                Tag::List(Some(_)) => out.push_str("\\begin{enumerate}\n"),
-                Tag::List(None) => out.push_str("\\begin{itemize}\n"),
-                Tag::Item => out.push_str("\\item "),
+                Tag::BlockQuote(_) => emit(&mut heading, &mut out, "\\begin{quote}\n"),
+                Tag::List(Some(_)) => emit(&mut heading, &mut out, "\\begin{enumerate}\n"),
+                Tag::List(None) => emit(&mut heading, &mut out, "\\begin{itemize}\n"),
+                Tag::Item => emit(&mut heading, &mut out, "\\item "),
                 Tag::Table(alignments) => {
-                    table_alignments = alignments;
-                    let cols: String = table_alignments
+                    let cols: String = alignments
                         .iter()
                         .map(|a| match a {
                             pulldown_cmark::Alignment::Left | pulldown_cmark::Alignment::None => {
-                                'l'
+                                ">{\\raggedright\\arraybackslash}X"
                             }
-                            pulldown_cmark::Alignment::Center => 'c',
-                            pulldown_cmark::Alignment::Right => 'r',
+                            pulldown_cmark::Alignment::Center => {
+                                ">{\\centering\\arraybackslash}X"
+                            }
+                            pulldown_cmark::Alignment::Right => ">{\\raggedleft\\arraybackslash}X",
                         })
                         .collect();
-                    out.push_str(&format!("\\begin{{tabular}}{{{cols}}}\n\\toprule\n"));
+                    let mut spec = String::from("\\begin{tabularx}{\\linewidth}{");
+                    spec.push_str(&cols);
+                    spec.push_str("}\n\\toprule\n");
+                    emit(&mut heading, &mut out, &spec);
                 }
                 Tag::TableHead => {
                     table_in_head = true;
                     table_cell_idx = 0;
-                    out.push_str("\\rowcolor{rlthead}");
+                    emit(&mut heading, &mut out, "\\rowcolor{rlthead}");
                 }
                 Tag::TableRow => {
                     table_cell_idx = 0;
                 }
                 Tag::TableCell => {
                     if table_cell_idx > 0 {
-                        out.push_str(" & ");
+                        emit(&mut heading, &mut out, " & ");
                     }
                     if table_in_head {
-                        out.push_str("\\textcolor{rlh1}{\\textbf{");
+                        emit(&mut heading, &mut out, "\\textcolor{rlh1}{\\textbf{");
                     }
                 }
                 Tag::Link { dest_url, .. } => {
                     let dest = crate::render::rewrite_link_dest_pdf(&dest_url, link)
                         .unwrap_or_else(|| dest_url.to_string());
-                    out.push_str(&format!("\\href{{{}}}", escape_href_dest(&dest)));
-                    out.push('{');
+                    let live = if let Some(frag) = dest.strip_prefix('#') {
+                        anchors.contains(&percent_decode(frag))
+                    } else {
+                        true
+                    };
+                    link_live.push(live);
+                    if live {
+                        let href = format!("\\href{{{}}}{{", escape_href_dest(&dest));
+                        emit(&mut heading, &mut out, &href);
+                    }
+                }
+                Tag::Image { dest_url, .. } => {
+                    image = Some((dest_url.to_string(), String::new()));
                 }
                 _ => {}
             },
             Event::End(tag) => match tag {
-                TagEnd::Heading(_) => out.push_str("}\n\n"),
-                TagEnd::Paragraph => out.push_str("\n\n"),
-                TagEnd::Emphasis => out.push('}'),
-                TagEnd::Strong => out.push('}'),
-                TagEnd::Strikethrough => out.push('}'),
-                TagEnd::CodeBlock => out.push_str("\\end{verbatim}\n\n"),
-                TagEnd::BlockQuote(_) => out.push_str("\\end{quote}\n"),
-                TagEnd::List(true) => out.push_str("\\end{enumerate}\n\n"),
-                TagEnd::List(false) => out.push_str("\\end{itemize}\n\n"),
-                TagEnd::Item => out.push('\n'),
+                TagEnd::Heading(_) => {
+                    if let Some(h) = heading.take() {
+                        if let Some(id) = heading_anchor(
+                            h.level,
+                            h.explicit.as_deref(),
+                            &h.plain,
+                            h.saw,
+                            used,
+                            empty_idx,
+                        ) {
+                            out.push_str(&format!(
+                                "\\hypertarget{{{}}}{{}}\n",
+                                escape_href_dest(&id)
+                            ));
+                        }
+                        out.push_str(&format!("\\{}{{{}}}\n\n", h.cmd, h.body));
+                    }
+                }
+                TagEnd::Paragraph => emit(&mut heading, &mut out, "\n\n"),
+                TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
+                    emit(&mut heading, &mut out, "}");
+                }
+                TagEnd::CodeBlock => emit(&mut heading, &mut out, "\\end{verbatim}\n\n"),
+                TagEnd::BlockQuote(_) => emit(&mut heading, &mut out, "\\end{quote}\n"),
+                TagEnd::List(true) => emit(&mut heading, &mut out, "\\end{enumerate}\n\n"),
+                TagEnd::List(false) => emit(&mut heading, &mut out, "\\end{itemize}\n\n"),
+                TagEnd::Item => emit(&mut heading, &mut out, "\n"),
                 TagEnd::Table => {
-                    out.push_str("\\bottomrule\n\\end{tabular}\n\n");
+                    emit(&mut heading, &mut out, "\\bottomrule\n\\end{tabularx}\n\n");
                 }
                 TagEnd::TableHead => {
-                    out.push_str(" \\\\\n\\midrule\n");
+                    emit(&mut heading, &mut out, " \\\\\n\\midrule\n");
                     table_in_head = false;
                 }
                 TagEnd::TableRow => {
                     if !table_in_head {
-                        out.push_str(" \\\\\n");
+                        emit(&mut heading, &mut out, " \\\\\n");
                     }
                 }
                 TagEnd::TableCell => {
                     if table_in_head {
-                        out.push_str("}}");
+                        emit(&mut heading, &mut out, "}}");
                     }
                     table_cell_idx += 1;
                 }
-                TagEnd::Link => out.push('}'),
+                TagEnd::Link => {
+                    if link_live.pop().unwrap_or(false) {
+                        emit(&mut heading, &mut out, "}");
+                    }
+                }
                 _ => {}
             },
             Event::Text(text) => {
-                // With `Options::ENABLE_MATH` on, pulldown-cmark delivers
-                // inline math via `Event::InlineMath` and display math via
-                // `Event::DisplayMath`. Anything that survives into a Text
-                // event is literal prose — including a backslash-escaped
-                // `\$` from the source, which arrives here as a bare `$`
-                // that must be escaped to `\$`, not preserved as a math
-                // delimiter.
-                out.push_str(&escape_latex(&text));
+                let escaped = escape_latex(&text);
+                if let Some(h) = heading.as_mut() {
+                    h.plain.push_str(&text);
+                    h.saw = true;
+                    h.body.push_str(&escaped);
+                } else {
+                    out.push_str(&escaped);
+                }
             }
             Event::Code(code) => {
                 let esc = escape_latex(&code);
-                // Bookmark text cannot carry a colorbox. The visible pill
-                // matches the HTML inline-code background.
-                out.push_str("\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{");
-                out.push_str(&esc);
-                out.push_str("}}}{\\texttt{");
-                out.push_str(&esc);
-                out.push_str("}}");
+                let mut pill = String::from(
+                    "\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{",
+                );
+                pill.push_str(&esc);
+                pill.push_str("}}}{\\texttt{");
+                pill.push_str(&esc);
+                pill.push_str("}}");
+                if let Some(h) = heading.as_mut() {
+                    h.plain.push_str(&code);
+                    h.saw = true;
+                    h.body.push_str(&pill);
+                } else {
+                    out.push_str(&pill);
+                }
             }
-            Event::SoftBreak => out.push('\n'),
-            Event::HardBreak => out.push_str("\\\\\n"),
+            Event::SoftBreak => {
+                if let Some(h) = heading.as_mut() {
+                    h.plain.push(' ');
+                    h.saw = true;
+                    h.body.push(' ');
+                } else {
+                    out.push('\n');
+                }
+            }
+            Event::HardBreak => {
+                if let Some(h) = heading.as_mut() {
+                    h.plain.push(' ');
+                    h.saw = true;
+                    h.body.push(' ');
+                } else {
+                    out.push_str("\\\\\n");
+                }
+            }
             Event::InlineMath(math) => {
-                out.push('$');
-                out.push_str(&math);
-                out.push('$');
+                let rendered = format!("${math}$");
+                if let Some(h) = heading.as_mut() {
+                    h.saw = true;
+                    h.body.push_str(&rendered);
+                } else {
+                    out.push_str(&rendered);
+                }
             }
             Event::DisplayMath(math) => {
-                out.push_str("\\[\n");
-                out.push_str(&math);
-                out.push_str("\n\\]\n");
+                let rendered = format!("\\[\n{math}\n\\]\n");
+                if let Some(h) = heading.as_mut() {
+                    h.saw = true;
+                    h.body.push_str(&rendered);
+                } else {
+                    out.push_str(&rendered);
+                }
             }
             Event::Html(html) | Event::InlineHtml(html) => {
                 // Raw HTML is never passed through to TeX (XSS / write18
-                // surface). HTML comments (author notes, directives that
-                // survived parsing) are dropped; other markup is emitted as
-                // escaped text so authors still see it.
+                // surface). HTML comments are dropped. A safe `<img>` is
+                // embedded when prose assets are available; everything else
+                // is escaped text.
                 let visible = strip_html_comments(&html);
-                if !visible.trim().is_empty() {
-                    out.push_str(&escape_latex(&visible));
+                if visible.trim().is_empty() {
+                    continue;
+                }
+                let rendered = if let Some(assets) = assets.as_mut() {
+                    assets.raw_html_to_latex(&visible)
+                } else {
+                    escape_latex(&visible)
+                };
+                if let Some(h) = heading.as_mut() {
+                    h.plain.push_str(&visible);
+                    h.saw = true;
+                    h.body.push_str(&rendered);
+                } else {
+                    out.push_str(&rendered);
                 }
             }
             _ => {}
@@ -653,6 +845,15 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
 
     out
 }
+
+fn emit(heading: &mut Option<HeadingCap>, out: &mut String, s: &str) {
+    if let Some(h) = heading.as_mut() {
+        h.body.push_str(s);
+    } else {
+        out.push_str(s);
+    }
+}
+
 
 /// Escape an `\href` DESTINATION.
 ///
@@ -863,6 +1064,22 @@ mod tests {
         Theme::Light.colors()
     }
 
+    /// Every `\href{\#id}` names a `\hypertarget{id}{}` in the same document.
+    fn assert_fragment_hrefs_have_hypertargets(tex: &str) {
+        let needle = "\\href{\\#";
+        let mut rest = tex;
+        while let Some(rel) = rest.find(needle) {
+            rest = &rest[rel + needle.len()..];
+            let end = rest.find('}').unwrap_or(rest.len());
+            let id = &rest[..end];
+            assert!(
+                tex.contains(&format!("\\hypertarget{{{id}}}{{}}")),
+                "\\href{{\\#{id}}} has no hypertarget"
+            );
+            rest = &rest[end..];
+        }
+    }
+
     // ── escape_latex ──
 
     #[test]
@@ -1000,7 +1217,9 @@ mod tests {
         // markdown. Compile-verified against tectonic in all three
         // contexts.
         let single = crate::render::LinkMode::single_file();
-        let out = markdown_to_latex("## Jump to [Setup](#setup)", &single);
+        // The heading that contains the link slugs to `jump-to-setup`, so
+        // `#setup` is only a real target when `## Setup` is also on the page.
+        let out = markdown_to_latex("## Setup\n\n## Jump to [Setup](#setup)", &single);
         assert!(
             out.contains("\\href{\\#setup}"),
             "unescaped # in heading: {out}"
@@ -1025,7 +1244,7 @@ mod tests {
         // `\href{a.md}` pointed a PDF reader at the raw source file, which
         // ships nowhere. Cross-notebook links target the sibling `.pdf`
         // artifacts a directory PDF build emits, with fragments dropped —
-        // the generated PDFs carry no named destinations for anchors.
+        // a sibling PDF does not share this page's hypertargets.
         let single = crate::render::LinkMode::single_file();
         let out = markdown_to_latex("[next](02-filter.md)", &single);
         assert!(out.contains("\\href{02-filter.pdf}"), "{out}");
@@ -1084,14 +1303,67 @@ mod tests {
     fn md_to_latex_table() {
         let md = "| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |";
         let out = markdown_to_latex(md, &crate::render::LinkMode::single_file());
-        assert!(out.contains("\\begin{tabular}"));
+        assert!(out.contains("\\begin{tabularx}{\\linewidth}"));
+        assert!(out.contains(">{\\raggedright\\arraybackslash}X"));
         assert!(out.contains("\\toprule"));
         assert!(out.contains("\\midrule"));
         assert!(out.contains("\\bottomrule"));
-        assert!(out.contains("\\end{tabular}"));
+        assert!(out.contains("\\end{tabularx}"));
         assert!(out.contains(" & "));
         assert!(out.contains("\\rowcolor{rlthead}"));
         assert!(out.contains("\\textcolor{rlh1}{\\textbf{"));
+    }
+
+    #[test]
+    fn md_to_latex_same_page_anchor_drops_dangling() {
+        let single = crate::render::LinkMode::single_file();
+        let out = markdown_to_latex(
+            "## Setup\n\n## under_score\n\nSee [Setup](#setup) and [us](#under_score).\n\nA [missing](#gone) target.",
+            &single,
+        );
+        assert!(out.contains("\\hypertarget{setup}{}"), "{out}");
+        assert!(out.contains("\\hypertarget{under_score}{}"), "{out}");
+        assert!(out.contains("\\href{\\#setup}{Setup}"), "{out}");
+        assert!(out.contains("\\href{\\#under_score}"), "{out}");
+        assert!(!out.contains("gone}"), "dangling href kept: {out}");
+        assert!(out.contains("missing"), "{out}");
+        assert_fragment_hrefs_have_hypertargets(&out);
+    }
+
+    #[test]
+    fn md_to_latex_prose_image_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nb = dir.path().join("nb");
+        std::fs::create_dir_all(&nb).unwrap();
+        let png = nb.join("dot.png");
+        let gif = nb.join("anim.gif");
+        std::fs::write(&png, crate::prose_media::TINY_PNG).unwrap();
+        std::fs::write(&gif, b"GIF89a").unwrap();
+        let _jail = crate::execute::JailRootGuard::new(Some(nb.clone()));
+        let plots = dir.path().join("plots").join("nb");
+        let md = format!(
+            "![scope]({png})\n\n<img src=\"{png}\" alt=\"raw\">\n\n![clip]({gif})\n\n![gone](missing.png)\n",
+            png = png.display(),
+            gif = gif.display(),
+        );
+        let tex = render_latex(
+            "T",
+            &[Rendered::Markdown(md)],
+            &plots,
+            "plots/nb",
+            light(),
+            &crate::render::LinkMode::single_file(),
+        );
+        assert_eq!(
+            tex.matches("\\includegraphics").count(),
+            2,
+            "png markdown + raw img only: {tex}"
+        );
+        assert!(tex.contains("plots/nb/prose-1"), "{tex}");
+        assert!(!tex.contains("prose-1.png"), "extension must be omitted: {tex}");
+        assert!(tex.contains("width=\\linewidth"), "{tex}");
+        assert!(tex.contains("missing figure"), "{tex}");
+        assert!(tex.contains("not embedded"), "{tex}");
     }
 
     #[test]
