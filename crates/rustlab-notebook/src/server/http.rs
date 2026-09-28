@@ -421,6 +421,7 @@ fn content_type_for(path: &std::path::Path) -> &'static str {
         Some("gif") => "image/gif",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
         _ => "application/octet-stream",
     }
 }

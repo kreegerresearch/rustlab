@@ -417,6 +417,11 @@ pub fn render_html_nonced(
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
+    // Prose images are copied here and referenced by `href_prefix`, which
+    // is `plots/<stem>` for a static file and `/plots/<slug>` for watch.
+    // The browser resolves a bare `dot.png` against the page URL (`/n/<slug>`
+    // in watch), so the author's relative path would 404.
+    let mut prose_assets = crate::prose_media::ProseAssets::new(plot_dir, &href_prefix);
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
@@ -459,7 +464,7 @@ pub fn render_html_nonced(
                 let md = transform_wikilinks(md);
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
 
                 // Extract headings for nav and inject IDs
                 let html =
@@ -672,7 +677,7 @@ pub fn render_html_nonced(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -1047,6 +1052,14 @@ document.addEventListener('click', (e) => {{
     background: {border};
     color: {accent_primary};
     font-weight: 600;
+  }}
+  .prose img, .callout img {{
+    max-width: 100%;
+    height: auto;
+  }}
+  .missing-figure {{
+    color: {text_dim};
+    font-style: italic;
   }}
   .prose ul, .prose ol {{
     margin: 0.5rem 0 1rem 1.5rem;
@@ -1458,7 +1471,7 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
-    markdown_to_html_linked(md, None)
+    markdown_to_html_linked(md, None, None)
 }
 
 /// [`markdown_to_html`] with cross-notebook link resolution.
@@ -1467,9 +1480,24 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 /// parser has resolved reference-style definitions and separated titles,
 /// and only for real links: text, code spans, and fenced blocks never
 /// produce link events, so `` `[x](a.md)` `` stays byte-identical.
-pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
+///
+/// When `assets` is set, markdown images and a safe raw `<img src alt>`
+/// are copied into the plot directory and the emitted `src` is that copy.
+pub(crate) fn markdown_to_html_linked(
+    md: &str,
+    link: Option<&LinkMode>,
+    mut assets: Option<&mut crate::prose_media::ProseAssets<'_>>,
+) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    if let Some(assets) = assets.as_mut() {
+        for ev in events.iter_mut() {
+            if let Event::Html(s) | Event::InlineHtml(s) = ev {
+                let rewritten = assets.stash_safe_imgs(s);
+                *s = rewritten.into();
+            }
+        }
+    }
     // Security: raw HTML from notebook markdown goes through the allow-list
     // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
     sanitize_raw_html_events(&mut events);
@@ -1477,9 +1505,46 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
+    let events = if let Some(assets) = assets.as_mut() {
+        rewrite_prose_images(events, assets)
+    } else {
+        events
+    };
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
-    restore_math(&html, &math)
+    let html = restore_math(&html, &math);
+    if let Some(assets) = assets.as_ref() {
+        assets.restore_stashed(&html)
+    } else {
+        html
+    }
+}
+
+/// Turn markdown image events into a placed `<img>` (or a placeholder).
+fn rewrite_prose_images<'b>(
+    events: Vec<Event<'b>>,
+    assets: &mut crate::prose_media::ProseAssets<'_>,
+) -> Vec<Event<'b>> {
+    let mut out = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(ev) = iter.next() {
+        match ev {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let src = dest_url.into_string();
+                let mut alt = String::new();
+                for inner in iter.by_ref() {
+                    match inner {
+                        Event::End(TagEnd::Image) => break,
+                        Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                        _ => {}
+                    }
+                }
+                out.push(Event::Html(assets.html_for(&src, &alt).into()));
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
@@ -3555,6 +3620,46 @@ mod tests {
     }
 
     // ── render_html (integration) ──
+
+    #[test]
+    fn static_html_copies_prose_image_beside_the_page() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(src_dir.path().join("dot.png"), crate::prose_media::TINY_PNG).unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"outside").unwrap();
+        let secret = outside.path().canonicalize().unwrap().join("secret.png");
+        let src = src_dir.path().join("repro.md");
+        std::fs::write(
+            &src,
+            format!(
+                "# T\n\n![Scope diagram](dot.png)\n\n<img src=\"dot.png\" alt=\"Raw scope\">\n\n<img src=\"dot.png\" onerror=\"alert(1)\">\n\n![nope]({})\n",
+                secret.display()
+            ),
+        )
+        .unwrap();
+        let out = out_dir.path().join("repro.html");
+        crate::cmd_render(
+            src,
+            Some(out.clone()),
+            crate::Format::Html,
+            Theme::Dark.colors(),
+        )
+        .unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("src=\"plots/repro/prose-1.png\""), "{html}");
+        assert!(html.contains("alt=\"Raw scope\""), "{html}");
+        // The handler is escaped text, not an attribute the browser runs.
+        assert!(html.contains("onerror=&quot;alert(1)&quot;"), "{html}");
+        assert!(!html.contains("onerror=\""), "{html}");
+        assert!(!html.contains("src=\"dot.png\""), "{html}");
+        assert!(!html.contains("secret.png"), "{html}");
+        assert_eq!(
+            std::fs::read(out_dir.path().join("plots/repro/prose-1.png")).unwrap(),
+            crate::prose_media::TINY_PNG
+        );
+        assert!(!out_dir.path().join("plots/repro/prose-3.png").exists());
+    }
 
     #[test]
     fn render_html_basic_structure() {

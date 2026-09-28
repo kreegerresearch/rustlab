@@ -1,11 +1,11 @@
-//! Prose figures for notebook PDF / LaTeX.
+//! Prose figures for notebook HTML, `notebook watch`, and PDF / LaTeX.
 //!
 //! Markdown images and a safe raw `<img src alt>` are copied into the plot
-//! directory after a path-jail check, then included with `\includegraphics`
-//! scaled to `\linewidth`. A missing file, a jail escape, gif/webp, or a
-//! remote URL becomes a visible placeholder and a stderr warning — never a
-//! broken `\includegraphics`. Wide tables are a `tabularx` in
-//! `render_latex`, not this module.
+//! directory after a path-jail check. HTML and watch reference that copy
+//! (`plots/…` or `/plots/<slug>/…`); PDF includes it with `\includegraphics`
+//! scaled to `\linewidth`. A missing file or a jail escape becomes a visible
+//! placeholder and a stderr warning. Remote URLs are not fetched. Wide PDF
+//! tables are a `tabularx` in `render_latex`, not this module.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,7 @@ pub struct ProseAssets<'a> {
     /// Notebook directory. Relative image paths join this, not a later cwd.
     base: PathBuf,
     n: usize,
+    stashed: Vec<String>,
 }
 
 impl<'a> ProseAssets<'a> {
@@ -34,7 +35,72 @@ impl<'a> ProseAssets<'a> {
             href_prefix: href_prefix.trim_end_matches('/').to_string(),
             base,
             n: 0,
+            stashed: Vec::new(),
         }
+    }
+
+    /// HTML for a markdown or raw image. Local files are the copied plot
+    /// path. `data:image/*` is left inline. Anything else we cannot place
+    /// is a placeholder, not an `<img>` with a broken `src`.
+    pub fn html_for(&mut self, src: &str, alt: &str) -> String {
+        match self.locate(src) {
+            Located::Copied { html_src, .. } => html_img(&html_src, alt),
+            // Remote URLs are not fetched. `data:image/*` is allowed by the
+            // watch CSP; `http(s)` is left as the author wrote it and the
+            // watch `img-src 'self'` policy blocks it in the browser.
+            Located::Remote(url) => html_img(&url, alt),
+            Located::Missing(msg) => missing_html(&msg),
+        }
+    }
+
+    /// Replace safe `<img src alt>` tags with placeholders before the HTML
+    /// sanitiser, which escapes every tag that carries an attribute. The
+    /// placeholder has no `<`.
+    pub fn stash_safe_imgs(&mut self, html: &str) -> String {
+        let bytes = html.as_bytes();
+        let mut out = String::with_capacity(html.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            if html[i..].starts_with("<!--") {
+                match html[i + 4..].find("-->") {
+                    Some(end) => {
+                        let stop = i + 4 + end + 3;
+                        out.push_str(&html[i..stop]);
+                        i = stop;
+                    }
+                    None => {
+                        out.push_str(&html[i..]);
+                        break;
+                    }
+                }
+                continue;
+            }
+            if is_img_open(html, i) {
+                if let Some(end) = end_of_tag(html, i) {
+                    let tag = &html[i..end];
+                    if let Some((src, alt)) = parse_safe_img(tag) {
+                        let fig = self.html_for(&src, &alt);
+                        let idx = self.stashed.len();
+                        self.stashed.push(fig);
+                        out.push_str(&img_placeholder(idx));
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            let ch = html[i..].chars().next().unwrap_or('\0');
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+        out
+    }
+
+    pub fn restore_stashed(&self, html: &str) -> String {
+        let mut out = html.to_string();
+        for (i, frag) in self.stashed.iter().enumerate() {
+            out = out.replace(&img_placeholder(i), frag);
+        }
+        out
     }
 
     /// LaTeX for a markdown image. No `\includegraphics` unless the file
@@ -133,7 +199,13 @@ impl<'a> ProseAssets<'a> {
         let root = crate::execute::jail_root_override().unwrap_or_else(|| self.base.clone());
         let resolved = match rustlab_script::path_jail::check_under_root(&candidate, &root) {
             Ok(p) => p,
-            Err(e) => return self.miss(&e),
+            Err(e) => {
+                // The stderr line names the path for the author. The page
+                // placeholder does not: an absolute path outside the jail
+                // would otherwise be written into the HTML.
+                eprintln!("warning: prose image: {e}");
+                return Located::Missing("image is outside the notebook directory".to_string());
+            }
         };
         if !resolved.is_file() {
             return self.miss(&format!("image not found: {src}"));
@@ -186,6 +258,32 @@ fn strip_ext(href: &str) -> &str {
         Some(i) if !href[i + 1..].contains('/') => &href[..i],
         _ => href,
     }
+}
+
+fn html_img(src: &str, alt: &str) -> String {
+    format!(
+        "<img src=\"{}\" alt=\"{}\">",
+        html_escape(src),
+        html_escape(alt)
+    )
+}
+
+fn missing_html(msg: &str) -> String {
+    format!(
+        "<span class=\"missing-figure\">missing figure: {}</span>",
+        html_escape(msg)
+    )
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn img_placeholder(idx: usize) -> String {
+    format!("\u{E000}P{idx}\u{E001}")
 }
 
 fn missing_latex(msg: &str) -> String {
@@ -367,6 +465,8 @@ mod tests {
         let secret = outside.path().join("secret.png");
         let tex = assets.latex_for(&secret.display().to_string(), "nope");
         assert!(tex.contains("missing figure"), "{tex}");
+        assert!(tex.contains("outside the notebook directory"), "{tex}");
+        assert!(!tex.contains("secret.png"), "{tex}");
         assert!(!tex.contains("includegraphics"), "{tex}");
         assert!(
             std::fs::read_dir(plots.path()).unwrap().next().is_none(),

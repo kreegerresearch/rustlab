@@ -107,9 +107,13 @@ passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`
 and `![[embed]]` must resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with
-`path escapes notebook directory`. PDF prose images (`![alt](path)` and
-a safe raw `<img src>`) use the same check; a path outside the root is
-not copied.
+`path escapes notebook directory`. Prose images in HTML, `notebook watch`,
+and PDF (`![alt](path)` and a safe raw `<img src alt>`) use the same
+check. A path outside the root is not copied, and the placeholder in the
+page does not repeat that path. Watch still serves only files under its
+plot tempdir (`GET /plots/…` rejects `..`). The page CSP is unchanged:
+`img-src 'self' data: blob:` and `script-src` with the per-process nonce
+plus `'strict-dynamic'`.
 
 The root is:
 

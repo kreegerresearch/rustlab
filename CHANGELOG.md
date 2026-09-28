@@ -215,6 +215,17 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **HTML and `notebook watch` prose figures.** Markdown images and a
+  safe raw `<img src alt>` are copied into the plot directory after the
+  path-jail check and referenced from that copy (`plots/<stem>/prose-N.ext`
+  beside a static HTML file, `/plots/<slug>/prose-N.ext` on the watch
+  server). A relative `src` used to be resolved against the page URL, so
+  in watch the browser requested `/n/<slug>/dot.png` and the figure was a
+  broken image. Percent-encoded names are decoded. A path outside the
+  jail is a placeholder that does not repeat the outside path, and the
+  file is not served. Unsafe `<img>` tags stay escaped. Watch CSP is
+  unchanged (`img-src 'self' data: blob:`; script nonce and
+  `'strict-dynamic'`). Remote URLs are not fetched.
 - **PDF prose figures, wide tables, and in-page links.**
   Markdown images and a safe raw `<img src alt>` in prose are copied
   into the plot directory (path-jailed; png/jpg/jpeg/svg) and included

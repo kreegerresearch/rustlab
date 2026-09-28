@@ -764,13 +764,17 @@ lives in `docs/notebooks.md`. Highlights:
 - **Raw HTML**: HTML output keeps only attribute-free formatting tags
   (`<b>`, `<br>`, `<sub>`, `<kbd>`, `<details>`, `<summary>`, `<div>`,
   table tags, …); anything with an attribute, plus `<script>`,
-  `<iframe>`, `<img>`, `<a>`, is shown as escaped text and HTML
-  comments are dropped. Write links/images in markdown. Notebook file
+  `<iframe>`, `<a>`, is shown as escaped text and HTML
+  comments are dropped. Write links in markdown. A prose image
+  (`![alt](file)` or `<img>` with only quoted `src` and `alt`) is copied
+  into the plot directory after the path jail check and referenced from
+  that copy: `plots/<stem>/prose-N.ext` in static HTML,
+  `/plots/<slug>/prose-N.ext` in `notebook watch` (the page is
+  `/n/<slug>`, so a bare relative `src` would 404), and
+  `\includegraphics` in PDF. Any other `<img>` attribute stays escaped.
+  Remote URLs are not fetched. Notebook file
   I/O is jailed (collection root in directory mode; `--jail-root` to
-  widen) — see `docs/security.md`. PDF prose images are a separate
-  path: `![alt](file)` and a safe raw `<img src alt>` are copied into
-  the plot directory after the same jail check and included with
-  `\includegraphics`.
+  widen) — see `docs/security.md`.
 
 See `dev/plans/closed/notebook_obsidian_alignment.md` for the design
 rationale (which Obsidian features were adopted and which were skipped).
@@ -1102,7 +1106,7 @@ Consumed by `rustlab-cli` (REPL / `run`) and `rustlab-notebook` (render/watch `-
 - `src/mermaid.rs` — pure-Rust SVG rendering of ` ```mermaid ` blocks via `mermaid-rs-renderer` (gated behind the default-on `mermaid` Cargo feature). BLAKE3-hashed output cache lives under `plots/<notebook>/.cache/`. Wraps the upstream call in `catch_unwind` so a 0.2.x crate panic falls back to verbatim source instead of tearing down the render.
 - `src/pdf_compile.rs` — engine selection (`pdflatex` → `tectonic`, never `-shell-escape`) and the fixed-argv Inkscape SVG→PDF pass that runs before TeX for both `--format pdf` and `--format latex`. Failures carry Inkscape's stderr tail. Also the Unicode safety net used by `lib::compile_pdf`: `rejected_unicode` parses `(U+XXXX)` out of the build log, `unicode_fallback` / `fallback_declarations` produce `\newunicodechar` lines (LaTeX macro or a visible `[U+XXXX]` placeholder), `insert_declarations` splices them after `\usepackage{newunicodechar}`. `compile_pdf` runs the engine; on a Unicode rejection it runs one diagnostic pass without `-halt-on-error` to collect every rejected code point, declares them all, and compiles once more (three runs at most). `compile_pdf`, `render_output`, `cmd_render` and `cmd_render_dir` return `Result<(), String>` instead of calling `process::exit` — directory renders report each failing notebook, keep going, and exit 1 at the end; the watcher's `cmd_render_cached` logs and continues.
 - `src/server/auth.rs` — loopback `Host` (every request) and `Origin` (`POST /save`, WS upgrade) checks, CSP header builder, and the per-process CSP nonce. The nonce is stamped at render time by `render::render_html_nonced` / `ws::inject_ws_client_nonced` / `page::inject_chrome_nonced` / `cell::inject_cell_client_nonced` on rustlab's own `<script>` tags only — never by post-processing served HTML. Rendered pages contain no inline `on*` handlers (the CSP has no `'unsafe-inline'` for scripts); KaTeX init and the sidebar toggle are wired from a nonced init script in `<head>`.
-- Raw HTML in prose goes through `render::sanitize_html_fragment` (attribute-free allow-list, comments dropped, everything else escaped) and `render::sanitize_dangerous_urls`; the directory `index.md` body uses the same pipeline. Path jail: `execute::JailRootGuard` (thread-local; collection root in directory mode, `--jail-root` override) feeds `rustlab_script::PathJailGuard`, whose `base` is the notebook directory captured at execute time so relative paths never depend on a later cwd move. See `docs/security.md`.
+- Raw HTML in prose goes through `render::sanitize_html_fragment` (attribute-free allow-list, comments dropped, everything else escaped) and `render::sanitize_dangerous_urls`; the directory `index.md` body uses the same pipeline. A safe prose `<img src alt>` is stashed before that sanitiser, copied by `prose_media::ProseAssets` into the plot dir (same jail as PDF), and restored as an `<img>` whose `src` is the copy. Path jail: `execute::JailRootGuard` (thread-local; collection root in directory mode, `--jail-root` override) feeds `rustlab_script::PathJailGuard`, whose `base` is the notebook directory captured at execute time so relative paths never depend on a later cwd move. See `docs/security.md`.
 
 **Theme support:** `--theme` / `-t` accepts Catppuccin builtins `mocha`, `macchiato`, `frappe`, `latte` plus aliases `dark`→mocha and `light`→latte (default mocha). Palettes live in `rustlab-plot/src/theme.rs` (`Theme` / `theme_colors` / `ThemeColors`) and are shared with plots. HTML emits `:root { --rl-*: … }` from `ThemeColors::css_custom_properties` and prefers `var(--rl-…, <literal>)` in the stylesheet. HTML `color-scheme` follows background luminance (`ThemeColors::is_dark`), not pointer identity; LaTeX/PDF are always Latte on white paper whatever `-t` says. Without `-t` the theme comes from `~/.rustlabrc` `[notebook] theme` (then `[plot] theme`, then mocha); the rc keys accept the same names (`rustlab_config::ColorTheme`) and map through `rustlab_plot::parse_theme`, so there is one name table.
 
