@@ -6,6 +6,7 @@ pub mod execute;
 pub mod mermaid;
 pub mod parse;
 pub mod pdf_compile;
+pub mod prose_media;
 pub mod render;
 pub mod render_json;
 pub mod render_latex;

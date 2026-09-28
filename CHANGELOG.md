@@ -62,12 +62,14 @@ Workflow Rule 12).
   attribute-free formatting tags (`<b>`, `<br>`, `<sub>`, `<kbd>`,
   `<details>`/`<summary>`, `<div>`, table tags, …) pass through; any tag
   with an attribute and every other tag (`<script>`, `<iframe>`,
-  `<img>`, `<a>`, …) renders as escaped text, and HTML comments are
-  dropped. `javascript:` / `data:` / `vbscript:` / `blob:` links are
-  neutralised; images keep `data:image/*` only. Migration: write links
-  and images in markdown; use `> [!NOTE]` callouts and the
-  `<!-- details: -->` directive instead of attributed HTML. Markdown
-  output (`-f markdown`) is unaffected.
+  `<a>`, …) renders as escaped text, and HTML comments are dropped.
+  One exception: an `<img>` whose only attributes are a quoted `src`
+  and an optional quoted `alt` is embedded (see Fixed). Extra
+  attributes, including `on*` handlers, stay escaped. `javascript:` /
+  `data:` / `vbscript:` / `blob:` links are neutralised; images keep
+  `data:image/*` only. Migration: write links in markdown; use
+  `> [!NOTE]` callouts and the `<!-- details: -->` directive instead of
+  attributed HTML. Markdown output (`-f markdown`) is unaffected.
 - **Single-output `svd` returns the singular values.** `s = svd(A)`
   now binds the singular-value vector (descending) — previously it
   bound the entire `(U, σ, V)` tuple, which was unusable as a single
@@ -213,6 +215,29 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **HTML and `notebook watch` prose figures.** Markdown images and a
+  safe raw `<img src alt>` are copied into the plot directory after the
+  path-jail check and referenced from that copy (`plots/<stem>/prose-N.ext`
+  beside a static HTML file, `/plots/<slug>/prose-N.ext` on the watch
+  server). A relative `src` used to be resolved against the page URL, so
+  in watch the browser requested `/n/<slug>/dot.png` and the figure was a
+  broken image. Percent-encoded names are decoded. A path outside the
+  jail is a placeholder that does not repeat the outside path, and the
+  file is not served. Unsafe `<img>` tags stay escaped. Watch CSP is
+  unchanged (`img-src 'self' data: blob:`; script nonce and
+  `'strict-dynamic'`). Remote URLs are not fetched.
+- **PDF prose figures, wide tables, and in-page links.**
+  Markdown images and a safe raw `<img src alt>` in prose are copied
+  into the plot directory (path-jailed; png/jpg/jpeg/svg) and included
+  in PDF / LaTeX, scaled to the line width. gif/webp, remote URLs, and
+  missing files become a visible placeholder and a stderr warning
+  instead of a broken `\includegraphics`. PDF tables use `tabularx`
+  fitted to `\linewidth` so a wide grid wraps inside the margins.
+  Same-page `#heading` links emit `\hyperref` only when that page has
+  a matching `\hypertarget`; a fragment with no target is plain text.
+  A link to another notebook's PDF still drops its fragment. Wikilink
+  fragments use the same heading slug as those targets (the shared
+  preprocessor, so HTML wikilink fragments change to that slug too).
 - **PDF builds no longer fail on Unicode in prose.** When `pdflatex`
   rejects a character the preamble does not declare (`2ⁿ`, `Aᵀ`, `ħ`, an
   emoji), `render -f pdf` recompiles with a fallback per rejected

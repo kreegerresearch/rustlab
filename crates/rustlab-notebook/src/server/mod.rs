@@ -1402,4 +1402,157 @@ mod tests {
         }
         drop(listener);
     }
+
+    async fn get_bytes(app: &axum::Router, uri: &str) -> (axum::http::StatusCode, String, Vec<u8>) {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let ct = res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec();
+        (status, ct, body)
+    }
+
+    #[tokio::test]
+    async fn single_file_watch_serves_prose_image_and_refuses_jail_escape() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let secret_bytes = b"not-the-notebook-image";
+        std::fs::write(outside.path().join("secret.png"), secret_bytes).unwrap();
+        std::fs::write(dir.path().join("dot.png"), crate::prose_media::TINY_PNG).unwrap();
+        std::fs::write(dir.path().join("my fig.png"), crate::prose_media::TINY_PNG).unwrap();
+        let secret = outside.path().canonicalize().unwrap().join("secret.png");
+        let nb = dir.path().join("repro.md");
+        std::fs::write(
+            &nb,
+            format!(
+                "# Repro\n\n![Scope diagram](dot.png)\n\n<img src=\"dot.png\" alt=\"Raw scope\">\n\n<img src=\"dot.png\" onerror=\"alert(1)\">\n\n![spaced](my%20fig.png)\n\n![nope]({})\n",
+                secret.display()
+            ),
+        )
+        .unwrap();
+        let canon = std::fs::canonicalize(&nb).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let slug = state.order[0].clone();
+        let app = serve_test(state);
+
+        let page_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/n/{slug}"))
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let csp = page_res
+            .headers()
+            .get("content-security-policy")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("img-src 'self' data: blob:"), "{csp}");
+        assert!(csp.contains("script-src 'self' 'nonce-testnonce' 'strict-dynamic'"), "{csp}");
+        let page = String::from_utf8(to_bytes(page_res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        let src = format!("/plots/{slug}/prose-1.png");
+        assert!(page.contains(&format!("src=\"{src}\"")), "{page}");
+        assert!(page.contains("alt=\"Raw scope\""), "{page}");
+        assert!(page.contains(&format!("/plots/{slug}/prose-3.png")), "{page}");
+        // Escaped text still contains the letters `onerror`. A live
+        // attribute would be `onerror="`. The watch client has `ws.onerror`.
+        assert!(page.contains("onerror=&quot;alert(1)&quot;"), "{page}");
+        assert!(!page.contains("onerror=\""), "live handler: {page}");
+        assert!(!page.contains("secret.png"), "jail escape leaked into HTML: {page}");
+        assert!(page.contains("outside the notebook directory"), "{page}");
+        assert!(page.contains("missing-figure"), "{page}");
+
+        let (status, ct, body) = get_bytes(&app, &src).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(ct.starts_with("image/png"), "{ct}");
+        assert_eq!(body, crate::prose_media::TINY_PNG);
+
+        let (status, _, body) = get_bytes(&app, &format!("/plots/{slug}/prose-4.png")).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+        assert!(!body.windows(secret_bytes.len()).any(|w| w == secret_bytes));
+
+        // Percent-encoded `..` must not walk out of the plot tempdir.
+        let (status, _, body) = get_bytes(&app, "/plots/%2e%2e/%2e%2e/etc/passwd").await;
+        assert_ne!(status, axum::http::StatusCode::OK);
+        assert!(!body.windows(secret_bytes.len()).any(|w| w == secret_bytes));
+    }
+
+    #[tokio::test]
+    async fn directory_watch_serves_nested_prose_image() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let sub = dir.path().join("ch1");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("dot.png"), crate::prose_media::TINY_PNG).unwrap();
+        std::fs::write(sub.join("note.md"), "# Nested\n\n![fig](dot.png)\n").unwrap();
+        std::fs::write(dir.path().join("root.md"), "# Root\n\nno figure.\n").unwrap();
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"outside-collection").unwrap();
+        // A path that climbs out of the collection must not be copied.
+        let secret = outside.path().canonicalize().unwrap().join("secret.png");
+        std::fs::write(
+            sub.join("escape.md"),
+            format!("# Escape\n\n![nope]({})\n", secret.display()),
+        )
+        .unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let note = state
+            .order
+            .iter()
+            .find(|s| s.starts_with("note"))
+            .cloned()
+            .expect("nested slug");
+        let escape = state
+            .order
+            .iter()
+            .find(|s| s.starts_with("escape"))
+            .cloned()
+            .expect("escape slug");
+        let app = serve_test(state);
+        let page = get_body(&app, &format!("/n/{note}")).await;
+        let src = format!("/plots/{note}/prose-1.png");
+        assert!(
+            page.contains(&format!("src=\"{src}\"")),
+            "nested notebook image was not rewritten to the plot route: {page}"
+        );
+        let (status, ct, body) = get_bytes(&app, &src).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(ct.starts_with("image/png"), "{ct}");
+        assert_eq!(body, crate::prose_media::TINY_PNG);
+
+        let escaped = get_body(&app, &format!("/n/{escape}")).await;
+        assert!(!escaped.contains("secret.png"), "{escaped}");
+        assert!(escaped.contains("outside the notebook directory"), "{escaped}");
+        assert!(escaped.contains("missing-figure"), "{escaped}");
+        let (status, _, _) = get_bytes(&app, &format!("/plots/{escape}/prose-1.png")).await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
 }

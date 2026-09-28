@@ -629,8 +629,9 @@ stray `$` signs in prose. No `\$` escaping is needed in HTML output.
 
 ### Tables
 
-Markdown tables render as styled HTML tables or LaTeX `tabular` with
-booktabs:
+Markdown tables render as styled HTML tables or a LaTeX `tabularx` that
+fits `\linewidth` (booktabs rules, wrapping `X` columns), so a wide grid
+stays inside the PDF page margins:
 
 ```markdown
 | Window      | Main Lobe Width | First Sidelobe |
@@ -638,6 +639,35 @@ booktabs:
 | Rectangular | $2/N$           | $-13$ dB       |
 | Hann        | $4/N$           | $-31$ dB       |
 ```
+
+### Prose figures
+
+Images written in prose — `![caption](path.png)` or a raw
+`<img src="path.png" alt="caption">` with only those two quoted
+attributes — are copied into the plot directory after the notebook path
+jail check (see below) and referenced from that copy:
+
+| Output | Where the copy is referenced |
+|---|---|
+| static HTML | `plots/<notebook>/prose-N.ext`, next to the `.html` file |
+| `notebook watch` | `/plots/<slug>/prose-N.ext` on the watch server |
+| PDF / LaTeX | `\includegraphics`, scaled to the text width |
+
+A relative path is resolved against the notebook's own directory, including
+a notebook in a subdirectory of a directory-mode render or watch. The
+watch page lives at `/n/<slug>`, so leaving `src="dot.png"` as written
+would request `/n/dot.png` and show a broken image. Percent-encoded names
+(`my%20fig.png`) are decoded before the jail check.
+
+png, jpeg, gif, svg, and webp are copied for HTML and watch. PDF embeds
+png, jpeg, and svg (svg goes through the same Inkscape pass as plot SVGs).
+gif and webp, a remote `http(s)` URL, a missing file, or a path outside
+the jail warn on stderr and print a “missing figure” placeholder. The
+placeholder does not repeat an outside path. Remote URLs are not fetched.
+In `notebook watch` the page CSP is `img-src 'self' data: blob:`, so a
+remote image is blocked in the browser; a `data:image/*` URL stays inline.
+Any other attribute on `<img>` (`onerror`, `width`, an unquoted `src`)
+stays escaped text and is not copied.
 
 ### GFM-superset features
 
@@ -672,7 +702,11 @@ id from its text, so fragments written the natural way just work:
 Slug rules match GitHub's: lowercase, punctuation dropped, spaces become
 hyphens, unicode kept; repeated headings dedup `-1`, `-2`, …; inline math
 is excluded from the slug (a math-only heading falls back to a positional
-`heading-N` id). `rustlab-notebook check` warns (`W004`) when a fragment
+`heading-N` id). h4–h6 get an id only when you write `{#anchor}`.
+`[[Note#Section Two]]` uses that same slug, in HTML and in PDF. In PDF a
+same-page link whose fragment matches no heading on the page is printed
+as plain text, so the renderer does not emit `\href` with nothing to
+land on. `rustlab-notebook check` warns (`W004`) when a fragment
 matches no anchor in its target.
 
 **Explicit heading IDs** still pin a stable anchor when you want one that
@@ -1279,19 +1313,25 @@ prose. Attribute-free formatting tags pass through unchanged — `<b>`,
 `<i>`, `<br>`, `<sub>`, `<sup>`, `<kbd>`, `<details>`/`<summary>`,
 `<div>`, `<span>`, `<hr>`, table tags, and similar. Any tag that carries
 an attribute (`<details open>`, `<span style=…>`, `<a href=…>`) and every
-tag off that list (`<script>`, `<iframe>`, `<img>`, `<style>`, …) is
+tag off that list (`<script>`, `<iframe>`, `<style>`, …) is
 rendered as escaped text so you can see it did not apply; HTML comments
-are dropped. Links and images belong in markdown syntax; `javascript:` /
-`data:` / `vbscript:` / `blob:` link targets are neutralised, and images
-accept `data:image/*` only. Markdown output (`-f markdown`) passes raw
-HTML through untouched — GitHub and Obsidian apply their own filters.
+are dropped. One exception: `<img>` with only a quoted `src` and an
+optional quoted `alt` is copied under the path jail and emitted as an
+`<img>` pointing at that copy (see [Prose figures](#prose-figures)). Any
+other attribute, including `onerror`, keeps the tag escaped. Links belong
+in markdown syntax; `javascript:` / `data:` / `vbscript:` / `blob:` link
+targets are neutralised, and images accept `data:image/*` inline.
+Markdown output (`-f markdown`) passes raw HTML through untouched —
+GitHub and Obsidian apply their own filters.
 
 #### Path jail for notebook code
 
 Notebook code may only read and write under its jail root: `load`,
 `save`, `savefig`, `saveanim`, `run`, `figure("….html")` and
 `![[embeds]]` that resolve outside it fail with
-`path escapes notebook directory`. The root is the notebook's own
+`path escapes notebook directory`. A prose image in HTML, `notebook watch`,
+or a PDF render is checked against the same root; a path outside it
+becomes a missing-figure placeholder and is not copied. The root is the notebook's own
 directory for a single-file render, the collection root when you render
 or watch a directory (so `ch2/lesson.md` may `load("../data/x.csv")`),
 or whatever `--jail-root <DIR>` names (an ancestor of the notebooks — a
@@ -1582,8 +1622,10 @@ Lookup order, for both `render` and `watch`:
 
 PDF and LaTeX output resolves the same links to the sibling `.pdf`
 files a directory PDF build emits (`filter_design.md` →
-`\href{filter_design.pdf}`), dropping `#anchor` fragments — PDFs have
-no named destinations for markdown headings.
+`\href{filter_design.pdf}`), dropping `#anchor` fragments — a sibling
+PDF does not share this page's anchors. A same-page `#heading` link is
+kept, and the heading emits `\hypertarget`, when that id exists on the
+page; otherwise the link text is printed without `\href`.
 
 The rewrite applies only to real links: code spans and fenced blocks are
 untouched (`` `[x](a.md)` `` renders literally), as are external URLs

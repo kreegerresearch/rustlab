@@ -70,7 +70,12 @@ on the watch origin can save; a page on another origin cannot.
   attribute, and every tag off the list (`<script>`, `<iframe>`,
   `<img>`, `<a>`, `<style>`, `<object>`, …), is rendered as escaped
   text. HTML comments are dropped. This applies to notebook prose,
-  callouts, and the directory `index.md` body alike.
+  callouts, and the directory `index.md` body alike. PDF / LaTeX is
+  separate: a markdown image, or a raw `<img>` whose only attributes
+  are a quoted `src` and an optional quoted `alt`, is copied into the
+  plot directory after the path jail check below and included with
+  `\includegraphics`. Extra attributes stay escaped text. Remote URLs
+  are not fetched.
 - Dangerous URL schemes (`javascript:`, `data:`, `vbscript:`, `blob:`)
   are stripped from links; images keep `data:image/*` only. The scheme
   test ignores ASCII whitespace and control characters, as browsers do.
@@ -102,7 +107,13 @@ passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`
 and `![[embed]]` must resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with
-`path escapes notebook directory`.
+`path escapes notebook directory`. Prose images in HTML, `notebook watch`,
+and PDF (`![alt](path)` and a safe raw `<img src alt>`) use the same
+check. A path outside the root is not copied, and the placeholder in the
+page does not repeat that path. Watch still serves only files under its
+plot tempdir (`GET /plots/…` rejects `..`). The page CSP is unchanged:
+`img-src 'self' data: blob:` and `script-src` with the per-process nonce
+plus `'strict-dynamic'`.
 
 The root is:
 

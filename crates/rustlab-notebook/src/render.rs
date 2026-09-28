@@ -2,7 +2,7 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::widget::{WidgetDecl, WidgetKind};
 use crate::NotebookNav;
-use pulldown_cmark::{html::push_html, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{html::push_html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
 use rustlab_plot::render_figure_plotly_div;
 use rustlab_plot::{NotebookAnimationFormat, ThemeColors};
@@ -386,7 +386,16 @@ pub fn render_html(
     nav: Option<&NotebookNav>,
     link: &LinkMode,
 ) -> String {
-    render_html_nonced(title, blocks, plot_dir, plot_href_prefix, theme, nav, link, None)
+    render_html_nonced(
+        title,
+        blocks,
+        plot_dir,
+        plot_href_prefix,
+        theme,
+        nav,
+        link,
+        None,
+    )
 }
 
 /// [`render_html`] with a Content-Security-Policy nonce stamped on every
@@ -408,6 +417,11 @@ pub fn render_html_nonced(
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
+    // Prose images are copied here and referenced by `href_prefix`, which
+    // is `plots/<stem>` for a static file and `/plots/<slug>` for watch.
+    // The browser resolves a bare `dot.png` against the page URL (`/n/<slug>`
+    // in watch), so the author's relative path would 404.
+    let mut prose_assets = crate::prose_media::ProseAssets::new(plot_dir, &href_prefix);
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
@@ -450,7 +464,7 @@ pub fn render_html_nonced(
                 let md = transform_wikilinks(md);
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
 
                 // Extract headings for nav and inject IDs
                 let html =
@@ -663,7 +677,7 @@ pub fn render_html_nonced(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let html = markdown_to_html_linked(&md, Some(link));
+                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -762,7 +776,7 @@ pub fn render_html_nonced(
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
     let c = theme;
-    format!(
+    let page = format!(
         r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1038,6 +1052,14 @@ document.addEventListener('click', (e) => {{
     background: {border};
     color: {accent_primary};
     font-weight: 600;
+  }}
+  .prose img, .callout img {{
+    max-width: 100%;
+    height: auto;
+  }}
+  .missing-figure {{
+    color: {text_dim};
+    font-style: italic;
   }}
   .prose ul, .prose ol {{
     margin: 0.5rem 0 1rem 1.5rem;
@@ -1365,7 +1387,8 @@ document.addEventListener('click', (e) => {{
         syn_string = c.css_var("syn-string"),
         syn_comment = c.css_var("syn-comment"),
         syn_operator = c.css_var("syn-operator"),
-    )
+    );
+    page
 }
 
 /// Pixel height for the `.plot-container` so that stacked subplots are not
@@ -1448,7 +1471,7 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
-    markdown_to_html_linked(md, None)
+    markdown_to_html_linked(md, None, None)
 }
 
 /// [`markdown_to_html`] with cross-notebook link resolution.
@@ -1456,12 +1479,25 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 /// Destinations are rewritten on `Event::Start(Tag::Link)` — after the
 /// parser has resolved reference-style definitions and separated titles,
 /// and only for real links: text, code spans, and fenced blocks never
-/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Images
-/// (`Tag::Image`) are deliberately untouched — `.md` is not an image
-/// format, and embeds were already expanded upstream.
-pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
+/// produce link events, so `` `[x](a.md)` `` stays byte-identical.
+///
+/// When `assets` is set, markdown images and a safe raw `<img src alt>`
+/// are copied into the plot directory and the emitted `src` is that copy.
+pub(crate) fn markdown_to_html_linked(
+    md: &str,
+    link: Option<&LinkMode>,
+    mut assets: Option<&mut crate::prose_media::ProseAssets<'_>>,
+) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
+    if let Some(assets) = assets.as_mut() {
+        for ev in events.iter_mut() {
+            if let Event::Html(s) | Event::InlineHtml(s) = ev {
+                let rewritten = assets.stash_safe_imgs(s);
+                *s = rewritten.into();
+            }
+        }
+    }
     // Security: raw HTML from notebook markdown goes through the allow-list
     // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
     sanitize_raw_html_events(&mut events);
@@ -1469,9 +1505,46 @@ pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> Stri
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
+    let events = if let Some(assets) = assets.as_mut() {
+        rewrite_prose_images(events, assets)
+    } else {
+        events
+    };
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
-    restore_math(&html, &math)
+    let html = restore_math(&html, &math);
+    if let Some(assets) = assets.as_ref() {
+        assets.restore_stashed(&html)
+    } else {
+        html
+    }
+}
+
+/// Turn markdown image events into a placed `<img>` (or a placeholder).
+fn rewrite_prose_images<'b>(
+    events: Vec<Event<'b>>,
+    assets: &mut crate::prose_media::ProseAssets<'_>,
+) -> Vec<Event<'b>> {
+    let mut out = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(ev) = iter.next() {
+        match ev {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                let src = dest_url.into_string();
+                let mut alt = String::new();
+                for inner in iter.by_ref() {
+                    match inner {
+                        Event::End(TagEnd::Image) => break,
+                        Event::Text(t) | Event::Code(t) => alt.push_str(&t),
+                        _ => {}
+                    }
+                }
+                out.push(Event::Html(assets.html_for(&src, &alt).into()));
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
@@ -1626,7 +1699,7 @@ pub(crate) fn sanitize_dangerous_urls(events: &mut [Event<'_>]) {
 
 /// `data:image/...` — safe as an `<img src>` (browsers never execute
 /// script from an image, SVG included).
-fn is_data_image_url(url: &str) -> bool {
+pub(crate) fn is_data_image_url(url: &str) -> bool {
     scheme_normalised(url).starts_with("data:image/")
 }
 
@@ -1664,10 +1737,7 @@ pub(crate) fn is_dangerous_url(url: &str) -> bool {
         .chars()
         .take_while(|c| *c != ':' && *c != '/' && *c != '?' && *c != '#')
         .collect();
-    matches!(
-        scheme.as_str(),
-        "javascript" | "data" | "vbscript" | "blob"
-    ) && cleaned.contains(':')
+    matches!(scheme.as_str(), "javascript" | "data" | "vbscript" | "blob") && cleaned.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1770,6 +1840,131 @@ fn build_footer_nav(nav: &NotebookNav) -> String {
 /// prose block with more than one heading (the common case: contiguous
 /// prose between code fences is a single block) got a sidebar whose order
 /// and implied nesting contradicted the page.
+
+/// Pick the anchor id for one heading.
+///
+/// An explicit id wins and is recorded in `used` (h1–h3 only — callers
+/// that walk h4–h6 must not pass those through here). Otherwise the id is
+/// [`slugify_heading`] of `plain`, then positional `heading-N` when that
+/// slug is empty, then a `-n` suffix when the id is already taken.
+pub(crate) fn assign_heading_id(
+    explicit: Option<&str>,
+    plain: &str,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) -> String {
+    if let Some(existing) = explicit {
+        let id = existing.to_string();
+        used.insert(id.clone());
+        return id;
+    }
+    let base = slugify_heading(plain);
+    let id = if base.is_empty() {
+        *empty_idx += 1;
+        format!("heading-{empty_idx}")
+    } else {
+        base
+    };
+    let id = if used.contains(&id) {
+        let mut n = 1;
+        loop {
+            let cand = format!("{id}-{n}");
+            if !used.contains(&cand) {
+                break cand;
+            }
+            n += 1;
+        }
+    } else {
+        id
+    };
+    used.insert(id.clone());
+    id
+}
+
+/// Anchor id a LaTeX heading should emit, if any.
+///
+/// h1–h3 always get an id when the heading has text, code, or math (or an
+/// explicit id). h4–h6 get one only when the author wrote `{#id}`, and
+/// that id does not occupy the generated-slug dedup set — HTML inject only
+/// walks h1–h3, and `check` treats generated h4–h6 anchors as missing.
+pub(crate) fn heading_anchor(
+    level: HeadingLevel,
+    explicit: Option<&str>,
+    plain: &str,
+    saw: bool,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) -> Option<String> {
+    let tracked = matches!(
+        level,
+        HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3
+    );
+    if let Some(id) = explicit {
+        if tracked {
+            return Some(assign_heading_id(Some(id), plain, used, empty_idx));
+        }
+        return Some(id.to_string());
+    }
+    if !tracked || !saw {
+        return None;
+    }
+    Some(assign_heading_id(None, plain, used, empty_idx))
+}
+
+/// Record every heading anchor `md` will emit, in document order.
+///
+/// `used` / `empty_idx` carry dedup state across blocks so the second
+/// `## Setup` on a later block is `setup-1`, matching [`inject_heading_ids`].
+/// Math source is omitted from the slug (HTML strips `\(…\)` before
+/// slugging). Wikilinks are expanded first so `[[#Heading]]` is a link,
+/// not heading text.
+pub(crate) fn collect_prose_anchors(
+    md: &str,
+    anchors: &mut HashSet<String>,
+    used: &mut HashSet<String>,
+    empty_idx: &mut usize,
+) {
+    let md = transform_wikilinks(md);
+    let mut opts = notebook_md_options();
+    opts.insert(Options::ENABLE_MATH);
+    let events = parse_single_tilde_safe(&md, opts);
+    let mut heading: Option<(HeadingLevel, Option<String>, String, bool)> = None;
+    for event in events {
+        match event {
+            Event::Start(Tag::Heading { level, id, .. }) => {
+                heading = Some((level, id.map(|s| s.to_string()), String::new(), false));
+            }
+            Event::End(TagEnd::Heading(_)) => {
+                if let Some((level, explicit, plain, saw)) = heading.take() {
+                    if let Some(id) =
+                        heading_anchor(level, explicit.as_deref(), &plain, saw, used, empty_idx)
+                    {
+                        anchors.insert(id);
+                    }
+                }
+            }
+            Event::Text(t) | Event::Code(t) => {
+                if let Some((_, _, plain, saw)) = heading.as_mut() {
+                    plain.push_str(&t);
+                    *saw = true;
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, _, plain, saw)) = heading.as_mut() {
+                    plain.push(' ');
+                    *saw = true;
+                }
+            }
+            Event::InlineMath(_) | Event::DisplayMath(_) => {
+                if let Some((_, _, _, saw)) = heading.as_mut() {
+                    *saw = true;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn inject_heading_ids(
     html: &str,
     nav: &mut String,
@@ -1849,42 +2044,16 @@ fn inject_heading_ids(
             // An explicit `{#anchor}` already produced an id, and other
             // pages may link to it — keep it and point the TOC there
             // rather than overwriting someone's stable anchor.
-            let (id, new_open) = match existing_id(&open_tag) {
-                Some(existing) => {
-                    used.insert(existing.clone());
-                    (existing, open_tag.clone())
-                }
-                None => {
-                    let base = slugify_heading(&clean);
-                    let id = if base.is_empty() {
-                        // Math-only / punctuation-only label: positional
-                        // fallback (still deduped — an explicit
-                        // `{#heading-3}` could exist).
-                        *idx += 1;
-                        format!("heading-{idx}")
-                    } else {
-                        base
-                    };
-                    // GitHub-style dedup: second `## Setup` → `setup-1`.
-                    let id = if used.contains(&id) {
-                        let mut n = 1;
-                        loop {
-                            let cand = format!("{id}-{n}");
-                            if !used.contains(&cand) {
-                                break cand;
-                            }
-                            n += 1;
-                        }
-                    } else {
-                        id
-                    };
-                    used.insert(id.clone());
-                    let inner = open_tag
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_string();
-                    (id.clone(), format!("<{inner} id=\"{id}\">"))
-                }
+            let explicit = existing_id(&open_tag);
+            let id = assign_heading_id(explicit.as_deref(), &clean, used, idx);
+            let new_open = if explicit.is_some() {
+                open_tag.clone()
+            } else {
+                let inner = open_tag
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .to_string();
+                format!("<{inner} id=\"{id}\">")
             };
             let delta = new_open.len() as isize - open_len as isize;
             result.replace_range(abs_open..abs_open + open_len, &new_open);
@@ -2152,7 +2321,8 @@ pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> Strin
     while let Some(start) = rest.find("<script") {
         let after = &rest[start + "<script".len()..];
         // `<scripts>` or `<scriptx` is not a script tag.
-        let is_tag = after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
+        let is_tag =
+            after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
         if !is_tag {
             out.push_str(&rest[..start + "<script".len()]);
             rest = after;
@@ -2221,6 +2391,8 @@ fn highlight_rustlab(source: &str) -> String {
 /// - `[[Foo|Bar]]`          → `[Bar](Foo.md)`
 /// - `[[Foo#Section]]`      → `[Foo § Section](Foo.md#section)`
 /// - `[[Foo#Section|Bar]]`  → `[Bar](Foo.md#section)`
+/// - `[[#Heading]]`         → `[Heading](#heading)` (same page; the
+///   fragment is [`slugify_heading`], the same slug the heading gets)
 /// - `![[image.png]]`       → `![](image.png)`
 /// - `![[image.png|alt]]`   → `![alt](image.png)`
 ///
@@ -2324,16 +2496,21 @@ fn render_wikilink(inner: &str) -> String {
         Some((p, a)) => (p.trim(), Some(a.trim())),
         None => (target, None),
     };
-    let dest = if path_has_extension(path) {
+    // `[[#Heading]]` is a same-page link. An empty path must not become
+    // the file `.md`.
+    let dest = if path.is_empty() {
+        String::new()
+    } else if path_has_extension(path) {
         path.to_string()
     } else {
         format!("{path}.md")
     };
     let anchor_url = anchor
-        .map(|a| format!("#{}", slugify(a)))
+        .map(|a| format!("#{}", slugify_heading(a)))
         .unwrap_or_default();
     let text = match (alias, anchor) {
         (Some(a), _) => a.to_string(),
+        (None, Some(a)) if path.is_empty() => a.to_string(),
         (None, Some(a)) => format!("{path} § {a}"),
         (None, None) => path.to_string(),
     };
@@ -2355,29 +2532,6 @@ fn render_embed(inner: &str) -> String {
 fn path_has_extension(path: &str) -> bool {
     let tail = path.rsplit('/').next().unwrap_or(path);
     tail.contains('.')
-}
-
-/// Lowercase + replace runs of non-alphanumerics with `-`. Matches how
-/// pulldown-cmark / GitHub generate heading anchors so `[[Foo#My Section]]`
-/// resolves to the same `#my-section` the heading produces.
-fn slugify(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut last_was_dash = false;
-    for c in s.chars() {
-        if c.is_alphanumeric() {
-            for lc in c.to_lowercase() {
-                out.push(lc);
-            }
-            last_was_dash = false;
-        } else if !last_was_dash && !out.is_empty() {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
 }
 
 // ── Math protection ─────────────────────────────────────────────────────────
@@ -3381,11 +3535,17 @@ mod tests {
     fn highlight_transpose_after_paren_and_bracket() {
         for src in ["v(2:5)'", "[1, 2, 3]'"] {
             let out = highlight_rustlab(src);
-            assert!(out.ends_with("<span class=\"syn-op\">'</span>"), "{src}: {out}");
+            assert!(
+                out.ends_with("<span class=\"syn-op\">'</span>"),
+                "{src}: {out}"
+            );
             assert!(!out.contains("syn-str"), "{src}: {out}");
         }
         let out = highlight_rustlab("y = [1, 2]'; % note");
-        assert!(out.contains("<span class=\"syn-com\">% note</span>"), "{out}");
+        assert!(
+            out.contains("<span class=\"syn-com\">% note</span>"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -3460,6 +3620,46 @@ mod tests {
     }
 
     // ── render_html (integration) ──
+
+    #[test]
+    fn static_html_copies_prose_image_beside_the_page() {
+        let src_dir = tempfile::tempdir().unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(src_dir.path().join("dot.png"), crate::prose_media::TINY_PNG).unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"outside").unwrap();
+        let secret = outside.path().canonicalize().unwrap().join("secret.png");
+        let src = src_dir.path().join("repro.md");
+        std::fs::write(
+            &src,
+            format!(
+                "# T\n\n![Scope diagram](dot.png)\n\n<img src=\"dot.png\" alt=\"Raw scope\">\n\n<img src=\"dot.png\" onerror=\"alert(1)\">\n\n![nope]({})\n",
+                secret.display()
+            ),
+        )
+        .unwrap();
+        let out = out_dir.path().join("repro.html");
+        crate::cmd_render(
+            src,
+            Some(out.clone()),
+            crate::Format::Html,
+            Theme::Dark.colors(),
+        )
+        .unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(html.contains("src=\"plots/repro/prose-1.png\""), "{html}");
+        assert!(html.contains("alt=\"Raw scope\""), "{html}");
+        // The handler is escaped text, not an attribute the browser runs.
+        assert!(html.contains("onerror=&quot;alert(1)&quot;"), "{html}");
+        assert!(!html.contains("onerror=\""), "{html}");
+        assert!(!html.contains("src=\"dot.png\""), "{html}");
+        assert!(!html.contains("secret.png"), "{html}");
+        assert_eq!(
+            std::fs::read(out_dir.path().join("plots/repro/prose-1.png")).unwrap(),
+            crate::prose_media::TINY_PNG
+        );
+        assert!(!out_dir.path().join("plots/repro/prose-3.png").exists());
+    }
 
     #[test]
     fn render_html_basic_structure() {
@@ -3542,10 +3742,7 @@ mod tests {
         // unchanged if :root vars are stripped).
         assert!(html.contains(&format!("background: {}", mocha.css_var("bg"))));
         assert!(html.contains(&format!("color: {}", mocha.css_var("text"))));
-        assert!(html.contains(&format!(
-            "color: {}",
-            mocha.css_var("accent-secondary")
-        )));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("accent-secondary"))));
         assert!(html.contains(&format!("color: {}", mocha.css_var("syn-keyword"))));
 
         let latte = Theme::Latte.colors();
@@ -3612,21 +3809,14 @@ mod tests {
             if c.is_dark() {
                 let u = rustlab_plot::contrast_ratio(c.accent_secondary, c.bg).unwrap_or(0.0);
                 let v = rustlab_plot::contrast_ratio(c.accent_primary, c.bg).unwrap_or(0.0);
-                assert!(
-                    u >= 4.5,
-                    "{name} accent_secondary contrast {u:.2} < 4.5"
-                );
-                assert!(
-                    v >= 4.5,
-                    "{name} accent_primary contrast {v:.2} < 4.5"
-                );
+                assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
+                assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
             }
         }
         // Aliases resolve.
         assert!(builtin_theme_names().contains(&"dark"));
         assert!(builtin_theme_names().contains(&"mocha"));
     }
-
 
     // ── Phase 3: stable block-id wrapping ──
 
@@ -5025,7 +5215,10 @@ w = 4
         );
         // The script tag is escaped exactly once — readers see `<script>` as
         // text, not `&lt;script&gt;`.
-        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "{html}"
+        );
         assert!(!html.contains("&amp;lt;"), "double-escaped: {html}");
         // Attribute-free formatting tags are allowed through.
         assert!(html.contains("hello <b>x</b>"), "{html}");
@@ -5038,14 +5231,20 @@ w = 4
             sanitize_html_fragment("<details><summary>More</summary>hidden</details>"),
             "<details><summary>More</summary>hidden</details>"
         );
-        assert_eq!(sanitize_html_fragment("a<br>b<BR/>c<br />d"), "a<br>b<BR/>c<br />d");
+        assert_eq!(
+            sanitize_html_fragment("a<br>b<BR/>c<br />d"),
+            "a<br>b<BR/>c<br />d"
+        );
         assert_eq!(sanitize_html_fragment("x<sub>2</sub>"), "x<sub>2</sub>");
         // Any attribute turns the tag into text.
         assert_eq!(
             sanitize_html_fragment("<b onclick=\"x()\">y</b>"),
             "&lt;b onclick=&quot;x()&quot;&gt;y</b>"
         );
-        assert_eq!(sanitize_html_fragment("<details open>"), "&lt;details open&gt;");
+        assert_eq!(
+            sanitize_html_fragment("<details open>"),
+            "&lt;details open&gt;"
+        );
         // Tags off the list are text, even without attributes.
         assert_eq!(
             sanitize_html_fragment("<script>alert(1)</script>"),
@@ -5056,12 +5255,17 @@ w = 4
         // Comments vanish; stray brackets and text are escaped.
         assert_eq!(sanitize_html_fragment("a <!-- note --> b"), "a  b");
         assert_eq!(sanitize_html_fragment("<!-- unterminated"), "");
-        assert_eq!(sanitize_html_fragment("1 < 2 & 3 > 2"), "1 &lt; 2 &amp; 3 &gt; 2");
+        assert_eq!(
+            sanitize_html_fragment("1 < 2 & 3 > 2"),
+            "1 &lt; 2 &amp; 3 &gt; 2"
+        );
     }
 
     #[test]
     fn markdown_drops_html_comments() {
-        let html = markdown_to_html("before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail");
+        let html = markdown_to_html(
+            "before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail",
+        );
         assert!(!html.contains("author note"), "{html}");
         assert!(!html.contains("block comment"), "{html}");
         assert!(html.contains("before") && html.contains("after") && html.contains("tail"));
@@ -5077,7 +5281,10 @@ w = 4
     #[test]
     fn markdown_keeps_data_image_src_but_not_data_links() {
         let html = markdown_to_html("![t](data:image/gif;base64,R0lGODlhAQABAAAAACw=)");
-        assert!(html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""), "{html}");
+        assert!(
+            html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""),
+            "{html}"
+        );
         let html = markdown_to_html("![t](data:text/html,<script>1</script>)");
         assert!(html.contains("src=\"\""), "{html}");
         let html = markdown_to_html("[t](data:image/svg+xml,x)");
@@ -5103,7 +5310,10 @@ w = 4
         let frag = "<div id=\"p\">→ ∇·E — π</div>\n<script>Plotly.newPlot('p', []);</script>\n<script type=\"text/plain\">x</script>";
         let out = add_nonce_to_scripts(frag, Some("abc123"));
         assert!(out.contains("<script nonce=\"abc123\">Plotly"), "{out}");
-        assert!(out.contains("<script nonce=\"abc123\" type=\"text/plain\">"), "{out}");
+        assert!(
+            out.contains("<script nonce=\"abc123\" type=\"text/plain\">"),
+            "{out}"
+        );
         assert!(out.contains("→ ∇·E — π"), "utf-8 mangled: {out}");
         // No nonce → byte-identical.
         assert_eq!(add_nonce_to_scripts(frag, None), frag);
@@ -5126,10 +5336,22 @@ w = 4
             None,
             &LinkMode::single_file(),
         );
-        assert!(!html.contains("onload="), "inline onload survives CSP-incompatible: {html:.400}");
-        assert!(!html.contains("onclick="), "inline onclick survives: {html:.400}");
-        assert!(html.contains("DOMContentLoaded"), "KaTeX init script missing");
-        assert!(html.contains("button.nav-toggle"), "sidebar toggle wiring missing");
+        assert!(
+            !html.contains("onload="),
+            "inline onload survives CSP-incompatible: {html:.400}"
+        );
+        assert!(
+            !html.contains("onclick="),
+            "inline onclick survives: {html:.400}"
+        );
+        assert!(
+            html.contains("DOMContentLoaded"),
+            "KaTeX init script missing"
+        );
+        assert!(
+            html.contains("button.nav-toggle"),
+            "sidebar toggle wiring missing"
+        );
         // Static output carries no nonce attributes.
         assert!(!html.contains("nonce="), "{html:.400}");
     }
@@ -5146,13 +5368,19 @@ w = 4
             &LinkMode::single_file(),
             Some("deadbeef"),
         );
-        let tags: Vec<&str> = html.match_indices("<script").map(|(i, _)| {
-            let end = html[i..].find('>').unwrap();
-            &html[i..i + end + 1]
-        }).collect();
+        let tags: Vec<&str> = html
+            .match_indices("<script")
+            .map(|(i, _)| {
+                let end = html[i..].find('>').unwrap();
+                &html[i..i + end + 1]
+            })
+            .collect();
         assert!(tags.len() >= 4, "expected head scripts: {tags:?}");
         for t in &tags {
-            assert!(t.contains("nonce=\"deadbeef\""), "unnonced renderer script: {t}");
+            assert!(
+                t.contains("nonce=\"deadbeef\""),
+                "unnonced renderer script: {t}"
+            );
         }
     }
 
@@ -6070,11 +6298,21 @@ w = 4
     }
 
     #[test]
-    fn slugify_matches_github_anchor_style() {
-        assert_eq!(slugify("Hello World"), "hello-world");
-        assert_eq!(slugify("Already-dashed"), "already-dashed");
-        assert_eq!(slugify("with punctuation!?"), "with-punctuation");
-        assert_eq!(slugify("multi   spaces"), "multi-spaces");
+    fn wikilink_anchor_uses_heading_slug() {
+        // Same slug `slugify_heading` gives the heading, including a
+        // doubled dash where punctuation was dropped and a kept `_`.
+        assert_eq!(
+            transform_wikilinks("[[Note#Structure & Selection]]"),
+            "[Note § Structure & Selection](Note.md#structure--selection)"
+        );
+        assert_eq!(
+            transform_wikilinks("[[Note#under_score]]"),
+            "[Note § under_score](Note.md#under_score)"
+        );
+        assert_eq!(
+            transform_wikilinks("[[#A captured trace]]"),
+            "[A captured trace](#a-captured-trace)"
+        );
     }
 
     #[test]
