@@ -1200,7 +1200,6 @@ pub(crate) fn read_and_render_index_md(
     render::rewrite_link_events(&mut events, link);
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
-    let html = prose_media::wrap_scroll_tables(&html);
     Some((html, Some(title)))
 }
 

@@ -386,7 +386,16 @@ pub fn render_html(
     nav: Option<&NotebookNav>,
     link: &LinkMode,
 ) -> String {
-    render_html_nonced(title, blocks, plot_dir, plot_href_prefix, theme, nav, link, None)
+    render_html_nonced(
+        title,
+        blocks,
+        plot_dir,
+        plot_href_prefix,
+        theme,
+        nav,
+        link,
+        None,
+    )
 }
 
 /// [`render_html`] with a Content-Security-Policy nonce stamped on every
@@ -408,7 +417,6 @@ pub fn render_html_nonced(
 ) -> String {
     let _ = std::fs::create_dir_all(plot_dir);
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
-    let mut prose_assets = crate::prose_media::ProseAssets::new(plot_dir, &href_prefix);
     let mut nav_items = String::new();
     let mut body = String::new();
     let mut heading_idx = 0;
@@ -451,7 +459,7 @@ pub fn render_html_nonced(
                 let md = transform_wikilinks(md);
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
-                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
+                let html = markdown_to_html_linked(&md, Some(link));
 
                 // Extract headings for nav and inject IDs
                 let html =
@@ -664,9 +672,7 @@ pub fn render_html_nonced(
                     escape_html(label)
                 ));
                 let md = transform_wikilinks(content);
-                let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
-                let html =
-                    inject_heading_ids(&html, &mut nav_items, &mut heading_idx, &mut heading_ids);
+                let html = markdown_to_html_linked(&md, Some(link));
                 body.push_str(&html);
                 body.push_str("</div>\n");
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
@@ -1042,35 +1048,6 @@ document.addEventListener('click', (e) => {{
     color: {accent_primary};
     font-weight: 600;
   }}
-  .table-scroll {{
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    overflow-x: auto;
-    margin: 1rem 0;
-  }}
-  .table-scroll > table {{
-    margin: 0;
-  }}
-  .prose th, .prose td, .callout th, .callout td, .exercise th, .exercise td {{
-    overflow-wrap: anywhere;
-  }}
-  .prose img, .callout img, .exercise img, figure.prose-figure img {{
-    max-width: 100%;
-    height: auto;
-  }}
-  figure.prose-figure {{
-    margin: 1rem 0;
-  }}
-  figure.prose-figure figcaption {{
-    color: {text_dim};
-    font-size: 0.9rem;
-    margin-top: 0.35rem;
-  }}
-  .missing-figure {{
-    color: {text_dim};
-    font-style: italic;
-  }}
   .prose ul, .prose ol {{
     margin: 0.5rem 0 1rem 1.5rem;
   }}
@@ -1398,7 +1375,7 @@ document.addEventListener('click', (e) => {{
         syn_comment = c.css_var("syn-comment"),
         syn_operator = c.css_var("syn-operator"),
     );
-    crate::prose_media::drop_dangling_fragment_links(&page)
+    page
 }
 
 /// Pixel height for the `.plot-container` so that stacked subplots are not
@@ -1481,7 +1458,7 @@ pub(crate) fn parse_single_tilde_safe<'a>(md: &'a str, opts: Options) -> Vec<Eve
 /// is demoted to literal text, and math is restored with the currency-safe
 /// `\(…\)` / `\[…\]` delimiters.
 pub(crate) fn markdown_to_html(md: &str) -> String {
-    markdown_to_html_linked(md, None, None)
+    markdown_to_html_linked(md, None)
 }
 
 /// [`markdown_to_html`] with cross-notebook link resolution.
@@ -1489,30 +1466,10 @@ pub(crate) fn markdown_to_html(md: &str) -> String {
 /// Destinations are rewritten on `Event::Start(Tag::Link)` — after the
 /// parser has resolved reference-style definitions and separated titles,
 /// and only for real links: text, code spans, and fenced blocks never
-/// produce link events, so `` `[x](a.md)` `` stays byte-identical. Markdown
-/// images are copied into the plot directory when `assets` is set.
-/// `.md` is not an image format, and file embeds were already expanded
-/// upstream.
-pub(crate) fn markdown_to_html_linked(
-    md: &str,
-    link: Option<&LinkMode>,
-    mut assets: Option<&mut crate::prose_media::ProseAssets<'_>>,
-) -> String {
+/// produce link events, so `` `[x](a.md)` `` stays byte-identical.
+pub(crate) fn markdown_to_html_linked(md: &str, link: Option<&LinkMode>) -> String {
     let (protected, math) = protect_math(md);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
-    // Safe `<img src alt>` is stashed BEFORE the sanitiser, which escapes
-    // every tag that carries an attribute. The placeholder has no `<`.
-    if let Some(assets) = assets.as_mut() {
-        for ev in events.iter_mut() {
-            match ev {
-                Event::Html(s) | Event::InlineHtml(s) => {
-                    let rewritten = assets.stash_safe_imgs(s);
-                    *s = rewritten.into();
-                }
-                _ => {}
-            }
-        }
-    }
     // Security: raw HTML from notebook markdown goes through the allow-list
     // sanitizer (XSS on watch); dangerous URL schemes are neutralised.
     sanitize_raw_html_events(&mut events);
@@ -1520,21 +1477,9 @@ pub(crate) fn markdown_to_html_linked(
     if let Some(mode) = link {
         rewrite_link_events(&mut events, mode);
     }
-    let events = if let Some(assets) = assets.as_mut() {
-        crate::prose_media::rewrite_markdown_images(events, assets)
-    } else {
-        events
-    };
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
-    let html = restore_math(&html, &math);
-    let html = if let Some(assets) = assets.as_mut() {
-        assets.restore_stashed(&html)
-    } else {
-        html
-    };
-    let html = crate::prose_media::unwrap_paragraph_figures(&html);
-    crate::prose_media::wrap_scroll_tables(&html)
+    restore_math(&html, &math)
 }
 
 /// Run every raw HTML / inline HTML event through [`sanitize_html_fragment`]
@@ -1727,10 +1672,7 @@ pub(crate) fn is_dangerous_url(url: &str) -> bool {
         .chars()
         .take_while(|c| *c != ':' && *c != '/' && *c != '?' && *c != '#')
         .collect();
-    matches!(
-        scheme.as_str(),
-        "javascript" | "data" | "vbscript" | "blob"
-    ) && cleaned.contains(':')
+    matches!(scheme.as_str(), "javascript" | "data" | "vbscript" | "blob") && cleaned.contains(':')
 }
 
 /// Render a Mermaid block into the HTML body. Inline SVG on success;
@@ -1929,14 +1871,9 @@ pub(crate) fn collect_prose_anchors(
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some((level, explicit, plain, saw)) = heading.take() {
-                    if let Some(id) = heading_anchor(
-                        level,
-                        explicit.as_deref(),
-                        &plain,
-                        saw,
-                        used,
-                        empty_idx,
-                    ) {
+                    if let Some(id) =
+                        heading_anchor(level, explicit.as_deref(), &plain, saw, used, empty_idx)
+                    {
                         anchors.insert(id);
                     }
                 }
@@ -2319,7 +2256,8 @@ pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> Strin
     while let Some(start) = rest.find("<script") {
         let after = &rest[start + "<script".len()..];
         // `<scripts>` or `<scriptx` is not a script tag.
-        let is_tag = after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
+        let is_tag =
+            after.is_empty() || after.starts_with('>') || after.starts_with(char::is_whitespace);
         if !is_tag {
             out.push_str(&rest[..start + "<script".len()]);
             rest = after;
@@ -2981,23 +2919,6 @@ mod tests {
         Theme::Dark.colors()
     }
 
-    /// Every pure `#fragment` href in rendered HTML names an `id` on the page.
-    fn assert_fragment_hrefs_have_ids(html: &str) {
-        let mut rest = html;
-        while let Some(rel) = rest.find("href=\"#") {
-            rest = &rest[rel + 7..];
-            let end = rest.find('"').unwrap_or(rest.len());
-            let frag = percent_decode(&rest[..end]).replace("&amp;", "&");
-            if !frag.is_empty() {
-                assert!(
-                    html.contains(&format!("id=\"{frag}\"")),
-                    "href=\"#{frag}\" has no matching id"
-                );
-            }
-            rest = &rest[end..];
-        }
-    }
-
     // ── escape_html ──
 
     #[test]
@@ -3549,11 +3470,17 @@ mod tests {
     fn highlight_transpose_after_paren_and_bracket() {
         for src in ["v(2:5)'", "[1, 2, 3]'"] {
             let out = highlight_rustlab(src);
-            assert!(out.ends_with("<span class=\"syn-op\">'</span>"), "{src}: {out}");
+            assert!(
+                out.ends_with("<span class=\"syn-op\">'</span>"),
+                "{src}: {out}"
+            );
             assert!(!out.contains("syn-str"), "{src}: {out}");
         }
         let out = highlight_rustlab("y = [1, 2]'; % note");
-        assert!(out.contains("<span class=\"syn-com\">% note</span>"), "{out}");
+        assert!(
+            out.contains("<span class=\"syn-com\">% note</span>"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -3648,60 +3575,6 @@ mod tests {
     }
 
     #[test]
-    fn render_html_prose_figures_tables_and_link_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let plots = dir.path().join("plots").join("repro");
-        std::fs::create_dir_all(&plots).unwrap();
-        let img = dir.path().join("dot.png");
-        std::fs::write(&img, crate::prose_media::TINY_PNG).unwrap();
-        let _jail = crate::execute::JailRootGuard::new(Some(dir.path().to_path_buf()));
-        let md = include_str!("../tests/fixtures/prose_media/repro.md")
-            .replace("dot.png", &img.display().to_string());
-        let blocks = vec![
-            Rendered::Markdown(md),
-            Rendered::Callout {
-                kind: CalloutKind::Note,
-                title: None,
-                content: "## Inside the note\n\n[back](#inside-the-note)\n".to_string(),
-            },
-        ];
-        let html = render_html(
-            "Repro",
-            &blocks,
-            &plots,
-            "plots/repro",
-            test_theme(),
-            None,
-            &LinkMode::single_file(),
-        );
-        assert!(plots.join("prose-1.png").is_file(), "markdown image copied");
-        assert!(plots.join("prose-2.png").is_file(), "raw img copied");
-        assert!(
-            html.contains("plots/repro/prose-1.png"),
-            "copied image src missing: {html}"
-        );
-        assert!(html.contains("<figcaption>Scope diagram</figcaption>"), "{html}");
-        assert!(html.contains("alt=\"Raw scope\""), "{html}");
-        assert!(
-            !html.contains("onerror=\""),
-            "unsafe img handler survived: {html}"
-        );
-        assert!(html.contains("class=\"table-scroll\""), "{html}");
-        for id in ["a-captured-trace", "regime--limits", "inside-the-note"] {
-            assert!(
-                html.contains(&format!("id=\"{id}\"")),
-                "missing id {id}: {html}"
-            );
-        }
-        assert!(
-            !html.contains("#not-a-heading"),
-            "dangling fragment kept: {html}"
-        );
-        assert!(html.contains("missing section"), "{html}");
-        assert_fragment_hrefs_have_ids(&html);
-    }
-
-    #[test]
     fn render_html_styles_prose_links_and_sets_color_scheme() {
         let dark = Theme::Dark.colors();
         let html = render_html(
@@ -3764,10 +3637,7 @@ mod tests {
         // unchanged if :root vars are stripped).
         assert!(html.contains(&format!("background: {}", mocha.css_var("bg"))));
         assert!(html.contains(&format!("color: {}", mocha.css_var("text"))));
-        assert!(html.contains(&format!(
-            "color: {}",
-            mocha.css_var("accent-secondary")
-        )));
+        assert!(html.contains(&format!("color: {}", mocha.css_var("accent-secondary"))));
         assert!(html.contains(&format!("color: {}", mocha.css_var("syn-keyword"))));
 
         let latte = Theme::Latte.colors();
@@ -3834,21 +3704,14 @@ mod tests {
             if c.is_dark() {
                 let u = rustlab_plot::contrast_ratio(c.accent_secondary, c.bg).unwrap_or(0.0);
                 let v = rustlab_plot::contrast_ratio(c.accent_primary, c.bg).unwrap_or(0.0);
-                assert!(
-                    u >= 4.5,
-                    "{name} accent_secondary contrast {u:.2} < 4.5"
-                );
-                assert!(
-                    v >= 4.5,
-                    "{name} accent_primary contrast {v:.2} < 4.5"
-                );
+                assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
+                assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
             }
         }
         // Aliases resolve.
         assert!(builtin_theme_names().contains(&"dark"));
         assert!(builtin_theme_names().contains(&"mocha"));
     }
-
 
     // ── Phase 3: stable block-id wrapping ──
 
@@ -5247,7 +5110,10 @@ w = 4
         );
         // The script tag is escaped exactly once — readers see `<script>` as
         // text, not `&lt;script&gt;`.
-        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "{html}"
+        );
         assert!(!html.contains("&amp;lt;"), "double-escaped: {html}");
         // Attribute-free formatting tags are allowed through.
         assert!(html.contains("hello <b>x</b>"), "{html}");
@@ -5260,14 +5126,20 @@ w = 4
             sanitize_html_fragment("<details><summary>More</summary>hidden</details>"),
             "<details><summary>More</summary>hidden</details>"
         );
-        assert_eq!(sanitize_html_fragment("a<br>b<BR/>c<br />d"), "a<br>b<BR/>c<br />d");
+        assert_eq!(
+            sanitize_html_fragment("a<br>b<BR/>c<br />d"),
+            "a<br>b<BR/>c<br />d"
+        );
         assert_eq!(sanitize_html_fragment("x<sub>2</sub>"), "x<sub>2</sub>");
         // Any attribute turns the tag into text.
         assert_eq!(
             sanitize_html_fragment("<b onclick=\"x()\">y</b>"),
             "&lt;b onclick=&quot;x()&quot;&gt;y</b>"
         );
-        assert_eq!(sanitize_html_fragment("<details open>"), "&lt;details open&gt;");
+        assert_eq!(
+            sanitize_html_fragment("<details open>"),
+            "&lt;details open&gt;"
+        );
         // Tags off the list are text, even without attributes.
         assert_eq!(
             sanitize_html_fragment("<script>alert(1)</script>"),
@@ -5278,12 +5150,17 @@ w = 4
         // Comments vanish; stray brackets and text are escaped.
         assert_eq!(sanitize_html_fragment("a <!-- note --> b"), "a  b");
         assert_eq!(sanitize_html_fragment("<!-- unterminated"), "");
-        assert_eq!(sanitize_html_fragment("1 < 2 & 3 > 2"), "1 &lt; 2 &amp; 3 &gt; 2");
+        assert_eq!(
+            sanitize_html_fragment("1 < 2 & 3 > 2"),
+            "1 &lt; 2 &amp; 3 &gt; 2"
+        );
     }
 
     #[test]
     fn markdown_drops_html_comments() {
-        let html = markdown_to_html("before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail");
+        let html = markdown_to_html(
+            "before <!-- an author note --> after\n\n<!-- block comment -->\n\ntail",
+        );
         assert!(!html.contains("author note"), "{html}");
         assert!(!html.contains("block comment"), "{html}");
         assert!(html.contains("before") && html.contains("after") && html.contains("tail"));
@@ -5299,7 +5176,10 @@ w = 4
     #[test]
     fn markdown_keeps_data_image_src_but_not_data_links() {
         let html = markdown_to_html("![t](data:image/gif;base64,R0lGODlhAQABAAAAACw=)");
-        assert!(html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""), "{html}");
+        assert!(
+            html.contains("src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\""),
+            "{html}"
+        );
         let html = markdown_to_html("![t](data:text/html,<script>1</script>)");
         assert!(html.contains("src=\"\""), "{html}");
         let html = markdown_to_html("[t](data:image/svg+xml,x)");
@@ -5325,7 +5205,10 @@ w = 4
         let frag = "<div id=\"p\">→ ∇·E — π</div>\n<script>Plotly.newPlot('p', []);</script>\n<script type=\"text/plain\">x</script>";
         let out = add_nonce_to_scripts(frag, Some("abc123"));
         assert!(out.contains("<script nonce=\"abc123\">Plotly"), "{out}");
-        assert!(out.contains("<script nonce=\"abc123\" type=\"text/plain\">"), "{out}");
+        assert!(
+            out.contains("<script nonce=\"abc123\" type=\"text/plain\">"),
+            "{out}"
+        );
         assert!(out.contains("→ ∇·E — π"), "utf-8 mangled: {out}");
         // No nonce → byte-identical.
         assert_eq!(add_nonce_to_scripts(frag, None), frag);
@@ -5348,10 +5231,22 @@ w = 4
             None,
             &LinkMode::single_file(),
         );
-        assert!(!html.contains("onload="), "inline onload survives CSP-incompatible: {html:.400}");
-        assert!(!html.contains("onclick="), "inline onclick survives: {html:.400}");
-        assert!(html.contains("DOMContentLoaded"), "KaTeX init script missing");
-        assert!(html.contains("button.nav-toggle"), "sidebar toggle wiring missing");
+        assert!(
+            !html.contains("onload="),
+            "inline onload survives CSP-incompatible: {html:.400}"
+        );
+        assert!(
+            !html.contains("onclick="),
+            "inline onclick survives: {html:.400}"
+        );
+        assert!(
+            html.contains("DOMContentLoaded"),
+            "KaTeX init script missing"
+        );
+        assert!(
+            html.contains("button.nav-toggle"),
+            "sidebar toggle wiring missing"
+        );
         // Static output carries no nonce attributes.
         assert!(!html.contains("nonce="), "{html:.400}");
     }
@@ -5368,13 +5263,19 @@ w = 4
             &LinkMode::single_file(),
             Some("deadbeef"),
         );
-        let tags: Vec<&str> = html.match_indices("<script").map(|(i, _)| {
-            let end = html[i..].find('>').unwrap();
-            &html[i..i + end + 1]
-        }).collect();
+        let tags: Vec<&str> = html
+            .match_indices("<script")
+            .map(|(i, _)| {
+                let end = html[i..].find('>').unwrap();
+                &html[i..i + end + 1]
+            })
+            .collect();
         assert!(tags.len() >= 4, "expected head scripts: {tags:?}");
         for t in &tags {
-            assert!(t.contains("nonce=\"deadbeef\""), "unnonced renderer script: {t}");
+            assert!(
+                t.contains("nonce=\"deadbeef\""),
+                "unnonced renderer script: {t}"
+            );
         }
     }
 

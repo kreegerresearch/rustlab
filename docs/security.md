@@ -68,17 +68,14 @@ on the watch origin can save; a page on another origin cannot.
   `<i>`, `<br>`, `<sub>`, `<sup>`, `<kbd>`, `<details>`, `<summary>`,
   `<div>`, `<span>`, table tags, …) pass through; any tag carrying an
   attribute, and every tag off the list (`<script>`, `<iframe>`,
-  `<a>`, `<style>`, `<object>`, …), is rendered as escaped
+  `<img>`, `<a>`, `<style>`, `<object>`, …), is rendered as escaped
   text. HTML comments are dropped. This applies to notebook prose,
-  callouts, and the directory `index.md` body alike.
-- A raw `<img>` is embedded only when its attributes are exactly a
-  quoted `src` and an optional quoted `alt`. The renderer copies a
-  local file into the plot directory after the path jail check below
-  and emits that copy; it does not leave the author's `src` in the
-  page. Extra attributes (including `onerror`) keep the tag escaped.
-  `data:image/*` may stay inline. Remote `http(s)` URLs are not
-  fetched; `notebook watch` CSP `img-src 'self' data: blob:` blocks
-  them in the browser.
+  callouts, and the directory `index.md` body alike. PDF / LaTeX is
+  separate: a markdown image, or a raw `<img>` whose only attributes
+  are a quoted `src` and an optional quoted `alt`, is copied into the
+  plot directory after the path jail check below and included with
+  `\includegraphics`. Extra attributes stay escaped text. Remote URLs
+  are not fetched.
 - Dangerous URL schemes (`javascript:`, `data:`, `vbscript:`, `blob:`)
   are stripped from links; images keep `data:image/*` only. The scheme
   test ignores ASCII whitespace and control characters, as browsers do.
@@ -106,12 +103,13 @@ on the watch origin can save; a page on another origin cannot.
 ## H4 — Path jail
 
 While executing notebook code (and when expanding embeds), every path
-passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`,
-`![[embed]]`, and prose images (`![alt](path)`, safe `<img src>`) must
-resolve under the jail root after lexical
+passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`
+and `![[embed]]` must resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with
-`path escapes notebook directory`.
+`path escapes notebook directory`. PDF prose images (`![alt](path)` and
+a safe raw `<img src>`) use the same check; a path outside the root is
+not copied.
 
 The root is:
 

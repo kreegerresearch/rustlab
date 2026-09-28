@@ -215,18 +215,18 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
-- **Notebook prose figures, wide tables, and in-page links.**
+- **PDF prose figures, wide tables, and in-page links.**
   Markdown images and a safe raw `<img src alt>` in prose are copied
-  into the plot directory (path-jailed; png/jpg/jpeg/gif/svg/webp) and
-  shown in static HTML, `notebook watch`, and PDF. PDF scales the
-  graphic to the line width; gif/webp, remote URLs, and missing files
-  become a visible placeholder and a stderr warning instead of a broken
-  `\includegraphics`. HTML tables sit in a horizontally scrolling
-  wrapper; PDF tables use `tabularx` fitted to `\linewidth`. Same-page
-  `#heading` links are emitted only when the page has that anchor
-  (HTML `id`, PDF `\hypertarget`); a fragment with no target is plain
-  text. Wikilink fragments use the same heading slug as those anchors.
-  A link to another notebook's PDF still drops its fragment.
+  into the plot directory (path-jailed; png/jpg/jpeg/svg) and included
+  in PDF / LaTeX, scaled to the line width. gif/webp, remote URLs, and
+  missing files become a visible placeholder and a stderr warning
+  instead of a broken `\includegraphics`. PDF tables use `tabularx`
+  fitted to `\linewidth` so a wide grid wraps inside the margins.
+  Same-page `#heading` links emit `\hyperref` only when that page has
+  a matching `\hypertarget`; a fragment with no target is plain text.
+  A link to another notebook's PDF still drops its fragment. Wikilink
+  fragments use the same heading slug as those targets (the shared
+  preprocessor, so HTML wikilink fragments change to that slug too).
 - **PDF builds no longer fail on Unicode in prose.** When `pdflatex`
   rejects a character the preamble does not declare (`2ⁿ`, `Aᵀ`, `ħ`, an
   emoji), `render -f pdf` recompiles with a fallback per rejected

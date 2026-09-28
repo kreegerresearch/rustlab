@@ -764,12 +764,13 @@ lives in `docs/notebooks.md`. Highlights:
 - **Raw HTML**: HTML output keeps only attribute-free formatting tags
   (`<b>`, `<br>`, `<sub>`, `<kbd>`, `<details>`, `<summary>`, `<div>`,
   table tags, …); anything with an attribute, plus `<script>`,
-  `<iframe>`, `<a>`, is shown as escaped text and HTML
-  comments are dropped. A raw `<img>` with only a quoted `src` and
-  optional quoted `alt` is copied into the plot directory after the
-  path jail check and embedded (prose markdown images too). Notebook file
+  `<iframe>`, `<img>`, `<a>`, is shown as escaped text and HTML
+  comments are dropped. Write links/images in markdown. Notebook file
   I/O is jailed (collection root in directory mode; `--jail-root` to
-  widen) — see `docs/security.md`.
+  widen) — see `docs/security.md`. PDF prose images are a separate
+  path: `![alt](file)` and a safe raw `<img src alt>` are copied into
+  the plot directory after the same jail check and included with
+  `\includegraphics`.
 
 See `dev/plans/closed/notebook_obsidian_alignment.md` for the design
 rationale (which Obsidian features were adopted and which were skipped).

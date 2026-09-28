@@ -630,10 +630,8 @@ stray `$` signs in prose. No `\$` escaping is needed in HTML output.
 ### Tables
 
 Markdown tables render as styled HTML tables or a LaTeX `tabularx` that
-fits `\linewidth` (booktabs rules, wrapping `X` columns). In HTML and
-`notebook watch` each table sits in a horizontally scrolling
-`.table-scroll` wrapper, and cells wrap long words, so a wide grid stays
-inside the page:
+fits `\linewidth` (booktabs rules, wrapping `X` columns), so a wide grid
+stays inside the PDF page margins:
 
 ```markdown
 | Window      | Main Lobe Width | First Sidelobe |
@@ -644,18 +642,19 @@ inside the page:
 
 ### Prose figures
 
-Images written in prose — `![caption](path.png)` or a raw
-`<img src="path.png" alt="caption">` with only those two quoted
-attributes — are copied into `plots/<notebook>/prose-N.ext` and shown in
-HTML, `notebook watch`, and PDF. The copy is checked against the notebook
-path jail (see below). A non-empty alt text is the caption. PDF includes
-png, jpeg, and svg (svg is converted to PDF with the same Inkscape pass
-as plot SVGs) scaled to the text width. gif and webp stay in HTML; PDF
-prints a placeholder instead. A missing file, a path outside the jail,
-or a remote `http(s)` URL warns on stderr and renders a “missing figure”
-placeholder — it does not drop the figure silently and it does not fetch
-the URL. Any other attribute on `<img>` (`onerror`, `width`, an unquoted
-`src`) is still escaped as text.
+In PDF and LaTeX, images written in prose — `![caption](path.png)` or a
+raw `<img src="path.png" alt="caption">` with only those two quoted
+attributes — are copied into `plots/<notebook>/prose-N.ext` and included
+with `\includegraphics`, scaled to the text width. The copy is checked
+against the notebook path jail (see below). A non-empty alt text is the
+caption. png, jpeg, and svg are embedded (svg is converted to PDF with
+the same Inkscape pass as plot SVGs). gif, webp, a remote `http(s)` URL,
+a missing file, or a path outside the jail warns on stderr and prints a
+“missing figure” placeholder — the figure is not dropped silently and
+the URL is not fetched. Any other attribute on `<img>` (`onerror`,
+`width`, an unquoted `src`) stays escaped text. HTML output is unchanged:
+markdown images keep the path you wrote, and a raw `<img>` is still
+escaped.
 
 ### GFM-superset features
 
@@ -691,10 +690,10 @@ Slug rules match GitHub's: lowercase, punctuation dropped, spaces become
 hyphens, unicode kept; repeated headings dedup `-1`, `-2`, …; inline math
 is excluded from the slug (a math-only heading falls back to a positional
 `heading-N` id). h4–h6 get an id only when you write `{#anchor}`.
-`[[Note#Section Two]]` uses that same slug. A same-page link whose
-fragment matches no id on the page is left as plain text (HTML and PDF),
-so the renderer does not emit an `href` or `\href` with nothing to land
-on. `rustlab-notebook check` warns (`W004`) when a fragment
+`[[Note#Section Two]]` uses that same slug, in HTML and in PDF. In PDF a
+same-page link whose fragment matches no heading on the page is printed
+as plain text, so the renderer does not emit `\href` with nothing to
+land on. `rustlab-notebook check` warns (`W004`) when a fragment
 matches no anchor in its target.
 
 **Explicit heading IDs** still pin a stable anchor when you want one that
@@ -1301,23 +1300,21 @@ prose. Attribute-free formatting tags pass through unchanged — `<b>`,
 `<i>`, `<br>`, `<sub>`, `<sup>`, `<kbd>`, `<details>`/`<summary>`,
 `<div>`, `<span>`, `<hr>`, table tags, and similar. Any tag that carries
 an attribute (`<details open>`, `<span style=…>`, `<a href=…>`) and every
-tag off that list (`<script>`, `<iframe>`, `<style>`, …) is
-rendered as escaped text so you can see it did not apply. A raw `<img>`
-is the exception when its only attributes are a quoted `src` and an
-optional quoted `alt`: that image is copied into the plot directory and
-embedded (see Prose figures). Any extra attribute keeps the tag escaped.
-HTML comments are dropped. Links belong in markdown syntax; `javascript:` /
+tag off that list (`<script>`, `<iframe>`, `<img>`, `<style>`, …) is
+rendered as escaped text so you can see it did not apply; HTML comments
+are dropped. Links and images belong in markdown syntax; `javascript:` /
 `data:` / `vbscript:` / `blob:` link targets are neutralised, and images
 accept `data:image/*` only. Markdown output (`-f markdown`) passes raw
 HTML through untouched — GitHub and Obsidian apply their own filters.
 
 #### Path jail for notebook code
 
-Notebook code may only read and write under its jail root. `load`,
-`save`, `savefig`, `saveanim`, `run`, `figure("….html")`, `![[embeds]]`,
-and prose images (`![alt](path)` / safe `<img>`) that resolve outside it
-fail with `path escapes notebook directory` (a prose image then renders
-as a missing-figure placeholder). The root is the notebook's own
+Notebook code may only read and write under its jail root: `load`,
+`save`, `savefig`, `saveanim`, `run`, `figure("….html")` and
+`![[embeds]]` that resolve outside it fail with
+`path escapes notebook directory`. A prose image in a PDF render is
+checked against the same root; a path outside it becomes a missing-figure
+placeholder and is not copied. The root is the notebook's own
 directory for a single-file render, the collection root when you render
 or watch a directory (so `ch2/lesson.md` may `load("../data/x.csv")`),
 or whatever `--jail-root <DIR>` names (an ancestor of the notebooks — a
