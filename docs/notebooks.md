@@ -228,7 +228,14 @@ Behaviour:
   and fails loud on collision.
 - **Embedded KaTeX + Plotly.** The page references local `/assets/`
   paths, not jsdelivr/cdn.plot.ly. Works fully offline (e.g. tablet
-  over an SSH tunnel on a plane).
+  over an SSH tunnel on a plane). Plotly 2.35.0 also asks for MapLibre
+  CSS, and on some map styles for Maki icons. Watch serves those from
+  `/assets/maplibre/maplibre-gl.css` and `/assets/maki/` (MapLibre GL
+  JS itself is already inside the Plotly bundle; the bundle is not
+  edited). Static HTML inlines that stylesheet. Map tiles
+  (OpenStreetMap, Carto, Mapbox) are not bundled: `connect-src` stays
+  loopback-only, so a `white-bg` style draws offline and a tile style
+  renders without imagery.
 - **Source `.md` is never modified** (unless you opt into
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no

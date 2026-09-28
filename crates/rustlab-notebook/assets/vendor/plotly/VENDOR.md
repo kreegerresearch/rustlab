@@ -13,7 +13,13 @@
 ## What's here
 
 - `plotly.min.js` — the bundle the interactive notebook server
-  embeds and serves at `/assets/plotly.min.js`.
+  embeds and serves at `/assets/plotly.min.js`. This file is not
+  patched. It already contains MapLibre GL JS and, at load time,
+  injects `maplibre-gl.css` from unpkg. The stylesheet (MapLibre GL
+  JS 4.5.2, the version this bundle depended on) and the Maki 2.1.0
+  `*-15` icons it may request live in the sibling `maplibre/` and
+  `maki/` directories. The notebook renderer installs a guard script
+  that retargets those URLs; see those directories' `VENDOR.md`.
 
 This is the open-source Plotly.js library only. Plotly's other
 products (Dash, Chart Studio, Plotly Enterprise) are separately

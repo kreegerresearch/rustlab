@@ -1304,6 +1304,10 @@ fn render_output(
             let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
             let html =
                 render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
+            // Static HTML has no `/assets/` server. Inline MapLibre CSS and
+            // clear the guard's asset hrefs so Plotly's unpkg `<link>` is
+            // dropped. Watch pages skip this and keep the same-origin routes.
+            let html = crate::server::assets::inline_maplibre_for_file(&html);
             write_output(out_path, html.as_bytes());
         }
         Format::Markdown { obsidian } => {

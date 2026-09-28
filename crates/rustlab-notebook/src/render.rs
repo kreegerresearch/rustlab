@@ -776,6 +776,10 @@ pub fn render_html_nonced(
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
     let c = theme;
+    // Runs before Plotly so the CDN stylesheet/icon loads Plotly injects
+    // at evaluation time are retargeted at the vendored files.
+    let nonce_attr = nonce_attr(nonce);
+    let maplibre_shim = crate::server::assets::maplibre_guard_script(&nonce_attr);
     let page = format!(
         r##"<!DOCTYPE html>
 <html lang="en">
@@ -783,7 +787,7 @@ pub fn render_html_nonced(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"{nonce_attr}></script>
+{maplibre_shim}<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"{nonce_attr}></script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"{nonce_attr}></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"{nonce_attr}></script>
@@ -1358,7 +1362,8 @@ document.addEventListener('click', (e) => {{
 </html>
 "##,
         title = escape_html(title),
-        nonce_attr = nonce_attr(nonce),
+        nonce_attr = nonce_attr,
+        maplibre_shim = maplibre_shim,
         body_class = body_class,
         topbar_block = topbar_block,
         sidebar_block = sidebar_block,
@@ -4463,6 +4468,49 @@ w = 4
             &LinkMode::single_file(),
         );
         assert!(html.contains("plotly"));
+    }
+
+    #[test]
+    fn render_html_guard_precedes_plotly_and_names_no_unpkg_host() {
+        let html = render_html(
+            "Test",
+            &[],
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(!html.contains("unpkg.com"));
+        assert!(!html.contains("jsdelivr.net/npm/maplibre"));
+        assert!(!html.contains("cdnjs"));
+        let guard = html
+            .find("/assets/maplibre/maplibre-gl.css")
+            .expect("maplibre guard href");
+        let plotly = html.find("plotly-2.35.0.min.js").expect("plotly script");
+        assert!(guard < plotly, "guard must run before Plotly evaluates");
+    }
+
+    #[test]
+    fn static_html_inlines_maplibre_and_has_no_unpkg() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("note.md");
+        std::fs::write(&src, "# T\n\nA line.\n").unwrap();
+        let out = dir.path().join("note.html");
+        crate::cmd_render(src, Some(out.clone()), crate::Format::Html, test_theme()).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(!html.contains("unpkg.com"), "static html references unpkg");
+        assert!(!html.contains("jsdelivr.net/npm/maplibre"));
+        assert!(!html.contains("cdnjs"));
+        assert!(
+            !html.contains("/assets/maplibre/"),
+            "static html must inline CSS, not fetch /assets/"
+        );
+        assert!(!html.contains("/assets/maki/"));
+        assert!(html.contains("id=\"rl-maplibre\""));
+        assert!(html.contains(".maplibregl-map"));
+        // Plotly and KaTeX stay on their existing CDNs in a file render.
+        assert!(html.contains("cdn.plot.ly/plotly-2.35.0.min.js"));
     }
 
     #[test]

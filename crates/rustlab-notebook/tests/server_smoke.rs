@@ -139,6 +139,14 @@ async fn notebook_html_renders_smoke_fixture() {
         "stray CDN URL: cdn.jsdelivr.net"
     );
     assert!(!html.contains("cdn.plot.ly"), "stray CDN URL: cdn.plot.ly");
+    assert!(!html.contains("unpkg.com"), "stray CDN URL: unpkg.com");
+    assert!(!html.contains("cdnjs"), "stray CDN URL: cdnjs");
+    assert!(!html.contains("jsdelivr.net/npm/maplibre"));
+    let guard = html
+        .find("/assets/maplibre/maplibre-gl.css")
+        .expect("maplibre stylesheet href");
+    let plotly = html.find("/assets/plotly.min.js").expect("local plotly");
+    assert!(guard < plotly, "guard must run before Plotly evaluates");
 }
 
 #[tokio::test]
@@ -224,6 +232,71 @@ async fn plotly_bundle_served_from_embedded_assets() {
         "plotly bundle smaller than expected: {}",
         body.len()
     );
+}
+
+#[tokio::test]
+async fn maplibre_css_and_maki_icon_served_from_embedded_assets() {
+    let (state, _src, _plot) = build_state();
+    let app = rustlab_notebook::server::http::router(state);
+
+    let css = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/maplibre/maplibre-gl.css")
+                .header(header::HOST, "127.0.0.1:8042")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(css.status(), StatusCode::OK);
+    let ct = css
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(ct.starts_with("text/css"), "{ct}");
+    let body = to_bytes(css.into_body(), 1_024 * 1_024).await.unwrap();
+    let text = std::str::from_utf8(&body).unwrap();
+    assert!(text.contains(".maplibregl-map"));
+    assert!(!text.contains("unpkg.com"));
+
+    let icon = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/maki/marker-15.svg")
+                .header(header::HOST, "127.0.0.1:8042")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(icon.status(), StatusCode::OK);
+    let ct = icon
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(ct, "image/svg+xml");
+    let body = to_bytes(icon.into_body(), 64 * 1_024).await.unwrap();
+    let text = std::str::from_utf8(&body).unwrap();
+    assert!(text.contains("<svg"), "{text:.80}");
+
+    let missing = app
+        .oneshot(
+            Request::builder()
+                .uri("/assets/maki/not-a-real-icon-15.svg")
+                .header(header::HOST, "127.0.0.1:8042")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
 #[test]

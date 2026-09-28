@@ -107,10 +107,18 @@ pub fn origin_rejection_body(headers: &HeaderMap, port: u16) -> String {
 /// literal) and ignores it, which also logs an error on every page. The
 /// listener binds `127.0.0.1`, so `'self'` and `ws://127.0.0.1:*` cover
 /// the page's WebSocket.
+///
+/// `worker-src 'self' blob:` exists because MapLibre GL JS, which ships
+/// inside the vendored Plotly bundle, starts its map worker from a blob
+/// URL. With no `worker-src`, Chrome falls back to `script-src`, and
+/// `blob:` is not covered by `'self'`, the nonce, or `'strict-dynamic'`.
+/// The directive does not allow a remote worker. `connect-src` stays
+/// loopback-only, so map tile and style hosts remain blocked.
 pub fn csp_header(nonce: &str) -> String {
     format!(
         "default-src 'self'; \
          script-src 'self' 'nonce-{nonce}' 'strict-dynamic'; \
+         worker-src 'self' blob:; \
          style-src 'self' 'unsafe-inline'; \
          img-src 'self' data: blob:; \
          font-src 'self'; \
@@ -207,6 +215,8 @@ mod tests {
         let csp = csp_header("abc");
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(!csp.contains("https://"), "csp must not allow a remote host: {csp}");
         assert!(csp.contains("frame-ancestors 'none'"));
     }
 
@@ -216,5 +226,7 @@ mod tests {
         assert!(!csp.contains("[::1]"));
         assert!(csp.contains("connect-src 'self' ws://127.0.0.1:* ws://localhost:*"));
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(!csp.contains("https://"), "csp must not allow a remote host: {csp}");
     }
 }

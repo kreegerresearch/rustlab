@@ -12,7 +12,7 @@
 //! | `GET /n/{slug}/ws` | WebSocket: re-render push for that notebook (see [`super::ws`]) |
 //! | `GET /raw/{slug}` | raw `.md` source from disk (drives the split-view source pane) |
 //! | `POST /save/{slug}` | write edited source back to disk — **only mounted when `--editable`** |
-//! | `GET /assets/{path}` | embedded KaTeX/Plotly/CodeMirror bundle from [`super::assets`] |
+//! | `GET /assets/{path}` | embedded KaTeX/Plotly/MapLibre/Maki/CodeMirror bundle from [`super::assets`] |
 //! | `GET /plots/{path}` | served from the per-server tempdir (`<slug>/<file>`) |
 //!
 //! Animations are the only artefact the HTML renderer writes to disk
@@ -730,6 +730,9 @@ mod tests {
             .unwrap();
         assert!(csp.contains("default-src 'self'"));
         assert!(csp.contains("nonce-testnonce"));
+        assert!(csp.contains("worker-src 'self' blob:"));
+        assert!(csp.contains("script-src 'self' 'nonce-testnonce' 'strict-dynamic'"));
+        assert!(!csp.contains("https://"), "{csp}");
         assert!(!csp.contains("[::1]"));
         let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         let s = String::from_utf8_lossy(&body);

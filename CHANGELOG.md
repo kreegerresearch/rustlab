@@ -215,6 +215,19 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **`notebook watch` no longer loads MapLibre from unpkg.** Plotly 2.35.0
+  (left unmodified) registers its map module while the bundle evaluates
+  and injects `maplibre-gl.css` from unpkg, which the watch Content
+  Security Policy blocks. A nonced guard script, installed before
+  Plotly, retargets that stylesheet and Maki `*-15` icons at
+  `/assets/maplibre/maplibre-gl.css` and `/assets/maki/`. Static HTML
+  inlines the same CSS, so a saved page does not fetch `/assets/`. CSP
+  gains `worker-src 'self' blob:` so MapLibre's blob worker can start;
+  `script-src` stays nonce + `'strict-dynamic'`, and `connect-src` is
+  unchanged, so map tiles and remote styles stay blocked. A `white-bg`
+  map draws offline; a tile style renders without imagery. `savefig` /
+  `saveanim` HTML still loads Plotly from `cdn.plot.ly` (that emitter
+  lives in `rustlab-plot`, which does not link the notebook assets).
 - **HTML and `notebook watch` prose figures.** Markdown images and a
   safe raw `<img src alt>` are copied into the plot directory after the
   path-jail check and referenced from that copy (`plots/<stem>/prose-N.ext`

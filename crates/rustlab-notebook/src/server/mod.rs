@@ -3,7 +3,7 @@
 //! Replaces the read-only `cmd_check` fallback that bare
 //! `notebook watch <file>` runs today (see `watch.rs::cmd_watch`)
 //! with a local web server that renders the notebook to an HTML page,
-//! serves embedded KaTeX + Plotly assets locally, and (in Phase 2)
+//! serves embedded KaTeX, Plotly, MapLibre CSS, and Maki icons locally, and (in Phase 2)
 //! will push re-renders to the browser on save.
 //!
 //! Design decisions live in `dev/plans/notebook_interactive_server.md`
@@ -1476,6 +1476,8 @@ mod tests {
             .to_string();
         assert!(csp.contains("img-src 'self' data: blob:"), "{csp}");
         assert!(csp.contains("script-src 'self' 'nonce-testnonce' 'strict-dynamic'"), "{csp}");
+        assert!(csp.contains("worker-src 'self' blob:"), "{csp}");
+        assert!(!csp.contains("https://"), "{csp}");
         let page = String::from_utf8(to_bytes(page_res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
         let src = format!("/plots/{slug}/prose-1.png");
         assert!(page.contains(&format!("src=\"{src}\"")), "{page}");

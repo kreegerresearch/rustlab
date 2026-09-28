@@ -22,10 +22,18 @@ reproducible via `dev/scripts/vendor-notebook-assets.sh`.
 |---|---|---|---|---|
 | KaTeX (CSS + JS + auto-render + fonts) | 0.16.21 | https://github.com/KaTeX/KaTeX | MIT — see `crates/rustlab-notebook/assets/vendor/katex/LICENSE` | `crates/rustlab-notebook/assets/vendor/katex/` |
 | Plotly.js | 2.35.0 | https://github.com/plotly/plotly.js | MIT — see `crates/rustlab-notebook/assets/vendor/plotly/LICENSE` | `crates/rustlab-notebook/assets/vendor/plotly/` |
+| MapLibre GL JS stylesheet | 4.5.2 | https://github.com/maplibre/maplibre-gl-js | BSD-3-Clause — see `crates/rustlab-notebook/assets/vendor/maplibre/LICENSE` | `crates/rustlab-notebook/assets/vendor/maplibre/` |
+| Maki icons (`*-15.svg` only) | 2.1.0 | https://github.com/mapbox/maki | CC0 — see `crates/rustlab-notebook/assets/vendor/maki/LICENSE` | `crates/rustlab-notebook/assets/vendor/maki/` |
 | CodeMirror 5 (core + CSS + Markdown mode) | 5.65.19 | https://github.com/codemirror/codemirror5 | MIT — see `crates/rustlab-notebook/assets/vendor/codemirror/LICENSE` | `crates/rustlab-notebook/assets/vendor/codemirror/` |
 
 CodeMirror is served only under `rustlab-notebook watch --editable`
 (the in-browser editor); the other assets are always served.
+MapLibre's JavaScript is already inside the Plotly 2.35.0 bundle
+(that file is not modified). Only the matching 4.5.2 stylesheet is
+vendored separately, plus the Maki 2.1.0 icons whose names end in
+`-15` (the size Plotly requests when a vector style is missing a
+sprite). Static HTML inlines the stylesheet; watch serves both from
+`/assets/`.
 
 The KaTeX fonts ship under the same MIT license as the rest of
 KaTeX — they are Computer Modern derivatives generated from

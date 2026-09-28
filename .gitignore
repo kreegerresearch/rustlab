@@ -60,6 +60,10 @@ gallery/*.gif
 !gallery/
 !gallery/**/*.svg
 
+# Vendored Maki icons (`notebook watch` /assets/maki/). The global
+# `*.svg` rule is for generated plots; these are source assets.
+!crates/rustlab-notebook/assets/vendor/maki/icons/*.svg
+
 # Test fixtures: the deliberately-broken inputs for
 # `rustlab-notebook validate`'s wrapper self-tests must be committed
 # even though they match the global *.html ignore.

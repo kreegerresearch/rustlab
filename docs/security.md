@@ -95,6 +95,17 @@ on the watch origin can save; a page on another origin cannot.
   `'strict-dynamic'` blocks them even with a nonce on the surrounding
   tag. KaTeX auto-render and the sidebar toggle are ordinary `<script>`
   bodies, which receive the page nonce.
+- `worker-src` is `'self' blob:`. MapLibre GL JS (inside the vendored
+  Plotly bundle) starts its map worker from a blob URL. `script-src`
+  does not include `blob:`, so without this directive a map trace
+  cannot start that worker. The directive does not allow a remote
+  worker script. `connect-src` is unchanged: tile and style hosts
+  (`tile.openstreetmap.org`, `basemaps.cartocdn.com`, Mapbox, and
+  similar) stay blocked. A map that needs those tiles draws without
+  imagery; `white-bg` needs no network. The Plotly bundle is not
+  modified. A nonced guard script, installed before Plotly, retargets
+  the stylesheet and Maki icon URLs Plotly hardcodes at
+  `/assets/maplibre/` and `/assets/maki/`.
 - Rustlab syntax highlighting is server-rendered escaped `<span class="syn-*">`
   text in HTML and `\textcolor` in PDF — not `minted`, and not a CDN or
   client-side highlighter. The spans are emitted by the renderer (they
@@ -111,9 +122,10 @@ normalisation of `..` and canonicalisation of the existing prefix
 and PDF (`![alt](path)` and a safe raw `<img src alt>`) use the same
 check. A path outside the root is not copied, and the placeholder in the
 page does not repeat that path. Watch still serves only files under its
-plot tempdir (`GET /plots/…` rejects `..`). The page CSP is unchanged:
-`img-src 'self' data: blob:` and `script-src` with the per-process nonce
-plus `'strict-dynamic'`.
+plot tempdir (`GET /plots/…` rejects `..`). `img-src` and `script-src`
+are unchanged: `img-src 'self' data: blob:` and `script-src` with the
+per-process nonce plus `'strict-dynamic'`. `worker-src` is
+`'self' blob:` for MapLibre's blob worker (see above).
 
 The root is:
 
