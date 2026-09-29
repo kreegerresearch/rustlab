@@ -2,6 +2,7 @@ pub mod cache;
 pub mod check;
 pub mod embed;
 pub mod execute;
+mod file_browser;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;
@@ -18,6 +19,8 @@ pub mod widget;
 
 use rustlab_plot::theme::ThemeColors;
 use std::path::{Path, PathBuf};
+
+pub use file_browser::{CollectionBrowser, FileEntry};
 
 /// Remove every `<iframe src="…" width="100%" height="600" style="border:
 /// 0;"></iframe>` tag from `source`, along with surrounding blank-line
@@ -209,6 +212,10 @@ pub struct NotebookNav {
     pub index_href: Option<String>,
     pub prev: Option<(String, String)>,
     pub next: Option<(String, String)>,
+    /// Collection file browser. `None` on single-file pages (and on any
+    /// nav that only carries prev/next). Directory HTML sets it on the
+    /// index and on every notebook page.
+    pub files: Option<CollectionBrowser>,
 }
 
 /// Comment line `render_markdown` prepends to every rendered .md file.
@@ -973,6 +980,25 @@ pub fn cmd_render_dir(
         current_rel_dir: String::new(),
     };
 
+    // Index title is also the file-browser label, so resolve it before
+    // the per-notebook pass. Same precedence as the index page itself:
+    // CLI flag > index.md title > directory name. PDF/Markdown skip it.
+    let (index_body_html, resolved_title) = if emit_nav {
+        let (body, md_title) = index_md_path
+            .as_ref()
+            .and_then(|p| read_and_render_index_md(p, &dir, theme, &link_mode))
+            .unwrap_or((String::new(), None));
+        let title = index_title.clone().or(md_title).unwrap_or_else(|| {
+            dir.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+        (body, title)
+    } else {
+        (String::new(), String::new())
+    };
+
     let n = pending.len();
     // One bad notebook must not abort the collection: record it, keep
     // rendering the rest, and report the tally at the end (exit 1).
@@ -995,10 +1021,23 @@ pub fn cmd_render_dir(
                     href_to(&pending[i + 1].filename),
                 )
             });
+            let files = Some(CollectionBrowser {
+                label: resolved_title.clone(),
+                current_rel: Some(pending[i].rel_md.clone()),
+                entries: pending
+                    .iter()
+                    .map(|p| FileEntry {
+                        title: p.title.clone(),
+                        rel_md: p.rel_md.clone(),
+                        href: href_to(&p.filename),
+                    })
+                    .collect(),
+            });
             Some(NotebookNav {
                 index_href: Some(href_to("index.html")),
                 prev,
                 next,
+                files,
             })
         } else {
             None
@@ -1039,24 +1078,31 @@ pub fn cmd_render_dir(
     }
 
     if matches!(format, Format::Html) {
-        // Resolve the index title: CLI flag > index.md title > dir name.
-        let (index_body_html, index_md_title) = index_md_path
-            .as_ref()
-            .and_then(|p| read_and_render_index_md(p, &dir, theme, &link_mode))
-            .unwrap_or((String::new(), None));
-        let resolved_title = index_title.clone().or(index_md_title).unwrap_or_else(|| {
-            dir.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
-        });
-
         let entries_simple: Vec<(String, String)> = pending
             .iter()
             .map(|p| (p.title.clone(), p.filename.clone()))
             .collect();
-        let index_html =
-            generate_index_html(&resolved_title, &entries_simple, theme, &index_body_html);
+        // Same entries as each notebook page, with root-relative hrefs
+        // and no current row — the index is not itself a notebook.
+        let browser = CollectionBrowser {
+            label: resolved_title.clone(),
+            current_rel: None,
+            entries: pending
+                .iter()
+                .map(|p| FileEntry {
+                    title: p.title.clone(),
+                    rel_md: p.rel_md.clone(),
+                    href: p.filename.clone(),
+                })
+                .collect(),
+        };
+        let index_html = generate_index_html(
+            &resolved_title,
+            &entries_simple,
+            theme,
+            &index_body_html,
+            Some(&browser),
+        );
         let index_path = out_dir.join("index.html");
         write_output(&index_path, index_html.as_bytes());
         println!(
@@ -1770,6 +1816,7 @@ pub fn generate_index_html(
     entries: &[(String, String)],
     theme: &ThemeColors,
     body_html: &str,
+    browser: Option<&CollectionBrowser>,
 ) -> String {
     let c = theme;
     let mut links = String::new();
@@ -1780,6 +1827,19 @@ pub fn generate_index_html(
             title = escape_html(title),
         ));
     }
+
+    let file_nav = browser.map(file_browser::render_nav).unwrap_or_default();
+    let has_files = !file_nav.is_empty();
+    let file_css = if has_files {
+        file_browser::styles(theme)
+    } else {
+        String::new()
+    };
+    let body_class = if has_files {
+        " class=\"has-files\""
+    } else {
+        ""
+    };
 
     let intro = if body_html.is_empty() {
         String::new()
@@ -1866,10 +1926,20 @@ pub fn generate_index_html(
   }}
   .intro a:visited {{ color: {accent_primary}; }}
   .intro a:hover {{ background: transparent; color: {accent_tertiary}; }}
+  body.has-files {{
+    display: block;
+    padding: 0;
+    justify-content: flex-start;
+  }}
+  body.has-files main {{
+    margin-left: max(var(--fb-w, 16.5rem), calc(50% - 360px));
+    padding: 3rem 1.5rem 2rem;
+  }}
+{file_css}
 </style>
 </head>
-<body>
-<main>
+<body{body_class}>
+{file_nav}<main>
 <h1>{title}</h1>
 <p class="subtitle">{count} notebook{plural}</p>
 {intro}<ul>
@@ -1895,6 +1965,9 @@ pub fn generate_index_html(
         accent_secondary = c.css_var("accent-secondary"),
         accent_tertiary = c.css_var("accent-tertiary"),
         footer_text = c.css_var("footer-text"),
+        file_css = file_css,
+        file_nav = file_nav,
+        body_class = body_class,
     )
 }
 
@@ -1991,6 +2064,66 @@ mod tests {
     use rustlab_plot::Theme;
 
     // ── shared listing rules (static build + watch server) ───────────
+
+    #[test]
+    fn directory_html_file_browser_and_single_file_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ch2")).unwrap();
+        std::fs::write(root.join("README.md"), "# Readme\n").unwrap();
+        std::fs::write(root.join("index.md"), "# Index\n\nbody\n").unwrap();
+        std::fs::write(root.join("_setup.md"), "# Setup\n").unwrap();
+        std::fs::write(root.join(".hidden.md"), "# Hidden\n").unwrap();
+        std::fs::write(root.join("ch2").join("filters.md"), "# Filters\n").unwrap();
+        std::fs::write(root.join("intro.md"), "# Intro\n").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("directory render");
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        let page = std::fs::read_to_string(out.path().join("ch2/filters.html")).unwrap();
+        assert_eq!(
+            file_browser::path_texts(&index),
+            vec!["ch2/filters.md".to_string(), "intro.md".to_string()],
+            "unordered notebooks sort by path, then group into folders"
+        );
+        assert_eq!(file_browser::path_texts(&page), file_browser::path_texts(&index));
+        assert!(index.contains("<details class=\"fb-root\" open"));
+        assert!(page.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
+        assert!(page.contains("aria-current=\"page\""));
+        assert!(!index.contains("fb-path\">README.md"));
+        assert!(!index.contains("_setup.md"));
+        assert!(!index.contains("fb-path\">.hidden.md"));
+        assert!(!index.contains("fb-path\">index.md"));
+        assert!(!page.contains("onclick"));
+        // LaTeX does not get the interactive browser (no TeX install needed).
+        let latex_out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            root.to_path_buf(),
+            Some(latex_out.path().to_path_buf()),
+            Format::Latex,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("latex render");
+        let tex = std::fs::read_to_string(latex_out.path().join("intro.tex")).unwrap();
+        assert!(!tex.contains("file-browser"));
+
+        let one = tempfile::tempdir().unwrap();
+        let md = one.path().join("only.md");
+        std::fs::write(&md, "# Only\n").unwrap();
+        let single_out = one.path().join("only.html");
+        cmd_render(md, Some(single_out.clone()), Format::Html, Theme::Dark.colors())
+            .expect("single render");
+        let single = std::fs::read_to_string(&single_out).unwrap();
+        assert!(!single.contains("<nav class=\"file-browser\""));
+        assert!(!single.contains("has-files\""));
+    }
 
     #[test]
     fn compare_notebook_order_puts_ordered_before_unordered() {
@@ -3291,7 +3424,7 @@ More.\n";
             ("Filter Analysis".to_string(), "filter.html".to_string()),
             ("Quick Look".to_string(), "quick.html".to_string()),
         ];
-        let html = generate_index_html("notebooks", &entries, Theme::Dark.colors(), "");
+        let html = generate_index_html("notebooks", &entries, Theme::Dark.colors(), "", None);
         assert!(html.contains("notebooks"));
         assert!(html.contains("2 notebooks"));
         assert!(html.contains("color-scheme: dark"));
@@ -3306,21 +3439,21 @@ More.\n";
     #[test]
     fn generate_index_single() {
         let entries = vec![("Solo".to_string(), "solo.html".to_string())];
-        let html = generate_index_html("test", &entries, Theme::Dark.colors(), "");
+        let html = generate_index_html("test", &entries, Theme::Dark.colors(), "", None);
         assert!(html.contains("1 notebook"));
         assert!(!html.contains("notebooks")); // singular
     }
 
     #[test]
     fn generate_index_empty() {
-        let html = generate_index_html("empty", &[], Theme::Dark.colors(), "");
+        let html = generate_index_html("empty", &[], Theme::Dark.colors(), "", None);
         assert!(html.contains("0 notebooks"));
     }
 
     #[test]
     fn generate_index_escapes_html() {
         let entries = vec![("A <script> & \"test\"".to_string(), "test.html".to_string())];
-        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), "");
+        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), "", None);
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&amp;"));
     }
@@ -3329,7 +3462,7 @@ More.\n";
     fn generate_index_includes_body_html() {
         let entries = vec![("A".to_string(), "a.html".to_string())];
         let body = "<p>Intro paragraph.</p>\n";
-        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), body);
+        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), body, None);
         assert!(html.contains("<p>Intro paragraph.</p>"));
         assert!(html.contains("class=\"intro"));
     }
@@ -3337,14 +3470,14 @@ More.\n";
     #[test]
     fn generate_index_no_intro_when_body_empty() {
         let entries = vec![("A".to_string(), "a.html".to_string())];
-        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), "");
+        let html = generate_index_html("dir", &entries, Theme::Dark.colors(), "", None);
         assert!(!html.contains("class=\"intro"));
     }
 
     #[test]
     fn generate_index_uses_custom_title() {
         let entries = vec![("A".to_string(), "a.html".to_string())];
-        let html = generate_index_html("My Book", &entries, Theme::Dark.colors(), "");
+        let html = generate_index_html("My Book", &entries, Theme::Dark.colors(), "", None);
         assert!(html.contains("<h1>My Book</h1>"));
         assert!(html.contains("<title>My Book"));
     }
