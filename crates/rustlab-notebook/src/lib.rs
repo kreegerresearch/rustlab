@@ -2,6 +2,7 @@ pub mod cache;
 pub mod check;
 pub mod embed;
 pub mod execute;
+pub mod fence_hl;
 #[cfg(feature = "mermaid")]
 pub mod mermaid;
 pub mod parse;

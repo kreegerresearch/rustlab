@@ -90,6 +90,13 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Notebook prose fences tagged `bash`, `python`, or `text` use the same
+  panel as a rustlab cell in HTML, `notebook watch`, and PDF. `bash` and
+  `python` are server-side highlighted (comments, strings, keywords,
+  numbers) with the rustlab token colors and a small language label.
+  `text` stays uncolored on the quieter printed-output background, which
+  also covers cell stdout the markdown renderer already writes as a
+  `text` fence. Other fence tags are unchanged.
 - `rustlab remote <host>` (in `--features viewer` builds, which `make
   install` produces): run rustlab on another machine with plots in the
   local `rustlab-viewer`. Checks a viewer is listening, then runs `ssh -t
