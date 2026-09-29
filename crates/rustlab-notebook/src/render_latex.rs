@@ -966,30 +966,23 @@ fn emit_colored_spans(source: &str, spans: &[rustlab_script::highlight::HlSpan])
     for span in spans {
         let text = &source[span.start..span.end];
         let escaped = escape_latex(&text.replace('\t', "    "));
-        let color = match span.kind {
-            HlKind::Keyword => "rlkw",
-            HlKind::Function => "rlfn",
-            HlKind::Number => "rlnum",
-            HlKind::String => "rlstr",
+        // A color command must not cross a newline: `\obeylines` makes
+        // each source line its own paragraph. Bash quotes and Python
+        // triple quotes can contain newlines, so close and reopen the
+        // color on each line of the span.
+        match span.kind {
+            HlKind::Keyword => push_colored_lines(&mut body, "rlkw", false, &escaped),
+            HlKind::Function => push_colored_lines(&mut body, "rlfn", false, &escaped),
+            HlKind::Number => push_colored_lines(&mut body, "rlnum", false, &escaped),
+            HlKind::String => push_colored_lines(&mut body, "rlstr", false, &escaped),
             HlKind::Comment => {
                 // Stay in the typewriter family. `\textit` would switch to
                 // roman italic and break the mono column.
-                body.push_str("{\\itshape\\textcolor{rlcom}{");
-                body.push_str(&escaped);
-                body.push_str("}}");
-                continue;
+                push_colored_lines(&mut body, "rlcom", true, &escaped);
             }
-            HlKind::Operator => "rlop",
-            HlKind::Text => {
-                body.push_str(&escaped);
-                continue;
-            }
-        };
-        body.push_str("\\textcolor{");
-        body.push_str(color);
-        body.push_str("}{");
-        body.push_str(&escaped);
-        body.push('}');
+            HlKind::Operator => push_colored_lines(&mut body, "rlop", false, &escaped),
+            HlKind::Text => body.push_str(&escaped),
+        }
     }
     // Not `flushleft`: that trivlist clears `\everypar`, which drops
     // the cell's accent rule. Ragged right plus `\obeylines` keeps one
@@ -998,8 +991,9 @@ fn emit_colored_spans(source: &str, spans: &[rustlab_script::highlight::HlSpan])
         "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
          \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
     );
-    // Only `Text` spans carry newlines (comments and strings stop before
-    // one), so an empty line here is exactly an empty source line.
+    // Newlines are only emitted between source lines (a color span that
+    // contains one is closed on each side), so an empty line here is an
+    // empty source line.
     let lines: Vec<&str> = body.split('\n').collect();
     let n = lines.len();
     for (i, line) in lines.iter().enumerate() {
@@ -1018,6 +1012,30 @@ fn emit_colored_spans(source: &str, spans: &[rustlab_script::highlight::HlSpan])
     }
     out.push_str("}\n\n");
     out
+}
+
+fn push_colored_lines(body: &mut String, color: &str, italic: bool, escaped: &str) {
+    for (i, line) in escaped.split('\n').enumerate() {
+        if i > 0 {
+            body.push('\n');
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if italic {
+            body.push_str("{\\itshape\\textcolor{");
+        } else {
+            body.push_str("\\textcolor{");
+        }
+        body.push_str(color);
+        body.push_str("}{");
+        body.push_str(line);
+        if italic {
+            body.push_str("}}");
+        } else {
+            body.push('}');
+        }
+    }
 }
 
 /// Escape special LaTeX characters (no math preservation — math is
@@ -1256,6 +1274,14 @@ mod tests {
         assert!(python.contains("\\textcolor{rlkw}{def}"), "{python}");
         assert!(python.contains("\\textcolor{rlkw}{return}"), "{python}");
         assert!(python.contains("\\textcolor{rlnum}{1}"), "{python}");
+
+        let multi = markdown_to_latex(
+            "```python\ns = \"\"\"a\nb\"\"\"\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(multi.contains("\\textcolor{rlstr}{\"\"\"a}"), "{multi}");
+        assert!(multi.contains("\\textcolor{rlstr}{b\"\"\"}"), "{multi}");
+        assert!(!multi.contains("\\textcolor{rlstr}{\"\"\"a\n"), "{multi}");
     }
 
     #[test]
