@@ -3719,6 +3719,25 @@ mod tests {
             "{bash}"
         );
         assert!(bash.contains("<span class=\"syn-num\">2</span>"), "{bash}");
+        let quoted = markdown_to_html("```bash\necho \"hi # there\" 'x'\n```\n");
+        assert!(
+            quoted.contains("<span class=\"syn-str\">&quot;hi # there&quot;</span>"),
+            "{quoted}"
+        );
+        assert!(
+            quoted.contains("<span class=\"syn-str\">'x'</span>"),
+            "{quoted}"
+        );
+        assert!(
+            !quoted.contains("syn-com"),
+            "hash inside quotes is not a comment: {quoted}"
+        );
+        let py = markdown_to_html("```python\ns = \"a # b\"  # real\n```\n");
+        assert!(
+            py.contains("<span class=\"syn-str\">&quot;a # b&quot;</span>"),
+            "{py}"
+        );
+        assert!(py.contains("<span class=\"syn-com\"># real</span>"), "{py}");
         assert!(
             bash.contains("<span class=\"syn-com\"># note</span>"),
             "{bash}"

@@ -463,6 +463,34 @@ mod tests {
     }
 
     #[test]
+    fn hash_inside_quotes_stays_in_the_string() {
+        // A `#` inside quotes is string text. The comment is only the
+        // `#` that sits outside the quotes.
+        let cases = [
+            ("\"hi # there\" # real\n", "\"hi # there\"", "# real"),
+            ("'hi # there' # real\n", "'hi # there'", "# real"),
+        ];
+        for lang in [ProseFence::Bash, ProseFence::Python] {
+            for (src, string, comment) in cases {
+                let got = colored(lang, src);
+                assert!(
+                    got.contains(&(string.into(), HlKind::String)),
+                    "{lang:?} {src:?} -> {got:?}"
+                );
+                assert!(
+                    got.contains(&(comment.into(), HlKind::Comment)),
+                    "{lang:?} {src:?} -> {got:?}"
+                );
+                assert!(
+                    !got.iter()
+                        .any(|(t, k)| *k == HlKind::Comment && t.contains("hi")),
+                    "{lang:?} {src:?} -> {got:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bash_length_forms_are_not_comments() {
         let got = colored(ProseFence::Bash, "echo ${#arr} $#\n");
         assert!(got.iter().all(|(_, k)| *k != HlKind::Comment));
