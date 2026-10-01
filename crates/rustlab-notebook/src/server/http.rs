@@ -285,7 +285,14 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         .map(|nb| (nb.title.clone(), format!("n/{}", nb.slug)))
         .collect();
     let body = state.index_body.read().await;
-    let html = crate::generate_index_html(&state.index_title, &entries, state.theme, &body);
+    let browser = super::collection_browser(&state, None);
+    let html = crate::generate_index_html(
+        &state.index_title,
+        &entries,
+        state.theme,
+        &body,
+        browser.as_ref(),
+    );
     // The WS client is the only script on the index page; it gets the
     // nonce here. The index body itself was sanitised at render time.
     let html = ws::inject_ws_client_nonced(&html, Some(&state.csp_nonce));

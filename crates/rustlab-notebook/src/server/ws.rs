@@ -511,6 +511,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // Sync order matches server emission (topbar, button, sidebar) so
     // inserted nodes land in server order and tab order.
     syncOutsideMain(parsed, 'body > header.topbar', tgt);
+    syncOutsideMain(parsed, 'body > nav.file-browser', tgt);
     syncOutsideMain(parsed, 'body > button.nav-toggle', tgt);
     syncOutsideMain(parsed, 'body > nav.sidebar', tgt);
     // Only the class the server owns. Assigning the whole className wiped
@@ -519,6 +520,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // mutual-exclusion guard while the pane was logically open.
     if (parsed.body) {
       document.body.classList.toggle('no-toc', parsed.body.classList.contains('no-toc'));
+      document.body.classList.toggle('has-files', parsed.body.classList.contains('has-files'));
     }
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);

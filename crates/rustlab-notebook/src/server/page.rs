@@ -106,6 +106,8 @@ fn chrome_style(c: &ThemeColors) -> String {
      against it — pin the margin to the sidebar edge instead. */
   body.rl-source-open main {{ margin-left: 220px; margin-right: 42vw; max-width: none; }}
   body.no-toc.rl-source-open main {{ margin-left: 0; }}
+  body.has-files.rl-source-open main {{ margin-left: calc(220px + var(--fb-w, 16.5rem)); }}
+  body.has-files.no-toc.rl-source-open main {{ margin-left: var(--fb-w, 16.5rem); }}
   #rl-source-head {{
     padding: 9px 14px; border-bottom: 1px solid {border};
     font: 12px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim};

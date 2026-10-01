@@ -227,7 +227,7 @@ fn code_idx_of(block_html: &str) -> Option<usize> {
 /// every entry off by one. The coordinator compares fingerprints and
 /// upgrades to a full refresh when they differ.
 #[allow(clippy::type_complexity)]
-pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&str>) {
+pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>) {
     // Real chrome always precedes <main>; author-written raw HTML inside
     // a prose block does not. Without this bound, a no-toc page (no real
     // sidebar) whose markdown contained a literal `<nav class="sidebar">`
@@ -242,6 +242,7 @@ pub fn chrome_fingerprint(html: &str) -> (Option<&str>, Option<&str>, Option<&st
     (
         slice("<header class=\"topbar\">", "</header>"),
         slice("<nav class=\"sidebar\">", "</nav>"),
+        slice("<nav class=\"file-browser\"", "</nav>"),
         slice("<body", ">"),
     )
 }
@@ -297,6 +298,19 @@ mod chrome_tests {
             "fake in-content sidebar leaked into the fingerprint"
         );
         assert_eq!(chrome_fingerprint(v1).1, None, "no real sidebar exists");
+        assert_eq!(chrome_fingerprint(v1).2, None, "no file browser exists");
+    }
+
+    #[test]
+    fn fingerprint_sees_file_browser() {
+        let a = "<body class=\"has-files\"><nav class=\"file-browser\" aria-label=\"Lab\">old</nav><main></main></body>";
+        let edited = a.replace("old", "new");
+        assert_ne!(
+            chrome_fingerprint(a),
+            chrome_fingerprint(&edited),
+            "file-browser change must alter the fingerprint"
+        );
+        assert!(chrome_fingerprint(a).2.unwrap().contains("old"));
     }
 }
 
