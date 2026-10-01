@@ -340,7 +340,14 @@ fn schedule_render(
         let nav = listing
             .iter()
             .position(|(s, _)| *s == slug)
-            .and_then(|idx| super::server_nav(&listing, idx, state.single));
+            .and_then(|idx| {
+                super::server_nav(
+                    &listing,
+                    idx,
+                    state.single,
+                    super::collection_browser(&state, Some(&slug)),
+                )
+            });
         // Same link resolution as the startup render — recomputed from
         // state so hrefs cannot drift across live re-renders.
         let link = state.link_mode_for(&slug);

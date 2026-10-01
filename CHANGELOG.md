@@ -97,7 +97,14 @@ Workflow Rule 12).
   `text` stays uncolored on the quieter printed-output background, which
   also covers cell stdout the markdown renderer already writes as a
   `text` fence. Other fence tags are unchanged.
-- `rustlab remote <host>` (in `--features viewer` builds, which `make
+- Directory `rustlab-notebook watch` and the matching static directory
+  HTML show a collapsible file browser on the index and on every notebook
+  page. Rows are grouped by folder and show the notebook title plus the
+  collection-relative path. The in-page heading list, index breadcrumb,
+  and prev/next stay. Single-file watch/render is unchanged. LaTeX and
+  PDF do not get the browser. Collapse is native `<details>` (no inline
+  event handlers).
+- `rustlab remote <host>` (in `--features viewer` builds, which `make`
   install` produces): run rustlab on another machine with plots in the
   local `rustlab-viewer`. Checks a viewer is listening, then runs `ssh -t
   -o ExitOnForwardFailure=yes -R <remote>:<local>` with a fresh

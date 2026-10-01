@@ -289,9 +289,47 @@ fn build_state(
         .map(|(slug, _, title)| (slug.clone(), title.clone()))
         .collect();
 
+    // The collection root's index.md is the served index page's body and
+    // title, exactly as in the static build (which hoists it into
+    // index.html). It is filtered from the notebook listing, so without
+    // this the served `/` showed an empty body under the directory name —
+    // and a `[home](index.md)` body link resolved to a page missing the
+    // very content it named. Resolved before the notebook pass so the
+    // file-browser label matches the index page title.
+    let index_md_path = is_dir
+        .then(|| canonical_input.join("index.md"))
+        .filter(|p| p.is_file());
+    let (index_body, index_md_title) = index_md_path
+        .as_ref()
+        .and_then(|p| {
+            let link = crate::render::LinkMode::Server {
+                slugs: link_slugs.clone(),
+                current_rel_dir: String::new(),
+                index_at_root: true,
+            };
+            crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
+        })
+        .unwrap_or((String::new(), None));
+    // Same title precedence as `cmd_render_dir`: index.md > directory name.
+    let index_title = if is_dir {
+        index_md_title.unwrap_or_else(|| {
+            canonical_input
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Notebooks".to_string())
+        })
+    } else {
+        String::new()
+    };
+
     // Pass 2: render each notebook with its cross-notebook nav baked in.
     for (idx, (slug, path, title)) in entries.iter().enumerate() {
-        let nav = server_nav(&listing, idx, !is_dir);
+        let nav = server_nav(
+            &listing,
+            idx,
+            !is_dir,
+            directory_browser(&listing, &rels, &index_title, Some(idx), is_dir),
+        );
         let link = crate::render::LinkMode::Server {
             slugs: link_slugs.clone(),
             current_rel_dir: crate::rel_dir_of(&rels[idx]),
@@ -327,35 +365,8 @@ fn build_state(
         order.push(slug.clone());
     }
 
-    // The collection root's index.md is the served index page's body and
-    // title, exactly as in the static build (which hoists it into
-    // index.html). It is filtered from the notebook listing, so without
-    // this the served `/` showed an empty body under the directory name —
-    // and a `[home](index.md)` body link resolved to a page missing the
-    // very content it named.
-    let index_md_path = is_dir
-        .then(|| canonical_input.join("index.md"))
-        .filter(|p| p.is_file());
-    let (index_body, index_md_title) = index_md_path
-        .as_ref()
-        .and_then(|p| {
-            let link = crate::render::LinkMode::Server {
-                slugs: link_slugs.clone(),
-                current_rel_dir: String::new(),
-                index_at_root: true,
-            };
-            crate::read_and_render_index_md(p, &canonical_input.to_path_buf(), theme, &link)
-        })
-        .unwrap_or((String::new(), None));
-
-    // Same title precedence as `cmd_render_dir`: index.md > directory name.
     let index_title = if is_dir {
-        index_md_title.unwrap_or_else(|| {
-            canonical_input
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "Notebooks".to_string())
-        })
+        index_title
     } else {
         notebooks
             .get(&order[0])
@@ -445,6 +456,7 @@ fn server_nav(
     listing: &[(String, String)],
     idx: usize,
     single: bool,
+    files: Option<crate::CollectionBrowser>,
 ) -> Option<crate::NotebookNav> {
     if single {
         return None;
@@ -457,7 +469,76 @@ fn server_nav(
         index_href: Some("/".to_string()),
         prev: (idx > 0).then(|| link(idx - 1)),
         next: (idx + 1 < listing.len()).then(|| link(idx + 1)),
+        files,
     })
+}
+
+/// Directory-mode file browser. `current` is the open notebook's index
+/// in `listing` (`None` on the index page). `None` in single-file mode.
+///
+/// Hrefs are absolute `/n/<slug>` so the same markup works on `/` and on
+/// `/n/<slug>`. `rels` is the listing-order collection path, the same
+/// string the static build stores on each entry.
+fn directory_browser(
+    listing: &[(String, String)],
+    rels: &[String],
+    label: &str,
+    current: Option<usize>,
+    is_dir: bool,
+) -> Option<crate::CollectionBrowser> {
+    if !is_dir {
+        return None;
+    }
+    Some(crate::CollectionBrowser {
+        label: label.to_string(),
+        current_rel: current.map(|i| rels[i].clone()),
+        entries: listing
+            .iter()
+            .zip(rels.iter())
+            .map(|((slug, title), rel)| crate::FileEntry {
+                title: title.clone(),
+                rel_md: rel.clone(),
+                href: format!("/n/{slug}"),
+            })
+            .collect(),
+    })
+}
+
+/// Directory-mode file browser for `current_slug` (`None` on the index).
+/// `None` in single-file mode — that page has no collection.
+///
+/// Paths come from `link_slugs` (the sort key), titles and order from
+/// `state.order`, so a live re-render matches the sidebar baked in at
+/// startup and the static build.
+pub(super) fn collection_browser(
+    state: &http::ServerState,
+    current_slug: Option<&str>,
+) -> Option<crate::CollectionBrowser> {
+    if state.single {
+        return None;
+    }
+    let rel_of: std::collections::HashMap<&str, &str> = state
+        .link_slugs
+        .iter()
+        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
+        .collect();
+    let rels: Vec<String> = state
+        .order
+        .iter()
+        .map(|slug| rel_of.get(slug.as_str()).copied().unwrap_or("").to_string())
+        .collect();
+    let listing: Vec<(String, String)> = state
+        .order
+        .iter()
+        .filter_map(|slug| {
+            state
+                .notebooks
+                .get(slug)
+                .map(|nb| (slug.clone(), nb.title.clone()))
+        })
+        .collect();
+    let current = current_slug.and_then(|slug| state.order.iter().position(|s| s == slug));
+    directory_browser(&listing, &rels, &state.index_title, current, true)
 }
 
 /// Re-implementation of the render pipeline in `lib::cmd_render` minus
@@ -871,20 +952,20 @@ mod tests {
             ("c".to_string(), "Gamma".to_string()),
         ];
         // Middle page: prev + next + index, all as server URLs.
-        let mid = server_nav(&listing, 1, false).unwrap();
+        let mid = server_nav(&listing, 1, false, None).unwrap();
         assert_eq!(mid.index_href.as_deref(), Some("/"));
         assert_eq!(mid.prev, Some(("Alpha".to_string(), "/n/a".to_string())));
         assert_eq!(mid.next, Some(("Gamma".to_string(), "/n/c".to_string())));
         // First page: no prev.
-        let first = server_nav(&listing, 0, false).unwrap();
+        let first = server_nav(&listing, 0, false, None).unwrap();
         assert!(first.prev.is_none());
         assert_eq!(first.next, Some(("Beta".to_string(), "/n/b".to_string())));
         // Last page: no next.
-        let last = server_nav(&listing, 2, false).unwrap();
+        let last = server_nav(&listing, 2, false, None).unwrap();
         assert!(last.next.is_none());
         assert_eq!(last.prev, Some(("Beta".to_string(), "/n/b".to_string())));
         // Single-file mode: no nav at all (keeps the sidebar layout).
-        assert!(server_nav(&listing, 0, true).is_none());
+        assert!(server_nav(&listing, 0, true, None).is_none());
     }
 
     #[tokio::test]
@@ -922,6 +1003,14 @@ mod tests {
         assert!(beta.contains("href=\"/n/gamma\""), "beta missing next link");
         // The source/edit toolbar still coexists with the new nav.
         assert!(beta.contains("rl-toolbar"), "beta lost the source toolbar");
+        // The collection file browser stays on the page, beside the TOC.
+        assert!(
+            beta.contains("<nav class=\"file-browser\""),
+            "beta missing file browser"
+        );
+        assert!(beta.contains("class=\"fb-path\">beta.md</span>"));
+        assert!(beta.contains("aria-current=\"page\""));
+        assert!(beta.contains("<details class=\"fb-root\" open"));
 
         // First page has a next but no prev (nothing precedes alpha).
         let alpha = get_body(&app, "/n/alpha").await;
@@ -933,6 +1022,123 @@ mod tests {
             !alpha.contains("class=\"prev\""),
             "alpha should have no prev link"
         );
+    }
+
+    #[tokio::test]
+    async fn directory_watch_file_browser_groups_folders_and_hides_partials() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("ch2")).unwrap();
+        std::fs::write(root.join("README.md"), "# Readme\n").unwrap();
+        std::fs::write(
+            root.join("index.md"),
+            "---\ntitle: Lab\n---\n\n# Lab\n\nwelcome\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("_setup.md"), "# Setup\n").unwrap();
+        std::fs::write(root.join(".hidden.md"), "# Hidden\n").unwrap();
+        std::fs::create_dir_all(root.join("_parts")).unwrap();
+        std::fs::write(root.join("_parts").join("bit.md"), "# Bit\n").unwrap();
+        std::fs::write(root.join("ch2").join("filters.md"), "# Filters\n\n## Band\n").unwrap();
+        std::fs::write(
+            root.join("intro.md"),
+            "---\norder: 1\ntitle: Intro\n---\n\n# Intro\n",
+        )
+        .unwrap();
+        let canon = std::fs::canonicalize(root).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let app = serve_test(state);
+        let index = get_body(&app, "/").await;
+        let filters = get_body(&app, "/n/filters").await;
+        for (name, html) in [("index", &index), ("filters", &filters)] {
+            assert!(
+                html.contains("<nav class=\"file-browser\""),
+                "{name} missing file browser"
+            );
+            assert!(
+                html.contains("<details class=\"fb-root\" open"),
+                "{name} root disclosure is not open"
+            );
+            assert!(
+                html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"),
+                "{name} missing ch2 folder"
+            );
+            assert!(html.contains("class=\"fb-path\">intro.md</span>"), "{name}");
+            assert!(
+                html.contains("class=\"fb-path\">ch2/filters.md</span>"),
+                "{name}"
+            );
+            assert!(!html.contains("fb-path\">README.md"), "{name} listed README");
+            assert!(!html.contains("fb-path\">index.md"), "{name} listed index.md");
+            assert!(!html.contains("_setup.md"), "{name} listed a partial");
+            assert!(!html.contains("fb-path\">.hidden.md"), "{name} listed a dotfile");
+            assert!(!html.contains("bit.md"), "{name} listed a nested partial");
+            assert!(!html.contains("onclick"), "{name} used an inline handler");
+            assert!(html.contains("var(--rl-"), "{name} ignored theme tokens");
+        }
+        assert_eq!(
+            crate::file_browser::path_texts(&index),
+            crate::file_browser::path_texts(&filters),
+            "index and notebook page disagree about the collection"
+        );
+        assert_eq!(
+            crate::file_browser::path_texts(&index),
+            vec!["intro.md".to_string(), "ch2/filters.md".to_string()]
+        );
+        assert!(!index.contains("aria-current=\"page\""));
+        assert!(filters.contains("aria-current=\"page\""));
+        let marked = filters.find("aria-current=\"page\"").unwrap();
+        assert!(
+            filters[marked..].contains("ch2/filters.md"),
+            "current marker is not on the open notebook"
+        );
+        assert!(filters.contains("<nav class=\"sidebar\">"));
+        assert!(filters.contains("class=\"topbar\""));
+        assert!(filters.contains("class=\"page-nav\""));
+        assert!(filters.contains("href=\"/\""));
+
+        let out = tempfile::tempdir().unwrap();
+        crate::cmd_render_dir(
+            canon.clone(),
+            Some(out.path().to_path_buf()),
+            crate::Format::Html,
+            theme,
+            None,
+        )
+        .expect("static render");
+        let static_index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        let static_page = std::fs::read_to_string(out.path().join("ch2/filters.html")).unwrap();
+        assert_eq!(
+            crate::file_browser::path_texts(&static_index),
+            crate::file_browser::path_texts(&index)
+        );
+        assert_eq!(
+            crate::file_browser::path_texts(&static_page),
+            crate::file_browser::path_texts(&index)
+        );
+        assert!(static_page.contains("<details class=\"fb-folder\" open"));
+        assert!(static_page.contains("aria-current=\"page\""));
+        assert!(static_page.contains("<nav class=\"sidebar\">"));
+        assert!(static_page.contains("href=\"../intro.html\""));
+    }
+
+    #[tokio::test]
+    async fn single_file_watch_has_no_collection_sidebar() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("only.md");
+        std::fs::write(&path, "# Only\n\n## Part\n").unwrap();
+        let canon = std::fs::canonicalize(&path).unwrap();
+        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let app = serve_test(state);
+        let page = get_body(&app, "/n/only").await;
+        assert!(
+            !page.contains("<nav class=\"file-browser\""),
+            "single-file watch grew a collection sidebar"
+        );
+        assert!(!page.contains("has-files\""));
+        assert!(page.contains("<nav class=\"sidebar\">"), "in-page TOC was dropped");
     }
 
     #[test]

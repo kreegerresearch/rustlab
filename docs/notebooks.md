@@ -1663,10 +1663,21 @@ questions and are always both present:
   bar is also appended at the foot of the page, where it is useful after a
   long read.
 
+Directory HTML (`render` of a folder, and `watch` of a folder) adds a
+third: a **file browser** fixed on the left of the index page and of
+every notebook page. It groups notebooks by their real folders, and each
+row shows the title plus the collection-relative path (`ch2/filters.md`).
+The whole browser and each folder are `<details>` disclosures, open by
+default; closing the root disclosure shrinks the column. The open
+notebook is marked. Listing rules match the index (no `README.md`,
+`index.md`, `_` partials, or dotfiles), and the row order matches
+frontmatter `order` then path. Single-file `render` / `watch` has no
+file browser. LaTeX and PDF do not.
+
 Single-file renders (`rustlab-notebook render file.md`) show the same
-chrome, minus the cross-notebook links and the footer bar — there's no
-sibling set to navigate. The page layout is otherwise identical to a
-collection page.
+chrome, minus the cross-notebook links, the file browser, and the footer
+bar — there's no sibling set to navigate. The page layout is otherwise
+identical to a collection page.
 
 TOC entries link headings by their anchor: the explicit `{#anchor}` when
 one is written, the generated slug (`## Section Two` → `#section-two`)
