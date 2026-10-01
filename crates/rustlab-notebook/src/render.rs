@@ -3804,9 +3804,8 @@ mod tests {
     #[test]
     fn theme_link_contrast_meets_wcag_aa() {
         // Pins the original bug: UA-default `#0000EE` on Mocha `#1e1e2e`
-        // is ~2:1. Dark-theme accents must stay at or above 4.5:1 against
-        // bg. Light (Latte `#1e66f5` on `#eff1f5`) is the official
-        // palette at ~4.3:1 — don't retune it here.
+        // is ~1.75:1. Every theme's link colors, including Latte, must
+        // clear 4.5:1 on the page and on the border (page-nav hover).
         let dark = Theme::Dark.colors();
         let unvisited = rustlab_plot::contrast_ratio(dark.accent_secondary, dark.bg).unwrap_or(0.0);
         assert!(
@@ -3827,6 +3826,14 @@ mod tests {
             ua < 4.5,
             "UA-default blue on Mocha should fail WCAG — if this passes, the regression test is stale"
         );
+        let light = Theme::Light.colors();
+        for (surface, bg) in [("page", light.bg), ("border", light.border)] {
+            let v = rustlab_plot::contrast_ratio(light.accent_secondary, bg).unwrap_or(0.0);
+            assert!(
+                v >= 4.5,
+                "latte unvisited link on {surface} contrast {v:.2} < 4.5"
+            );
+        }
     }
 
     #[test]
@@ -4155,7 +4162,7 @@ mod tests {
         }];
         for (theme, accent) in [
             (Theme::Dark.colors(), "#cba6f7"),
-            (Theme::Light.colors(), "#8839ef"),
+            (Theme::Light.colors(), "#7113ec"),
         ] {
             let html = render_html(
                 "Test",

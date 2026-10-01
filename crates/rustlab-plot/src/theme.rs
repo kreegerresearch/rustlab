@@ -267,13 +267,17 @@ fn srgb_lin(c: u8) -> f64 {
 }
 
 // ── Catppuccin → ThemeColors mapping ──────────────────────────────────────
-// base→bg, mantle→bg_secondary, text→text, subtext0→text_dim,
-// surface0→border / inline_code_bg, surface1→border_subtle,
-// mauve→accent_primary / syn_keyword, blue→accent_secondary / syn_function,
-// sapphire→accent_tertiary, crust→code_bg, mantle→output_bg,
-// red→error_text, peach→syn_number, green→syn_string, overlay0→syn_comment,
-// sky→syn_operator, surface2→footer_text. error_bg / plot_grid are local
-// tints (not named Catppuccin tokens). See docs/notebooks.md.
+// Backgrounds stay the stock tokens: base→bg / plot_bg, mantle→bg_secondary
+// / output_bg, surface0→border / inline_code_bg, surface1→border_subtle,
+// crust→code_bg. error_bg / plot_grid are local tints. See docs/notebooks.md.
+//
+// Font roles start from the same swatches (text, subtext0, mauve, blue,
+// sapphire, red, peach, green, overlay0, sky, surface2) but a role whose
+// stock pair is under WCAG AA 4.5:1 on a surface it is actually painted on
+// is lightness-nudged, hue kept. Two roles that share a stock token can
+// therefore diverge: Frappé mauve is lighter as an accent (it also sits on
+// the border) than as a keyword (code panel only), and Latte headings are
+// darker than the code-panel tokens of the same hue.
 
 /// Catppuccin Mocha (dark) — also the `dark` alias.
 static MOCHA: ThemeColors = ThemeColors {
@@ -297,9 +301,10 @@ static MOCHA: ThemeColors = ThemeColors {
     syn_function: "#89b4fa",
     syn_number: "#fab387",
     syn_string: "#a6e3a1",
-    syn_comment: "#6c7086",
+    // overlay0 #6c7086 is 3.84:1 on crust; surface2 #585b70 is 2.46:1 on base.
+    syn_comment: "#787c92",
     syn_operator: "#89dceb",
-    footer_text: "#585b70",
+    footer_text: "#81859c",
 };
 
 /// Catppuccin Macchiato (dark).
@@ -324,9 +329,10 @@ static MACCHIATO: ThemeColors = ThemeColors {
     syn_function: "#8aadf4",
     syn_number: "#f5a97f",
     syn_string: "#a6da95",
-    syn_comment: "#6e738d",
+    // overlay0 #6e738d is 3.73:1 on crust; surface2 #5b6078 is 2.38:1 on base.
+    syn_comment: "#7c8199",
     syn_operator: "#91d7e3",
-    footer_text: "#5b6078",
+    footer_text: "#898ea5",
 };
 
 /// Catppuccin Frappé (dark).
@@ -334,11 +340,14 @@ static FRAPPE: ThemeColors = ThemeColors {
     bg: "#303446",
     bg_secondary: "#292c3c",
     text: "#c6d0f5",
-    text_dim: "#a5adce",
+    // subtext0 #a5adce is 4.26:1 on surface0 (sidebar / table head).
+    text_dim: "#aab2d1",
     border: "#414559",
     border_subtle: "#51576d",
-    accent_primary: "#ca9ee6",
-    accent_secondary: "#8caaee",
+    // mauve #ca9ee6 is 4.30:1 and blue #8caaee is 4.10:1 on surface0.
+    // Keywords stay the stock mauve: they are only drawn on crust.
+    accent_primary: "#cda4e7",
+    accent_secondary: "#98b3f0",
     accent_tertiary: "#85c1dc",
     code_bg: "#232634",
     output_bg: "#292c3c",
@@ -351,9 +360,10 @@ static FRAPPE: ThemeColors = ThemeColors {
     syn_function: "#8caaee",
     syn_number: "#ef9f76",
     syn_string: "#a6d189",
-    syn_comment: "#737994",
+    // overlay0 #737994 is 3.50:1 on crust; surface2 #626880 is 2.23:1 on base.
+    syn_comment: "#868ca3",
     syn_operator: "#99d1db",
-    footer_text: "#626880",
+    footer_text: "#979caf",
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -361,26 +371,37 @@ static LATTE: ThemeColors = ThemeColors {
     bg: "#eff1f5",
     bg_secondary: "#e6e9ef",
     text: "#4c4f69",
-    text_dim: "#6c6f85",
+    // subtext0 #6c6f85 is 3.20:1 on surface0 and on the white PDF page.
+    text_dim: "#56586a",
     border: "#ccd0da",
     border_subtle: "#bcc0cc",
-    accent_primary: "#8839ef",
-    accent_secondary: "#1e66f5",
-    accent_tertiary: "#179299",
+    // Headings and links also sit on surface0 and on white paper.
+    // Stock mauve #8839ef is 3.51:1 there, blue #1e66f5 is 3.18:1,
+    // sapphire #179299 is 3.08:1 on mantle.
+    accent_primary: "#7113ec",
+    accent_secondary: "#094dd3",
+    accent_tertiary: "#12747a",
     code_bg: "#dce0e8",
     output_bg: "#e6e9ef",
     inline_code_bg: "#ccd0da",
     error_bg: "#fce4e4",
-    error_text: "#d20f39",
+    // Stock red #d20f39 is 4.46:1 on mantle and 4.10:1 on the code panel
+    // (CodeMirror errors use this role).
+    error_text: "#c60e36",
     plot_bg: "#eff1f5",
     plot_grid: "rgba(100,100,120,0.2)",
-    syn_keyword: "#8839ef",
-    syn_function: "#1e66f5",
-    syn_number: "#fe640b",
-    syn_string: "#40a02b",
-    syn_comment: "#9ca0b0",
-    syn_operator: "#179299",
-    footer_text: "#9ca0b0",
+    // Code-panel tokens are a smaller darkening than the headings: crust
+    // is lighter than surface0, so the same hue clears 4.5 sooner.
+    // Stock peach #fe640b is 2.25:1 on crust and 2.98:1 on white paper;
+    // green #40a02b is 2.53:1; overlay0 #9ca0b0 is 1.97:1.
+    syn_keyword: "#802cee",
+    syn_function: "#0a55ea",
+    syn_number: "#ad4001",
+    syn_string: "#2d711e",
+    syn_comment: "#5e6376",
+    syn_operator: "#116e74",
+    // surface2 #9ca0b0 is 2.30:1 on base.
+    footer_text: "#686d82",
 };
 
 #[cfg(test)]
@@ -475,5 +496,146 @@ mod tests {
             assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
             assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
         }
+    }
+
+    /// Font role → the backgrounds that role is actually painted on.
+    /// A swatch that clears the page can still fail on the code panel,
+    /// the output panel, or the sidebar border.
+    fn font_surfaces(
+        c: &ThemeColors,
+    ) -> Vec<(
+        &'static str,
+        &'static str,
+        Vec<(&'static str, &'static str)>,
+    )> {
+        let bg = ("page", c.bg);
+        let secondary = ("sidebar", c.bg_secondary);
+        let border = ("border", c.border);
+        let code = ("code panel", c.code_bg);
+        let output = ("output panel", c.output_bg);
+        let inline = ("inline code / table head", c.inline_code_bg);
+        let err = ("error panel", c.error_bg);
+        vec![
+            ("text", c.text, vec![bg, code, secondary, inline, border]),
+            (
+                "text_dim",
+                c.text_dim,
+                vec![bg, secondary, output, code, border],
+            ),
+            ("footer_text", c.footer_text, vec![bg]),
+            (
+                "accent_primary",
+                c.accent_primary,
+                vec![bg, secondary, border, inline],
+            ),
+            (
+                "accent_secondary",
+                c.accent_secondary,
+                vec![bg, secondary, border, code],
+            ),
+            ("accent_tertiary", c.accent_tertiary, vec![bg, secondary]),
+            ("error_text", c.error_text, vec![err, secondary, code]),
+            ("syn_keyword", c.syn_keyword, vec![code]),
+            ("syn_function", c.syn_function, vec![code]),
+            ("syn_number", c.syn_number, vec![code]),
+            ("syn_string", c.syn_string, vec![code]),
+            ("syn_comment", c.syn_comment, vec![code]),
+            ("syn_operator", c.syn_operator, vec![code]),
+        ]
+    }
+
+    fn assert_aa(theme: &str, role: &str, fg: &str, surface: &str, bg: &str) {
+        let v = contrast_ratio(fg, bg).unwrap_or(0.0);
+        assert!(
+            v >= 4.5,
+            "{theme} {role} {fg} on {surface} {bg} is {v:.2}:1"
+        );
+    }
+
+    #[test]
+    fn every_builtin_font_meets_wcag_aa_on_its_surfaces() {
+        for (name, colors) in [
+            ("mocha", &MOCHA),
+            ("macchiato", &MACCHIATO),
+            ("frappe", &FRAPPE),
+            ("latte", &LATTE),
+        ] {
+            // Active toolbar button paints the page color on the accent.
+            assert_aa(name, "toolbar", colors.bg, "accent", colors.accent_primary);
+            for (role, fg, surfaces) in font_surfaces(colors) {
+                for (surface, bg) in surfaces {
+                    assert_aa(name, role, fg, surface, bg);
+                }
+            }
+        }
+        // PDF / LaTeX force Latte onto white paper (no pagecolor).
+        let paper = "#ffffff";
+        for (role, fg) in [
+            ("text", LATTE.text),
+            ("text_dim", LATTE.text_dim),
+            ("accent_primary", LATTE.accent_primary),
+            ("accent_secondary", LATTE.accent_secondary),
+            ("accent_tertiary", LATTE.accent_tertiary),
+            ("error_text", LATTE.error_text),
+            ("syn_keyword", LATTE.syn_keyword),
+            ("syn_function", LATTE.syn_function),
+            ("syn_number", LATTE.syn_number),
+            ("syn_string", LATTE.syn_string),
+            ("syn_comment", LATTE.syn_comment),
+            ("syn_operator", LATTE.syn_operator),
+        ] {
+            assert_aa("latte", role, fg, "white paper", paper);
+        }
+    }
+
+    #[test]
+    fn named_unreadable_pairs_are_not_theme_fonts() {
+        // Dark blue on near-black, and light yellow / peach on white.
+        // These ratios must stay failing so the guard itself cannot rot,
+        // and none of them may be a font role.
+        let failures = [
+            ("#0000ee", "#1e1e2e"),
+            ("#0000ff", "#11111b"),
+            ("#0000cc", "#11111b"),
+            ("#999977", "#dce0e8"),
+            ("#ffffaa", "#ffffff"),
+            ("#fe640b", "#ffffff"),
+            ("#fe640b", "#dce0e8"),
+        ];
+        for (fg, bg) in failures {
+            let v = contrast_ratio(fg, bg).unwrap();
+            assert!(
+                v < 4.5,
+                "{fg} on {bg} contrast {v:.2} no longer documents a failure"
+            );
+        }
+        for colors in [&MOCHA, &MACCHIATO, &FRAPPE, &LATTE] {
+            for (_role, fg, _) in font_surfaces(colors) {
+                let lower = fg.to_ascii_lowercase();
+                for banned in [
+                    "#0000ee", "#0000ff", "#0000cc", "#999977", "#ffffaa", "#fe640b",
+                ] {
+                    assert_ne!(lower, banned, "{fg} is a named unreadable font");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readable_stock_swatches_stay_put() {
+        assert_eq!(MOCHA.text, "#cdd6f4");
+        assert_eq!(MOCHA.syn_keyword, "#cba6f7");
+        assert_eq!(MOCHA.syn_number, "#fab387");
+        assert_eq!(MOCHA.error_text, "#f38ba8");
+        assert_eq!(MOCHA.bg, "#1e1e2e");
+        assert_eq!(MOCHA.code_bg, "#11111b");
+        // Frappé keywords only sit on the code panel, which the stock
+        // mauve already clears, so they do not follow the accent nudge.
+        assert_eq!(FRAPPE.syn_keyword, "#ca9ee6");
+        assert_ne!(FRAPPE.accent_primary, FRAPPE.syn_keyword);
+        assert_eq!(LATTE.text, "#4c4f69");
+        assert_eq!(LATTE.bg, "#eff1f5");
+        assert_eq!(LATTE.code_bg, "#dce0e8");
+        assert_eq!(LATTE.error_bg, "#fce4e4");
     }
 }

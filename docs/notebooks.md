@@ -1238,6 +1238,16 @@ The same role map is used for every flavor:
 
 `error_bg` and `plot_grid` are local tints (not named Catppuccin tokens).
 
+Backgrounds stay those stock tokens. A font role whose stock swatch is
+under WCAG AA (4.5:1) on a surface it is actually painted on — page,
+code panel, output panel, sidebar, table head, or (for Latte) white
+PDF paper — is lightness-adjusted and keeps its hue. Two roles that
+share a stock token can therefore use different hexes: a heading also
+sits on the sidebar and the border, while a keyword sits only on the
+code panel. `notebook watch` paints CodeMirror tokens with the same
+roles, so the editor does not keep the library's dark-blue or
+yellow-gray defaults.
+
 ### HTML CSS custom properties
 
 HTML (notebook pages, the directory index, and `watch` chrome) emits the
@@ -1364,15 +1374,19 @@ reports the tail of Inkscape's stderr.
 LaTeX and PDF are always Catppuccin Latte on white paper, whatever
 `-t` or `~/.rustlabrc` says. `-t` themes HTML and `notebook watch`
 only. There is no dark `pagecolor`. Body text is `#4c4f69`. Headings
-are unnumbered: H1 `#8839ef`, H2 `#1e66f5`, H3 `#179299`. The title
-block has no date.
+are unnumbered: H1 `#7113ec`, H2 `#094dd3`, H3 `#12747a`. The title
+block has no date. Those heading colors are Latte's mauve, blue, and
+teal darkened so each clears 4.5:1 on white paper and on the Latte
+surfaces HTML uses for the same roles.
 
 Rustlab source cells are colored with `\textcolor` (`rlkw`, `rlfn`,
-`rlnum`, `rlstr`, `rlcom`, `rlop`), using the Latte hex values. Comments
-are italic typewriter. Each token is LaTeX-escaped. Source, printed
-output, and errors sit in breakable `tcolorbox` panels (code background
-`#dce0e8`, output `#e6e9ef` with dim text `#6c6f85`, errors `#fce4e4` /
-`#d20f39`) with a mauve left rule. PDF does not collapse the source.
+`rlnum`, `rlstr`, `rlcom`, `rlop`). The token hexes are a smaller
+darkening of the same hues than the headings, because they sit on the
+code panel (`#dce0e8`) rather than on the border. Comments are italic
+typewriter. Each token is LaTeX-escaped. Source, printed output, and
+errors sit in breakable `tcolorbox` panels (code background `#dce0e8`,
+output `#e6e9ef` with dim text `#56586a`, errors `#fce4e4` /
+`#c60e36`) with a mauve left rule. PDF does not collapse the source.
 A single plot is centered; `<!-- grid: N -->` uses a row of minipages.
 Mermaid figures use the `float` package's `[H]` so they stay with the
 heading that introduces them. This path does not use `minted`.
