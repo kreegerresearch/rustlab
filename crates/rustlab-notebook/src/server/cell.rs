@@ -107,7 +107,7 @@ fn cell_style(c: &ThemeColors) -> String {
   }}
   .rl-cell-editor .CodeMirror-cursor {{ border-left: 1px solid {text}; }}
   .rl-cell-editor .CodeMirror-selected {{ background: {border}; }}
-  #rl-cell-banner {{
+{tokens}  #rl-cell-banner {{
     position: fixed; bottom: 0; left: 0; right: 0; z-index: 99999;
     background: {bg_secondary}; color: {text}; border-top: 1px solid {accent};
     text-align: center; padding: 6px 10px;
@@ -120,6 +120,7 @@ fn cell_style(c: &ThemeColors) -> String {
         text = c.css_var("text"),
         border = c.css_var("border"),
         accent = c.css_var("accent-primary"),
+        tokens = super::page::codemirror_token_css(".rl-cell-editor", c),
     )
 }
 
@@ -412,6 +413,10 @@ mod tests {
         );
         // Original content preserved.
         assert!(out.contains("data-code-idx=\"0\""));
+        assert!(out.contains(".rl-cell-editor .cm-keyword"));
+        assert!(out.contains(".rl-cell-editor .cm-bracket"));
+        assert!(out.contains(".cm-searching"));
+        assert!(out.contains("background-color: transparent"));
     }
 
     #[test]

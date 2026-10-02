@@ -229,6 +229,42 @@ Workflow Rule 12).
   unchanged.
 
 ### Fixed
+- **Theme fonts stay readable on the surface they sit on.** Notebook
+  HTML, `notebook watch` (page, sidebar, code and output panels, and
+  the CodeMirror source and cell editors), and Latte-on-white PDF /
+  LaTeX no longer pair a font with a background below WCAG AA 4.5:1.
+  Backgrounds are unchanged. Roles that already cleared 4.5 are
+  unchanged. What moved, and why:
+  - Mocha and Macchiato: footer (`#585b70` → `#81859c`, `#5b6078` →
+    `#898ea5`; surface2 on the page was ~2.4:1) and code comments
+    (`#6c7086` → `#787c92`, `#6e738d` → `#7c8199`; overlay0 on the code
+    panel was ~3.8:1).
+  - Frappé: dim text (`#a5adce` → `#aab2d1`, 4.26:1 on the border),
+    footer (`#626880` → `#979caf`), mauve and blue accents
+    (`#ca9ee6` → `#cda4e7`, `#8caaee` → `#98b3f0`; they missed 4.5 on
+    the lighter border), and comments (`#737994` → `#868ca3`). Keyword
+    and function tokens stay the stock swatches — they only sit on the
+    code panel, which those swatches already clear — so they no longer
+    share a hex with the accents.
+  - Latte, including white PDF paper: dim text (`#6c6f85` → `#56586a`),
+    footer (`#9ca0b0` → `#686d82`), headings and links
+    (`#8839ef` → `#7113ec`, `#1e66f5` → `#094dd3`, `#179299` → `#12747a`;
+    the old link blue was ~4.3:1 on the page and ~3.2:1 on the border),
+    error red (`#d20f39` → `#c60e36`; 4.46:1 on the sidebar and 4.10:1
+    on the code panel), and every syntax token. Stock peach `#fe640b`
+    was ~2.3:1 on the code panel and ~3.0:1 on white; it is now
+    `#ad4001`. Code-panel tokens are a smaller darkening than the
+    headings of the same hue, because the code panel is lighter than
+    the border.
+  - CodeMirror in `notebook watch` no longer uses its default dark blue
+    (`#00f` / `#00c`, unreadable on a dark code panel) or yellow-gray
+    brackets (`#997`, ~2.2:1 on the Latte code panel) or the yellow
+    search wash (`#ffa`, which made light theme text unreadable). Those
+    classes take the theme token colors; a search match is an underline
+    on the code background.
+  The plot viewer's egui chrome and 3D axis labels already cleared 4.5
+  on their dark panels and are unchanged. Plot series colors are
+  strokes, not theme fonts.
 - **HTML and `notebook watch` prose figures.** Markdown images and a
   safe raw `<img src alt>` are copied into the plot directory after the
   path-jail check and referenced from that copy (`plots/<stem>/prose-N.ext`

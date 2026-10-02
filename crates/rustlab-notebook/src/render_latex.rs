@@ -1997,7 +1997,7 @@ mod tests {
             after.contains("\\includegraphics"),
             "figure should follow the panels:\n{tex}"
         );
-        assert!(tex.contains("\\definecolor{rlrule}{HTML}{8839ef}"));
+        assert!(tex.contains("\\definecolor{rlrule}{HTML}{7113ec}"));
         assert!(tex.contains("breakable"));
         assert!(!tex.contains("\\begin{rlcell}"));
         assert!(!tex.contains("minted"));
@@ -2101,7 +2101,7 @@ mod tests {
             &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\begin{rlerror}"));
-        assert!(tex.contains("\\definecolor{rlerrfg}{HTML}{d20f39}"));
+        assert!(tex.contains("\\definecolor{rlerrfg}{HTML}{c60e36}"));
         assert!(tex.contains("undefined variable"));
     }
 
@@ -2297,13 +2297,13 @@ mod tests {
             &crate::render::LinkMode::single_file(),
         );
         assert!(tex.contains("\\definecolor{rltext}{HTML}{4c4f69}"), "{tex}");
-        assert!(tex.contains("\\definecolor{rlkw}{HTML}{8839ef}"));
+        assert!(tex.contains("\\definecolor{rlkw}{HTML}{802cee}"));
         assert!(tex.contains("\\definecolor{rlcodebg}{HTML}{dce0e8}"));
         assert!(tex.contains("\\definecolor{rloutbg}{HTML}{e6e9ef}"));
-        assert!(tex.contains("\\definecolor{rldim}{HTML}{6c6f85}"));
+        assert!(tex.contains("\\definecolor{rldim}{HTML}{56586a}"));
         assert!(tex.contains("\\definecolor{rlerrbg}{HTML}{fce4e4}"));
-        assert!(tex.contains("\\definecolor{rlh2}{HTML}{1e66f5}"));
-        assert!(tex.contains("\\definecolor{rlh3}{HTML}{179299}"));
+        assert!(tex.contains("\\definecolor{rlh2}{HTML}{094dd3}"));
+        assert!(tex.contains("\\definecolor{rlh3}{HTML}{12747a}"));
         assert!(
             !tex.contains("cba6f7"),
             "dark Mocha keyword must not leak: {tex}"

@@ -150,18 +150,70 @@ fn editor_style(c: &ThemeColors) -> String {
   #rl-source-pane .CodeMirror-cursor {{ border-left: 1px solid {text}; }}
   #rl-source-pane .CodeMirror-selected {{ background: {border}; }}
   #rl-source-pane .CodeMirror-activeline-background {{ background: {bg_secondary}; }}
-  /* Default CodeMirror tokens assume a light page; `.cm-link` is a
-     dark blue that vanishes on Mocha. */
-  #rl-source-pane .cm-link {{ color: {accent}; }}
-</style>
+{tokens}</style>
 "##,
         bg_secondary = c.css_var("bg-secondary"),
         text = c.css_var("text"),
         text_dim = c.css_var("text-dim"),
         border = c.css_var("border"),
         code_bg = c.css_var("code-bg"),
-        accent = c.css_var("accent-secondary"),
+        tokens = codemirror_token_css("#rl-source-pane", c),
     )
+}
+
+/// Map CodeMirror's default token classes onto theme font roles.
+///
+/// The vendored stylesheet assumes a light page: headers and links are
+/// dark blue (`#00f`, `#00c`), brackets are a yellow-gray (`#997`), and
+/// the search match is a yellow wash (`#ffa`). Those pairs fail on a
+/// dark code panel and on Latte's near-white code panel. Every override
+/// uses a role that already clears WCAG AA against `code_bg`. Search is
+/// an underline so the match is not a second background the tokens were
+/// not tuned for.
+pub(crate) fn codemirror_token_css(scope: &str, c: &ThemeColors) -> String {
+    let color = |classes: &[&str], role: &str| -> String {
+        let sels: Vec<String> = classes.iter().map(|cl| format!("{scope} {cl}")).collect();
+        format!("  {} {{ color: {}; }}\n", sels.join(", "), c.css_var(role))
+    };
+    let mut out = String::from(
+        "  /* CodeMirror defaults are a light page. Token colors are theme roles. */\n",
+    );
+    out.push_str(&color(&[".cm-header"], "accent-primary"));
+    out.push_str(&color(&[".cm-link", ".cm-url"], "accent-secondary"));
+    out.push_str(&color(
+        &[".cm-keyword", ".cm-builtin", ".cm-tag", ".cm-attribute"],
+        "syn-keyword",
+    ));
+    out.push_str(&color(
+        &[".cm-string", ".cm-string-2", ".cm-quote"],
+        "syn-string",
+    ));
+    out.push_str(&color(&[".cm-comment"], "syn-comment"));
+    out.push_str(&color(&[".cm-number", ".cm-atom"], "syn-number"));
+    out.push_str(&color(
+        &[".cm-def", ".cm-variable-2", ".cm-variable-3", ".cm-type"],
+        "syn-function",
+    ));
+    out.push_str(&color(&[".cm-operator", ".cm-bracket"], "syn-operator"));
+    out.push_str(&color(&[".cm-meta", ".cm-qualifier", ".cm-hr"], "text-dim"));
+    out.push_str(&color(
+        &[".cm-error", ".cm-invalidchar", ".cm-negative"],
+        "error-text",
+    ));
+    out.push_str(&color(
+        &[
+            ".cm-positive",
+            ".cm-matchingbracket",
+            ".CodeMirror-matchingbracket",
+        ],
+        "syn-string",
+    ));
+    out.push_str(&color(&[".CodeMirror-nonmatchingbracket"], "error-text"));
+    out.push_str(&format!(
+        "  {scope} .cm-searching {{ background: transparent !important; background-color: transparent !important; text-decoration: underline; text-decoration-color: {}; }}\n",
+        c.css_var("accent-secondary"),
+    ));
+    out
 }
 
 /// `<body>` additions: toolbar + pane markup, the CodeMirror scripts
@@ -348,7 +400,21 @@ mod tests {
         assert!(out.contains("/assets/codemirror/codemirror.min.css"));
         assert!(
             out.contains(".cm-link"),
-            "dark-theme override for markdown links"
+            "markdown links must not keep CodeMirror's dark blue"
+        );
+        assert!(out.contains(".cm-keyword"), "keyword token override");
+        assert!(out.contains(".cm-bracket"), "bracket token override");
+        assert!(
+            out.contains(".cm-searching"),
+            "search match must not keep the yellow wash"
+        );
+        assert!(out.contains("background-color: transparent"));
+        assert!(
+            !out.contains("#00f")
+                && !out.contains("#00c")
+                && !out.contains("#ffa")
+                && !out.contains("#997"),
+            "default CodeMirror font colors must not be re-emitted"
         );
         assert!(out.contains("/assets/codemirror/mode/markdown/markdown.min.js"));
         assert!(out.contains("/save/' + slug"), "save POST target present");

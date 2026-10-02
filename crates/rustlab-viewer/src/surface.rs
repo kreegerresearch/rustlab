@@ -167,11 +167,26 @@ fn handle_input(ui: &Ui, response: &Response, cam: &mut SurfaceCamera) {
     }
 }
 
+/// 3-D panel fill. Tick labels and the hint are drawn on this color.
+fn surface_fill() -> Color32 {
+    Color32::from_rgb(18, 18, 22)
+}
+
+/// Axis tick labels on [`surface_fill`].
+fn surface_label_color() -> Color32 {
+    Color32::from_rgb(200, 200, 210)
+}
+
+/// The one-line interaction hint on [`surface_fill`].
+fn surface_hint_color() -> Color32 {
+    Color32::from_rgb(140, 140, 155)
+}
+
 fn paint_surface(painter: &Painter, rect: Rect, data: &Surface3dData, cam: &SurfaceCamera) {
     painter.rect(
         rect,
         0.0,
-        Color32::from_rgb(18, 18, 22),
+        surface_fill(),
         Stroke::new(1.0, Color32::from_rgb(60, 60, 70)),
         StrokeKind::Inside,
     );
@@ -329,7 +344,7 @@ fn paint_surface(painter: &Painter, rect: Rect, data: &Surface3dData, cam: &Surf
     painter.add(Shape::mesh(mesh));
 
     // Axis tick labels: min/max on each axis.
-    let label_color = Color32::from_rgb(200, 200, 210);
+    let label_color = surface_label_color();
     let font = egui::FontId::proportional(11.0);
     let label = |p: Pos2, s: String| {
         painter.text(
@@ -352,6 +367,51 @@ fn paint_surface(painter: &Painter, rect: Rect, data: &Surface3dData, cam: &Surf
         egui::Align2::LEFT_TOP,
         hint,
         egui::FontId::proportional(10.0),
-        Color32::from_rgb(140, 140, 155),
+        surface_hint_color(),
     );
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::{surface_fill, surface_hint_color, surface_label_color};
+
+    fn lin(c: u8) -> f64 {
+        let x = f64::from(c) / 255.0;
+        if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn contrast(fg: egui::Color32, bg: egui::Color32) -> f64 {
+        let lum =
+            |c: egui::Color32| 0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b());
+        let (hi, lo) = {
+            let a = lum(fg);
+            let b = lum(bg);
+            if a > b {
+                (a, b)
+            } else {
+                (b, a)
+            }
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn surface_labels_meet_wcag_aa_on_the_panel() {
+        let bg = surface_fill();
+        let labels = contrast(surface_label_color(), bg);
+        let hint = contrast(surface_hint_color(), bg);
+        assert!(labels >= 4.5, "tick labels {labels:.2}:1 on the 3D panel");
+        assert!(hint >= 4.5, "hint {hint:.2}:1 on the 3D panel");
+        // Dark blue on this near-black fill is the named failure. It must
+        // stay failing so this guard cannot pass by accident.
+        let blue = contrast(egui::Color32::from_rgb(0, 0, 0xee), bg);
+        assert!(
+            blue < 4.5,
+            "UA blue on the 3D panel contrast {blue:.2} is no longer a failure"
+        );
+    }
 }
