@@ -14,7 +14,7 @@ use std::path::PathBuf;
     about = "Render Markdown notebooks with rustlab code blocks",
     long_about = "Render Markdown notebooks with rustlab code blocks.\n\n\
         Executes ```rustlab fenced code blocks through the evaluator, captures\n\
-        text output and plots, and produces self-contained HTML, LaTeX, or PDF.\n\
+        text output and plots, and produces HTML, Markdown, LaTeX, PDF, or JSON.\n\
         Supports template interpolation (${expr}), KaTeX math, syntax highlighting,\n\
         and multi-notebook directory rendering with index generation.\n\n\
         Examples:\n  \
@@ -27,7 +27,7 @@ use std::path::PathBuf;
         rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
         Options:\n  \
         -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
-        -f, --format <FMT>     html (default), latex, pdf, markdown\n  \
+        -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
         -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                             \
                                (aliases: dark, light). Default dark, or ~/.rustlabrc\n                             \
                                [notebook] theme. LaTeX and PDF are always Catppuccin\n                             \
@@ -41,7 +41,10 @@ use std::path::PathBuf;
         latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
         pdf       Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n  \
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
-                  committing alongside source, browsable on GitHub\n\n\
+                  committing alongside source, browsable on GitHub\n  \
+        json      One notebook as JSON on stdout (single file; --stdin, --pretty)\n\n\
+        Fences tagged bash, python, or text are highlighted (text is uncolored).\n\
+        Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
         Themes:\n  \
         mocha / dark (default)  Catppuccin Mocha\n  \
         macchiato               Catppuccin Macchiato\n  \
@@ -67,34 +70,6 @@ enum CliFormat {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF
-    #[command(
-        long_about = "Render a notebook (or directory of notebooks) to HTML, LaTeX, or PDF.\n\n\
-            Examples:\n  \
-            rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
-            rustlab-notebook render analysis.md -t light           # → analysis.html (latte)\n  \
-            rustlab-notebook render analysis.md -t macchiato       # → Catppuccin Macchiato\n  \
-            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always light)\n  \
-            rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
-            rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
-            rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
-            rustlab-notebook render notebooks/ -f pdf              # all notebooks → light PDF\n\n\
-            Options:\n  \
-            -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
-            -f, --format <FMT>     html (default), latex, pdf\n  \
-            -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                                 \
-                                   (aliases: dark, light); default dark or ~/.rustlabrc.\n                                 \
-                                   LaTeX and PDF are always Latte on white paper.\n\n\
-            Formats:\n  \
-            html   Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
-            latex  LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
-            pdf    Compile LaTeX to PDF (always light; requires pdflatex or tectonic)\n\n\
-            Themes:\n  \
-            mocha / dark (default)  Catppuccin Mocha\n  \
-            macchiato               Catppuccin Macchiato\n  \
-            frappe                  Catppuccin Frappé\n  \
-            latte / light           Catppuccin Latte"
-    )]
     /// Watch a notebook (interactive server) or directory (re-render on save)
     #[command(long_about = "Watch a notebook source and react to saves.\n\n\
             Two modes — picked by what you pass:\n\n  \
@@ -125,7 +100,8 @@ enum Command {
             rustlab-notebook watch notebooks/ --obsidian                   # re-render on save, vault-friendly in-place\n  \
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
-            Re-render-on-save is markdown-only currently.")]
+            Re-render-on-save is markdown-only currently.\n\n\
+            A directory watch shows a file browser; a single file does not.")]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
         /// files (with --obsidian / --output).
@@ -223,13 +199,47 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Render a notebook (or a directory of notebooks) to HTML, Markdown, LaTeX, PDF, or JSON
+    #[command(
+        long_about = "Render a notebook (or a directory of notebooks) to HTML, Markdown, LaTeX, PDF, or JSON.\n\n\
+            Examples:\n  \
+            rustlab-notebook render analysis.md                    # → analysis.html (dark theme)\n  \
+            rustlab-notebook render analysis.md -t light           # → analysis.html (latte)\n  \
+            rustlab-notebook render analysis.md -t macchiato       # → Catppuccin Macchiato\n  \
+            rustlab-notebook render analysis.md -f pdf             # → analysis.pdf (always Latte)\n  \
+            rustlab-notebook render analysis.md -f latex           # → analysis.tex + SVG plots\n  \
+            rustlab-notebook render analysis.md -f markdown        # → analysis.md + SVG plots\n  \
+            rustlab-notebook render analysis.md -f json            # JSON on stdout (single file)\n  \
+            rustlab-notebook render analysis.md -o out.html        # custom output path\n  \
+            rustlab-notebook render notebooks/                     # render all .md → .html + index\n  \
+            rustlab-notebook render notebooks/ -f pdf              # all notebooks → Latte PDF\n\n\
+            Options:\n  \
+            -o, --output <PATH>    Output file or directory (default: <input_stem>.<ext>)\n  \
+            -f, --format <FMT>     html (default), latex, pdf, markdown, json\n  \
+            -t, --theme  <THEME>   HTML/watch theme: mocha|macchiato|frappe|latte\n                                 \
+                                   (aliases: dark, light); default dark or ~/.rustlabrc.\n                                 \
+                                   LaTeX and PDF are always Latte on white paper.\n\n\
+            Formats:\n  \
+            html      Self-contained HTML with Plotly charts and KaTeX math (default)\n  \
+            markdown  GitHub-friendly .md with inline SVG plots\n  \
+            latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
+            pdf       Compile LaTeX to PDF (always Latte on white paper; requires pdflatex or tectonic)\n  \
+            json      JSON on stdout for one notebook (--stdin, --cwd, --pretty). No --output file.\n\n\
+            Fences tagged bash, python, or text are highlighted (text is uncolored).\n\
+            Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
+            Themes:\n  \
+            mocha / dark (default)  Catppuccin Mocha\n  \
+            macchiato               Catppuccin Macchiato\n  \
+            frappe                  Catppuccin Frappé\n  \
+            latte / light           Catppuccin Latte"
+    )]
     Render {
         /// Input .md file or directory of .md files
         input: PathBuf,
         /// Output file or directory (default: <input_stem>.<ext> or same directory)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Output format: html (default), latex, pdf, markdown
+        /// Output format: html (default), latex, pdf, markdown, json
         #[arg(short, long, value_enum, default_value = "html")]
         format: CliFormat,
         /// HTML and watch theme: mocha|macchiato|frappe|latte (aliases:

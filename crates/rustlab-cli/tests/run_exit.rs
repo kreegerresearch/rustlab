@@ -85,5 +85,5 @@ fn profile_mode_failing_script_exits_nonzero() {
         .expect("launch rustlab")
         .status
         .code();
-    assert_ne!(code, Some(0));
+    assert_eq!(code, Some(1));
 }

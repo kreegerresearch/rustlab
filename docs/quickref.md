@@ -4,7 +4,7 @@ Concise cheat sheet for the rustlab scripting language. Full signatures and exam
 
 Run a script: `rustlab run script.rlab` — Interactive REPL: `rustlab`
 
-Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs Plotting` (category), `rustlab docs --search query` (substring match), `rustlab docs --json` (machine-readable index of every builtin).
+Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs dsp` (one toolbox — `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`), `rustlab docs --search query` (substring match), `rustlab docs --json` (array of `{name, toolbox, subcategory, brief, detail}`). `plot` and `sparse` are also builtin names, so `rustlab docs plot` shows the function and `rustlab docs Plot` lists that toolbox. There is no `Plotting` toolbox.
 
 > **For AI agents:** This file is the canonical capability index. Check it to know what functions exist before generating code. It is kept in sync with the actual builtins; if a function is not listed here, it is not implemented. For a programmatic index, run `rustlab docs --json` and parse the result.
 

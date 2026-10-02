@@ -2,14 +2,19 @@
 
 > Rust-native matrix algebra + DSP toolkit with a scriptable language (`.rlab`),
 > an interactive REPL, a Markdown notebook renderer, and terminal/file/HTML plotting.
-> Numerics are complex-by-default, indexing is 1-based, ~327 builtins across
+> Numerics are complex-by-default, indexing is 1-based, 349 builtins across
 > math, linear algebra (dense + sparse), statistics, FFT/spectral, FIR/IIR filter
 > design, fixed-point, control systems, RF S-parameters, and vector calculus.
 
 Run a script: `rustlab run script.rlab --plot none`   REPL: `rustlab`
 Render a notebook: `rustlab-notebook render note.md`
-Note: runtime errors print `error: line N: ...` to stderr but the exit code
-stays 0 — check stderr, not the exit code.
+`rustlab --help` is the CLI only. Builtins: `rustlab docs` and
+`rustlab docs --json`. Notebooks, themes, and rendering:
+`rustlab-notebook --help`.
+`rustlab run` exits 1 on a lex, parse, or runtime failure, including
+with `--profile`. The diagnostic is on stderr (`error: ...` without
+`--profile`). A successful script exits 0, as do audio EOF and an
+interrupt (Ctrl-C or `q` on a live figure).
 
 ## Docs
 
@@ -33,10 +38,11 @@ stays 0 — check stderr, not the exit code.
 
 ## Examples
 
-- [examples/](examples/): 81 runnable .rlab scripts, one directory per toolbox
+- [examples/](examples/): 82 runnable .rlab scripts, grouped by toolbox
   (language, math, linalg, stats, sparse, dsp, spectral, controls, rf, pde,
-  plot, audio, notebooks)
-- [gallery/](gallery/): 38 rendered notebooks with inline plots, browsable on GitHub
+  plot, audio), plus a helper under notebooks
+- [gallery/](gallery/): 40 rendered notebooks with inline plots, browsable on GitHub
+  (`README.md` is the index; `_setup.md` is a partial, not a standalone page)
 
 ## Programmatic discovery
 

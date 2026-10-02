@@ -298,17 +298,42 @@ fn info_prints_version_and_usage_summary() {
         "stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("DSP toolkit"),
-        "usage summary missing; stdout:\n{stdout}"
+        stdout.contains("rustlab docs") && stdout.contains("rustlab docs --json"),
+        "docs pointer missing; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("rustlab-notebook --help"),
+        "notebook pointer missing; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("DSP toolkit"),
+        "info must not print a DSP feature list; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn help_points_at_docs_and_stays_short() {
+    let out = run(&["--help"]);
+    assert!(out.status.success(), "exit {}: {}", out.status, stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(
+        stdout.contains("rustlab docs") && stdout.contains("rustlab docs --json"),
+        "builtins pointer missing; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("rustlab-notebook --help"),
+        "notebook pointer missing; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("fir_lowpass"),
+        "help must not paste the builtin list; stdout:\n{stdout}"
     );
 }
 
 // ── run: error reporting ───────────────────────────────────────────────────
 //
-// Note: `rustlab run` currently exits 0 even when the script fails to parse
-// or hits a runtime error — `run_script_source` prints the diagnostic to
-// stderr and swallows the error. These tests therefore lock in the stderr
-// contract only; if exit codes are ever fixed to be non-zero, tighten them.
+// `rustlab run` exits 1 on a parse or runtime failure (see also
+// tests/run_exit.rs). `--profile` takes the anyhow path and also exits 1.
 
 #[test]
 fn run_syntax_error_reports_error_on_stderr() {
@@ -317,6 +342,11 @@ fn run_syntax_error_reports_error_on_stderr() {
 
     let out = run_in(dir.path(), &["run", "broken.rlab"]);
     let stderr = stderr_str(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "parse failure must exit 1; stderr:\n{stderr}"
+    );
     assert!(
         stderr.lines().any(|l| l.starts_with("error:") && l.contains("parse error")),
         "expected an `error: ... parse error ...` line on stderr; actual stderr:\n{stderr}"
@@ -336,6 +366,11 @@ fn run_runtime_error_reports_line_number_on_stderr() {
 
     let out = run_in(dir.path(), &["run", "oob.rlab"]);
     let stderr = stderr_str(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "runtime failure must exit 1; stderr:\n{stderr}"
+    );
     assert!(
         stderr.contains("error: line 2:"),
         "expected `error: line 2:` on stderr; actual stderr:\n{stderr}"

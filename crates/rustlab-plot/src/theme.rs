@@ -5,9 +5,10 @@
 //! [`theme_colors`] (`"mocha"`, `"macchiato"`, `"frappe"`, `"latte"`, plus
 //! aliases `"dark"` / `"light"`).
 //!
-//! Light vs dark chrome (CSS `color-scheme`, LaTeX `pagecolor`) is derived
-//! from background luminance via [`ThemeColors::is_dark`] — not from which
-//! static the palette pointer equals.
+//! HTML light vs dark chrome (CSS `color-scheme`) is derived from background
+//! luminance via [`ThemeColors::is_dark`] — not from which static the palette
+//! pointer equals. LaTeX and PDF do not use that switch: they are always
+//! Catppuccin Latte on white paper, with no `pagecolor`.
 //!
 //! HTML emitters call [`ThemeColors::css_custom_properties`] for `:root`
 //! `--rl-*` tokens and [`ThemeColors::css_var`] for `var(--rl-…, literal)`
@@ -157,8 +158,10 @@ pub struct ThemeColors {
 
 impl ThemeColors {
     /// `true` when the page background is closer to black than white
-    /// (sRGB relative luminance &lt; 0.5). Used for CSS `color-scheme` and
-    /// LaTeX `pagecolor` — not pointer identity against a builtin static.
+    /// (sRGB relative luminance &lt; 0.5). Used for CSS `color-scheme` —
+    /// not pointer identity against a builtin static. LaTeX and PDF do
+    /// not consult this; they are always Latte on white paper, with no
+    /// `pagecolor`.
     pub fn is_dark(&self) -> bool {
         !matches!(relative_luminance(self.bg), Some(l) if l >= 0.5)
     }

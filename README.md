@@ -2,7 +2,7 @@
 
 A matrix algebra and DSP toolkit written in Rust — scriptable from the command line or embedded in your own applications.
 
-**[Browse the rendered notebook gallery →](gallery/)** — twenty worked
+**[Browse the rendered notebook gallery →](gallery/)** — 40 worked
 notebooks (DSP filter design, spectral estimation, vector calculus,
 contour and surface plots, sparse direct solves with Cholesky and LU,
 multi-source electrostatics, dielectric Poisson, and more), all rendered
@@ -22,7 +22,7 @@ make install
 Builds release binaries and installs three tools to `~/.local/bin`:
 
 - **`rustlab`** — REPL, script runner, and CLI toolkit
-- **`rustlab-notebook`** — render Markdown notebooks to HTML, LaTeX, or PDF
+- **`rustlab-notebook`** — render Markdown notebooks to HTML, Markdown, LaTeX, PDF, or JSON
 - **`rustlab-viewer`** — standalone interactive plot viewer (egui). Can render plots from a
   `rustlab` running on another machine — see [Remote sessions](docs/remote-viewer.md)
 
@@ -86,7 +86,7 @@ rustlab
 ```
 
 ```
-rustlab 0.1.5 — type 'exit' or press Ctrl+D to quit
+rustlab 0.3.7 — type 'help' or '?' for help, 'exit' or Ctrl+D to quit
 Tip: end a line with ; to suppress output
 
 >> a = 1:5
@@ -406,7 +406,7 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 320+ builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 349 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|
@@ -519,21 +519,28 @@ as the REPL's `help` / `?` commands, no need to launch the REPL just to
 remember what arguments `firpm` takes.
 
 ```sh
-rustlab docs                       # list every builtin grouped by category
+rustlab docs                       # list every builtin grouped by toolbox
 rustlab docs eig                   # detail for one builtin (usage + examples)
-rustlab docs Plotting              # list one category
+rustlab docs dsp                   # list one toolbox
 rustlab docs --search eigen        # substring match across names + briefs
 rustlab docs --json                # machine-readable dump (one object per builtin)
 ```
 
-The `--json` form prints a JSON array of `{name, category, brief, detail}`
-records covering every builtin (~250 entries). Useful for editor
-extensions, autocomplete plugins, and AI tooling that wants a single
-authoritative index without re-implementing the categories table.
+Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`,
+`spectral`, `controls`, `rf`, `pde`, `plot`, and `audio`. There is no
+`Plotting` toolbox. `plot` and `sparse` are also builtin names, so
+`rustlab docs plot` shows the function; `rustlab docs Plot` lists that
+toolbox.
 
-When the topic doesn't match any builtin or category name, `rustlab docs`
-prints a "No help found" message and exits with a non-zero status — handy
-in scripts that probe for support of a particular feature.
+The `--json` form prints a JSON array of
+`{name, toolbox, subcategory, brief, detail}` records, one per builtin
+(349 entries). `detail` holds the signature and a usage example. Useful
+for editor extensions, autocomplete plugins, and AI tooling that wants a
+single authoritative index.
+
+When the topic doesn't match any builtin, toolbox, or subcategory name,
+`rustlab docs` prints a "No help found" message and exits with a non-zero
+status — handy in scripts that probe for support of a particular feature.
 
 ### `rustlab remote <host>`
 
@@ -630,7 +637,7 @@ Generate a window function and print values to stdout.
 | `--type TYPE` | required | Window type: `hann`, `hamming`, `blackman`, `rectangular`, `kaiser` |
 | `--length N` | required | Number of samples |
 | `--beta B` | — | Kaiser beta parameter |
-| `--plot` | false | Show an ASCII stem plot |
+| `--plot` | false | Open a terminal stem plot (the rustlab plot library) |
 
 ```sh
 rustlab window --type hann --length 32
@@ -639,7 +646,7 @@ rustlab window --type kaiser --length 64 --beta 8.6 --plot
 
 ### `rustlab plot [OPTIONS]`
 
-Plot a CSV signal file (ASCII art rendered to the terminal).
+Plot a CSV signal in the terminal with the rustlab plot library (line or stem chart).
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -654,7 +661,8 @@ rustlab plot --input coeffs.csv --type stem --title "Filter coefficients"
 
 ### `rustlab info`
 
-Print version and usage hints.
+Print the version and pointers to `rustlab docs` / `rustlab docs --json`
+and `rustlab-notebook --help`.
 
 ```sh
 rustlab info
