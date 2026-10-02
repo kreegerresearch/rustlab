@@ -390,8 +390,21 @@ Workflow Rule 12).
 - The non-integer index error now suggests a fix: `index 2.5 is invalid
   (must be a positive integer; round a computed index explicitly with
   floor()/round(), or use integer arithmetic)`.
+- `rustlab info` prints the version and pointers to `rustlab docs` /
+  `rustlab docs --json` and `rustlab-notebook --help`. It no longer
+  prints a short DSP feature list. `rustlab --help` stays a subcommand
+  list and adds the same two pointers.
 
 ### Docs
+- Agent-facing docs match the binary. `rustlab run` exits 1 on a lex,
+  parse, or runtime failure, including `--profile`. `rustlab docs --json`
+  records are `{name, toolbox, subcategory, brief, detail}` (349
+  builtins). Toolbox names are the twelve lowercase ids (`rustlab docs
+  dsp`); there is no `Plotting` toolbox. `window --plot` and `rustlab
+  plot` use the plot library's terminal charts. The gallery has 40
+  rendered notebooks and `examples/` has 82 scripts. `bash`, `python`,
+  and `text` fences are highlighted. LaTeX and PDF stay Catppuccin Latte
+  on white paper, with no `pagecolor`.
 - Corrected the physical rationale for the harmonic-mean face coefficients
   in the `laplacian_eps_2d` reference (series composition of half-cell
   fluxes / O(h) accuracy, not flux-conservation).

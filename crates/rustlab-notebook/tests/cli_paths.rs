@@ -54,3 +54,72 @@ fn render_dir_relative_output_resolves_against_cwd() {
     assert!(Path::new(&dir.path().join("site/a.html")).is_file());
     assert!(!src_dir.join("site").exists());
 }
+
+#[test]
+fn help_puts_render_detail_on_render_not_watch() {
+    let top = bin().arg("--help").output().expect("notebook --help");
+    assert!(top.status.success());
+    let top_out = String::from_utf8_lossy(&top.stdout);
+    assert!(
+        top_out.contains("html (default), latex, pdf, markdown, json"),
+        "format line should name json:\n{top_out}"
+    );
+    assert!(
+        top_out.contains("bash, python, or text"),
+        "fence line missing:\n{top_out}"
+    );
+    assert!(
+        top_out.contains("file browser"),
+        "file browser line missing:\n{top_out}"
+    );
+    assert!(
+        top_out.contains("Latte"),
+        "PDF/LaTeX theme note missing:\n{top_out}"
+    );
+
+    let render = bin()
+        .args(["render", "--help"])
+        .output()
+        .expect("render --help");
+    assert!(render.status.success());
+    let render_out = String::from_utf8_lossy(&render.stdout);
+    assert!(
+        render_out.contains("html (default), latex, pdf, markdown, json"),
+        "render format line should name json:\n{render_out}"
+    );
+    assert!(
+        render_out.contains("bash, python, or text"),
+        "render fence line missing:\n{render_out}"
+    );
+    assert!(
+        render_out.contains("file browser"),
+        "render file browser line missing:\n{render_out}"
+    );
+    assert!(
+        render_out.contains("always Latte"),
+        "render should still say PDF is Latte:\n{render_out}"
+    );
+    assert!(
+        render_out.contains("→ analysis.html"),
+        "long render description should live on render:\n{render_out}"
+    );
+
+    let watch = bin()
+        .args(["watch", "--help"])
+        .output()
+        .expect("watch --help");
+    assert!(watch.status.success());
+    let watch_out = String::from_utf8_lossy(&watch.stdout);
+    assert!(
+        watch_out.contains("Interactive server"),
+        "watch help should describe the server:\n{watch_out}"
+    );
+    assert!(
+        watch_out.contains("file browser"),
+        "directory watch should mention the file browser:\n{watch_out}"
+    );
+    assert!(
+        !watch_out.contains("→ analysis.html"),
+        "render examples must not be stacked on watch:\n{watch_out}"
+    );
+}

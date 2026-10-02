@@ -10,7 +10,7 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 81 runnable scripts and 38 rendered notebooks to copy patterns from.
+5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 82 runnable scripts and 40 rendered notebooks to copy patterns from.
 
 ---
 
@@ -40,7 +40,7 @@ rustlab run script.rlab --profile      # print per-function timing report to std
 
 Facts an agent must know (all verified against the current binary):
 
-- **Exit code is 0 even when the script fails.** Runtime errors *and* parse errors print to **stderr** as `error: ...` (runtime ones as `error: line N: runtime error: <message>`) and halt execution, but the process still exits 0; only lex errors and pre-execution failures (e.g. missing file) exit non-zero. To detect failure reliably, capture stderr and check for a line starting with `error:` — do not rely on the exit code.
+- **A failing script exits 1.** Lex errors, parse errors, and runtime errors halt the script and the process exits 1, with or without `--profile`. Without `--profile` the diagnostic is a stderr line `error: ...` (runtime: `error: line N: ...`). `--profile` reports the same failure through the process error and also exits 1. A successful script exits 0. Two signals are clean exits (code 0, no error line): `audio_read` hitting EOF, and an interrupt (Ctrl-C or `q` on a live figure). A missing file exits nonzero before the script runs. Every run also prints a `rustlab … — interpreting …` banner on stderr; that banner is not a failure.
 - **Plots do not block in non-TTY runs.** The interactive TUI pager is skipped automatically when stdout is not a terminal, and `--plot none` suppresses it explicitly. `savefig()` still writes files in both cases. An agent piping output can safely run scripts containing `plot(...)`.
 - **Relative paths in `savefig`, `save`, and `load` resolve against the script's directory**, not the process working directory.
 - A bare expression or assignment without `;` echoes its value to stdout; a trailing `;` suppresses the echo.
@@ -62,14 +62,18 @@ Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustla
 The authoritative, machine-readable source is the binary itself:
 
 ```sh
-rustlab docs                  # all ~327 builtins grouped by category
+rustlab docs                  # all 349 builtins grouped by toolbox
 rustlab docs eig              # full detail for one builtin (signature + example)
-rustlab docs Plotting         # one category
+rustlab docs dsp              # one toolbox
 rustlab docs --search welch   # substring match over names and briefs
 rustlab docs --json           # complete JSON index — best single call for an agent
 ```
 
-`rustlab docs --json` returns an array of `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`. There is no `Plotting` toolbox. A builtin name wins over a toolbox spelled the same way, so `rustlab docs plot` and `rustlab docs sparse` show those functions; `rustlab docs Plot` lists the plot toolbox.
+
+`rustlab docs --json` returns an array of 349 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+
+`rustlab --help` lists this binary's subcommands only. Notebooks, themes, and rendering are `rustlab-notebook --help` (detail for a render is `rustlab-notebook render --help`).
 
 In source form, [`docs/quickref.md`](quickref.md) is the canonical capability index, kept in sync with the registered builtins by project policy. **If a function is not in quickref.md, do not generate code that calls it.**
 
@@ -123,7 +127,7 @@ Ordered roughly by how often they matter:
 
 | Pitfall | Correct handling |
 |---|---|
-| Runtime errors do **not** change the exit code of `rustlab run` | Capture stderr; treat any `error: line N:` line as failure |
+| A lex, parse, or runtime failure exits 1 (including `--profile`) | Read stderr for the diagnostic; without `--profile` it is a line starting with `error:` |
 | No `break`/`continue` in loops | Restructure with a flag in the `while` condition or bounded `for` |
 | No `~` placeholder in destructuring (`[~, i] = ...` is a lex error) | Bind unwanted outputs to a dummy variable, or use `argmin`/`argmax` |
 | `*` vs `.*` on same-shaped matrices | `*` is matrix product; use `.*` for element-wise |
@@ -203,7 +207,7 @@ Authoring features an agent should use (full reference: [`docs/notebooks.md`](no
 
 Verification loop for notebook authoring: edit → `rustlab-notebook render note.md -f html` (watch stderr for block errors) → `rustlab-notebook check note.md`.
 
-The [`gallery/`](../gallery/) directory holds 38 rendered example notebooks (committed Markdown output, browsable on GitHub) — the best source of real authoring patterns. Their sources live in `examples/notebooks/`.
+The [`gallery/`](../gallery/) directory holds 40 rendered example notebooks (committed Markdown output, browsable on GitHub) — the best source of real authoring patterns. Their sources live in `examples/notebooks/`. `_setup.md` is a partial, not a standalone page.
 
 ---
 
@@ -238,7 +242,7 @@ When asked to produce rustlab code:
 1. **Check the capability index first** (`docs/quickref.md` or `rustlab docs --json`). Never invent function names.
 2. **Write the script** to a `.rlab` file, ending file outputs with `savefig`/`save` rather than interactive plots.
 3. **Run it:** `rustlab run script.rlab --plot none`, capturing stderr.
-4. **Treat any stderr line matching `^error:` as failure** (the exit code stays 0); fix and re-run.
+4. **A nonzero exit code means the script failed.** Without `--profile`, stderr also has a line starting with `error:`. Fix and re-run.
 5. **Verify artifacts** (the SVG/CSV/NPZ files you expected) exist and are non-trivial in size.
 6. For notebooks: `rustlab-notebook render note.md` then `rustlab-notebook check note.md`.
 7. To mimic existing style, copy patterns from the closest script in `examples/` or notebook in `gallery/` — they are all maintained and runnable (`cargo test -p rustlab-cli` executes the example suite in CI).

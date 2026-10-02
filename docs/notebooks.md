@@ -1286,8 +1286,10 @@ Self-contained HTML with:
   lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
   numbers, operators, call-like names) and follow the Catppuccin theme.
   Token text is escaped HTML (`<span class="syn-*">`); there is no
-  client-side highlighter. Markdown fences that are not `rustlab`, inline
-  code, and printed output are not highlighted.
+  client-side highlighter. Fences tagged `bash` or `python` use those
+  same token colors; a `text` fence is uncolored on the printed-output
+  background. Other fence tags, inline code, and printed output are not
+  highlighted.
 - Responsive layout (sidebar collapses on mobile)
 
 ### Markdown (`--format markdown`)

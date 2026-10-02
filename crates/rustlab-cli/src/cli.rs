@@ -7,6 +7,8 @@ use clap::{Parser, Subcommand};
     version = env!("CARGO_PKG_VERSION"),
     about   = "Matrix algebra and DSP toolkit with a scriptable .rlab language",
     long_about = None,
+    after_help = "Builtins: rustlab docs  and  rustlab docs --json\n\
+                  Notebooks, themes, and rendering: rustlab-notebook --help"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -34,7 +36,7 @@ pub enum Commands {
     /// (viewer-feature builds only — `make install` produces one)
     #[cfg(feature = "viewer")]
     Remote(crate::commands::remote::RemoteArgs),
-    /// Show version and feature information
+    /// Print the version and pointers to builtin and notebook docs
     Info,
     /// Inspect, prune, or clear a persistent function-result cache
     #[command(subcommand)]
