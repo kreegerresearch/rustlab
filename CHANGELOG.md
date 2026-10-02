@@ -6,6 +6,29 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.8
+
+### Breaking / behavior changes
+- **Directory `notebook watch` pages use the collection path.**
+  `ch2/filters.md` is `http://127.0.0.1:<port>/n/ch2/filters` (the `.md`
+  stripped). An old `/n/<stem>` URL, including a `-N` collision suffix,
+  redirects to that path. Two files named `filters.md` are
+  `/n/ch2/filters` and `/n/ch3/filters`. A single-file `watch` stays at
+  `/n/<stem>`. Static HTML links are unchanged. WebSocket, `/raw/`, and
+  `/save/` still use an internal id; the page stamps it in
+  `<meta name="rl-slug">`. Migration: bookmarks of `/n/<stem>` for a
+  nested notebook follow the redirect.
+- **The directory file browser shows file names.** Each row is the file
+  name (`filters.md`) inside its folder. The notebook title and the full
+  collection-relative path are no longer stacked on the row. Listing
+  rules, order, the current-page marker, and native `<details>` collapse
+  are unchanged.
+- **A fenced code block with no language tag renders as `text`.** It uses
+  the same boxed, uncolored panel as an explicit ` ```text ` fence in
+  HTML, `notebook watch`, and PDF, including the `text` label. A tag this
+  renderer does not highlight (`javascript`, `sh`) is unchanged, and an
+  indented code block is still not a fence.
+
 ## 0.3.7
 
 All entries below shipped under no released version number before this

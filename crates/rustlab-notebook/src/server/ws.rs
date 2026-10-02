@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as AxPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use rustlab_script::WidgetValue;
@@ -17,14 +16,16 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::http::{Notebook, ServerState};
 use super::render_loop::RenderRequest;
 
-/// Axum upgrade handler for `/n/{slug}/ws`. Resolves the notebook by
-/// slug, then hands the socket to [`handle_socket`] bound to that
-/// notebook's broadcast channel. Unknown slug → 404 (no upgrade).
-/// Requires a loopback `Origin` for the bound port (missing Origin is
-/// 403). The Host check lives in the router middleware.
-pub async fn ws_upgrade(
-    State(state): State<Arc<ServerState>>,
-    AxPath(slug): AxPath<String>,
+/// Finish a WebSocket upgrade for `/n/{slug}/ws`. The page route calls
+/// this only when the request already asked to upgrade, so a plain GET
+/// of the same path (including a notebook at `<slug>/ws.md`) stays a
+/// page. Resolves the notebook by slug, then hands the socket to
+/// [`handle_socket`]. Unknown slug → 404 (no upgrade). Requires a
+/// loopback `Origin` for the bound port (missing Origin is 403). The
+/// Host check lives in the router middleware.
+pub async fn upgrade_socket(
+    state: Arc<ServerState>,
+    slug: String,
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -419,11 +420,18 @@ pub fn cell_status_done_envelope() -> String {
 /// don't ship stale content if updates were missed.
 pub const WS_CLIENT_SCRIPT: &str = r#"<script>
 (() => {
-  // Derive this page's notebook slug from its URL (`/n/<slug>`). The
-  // index page (`/`) has no slug, so it simply never opens a socket.
-  const slugMatch = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
-  if (!slugMatch) return;
-  const slug = slugMatch[1];
+  // The internal slug is stamped in <head> because a directory page
+  // URL is /n/<relative-path> (more than one segment). Fall back to a
+  // single-segment /n/<slug> URL so an unstamped page still connects.
+  // The index page (`/`) has neither, so it never opens a socket.
+  function notebookSlug() {
+    const meta = document.querySelector('meta[name="rl-slug"]');
+    if (meta && meta.content) return meta.content;
+    const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
+    return m ? m[1] : null;
+  }
+  const slug = notebookSlug();
+  if (!slug) return;
   const url = `ws://${location.host}/n/${slug}/ws`;
   let ws;
   let reconnectDelay = 500;

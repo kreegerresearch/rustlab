@@ -4,7 +4,7 @@
 //! One tree, two href spellings. Callers pass entries already sorted by
 //! [`crate::compare_notebook_order`] and hrefs already resolved for the
 //! page being rendered (static pages climb out of their directory;
-//! `watch` uses `/n/<slug>`). This module only groups that sequence into
+//! directory `watch` uses `/n/<relative-path>`). This module only groups that sequence into
 //! folders and emits the markup, so the two outputs cannot disagree about
 //! membership or order.
 //!
@@ -123,13 +123,17 @@ fn render_nodes(nodes: &[Node], current: Option<&str>, out: &mut String) {
                 } else {
                     ("fb-link", "")
                 };
+                let name = entry
+                    .rel_md
+                    .rsplit('/')
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(entry.rel_md.as_str());
                 out.push_str(&format!(
                     "<li class=\"fb-file\"><a class=\"{class}\"{aria} href=\"{href}\">\
-<span class=\"fb-title\">{title}</span>\
-<span class=\"fb-path\">{path}</span></a></li>\n",
+<span class=\"fb-name\">{name}</span></a></li>\n",
                     href = escape(&entry.href),
-                    title = escape(&entry.title),
-                    path = escape(&entry.rel_md),
+                    name = escape(name),
                 ));
             }
             Node::Dir {
@@ -236,11 +240,12 @@ pub fn styles(theme: &ThemeColors) -> String {
   nav.file-browser li {{
     margin: 0;
   }}
+  nav.file-browser .fb-folder > .fb-list {{
+    padding-left: 0.55rem;
+  }}
   nav.file-browser a.fb-link {{
-    display: flex;
-    flex-direction: column;
-    gap: 0.08rem;
-    padding: 0.32rem 0.85rem 0.38rem 1.15rem;
+    display: block;
+    padding: 0.28rem 0.85rem 0.28rem 1.35rem;
     text-decoration: none;
     color: {text};
     background: transparent;
@@ -251,15 +256,10 @@ pub fn styles(theme: &ThemeColors) -> String {
     background: {border};
     color: {text};
   }}
-  nav.file-browser .fb-title {{
-    font-size: 0.88rem;
-    line-height: 1.3;
-    overflow-wrap: anywhere;
-  }}
-  nav.file-browser .fb-path {{
-    font-size: 0.72rem;
-    line-height: 1.3;
-    color: {text_dim};
+  nav.file-browser .fb-name {{
+    font-size: 0.82rem;
+    line-height: 1.35;
+    color: {text};
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     overflow-wrap: anywhere;
   }}
@@ -295,10 +295,10 @@ pub fn styles(theme: &ThemeColors) -> String {
     )
 }
 
-/// Collection-relative paths in browser rows, document order.
+/// File names in browser rows, document order.
 #[cfg(test)]
 pub(crate) fn path_texts(html: &str) -> Vec<String> {
-    const OPEN: &str = "<span class=\"fb-path\">";
+    const OPEN: &str = "<span class=\"fb-name\">";
     let mut out = Vec::new();
     let mut rest = html;
     while let Some(i) = rest.find(OPEN) {
@@ -350,17 +350,17 @@ mod tests {
             path_texts(&html),
             vec![
                 "z-first.md",
-                "ch2/early.md",
-                "ch2/late.md",
-                "ch2/lab/nested.md",
+                "early.md",
+                "late.md",
+                "nested.md",
                 "a-unordered.md",
-                "ch1/deep.md",
+                "deep.md",
             ]
         );
         let ch2 = html.find("data-path=\"ch2\"").unwrap();
-        let early = html.find("ch2/early.md").unwrap();
+        let early = html.find(">early.md<").unwrap();
         let nested_dir = html.find("data-path=\"ch2/lab\"").unwrap();
-        let nested = html.find("ch2/lab/nested.md").unwrap();
+        let nested = html.find(">nested.md<").unwrap();
         let unordered = html.find(">a-unordered.md<").unwrap();
         let ch1 = html.find("data-path=\"ch1\"").unwrap();
         assert!(ch2 < early && early < nested_dir && nested_dir < nested);
@@ -372,12 +372,14 @@ mod tests {
         assert!(html.contains("class=\"fb-link fb-current\""));
         // The marked row is the open notebook, not merely the first link.
         let marked = html.find("class=\"fb-link fb-current\"").unwrap();
-        let marked_path = html[marked..].find(">ch1/deep.md<").unwrap();
-        assert!(marked_path < 400, "current marker is not on ch1/deep.md");
+        let marked_path = html[marked..].find(">deep.md<").unwrap();
+        assert!(marked_path < 400, "current marker is not on deep.md");
         assert!(!html.contains("onclick"));
         assert!(!html.contains("onchange"));
         assert!(html.contains("Lab &lt;notes&gt;"));
-        assert!(html.contains("A &amp; Unordered"));
+        assert!(!html.contains("A &amp; Unordered"), "row shows the title");
+        assert!(!html.contains("Z First"));
+        assert!(!html.contains("ch2/early.md"), "row shows the full path");
         assert!(html.contains("href=\"../ch1/deep.html\""));
     }
 

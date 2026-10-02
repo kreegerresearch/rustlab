@@ -543,14 +543,7 @@ fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     collect_prose_anchors(md, &mut anchors, &mut used, &mut idx);
     let mut emit_used = HashSet::new();
     let mut emit_idx = 0usize;
-    markdown_to_latex_in(
-        md,
-        link,
-        None,
-        &anchors,
-        &mut emit_used,
-        &mut emit_idx,
-    )
+    markdown_to_latex_in(md, link, None, &anchors, &mut emit_used, &mut emit_idx)
 }
 
 struct HeadingCap {
@@ -676,9 +669,7 @@ fn markdown_to_latex_in(
                             pulldown_cmark::Alignment::Left | pulldown_cmark::Alignment::None => {
                                 ">{\\raggedright\\arraybackslash}X"
                             }
-                            pulldown_cmark::Alignment::Center => {
-                                ">{\\centering\\arraybackslash}X"
-                            }
+                            pulldown_cmark::Alignment::Center => ">{\\centering\\arraybackslash}X",
                             pulldown_cmark::Alignment::Right => ">{\\raggedleft\\arraybackslash}X",
                         })
                         .collect();
@@ -787,9 +778,7 @@ fn markdown_to_latex_in(
             }
             Event::Code(code) => {
                 let esc = escape_latex(&code);
-                let mut pill = String::from(
-                    "\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{",
-                );
+                let mut pill = String::from("\\texorpdfstring{\\colorbox{rlcodepill}{\\texttt{");
                 pill.push_str(&esc);
                 pill.push_str("}}}{\\texttt{");
                 pill.push_str(&esc);
@@ -874,7 +863,6 @@ fn emit(heading: &mut Option<HeadingCap>, out: &mut String, s: &str) {
         out.push_str(s);
     }
 }
-
 
 /// Escape an `\href` DESTINATION.
 ///
@@ -1246,8 +1234,18 @@ mod tests {
             "```\ncode here\n```",
             &crate::render::LinkMode::single_file(),
         );
-        assert!(out.contains("\\begin{verbatim}"));
-        assert!(out.contains("\\end{verbatim}"));
+        let text = markdown_to_latex(
+            "```text\ncode here\n```",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert_eq!(
+            out, text,
+            "untagged fence should match an explicit text fence"
+        );
+        assert!(out.contains("\\textcolor{rldim}{text}"), "{out}");
+        assert!(out.contains("\\begin{rloutput}"), "{out}");
+        assert!(out.contains("code here"), "{out}");
+        assert!(!out.contains("\\begin{verbatim}"), "{out}");
     }
 
     #[test]
@@ -1501,7 +1499,10 @@ mod tests {
             "png markdown + raw img only: {tex}"
         );
         assert!(tex.contains("plots/nb/prose-1"), "{tex}");
-        assert!(!tex.contains("prose-1.png"), "extension must be omitted: {tex}");
+        assert!(
+            !tex.contains("prose-1.png"),
+            "extension must be omitted: {tex}"
+        );
         assert!(tex.contains("width=\\linewidth"), "{tex}");
         assert!(tex.contains("missing figure"), "{tex}");
         assert!(tex.contains("not embedded"), "{tex}");

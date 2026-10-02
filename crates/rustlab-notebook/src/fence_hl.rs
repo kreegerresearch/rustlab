@@ -34,7 +34,12 @@ impl ProseFence {
 
     pub fn from_code_block(kind: &CodeBlockKind<'_>) -> Option<Self> {
         match kind {
+            // An empty info string is "no language". That is the text
+            // panel, same as an explicit ```text fence. A tag we do not
+            // highlight (`javascript`, `sh`) stays None.
+            CodeBlockKind::Fenced(info) if info.trim().is_empty() => Some(Self::Text),
             CodeBlockKind::Fenced(info) => Self::parse_info(info),
+            // Indented code is not a fenced block.
             CodeBlockKind::Indented => None,
         }
     }
@@ -444,6 +449,31 @@ mod tests {
         assert_eq!(ProseFence::parse_info("py"), None);
         assert_eq!(ProseFence::parse_info("javascript"), None);
         assert_eq!(ProseFence::parse_info(""), None);
+    }
+
+    #[test]
+    fn untagged_fence_is_text_and_indented_is_not() {
+        assert_eq!(
+            ProseFence::from_code_block(&CodeBlockKind::Fenced("".into())),
+            Some(ProseFence::Text)
+        );
+        assert_eq!(
+            ProseFence::from_code_block(&CodeBlockKind::Fenced("   ".into())),
+            Some(ProseFence::Text)
+        );
+        assert_eq!(ProseFence::from_code_block(&CodeBlockKind::Indented), None);
+        assert_eq!(
+            ProseFence::from_code_block(&CodeBlockKind::Fenced("javascript".into())),
+            None
+        );
+        assert_eq!(
+            ProseFence::from_code_block(&CodeBlockKind::Fenced("sh".into())),
+            None
+        );
+        assert_eq!(
+            ProseFence::from_code_block(&CodeBlockKind::Fenced("text".into())),
+            Some(ProseFence::Text)
+        );
     }
 
     #[test]

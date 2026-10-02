@@ -98,8 +98,7 @@ fn strip_legacy_text_outputs(source: &str) -> String {
             let text_open_start = scan;
             let text_body_start = text_open_start + TEXT_OPEN.len();
             if let Some(rel_text_close) = source[text_body_start..].find(FENCE_CLOSE) {
-                let text_close_end =
-                    text_body_start + rel_text_close + FENCE_CLOSE.len();
+                let text_close_end = text_body_start + rel_text_close + FENCE_CLOSE.len();
                 let mut after_text = text_close_end;
                 while after_text < bytes.len() && bytes[after_text] == b'\n' {
                     after_text += 1;
@@ -384,7 +383,11 @@ pub fn cmd_check(input: PathBuf, fix: bool, strict: bool) -> CheckOutcome {
         // For the embed expander, treat the file's parent as the vault
         // root when scanning a single file. When scanning a directory,
         // use the directory itself.
-        let root_dir = if input.is_dir() { input.as_path() } else { host_dir };
+        let root_dir = if input.is_dir() {
+            input.as_path()
+        } else {
+            host_dir
+        };
         let mut findings = check::check_source(&source, file, host_dir, root_dir);
 
         if fix && findings.iter().any(|f| f.auto_fixable) {
@@ -570,7 +573,9 @@ fn guard_markdown_overwrite(
     format: &Format,
     was_default_output: bool,
 ) -> Result<(), ()> {
-    let Format::Markdown { obsidian } = format else { return Ok(()); };
+    let Format::Markdown { obsidian } = format else {
+        return Ok(());
+    };
     if obsidian.is_some() {
         return Ok(());
     }
@@ -625,7 +630,10 @@ pub fn cmd_render_cached(
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: cannot read {}: {e}", input.display());
-            return CachedRenderSummary { cached_blocks: 0, total_blocks: 0 };
+            return CachedRenderSummary {
+                cached_blocks: 0,
+                total_blocks: 0,
+            };
         }
     };
     let source = strip_render_artifacts(&source);
@@ -882,7 +890,11 @@ pub fn cmd_render_dir(
             // unrelated ancestors (`~/_work/…`) and silently hide the
             // whole collection.
             Err(_) => {
-                debug_assert!(false, "walk produced a path outside its root: {}", p.display());
+                debug_assert!(
+                    false,
+                    "walk produced a path outside its root: {}",
+                    p.display()
+                );
                 true
             }
         })
@@ -1311,7 +1323,9 @@ pub enum Format {
     /// `obsidian: Some(_)` switches to vault-native emission (wikilinks,
     /// `_attachments/`, frontmatter injection, iframe). `None` produces
     /// the default GitHub-friendly form.
-    Markdown { obsidian: Option<ObsidianOpts> },
+    Markdown {
+        obsidian: Option<ObsidianOpts>,
+    },
 }
 
 impl Format {
@@ -1475,12 +1489,10 @@ fn render_output(
 pub fn plot_dir_for_format(out_path: &PathBuf, format: &Format) -> Option<PathBuf> {
     match format {
         Format::Html | Format::Pdf => None,
-        Format::Markdown { obsidian: Some(opts) } => {
-            Some(attachments_layout_for(out_path, &opts.attachments_dir).0)
-        }
-        Format::Markdown { obsidian: None } | Format::Latex => {
-            Some(plot_layout_for(out_path).0)
-        }
+        Format::Markdown {
+            obsidian: Some(opts),
+        } => Some(attachments_layout_for(out_path, &opts.attachments_dir).0),
+        Format::Markdown { obsidian: None } | Format::Latex => Some(plot_layout_for(out_path).0),
     }
 }
 
@@ -1509,10 +1521,7 @@ fn plot_layout_for(out_path: &PathBuf) -> (PathBuf, String) {
 fn merge_obsidian_frontmatter(source: &str) -> String {
     // Try to peel an existing frontmatter block off the source.
     let (existing_yaml, _body) = split_source_frontmatter(source);
-    let mut lines: Vec<String> = existing_yaml
-        .lines()
-        .map(|l| l.to_string())
-        .collect();
+    let mut lines: Vec<String> = existing_yaml.lines().map(|l| l.to_string()).collect();
 
     let has_key = |key: &str, lines: &[String]| -> bool {
         lines
@@ -1678,7 +1687,9 @@ fn write_output(path: &PathBuf, data: &[u8]) {
     // write either way.
     let new_hash = hash_bytes(data);
     {
-        let cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+        let cache = write_output_hashes()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if cache.get(path) == Some(&new_hash) {
             return;
         }
@@ -1692,7 +1703,9 @@ fn write_output(path: &PathBuf, data: &[u8]) {
     if let Ok(existing) = std::fs::read(path) {
         if existing == data {
             // Memoise so the *next* repeat is a pure in-memory hit.
-            let mut cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = write_output_hashes()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             cache.insert(path.clone(), new_hash);
             return;
         }
@@ -1701,7 +1714,9 @@ fn write_output(path: &PathBuf, data: &[u8]) {
         eprintln!("error: cannot write {}: {e}", path.display());
         std::process::exit(1);
     }
-    let mut cache = write_output_hashes().lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = write_output_hashes()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     cache.insert(path.clone(), new_hash);
 }
 
@@ -2090,17 +2105,20 @@ mod tests {
         let page = std::fs::read_to_string(out.path().join("ch2/filters.html")).unwrap();
         assert_eq!(
             file_browser::path_texts(&index),
-            vec!["ch2/filters.md".to_string(), "intro.md".to_string()],
+            vec!["filters.md".to_string(), "intro.md".to_string()],
             "unordered notebooks sort by path, then group into folders"
         );
-        assert_eq!(file_browser::path_texts(&page), file_browser::path_texts(&index));
+        assert_eq!(
+            file_browser::path_texts(&page),
+            file_browser::path_texts(&index)
+        );
         assert!(index.contains("<details class=\"fb-root\" open"));
         assert!(page.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
         assert!(page.contains("aria-current=\"page\""));
-        assert!(!index.contains("fb-path\">README.md"));
+        assert!(!index.contains("fb-name\">README.md"));
         assert!(!index.contains("_setup.md"));
-        assert!(!index.contains("fb-path\">.hidden.md"));
-        assert!(!index.contains("fb-path\">index.md"));
+        assert!(!index.contains("fb-name\">.hidden.md"));
+        assert!(!index.contains("fb-name\">index.md"));
         assert!(!page.contains("onclick"));
         // LaTeX does not get the interactive browser (no TeX install needed).
         let latex_out = tempfile::tempdir().unwrap();
@@ -2119,8 +2137,13 @@ mod tests {
         let md = one.path().join("only.md");
         std::fs::write(&md, "# Only\n").unwrap();
         let single_out = one.path().join("only.html");
-        cmd_render(md, Some(single_out.clone()), Format::Html, Theme::Dark.colors())
-            .expect("single render");
+        cmd_render(
+            md,
+            Some(single_out.clone()),
+            Format::Html,
+            Theme::Dark.colors(),
+        )
+        .expect("single render");
         let single = std::fs::read_to_string(&single_out).unwrap();
         assert!(!single.contains("<nav class=\"file-browser\""));
         assert!(!single.contains("has-files\""));
@@ -2133,10 +2156,22 @@ mod tests {
         // name. Ties break by name; unordered sort among themselves by
         // name.
         use std::cmp::Ordering::*;
-        assert_eq!(compare_notebook_order((Some(99), "zz.md"), (None, "aa.md")), Less);
-        assert_eq!(compare_notebook_order((None, "aa.md"), (Some(99), "zz.md")), Greater);
-        assert_eq!(compare_notebook_order((Some(1), "b.md"), (Some(1), "a.md")), Greater);
-        assert_eq!(compare_notebook_order((Some(1), "a.md"), (Some(2), "z.md")), Less);
+        assert_eq!(
+            compare_notebook_order((Some(99), "zz.md"), (None, "aa.md")),
+            Less
+        );
+        assert_eq!(
+            compare_notebook_order((None, "aa.md"), (Some(99), "zz.md")),
+            Greater
+        );
+        assert_eq!(
+            compare_notebook_order((Some(1), "b.md"), (Some(1), "a.md")),
+            Greater
+        );
+        assert_eq!(
+            compare_notebook_order((Some(1), "a.md"), (Some(2), "z.md")),
+            Less
+        );
         assert_eq!(compare_notebook_order((None, "a.md"), (None, "b.md")), Less);
     }
 
@@ -2160,7 +2195,9 @@ mod tests {
         assert!(!is_listable_notebook(Path::new(".obsidian/note.md")));
         // The contract: `rel` must be RELATIVE. An absolute path would
         // wrongly match `_`-prefixed ancestors — callers strip first.
-        assert!(!is_listable_notebook(Path::new("/tmp/_work/coll/lesson.md")));
+        assert!(!is_listable_notebook(Path::new(
+            "/tmp/_work/coll/lesson.md"
+        )));
     }
 
     #[test]
@@ -2214,7 +2251,8 @@ mod tests {
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
             None,
-        ).expect("render");
+        )
+        .expect("render");
         let a = std::fs::read_to_string(out.path().join("ch1/a.md")).unwrap();
         let r = std::fs::read_to_string(out.path().join("root.md")).unwrap();
         assert!(a.contains("[root](../root.md)"), "link rewritten: {a}");
@@ -2237,7 +2275,8 @@ mod tests {
                 Format::Html,
                 Theme::Dark.colors(),
                 None,
-            ).expect("render");
+            )
+            .expect("render");
             let mut hashes = Vec::new();
             for f in ["ch1/a.html", "root.html", "index.html"] {
                 hashes.push(hash_bytes(&std::fs::read(dir.path().join(f)).unwrap()));
@@ -2372,10 +2411,7 @@ mod tests {
         // Earlier buggy in-place renders accumulated one extra header per
         // pass. Strip cleans them all up so the next emit produces the
         // canonical single-header shape.
-        let src = format!(
-            "{h}\n\n{h}\n\n{h}\n\n# Title\n",
-            h = GENERATED_HEADER
-        );
+        let src = format!("{h}\n\n{h}\n\n{h}\n\n# Title\n", h = GENERATED_HEADER);
         let stripped = strip_render_artifacts(&src);
         assert_eq!(stripped, "# Title\n");
     }
@@ -2396,8 +2432,7 @@ mod tests {
         );
         let stripped = strip_render_artifacts(&src);
         assert_eq!(
-            stripped,
-            "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
+            stripped, "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
             "output region between sentinels must be removed",
         );
     }
@@ -2425,7 +2460,11 @@ mod tests {
 <iframe src=\"note.html\" width=\"100%\" height=\"600\" style=\"border: 0;\"></iframe>\n\n\
 More.\n";
         let stripped = strip_render_artifacts(src);
-        assert_eq!(stripped.matches("<iframe").count(), 0, "all legacy iframes removed: {stripped:?}");
+        assert_eq!(
+            stripped.matches("<iframe").count(),
+            0,
+            "all legacy iframes removed: {stripped:?}"
+        );
         assert!(stripped.contains("# Demo"));
         assert!(stripped.contains("More."));
     }
@@ -2439,7 +2478,10 @@ More.\n";
 <iframe src=\"https://www.youtube.com/embed/abc\" width=\"560\" height=\"315\" frameborder=\"0\"></iframe>\n\n\
 More.\n";
         let stripped = strip_render_artifacts(src);
-        assert_eq!(stripped, src, "user iframe with non-rustlab attrs preserved");
+        assert_eq!(
+            stripped, src,
+            "user iframe with non-rustlab attrs preserved"
+        );
     }
 
     #[test]
@@ -2450,8 +2492,7 @@ More.\n";
 More.\n";
         let stripped = strip_render_artifacts(src);
         assert_eq!(
-            stripped,
-            "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
+            stripped, "# Demo\n\n```rustlab\nprint(1)\n```\n\nMore.\n",
             "legacy bare text block after rustlab fence must be removed",
         );
     }
@@ -2487,7 +2528,10 @@ More.\n";
         // and let the user see it.
         let src = format!("a\n\n{}\nx\nno end here\n", OUTPUT_BLOCK_START);
         let stripped = strip_render_artifacts(&src);
-        assert!(stripped.contains("no end here"), "truncated region preserved: {stripped:?}");
+        assert!(
+            stripped.contains("no end here"),
+            "truncated region preserved: {stripped:?}"
+        );
     }
 
     fn pdflatex_available() -> bool {
@@ -2578,7 +2622,8 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2612,9 +2657,12 @@ More.\n";
         cmd_render(
             src,
             Some(out.clone()),
-            Format::Markdown { obsidian: Some(opts) },
+            Format::Markdown {
+                obsidian: Some(opts),
+            },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2628,7 +2676,9 @@ More.\n";
             .map(|e| e.file_name().into_string().unwrap())
             .collect();
         assert!(
-            entries.iter().any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
+            entries
+                .iter()
+                .any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
             "hashed plot file must exist under custom attachments dir; got {entries:?}",
         );
         assert!(
@@ -2652,9 +2702,12 @@ More.\n";
         cmd_render(
             src,
             Some(out.clone()),
-            Format::Markdown { obsidian: Some(opts) },
+            Format::Markdown {
+                obsidian: Some(opts),
+            },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         assert!(
@@ -2678,7 +2731,8 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         // Regression: an earlier fix used `plot-1.svg?v=hash` which works
@@ -2702,7 +2756,9 @@ More.\n";
             .map(|e| e.file_name().into_string().unwrap())
             .collect();
         assert!(
-            entries.iter().any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
+            entries
+                .iter()
+                .any(|n| n.starts_with("plot-1-") && n.ends_with(".svg")),
             "file on disk must have the hashed name the .md points at; got {entries:?}",
         );
     }
@@ -2726,7 +2782,8 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md = std::fs::read_to_string(&out).unwrap();
         // User-authored title and the user's existing tags entries must be
@@ -2735,7 +2792,10 @@ More.\n";
         assert!(md.contains("user"), "existing tag entry lost: {md}");
         assert!(md.contains("custom"), "existing tag entry lost: {md}");
         // Output must still have a frontmatter block, not bare body.
-        assert!(md.starts_with("---\n"), "frontmatter delimiter missing: {md}");
+        assert!(
+            md.starts_with("---\n"),
+            "frontmatter delimiter missing: {md}"
+        );
     }
 
     #[test]
@@ -2757,9 +2817,13 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         let rendered = std::fs::read_to_string(&out).unwrap();
-        assert!(rendered.contains("<iframe "), "test pre-condition: render emitted an iframe");
+        assert!(
+            rendered.contains("<iframe "),
+            "test pre-condition: render emitted an iframe"
+        );
 
         cmd_clean(out.clone(), None, false);
         let cleaned = std::fs::read_to_string(&out).unwrap();
@@ -2795,7 +2859,8 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         cmd_clean(out.clone(), None, false);
         let cleaned = std::fs::read_to_string(&out).unwrap();
 
@@ -2810,7 +2875,10 @@ More.\n";
         assert!(!cleaned.contains(GENERATED_HEADER));
         assert!(!cleaned.contains(OUTPUT_BLOCK_START));
         assert!(!cleaned.contains("<iframe "));
-        assert!(!cleaned.contains("```text"), "captured stdout block leaked: {cleaned}");
+        assert!(
+            !cleaned.contains("```text"),
+            "captured stdout block leaked: {cleaned}"
+        );
     }
 
     // Bug regression: `--obsidian` mode prepends a YAML frontmatter
@@ -2875,7 +2943,10 @@ More.\n";
         let cleaned = std::fs::read_to_string(src.path().join("note.md")).unwrap();
         assert!(!cleaned.contains(GENERATED_HEADER));
         assert!(!cleaned.contains(OUTPUT_BLOCK_START));
-        assert!(cleaned.contains("```rustlab\nprint(1)\n```"), "code fence preserved: {cleaned}");
+        assert!(
+            cleaned.contains("```rustlab\nprint(1)\n```"),
+            "code fence preserved: {cleaned}"
+        );
     }
 
     #[test]
@@ -2896,30 +2967,44 @@ More.\n";
         std::fs::write(&path, &body).unwrap();
 
         let is_in_place = paths_equal(dir.path(), dir.path());
-        assert!(is_in_place, "same path on both sides must register as in-place");
+        assert!(
+            is_in_place,
+            "same path on both sides must register as in-place"
+        );
 
         // Don't call cmd_clean in this branch (mirrors what cmd_watch does).
         let preserved = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(preserved, body, "in-place mode must leave the source bytes untouched");
+        assert_eq!(
+            preserved, body,
+            "in-place mode must leave the source bytes untouched"
+        );
     }
 
     #[test]
     fn cmd_render_markdown_obsidian_in_place_is_idempotent() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("note.md");
-        std::fs::write(
-            &path,
-            "# Demo\n\n```rustlab\nx = 1 + 2;\nprint(x)\n```\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "# Demo\n\n```rustlab\nx = 1 + 2;\nprint(x)\n```\n").unwrap();
 
         let format = Format::Markdown {
             obsidian: Some(ObsidianOpts::default()),
         };
-        cmd_render(path.clone(), Some(path.clone()), format.clone(), Theme::Dark.colors()).expect("render");
+        cmd_render(
+            path.clone(),
+            Some(path.clone()),
+            format.clone(),
+            Theme::Dark.colors(),
+        )
+        .expect("render");
         let after_first = std::fs::read_to_string(&path).unwrap();
 
-        cmd_render(path.clone(), Some(path.clone()), format, Theme::Dark.colors()).expect("render");
+        cmd_render(
+            path.clone(),
+            Some(path.clone()),
+            format,
+            Theme::Dark.colors(),
+        )
+        .expect("render");
         let after_second = std::fs::read_to_string(&path).unwrap();
 
         assert_eq!(
@@ -2963,7 +3048,8 @@ More.\n";
                 obsidian: Some(ObsidianOpts::default()),
             },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let rendered = std::fs::read_to_string(&out_path).unwrap();
         assert_eq!(
@@ -2994,7 +3080,8 @@ More.\n";
             Some(path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         let after_first = std::fs::read_to_string(&path).unwrap();
 
         // Second pass: re-read the rendered output and render again.
@@ -3003,7 +3090,8 @@ More.\n";
             Some(path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         let after_second = std::fs::read_to_string(&path).unwrap();
 
         assert_eq!(
@@ -3034,7 +3122,8 @@ More.\n";
             Some(out_path.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let rendered = std::fs::read_to_string(&out_path).unwrap();
         assert_eq!(
@@ -3246,13 +3335,15 @@ More.\n";
             Some(src_a.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         cmd_render(
             src_b.clone(),
             Some(src_b.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md_a = std::fs::read_to_string(&src_a).unwrap();
         let md_b = std::fs::read_to_string(&src_b).unwrap();
@@ -3280,13 +3371,15 @@ More.\n";
             Some(s1.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
         cmd_render(
             s2.clone(),
             Some(s2.clone()),
             Format::Markdown { obsidian: None },
             Theme::Dark.colors(),
-        ).expect("render");
+        )
+        .expect("render");
 
         let md1 = std::fs::read_to_string(&s1).unwrap();
         let md2 = std::fs::read_to_string(&s2).unwrap();
@@ -3376,8 +3469,12 @@ More.\n";
         let changed = cmd_clean(dir.path().to_path_buf(), None, false);
         assert_eq!(changed, 2, "two .md under the tree, README excluded");
 
-        assert!(!std::fs::read_to_string(&a).unwrap().contains(GENERATED_HEADER));
-        assert!(!std::fs::read_to_string(&b).unwrap().contains(GENERATED_HEADER));
+        assert!(!std::fs::read_to_string(&a)
+            .unwrap()
+            .contains(GENERATED_HEADER));
+        assert!(!std::fs::read_to_string(&b)
+            .unwrap()
+            .contains(GENERATED_HEADER));
         // README untouched.
         assert!(std::fs::read_to_string(dir.path().join("README.md"))
             .unwrap()
@@ -3394,8 +3491,14 @@ More.\n";
 
         cmd_clean(src.clone(), Some(dst.clone()), false);
 
-        assert_eq!(std::fs::read_to_string(&src).unwrap(), dirty, "source untouched");
-        assert!(!std::fs::read_to_string(&dst).unwrap().contains(GENERATED_HEADER));
+        assert_eq!(
+            std::fs::read_to_string(&src).unwrap(),
+            dirty,
+            "source untouched"
+        );
+        assert!(!std::fs::read_to_string(&dst)
+            .unwrap()
+            .contains(GENERATED_HEADER));
     }
 
     #[test]
@@ -3522,14 +3625,20 @@ More.\n";
         assert!(fm.contains("title: My Notebook"), "lost title: {fm}");
         assert!(fm.contains("order: 5"), "lost order: {fm}");
         assert!(fm.contains("tags: [rustlab]"), "missing tags: {fm}");
-        assert!(fm.contains("cssclasses: [rustlab-notebook]"), "missing cssclasses: {fm}");
+        assert!(
+            fm.contains("cssclasses: [rustlab-notebook]"),
+            "missing cssclasses: {fm}"
+        );
     }
 
     #[test]
     fn obsidian_does_not_overwrite_existing_tags() {
         let source = "---\ntags: [physics, optics]\n---\n";
         let fm = merge_obsidian_frontmatter(source);
-        assert!(fm.contains("tags: [physics, optics]"), "tags overwritten: {fm}");
+        assert!(
+            fm.contains("tags: [physics, optics]"),
+            "tags overwritten: {fm}"
+        );
         // Should NOT add a second `tags:` line.
         let occurrences = fm.matches("tags:").count();
         assert_eq!(occurrences, 1, "extra tags line: {fm}");
@@ -3592,8 +3701,14 @@ More.\n";
         .expect("index rendered");
         assert_eq!(title.as_deref(), Some("Welcome"));
         assert!(!html.contains("<script>"), "live script survived: {html}");
-        assert!(html.contains("&lt;script&gt;window.__x=1&lt;/script&gt;"), "{html}");
-        assert!(html.contains("<b>bold</b>"), "plain formatting tag lost: {html}");
+        assert!(
+            html.contains("&lt;script&gt;window.__x=1&lt;/script&gt;"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<b>bold</b>"),
+            "plain formatting tag lost: {html}"
+        );
         assert!(!html.to_lowercase().contains("javascript:"), "{html}");
         assert!(!html.contains("private note"), "comment leaked: {html}");
     }
@@ -3602,10 +3717,8 @@ More.\n";
 
     #[test]
     fn attachments_layout_uses_configured_dir() {
-        let (dir, href) = attachments_layout_for(
-            &PathBuf::from("/out/notebook.md"),
-            "_attachments",
-        );
+        let (dir, href) =
+            attachments_layout_for(&PathBuf::from("/out/notebook.md"), "_attachments");
         assert!(dir.ends_with("_attachments/notebook"));
         assert_eq!(href, "_attachments/notebook");
     }

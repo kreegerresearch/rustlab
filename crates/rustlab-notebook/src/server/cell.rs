@@ -129,9 +129,10 @@ fn cell_script(cell_edit: bool) -> String {
     format!(
         r##"<script>
 (() => {{
-  // Cells exist only on notebook pages (`/n/<slug>`), like the WS client.
-  const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
-  if (!m) return;
+  // Cells exist only on notebook pages. Directory URLs are
+  // /n/<relative-path> (more than one segment); this gate does not
+  // need the internal slug.
+  if (!/^\/n\/.+/.test(location.pathname)) return;
   const CELL_EDIT = {cell_edit_js};
 
   function codeSections() {{

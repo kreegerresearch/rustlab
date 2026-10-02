@@ -8,8 +8,7 @@
 //! | Path | Handler |
 //! |---|---|
 //! | `GET /` | single: redirect to the one notebook; directory: the index listing |
-//! | `GET /n/{slug}` | that notebook's current rendered HTML |
-//! | `GET /n/{slug}/ws` | WebSocket: re-render push for that notebook (see [`super::ws`]) |
+//! | `GET /n/{*path}` | directory: `/n/<relative path without .md>`; single-file: `/n/<slug>`. Old `/n/<stem>` redirects. A `{slug}/ws` path with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
 //! | `GET /raw/{slug}` | raw `.md` source from disk (drives the split-view source pane) |
 //! | `POST /save/{slug}` | write edited source back to disk — **only mounted when `--editable`** |
 //! | `GET /assets/{path}` | embedded KaTeX/Plotly/CodeMirror bundle from [`super::assets`] |
@@ -29,7 +28,7 @@ use rustlab_script::WidgetValue;
 
 use axum::{
     body::Body,
-    extract::{Path as AxPath, Request, State},
+    extract::{FromRequestParts, Path as AxPath, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
@@ -240,8 +239,11 @@ pub fn router(state: Arc<ServerState>) -> Router {
     let mut r = Router::new()
         .route("/", get(root))
         .route("/notebook.html", get(legacy_redirect)) // back-compat with Phase 1–4 URLs
-        .route("/n/{slug}", get(notebook_page))
-        .route("/n/{slug}/ws", get(ws::ws_upgrade))
+        // One route: matchit rejects `/n/{*path}` beside `/n/{slug}/ws`.
+        // `notebook_page` upgrades `{slug}/ws` when the client asked for
+        // a WebSocket and otherwise serves the page (including a notebook
+        // whose public path ends in `/ws`).
+        .route("/n/{*path}", get(notebook_page))
         .route("/raw/{slug}", get(raw_source))
         .route("/assets/{*path}", get(asset))
         .route("/plots/{*path}", get(plot));
@@ -278,11 +280,24 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         let loc = format!("/n/{}", nb.slug);
         return Redirect::temporary(&loc).into_response();
     }
+    let rel_of: HashMap<&str, &str> = state
+        .link_slugs
+        .iter()
+        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
+        .collect();
     let entries: Vec<(String, String)> = state
         .order
         .iter()
-        .filter_map(|slug| state.notebooks.get(slug))
-        .map(|nb| (nb.title.clone(), format!("n/{}", nb.slug)))
+        .filter_map(|slug| {
+            let nb = state.notebooks.get(slug)?;
+            let href = if state.single {
+                format!("n/{}", nb.slug)
+            } else {
+                let rel = rel_of.get(slug.as_str()).copied().unwrap_or("");
+                format!("n/{}", crate::render::watch_public_rel(rel))
+            };
+            Some((nb.title.clone(), href))
+        })
         .collect();
     let body = state.index_body.read().await;
     let browser = super::collection_browser(&state, None);
@@ -305,18 +320,134 @@ async fn legacy_redirect() -> Redirect {
     Redirect::temporary("/")
 }
 
+/// What `GET /n/{path}` should do. The path is never joined to the
+/// filesystem: a hit is a key already in `link_slugs`, or (for an old
+/// stem URL) an internal slug.
+enum PageHit {
+    Serve(String),
+    Redirect(String),
+    Bad,
+    Missing,
+}
+
+/// Resolve a captured `/n/` path.
+///
+/// Directory mode: `{decoded}.md` in `link_slugs` wins (so two
+/// `filters.md` files are `/n/ch2/filters` and `/n/ch3/filters`). A
+/// single-segment path that is only an internal slug redirects to that
+/// notebook's public path when the two differ. `..`, `.`, empty
+/// segments, `\\`, and NUL are rejected. Single-file mode serves
+/// `/n/<slug>` and does not interpret the path as a collection path.
+fn resolve_watch_page(state: &ServerState, path: &str) -> PageHit {
+    if path.contains('\\') || path.contains('\0') {
+        return PageHit::Bad;
+    }
+    let mut decoded_segs = Vec::new();
+    for seg in path.split('/') {
+        if seg.is_empty() {
+            return PageHit::Bad;
+        }
+        let decoded = crate::render::percent_decode(seg);
+        if decoded.is_empty()
+            || decoded == "."
+            || decoded == ".."
+            || decoded.contains('/')
+            || decoded.contains('\\')
+            || decoded.contains('\0')
+        {
+            return PageHit::Bad;
+        }
+        decoded_segs.push(decoded);
+    }
+    let decoded = decoded_segs.join("/");
+
+    if state.single {
+        if decoded.contains('/') {
+            return PageHit::Missing;
+        }
+        return match state.notebook(&decoded) {
+            Some(nb) => PageHit::Serve(nb.slug.clone()),
+            None => PageHit::Missing,
+        };
+    }
+
+    let key = format!("{decoded}.md");
+    if let Some(slug) = state.link_slugs.get(&key) {
+        return PageHit::Serve(slug.clone());
+    }
+    // Legacy `/n/<stem>` (and `/n/<stem>-N`). Path match already won.
+    if !decoded.contains('/') {
+        if let Some(nb) = state.notebook(&decoded) {
+            let rel = state
+                .link_slugs
+                .iter()
+                .find(|(_, s)| s.as_str() == nb.slug.as_str())
+                .map(|(r, _)| r.as_str());
+            if let Some(rel) = rel {
+                let public = crate::render::watch_public_rel(rel);
+                if public != decoded {
+                    return PageHit::Redirect(format!("/n/{public}"));
+                }
+                return PageHit::Serve(nb.slug.clone());
+            }
+        }
+    }
+    PageHit::Missing
+}
+
 async fn notebook_page(
     State(state): State<Arc<ServerState>>,
-    AxPath(slug): AxPath<String>,
+    AxPath(path): AxPath<String>,
+    req: Request,
 ) -> Response {
-    match state.notebook(&slug) {
-        Some(nb) => {
-            // Nonces were stamped when this HTML was rendered
-            // (`render_for_server_cancellable`); nothing is added here.
-            let html = nb.html.read().await.clone();
-            html_response(&state, html)
+    if let Some(slug) = ws_slug(&path) {
+        let upgrade = req
+            .headers()
+            .get(header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|s| s.eq_ignore_ascii_case("websocket"));
+        if upgrade {
+            let (mut parts, _body) = req.into_parts();
+            let headers = parts.headers.clone();
+            match axum::extract::ws::WebSocketUpgrade::from_request_parts(&mut parts, &state).await
+            {
+                Ok(ws) => return ws::upgrade_socket(state, slug, headers, ws).await,
+                Err(err) => return err.into_response(),
+            }
         }
-        None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
+    }
+    serve_notebook_path(state, path).await
+}
+
+/// Internal live-reload socket: exactly one slug segment plus `/ws`.
+/// Public page paths such as `ch2/filters` do not match.
+fn ws_slug(path: &str) -> Option<String> {
+    let (slug, rest) = path.split_once('/')?;
+    if rest == "ws" && !slug.is_empty() {
+        Some(slug.to_string())
+    } else {
+        None
+    }
+}
+
+/// Serve or redirect the notebook at a captured `/n/` path. Also used
+/// when `/n/{slug}/ws` is fetched without a WebSocket upgrade, so a
+/// public page whose path ends in `/ws` is not swallowed by the socket
+/// route.
+pub(super) async fn serve_notebook_path(state: Arc<ServerState>, path: String) -> Response {
+    match resolve_watch_page(&state, &path) {
+        PageHit::Serve(slug) => match state.notebook(&slug) {
+            Some(nb) => {
+                // Nonces were stamped when this HTML was rendered
+                // (`render_for_server_cancellable`); nothing is added here.
+                let html = nb.html.read().await.clone();
+                html_response(&state, html)
+            }
+            None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
+        },
+        PageHit::Redirect(loc) => Redirect::temporary(&loc).into_response(),
+        PageHit::Bad => (StatusCode::BAD_REQUEST, "bad path").into_response(),
+        PageHit::Missing => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
 }
 
@@ -827,7 +958,9 @@ mod tests {
     async fn notebook_page_is_served_verbatim_with_csp() {
         // Rendered HTML is stored with nonces already stamped; serving
         // adds the header and nothing else.
-        let app = router(single_state("<script nonce=\"testnonce\">1</script><script>2</script>"));
+        let app = router(single_state(
+            "<script nonce=\"testnonce\">1</script><script>2</script>",
+        ));
         let res = app
             .oneshot(
                 host(axum::http::Request::builder().uri("/n/nb"))

@@ -256,10 +256,17 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
 </aside>
 {cm_scripts}<script{nonce_attr}>
 (() => {{
-  // Only notebook pages (`/n/<slug>`) have a source pane; the index has none.
-  const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
-  if (!m) return;
-  const slug = m[1];
+  // Directory pages are /n/<relative-path>. The internal slug (for
+  // /raw/ and /save/) is the rl-slug meta. A single-segment URL still
+  // works when that meta is absent. The index has neither.
+  function notebookSlug() {{
+    const meta = document.querySelector('meta[name="rl-slug"]');
+    if (meta && meta.content) return meta.content;
+    const m = location.pathname.match(/^\/n\/([^\/]+)\/?$/);
+    return m ? m[1] : null;
+  }}
+  const slug = notebookSlug();
+  if (!slug) return;
   const EDITABLE = {editable_js};
   const toggle = document.getElementById('rl-source-toggle');
   const pane = document.getElementById('rl-source-pane');

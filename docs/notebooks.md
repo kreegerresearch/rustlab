@@ -207,15 +207,18 @@ Behaviour:
 
 - **A single `.md` serves one notebook; a directory serves every
   `.md` under it** (recursive, `README.md` skipped) behind a
-  generated index page at `/`. Each notebook lives at `/n/<slug>`
-  where `<slug>` is its URL-safe file stem (collisions get a `-N`
-  suffix). Passing a directory *with* `--obsidian`/`--output` still
-  selects the re-render-on-save mode instead.
+  generated index page at `/`. In a directory, each notebook lives at
+  `/n/<relative-path>` with the `.md` stripped (`ch2/filters.md` →
+  `/n/ch2/filters`). An old `/n/<stem>` URL redirects there. A second
+  file with the same name is a different path, so the public URL does
+  not grow a `-N` suffix. A single file stays at `/n/<stem>`. Passing
+  a directory *with* `--obsidian`/`--output` still selects the
+  re-render-on-save mode instead.
 - **Directory pages get the same navigation as `render`.** In
   directory mode each served page gets a topbar carrying
   `← Previous · Index · Next →` plus the page title, and a matching
   footer bar, wired to the adjacent notebooks (the index lives at `/`,
-  siblings at `/n/<slug>`). The in-page TOC sidebar is present either
+  siblings at `/n/<relative-path>`). The in-page TOC sidebar is present either
   way; a single-file `watch` shows the same chrome with nothing to page
   to. (See [Page navigation](#page-navigation).)
 - **Relative `run`/`load` paths resolve against the notebook's own
@@ -254,7 +257,7 @@ Behaviour:
   that's cleaned up on exit.
 - **Live reload on save** with block-level diffing. The rendered
   page includes a tiny WebSocket client that connects back to
-  `/n/<slug>/ws` (one channel per notebook, so a save to one
+  `/n/<internal-id>/ws` (one channel per notebook, so a save to one
   notebook in directory mode only reloads that page). On every
   save of the watched `.md`, the server
   re-renders (debounced 250 ms) and chooses the smallest payload
@@ -591,12 +594,14 @@ animations stay full width, outside the panels, in every format.
 across; a short last row stays left-aligned).
 
 Fenced blocks tagged `bash`, `python`, or `text` (any capitalisation)
-get the same panel in HTML, `notebook watch`, and PDF. `bash` and
-`python` are colored on the server with the rustlab token colors —
-comments, strings, keywords, and numbers — and a small language label.
-`text` is not colored and uses the quieter printed-output background,
-including a `text` fence the markdown renderer writes for cell stdout.
-Other fence tags are unchanged. There is no client-side highlighter.
+get the same panel in HTML, `notebook watch`, and PDF. A fence with
+no language tag is `text`. `bash` and `python` are colored on the
+server with the rustlab token colors — comments, strings, keywords,
+and numbers — and a small language label. `text` is not colored and
+uses the quieter printed-output background, including a `text` fence
+the markdown renderer writes for cell stdout. Other fence tags
+(`javascript`, `sh`) are unchanged, and an indented code block is
+not a fence. There is no client-side highlighter.
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
@@ -663,7 +668,7 @@ jail check (see below) and referenced from that copy:
 
 A relative path is resolved against the notebook's own directory, including
 a notebook in a subdirectory of a directory-mode render or watch. The
-watch page lives at `/n/<slug>`, so leaving `src="dot.png"` as written
+watch page lives under `/n/`, so leaving `src="dot.png"` as written
 would request `/n/dot.png` and show a broken image. Percent-encoded names
 (`my%20fig.png`) are decoded before the jail check.
 
@@ -1625,11 +1630,14 @@ See [Filter Design](filter_design.md) for details.
 ```
 
 becomes `<a href="filter_design.html">` in a static render, and
-`<a href="/n/filter_design">` when served by `watch` — the server routes
-notebooks at `/n/<slug>`, so a `.html` href would 404 there. Fragments
-survive (`filter_design.md#anchor` → `filter_design.html#anchor` /
+`<a href="/n/filter_design">` when served by directory `watch` — the
+server routes a notebook at `/n/<relative-path>` (the `.md` stripped),
+so a `.html` href would 404 there. A nested note is
+`/n/ch2/notes`, not a stem slug. Fragments survive
+(`filter_design.md#anchor` → `filter_design.html#anchor` /
 `/n/filter_design#anchor`), titled and reference-style links resolve the
-same way, and `[[wikilinks]]` go through the same resolver.
+same way, and `[[wikilinks]]` go through the same resolver. A single-file
+`watch` still uses `/n/<stem>`.
 
 Lookup order, for both `render` and `watch`:
 
@@ -1682,7 +1690,7 @@ questions and are always both present:
 Directory HTML (`render` of a folder, and `watch` of a folder) adds a
 third: a **file browser** fixed on the left of the index page and of
 every notebook page. It groups notebooks by their real folders, and each
-row shows the title plus the collection-relative path (`ch2/filters.md`).
+row shows only the file name (`filters.md`), inside its folder.
 The whole browser and each folder are `<details>` disclosures, open by
 default; closing the root disclosure shrinks the column. The open
 notebook is marked. Listing rules match the index (no `README.md`,

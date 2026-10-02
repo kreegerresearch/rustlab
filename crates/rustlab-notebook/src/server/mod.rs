@@ -326,6 +326,7 @@ fn build_state(
     for (idx, (slug, path, title)) in entries.iter().enumerate() {
         let nav = server_nav(
             &listing,
+            &rels,
             idx,
             !is_dir,
             directory_browser(&listing, &rels, &index_title, Some(idx), is_dir),
@@ -441,6 +442,45 @@ fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
     }
 }
 
+/// `(slug, title)` and collection-relative paths, both in listing order.
+pub(super) fn listing_and_rels(state: &http::ServerState) -> (Vec<(String, String)>, Vec<String>) {
+    let rel_of: std::collections::HashMap<&str, &str> = state
+        .link_slugs
+        .iter()
+        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
+        .collect();
+    let mut listing = Vec::new();
+    let mut rels = Vec::new();
+    for slug in &state.order {
+        if let Some(nb) = state.notebooks.get(slug) {
+            listing.push((slug.clone(), nb.title.clone()));
+            rels.push(rel_of.get(slug.as_str()).copied().unwrap_or("").to_string());
+        }
+    }
+    (listing, rels)
+}
+
+/// Insert `<meta name="rl-slug">` immediately after `<head>` so scripts
+/// in the head can see the internal id before the body exists. Slugs are
+/// `[a-z0-9-]`; anything else is escaped.
+fn stamp_rl_slug(html: &str, slug: &str) -> String {
+    let safe = slug
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;");
+    let meta = format!("<meta name=\"rl-slug\" content=\"{safe}\">");
+    let Some(head) = html.find("<head>") else {
+        return html.to_string();
+    };
+    let at = head + "<head>".len();
+    let mut out = String::with_capacity(html.len() + meta.len() + 1);
+    out.push_str(&html[..at]);
+    out.push('\n');
+    out.push_str(&meta);
+    out.push_str(&html[at..]);
+    out
+}
+
 /// Build the cross-notebook navigation for the page at `idx` within
 /// `listing` (`(slug, title)` pairs in listing order). Mirrors what
 /// `cmd_render_dir` emits for static directory builds, so served pages
@@ -451,9 +491,12 @@ fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
 /// a lone file.
 ///
 /// Hrefs are *server* paths, not the static filenames `cmd_render_dir`
-/// uses: the index lives at `/` and each notebook at `/n/{slug}`.
+/// uses: the index lives at `/` and each notebook at
+/// `/n/<relative-path>` (the `.md` stripped). `rels` is parallel to
+/// `listing`.
 fn server_nav(
     listing: &[(String, String)],
+    rels: &[String],
     idx: usize,
     single: bool,
     files: Option<crate::CollectionBrowser>,
@@ -462,8 +505,11 @@ fn server_nav(
         return None;
     }
     let link = |i: usize| {
-        let (slug, title) = &listing[i];
-        (title.clone(), format!("/n/{slug}"))
+        let title = &listing[i].1;
+        (
+            title.clone(),
+            format!("/n/{}", crate::render::watch_public_rel(&rels[i])),
+        )
     };
     Some(crate::NotebookNav {
         index_href: Some("/".to_string()),
@@ -476,9 +522,9 @@ fn server_nav(
 /// Directory-mode file browser. `current` is the open notebook's index
 /// in `listing` (`None` on the index page). `None` in single-file mode.
 ///
-/// Hrefs are absolute `/n/<slug>` so the same markup works on `/` and on
-/// `/n/<slug>`. `rels` is the listing-order collection path, the same
-/// string the static build stores on each entry.
+/// Hrefs are absolute `/n/<relative-path>` so the same markup works on
+/// `/` and on a nested page. `rels` is the listing-order collection
+/// path, the same string the static build stores on each entry.
 fn directory_browser(
     listing: &[(String, String)],
     rels: &[String],
@@ -495,10 +541,10 @@ fn directory_browser(
         entries: listing
             .iter()
             .zip(rels.iter())
-            .map(|((slug, title), rel)| crate::FileEntry {
+            .map(|((_, title), rel)| crate::FileEntry {
                 title: title.clone(),
                 rel_md: rel.clone(),
-                href: format!("/n/{slug}"),
+                href: format!("/n/{}", crate::render::watch_public_rel(rel)),
             })
             .collect(),
     })
@@ -679,19 +725,19 @@ pub(super) fn render_for_server_cancellable(
     // A remembered reader toggle in the page script still wins on live
     // updates for cells they have opened or closed.
     let frontmatter = parse::extract_frontmatter(&source).0.code_open;
-    let notebook_open = render::resolve_source_open(
-        None,
-        frontmatter,
-        Some(render::rc_source_open()),
-    );
+    let notebook_open =
+        render::resolve_source_open(None, frontmatter, Some(render::rc_source_open()));
     let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
     let html = render::render_html_nonced(
         &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
     );
     let html = assets::rewrite_cdn_urls(&html);
+    // Stamped before the head scripts. Directory page URLs are
+    // multi-segment, so the WS client and source pane cannot read the
+    // internal slug from `location.pathname`.
+    let html = stamp_rl_slug(&html, slug);
     let html = ws::inject_ws_client_nonced(&html, page.nonce);
-    let html =
-        page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
+    let html = page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
     // Inline cell editing needs --editable AND an embed-free notebook:
     // cell saves splice the host `.md` by executable ordinal, which is
     // only sound when every rendered block comes from that file. The
@@ -807,6 +853,50 @@ mod tests {
         assert_eq!(res.status(), axum::http::StatusCode::OK, "GET {uri}");
         let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
         String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    async fn get_status(app: &axum::Router, uri: &str) -> axum::http::StatusCode {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        res.status()
+    }
+
+    async fn get_redirect(
+        app: &axum::Router,
+        uri: &str,
+    ) -> (axum::http::StatusCode, Option<String>) {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let loc = res
+            .headers()
+            .get(axum::http::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (res.status(), loc)
     }
 
     #[test]
@@ -952,20 +1042,21 @@ mod tests {
             ("c".to_string(), "Gamma".to_string()),
         ];
         // Middle page: prev + next + index, all as server URLs.
-        let mid = server_nav(&listing, 1, false, None).unwrap();
+        let rels = vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()];
+        let mid = server_nav(&listing, &rels, 1, false, None).unwrap();
         assert_eq!(mid.index_href.as_deref(), Some("/"));
         assert_eq!(mid.prev, Some(("Alpha".to_string(), "/n/a".to_string())));
         assert_eq!(mid.next, Some(("Gamma".to_string(), "/n/c".to_string())));
         // First page: no prev.
-        let first = server_nav(&listing, 0, false, None).unwrap();
+        let first = server_nav(&listing, &rels, 0, false, None).unwrap();
         assert!(first.prev.is_none());
         assert_eq!(first.next, Some(("Beta".to_string(), "/n/b".to_string())));
         // Last page: no next.
-        let last = server_nav(&listing, 2, false, None).unwrap();
+        let last = server_nav(&listing, &rels, 2, false, None).unwrap();
         assert!(last.next.is_none());
         assert_eq!(last.prev, Some(("Beta".to_string(), "/n/b".to_string())));
         // Single-file mode: no nav at all (keeps the sidebar layout).
-        assert!(server_nav(&listing, 0, true, None).is_none());
+        assert!(server_nav(&listing, &rels, 0, true, None).is_none());
     }
 
     #[tokio::test]
@@ -1008,7 +1099,7 @@ mod tests {
             beta.contains("<nav class=\"file-browser\""),
             "beta missing file browser"
         );
-        assert!(beta.contains("class=\"fb-path\">beta.md</span>"));
+        assert!(beta.contains("class=\"fb-name\">beta.md</span>"));
         assert!(beta.contains("aria-current=\"page\""));
         assert!(beta.contains("<details class=\"fb-root\" open"));
 
@@ -1040,7 +1131,11 @@ mod tests {
         std::fs::write(root.join(".hidden.md"), "# Hidden\n").unwrap();
         std::fs::create_dir_all(root.join("_parts")).unwrap();
         std::fs::write(root.join("_parts").join("bit.md"), "# Bit\n").unwrap();
-        std::fs::write(root.join("ch2").join("filters.md"), "# Filters\n\n## Band\n").unwrap();
+        std::fs::write(
+            root.join("ch2").join("filters.md"),
+            "# Filters\n\n## Band\n",
+        )
+        .unwrap();
         std::fs::write(
             root.join("intro.md"),
             "---\norder: 1\ntitle: Intro\n---\n\n# Intro\n",
@@ -1050,7 +1145,7 @@ mod tests {
         let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
         let app = serve_test(state);
         let index = get_body(&app, "/").await;
-        let filters = get_body(&app, "/n/filters").await;
+        let filters = get_body(&app, "/n/ch2/filters").await;
         for (name, html) in [("index", &index), ("filters", &filters)] {
             assert!(
                 html.contains("<nav class=\"file-browser\""),
@@ -1064,15 +1159,28 @@ mod tests {
                 html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"),
                 "{name} missing ch2 folder"
             );
-            assert!(html.contains("class=\"fb-path\">intro.md</span>"), "{name}");
+            assert!(html.contains("class=\"fb-name\">intro.md</span>"), "{name}");
             assert!(
-                html.contains("class=\"fb-path\">ch2/filters.md</span>"),
+                html.contains("class=\"fb-name\">filters.md</span>"),
                 "{name}"
             );
-            assert!(!html.contains("fb-path\">README.md"), "{name} listed README");
-            assert!(!html.contains("fb-path\">index.md"), "{name} listed index.md");
+            assert!(
+                !html.contains("ch2/filters.md"),
+                "{name} row shows the full path"
+            );
+            assert!(
+                !html.contains("fb-name\">README.md"),
+                "{name} listed README"
+            );
+            assert!(
+                !html.contains("fb-name\">index.md"),
+                "{name} listed index.md"
+            );
             assert!(!html.contains("_setup.md"), "{name} listed a partial");
-            assert!(!html.contains("fb-path\">.hidden.md"), "{name} listed a dotfile");
+            assert!(
+                !html.contains("fb-name\">.hidden.md"),
+                "{name} listed a dotfile"
+            );
             assert!(!html.contains("bit.md"), "{name} listed a nested partial");
             assert!(!html.contains("onclick"), "{name} used an inline handler");
             assert!(html.contains("var(--rl-"), "{name} ignored theme tokens");
@@ -1084,13 +1192,13 @@ mod tests {
         );
         assert_eq!(
             crate::file_browser::path_texts(&index),
-            vec!["intro.md".to_string(), "ch2/filters.md".to_string()]
+            vec!["intro.md".to_string(), "filters.md".to_string()]
         );
         assert!(!index.contains("aria-current=\"page\""));
         assert!(filters.contains("aria-current=\"page\""));
         let marked = filters.find("aria-current=\"page\"").unwrap();
         assert!(
-            filters[marked..].contains("ch2/filters.md"),
+            filters[marked..].contains(">filters.md<"),
             "current marker is not on the open notebook"
         );
         assert!(filters.contains("<nav class=\"sidebar\">"));
@@ -1138,7 +1246,10 @@ mod tests {
             "single-file watch grew a collection sidebar"
         );
         assert!(!page.contains("has-files\""));
-        assert!(page.contains("<nav class=\"sidebar\">"), "in-page TOC was dropped");
+        assert!(
+            page.contains("<nav class=\"sidebar\">"),
+            "in-page TOC was dropped"
+        );
     }
 
     #[test]
@@ -1252,7 +1363,8 @@ mod tests {
             crate::Format::Html,
             theme,
             None,
-        ).expect("render");
+        )
+        .expect("render");
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         let built: Vec<String> = index
             .lines()
@@ -1349,19 +1461,21 @@ mod tests {
         };
         let root_intro = slug_of("01-intro.md");
         let ch1_intro = slug_of("ch1/01-intro.md");
-        let filter = slug_of("02-filter.md");
-        let notes = slug_of("ch2/notes.md");
         assert_ne!(root_intro, ch1_intro, "same-stem files need distinct slugs");
         let app = serve_test(state);
 
-        let intro = get_body(&app, &format!("/n/{root_intro}")).await;
+        let intro = get_body(&app, "/n/01-intro").await;
         assert!(
-            intro.contains(&format!("href=\"/n/{filter}\"")),
-            "same-dir link not resolved to slug route: {intro}"
+            intro.contains("href=\"/n/02-filter\""),
+            "same-dir link not resolved to path route: {intro}"
         );
         assert!(
-            intro.contains(&format!("href=\"/n/{filter}#setup\"")),
+            intro.contains("href=\"/n/02-filter#setup\""),
             "fragment did not survive resolution"
+        );
+        assert!(
+            intro.contains(&format!("content=\"{root_intro}\"")),
+            "page missing its internal slug meta"
         );
         // index.md has no slug — it is the index page's body at `/`.
         assert!(
@@ -1386,29 +1500,37 @@ mod tests {
         // Nested pages resolve by path, not stem: `01-intro.md` relative
         // to ch1/ is the ch1 file, `../01-intro.md` the root one. A
         // stem-keyed map cannot pass this.
-        let ch1 = get_body(&app, &format!("/n/{ch1_intro}")).await;
+        let ch1 = get_body(&app, "/n/ch1/01-intro").await;
         assert!(
-            ch1.contains(&format!("href=\"/n/{ch1_intro}\"")),
+            ch1.contains("href=\"/n/ch1/01-intro\""),
             "same-dir nested link resolved to the wrong file: {ch1}"
         );
         assert!(
-            ch1.contains(&format!("href=\"/n/{root_intro}\"")),
+            ch1.contains("href=\"/n/01-intro\""),
             "../ link did not resolve to the root file"
         );
         assert!(
-            ch1.contains(&format!("href=\"/n/{notes}\"")),
+            ch1.contains("href=\"/n/ch2/notes\""),
             "../ch2/ link did not resolve"
+        );
+        assert!(
+            ch1.contains(&format!("content=\"{ch1_intro}\"")),
+            "nested page meta is not the internal slug"
+        );
+        assert!(
+            !ch1.contains(&format!("content=\"{root_intro}\"")),
+            "nested page reused the root slug"
         );
         // Collection-root spelling (no `../`) and the equivalent wikilink
         // must also resolve — otherwise watch 404s from nested pages.
-        let root_rel_hits = ch1.matches(&format!("href=\"/n/{notes}\"")).count();
+        let root_rel_hits = ch1.matches("href=\"/n/ch2/notes\"").count();
         assert!(
             root_rel_hits >= 3,
             "expected page-relative + root-relative + wikilink to all resolve, got {root_rel_hits}: {ch1}"
         );
 
         // The fragment target really exists on the destination page.
-        let filter_page = get_body(&app, &format!("/n/{filter}")).await;
+        let filter_page = get_body(&app, "/n/02-filter").await;
         assert!(
             filter_page.contains("id=\"setup\""),
             "explicit {{#setup}} anchor missing from destination page"
@@ -1417,6 +1539,53 @@ mod tests {
         // footer nav, which were already correct server hrefs.
         assert!(filter_page.contains("class=\"topbar\""));
         assert!(filter_page.contains("class=\"page-nav\""));
+    }
+
+    #[tokio::test]
+    async fn directory_watch_path_urls_redirect_legacy_stems() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch2")).unwrap();
+        std::fs::create_dir_all(dir.path().join("ch3")).unwrap();
+        std::fs::write(dir.path().join("ch2").join("filters.md"), "# Ch2\n").unwrap();
+        std::fs::write(dir.path().join("ch3").join("filters.md"), "# Ch3\n").unwrap();
+        std::fs::write(dir.path().join("intro.md"), "# Intro\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let slug = |rel: &str| state.link_slugs.get(rel).unwrap().clone();
+        let ch2 = slug("ch2/filters.md");
+        let ch3 = slug("ch3/filters.md");
+        assert_ne!(ch2, ch3);
+        let app = serve_test(state);
+
+        let page2 = get_body(&app, "/n/ch2/filters").await;
+        let page3 = get_body(&app, "/n/ch3/filters").await;
+        assert!(page2.contains(&format!("content=\"{ch2}\"")));
+        assert!(page3.contains(&format!("content=\"{ch3}\"")));
+        assert!(page2.contains(">filters.md<"));
+        assert!(page2.contains("href=\"/n/ch2/filters\""));
+        assert!(page2.contains("href=\"/n/ch3/filters\""));
+        // The public URL is the path, even when the internal slug is `filters-2`.
+        assert!(!page2.contains("href=\"/n/filters-2\""));
+        assert!(!page3.contains("href=\"/n/filters-2\""));
+
+        let (st, loc) = get_redirect(&app, &format!("/n/{ch2}")).await;
+        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(loc.as_deref(), Some("/n/ch2/filters"));
+        let (st, loc) = get_redirect(&app, &format!("/n/{ch3}")).await;
+        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(loc.as_deref(), Some("/n/ch3/filters"));
+
+        let bad = get_status(&app, "/n/ch2/%2e%2e/intro").await;
+        assert!(
+            bad == axum::http::StatusCode::BAD_REQUEST || bad == axum::http::StatusCode::NOT_FOUND,
+            "dotdot was {bad}"
+        );
+        let intro = get_body(&app, "/n/intro").await;
+        assert!(intro.contains("# Intro") || intro.contains("Intro"));
+        // A socket URL without an upgrade is not the notebook page.
+        let ws = get_status(&app, &format!("/n/{ch2}/ws")).await;
+        assert_ne!(ws, axum::http::StatusCode::OK);
     }
 
     #[tokio::test]
@@ -1681,17 +1850,32 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(csp.contains("img-src 'self' data: blob:"), "{csp}");
-        assert!(csp.contains("script-src 'self' 'nonce-testnonce' 'strict-dynamic'"), "{csp}");
-        let page = String::from_utf8(to_bytes(page_res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
+        assert!(
+            csp.contains("script-src 'self' 'nonce-testnonce' 'strict-dynamic'"),
+            "{csp}"
+        );
+        let page = String::from_utf8(
+            to_bytes(page_res.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
         let src = format!("/plots/{slug}/prose-1.png");
         assert!(page.contains(&format!("src=\"{src}\"")), "{page}");
         assert!(page.contains("alt=\"Raw scope\""), "{page}");
-        assert!(page.contains(&format!("/plots/{slug}/prose-3.png")), "{page}");
+        assert!(
+            page.contains(&format!("/plots/{slug}/prose-3.png")),
+            "{page}"
+        );
         // Escaped text still contains the letters `onerror`. A live
         // attribute would be `onerror="`. The watch client has `ws.onerror`.
         assert!(page.contains("onerror=&quot;alert(1)&quot;"), "{page}");
         assert!(!page.contains("onerror=\""), "live handler: {page}");
-        assert!(!page.contains("secret.png"), "jail escape leaked into HTML: {page}");
+        assert!(
+            !page.contains("secret.png"),
+            "jail escape leaked into HTML: {page}"
+        );
         assert!(page.contains("outside the notebook directory"), "{page}");
         assert!(page.contains("missing-figure"), "{page}");
 
@@ -1743,7 +1927,7 @@ mod tests {
             .cloned()
             .expect("escape slug");
         let app = serve_test(state);
-        let page = get_body(&app, &format!("/n/{note}")).await;
+        let page = get_body(&app, "/n/ch1/note").await;
         let src = format!("/plots/{note}/prose-1.png");
         assert!(
             page.contains(&format!("src=\"{src}\"")),
@@ -1754,9 +1938,12 @@ mod tests {
         assert!(ct.starts_with("image/png"), "{ct}");
         assert_eq!(body, crate::prose_media::TINY_PNG);
 
-        let escaped = get_body(&app, &format!("/n/{escape}")).await;
+        let escaped = get_body(&app, "/n/ch1/escape").await;
         assert!(!escaped.contains("secret.png"), "{escaped}");
-        assert!(escaped.contains("outside the notebook directory"), "{escaped}");
+        assert!(
+            escaped.contains("outside the notebook directory"),
+            "{escaped}"
+        );
         assert!(escaped.contains("missing-figure"), "{escaped}");
         let (status, _, _) = get_bytes(&app, &format!("/plots/{escape}/prose-1.png")).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);

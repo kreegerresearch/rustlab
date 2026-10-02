@@ -332,17 +332,14 @@ fn schedule_render(
         // Recompute this page's cross-notebook nav from the current
         // listing so the re-rendered HTML keeps its breadcrumb and
         // prev/next footer (build_state seeds the same nav at startup).
-        let listing: Vec<(String, String)> = state
-            .order
-            .iter()
-            .filter_map(|s| state.notebooks.get(s).map(|n| (s.clone(), n.title.clone())))
-            .collect();
+        let (listing, rels) = super::listing_and_rels(&state);
         let nav = listing
             .iter()
             .position(|(s, _)| *s == slug)
             .and_then(|idx| {
                 super::server_nav(
                     &listing,
+                    &rels,
                     idx,
                     state.single,
                     super::collection_browser(&state, Some(&slug)),
