@@ -509,7 +509,7 @@ pub fn render_html_nonced(
                     let open = source_open.unwrap_or_else(notebook_source_open);
                     let open_attr = if open { " open" } else { "" };
                     format!(
-                        "<details class=\"rl-src\"{open_attr}>\n<summary>rustlab</summary>\n\
+                        "<details class=\"rl-src\"{open_attr}>\n<summary class=\"rl-lang\">rustlab</summary>\n\
                          <pre class=\"source\"><code>{}</code></pre>\n</details>\n",
                         highlight_rustlab(source)
                     )
@@ -1114,15 +1114,18 @@ document.addEventListener('click', (e) => {{
     padding: 0.05rem 0 0.05rem 0.85rem;
     border-left: 3px solid {accent_primary};
   }}
+  /* Language chip shared by rustlab cells and bash/python/text fences. */
+  .rl-lang {{
+    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--rl-text-dim);
+    padding: 0.1rem 0 0.35rem;
+    user-select: none;
+  }}
   /* Source only. Open by default; collapsing leaves the summary, and
      the `.rl-cell` rule still marks output that follows. */
   .rl-src > summary {{
     cursor: pointer;
     list-style: none;
-    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    color: var(--rl-text-dim);
-    padding: 0.1rem 0 0.35rem;
-    user-select: none;
   }}
   .rl-src > summary::-webkit-details-marker {{ display: none; }}
   .rl-src > summary::marker {{ content: ""; }}
@@ -1134,6 +1137,23 @@ document.addEventListener('click', (e) => {{
   }}
   .rl-src[open] > summary::before {{
     content: "▾";
+  }}
+  /* Prose fences (bash / python / text). Same panel colors as a rustlab
+     cell: `.source` for code, `.output` for uncolored text. The accent
+     rule matches the PDF tcolorbox. */
+  .rl-fence {{
+    margin: 0.35rem 0 1.1rem 0.15rem;
+    padding-left: 0.85rem;
+    border-left: 3px solid {accent_primary};
+  }}
+  .rl-fence .output {{
+    margin-top: 0;
+  }}
+  .rl-fence code {{
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
   }}
   .source {{
     background: {code_bg};
@@ -1552,6 +1572,7 @@ pub(crate) fn markdown_to_html_linked(
     } else {
         events
     };
+    let events = rewrite_prose_fences(events);
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
     let html = restore_math(&html, &math);
@@ -2397,9 +2418,19 @@ pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> Strin
 /// the lexer). Token text is HTML-escaped before it is wrapped, so source
 /// cannot break out of a span.
 fn highlight_rustlab(source: &str) -> String {
+    spans_to_html(source, &rustlab_script::highlight::highlight(source))
+}
+
+/// Escape each span and wrap colored tokens in the rustlab `syn-*` classes.
+/// A span list that does not cover `source` falls back to a plain escape
+/// so a highlighter bug cannot drop source text.
+fn spans_to_html(source: &str, spans: &[rustlab_script::highlight::HlSpan]) -> String {
     use rustlab_script::highlight::HlKind;
+    if !spans_cover(source, spans) {
+        return escape_html(source);
+    }
     let mut out = String::with_capacity(source.len() * 2);
-    for span in rustlab_script::highlight::highlight(source) {
+    for span in spans {
         let text = &source[span.start..span.end];
         let escaped = escape_html(text);
         let class = match span.kind {
@@ -2421,6 +2452,63 @@ fn highlight_rustlab(source: &str) -> String {
         out.push_str("</span>");
     }
     out
+}
+
+fn spans_cover(source: &str, spans: &[rustlab_script::highlight::HlSpan]) -> bool {
+    let mut at = 0;
+    for span in spans {
+        if span.start != at || span.end < span.start || span.end > source.len() {
+            return false;
+        }
+        at = span.end;
+    }
+    at == source.len()
+}
+
+/// Replace `bash` / `python` / `text` fences with a labeled panel. Other
+/// fences stay on pulldown's plain `<pre><code>` path. The HTML is escaped
+/// span markup — no event handlers.
+fn rewrite_prose_fences<'a>(events: Vec<Event<'a>>) -> Vec<Event<'a>> {
+    use crate::fence_hl::ProseFence;
+    let mut out = Vec::with_capacity(events.len());
+    let mut iter = events.into_iter();
+    while let Some(ev) = iter.next() {
+        match ev {
+            Event::Start(Tag::CodeBlock(kind)) => {
+                if let Some(lang) = ProseFence::from_code_block(&kind) {
+                    let mut source = String::new();
+                    for inner in iter.by_ref() {
+                        match inner {
+                            Event::End(TagEnd::CodeBlock) => break,
+                            Event::Text(t) => source.push_str(&t),
+                            Event::SoftBreak | Event::HardBreak => source.push('\n'),
+                            _ => {}
+                        }
+                    }
+                    out.push(Event::Html(prose_fence_html(lang, &source).into()));
+                } else {
+                    out.push(Event::Start(Tag::CodeBlock(kind)));
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn prose_fence_html(lang: crate::fence_hl::ProseFence, source: &str) -> String {
+    use crate::fence_hl::{display_body, ProseFence};
+    let body = display_body(source);
+    let (class, inner) = match lang {
+        ProseFence::Text => ("output", escape_html(body)),
+        ProseFence::Bash | ProseFence::Python => {
+            ("source", spans_to_html(body, &lang.highlight(body)))
+        }
+    };
+    format!(
+        "<div class=\"rl-fence\">\n<div class=\"rl-lang\">{}</div>\n<pre class=\"{class}\"><code>{inner}</code></pre>\n</div>\n",
+        lang.label()
+    )
 }
 
 /// Transform Obsidian-style wikilinks and embeds into standard markdown so
@@ -3661,6 +3749,89 @@ mod tests {
         assert!(out.contains("<span class=\"syn-fn\">disp</span>"));
     }
 
+    #[test]
+    fn prose_fence_bash_and_python_use_rustlab_token_classes() {
+        let bash = markdown_to_html("```bash\nif true; then echo \"hi\" 2; fi # note\n```\n");
+        assert!(bash.contains("<div class=\"rl-lang\">bash</div>"), "{bash}");
+        assert!(bash.contains("class=\"source\""), "{bash}");
+        assert!(bash.contains("<span class=\"syn-kw\">if</span>"), "{bash}");
+        assert!(bash.contains("<span class=\"syn-kw\">fi</span>"), "{bash}");
+        assert!(
+            bash.contains("<span class=\"syn-str\">&quot;hi&quot;</span>"),
+            "{bash}"
+        );
+        assert!(bash.contains("<span class=\"syn-num\">2</span>"), "{bash}");
+        let quoted = markdown_to_html("```bash\necho \"hi # there\" 'x'\n```\n");
+        assert!(
+            quoted.contains("<span class=\"syn-str\">&quot;hi # there&quot;</span>"),
+            "{quoted}"
+        );
+        assert!(
+            quoted.contains("<span class=\"syn-str\">'x'</span>"),
+            "{quoted}"
+        );
+        assert!(
+            !quoted.contains("syn-com"),
+            "hash inside quotes is not a comment: {quoted}"
+        );
+        let py = markdown_to_html("```python\ns = \"a # b\"  # real\n```\n");
+        assert!(
+            py.contains("<span class=\"syn-str\">&quot;a # b&quot;</span>"),
+            "{py}"
+        );
+        assert!(py.contains("<span class=\"syn-com\"># real</span>"), "{py}");
+        assert!(
+            bash.contains("<span class=\"syn-com\"># note</span>"),
+            "{bash}"
+        );
+        assert!(!bash.contains("onclick"), "{bash}");
+
+        let python = markdown_to_html("```python\ndef f():\n    return 1  # n\n```\n");
+        assert!(
+            python.contains("<div class=\"rl-lang\">python</div>"),
+            "{python}"
+        );
+        assert!(
+            python.contains("<span class=\"syn-kw\">def</span>"),
+            "{python}"
+        );
+        assert!(
+            python.contains("<span class=\"syn-kw\">return</span>"),
+            "{python}"
+        );
+        assert!(
+            python.contains("<span class=\"syn-num\">1</span>"),
+            "{python}"
+        );
+        assert!(
+            python.contains("<span class=\"syn-com\"># n</span>"),
+            "{python}"
+        );
+    }
+
+    #[test]
+    fn prose_fence_text_is_quiet_and_uncolored() {
+        // Cell stdout in markdown output is this same fence.
+        let html = markdown_to_html("```text\nans = 1\ndef not_code\n```\n");
+        assert!(html.contains("<div class=\"rl-lang\">text</div>"), "{html}");
+        assert!(html.contains("class=\"output\""), "{html}");
+        assert!(!html.contains("class=\"source\""), "{html}");
+        assert!(!html.contains("syn-"), "{html}");
+        assert!(html.contains("ans = 1\ndef not_code"), "{html}");
+    }
+
+    #[test]
+    fn prose_fence_escapes_markup_and_leaves_other_languages() {
+        let html = markdown_to_html("```bash\necho <script>alert(1)</script>\n```\n");
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+        assert!(!html.contains("onerror"), "{html}");
+
+        let other = markdown_to_html("```javascript\nconst x = 1\n```\n");
+        assert!(!other.contains("rl-lang"), "{other}");
+        assert!(other.contains("language-javascript"), "{other}");
+    }
+
     // ── render_html (integration) ──
 
     #[test]
@@ -4234,7 +4405,9 @@ mod tests {
         let open_at = cell
             .find("<details class=\"rl-src\" open>")
             .expect("open source disclosure");
-        let summary_at = cell.find("<summary>rustlab</summary>").expect("summary");
+        let summary_at = cell
+            .find("<summary class=\"rl-lang\">rustlab</summary>")
+            .expect("summary");
         let close_at = cell.find("</details>").expect("details close");
         assert!(open_at < summary_at && summary_at < close_at);
         let inside = &cell[open_at..close_at];

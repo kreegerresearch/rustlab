@@ -89,9 +89,7 @@ pub fn render_latex(
                 // is HTML-only; PDF always shows the source.
                 let trimmed = text_output.trim();
                 if !hidden {
-                    body.push_str(
-                        "\\noindent{\\sffamily\\footnotesize\\textcolor{rldim}{rustlab}}\\par\\nopagebreak\n",
-                    );
+                    body.push_str(&lang_label("rustlab"));
                     body.push_str("\\begin{rlsource}\n");
                     // Colored with \textcolor — never minted, which would
                     // need shell-escape. Text mode, so the tokens stay escaped.
@@ -585,8 +583,27 @@ fn markdown_to_latex_in(
     let mut heading: Option<HeadingCap> = None;
     let mut image: Option<(String, String)> = None;
     let mut link_live: Vec<bool> = Vec::new();
+    let mut prose_fence: Option<(crate::fence_hl::ProseFence, String)> = None;
 
     for event in events {
+        if prose_fence.is_some() {
+            match &event {
+                Event::Text(t) => {
+                    prose_fence.as_mut().unwrap().1.push_str(t);
+                    continue;
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    prose_fence.as_mut().unwrap().1.push('\n');
+                    continue;
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    let (lang, source) = prose_fence.take().unwrap();
+                    emit_prose_fence(&mut heading, &mut out, lang, &source);
+                    continue;
+                }
+                _ => continue,
+            }
+        }
         if image.is_some() {
             match event {
                 Event::Text(t) | Event::Code(t) => {
@@ -641,8 +658,12 @@ fn markdown_to_latex_in(
                 Tag::Emphasis => emit(&mut heading, &mut out, "\\emph{"),
                 Tag::Strong => emit(&mut heading, &mut out, "\\textbf{"),
                 Tag::Strikethrough => emit(&mut heading, &mut out, "\\sout{"),
-                Tag::CodeBlock(_) => {
-                    emit(&mut heading, &mut out, "\\begin{verbatim}\n");
+                Tag::CodeBlock(kind) => {
+                    if let Some(lang) = crate::fence_hl::ProseFence::from_code_block(&kind) {
+                        prose_fence = Some((lang, String::new()));
+                    } else {
+                        emit(&mut heading, &mut out, "\\begin{verbatim}\n");
+                    }
                 }
                 Tag::BlockQuote(_) => emit(&mut heading, &mut out, "\\begin{quote}\n"),
                 Tag::List(Some(_)) => emit(&mut heading, &mut out, "\\begin{enumerate}\n"),
@@ -885,7 +906,44 @@ fn html_hex(color: &str) -> &str {
     color.strip_prefix('#').unwrap_or(color)
 }
 
-/// Colored rustlab source. Each token is passed through [`escape_latex`]
+fn lang_label(label: &str) -> String {
+    format!(
+        "\\noindent{{\\sffamily\\footnotesize\\textcolor{{rldim}}{{{label}}}}}\\par\\nopagebreak\n"
+    )
+}
+
+/// Bash / python fences use the rustlab source panel and token colors.
+/// Text fences use the quieter output panel and stay uncolored, same as
+/// printed cell output. The markdown renderer writes that output as a
+/// `text` fence, so it takes this path when the markdown is rendered.
+fn emit_prose_fence(
+    heading: &mut Option<HeadingCap>,
+    out: &mut String,
+    lang: crate::fence_hl::ProseFence,
+    source: &str,
+) {
+    use crate::fence_hl::{display_body, ProseFence};
+    let body = display_body(source);
+    emit(heading, out, &lang_label(lang.label()));
+    match lang {
+        ProseFence::Text => {
+            emit(heading, out, "\\begin{rloutput}\n\\begin{rlverb}\n");
+            emit(heading, out, &neutralize_verb_end(body));
+            emit(heading, out, "\n\\end{rlverb}\n\\end{rloutput}\n\n");
+        }
+        ProseFence::Bash | ProseFence::Python => {
+            emit(heading, out, "\\begin{rlsource}\n");
+            emit(
+                heading,
+                out,
+                &emit_colored_spans(body, &lang.highlight(body)),
+            );
+            emit(heading, out, "\\end{rlsource}\n\n");
+        }
+    }
+}
+
+/// Colored source. Each token is passed through [`escape_latex`]
 /// and wrapped in `\textcolor`. Output stays in text mode so the
 /// preamble's `\newunicodechar` mappings still apply (they do not fire
 /// inside `verbatim`). No `minted` / shell-escape.
@@ -899,35 +957,32 @@ fn html_hex(color: &str) -> &str {
 /// `\leavevmode{}`. Tabs become four spaces (only the space character is
 /// made active, a tab would be skipped at the line start).
 fn emit_highlighted_source(source: &str) -> String {
+    emit_colored_spans(source, &rustlab_script::highlight::highlight(source))
+}
+
+fn emit_colored_spans(source: &str, spans: &[rustlab_script::highlight::HlSpan]) -> String {
     use rustlab_script::highlight::HlKind;
     let mut body = String::with_capacity(source.len() * 2);
-    for span in rustlab_script::highlight::highlight(source) {
+    for span in spans {
         let text = &source[span.start..span.end];
         let escaped = escape_latex(&text.replace('\t', "    "));
-        let color = match span.kind {
-            HlKind::Keyword => "rlkw",
-            HlKind::Function => "rlfn",
-            HlKind::Number => "rlnum",
-            HlKind::String => "rlstr",
+        // A color command must not cross a newline: `\obeylines` makes
+        // each source line its own paragraph. Bash quotes and Python
+        // triple quotes can contain newlines, so close and reopen the
+        // color on each line of the span.
+        match span.kind {
+            HlKind::Keyword => push_colored_lines(&mut body, "rlkw", false, &escaped),
+            HlKind::Function => push_colored_lines(&mut body, "rlfn", false, &escaped),
+            HlKind::Number => push_colored_lines(&mut body, "rlnum", false, &escaped),
+            HlKind::String => push_colored_lines(&mut body, "rlstr", false, &escaped),
             HlKind::Comment => {
                 // Stay in the typewriter family. `\textit` would switch to
                 // roman italic and break the mono column.
-                body.push_str("{\\itshape\\textcolor{rlcom}{");
-                body.push_str(&escaped);
-                body.push_str("}}");
-                continue;
+                push_colored_lines(&mut body, "rlcom", true, &escaped);
             }
-            HlKind::Operator => "rlop",
-            HlKind::Text => {
-                body.push_str(&escaped);
-                continue;
-            }
-        };
-        body.push_str("\\textcolor{");
-        body.push_str(color);
-        body.push_str("}{");
-        body.push_str(&escaped);
-        body.push('}');
+            HlKind::Operator => push_colored_lines(&mut body, "rlop", false, &escaped),
+            HlKind::Text => body.push_str(&escaped),
+        }
     }
     // Not `flushleft`: that trivlist clears `\everypar`, which drops
     // the cell's accent rule. Ragged right plus `\obeylines` keeps one
@@ -936,8 +991,9 @@ fn emit_highlighted_source(source: &str) -> String {
         "{\\ttfamily\\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n\
          \\setlength{\\rightskip}{0pt plus 1fil}\\obeylines\\obeyspaces\n",
     );
-    // Only `Text` spans carry newlines (comments and strings stop before
-    // one), so an empty line here is exactly an empty source line.
+    // Newlines are only emitted between source lines (a color span that
+    // contains one is closed on each side), so an empty line here is an
+    // empty source line.
     let lines: Vec<&str> = body.split('\n').collect();
     let n = lines.len();
     for (i, line) in lines.iter().enumerate() {
@@ -956,6 +1012,30 @@ fn emit_highlighted_source(source: &str) -> String {
     }
     out.push_str("}\n\n");
     out
+}
+
+fn push_colored_lines(body: &mut String, color: &str, italic: bool, escaped: &str) {
+    for (i, line) in escaped.split('\n').enumerate() {
+        if i > 0 {
+            body.push('\n');
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if italic {
+            body.push_str("{\\itshape\\textcolor{");
+        } else {
+            body.push_str("\\textcolor{");
+        }
+        body.push_str(color);
+        body.push_str("}{");
+        body.push_str(line);
+        if italic {
+            body.push_str("}}");
+        } else {
+            body.push('}');
+        }
+    }
 }
 
 /// Escape special LaTeX characters (no math preservation — math is
@@ -1168,6 +1248,67 @@ mod tests {
         );
         assert!(out.contains("\\begin{verbatim}"));
         assert!(out.contains("\\end{verbatim}"));
+    }
+
+    #[test]
+    fn md_to_latex_bash_and_python_use_source_colors() {
+        let bash = markdown_to_latex(
+            "```bash\nif true; then echo \"hi\" 2; fi # note\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(bash.contains("\\textcolor{rldim}{bash}"), "{bash}");
+        assert!(bash.contains("\\begin{rlsource}"), "{bash}");
+        assert!(bash.contains("\\textcolor{rlkw}{if}"), "{bash}");
+        assert!(bash.contains("\\textcolor{rlkw}{fi}"), "{bash}");
+        assert!(bash.contains("\\textcolor{rlstr}{\"hi\"}"), "{bash}");
+        assert!(bash.contains("\\textcolor{rlnum}{2}"), "{bash}");
+        assert!(bash.contains("\\textcolor{rlcom}{\\# note}"), "{bash}");
+        assert!(!bash.contains("\\begin{verbatim}"), "{bash}");
+        assert!(!bash.contains("minted"), "{bash}");
+
+        let python = markdown_to_latex(
+            "```python\ndef f():\n    return 1\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(python.contains("\\textcolor{rldim}{python}"), "{python}");
+        assert!(python.contains("\\textcolor{rlkw}{def}"), "{python}");
+        assert!(python.contains("\\textcolor{rlkw}{return}"), "{python}");
+        assert!(python.contains("\\textcolor{rlnum}{1}"), "{python}");
+
+        let multi = markdown_to_latex(
+            "```python\ns = \"\"\"a\nb\"\"\"\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(multi.contains("\\textcolor{rlstr}{\"\"\"a}"), "{multi}");
+        assert!(multi.contains("\\textcolor{rlstr}{b\"\"\"}"), "{multi}");
+        assert!(!multi.contains("\\textcolor{rlstr}{\"\"\"a\n"), "{multi}");
+    }
+
+    #[test]
+    fn md_to_latex_text_fence_is_quiet_output() {
+        let out = markdown_to_latex(
+            "```text\nans = 1\nvalue_1 = 50%\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(out.contains("\\textcolor{rldim}{text}"), "{out}");
+        assert!(out.contains("\\begin{rloutput}"), "{out}");
+        assert!(out.contains("\\begin{rlverb}"), "{out}");
+        assert!(out.contains("ans = 1"), "{out}");
+        // Verbatim, so shell metacharacters stay literal.
+        assert!(out.contains("value_1 = 50%"), "{out}");
+        assert!(!out.contains("\\textcolor{rlkw}"), "{out}");
+        assert!(!out.contains("\\begin{verbatim}"), "{out}");
+    }
+
+    #[test]
+    fn md_to_latex_other_fence_stays_verbatim() {
+        let out = markdown_to_latex(
+            "```javascript\nconst x = 1\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(out.contains("\\begin{verbatim}"), "{out}");
+        assert!(out.contains("const x = 1"), "{out}");
+        assert!(!out.contains("rlsource"), "{out}");
     }
 
     #[test]

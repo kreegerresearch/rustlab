@@ -590,6 +590,14 @@ animations stay full width, outside the panels, in every format.
 `<!-- grid: N -->` lays plots out in a row of minipages (at most four
 across; a short last row stays left-aligned).
 
+Fenced blocks tagged `bash`, `python`, or `text` (any capitalisation)
+get the same panel in HTML, `notebook watch`, and PDF. `bash` and
+`python` are colored on the server with the rustlab token colors —
+comments, strings, keywords, and numbers — and a small language label.
+`text` is not colored and uses the quieter printed-output background,
+including a `text` fence the markdown renderer writes for cell stdout.
+Other fence tags are unchanged. There is no client-side highlighter.
+
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
 ### Variable persistence

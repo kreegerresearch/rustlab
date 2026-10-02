@@ -90,6 +90,13 @@ Workflow Rule 12).
   of two, as documented.
 
 ### Added
+- Notebook prose fences tagged `bash`, `python`, or `text` use the same
+  panel as a rustlab cell in HTML, `notebook watch`, and PDF. `bash` and
+  `python` are server-side highlighted (comments, strings, keywords,
+  numbers) with the rustlab token colors and a small language label.
+  `text` stays uncolored on the quieter printed-output background, which
+  also covers cell stdout the markdown renderer already writes as a
+  `text` fence. Other fence tags are unchanged.
 - Directory `rustlab-notebook watch` and the matching static directory
   HTML show a collapsible file browser on the index and on every notebook
   page. Rows are grouped by folder and show the notebook title plus the
