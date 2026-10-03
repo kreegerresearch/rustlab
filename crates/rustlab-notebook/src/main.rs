@@ -43,7 +43,7 @@ use std::path::PathBuf;
         markdown  GitHub-friendly .md with inline SVG plots — suitable for\n            \
                   committing alongside source, browsable on GitHub\n  \
         json      One notebook as JSON on stdout (single file; --stdin, --pretty)\n\n\
-        Fences tagged bash, python, or text are highlighted (text is uncolored).\n\
+        Fences tagged bash, python, or text are highlighted (text is uncolored). A fence with no tag is text.\n\
         Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
         Themes:\n  \
         mocha / dark (default)  Catppuccin Mocha\n  \
@@ -101,7 +101,7 @@ enum Command {
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
-            A directory watch shows a file browser; a single file does not.")]
+            A directory watch shows a file browser of file names. Pages are /n/<relative-path> without .md; an old /n/<stem> redirects. A single file stays /n/<stem> and has no file browser.")]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
         /// files (with --obsidian / --output).
@@ -225,7 +225,7 @@ enum Command {
             latex     LaTeX .tex file + SVG plots in plots/<name>/ directory\n  \
             pdf       Compile LaTeX to PDF (always Latte on white paper; requires pdflatex or tectonic)\n  \
             json      JSON on stdout for one notebook (--stdin, --cwd, --pretty). No --output file.\n\n\
-            Fences tagged bash, python, or text are highlighted (text is uncolored).\n\
+            Fences tagged bash, python, or text are highlighted (text is uncolored). A fence with no tag is text.\n\
             Directory render and directory watch show a file browser; a single file, LaTeX, and PDF do not.\n\n\
             Themes:\n  \
             mocha / dark (default)  Catppuccin Mocha\n  \

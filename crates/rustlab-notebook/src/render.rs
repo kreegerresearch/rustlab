@@ -74,7 +74,7 @@ pub fn resolve_source_open(
 /// How cross-notebook `.md` link destinations resolve in HTML output.
 ///
 /// The static build and the watch server publish notebooks at different
-/// addresses — `<stem>.html` siblings vs `/n/<slug>` routes — so the same
+/// addresses — `<stem>.html` siblings vs `/n/<path>` routes — so the same
 /// `[next](02-filter.md)` source must emit different hrefs per mode. The
 /// rewrite happens in the pulldown-cmark event stream (see
 /// [`markdown_to_html_linked`]), which is what scopes it to real link
@@ -113,12 +113,15 @@ pub enum LinkMode {
         known: Option<HashSet<String>>,
         current_rel_dir: String,
     },
-    /// Watch server: `foo.md` → `/n/<slug>`.
+    /// Watch server. Directory mode (`index_at_root`) emits
+    /// `/n/<collection-relative path without .md>` (`ch2/filters.md` →
+    /// `/n/ch2/filters`). Single-file serves emit `/n/<slug>`.
     ///
     /// `slugs` maps normalized collection-root-relative paths
-    /// (`"ch1/notes.md"`) to server slugs. Keyed by path, not stem: the
+    /// (`"ch1/notes.md"`) to internal slugs. Keyed by path, not stem: the
     /// server walk is recursive and same-stem files in different
-    /// directories hold distinct `-N` suffixed slugs. `current_rel_dir` is
+    /// directories hold distinct `-N` suffixed slugs. Those slugs stay
+    /// internal (WebSocket, `/raw/`, `/save/`, plots). `current_rel_dir` is
     /// the linking notebook's directory relative to the root (`""` at the
     /// root), used to resolve `./` and `../`. When `index_at_root` is set
     /// (directory mode), root `index.md` maps to `/` — the index page's
@@ -232,10 +235,42 @@ fn rewrite_link_dest_to(
                 // The index page's body, hoisted to the server root.
                 return Some(format!("/{fragment}"));
             }
+            if *index_at_root {
+                let public = watch_public_rel(&resolved);
+                return Some(format!("/n/{public}{fragment}"));
+            }
             let slug = slugs.get(&resolved)?;
             Some(format!("/n/{slug}{fragment}"))
         }
     }
+}
+
+/// Collection-relative watch path for a listed notebook.
+///
+/// `ch2/filters.md` → `ch2/filters`. One `.md` suffix is stripped, empty
+/// segments are dropped, and each remaining segment is percent-encoded.
+/// Directory `watch` serves this under `/n/`. The result is derived from
+/// the path the server already listed — it is not a filesystem join.
+pub(crate) fn watch_public_rel(rel_md: &str) -> String {
+    let bare = rel_md.strip_suffix(".md").unwrap_or(rel_md);
+    bare.split('/')
+        .filter(|s| !s.is_empty())
+        .map(encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// RFC 3986 unreserved bytes stay literal; everything else is `%XX`.
+fn encode_path_segment(seg: &str) -> String {
+    let mut out = String::with_capacity(seg.len());
+    for b in seg.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 /// Swap a `.md` suffix for `ext` (`"html"` / `"pdf"`). `path` is a
@@ -376,7 +411,7 @@ pub(crate) fn normalize_rel_path(base_dir: &str, target: &str) -> Option<String>
 /// footer links. `None` for single-file renders.
 ///
 /// `link` chooses how `.md` cross-notebook references resolve — static
-/// `.html` siblings or server `/n/<slug>` routes. See [`LinkMode`].
+/// `.html` siblings or server `/n/<path>` routes. See [`LinkMode`].
 pub fn render_html(
     title: &str,
     blocks: &[Rendered],
@@ -419,7 +454,7 @@ pub fn render_html_nonced(
     let href_prefix = plot_href_prefix.trim_end_matches('/').to_string();
     // Prose images are copied here and referenced by `href_prefix`, which
     // is `plots/<stem>` for a static file and `/plots/<slug>` for watch.
-    // The browser resolves a bare `dot.png` against the page URL (`/n/<slug>`
+    // The browser resolves a bare `dot.png` against the page URL (`/n/…`
     // in watch), so the author's relative path would 404.
     let mut prose_assets = crate::prose_media::ProseAssets::new(plot_dir, &href_prefix);
     let mut nav_items = String::new();
@@ -3821,6 +3856,23 @@ mod tests {
     }
 
     #[test]
+    fn prose_fence_untagged_matches_the_text_panel() {
+        let untagged = markdown_to_html("```\nans = 1\ndef not_code\n```\n");
+        let text = markdown_to_html("```text\nans = 1\ndef not_code\n```\n");
+        assert_eq!(untagged, text, "untagged fence should be the text panel");
+        assert!(untagged.contains("<div class=\"rl-fence\">"), "{untagged}");
+        assert!(
+            untagged.contains("<div class=\"rl-lang\">text</div>"),
+            "{untagged}"
+        );
+        let indented = markdown_to_html("    indented\n");
+        assert!(
+            !indented.contains("rl-lang"),
+            "indented code is not the text panel: {indented}"
+        );
+    }
+
+    #[test]
     fn prose_fence_escapes_markup_and_leaves_other_languages() {
         let html = markdown_to_html("```bash\necho <script>alert(1)</script>\n```\n");
         assert!(!html.contains("<script>"), "{html}");
@@ -4934,7 +4986,7 @@ w = 4
         );
         assert_eq!(
             rewrite_link_dest("01-intro.md", &mode).as_deref(),
-            Some("/n/01-intro-2"),
+            Some("/n/ch1/01-intro"),
             "relative to ch1/, `01-intro.md` is the ch1 file"
         );
         assert_eq!(
@@ -4943,7 +4995,7 @@ w = 4
         );
         assert_eq!(
             rewrite_link_dest("../ch2/notes.md", &mode).as_deref(),
-            Some("/n/notes")
+            Some("/n/ch2/notes")
         );
         // `..` escaping the collection root cannot resolve — left alone.
         assert_eq!(rewrite_link_dest("../../outside.md", &mode), None);
@@ -4965,18 +5017,18 @@ w = 4
         );
         assert_eq!(
             rewrite_link_dest("ch2/notes.md", &mode).as_deref(),
-            Some("/n/notes"),
+            Some("/n/ch2/notes"),
             "collection-root path from a nested page"
         );
         assert_eq!(
             rewrite_link_dest("notes.md", &mode).as_deref(),
-            Some("/n/notes"),
+            Some("/n/ch2/notes"),
             "unique basename when the name exists once"
         );
         // Same-dir still wins over a root file of the same name.
         assert_eq!(
             rewrite_link_dest("01-intro.md", &mode).as_deref(),
-            Some("/n/01-intro-2")
+            Some("/n/ch1/01-intro")
         );
         // Explicit `./` / `../` do not take the fallback.
         assert_eq!(rewrite_link_dest("./ch2/notes.md", &mode), None);
@@ -5002,7 +5054,7 @@ w = 4
         );
         assert_eq!(
             rewrite_link_dest("dup.md", &same_dir).as_deref(),
-            Some("/n/dup-ch1")
+            Some("/n/ch1/dup")
         );
     }
 
@@ -5067,7 +5119,7 @@ w = 4
         let mode = server_mode(&[("foo bar.md", "foo-bar")], "");
         assert_eq!(
             rewrite_link_dest("foo%20bar.md", &mode).as_deref(),
-            Some("/n/foo-bar")
+            Some("/n/foo%20bar")
         );
         // Invalid escapes pass through to the (failing) literal lookup.
         assert_eq!(rewrite_link_dest("bad%2.md", &mode), None);
@@ -5231,8 +5283,8 @@ w = 4
             &server_mode(&[("ch2/notes.md", "notes")], "ch1"),
         );
         assert!(
-            html.contains(r#"href="/n/notes""#),
-            "nested wikilink not resolved to slug route: {html}"
+            html.contains(r#"href="/n/ch2/notes""#),
+            "nested wikilink not resolved to path route: {html}"
         );
         let known: HashSet<String> = ["ch2/notes.md".to_string()].into_iter().collect();
         let html = render_md_linked(
