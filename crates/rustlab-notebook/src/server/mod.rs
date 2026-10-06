@@ -1156,7 +1156,7 @@ mod tests {
                 "{name} root disclosure is not open"
             );
             assert!(
-                html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"),
+                html.contains("data-path=\"ch2\""),
                 "{name} missing ch2 folder"
             );
             assert!(html.contains("class=\"fb-name\">intro.md</span>"), "{name}");
@@ -1194,6 +1194,14 @@ mod tests {
             crate::file_browser::path_texts(&index),
             vec!["intro.md".to_string(), "filters.md".to_string()]
         );
+        assert!(
+            !index.contains("<details class=\"fb-folder\" open"),
+            "index folders start closed"
+        );
+        assert!(
+            filters.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"),
+            "the folder that holds the open notebook starts open"
+        );
         assert!(!index.contains("aria-current=\"page\""));
         assert!(filters.contains("aria-current=\"page\""));
         let marked = filters.find("aria-current=\"page\"").unwrap();
@@ -1225,7 +1233,11 @@ mod tests {
             crate::file_browser::path_texts(&static_page),
             crate::file_browser::path_texts(&index)
         );
-        assert!(static_page.contains("<details class=\"fb-folder\" open"));
+        assert!(
+            !static_index.contains("<details class=\"fb-folder\" open"),
+            "static index folders start closed"
+        );
+        assert!(static_page.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
         assert!(static_page.contains("aria-current=\"page\""));
         assert!(static_page.contains("<nav class=\"sidebar\">"));
         assert!(static_page.contains("href=\"../intro.html\""));

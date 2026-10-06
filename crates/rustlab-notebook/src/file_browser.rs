@@ -86,6 +86,20 @@ fn insert(nodes: &mut Vec<Node>, parts: &[&str], parent: &str, entry: FileEntry)
     });
 }
 
+/// `folder` contains the open notebook when that file lives in this
+/// directory or a subdirectory of it. A root file (`intro.md`) sits in
+/// no folder. The index passes `current = None`, so every folder starts
+/// closed.
+fn folder_holds_current(folder: &str, current: Option<&str>) -> bool {
+    let Some(current) = current else {
+        return false;
+    };
+    let Some((dir, _)) = current.rsplit_once('/') else {
+        return false;
+    };
+    dir == folder || dir.starts_with(&format!("{folder}/"))
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -141,8 +155,19 @@ fn render_nodes(nodes: &[Node], current: Option<&str>, out: &mut String) {
                 name,
                 children,
             } => {
+                // Closed unless this folder contains the notebook on
+                // this page. A file click is a new page; leaving every
+                // folder `open` made that navigation look like it had
+                // expanded the whole tree. The root disclosure stays
+                // open in `render_nav` so the column does not collapse
+                // to a strip.
+                let open = if folder_holds_current(path, current) {
+                    " open"
+                } else {
+                    ""
+                };
                 out.push_str(&format!(
-                    "<li class=\"fb-dir\"><details class=\"fb-folder\" open data-path=\"{path}\">\
+                    "<li class=\"fb-dir\"><details class=\"fb-folder\"{open} data-path=\"{path}\">\
 <summary class=\"fb-summary\"><span class=\"fb-label\">{name}</span></summary>\n",
                     path = escape(path),
                     name = escape(name),
@@ -366,7 +391,12 @@ mod tests {
         assert!(ch2 < early && early < nested_dir && nested_dir < nested);
         assert!(nested < unordered && unordered < ch1);
         assert!(html.contains("<details class=\"fb-root\" open"));
-        assert!(html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
+        // Current file is ch1/deep.md, so only ch1 starts open.
+        assert!(html.contains("<details class=\"fb-folder\" open data-path=\"ch1\">"));
+        assert!(html.contains("<details class=\"fb-folder\" data-path=\"ch2\">"));
+        assert!(!html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
+        assert!(html.contains("<details class=\"fb-folder\" data-path=\"ch2/lab\">"));
+        assert!(!html.contains("<details class=\"fb-folder\" open data-path=\"ch2/lab\">"));
         assert!(html.contains("<summary class=\"fb-summary\">"));
         assert!(html.contains("aria-current=\"page\""));
         assert!(html.contains("class=\"fb-link fb-current\""));
@@ -381,6 +411,28 @@ mod tests {
         assert!(!html.contains("Z First"));
         assert!(!html.contains("ch2/early.md"), "row shows the full path");
         assert!(html.contains("href=\"../ch1/deep.html\""));
+    }
+
+    #[test]
+    fn folders_start_closed_except_the_open_notebooks_path() {
+        let mut browser = sample();
+        browser.current_rel = Some("ch2/lab/nested.md".into());
+        let html = render_nav(&browser);
+        assert!(html.contains("<details class=\"fb-root\" open"));
+        assert!(html.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
+        assert!(html.contains("<details class=\"fb-folder\" open data-path=\"ch2/lab\">"));
+        assert!(html.contains("<details class=\"fb-folder\" data-path=\"ch1\">"));
+        assert!(!html.contains("<details class=\"fb-folder\" open data-path=\"ch1\">"));
+        assert!(!html.contains("onclick"));
+
+        browser.current_rel = None;
+        let index = render_nav(&browser);
+        assert!(index.contains("<details class=\"fb-root\" open"));
+        assert!(!index.contains("<details class=\"fb-folder\" open"));
+
+        browser.current_rel = Some("z-first.md".into());
+        let root_file = render_nav(&browser);
+        assert!(!root_file.contains("<details class=\"fb-folder\" open"));
     }
 
     #[test]
