@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.9
+
+### Breaking / behavior changes
+- **Directory file-browser folders start collapsed.** Every folder
+  disclosure is closed until you open it. The folders that contain the
+  notebook on the page stay open, so the current file stays visible.
+  The index has no current notebook, so every folder starts closed
+  there. The root disclosure stays open. Clicking a file no longer
+  reloads the page with every folder expanded; clicking a folder
+  summary still opens or closes only that folder. Static HTML and
+  `notebook watch` share this markup.
+
 ## 0.3.8
 
 ### Breaking / behavior changes

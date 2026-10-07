@@ -2113,6 +2113,10 @@ mod tests {
             file_browser::path_texts(&index)
         );
         assert!(index.contains("<details class=\"fb-root\" open"));
+        assert!(
+            !index.contains("<details class=\"fb-folder\" open"),
+            "index has no current notebook, so folders start closed"
+        );
         assert!(page.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
         assert!(page.contains("aria-current=\"page\""));
         assert!(!index.contains("fb-name\">README.md"));

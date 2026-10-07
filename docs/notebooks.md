@@ -1691,9 +1691,12 @@ Directory HTML (`render` of a folder, and `watch` of a folder) adds a
 third: a **file browser** fixed on the left of the index page and of
 every notebook page. It groups notebooks by their real folders, and each
 row shows only the file name (`filters.md`), inside its folder.
-The whole browser and each folder are `<details>` disclosures, open by
-default; closing the root disclosure shrinks the column. The open
-notebook is marked. Listing rules match the index (no `README.md`,
+The whole browser and each folder are `<details>` disclosures. The root
+disclosure starts open; closing it shrinks the column. Every folder
+starts closed, except the folders that contain the notebook on this
+page, so that file stays visible. The index has no current notebook, so
+every folder starts closed there. Clicking a folder summary opens or
+closes only that folder. The open notebook is marked. Listing rules match the index (no `README.md`,
 `index.md`, `_` partials, or dotfiles), and the row order matches
 frontmatter `order` then path. Single-file `render` / `watch` has no
 file browser. LaTeX and PDF do not.
