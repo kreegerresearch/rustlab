@@ -2,7 +2,7 @@
 
 **Status:** design only. Nothing is implemented. Waiting on decisions in [Open questions](#open-questions).  
 **Created:** 2026-10-07  
-**Updated:** 2026-10-08 — CriticMarkup is dropped. Notes use Obsidian `==highlight==` and `%%comment%%`. `@author` is optional free text; nothing looks up a name. A `%%` immediately before a fence is a comment on that cell (§7).  
+**Updated:** 2026-10-08 — CriticMarkup is dropped. Notes use Obsidian `==highlight==` and `%%comment%%`. `@author` is optional free text; nothing looks up a name. A `%%` immediately before a fence is a comment on that cell (§7). In `watch --annotate`, a valid selection is annotated from a right-click menu (§4.1).  
 **Surfaces:** HTML (single and directory), `watch` (interactive server), LaTeX/PDF, Markdown, JSON, `check`.  
 **Scope:** `.md` notebooks only. Standalone `.rlab` scripts, such as `run setup.rlab`, are code. They are never scanned for marks.
 
@@ -10,7 +10,7 @@
 
 Reviewers highlight a passage and leave a comment on it, or leave a comment on a whole code cell. The notes live **in the `.md` file**, in Obsidian's own syntax. rustlab renders highlights as `<mark>` and comments as margin notes.
 
-The headline interaction is in `notebook watch`: select text in the rendered notebook, highlight it, and attach a comment. That is phase 2, immediately after read-only rendering. Phase 1 only displays marks that are already in the file.
+The headline interaction is in `notebook watch` with `--annotate`: select text, right-click, and choose **Add comment** or **Highlight**. That is phase 2, immediately after read-only rendering. Phase 1 only displays marks that are already in the file.
 
 There are **no tracked changes**. No insertions, deletions, or substitutions, and no `--critic` mode.
 
@@ -52,7 +52,7 @@ The cutoff is 0.25.%%@michael 2026-10-08: confirm against the lesson%%
 The cutoff is 0.25.</span><span class="rl-cm-note" id="cm-n2" role="note" tabindex="0">…</span></p>
 ```
 
-The offsets in that sketch are byte offsets into the file. The real renderer stamps every prose text run, not only the marks (§4.2).
+The offsets in that sketch are byte offsets into the file. The real renderer stamps every prose text run, not only the marks (§4.3).
 
 ### 1.2 Divergence from Obsidian
 
@@ -260,6 +260,8 @@ Every pair below must reach WCAG **4.5:1** on all four builtins. A unit test in 
 - `text` / `cm_note_bg`
 - `cm_note_border` / `cm_note_bg`
 
+The annotate context menu (§4.1) uses these same roles: `text` on `cm_note_bg`, and a `cm_note_border` rule. It does not add a fourth color. Hover keeps the text color and draws the border as a 2px focus/hover outline, so the contrast pairs above cover the menu.
+
 Yellow at 25% over `bg` gives `text`/`cm_mark_bg` of about 5.6, 5.2, **4.5**, and 5.7 (Mocha, Macchiato, Frappé, Latte). Frappé needs about 20% so it is not sitting on the threshold. `<mark>` sets `color: var(--rl-text)`, never the browser's default black.
 
 No insert/delete colors. Those marks are out of scope.
@@ -294,22 +296,72 @@ notes/filter.md:57 [rustlab:W011] warning: orphan reply re #c4 (no #c4 in this f
 
 ## 4. Selecting text to comment (phase 2, the headline)
 
-Phase 1 displays marks. Phase 2 lets a person **select rendered prose, highlight it, and attach a comment** without typing delimiters.
+Phase 1 displays marks. Phase 2 lets a person **select rendered text and annotate it** without typing delimiters. With a mouse, the gesture is select, then right-click, then a menu item. The popover is the place the comment is typed, and the fallback when there is no right-click (§4.2).
 
-### 4.1 Popover
+### 4.1 Context menu
 
-Shown only in `watch`, and only when `--annotate` is on (§4.4). Static HTML never gets it.
+Shown only in `watch`, and only when `--annotate` is on (§4.5). Static HTML never gets it. The menu is an element in the page, `role="menu"`, hidden until opened. A nonce'd script binds `contextmenu` and `keydown` with `addEventListener`. No `oncontextmenu` attribute, no other `on*` attribute, no CDN. Item labels are fixed strings in that script. The script does not build the menu from notebook text.
 
-- On `mouseup` inside `<main>`, if the selection is non-empty and valid (§4.2), a small popover opens at the selection rectangle.
-- The popover contains a comment textarea, an optional Name field (§2), and one primary button, **Comment**. On prose, that button writes the highlight and, when the textarea is non-empty, the comment.
-- An empty textarea on prose writes the highlight only: `==selected text==`.
+**Open the menu** (`preventDefault`, then show it) only when all of these hold:
+
+- the event target is inside `<main>`, and not inside `.CodeMirror`, a `textarea`, an `input`, or `[contenteditable]`
+- Shift is not held (`!event.shiftKey`)
+- there is a valid selection (§4.3), or the target is inside one existing `.rl-cm-mark` or `.rl-cm-note`
+
+The menu is positioned at the pointer. A keyboard open uses the selection rectangle. It flips to stay inside the viewport.
+
+**Leave the native browser menu alone** when any of these hold. The handler returns without `preventDefault` and without showing our menu:
+
+- there is no selection, or the selection is collapsed, and the target is not an existing mark or note
+- the selection is invalid: it crosses two blocks, crosses from a cell into prose, or intersects `.rl-math`
+- Shift is held
+- the target is outside `<main>`, or inside the source pane, the cell editor, or another text control
+
+**Items.** A valid selection of unmarked prose:
+
+| Item | What it does |
+|---|---|
+| **Add comment** | Opens the popover (§4.2). Submit writes `==selected== %%#cN …%%`. |
+| **Highlight** | Writes `==selected==` immediately. No popover. |
+
+A valid selection inside one code, mermaid, widget, or prose fence uses this same menu and writes the whole-cell `%%` (§7). **Highlight** is omitted there. Wrapping code in `==` is not a cell comment. **Add comment** opens the popover; submit writes the `%%` above the directive stack.
+
+A right-click on an existing mark or its note:
+
+| Target | Items |
+|---|---|
+| Highlight with a bound `%%`, or the note card | **Edit comment**, **Delete** |
+| Bare `<mark>` (no `%%`) | **Add comment**, **Delete** |
+
+**Edit comment** opens the popover with the current body. Save sends `op: "edit"`. **Delete** sends `op: "delete"`. On a note, delete removes that `%%` and its `re #id` replies and leaves a bound highlight, the same as the card buttons (§4.4). On a bare highlight, delete unwraps `==` and leaves the words. **Add comment** on a bare highlight writes a `%%` bound to the existing `==` and does not wrap the text again.
+
+**Keyboard.** The menu is a WAI-ARIA menu with roving tabindex:
+
+- `ContextMenu` and Shift+F10, while the selection is valid and focus is inside `<main>`, open it. The same fall-through rules apply: an invalid selection does not call `preventDefault`.
+- ArrowUp and ArrowDown move between items. Home and End move to the ends.
+- Enter and Space activate the focused item.
+- Esc closes the menu and leaves the selection in place.
+- Tab closes the menu.
+
+Focus moves to the first item when the menu opens. A click outside, a scroll, a selection change, or a live reload that replaces `<main>` closes it.
+
+### 4.2 Popover
+
+The popover is the composer, not the thing a mouse click opens by itself.
+
+- **Add comment** and **Edit comment** open it next to the selection.
+- It contains a comment textarea, an optional Name field (§2), and one primary button, **Comment** (or **Save** when editing).
 - A one-line prose comment writes `==selected text== %%#cN YYYY-MM-DD: comment%%`. `@name` is added only when the Name field is non-empty.
 - A comment that contains a newline writes a block note after the highlight.
-- A selection inside one fenced cell uses the same popover and writes a cell comment (§7). The textarea is required there. An empty cell comment is not written.
+- A cell selection writes a cell comment (§7). The textarea is required. An empty cell comment is not written.
+- **Highlight** does not open the popover.
 - The server rejects a comment body that contains `%%`, `==`, or a line of three or more backticks, so the body cannot close the delimiter or open a fence.
-- The popover is plain HTML inlined in the page. A nonce'd script binds `mouseup`, `click`, and `keydown` with `addEventListener`. No `on*` attributes. No CDN. Escape or a click elsewhere dismisses it.
 
-### 4.2 Mapping a selection to source bytes
+**Touch and keyboard.** A fine pointer does not open the popover on `mouseup`. Selecting and then right-clicking is the mouse path. A coarse pointer (`matchMedia('(pointer: coarse)')`) opens the popover on `pointerup` when the selection is valid, because a long-press `contextmenu` is not reliable. That fallback popover shows the same actions the menu would have: **Highlight** next to **Comment** for unmarked prose, **Comment** alone for a cell, and **Edit** / **Delete** for an existing mark. Keyboard users open the menu with ContextMenu or Shift+F10. The popover stays because the menu has no text field, and because touch has no dependable right-click. It is not a second mouse path.
+
+The popover is plain HTML inlined in the page. The same nonce'd script binds `pointerup`, `click`, and `keydown` with `addEventListener`. No `on*` attributes. No CDN. Esc or a click elsewhere dismisses it.
+
+### 4.3 Mapping a selection to source bytes
 
 `parse_notebook` does not store offsets. The renderer stamps them.
 
@@ -323,14 +375,17 @@ The script walks the selection's start and end containers, reads the surrounding
 **Reject in the browser, before any request, when:**
 
 - the selection crosses two `section.rl-block` elements, or starts in a code section and ends outside it
-- it intersects `.rl-math` or an existing `.rl-cm-mark` / `.rl-cm-note`
+- it intersects `.rl-math`
+- it covers both unmarked text and an existing `.rl-cm-mark` or `.rl-cm-note`, or it covers two marks
 - the offsets cannot be read (no `data-src-*` ancestor)
+
+A selection contained in one existing mark is valid. The menu then offers Edit / Delete (or Add comment / Delete on a bare highlight), not a second `==` wrap (§4.1).
 
 The server repeats the check against the file. For a prose insert, the bytes `file[start..end]` must equal the `text` field exactly. The range must sit inside one markdown region of the raw file, and must not overlap a fence, a math span, an HTML comment, or an existing `==` / `%%`. A mismatch is **400**. The client asks the reader to select the text again. The cell-insert check is in §7.
 
 Quoting the selected string and searching for it is not the mechanism. The same sentence can occur twice. Offsets plus an equality check are the mechanism.
 
-### 4.3 Edit and delete from the margin card
+### 4.4 Edit and delete from the margin card
 
 With `--annotate`, each note card shows **Edit** and **Delete**. They are `<button type="button">` elements. The same nonce'd script handles them by delegation. No per-card listeners in the HTML, no `on*` attributes.
 
@@ -338,7 +393,7 @@ With `--annotate`, each note card shows **Edit** and **Delete**. They are `<butt
 - **Delete** sends `op: "delete"`. The server removes that `%%...%%` and any reply whose header is `re #that-id`. A highlight the comment was bound to is left in place. One preceding space is removed when it was the single space that bound `==` to `%%`.
 - Both operations send `expect`: the exact `%%...%%` bytes the page rendered. The server checks `expect` against the file at `data-src-start/end` on the note. A mismatch is **409**, same as a bad `If-Match`.
 
-### 4.4 Write route: `--annotate`, not `--editable`
+### 4.5 Write route: `--annotate`, not `--editable`
 
 **Recommendation: a new `--annotate` flag.** Do not reuse `--editable`.
 
@@ -347,7 +402,7 @@ With `--annotate`, each note card shows **Edit** and **Delete**. They are `<butt
 | Flag | What it enables |
 |---|---|
 | *(neither)* | read-only `watch`, toggle still works |
-| `--annotate` | selection popover, edit/delete on notes, `POST /annotate/{slug}` |
+| `--annotate` | context menu, comment popover, edit/delete on notes, `POST /annotate/{slug}` |
 | `--editable` | today's whole-file save and cell editor. It does **not** mount the annotate route unless open question 2 says it should |
 
 `POST /annotate/{slug}` lives next to `POST /save/{slug}` in `server/http.rs` and is registered only when `--annotate` is set.
@@ -366,7 +421,7 @@ Insert splice, one-line comment:
 ==Group delay is constant== %%#c3 2026-10-08: only for linear phase%%
 ```
 
-### 4.5 Live reload after a write
+### 4.6 Live reload after a write
 
 The handler does not render and does not broadcast. It writes the file and returns 204. The existing watcher (notify, 250 ms debounce, `render_loop`) re-renders and sends the usual WebSocket patch. The same path already runs after `POST /save/{slug}`.
 
@@ -380,7 +435,7 @@ A 409 does not write, so it does not re-render.
 |---|---|---|
 | **1** | `comments.rs`; HTML and JSON rendering, including cell comments (§7); theme roles; sidenotes and block notes; the Comments toggle; `--comments` / `--no-comments` for HTML, watch, markdown, and JSON; `check` W006–W011; `docs/notebooks.md` including the Obsidian divergence | 1 PR |
 | **1b** | LaTeX/PDF, default off, `--comments` on, cell notes above the listing | 1 small PR |
-| **2** | **Headline.** Selection popover for prose and for a whole cell; `data-src-*` spans; `POST /annotate/{slug}` with Host, Origin, jail, `If-Match` → 409; edit and delete on the margin card; live reload through the existing watcher | 1 PR |
+| **2** | **Headline.** Right-click menu (Add comment, Highlight, Edit, Delete) plus the popover as composer and touch fallback; cell selections write a whole-cell `%%`; `data-src-*` spans; `POST /annotate/{slug}` with Host, Origin, jail, `If-Match` → 409; live reload through the existing watcher | 1 PR |
 | **3** (optional) | CodeMirror overlay so `==` and `%%` are visible in the source pane; insert from that pane when a rendered selection is rejected | 1 PR |
 
 Phase 1 has no write route. Marks get into the file from an editor. `watch` re-renders on save, as it already does.
@@ -392,10 +447,12 @@ Phase 1 has no write route. Marks get into the file from an editor. `watch` re-r
 - **CLI:** `--no-comments` HTML contains neither `rl-cm-mark` nor `rl-cm-note`. `--comments` PDF contains the highlight text and the comment text. Default PDF contains the highlight text and not the comment text.
 - **Markdown:** comments on passes `==` and `%%` through. `--no-comments` unwraps and deletes them. `--obsidian` with comments on still emits `%%` (Obsidian will hide it; we must not strip it by accident).
 - **Property:** a file with no `==` or `%%` renders byte-identical to today.
-- **Theme contrast** for the three pairs in §3.5, all four builtins, ≥ 4.5:1.
+- **Theme contrast** for the three pairs in §3.5, all four builtins, ≥ 4.5:1. The context menu uses those pairs and adds no new color.
+- **Context menu (phase 2):** a `contextmenu` on a valid selection inside `<main>` calls `preventDefault` and shows Add comment and Highlight. The same event with no selection, an invalid selection (cross-block or math), Shift held, or a target outside `<main>` or inside CodeMirror does not call `preventDefault`. A cell selection shows Add comment and not Highlight. A right-click on a note shows Edit comment and Delete. Shift+F10 opens the menu, Esc closes it, and Enter activates the focused item.
 - **`check`:** each W006–W011, right line, sorted order. A rustlab cell with `a == b`, `# comment`, or `% comment` produces no finding. A cell comment uses the same codes as any other `%%`.
 - **Server (phase 2):**
-  - a prose insert writes exactly `==text== %%#cN …%%` and no other bytes, with `@name` only when `author` is a non-empty token
+  - **Highlight** writes exactly `==text==` and no `%%`
+  - a prose **Add comment** writes exactly `==text== %%#cN …%%` and no other bytes, with `@name` only when `author` is a non-empty token
   - a cell insert writes one `%%` line immediately before the fence's directive stack, and does not wrap any code in `==`
   - a selection that crosses a block, or crosses from a cell into prose, or overlaps math, is 400 and does not write
   - an empty cell comment is 400 and does not write
@@ -449,7 +506,7 @@ The note stays on the sentence. The comment text is what says "64". A sidecar `e
 | Blank line inserted between a cell comment and its fence | The `%%` becomes an ordinary block note. It is no longer drawn on the cell | The binding rule is adjacency (§7). `check` does not invent a new warning for it. |
 | The fence is moved and the preceding `%%` is left behind | The note stays on the lines that stayed | Adjacency is the anchor. There is no cell id to follow the fence. |
 | Whole-file `POST /save/{slug}` | Last writer wins. This route has **no** `If-Match` today | Comment writes do not use it. They use `/annotate` and `If-Match`. |
-| Live reload while the popover is open | The selection's offsets may go stale | Submit still sends `If-Match`. A stale hash is 409, and the file is not changed. |
+| Live reload while the menu or popover is open | The selection's offsets may go stale. The reload closes both. | Submit still sends `If-Match`. A stale hash is 409, and the file is not changed. |
 
 ### 6.3 Mitigations
 
@@ -457,7 +514,7 @@ The note stays on the sentence. The comment text is what says "64". A sidecar `e
 2. **`check` with line numbers.** W006–W011 (§3.7).
 3. **Degrade in place.** An unmatched `==` or `%%` is literal text followed by `<span class="rl-cm-warn" role="img" aria-label="Unclosed highlight" title="Unclosed == (line 42)">⚠</span>`. The rest of the paragraph renders normally.
 4. **Ids.** Browser inserts always write `#cN`. Replies and delete use the id, not the display number.
-5. **Exact splice.** Insert, edit, and delete change one byte range after the file hash matches and (for edit/delete) `expect` matches, then the round-trip guard runs (§4.4).
+5. **Exact splice.** Insert, edit, and delete change one byte range after the file hash matches and (for edit/delete) `expect` matches, then the round-trip guard runs (§4.5).
 6. **Live reload is per block.** A broken mark affects its block. Fixing it clears the badge on the next render.
 
 ### 6.4 If a sidecar is ever needed
@@ -524,7 +581,7 @@ This applies to every fence `parse_notebook` already splits out: `rustlab`, merm
 
 **Toggle, CLI, PDF.** The Comments switch and `--no-comments` hide or omit the card and the badge the same way they omit any other note (§3). The code remains. `--comments` on PDF prints the note immediately above the listing. The default PDF drops it.
 
-**Selection in `--annotate`.** A non-empty selection that starts and ends inside one code section opens the same popover. The button writes a cell comment, not `==…==` around the selection. The request is `target: "cell"` with the fence opener's byte offset. The server checks that offset is still a fence opener, inserts one `%%` line above the directive stack, and requires a non-empty comment. It does not copy the selected lines into the comment. A selection can contain `%%`, `==`, or a fence-like string of backticks, and copying it into the `%%` body would close the comment or break `parse_notebook`. The popover shows the selected lines as read-only context so the reader can see what they pointed at. Citing a line is something they type, in their own words. A selection that leaves the cell is rejected (§4.2).
+**Selection in `--annotate`.** A non-empty selection that starts and ends inside one code section uses the same context menu (§4.1). **Add comment** opens the popover and writes a cell comment. **Highlight** is not in that menu. The request is `target: "cell"` with the fence opener's byte offset. The server checks that offset is still a fence opener, inserts one `%%` line above the directive stack, and requires a non-empty comment. It does not copy the selected lines into the comment. A selection can contain `%%`, `==`, or a fence-like string of backticks, and copying it into the `%%` body would close the comment or break `parse_notebook`. The popover shows the selected lines as read-only context so the reader can see what they pointed at. Citing a line is something they type, in their own words. A selection that leaves the cell is rejected (§4.3).
 
 **Sync.** The note survives a cell-body edit. It detaches when a blank line, or a line that is not a code directive, is inserted between it and the fence. It does not follow a fence that is moved without it. That is the trade for having no cell id. The `%%` is visible in the markdown next to the fence, so a diff shows whether the note moved with the cell.
 
