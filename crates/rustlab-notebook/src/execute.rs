@@ -299,14 +299,11 @@ fn execute_core(
     if let Some(c) = &cancel {
         ev.set_cancel(c.clone());
     }
-    if valid_k == 0 {
-        // No cached prefix to restore from — make sure thread-locals
-        // start clean so a fresh execution doesn't see stale state
-        // left over from a prior render in this process.
-        FIGURE.with(|f| f.borrow_mut().reset());
-        rustlab_plot::clear_notebook_figures();
-        clear_notebook_animations();
-    }
+    // Always start from a clean figure. Cache hits below restore the
+    // plot snapshot captured after each cached block, so a scoped
+    // re-render still sees `hold` from earlier cells. A previous
+    // notebook's `hold on` must not leak into this render.
+    reset_figure_for_render();
 
     let cancelled = || cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
 
@@ -440,6 +437,46 @@ fn widget_reads_with_values(
         .collect()
 }
 
+/// Drop figure, savefig, and animation state left by an earlier render.
+fn reset_figure_for_render() {
+    FIGURE.with(|f| f.borrow_mut().reset());
+    clear_notebook_figures();
+    clear_notebook_animations();
+}
+
+/// Prepare one code block's figure capture.
+///
+/// `hold off` (the default) clears the axes so this block only shows
+/// what it draws. `hold on` keeps the axes so a later `plot` overlays.
+/// Returns a fingerprint of the figure as the block starts.
+fn begin_figure_block() -> u64 {
+    let hold_active = FIGURE.with(|fig| fig.borrow().hold);
+    if !hold_active {
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+    }
+    clear_notebook_figures();
+    clear_notebook_animations();
+    FIGURE.with(|fig| fig.borrow().content_hash())
+}
+
+/// Snapshots this block should show.
+///
+/// `savefig` snapshots win. Otherwise the live figure is emitted only
+/// when the block changed it and it still has something to draw — a
+/// compute cell under `hold on` does not repeat the previous plot.
+fn end_figure_block(before: u64) -> (Vec<FigureState>, Vec<NotebookAnimation>) {
+    let mut figures = take_notebook_figures();
+    if figures.is_empty() {
+        FIGURE.with(|fig| {
+            let f = fig.borrow();
+            if f.content_hash() != before && f.has_drawable_content() {
+                figures.push(f.clone());
+            }
+        });
+    }
+    (figures, take_notebook_animations())
+}
+
 /// Execute one rustlab code block against an existing evaluator,
 /// capturing its full output (text, error, figures, animations) as a
 /// `Rendered::Code` ready to splice into a rendered document. Used by
@@ -450,37 +487,13 @@ fn run_code_block_capturing(
     source: &str,
     directives: &crate::parse::CodeDirectives,
 ) -> Rendered {
-    // Reset figure before each code block so we only capture what this
-    // block produces — unless hold is on, in which case we preserve
-    // figure state for multi-block overlays.
-    let hold_active = FIGURE.with(|fig| fig.borrow().hold);
-    if !hold_active {
-        FIGURE.with(|fig| fig.borrow_mut().reset());
-    }
-    clear_notebook_figures();
-    clear_notebook_animations();
+    let before = begin_figure_block();
 
     rustlab_script::start_capture();
     let error = run_code_block(ev, source);
     let text_output = rustlab_script::stop_capture();
 
-    let mut figures = take_notebook_figures();
-    if figures.is_empty() {
-        FIGURE.with(|fig| {
-            let f = fig.borrow();
-            if f.subplots.iter().any(|s| {
-                !s.series.is_empty()
-                    || s.heatmap.is_some()
-                    || s.surface.is_some()
-                    || !s.contours.is_empty()
-                    || !s.quivers.is_empty()
-                    || !s.streamlines.is_empty()
-            }) {
-                figures.push(f.clone());
-            }
-        });
-    }
-    let animations = take_notebook_animations();
+    let (figures, animations) = end_figure_block(before);
 
     Rendered::Code {
         source: source.to_string(),
@@ -533,6 +546,8 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
 
     let widgets = Arc::new(build_widget_table(blocks, None));
     let mut ev = Evaluator::new().with_widgets(widgets.clone());
+    // A previous notebook in this process must not leave `hold on`.
+    reset_figure_for_render();
     let mut rendered = Vec::with_capacity(blocks.len());
     let mut exercise_counter = 0usize;
 
@@ -543,54 +558,7 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                 rendered.push(Rendered::Markdown(interpolated));
             }
             Block::Code { source, directives } => {
-                // Reset figure before each code block so we only capture
-                // what this block produces — unless hold is on, in which
-                // case we preserve the figure state for multi-block overlays.
-                let hold_active = FIGURE.with(|fig| fig.borrow().hold);
-                if !hold_active {
-                    FIGURE.with(|fig| fig.borrow_mut().reset());
-                }
-                // Drop any stray savefig snapshots from a prior block.
-                clear_notebook_figures();
-                clear_notebook_animations();
-
-                // Capture text output during execution
-                rustlab_script::start_capture();
-                let error = run_code_block(&mut ev, source);
-                let text_output = rustlab_script::stop_capture();
-
-                // Collect per-savefig snapshots; if none were taken but the
-                // block left plot data in FIGURE, fall back to a final snapshot.
-                let mut figures = take_notebook_figures();
-                if figures.is_empty() {
-                    FIGURE.with(|fig| {
-                        let f = fig.borrow();
-                        if f.subplots.iter().any(|s| {
-                            !s.series.is_empty()
-                                || s.heatmap.is_some()
-                                || s.surface.is_some()
-                                || !s.contours.is_empty()
-                                || !s.quivers.is_empty()
-                                || !s.streamlines.is_empty()
-                        }) {
-                            figures.push(f.clone());
-                        }
-                    });
-                }
-
-                let animations = take_notebook_animations();
-
-                rendered.push(Rendered::Code {
-                    source: source.clone(),
-                    text_output,
-                    error,
-                    figures,
-                    animations,
-                    hidden: directives.hidden,
-                    details: directives.details.clone(),
-                    grid_cols: directives.grid_cols,
-                    source_open: directives.source_open,
-                });
+                rendered.push(run_code_block_capturing(&mut ev, source, directives));
             }
             Block::Mermaid { source, directives } => {
                 let MermaidDirectives { hidden, details, caption } = directives.clone();
@@ -1499,6 +1467,205 @@ mod tests {
                 );
             }
             _ => panic!("expected Code block"),
+        }
+    }
+
+    fn code_blocks(rendered: &[Rendered]) -> Vec<&Rendered> {
+        rendered
+            .iter()
+            .filter(|r| matches!(r, Rendered::Code { .. }))
+            .collect()
+    }
+
+    fn series_len(block: &Rendered) -> usize {
+        match block {
+            Rendered::Code { figures, .. } => figures
+                .first()
+                .map(|f| f.subplots.iter().map(|s| s.series.len()).sum())
+                .unwrap_or(0),
+            _ => panic!("expected Code block"),
+        }
+    }
+
+    /// `hold on` keeps the axes for a later plot, but a cell that does
+    /// not touch the figure does not emit a copy of it.
+    #[test]
+    fn hold_on_compute_cell_does_not_repeat_the_plot() {
+        let src = "\
+```rustlab
+x = 0:3
+plot(x)
+hold on
+```
+
+```rustlab
+y = 1 + 1
+print(y)
+```
+
+```rustlab
+plot(x + 1)
+```
+";
+        let rendered = execute_notebook(&crate::parse::parse_notebook(src));
+        let cells = code_blocks(&rendered);
+        assert_eq!(cells.len(), 3);
+        match cells[0] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(figures.len(), 1);
+                assert!(figures[0].hold);
+                assert_eq!(series_len(cells[0]), 1);
+            }
+            _ => unreachable!(),
+        }
+        match cells[1] {
+            Rendered::Code {
+                figures,
+                text_output,
+                error,
+                ..
+            } => {
+                assert!(error.is_none(), "{error:?}");
+                assert!(figures.is_empty(), "compute cell repeated the held plot");
+                assert!(text_output.contains('2'), "{text_output:?}");
+            }
+            _ => unreachable!(),
+        }
+        match cells[2] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(figures.len(), 1);
+                assert_eq!(series_len(cells[2]), 2, "later plot must overlay");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// `hold off` clears the axes before the next cell, so a following
+    /// compute cell has nothing to emit.
+    #[test]
+    fn hold_off_then_compute_cell_emits_nothing() {
+        let src = "\
+```rustlab
+x = 0:3
+plot(x)
+hold off
+```
+
+```rustlab
+print(1)
+```
+";
+        let rendered = execute_notebook(&crate::parse::parse_notebook(src));
+        let cells = code_blocks(&rendered);
+        match cells[0] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(figures.len(), 1);
+            }
+            _ => unreachable!(),
+        }
+        match cells[1] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert!(figures.is_empty());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// A title written onto a held figure is a real change and still emits.
+    #[test]
+    fn title_under_hold_still_emits() {
+        let src = "\
+```rustlab
+plot(0:3)
+hold on
+```
+
+```rustlab
+title(\"later\")
+```
+";
+        let rendered = execute_notebook(&crate::parse::parse_notebook(src));
+        let cells = code_blocks(&rendered);
+        match cells[1] {
+            Rendered::Code { figures, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert_eq!(figures.len(), 1);
+                assert_eq!(figures[0].subplots[0].title, "later");
+                assert_eq!(figures[0].subplots[0].series.len(), 1);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Editing the compute cell re-runs from there. The cached plot cell
+    /// stays, and the edited cell still does not grow a figure.
+    #[test]
+    fn scoped_rerender_of_compute_cell_stays_figure_free() {
+        let src = "\
+```rustlab
+x = 0:3
+plot(x)
+hold on
+```
+
+```rustlab
+y = 1 + 1
+print(y)
+```
+
+```rustlab
+plot(x + 1)
+```
+";
+        let mut cache = crate::cache::NotebookCache::default();
+        drive_scoped(src, &mut cache, None);
+        let edited = src.replace("print(y)", "print(y + 1)");
+        let outcome = drive_scoped(&edited, &mut cache, None);
+        assert_eq!(outcome.cached_blocks, 1, "the plot cell stays cached");
+        let cells = code_blocks(&outcome.rendered);
+        match cells[1] {
+            Rendered::Code {
+                figures,
+                text_output,
+                ..
+            } => {
+                assert!(figures.is_empty());
+                assert!(text_output.contains('3'), "{text_output:?}");
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(series_len(cells[2]), 2);
+    }
+
+    /// Each notebook render starts from a reset figure. A later
+    /// compute-only notebook does not inherit `hold on`.
+    #[test]
+    fn later_notebook_does_not_inherit_hold() {
+        let plotting = crate::parse::parse_notebook("```rustlab\nplot(0:3)\nhold on\n```\n");
+        let first = execute_notebook(&plotting);
+        assert_eq!(series_len(&code_blocks(&first)[0]), 1);
+
+        let quiet = crate::parse::parse_notebook("```rustlab\nprint(7)\n```\n");
+        let second = execute_notebook(&quiet);
+        match &code_blocks(&second)[0] {
+            Rendered::Code {
+                figures,
+                text_output,
+                error,
+                ..
+            } => {
+                assert!(error.is_none(), "{error:?}");
+                assert!(
+                    figures.is_empty(),
+                    "held figure leaked into the next notebook"
+                );
+                assert!(text_output.contains('7'), "{text_output:?}");
+            }
+            _ => unreachable!(),
         }
     }
 }

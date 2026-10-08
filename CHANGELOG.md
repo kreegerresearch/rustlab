@@ -9,6 +9,44 @@ should re-validate against those entries when upgrading.
 ## 0.3.9
 
 ### Breaking / behavior changes
+- **`fprintf` / `sprintf` honor format flags and more specifiers.**
+  `+`, a leading space, `0` (zero-pad between the sign and the digits),
+  and `#` are applied. `*` and `.*` consume the next argument as the
+  width or precision. Precision limits `%s`, sets a minimum digit count
+  for integers (`%.0d` of 0 is empty), and is significant digits for
+  `%g`/`%G`. New specifiers: `%u %o %x %X %c %E %G`. New escapes:
+  `\r \b \f`. Non-finite values print as `Inf`, `-Inf`, and `NaN`.
+  The `,` thousands-separator flag is unchanged. A vector or matrix is
+  still an error — values are not recycled across elements. `%l` / `%ld`
+  stay unknown. Migration: a script that passed `+`, `0`, `#`, or a
+  space flag and expected them to be ignored will now see the sign,
+  padding, or alternate form. `%u` of a negative number wraps as a
+  64-bit unsigned value instead of erroring as an unknown specifier.
+- **A matrix single index treats `end` as the element count.** `M(end)`
+  and `(M)(end)` read and write the last element in column-major order,
+  including a 1×N row (`zeros(1, n)`). Two indexes still bind `end` per
+  axis, so `M(end, end)` is the corner. A 1×N or N×1 matrix honors
+  `dim` the way a vector does: reducing the length-1 axis returns the
+  matrix unchanged (`sum(r, 1)` on a row); the default and the long
+  axis still reduce to a scalar. This applies to `sum`, `mean`, `prod`,
+  `median`, `std`, `cumsum`, `max`/`min` with a dimension, and
+  `argmin`/`argmax`. A vector now compares elementwise with a 1×N
+  matrix of the same length (`==`, `!=`, `<`, `<=`, `>`, `>=`); the
+  result is a 0/1 matrix. `all`/`any` accept a 1×N or N×1 matrix.
+  `for i = r` walks the elements of a 1×N matrix. An N×1 column still
+  cannot be iterated, and `fft` of a 1×N matrix is unchanged.
+  Migration: `r(end)` on a 1×N matrix used to mean `r(1)`. `sum(r, 1)`
+  on that row used to be the scalar total; it is now the row itself.
+  Use `sum(r)` or `sum(r, 2)` for the total.
+- **A notebook cell emits a plot only when it changes the figure.**
+  `hold on` still keeps the axes, so a later `plot` overlays. A cell
+  that only computes does not repeat the held figure. `savefig`
+  snapshots are unchanged. Each notebook render starts from a reset
+  figure, so `hold on` does not leak into the next notebook or the
+  next `notebook watch` render. Migration: a cell that relied on a
+  previous cell's plot appearing again without drawing or calling
+  `savefig` will no longer show that plot. Draw in the cell that
+  should display it, or call `savefig`.
 - **Directory file-browser folders start collapsed.** Every folder
   disclosure is closed until you open it. The folders that contain the
   notebook on the page stay open, so the current file stays visible.

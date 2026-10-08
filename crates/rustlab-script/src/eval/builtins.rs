@@ -1819,7 +1819,34 @@ fn builtin_extremum_nargout(
         }
         return match &args[0] {
             Value::Matrix(m) if !m.is_empty() => {
-                if nargout >= 2 {
+                let nrows = m.nrows();
+                let ncols = m.ncols();
+                // 1×N / N×1 follow the vector rule: reducing the length-1
+                // axis is the identity; reducing the long axis is a scalar.
+                if (nrows == 1 || ncols == 1)
+                    && reduction_along_singleton(nrows, ncols, dim as usize)
+                {
+                    if nargout >= 2 {
+                        let idx = Value::Matrix(Array2::from_elem(
+                            (nrows, ncols),
+                            Complex::new(1.0, 0.0),
+                        ));
+                        Ok(Value::Tuple(vec![Value::Matrix(m.clone()), idx]))
+                    } else {
+                        Ok(Value::Matrix(m.clone()))
+                    }
+                } else if nrows == 1 || ncols == 1 {
+                    let elems: Vec<C64> = m.iter().copied().collect();
+                    let (val, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
+                    if nargout >= 2 {
+                        Ok(Value::Tuple(vec![
+                            value_from_c64(val),
+                            Value::Scalar(idx as f64),
+                        ]))
+                    } else {
+                        Ok(value_from_c64(val))
+                    }
+                } else if nargout >= 2 {
                     let (vals, idx) =
                         matrix_axis_extremum_with_index(m, dim as usize, is_max, fn_name)?;
                     Ok(Value::Tuple(vec![vals, idx]))
@@ -2170,16 +2197,22 @@ fn matrix_axis_collect_then(
     }
 }
 
+/// True when `dim` runs along an axis of length 1, so the reduction is
+/// the identity (a 1×N row with `dim = 1`, an N×1 column with `dim = 2`).
+fn reduction_along_singleton(nrows: usize, ncols: usize, dim: usize) -> bool {
+    (dim == 1 && nrows == 1) || (dim == 2 && ncols == 1)
+}
+
 /// Common dispatch envelope for matrix-axis reducers. Handles:
 ///
 /// - `Value::Vector`: `dim=1` is identity (vector behaves like a 1×N row,
 ///   so reducing along the singleton row dim yields the same vector);
 ///   default and `dim=2` apply `flat_reduce` to all elements.
-/// - `Value::Matrix`: empty matrix returns `Scalar(0.0)`; 1-D-shaped matrix
-///   (`1×N` or `N×1`) is treated as a vector and `flat_reduce` is applied
-///   over all elements; general `M×N` matrix dispatches to `axis_reduce`
-///   along the chosen `dim` (default 1, the octave first-non-singleton-dim
-///   rule for matrices with `M > 1`).
+/// - `Value::Matrix`: empty matrix returns `Scalar(0.0)`. A 1×N or N×1
+///   matrix follows the vector rule: an explicit `dim` along the length-1
+///   axis returns the matrix unchanged; the default and the long axis
+///   `flat_reduce`. A general `M×N` matrix dispatches to `axis_reduce`
+///   along the chosen `dim` (default 1).
 /// - `Value::Scalar` / `Value::Complex`: cloned through.
 ///
 /// `flat_reduce` returns a `Value` directly because different reducers map
@@ -2213,6 +2246,9 @@ where
                 return Ok(Value::Scalar(0.0));
             }
             if nrows == 1 || ncols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
+                    return Ok(args[0].clone());
+                }
                 let elements: Vec<C64> = m.iter().copied().collect();
                 return flat_reduce(&elements);
             }
@@ -2230,6 +2266,9 @@ where
             }
             let m = Value::int_array_to_cmatrix(data, *rows, *cols);
             if *rows == 1 || *cols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(*rows, *cols, d)) {
+                    return Ok(args[0].clone());
+                }
                 let elements: Vec<C64> = m.iter().copied().collect();
                 return flat_reduce(&elements);
             }
@@ -2313,9 +2352,13 @@ fn builtin_cumsum(args: Vec<Value>) -> Result<Value, ScriptError> {
             if nrows == 0 || ncols == 0 {
                 return Ok(Value::Matrix(m.clone()));
             }
-            // 1-D-shaped matrix (column or row vector form): treat as a vector
-            // and accumulate along the long axis. Preserve the input shape.
+            // 1-D-shaped matrix. An explicit dim along the length-1 axis is
+            // the identity (same rule as a vector's dim=1). Otherwise
+            // accumulate along the long axis and keep the input shape.
             if nrows == 1 || ncols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
+                    return Ok(args[0].clone());
+                }
                 let mut acc = Complex::new(0.0, 0.0);
                 let mut data: Vec<C64> = Vec::with_capacity(nrows * ncols);
                 for &x in m.iter() {
@@ -2400,6 +2443,12 @@ fn builtin_argextremum(
             let nrows = m.nrows();
             let ncols = m.ncols();
             if nrows == 1 || ncols == 1 {
+                if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
+                    return Ok(Value::Matrix(Array2::from_elem(
+                        (nrows, ncols),
+                        Complex::new(1.0, 0.0),
+                    )));
+                }
                 let elems: Vec<C64> = m.iter().copied().collect();
                 let (_, idx) = vec_extremum_with_index(&elems, is_max, fn_name)?;
                 return Ok(Value::Scalar(idx as f64));
@@ -8952,38 +9001,38 @@ fn normalise_exp(s: &str) -> String {
 }
 
 /// Apply a C-style format string with the given argument slice.
-/// Supports: %d %i %f %g %e %s %%   and escape sequences \n \t \\
+///
+/// Specifiers: `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%s` `%%`.
+/// Flags: `-` `+` ` ` `0` `#` and the rustlab `,` thousands-separator extension.
+/// `*` reads the width or precision from the next argument. Array arguments
+/// are not recycled — one scalar or string per specifier.
 pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
-    let mut result = String::new();
     let chars: Vec<char> = fmt.chars().collect();
+    let mut result = String::new();
     let mut i = 0;
     let mut arg_idx = 0;
 
     while i < chars.len() {
-        // Escape sequences
         if chars[i] == '\\' && i + 1 < chars.len() {
-            match chars[i + 1] {
-                'n' => {
-                    result.push('\n');
-                    i += 2;
-                    continue;
-                }
-                't' => {
-                    result.push('\t');
-                    i += 2;
-                    continue;
-                }
-                '\\' => {
-                    result.push('\\');
-                    i += 2;
-                    continue;
-                }
-                _ => {
-                    result.push(chars[i]);
-                    i += 1;
-                    continue;
-                }
+            let escaped = match chars[i + 1] {
+                'n' => Some('\n'),
+                't' => Some('\t'),
+                'r' => Some('\r'),
+                'b' => Some('\u{0008}'),
+                'f' => Some('\u{000c}'),
+                '\\' => Some('\\'),
+                _ => None,
+            };
+            if let Some(ch) = escaped {
+                result.push(ch);
+                i += 2;
+                continue;
             }
+            // Unknown escape: keep the backslash and let the next
+            // iteration emit the following character.
+            result.push(chars[i]);
+            i += 1;
+            continue;
         }
 
         if chars[i] != '%' {
@@ -8992,7 +9041,7 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
             continue;
         }
 
-        i += 1; // skip '%'
+        i += 1;
         if i >= chars.len() {
             return Err("fprintf: trailing '%'".to_string());
         }
@@ -9002,26 +9051,73 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
             continue;
         }
 
-        // Parse optional flags, width, precision
-        let mut flags = String::new();
+        let mut left = false;
+        let mut plus = false;
+        let mut space = false;
+        let mut zero = false;
+        let mut hash = false;
+        let mut commas = false;
         while i < chars.len() && "-+ 0#,".contains(chars[i]) {
-            flags.push(chars[i]);
+            match chars[i] {
+                '-' => left = true,
+                '+' => plus = true,
+                ' ' => space = true,
+                '0' => zero = true,
+                '#' => hash = true,
+                ',' => commas = true,
+                _ => {}
+            }
             i += 1;
         }
-        let use_commas = flags.contains(',');
-
-        let mut width_str = String::new();
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            width_str.push(chars[i]);
-            i += 1;
+        if plus {
+            space = false;
+        }
+        if left {
+            zero = false;
         }
 
-        let mut prec_str = String::new();
+        let mut width: usize = 0;
+        if i < chars.len() && chars[i] == '*' {
+            let w = fmt_take_scalar(args, &mut arg_idx, "width")? as i64;
+            if w < 0 {
+                left = true;
+                zero = false;
+                width = w.unsigned_abs() as usize;
+            } else {
+                width = w as usize;
+            }
+            i += 1;
+        } else {
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                width = width
+                    .saturating_mul(10)
+                    .saturating_add((chars[i] as u8 - b'0') as usize);
+                i += 1;
+            }
+        }
+
+        let mut prec: usize = 6;
+        let mut prec_set = false;
         if i < chars.len() && chars[i] == '.' {
             i += 1;
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                prec_str.push(chars[i]);
+            prec_set = true;
+            prec = 0;
+            if i < chars.len() && chars[i] == '*' {
+                let p = fmt_take_scalar(args, &mut arg_idx, "precision")? as i64;
+                if p < 0 {
+                    prec_set = false;
+                    prec = 6;
+                } else {
+                    prec = p as usize;
+                }
                 i += 1;
+            } else {
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    prec = prec
+                        .saturating_mul(10)
+                        .saturating_add((chars[i] as u8 - b'0') as usize);
+                    i += 1;
+                }
             }
         }
 
@@ -9031,99 +9127,311 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
         let spec = chars[i];
         i += 1;
 
-        let arg = args.get(arg_idx).ok_or_else(|| {
-            format!(
-                "fprintf: not enough arguments (need arg {} for '%{}')",
-                arg_idx + 1,
-                spec
-            )
-        })?;
-        arg_idx += 1;
-
-        let w = width_str.parse::<usize>().unwrap_or(0);
-        let p = prec_str.parse::<usize>().unwrap_or(6);
-        let left = flags.contains('-');
-
         let piece = match spec {
             'd' | 'i' => {
-                let n = arg.to_scalar().map_err(|e| format!("fprintf %d: {}", e))? as i64;
-                let base = format!("{}", n);
-                let base = if use_commas {
-                    insert_commas(&base)
+                let n = fmt_take_scalar(args, &mut arg_idx, &format!("%{spec}"))? as i64;
+                let digits = fmt_integer_digits(n.unsigned_abs(), prec_set, prec);
+                let digits = if commas {
+                    insert_commas(&digits)
                 } else {
-                    base
+                    digits
                 };
-                if left {
-                    format!("{:<width$}", base, width = w)
+                fmt_pad(
+                    fmt_sign(n < 0, plus, space),
+                    &digits,
+                    width,
+                    left,
+                    zero && !prec_set,
+                )
+            }
+            'u' | 'o' | 'x' | 'X' => {
+                let n = fmt_take_scalar(args, &mut arg_idx, &format!("%{spec}"))? as i64;
+                let abs = n as u64;
+                let digits = if spec == 'o' {
+                    fmt_octal_digits(abs, prec_set, prec, hash)
+                } else if spec == 'u' {
+                    fmt_integer_digits(abs, prec_set, prec)
                 } else {
-                    format!("{:>width$}", base, width = w)
+                    let raw = if spec == 'X' {
+                        format!("{abs:X}")
+                    } else {
+                        format!("{abs:x}")
+                    };
+                    if prec_set && prec == 0 && abs == 0 {
+                        String::new()
+                    } else if prec_set {
+                        fmt_min_digits(&raw, prec)
+                    } else {
+                        raw
+                    }
+                };
+                let digits = if commas && spec == 'u' {
+                    insert_commas(&digits)
+                } else {
+                    digits
+                };
+                let prefix = if (spec == 'x' || spec == 'X') && hash && abs != 0 {
+                    if spec == 'X' {
+                        "0X"
+                    } else {
+                        "0x"
+                    }
+                } else {
+                    ""
+                };
+                fmt_pad(prefix, &digits, width, left, zero && !prec_set)
+            }
+            'f' | 'e' | 'E' | 'g' | 'G' => {
+                let n = fmt_take_scalar(args, &mut arg_idx, &format!("%{spec}"))?;
+                if let Some(tok) = fmt_nonfinite(n, plus, space) {
+                    fmt_pad("", &tok, width, left, false)
+                } else {
+                    let prec_use = if spec == 'g' || spec == 'G' {
+                        if prec_set {
+                            prec.max(1)
+                        } else {
+                            6
+                        }
+                    } else if prec_set {
+                        prec
+                    } else {
+                        6
+                    };
+                    let mag = n.abs();
+                    let mut body = match spec {
+                        'f' => fmt_fixed(mag, prec_use, hash),
+                        'e' => fmt_scientific(mag, prec_use, hash, false),
+                        'E' => fmt_scientific(mag, prec_use, hash, true),
+                        'g' => fmt_general(mag, prec_use, hash, false),
+                        'G' => fmt_general(mag, prec_use, hash, true),
+                        _ => unreachable!(),
+                    };
+                    if commas {
+                        body = insert_commas(&body);
+                    }
+                    fmt_pad(
+                        fmt_sign(n.is_sign_negative(), plus, space),
+                        &body,
+                        width,
+                        left,
+                        zero,
+                    )
                 }
             }
-            'f' => {
-                let n = arg.to_scalar().map_err(|e| format!("fprintf %f: {}", e))?;
-                let base = format!("{:.prec$}", n, prec = p);
-                let base = if use_commas {
-                    insert_commas(&base)
-                } else {
-                    base
-                };
-                if left {
-                    format!("{:<width$}", base, width = w)
-                } else {
-                    format!("{:>width$}", base, width = w)
-                }
-            }
-            'e' => {
-                let n = arg.to_scalar().map_err(|e| format!("fprintf %e: {}", e))?;
-                // Rust's {:e} omits the '+' sign and leading zeros in the exponent;
-                // normalise to C-style e+XX / e-XX  (e.g.  1.23e+04)
-                let base = format!("{:.prec$e}", n, prec = p);
-                let base = normalise_exp(&base);
-                let base = if use_commas {
-                    insert_commas(&base)
-                } else {
-                    base
-                };
-                if left {
-                    format!("{:<width$}", base, width = w)
-                } else {
-                    format!("{:>width$}", base, width = w)
-                }
-            }
-            'g' => {
-                let n = arg.to_scalar().map_err(|e| format!("fprintf %g: {}", e))?;
-                let base = if n == 0.0 || (n.abs() >= 1e-4 && n.abs() < 1e6) {
-                    // Trim trailing zeros like %g
-                    let s = format!("{:.prec$}", n, prec = p);
-                    s.trim_end_matches('0').trim_end_matches('.').to_string()
-                } else {
-                    let s = format!("{:.prec$e}", n, prec = p);
-                    s
-                };
-                let base = if use_commas {
-                    insert_commas(&base)
-                } else {
-                    base
-                };
-                if left {
-                    format!("{:<width$}", base, width = w)
-                } else {
-                    format!("{:>width$}", base, width = w)
-                }
+            'c' => {
+                let n = fmt_take_scalar(args, &mut arg_idx, "%c")? as i64;
+                let ch = (n >= 0)
+                    .then(|| char::from_u32(n as u32))
+                    .flatten()
+                    .ok_or_else(|| format!("fprintf %c: invalid code point {n}"))?;
+                fmt_pad("", &ch.to_string(), width, left, false)
             }
             's' => {
-                let s = arg.to_str().map_err(|e| format!("fprintf %s: {}", e))?;
-                if left {
-                    format!("{:<width$}", s, width = w)
+                let s = fmt_take_str(args, &mut arg_idx)?;
+                let body = if prec_set {
+                    s.chars().take(prec).collect::<String>()
                 } else {
-                    format!("{:>width$}", s, width = w)
-                }
+                    s
+                };
+                fmt_pad("", &body, width, left, false)
             }
-            other => return Err(format!("fprintf: unknown specifier '%{}'", other)),
+            other => return Err(format!("fprintf: unknown specifier '%{other}'")),
         };
         result.push_str(&piece);
     }
     Ok(result)
+}
+
+fn fmt_take_scalar(args: &[Value], arg_idx: &mut usize, what: &str) -> Result<f64, String> {
+    let arg = args.get(*arg_idx).ok_or_else(|| {
+        format!(
+            "fprintf: not enough arguments (need arg {} for {what})",
+            *arg_idx + 1
+        )
+    })?;
+    *arg_idx += 1;
+    arg.to_scalar().map_err(|e| format!("fprintf {what}: {e}"))
+}
+
+fn fmt_take_str(args: &[Value], arg_idx: &mut usize) -> Result<String, String> {
+    let arg = args.get(*arg_idx).ok_or_else(|| {
+        format!(
+            "fprintf: not enough arguments (need arg {} for '%s')",
+            *arg_idx + 1
+        )
+    })?;
+    *arg_idx += 1;
+    arg.to_str().map_err(|e| format!("fprintf %s: {e}"))
+}
+
+fn fmt_pad(sign: &str, body: &str, width: usize, left: bool, zero: bool) -> String {
+    let total = sign.chars().count() + body.chars().count();
+    if width <= total {
+        return format!("{sign}{body}");
+    }
+    let pad_str = if zero && !left { "0" } else { " " }.repeat(width - total);
+    if left {
+        format!("{sign}{body}{pad_str}")
+    } else if zero {
+        format!("{sign}{pad_str}{body}")
+    } else {
+        format!("{pad_str}{sign}{body}")
+    }
+}
+
+fn fmt_sign(neg: bool, plus: bool, space: bool) -> &'static str {
+    if neg {
+        "-"
+    } else if plus {
+        "+"
+    } else if space {
+        " "
+    } else {
+        ""
+    }
+}
+
+fn fmt_min_digits(digits: &str, prec: usize) -> String {
+    if digits.len() >= prec {
+        digits.to_string()
+    } else {
+        format!("{:0>width$}", digits, width = prec)
+    }
+}
+
+fn fmt_integer_digits(abs: u64, prec_set: bool, prec: usize) -> String {
+    if prec_set && prec == 0 && abs == 0 {
+        return String::new();
+    }
+    let digits = abs.to_string();
+    if prec_set {
+        fmt_min_digits(&digits, prec)
+    } else {
+        digits
+    }
+}
+
+fn fmt_octal_digits(abs: u64, prec_set: bool, prec: usize, hash: bool) -> String {
+    let mut digits = if prec_set && prec == 0 && abs == 0 {
+        String::new()
+    } else {
+        let raw = format!("{abs:o}");
+        if prec_set {
+            fmt_min_digits(&raw, prec)
+        } else {
+            raw
+        }
+    };
+    if hash && (digits.is_empty() || !digits.starts_with('0')) {
+        digits.insert(0, '0');
+    }
+    digits
+}
+
+/// Exponent in `d.ddd e±exp` once `mag` is rounded to `prec` significant digits.
+fn decimal_exponent(mag: f64, prec: usize) -> i32 {
+    let prec = prec.max(1);
+    let s = format!("{mag:.p$e}", p = prec - 1);
+    let exp_str = &s[s.rfind('e').expect("scientific format") + 1..];
+    exp_str.parse().unwrap_or(0)
+}
+
+fn fmt_trim_zeros(s: &str) -> String {
+    let (mant, exp) = match s.find(['e', 'E']) {
+        Some(i) => (&s[..i], &s[i..]),
+        None => (s, ""),
+    };
+    let mant = mant.trim_end_matches('0').trim_end_matches('.');
+    format!("{mant}{exp}")
+}
+
+fn fmt_ensure_dot_before_exp(s: &mut String) {
+    if s.contains('.') {
+        return;
+    }
+    if let Some(p) = s.find(['e', 'E']) {
+        s.insert(p, '.');
+    } else {
+        s.push('.');
+    }
+}
+
+fn fmt_nonfinite(n: f64, plus: bool, space: bool) -> Option<String> {
+    if n.is_nan() {
+        return Some("NaN".to_string());
+    }
+    if n.is_infinite() {
+        let mut s = String::new();
+        if n.is_sign_negative() {
+            s.push('-');
+        } else if plus {
+            s.push('+');
+        } else if space {
+            s.push(' ');
+        }
+        s.push_str("Inf");
+        return Some(s);
+    }
+    None
+}
+
+fn fmt_fixed(mag: f64, prec: usize, hash: bool) -> String {
+    let mut body = format!("{mag:.prec$}");
+    if hash && !body.contains('.') {
+        body.push('.');
+    }
+    body
+}
+
+fn fmt_scientific(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
+    let mut body = format!("{mag:.prec$e}");
+    if hash {
+        fmt_ensure_dot_before_exp(&mut body);
+    }
+    body = normalise_exp(&body);
+    if upper {
+        body = body.replace('e', "E");
+    }
+    body
+}
+
+/// `%g` / `%G`: `prec` is significant digits (0 is treated as 1).
+fn fmt_general(mag: f64, prec: usize, hash: bool, upper: bool) -> String {
+    let prec = prec.max(1);
+    if mag == 0.0 {
+        return if hash {
+            if prec == 1 {
+                "0.".to_string()
+            } else {
+                format!("0.{}", "0".repeat(prec - 1))
+            }
+        } else {
+            "0".to_string()
+        };
+    }
+    // Exponent of the value after rounding to `prec` significant digits.
+    // `log10` sits on the wrong side of an exact power of ten (1e-4),
+    // which would pick scientific form for a number `%g` prints fixed.
+    let exp = decimal_exponent(mag, prec);
+    if exp < -4 || exp >= prec as i32 {
+        let body = fmt_scientific(mag, prec - 1, hash, upper);
+        return if hash { body } else { fmt_trim_zeros(&body) };
+    }
+    let fprec = (prec as i32 - exp - 1).max(0) as usize;
+    let body = fmt_fixed(mag, fprec, false);
+    // Fixed-form rounding can spill into an extra integer digit
+    // (999.6 printed with 3 significant digits). Fractions always
+    // have a leading "0", which is not that spill.
+    let int_digits = body.split('.').next().map(str::len).unwrap_or(0);
+    if exp >= 0 && int_digits > (exp + 1) as usize {
+        let body = fmt_scientific(mag, prec - 1, hash, upper);
+        return if hash { body } else { fmt_trim_zeros(&body) };
+    }
+    if hash {
+        fmt_fixed(mag, fprec, true)
+    } else {
+        fmt_trim_zeros(&body)
+    }
 }
 
 // ─── Aggregate builtins ───────────────────────────────────────────────────────
@@ -9134,8 +9442,13 @@ fn builtin_all(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Bool(b) => Ok(Value::Bool(*b)),
         Value::Scalar(n) => Ok(Value::Bool(*n != 0.0)),
         Value::Vector(v) => Ok(Value::Bool(v.iter().all(|c| c.re != 0.0 || c.im != 0.0))),
+        // A 1×N row is the matrix form of a vector. An N×1 column is the
+        // same element list. Wider matrices still error (no dim argument).
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(Value::Bool(m.iter().all(|c| c.re != 0.0 || c.im != 0.0)))
+        }
         other => Err(ScriptError::type_err(format!(
-            "all: expected vector or scalar, got {}",
+            "all: expected vector, 1-d matrix, or scalar, got {}",
             other.type_name()
         ))),
     }
@@ -9147,8 +9460,11 @@ fn builtin_any(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Bool(b) => Ok(Value::Bool(*b)),
         Value::Scalar(n) => Ok(Value::Bool(*n != 0.0)),
         Value::Vector(v) => Ok(Value::Bool(v.iter().any(|c| c.re != 0.0 || c.im != 0.0))),
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(Value::Bool(m.iter().any(|c| c.re != 0.0 || c.im != 0.0)))
+        }
         other => Err(ScriptError::type_err(format!(
-            "any: expected vector or scalar, got {}",
+            "any: expected vector, 1-d matrix, or scalar, got {}",
             other.type_name()
         ))),
     }

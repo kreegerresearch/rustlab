@@ -179,7 +179,7 @@ saveanim("wave.gif", 30)           # .gif or .html (Plotly with play/slider)
 
 ### Formatted text
 
-`fprintf("fmt", args...)` / `sprintf(...)` with `%d %f %g %e %s`, flags `- + 0 # ,`; `print(...)` and `disp(x)` for quick output; `commas(x)` for thousands separators.
+`fprintf("fmt", args...)` / `sprintf(...)` with `%d %i %u %o %x %X %f %e %E %g %G %c %s`, flags `- +` space `0 # ,`, and `*` width / `.*` precision; `print(...)` and `disp(x)` for quick output; `commas(x)` for thousands separators. Non-finite values print as `Inf`, `-Inf`, and `NaN`. A vector is an error (no array recycling).
 
 ---
 

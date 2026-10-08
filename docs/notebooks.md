@@ -567,7 +567,9 @@ Each code block produces up to three zones in the output:
 
 1. **Source** — the rustlab code (syntax-highlighted in HTML and in LaTeX/PDF)
 2. **Text output** — anything the code prints (`disp()`, `ans =`, etc.)
-3. **Plot** — interactive Plotly chart (HTML) or static SVG (LaTeX/PDF)
+3. **Plot** — interactive Plotly chart (HTML) or static SVG (LaTeX/PDF), when this cell changed the figure
+
+A cell shows a plot when it calls `savefig`, or when it changes the live figure and that figure still has something to draw (a series, heatmap, surface, contour, quiver, or streamline). `hold on` keeps the axes, so a later cell's `plot` overlays the earlier one. A cell that only computes under `hold on` does not repeat the previous plot. `hold off` (the default) clears the axes at the start of the next cell. Each notebook render starts from a fresh figure, so `hold on` in one notebook does not carry into the next.
 
 In HTML (including `notebook watch`) the source, printed output, and
 errors share one indented block (`.rl-cell`) with a left rule in the

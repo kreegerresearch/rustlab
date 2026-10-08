@@ -340,6 +340,7 @@ imaginary part is non-negligible, otherwise scalar.
 sum([1.0, 2.0, 3.0])   # → 6.0
 sum(ones(4) * j)        # → 0+4i
 ```
+A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `std`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
 
 ### `cumsum(v)`
 Cumulative sum of a vector. Returns a vector of the same length where each element is the
@@ -404,7 +405,7 @@ Returns `true` if all elements are nonzero.
 all([1, 2, 3])     # → true
 all([1, 0, 3])     # → false
 ```
-- Scalar: nonzero → true. Vector: all elements nonzero (real or imaginary part).
+- Scalar: nonzero → true. Vector, 1×N row, or N×1 column: all elements nonzero (real or imaginary part). A wider matrix is an error.
 
 ### `any(v)`
 Returns `true` if any element is nonzero.
@@ -433,7 +434,7 @@ P = softmax(S, 2)                     # explicit per-row
 P = softmax(S, 1)                     # per-column, each column sums to 1
 ```
 - Replaces the manual `for t = 1:T; A(t) = softmax(S(t, :)); end` attention idiom.
-- 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of `dim`, matching `sum`/`mean`/`layernorm`.
+- 1-D-shaped matrices (1×N or N×1) are flattened regardless of `dim`.
 - Single scalar input returns `1.0`.
 - Monotone: larger input values produce larger output probabilities.
 
@@ -3206,20 +3207,31 @@ disp(A)
 ```
 
 ### `fprintf(fmt, args...)`
-Formatted print. Supports C-style format specifiers: `%d`, `%f`, `%g`, `%e`, `%s`, `%%`. Flags: `-`, `+`, `0`, `#`, `,` (comma inserts thousands separators). Escape sequences: `\n`, `\t`.
+Formatted print. One scalar or string per specifier — a vector or matrix is an error (values are not recycled across elements). Extra arguments are ignored. A missing argument, a trailing `%`, or an unknown specifier is an error.
+
+Specifiers: `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%s` `%%`.
+Flags: `-` (left), `+` (always sign), space (sign or leading space), `0` (zero-pad between the sign and the digits; `-` wins, and a precision on an integer suppresses `0`), `#` (`%#o` leading 0, `%#x`/`%#X` `0x`/`0X` except for 0, `%#f`/`%#e`/`%#g` keep the decimal point and `%g` trailing zeros), `,` (rustlab extension: thousands separators).
+`*` reads the next argument as the width; `.*` reads it as the precision. A negative width means left-justify. A negative precision means "precision omitted".
+Precision: `%s` is a maximum character count, `%d`/`%u`/`%o`/`%x` is a minimum digit count (`%.0d` of 0 is empty), `%f`/`%e` is digits after the decimal, `%g` is significant digits (`0` is treated as `1`). `%g` uses fixed form when the exponent is in `[-4, precision)` and scientific form otherwise. `%e`/`%g` exponents are `e+00` style; `%E`/`%G` use `E`.
+`%d` truncates toward zero. `%u` of a negative value wraps as a 64-bit unsigned integer. `%c` is a Unicode code point (`char`); a negative or invalid code point errors.
+Non-finite values print as MATLAB spells them: `Inf`, `-Inf`, `NaN`. `+` and the space flag apply to `Inf`, not to `NaN`. Non-finite values are space-padded, never zero-padded.
+Escapes: `\n` `\t` `\r` `\b` `\f` `\\`. An unknown `\X` is kept as a backslash plus that character.
 ```
 fprintf("x = %f, n = %d\n", 3.14, 42)
 fprintf("GM=%.1f dB  PM=%.1f deg\n", 20*log10(Gm), Pm)
 fprintf("population: %,d\n", 1234567)       % → population: 1,234,567
 fprintf("price: $%,.2f\n", 1234567.89)      % → price: $1,234,567.89
+fprintf("%+8.2f\n", 1.5)                    % → "   +1.50"
+fprintf("%g\n", 1.23456789e7)               % → 1.23457e+07
 ```
 - Does not append a trailing newline unless `\n` is included in the format string.
 
 ### `sprintf(fmt, args...)`
-Same format specifiers and flags as `fprintf`, but returns the formatted string instead of printing it.
+Same format specifiers, flags, and escapes as `fprintf`, but returns the formatted string instead of printing it.
 ```
 s = sprintf("%,.2f", 1234567.89)    % → "1,234,567.89"
 s = sprintf("%d items", 42)         % → "42 items"
+s = sprintf("%+.2f", 1.5)           % → "+1.50"
 ```
 
 ### `commas(x)` / `commas(x, precision)`
@@ -3327,6 +3339,7 @@ v(1)       # first element
 v(end)     # last element
 v(2:4)     # elements 2, 3, 4
 ```
+On a matrix, a single index is linear and column-major, and `end` is the element count (`numel`), on both read and write and on a chained index `(M)(end)`. Two indexes bind `end` per axis: `M(end, end)` is the last row and last column.
 
 ### Indexed assignment: `v(i) = val` / `M(r,c) = val`
 Assign to a specific position. Vectors are auto-created and grown as needed.
