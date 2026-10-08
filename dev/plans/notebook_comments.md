@@ -2,13 +2,13 @@
 
 **Status:** design only. Nothing is implemented. Waiting on decisions in [Open questions](#open-questions).  
 **Created:** 2026-10-07  
-**Updated:** 2026-10-08 — CriticMarkup is dropped. Notes use Obsidian `==highlight==` and `%%comment%%`.  
+**Updated:** 2026-10-08 — CriticMarkup is dropped. Notes use Obsidian `==highlight==` and `%%comment%%`. `@author` is optional free text; nothing looks up a name. A `%%` immediately before a fence is a comment on that cell (§7).  
 **Surfaces:** HTML (single and directory), `watch` (interactive server), LaTeX/PDF, Markdown, JSON, `check`.  
 **Scope:** `.md` notebooks only. Standalone `.rlab` scripts, such as `run setup.rlab`, are code. They are never scanned for marks.
 
 ## Goal
 
-Reviewers highlight a passage and leave a comment on it. The notes live **in the `.md` file**, in Obsidian's own syntax. rustlab renders highlights as `<mark>` and comments as margin notes.
+Reviewers highlight a passage and leave a comment on it, or leave a comment on a whole code cell. The notes live **in the `.md` file**, in Obsidian's own syntax. rustlab renders highlights as `<mark>` and comments as margin notes.
 
 The headline interaction is in `notebook watch`: select text in the rendered notebook, highlight it, and attach a comment. That is phase 2, immediately after read-only rendering. Phase 1 only displays marks that are already in the file.
 
@@ -16,7 +16,7 @@ There are **no tracked changes**. No insertions, deletions, or substitutions, an
 
 Collaboration is the file itself: git or a shared folder. `rustlab remote` only forwards the plot-viewer socket; it does not carry notebook text.
 
-**Non-goals:** sidecar annotation files, comment threads with server state, user accounts, tracked changes, and exposing `watch` beyond loopback.
+**Non-goals:** sidecar annotation files, comment threads with server state, user accounts, tracked changes, line-level anchors inside a code cell, and exposing `watch` beyond loopback.
 
 ---
 
@@ -30,6 +30,7 @@ Collaboration is the file itself: git or a shared folder. `rustlab remote` only 
 | Comment on that highlight | `==text== %%why?%%` | the `<mark>` plus a margin note, linked with `aria-describedby` |
 | Standalone comment | `See note.%%why?%%` | a margin note at that point in the paragraph |
 | Block comment | a `%%` pair on its own lines | a block note in the flow (see 1.3) |
+| Comment on a code cell | a `%%` line or block immediately before the fence | the same margin note, attached to that cell (§7) |
 
 A `%%...%%` is bound to the highlight before it when the comment opens on the **same line**, with **at most one space** between the closing `==` and the opening `%%`. `==text==%%why?%%` and `==text== %%why?%%` are bound. Two spaces, or a newline, leaves a standalone comment.
 
@@ -92,17 +93,16 @@ The scanner leaves these as literal text:
 
 `==` inside a rustlab cell is ordinary equality (`a == b`). `check` does **not** warn about it. A warning there would fire on almost every numeric notebook.
 
-**Comments on code go on the prose beside the cell**, not inside the fence:
+The rlab lexer treats `#` and `%` as line comments (`crates/rustlab-script/src/lexer.rs`). A line `%% note` inside a fence is an rlab comment. The notebook scanner does not read it as a review mark.
+
+A review note on a cell is a `%%` **outside** the fence, on the lines immediately before it (§7):
 
 ````markdown
-Design the filter. %%@lisa: should this be a Kaiser window?%%
-
+%%#c3 2026-10-08: should this be a Kaiser window?%%
 ```rustlab
 h = fir1(64, 0.25);
 ```
 ````
-
-Selecting inside a rendered code cell, a math span, or across two blocks is rejected (§4.2). Whether a fence directive should attach a note to the cell itself is open question 3.
 
 ### 1.5 Boundaries
 
@@ -143,26 +143,28 @@ Callers of `render.rs::markdown_to_html_linked` (HTML prose and callouts) run `t
 
 ---
 
-## 2. Author, date, id, and replies (rustlab-only)
+## 2. Date, id, replies, and an optional name (rustlab-only)
 
 Obsidian comments have no metadata. An optional header is parsed only when the comment contains a colon after the header fields:
 
 ```
-%%[#id] [re #id] [@author] [YYYY-MM-DD]: text%%
+%%[#id] [re #id] [@name] [YYYY-MM-DD]: text%%
 ```
 
 | Source | Meaning |
 |---|---|
 | `%%looks off%%` | anonymous comment (plain Obsidian) |
-| `%%@michael 2026-10-08: looks off%%` | author and date |
+| `%%@michael 2026-10-08: looks off%%` | optional name and date |
 | `%%#c12 @michael: looks off%%` | stable id `c12` |
 | `%%#c4 re #c3 @liz: fixed in the prose above%%` | reply to `c3`, rendered indented in `c3`'s card |
 
 This header is **rustlab-specific**. Obsidian hides the whole `%%...%%`, so the header is invisible there. Other tools that show the raw characters will show the header as part of the comment text. `docs/notebooks.md` says so.
 
+`@name` is one token: the characters after `@` up to the next space. It is **optional**. The system does not look up a name. There is no `[notebook] author` key, no read of `$USER`, and no read of `git config`.
+
 - **Resolve means delete** the comment and its replies (`re #id`). Git history is the archive. There is no `resolved` flag in the file.
-- **Browser inserts** always write an id. The next free id is `max(#cN) + 1` in the file. The date is the UTC day of the insert. `@author` is included only when an author string is configured (open question 1). Until that is decided, inserts omit `@author` and still write `#cN` and the date.
-- Hand-written comments may omit the header. Ids are required only for replies and for edit/delete from the margin card.
+- **Browser inserts** always write an id and the UTC date. The next free id is `max(#cN) + 1` in the file. The popover has an optional Name field. It starts empty. A blank field omits `@name`. A value with a space, `%`, or `:` is rejected in the popover and is not written. The field is not saved to `~/.rustlabrc` and is not filled from the environment. Remembering the last typed token for the rest of the browser tab is open question 1.
+- Hand-written comments may omit the header. Ids are required only for replies and for edit/delete from the margin card. A hand-written `@name` is kept as written.
 
 ---
 
@@ -238,8 +240,8 @@ The CSS and script are inlined. No CDN.
 
 ### 3.4 PDF
 
-- **Off (default):** the LaTeX emitter writes the highlight's text and drops every `%%`. No `\hl`, no margin notes.
-- **On:** highlights use `\hl` from `soul` (or `\colorbox` if `soul` is unavailable). Inline comments use numbered `\marginpar`, or `\footnote` inside tables, where marginpar fails. Block comments are quote environments in the flow.
+- **Off (default):** the LaTeX emitter writes the highlight's text and drops every `%%`. No `\hl`, no margin notes. A cell comment is omitted. The listing is the code alone.
+- **On:** highlights use `\hl` from `soul` (or `\colorbox` if `soul` is unavailable). Inline comments use numbered `\marginpar`, or `\footnote` inside tables, where marginpar fails. Block comments are quote environments in the flow. A cell comment is a note immediately above that listing.
 - Colors come from Latte's comment roles. LaTeX and PDF are always Latte on white paper.
 
 ### 3.5 Theme roles (`crates/rustlab-plot/src/theme.rs`)
@@ -281,7 +283,7 @@ The `rustlab:` codes continue the existing numbering (`E001`–`E005`, `W001`–
 | W010 | duplicate comment id `#c12`, lines N and M |
 | W011 | orphan reply: `re #c12` and no `#c12` |
 
-`check --fix` does not rewrite comments. `==` inside a code fence is not a finding.
+`check --fix` does not rewrite comments. `==`, `%%`, `#`, and `%` inside a code fence are not findings. A cell comment is an ordinary `%%` and uses W006–W011 when it is unbalanced, nested, or has a bad id.
 
 ```
 notes/filter.md:42 [rustlab:W006] warning: unclosed `==` (no closing `==` before blank line at 44)
@@ -299,11 +301,12 @@ Phase 1 displays marks. Phase 2 lets a person **select rendered prose, highlight
 Shown only in `watch`, and only when `--annotate` is on (§4.4). Static HTML never gets it.
 
 - On `mouseup` inside `<main>`, if the selection is non-empty and valid (§4.2), a small popover opens at the selection rectangle.
-- The popover contains a textarea and one primary button, **Comment**. That single action writes both the highlight and the comment.
-- An empty textarea writes the highlight only: `==selected text==`.
-- A one-line comment writes `==selected text== %%#cN @author YYYY-MM-DD: comment%%` (no `@author` until open question 1 is decided).
+- The popover contains a comment textarea, an optional Name field (§2), and one primary button, **Comment**. On prose, that button writes the highlight and, when the textarea is non-empty, the comment.
+- An empty textarea on prose writes the highlight only: `==selected text==`.
+- A one-line prose comment writes `==selected text== %%#cN YYYY-MM-DD: comment%%`. `@name` is added only when the Name field is non-empty.
 - A comment that contains a newline writes a block note after the highlight.
-- The server rejects a comment body that contains `%%` or `==`, so the body cannot close the delimiter early.
+- A selection inside one fenced cell uses the same popover and writes a cell comment (§7). The textarea is required there. An empty cell comment is not written.
+- The server rejects a comment body that contains `%%`, `==`, or a line of three or more backticks, so the body cannot close the delimiter or open a fence.
 - The popover is plain HTML inlined in the page. A nonce'd script binds `mouseup`, `click`, and `keydown` with `addEventListener`. No `on*` attributes. No CDN. Escape or a click elsewhere dismisses it.
 
 ### 4.2 Mapping a selection to source bytes
@@ -312,18 +315,18 @@ Shown only in `watch`, and only when `--annotate` is on (§4.4). Static HTML nev
 
 - Each markdown `section.rl-block` gets `data-src-start` and `data-src-end`: the block's byte range in the **raw file**, including the frontmatter offset `parse.rs::body_offset` accounts for.
 - Every prose text run inside that section gets the same attributes for the slice it rendered, via the source map in §1.6.
-- Math is `data-src-kind="math"`. Code, mermaid, and widget sections are `data-src-kind="code"` and have no selectable prose spans.
+- Math is `data-src-kind="math"`. Code, mermaid, widget, and prose-fence sections are `data-src-kind="code"` and carry the fence's byte range on the section. They have no prose spans inside the listing.
 - Existing highlights and comments carry their own spans.
 
-The script walks the selection's start and end containers, reads the surrounding `data-src-*` span, and interpolates a partial selection by UTF-8 byte length of the text prefix. It then sends those file offsets.
+The script walks the selection's start and end containers, reads the surrounding `data-src-*` span, and interpolates a partial selection by UTF-8 byte length of the text prefix. It then sends those file offsets. A selection contained in one `data-src-kind="code"` section does not send a highlight range. It sends `target: "cell"` and the fence opener's offset (§7).
 
 **Reject in the browser, before any request, when:**
 
-- the selection crosses two `section.rl-block` elements
-- it intersects `.rl-math`, a code/mermaid/widget section, or an existing `.rl-cm-mark` / `.rl-cm-note`
+- the selection crosses two `section.rl-block` elements, or starts in a code section and ends outside it
+- it intersects `.rl-math` or an existing `.rl-cm-mark` / `.rl-cm-note`
 - the offsets cannot be read (no `data-src-*` ancestor)
 
-The server repeats the check against the file. The bytes `file[start..end]` must equal the `text` field exactly. The range must sit inside one markdown region of the raw file, and must not overlap a fence, a math span, an HTML comment, or an existing `==` / `%%`. A mismatch is **400**. The client asks the reader to select the text again.
+The server repeats the check against the file. For a prose insert, the bytes `file[start..end]` must equal the `text` field exactly. The range must sit inside one markdown region of the raw file, and must not overlap a fence, a math span, an HTML comment, or an existing `==` / `%%`. A mismatch is **400**. The client asks the reader to select the text again. The cell-insert check is in §7.
 
 Quoting the selected string and searching for it is not the mechanism. The same sentence can occur twice. Offsets plus an equality check are the mechanism.
 
@@ -351,7 +354,7 @@ With `--annotate`, each note card shows **Edit** and **Delete**. They are `<butt
 
 - **Host** is the existing loopback check on every request. **Origin** is `authorize_mutate` (missing or non-loopback Origin → 403), the same rule as `/save` and the WebSocket upgrade.
 - The handler writes only that notebook's `source_path`. The path is never taken from the JSON body. The file jail is unchanged.
-- The body is small JSON, not the file: `{ "op": "insert"|"edit"|"delete", "start", "end", "text", "comment", "id", "expect" }`. Unknown fields are ignored. `comment` and `expect` are capped (64 KB).
+- The body is small JSON, not the file: `{ "op": "insert"|"edit"|"delete", "target": "prose"|"cell", "start", "end", "text", "comment", "author", "id", "expect" }`. Unknown fields are ignored. `comment` and `expect` are capped (64 KB). `author` is omitted or a single token (§2). The server does not store it anywhere except inside the `%%` it writes.
 - **`If-Match`** is required. The value is the lowercase hex SHA-256 of the file bytes the page was rendered from, sent as `If-Match: "<hex>"`. The render stamps `<meta name="rl-source-sha256" content="hex">`. If the hash differs from the file now on disk, the response is **409** and the file is not written. The popover says the notebook changed and leaves the selection in place so the reader can retry after reload.
 - `nb.save_lock` is held across read, check, splice, and write, so an annotate and a `POST /save` or a cell save cannot interleave.
 - **Round-trip guard** before the write is committed to the response: re-scan the spliced text, require exactly the expected new or removed mark, and require every byte outside the splice to be unchanged. A failed guard returns 400 and does not write.
@@ -375,26 +378,28 @@ A 409 does not write, so it does not re-render.
 
 | Phase | Contents | Size |
 |---|---|---|
-| **1** | `comments.rs`; HTML and JSON rendering; theme roles; sidenotes and block notes; the Comments toggle; `--comments` / `--no-comments` for HTML, watch, markdown, and JSON; `check` W006–W011; `docs/notebooks.md` including the Obsidian divergence | 1 PR |
-| **1b** | LaTeX/PDF, default off, `--comments` on | 1 small PR |
-| **2** | **Headline.** Selection popover; `data-src-*` spans; `POST /annotate/{slug}` with Host, Origin, jail, `If-Match` → 409; edit and delete on the margin card; live reload through the existing watcher | 1 PR |
+| **1** | `comments.rs`; HTML and JSON rendering, including cell comments (§7); theme roles; sidenotes and block notes; the Comments toggle; `--comments` / `--no-comments` for HTML, watch, markdown, and JSON; `check` W006–W011; `docs/notebooks.md` including the Obsidian divergence | 1 PR |
+| **1b** | LaTeX/PDF, default off, `--comments` on, cell notes above the listing | 1 small PR |
+| **2** | **Headline.** Selection popover for prose and for a whole cell; `data-src-*` spans; `POST /annotate/{slug}` with Host, Origin, jail, `If-Match` → 409; edit and delete on the margin card; live reload through the existing watcher | 1 PR |
 | **3** (optional) | CodeMirror overlay so `==` and `%%` are visible in the source pane; insert from that pane when a rendered selection is rejected | 1 PR |
 
 Phase 1 has no write route. Marks get into the file from an editor. `watch` re-renders on save, as it already does.
 
 ### Tests
 
-- **Golden HTML** in `render.rs`: highlight, bound comment, standalone comment, block comment, header variants, `\==` escape, highlight in a heading (slug ignores the note), table cell, list, callout, footnote reference, mark beside `$math$` and beside inline code, `==` inside a rustlab fence and inside math left literal, unclosed `==` and `%%` as literal text plus a badge.
+- **Golden HTML** in `render.rs`: highlight, bound comment, standalone comment, block comment, header variants, `\==` escape, highlight in a heading (slug ignores the note), table cell, list, callout, footnote reference, mark beside `$math$` and beside inline code, `==` inside a rustlab fence and inside math left literal, unclosed `==` and `%%` as literal text plus a badge. A `%%` on its own line immediately before a fence is a note on that cell, not a paragraph. A blank line between them leaves an ordinary block note. `<!-- hide -->` between the `%%` and the fence still hides the cell and still binds the note. `%%`, `#`, and `%` inside the fence stay in the listing.
 - **Toggle:** with the checkbox unchecked, notes are `display: none` and `<mark>` has no highlight background. The words remain.
 - **CLI:** `--no-comments` HTML contains neither `rl-cm-mark` nor `rl-cm-note`. `--comments` PDF contains the highlight text and the comment text. Default PDF contains the highlight text and not the comment text.
 - **Markdown:** comments on passes `==` and `%%` through. `--no-comments` unwraps and deletes them. `--obsidian` with comments on still emits `%%` (Obsidian will hide it; we must not strip it by accident).
 - **Property:** a file with no `==` or `%%` renders byte-identical to today.
 - **Theme contrast** for the three pairs in §3.5, all four builtins, ≥ 4.5:1.
-- **`check`:** each W006–W011, right line, sorted order. A rustlab cell with `a == b` produces no finding.
+- **`check`:** each W006–W011, right line, sorted order. A rustlab cell with `a == b`, `# comment`, or `% comment` produces no finding. A cell comment uses the same codes as any other `%%`.
 - **Server (phase 2):**
-  - insert writes exactly `==text== %%#cN …%%` and no other bytes
-  - a selection that crosses a block, or overlaps code or math, is 400 and does not write
-  - `file[start..end] != text` is 400
+  - a prose insert writes exactly `==text== %%#cN …%%` and no other bytes, with `@name` only when `author` is a non-empty token
+  - a cell insert writes one `%%` line immediately before the fence's directive stack, and does not wrap any code in `==`
+  - a selection that crosses a block, or crosses from a cell into prose, or overlaps math, is 400 and does not write
+  - an empty cell comment is 400 and does not write
+  - `file[start..end] != text` on a prose insert is 400
   - `If-Match` mismatch is 409 and does not write
   - edit and delete rewrite only the `%%` span; delete also removes `re #id` replies
   - the route is absent without `--annotate`
@@ -440,7 +445,9 @@ The note stays on the sentence. The comment text is what says "64". A sidecar `e
 | Mark crosses a fence or a blank line (`==`) | `parse_notebook` splits rustlab, mermaid, and widget fences, so each half is unbalanced | The scanner does not cross a fence. `==` does not cross a blank line. `check` W008. |
 | Two people comment on the same line | A normal git conflict | Resolve it as text. The markers are not conflict markers. |
 | A formatter reflows the paragraph | A hard wrap inside `==` is fine. A blank line, or a space inserted so two spaces sit between `==` and `%%`, unbinds the comment | W006/W008. Docs: do not run a markdown formatter that rewrites notebooks, or keep each note on one line. |
-| `--editable` cell edit | `replace_code_block_source` copies prose verbatim. Marks are not inside cells | The existing round-trip guard rejects a body that adds a `` ``` `` line. Prose notes are untouched. |
+| `--editable` cell edit | `replace_code_block_source` copies the lines outside the fence verbatim. The preceding `%%` stays on that cell | The existing round-trip guard rejects a body that adds a `` ``` `` line. |
+| Blank line inserted between a cell comment and its fence | The `%%` becomes an ordinary block note. It is no longer drawn on the cell | The binding rule is adjacency (§7). `check` does not invent a new warning for it. |
+| The fence is moved and the preceding `%%` is left behind | The note stays on the lines that stayed | Adjacency is the anchor. There is no cell id to follow the fence. |
 | Whole-file `POST /save/{slug}` | Last writer wins. This route has **no** `If-Match` today | Comment writes do not use it. They use `/annotate` and `If-Match`. |
 | Live reload while the popover is open | The selection's offsets may go stale | Submit still sends `If-Match`. A stale hash is 409, and the file is not changed. |
 
@@ -459,9 +466,83 @@ Not in this design. If a later version needs state that does not belong in the `
 
 ---
 
-## 7. Open questions
+## 7. Comments on code cells
 
-1. **Default author:** take it from `~/.rustlabrc` `[notebook] author`, from `$USER`, or from `git config user.name`? Phase 1 writes nothing. Phase 2 needs a string when it inserts a comment. Until this is decided, inserts omit `@author` and still write `#cN` and the UTC date.
+A comment on code is a comment on the **whole cell**. It is a `%%` line, or a block `%%`, placed on the lines before that cell's fence. The same margin card is used. There is no highlight inside the listing, no line number, and no gutter marker on a line of code.
+
+### 7.1 What other tools do
+
+Two patterns cover the tools below. **Cell-level** means the note hangs off the cell as a unit. **Line-level** means it hangs off a line or a selected range, and has to be moved when that line moves. **In file** means a clone of the notebook still has the note. **Beside the file** means the note lives in a service, a database, or a pull-request thread.
+
+| Tool | Anchor | Where the note lives | What survives an edit |
+|---|---|---|---|
+| Jupyter cell metadata (proposed) | cell | `metadata` inside the `.ipynb` | Travels with the file. A cell id keeps the note when the cell moves. [JupyterLab #12709](https://github.com/jupyterlab/jupyterlab/issues/12709) discusses `metadata.comments`. [JEP: cell ids](https://jupyter.org/enhancement-proposals/cell-id/) lists "associate comments to a cell" as a reason for stable ids. |
+| `jupyterlab-comments` | cell in notebooks; line or selection in text files | sidecar `comments.db` | The db can be copied beside the tree. It is a second file. [usage.md](https://github.com/jupyterlab/jupyterlab-commenting/blob/master/docs/usage.md) says comments save in `comments.db`. Cell-level notebook comments were the shipped notebook gesture; character and single-line comments inside a notebook cell were still unchecked on the project list. |
+| JupyterLab comment discussion / `jupyter-collaboration` | character range, via Yjs relative positions | a shared model beside the notebook content | Positions move when the text is edited in the live session. [JupyterLab #9885](https://github.com/jupyterlab/jupyterlab/issues/9885). [`jupyter-collaboration`](https://github.com/jupyterlab/jupyter-collaboration) syncs the Y document. It is not a comment syntax in the file. |
+| Google Colab | margin comments on the Drive file | Drive, outside the `.ipynb` | Lost on "Save a copy". [colabtools #1927](https://github.com/googlecolab/colabtools/issues/1927). |
+| Deepnote | a block, from the comment button on that block | the Deepnote project | [Comments](https://deepnote.com/docs/comments): the sidebar jumps back to the block; threads can be resolved. The [code-review](https://deepnote.com/docs/code-reviews) page also describes highlighting lines. Neither page describes a note inside an exported notebook. |
+| Hex | a cell | the Hex project | [Commenting](https://learn.hex.tech/docs/collaborate/comments): notebook comments and published-app comments are separate. Notebook comments are visible in the Notebook view. The docs do not describe an exported file format. |
+| Observable | a cell, with a count in the left margin; threads hidden until opened | the Observable notebook | [Comments](https://observablehq.com/documentation/collaboration/comments): anyone who can see the notebook can see the comments; editors resolve and delete. This is the hosted notebook, not a markdown file. |
+| Databricks | a highlighted code section, then a comment bubble | the workspace notebook | [Collaborate using notebooks](https://docs.databricks.com/aws/en/notebooks/notebooks-collaborate) documents the highlight-then-comment gesture and `@` mentions. It does not document the comment as text inside the cell. |
+| VS Code notebooks / GitHub | GitHub attaches a review comment to a line of the raw `.ipynb` JSON | the pull request | [VS Code #214017](https://github.com/microsoft/vscode/issues/214017): the notebook editor shows comments on a cell URI, and a GitHub line comment on the JSON does not appear there unless something maps the file range onto a cell. [VS Code #246317](https://github.com/microsoft/vscode/pull/246317) is that mapper. GitHub's rendered notebook diff is not itself a comment target; the commentable view is the JSON. [ReviewNB](https://blog.reviewnb.com/how-to-add-comments-to-notebook-diffs-github/). |
+| ReviewNB | cell, and later line, on a rich diff | GitHub/Bitbucket for PR comments; ReviewNB's own store for JDoc | [ReviewNB](https://www.reviewnb.com/) posts PR comments to the forge. [JDoc](https://blog.reviewnb.com/commenting-for-jupyter/) stores comments on a standalone notebook at ReviewNB, because GitHub has no comment on a file outside a commit or PR. A rename looks like a new file, and the old thread does not follow. [Line-level comments](https://github.com/ReviewNB/support/issues/17) shipped after cell-level; the earlier workaround was to paste the line into the comment. |
+| Quarto | a line, via a language comment `# <n>` inside the cell, plus an ordered list immediately after the cell | in the source | [Code annotation](https://quarto.org/docs/authoring/code-annotation.html). This is authored explanation, not a review thread. The marker is inside the program. `code-annotations: none` strips the markers from the output. |
+| R Markdown / knitr | chunk options (`echo`, `eval`, …) in the chunk header or in `#|` lines at the top of the chunk | in the source | [knitr options](https://yihui.org/knitr/options/). `#|` is execution and display metadata. The chunk option named `comment` is the prefix on printed output (`##` by default), not a review note. |
+| MyST | `{code-cell}` takes `:key: value` metadata. A `%` at the start of a line is a hidden comment | in the markdown | [Executable markdown](https://mystmd.org/guide/notebooks-with-markdown), [blocks and comments](https://mystmd.org/guide/blocks). The `%` comment is dropped from the output. It is not attached to the next code cell. |
+| Obsidian | `%%` is hidden in reading view. There is no code-cell comment syntax | in the note | [Basic formatting syntax](https://obsidian.md/help/syntax). A `%%` that tries to wrap a fence is unreliable: a code block inside the comment can still render. [Forum thread](https://forum.obsidian.md/t/comment-semantics/60311). The Document Comments plugin stores an in-file HTML-comment anchor, including a line range inside a fence, and shows an orphan when the quoted text is gone. [Plugin page](https://community.obsidian.md/plugins/document-comments). |
+
+The durable in-file anchors are the ones that sit in the text the cell already has: Jupyter metadata next to the cell, Quarto's list after the cell, a MyST or Obsidian comment in the markdown around the fence. Line numbers and quoted line ranges go stale when the cell is edited (ReviewNB's old paste-the-line workaround, the Document Comments orphan, GitHub comments on shifting JSON lines). Notes that live in a product's database do not come along with a git clone.
+
+### 7.2 Recommendation
+
+**A `%%` that ends immediately before a fence, or immediately before that fence's code directives, is a comment on that cell.** One-line and block forms both count. Several of them may stack. Replies stay `re #id` comments in that same stack.
+
+````markdown
+%%#c8 2026-10-08: why 64 taps?%%
+```rustlab
+h = fir1(64, 0.25);
+```
+````
+
+Code-block directives stay between the comment and the fence. `parse.rs::extract_code_directives` walks backward from the fence and stops at the first line that is not a directive, so a `%%` inserted between `<!-- hide -->` and the fence would leave `hide` unapplied. The write path inserts **above** the directive stack:
+
+````markdown
+%%#c8 2026-10-08: why 64 taps?%%
+<!-- hide -->
+```rustlab
+h = fir1(64, 0.25);
+```
+````
+
+Binding rule, scanned forward from the comment's closing line: the following non-empty lines may only be `<!-- hide -->`, `<!-- code: … -->`, `<!-- caption: … -->`, `<!-- details: … -->`, or `<!-- grid: … -->`, and then a fence opener. A blank line, or any other line, leaves an ordinary block note. An inline `%%` in the paragraph above the fence stays a prose comment.
+
+This applies to every fence `parse_notebook` already splits out: `rustlab`, mermaid, widget, and prose fences. The anchor is the same in each case.
+
+**Why this one.** It is the prose comment syntax, in the file, on the cell as a whole. Editing the cell body does not move it, because `replace_code_block_source` copies the surrounding markdown unchanged. Moving the section in the markdown carries the note when the author moves those lines with the fence. Obsidian already hides a `%%` in that position, which matches §1.2. No new delimiter, no fence attribute, and no change to the rlab lexer.
+
+**Rendering.** The note is not a paragraph above the cell. The renderer takes a trailing cell-comment `%%` off the preceding markdown block and draws it as `.rl-cm-note` on the code section, with the same number superscript used as a badge on the cell. Wide viewports float the card in the gutter. Narrow viewports show the badge, and focus expands the card (`:focus-within`), the same as a prose note. The listing itself is unchanged: no `<mark>`, no per-line marker.
+
+**Toggle, CLI, PDF.** The Comments switch and `--no-comments` hide or omit the card and the badge the same way they omit any other note (§3). The code remains. `--comments` on PDF prints the note immediately above the listing. The default PDF drops it.
+
+**Selection in `--annotate`.** A non-empty selection that starts and ends inside one code section opens the same popover. The button writes a cell comment, not `==…==` around the selection. The request is `target: "cell"` with the fence opener's byte offset. The server checks that offset is still a fence opener, inserts one `%%` line above the directive stack, and requires a non-empty comment. It does not copy the selected lines into the comment. A selection can contain `%%`, `==`, or a fence-like string of backticks, and copying it into the `%%` body would close the comment or break `parse_notebook`. The popover shows the selected lines as read-only context so the reader can see what they pointed at. Citing a line is something they type, in their own words. A selection that leaves the cell is rejected (§4.2).
+
+**Sync.** The note survives a cell-body edit. It detaches when a blank line, or a line that is not a code directive, is inserted between it and the fence. It does not follow a fence that is moved without it. That is the trade for having no cell id. The `%%` is visible in the markdown next to the fence, so a diff shows whether the note moved with the cell.
+
+**`check`.** No new code. Unclosed, nested, duplicate, and orphan-reply cases are W006–W011. A `#` line, a `%` line, or `a == b` inside the fence is not a finding.
+
+### 7.3 Alternatives left out
+
+- **A sidecar or a service store** (Colab, Deepnote, Hex, Observable, Databricks, `comments.db`, ReviewNB JDoc). The note does not travel in the `.md`. Sidecars are already a non-goal.
+- **A cell id** on the fence, with the note looked up by that id. Jupyter needs this because the note is not the previous line. Adjacency is the whole mechanism here.
+- **Line markers inside the cell** (`# <1>` as in Quarto, a gutter dot, a stored line number). They edit the program or go stale when a line is inserted above them. `#` and `%` are already rlab comments, so a `%%` inside the fence cannot be a review mark without a lexer change.
+- **A note after the fence.** Quarto puts its annotation list after the cell. In this syntax a `%%` after the fence is easier to read as a comment on the next paragraph. Before the fence, the next construct is the cell.
+- **`<!-- note: … -->`.** rustlab already uses HTML comments for renderer directives (`hide`, `code`, `caption`, `details`, `grid`). A review note in that form would be a second comment syntax. `%%` is the one review syntax.
+- **The Obsidian Document Comments anchor** (HTML comments recording a line range and a quote). In-file, and heavier. The quote becomes an orphan when the line changes. §7.2 does not store a quote.
+
+---
+
+## 8. Open questions
+
+1. **Remembered name, this tab only:** the Name field starts empty and is never loaded from `~/.rustlabrc`, `$USER`, or `git config`. Should the popover keep the last token the user typed in `sessionStorage` for the rest of that browser tab, or stay empty on every popover?
 2. **`--editable` and `--annotate`:** `--annotate` is the flag that mounts `POST /annotate/{slug}`. Should `--editable` imply `--annotate`, or stay independent so the cell editor does not also enable margin-note writes?
-3. **Comments on code:** a selection inside a code cell is rejected, and `==` in a cell is equality, not a highlight. Is a `%%` on the prose line beside the cell enough, or do you want a directive before the fence, like `<!-- note: … -->`, that renders as a note attached to the cell?
-4. **Hand-written ids:** browser inserts always add `#cN`. Should `check` warn when a hand-written `%%` has no id, or are ids optional unless a reply or a margin-card edit needs one?
+3. **Hand-written ids:** browser inserts always add `#cN`. Should `check` warn when a hand-written `%%` has no id, or are ids optional unless a reply or a margin-card edit needs one?
