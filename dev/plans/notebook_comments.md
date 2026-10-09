@@ -1,6 +1,6 @@
 # Plan: notebook highlights and comments (Obsidian syntax)
 
-**Status:** design only. Nothing is implemented. Decisions are recorded below. No open questions remain.  
+**Status:** implemented on this branch (read-only render, `check`, PDF, and `watch --annotate`). A per-comment reviewed/accepted flag is reserved and not implemented. Decisions are recorded below. No open questions remain.
 **Created:** 2026-10-07  
 **Updated:** 2026-10-09 — The Name field prefills from this tab's `sessionStorage`. A `%%` with no `#cN` is W012. `--editable` implies `--annotate`. `--no-comments` hides notes while drafting; a note added while hidden is still saved, with a short confirmation. Each person shares comments by git push/pull. `If-Match` is single-user. A mouse `mouseup` does not open the popover; touch and pen use that event's `pointerType`.
 **Surfaces:** HTML (single and directory), `watch` (interactive server), LaTeX/PDF, Markdown, JSON, `check`.  
@@ -28,6 +28,7 @@ Collaboration is the file itself, through git. Each person edits their own worki
 - **Missing id.** A well-formed `%%` with no `#cN` is **W012**, on the line of the opening `%%`. That covers an inline comment after a highlight, a standalone comment, a block comment, and a cell comment, including a private Obsidian `%%` note. `check` does not look at `--obsidian`. `check --fix` does not add ids (§3.7).
 - **Write versus display.** `--annotate` means the session can write comments. `--editable` implies `--annotate`. `--annotate` alone is a comment-only session. `--comments` / `--no-comments` set the initial display, and whether PDF and the other non-watch formats include notes. The in-page Comments checkbox flips display at runtime and a write does not change it. A note saved while the checkbox is off is written, a short confirmation is shown, and the new mark stays hidden until the reader turns Comments on (§3.2, §4.5).
 - **Who shares a file.** One working copy per person. Git push and pull carry the comments. `POST /annotate/{slug}` with `If-Match` / 409 only notices that this copy changed under the page (the same person's editor, or another tab). It is not a multi-user lock (§4.5, §6).
+- **Reviewed / accepted.** Deferred. A checkbox was discussed and the spec is not settled, so nothing is parsed or written for it. `CommentHeader.state` is the slot a later flag will use. Spans and `#cN` ids do not depend on it.
 
 ---
 
@@ -59,11 +60,11 @@ The cutoff is 0.25.%%@michael 2026-10-08: confirm against the lesson%%
 ```
 
 ```html
-<p><span data-src-start="16" data-src-end="39">Group delay is </span><mark class="rl-cm rl-cm-mark" data-src-start="39" data-src-end="51" aria-describedby="cm-n1">constant</mark><span class="rl-cm-note" id="cm-n1" data-cm-id="c0" role="note" tabindex="0"><sup class="rl-cm-num">1</sup><span class="rl-cm-body">only for linear phase</span></span><span data-src-start="74" data-src-end="95">.
+<p><span data-src-start="16" data-src-end="39">Group delay is </span><mark class="rl-cm rl-cm-mark" data-src-start="39" data-src-end="51" aria-describedby="cm-n1">constant</mark><span class="rl-cm-note" id="cm-n1" role="note" tabindex="0"><sup class="rl-cm-num">1</sup><span class="rl-cm-body">only for linear phase</span></span><span data-src-start="74" data-src-end="95">.
 The cutoff is 0.25.</span><span class="rl-cm-note" id="cm-n2" role="note" tabindex="0">…</span></p>
 ```
 
-The offsets in that sketch are byte offsets into the file. The real renderer stamps every prose text run, not only the marks (§4.3).
+The offsets in that sketch are byte offsets into the file. An `--annotate` session stamps them on marks and on verbatim prose runs (bytes CommonMark will not rewrite). Static HTML, and a watch that is not annotating, omit the offsets so a length change above a block does not force a full page reload (§4.3).
 
 ### 1.2 Divergence from Obsidian
 
@@ -165,7 +166,7 @@ Obsidian comments have no metadata. An optional header is parsed only when the c
 | Source | Meaning |
 |---|---|
 | `%%looks off%%` | anonymous comment (plain Obsidian). Renders. `check` warns W012 |
-| `%%@michael 2026-10-08: looks off%%` | optional name and date |
+| `%%@michael 2026-10-08: looks off%%` | optional name and date. No `#cN`, so `check` warns W012 |
 | `%%#c12 @michael: looks off%%` | stable id `c12` |
 | `%%#c4 re #c3 @liz: fixed in the prose above%%` | reply to `c3`, rendered indented in `c3`'s card |
 
@@ -329,7 +330,7 @@ Shown only in `watch`, and only when annotation writes are on: `--annotate`, or 
 **Open the menu** (`preventDefault`, then show it) only when all of these hold:
 
 - the event target is inside `<main>`, and not inside `.CodeMirror`, a `textarea`, an `input`, or `[contenteditable]`
-- Shift is not held (`!event.shiftKey`)
+- for a pointer `contextmenu`, Shift is not held (`!event.shiftKey`). Shift+F10 is a `keydown`, not this event, and still opens the menu
 - there is a valid selection (§4.3), or the target is inside one existing `.rl-cm-mark` or `.rl-cm-note`
 
 The menu is positioned at the pointer. A keyboard open uses the selection rectangle. It flips to stay inside the viewport.
@@ -338,7 +339,7 @@ The menu is positioned at the pointer. A keyboard open uses the selection rectan
 
 - there is no selection, or the selection is collapsed, and the target is not an existing mark or note
 - the selection is invalid: it crosses two blocks, crosses from a cell into prose, or intersects `.rl-math`
-- Shift is held
+- Shift is held on a pointer `contextmenu` (right-click). Shift+F10 still opens the menu
 - the target is outside `<main>`, or inside the source pane, the cell editor, or another text control
 
 **Items.** A valid selection of unmarked prose:
@@ -392,6 +393,8 @@ The popover is plain HTML inlined in the page. The same nonce'd script binds `po
 ### 4.3 Mapping a selection to source bytes
 
 `parse_notebook` does not store offsets. The renderer stamps them.
+
+Shipped v1 stamps those offsets only while `watch --annotate` is on, and only on marks plus verbatim prose runs (no `*_[]()``#|<>$\!~&` and no newline). A selection across markdown syntax has no span, so the menu does not open. Math, callouts, and a rendered string that no longer matches the host file (template interpolation, an embed) are not mapped. Static HTML omits the offsets.
 
 - Each markdown `section.rl-block` gets `data-src-start` and `data-src-end`: the block's byte range in the **raw file**, including the frontmatter offset `parse.rs::body_offset` accounts for.
 - Every prose text run inside that section gets the same attributes for the slice it rendered, via the source map in §1.6.
@@ -610,7 +613,7 @@ h = fir1(64, 0.25);
 
 Binding rule, scanned forward from the comment's closing line: the following non-empty lines may only be `<!-- hide -->`, `<!-- code: … -->`, `<!-- caption: … -->`, `<!-- details: … -->`, or `<!-- grid: … -->`, and then a fence opener. A blank line, or any other line, leaves an ordinary block note. An inline `%%` in the paragraph above the fence stays a prose comment.
 
-This applies to every fence `parse_notebook` already splits out: `rustlab`, mermaid, widget, and prose fences. The anchor is the same in each case.
+This applies to every fence `parse_notebook` splits out: `rustlab`, mermaid, and widget. A `bash` / `python` / `text` fence stays inside the markdown block, so a `%%` before it is an ordinary prose note.
 
 **Why this one.** It is the prose comment syntax, in the file, on the cell as a whole. Editing the cell body does not move it, because `replace_code_block_source` copies the surrounding markdown unchanged. Moving the section in the markdown carries the note when the author moves those lines with the fence. Obsidian already hides a `%%` in that position, which matches §1.2. No new delimiter, no fence attribute, and no change to the rlab lexer.
 
