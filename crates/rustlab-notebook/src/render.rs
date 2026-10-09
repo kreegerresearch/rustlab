@@ -474,7 +474,9 @@ pub fn render_html_nonced(
     // server's ▶ Run can address the block; inert in static output.
     let mut exec_idx = 0usize;
     let _comment_page = crate::comments::enter_page();
+    crate::comments::locate_installed(blocks);
     let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
+    let mut cell_origin = 0usize;
 
     for (bi, block) in blocks.iter().enumerate() {
         // Auto-close solution/exercise when we hit a new exercise or solution marker
@@ -496,6 +498,8 @@ pub fn render_html_nonced(
         match block {
             Rendered::Markdown(md) => {
                 let mut md = md.clone();
+                cell_origin = crate::comments::range_of(bi).map(|(s, _)| s).unwrap_or(0);
+                crate::comments::set_origin(cell_origin);
                 if crate::comments::mode().show
                     && blocks
                         .get(bi + 1)
@@ -506,6 +510,7 @@ pub fn render_html_nonced(
                     md = rest;
                 }
                 if md.trim().is_empty() {
+                    crate::comments::set_origin(0);
                     continue;
                 }
                 let mark = body.len();
@@ -523,7 +528,13 @@ pub fn render_html_nonced(
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
                 body.push_str("</div>\n");
-                finalize_block(&mut body, mark, &mut block_id_counter, "");
+                crate::comments::set_origin(0);
+                finalize_block(
+                    &mut body,
+                    mark,
+                    &mut block_id_counter,
+                    &crate::comments::src_attr(bi),
+                );
             }
             Rendered::Code {
                 source,
@@ -539,7 +550,10 @@ pub fn render_html_nonced(
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
                 if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes(&pending_cells));
+                    body.push_str(&crate::comments::render_cell_notes_at(
+                        &pending_cells,
+                        cell_origin,
+                    ));
                     pending_cells.clear();
                 }
 
@@ -680,7 +694,10 @@ pub fn render_html_nonced(
                 }
 
                 body.push_str("</div>\n");
-                let attrs = format!(" data-code-idx=\"{exec_idx}\" data-src-kind=\"code\"");
+                let attrs = format!(
+                    " data-code-idx=\"{exec_idx}\" data-src-kind=\"code\"{}",
+                    crate::comments::src_attr(bi)
+                );
                 finalize_block(&mut body, mark, &mut block_id_counter, &attrs);
                 exec_idx += 1;
             }
@@ -696,20 +713,26 @@ pub fn render_html_nonced(
                 if *hidden {
                     if !pending_cells.is_empty() {
                         let mark = body.len();
-                        body.push_str(&crate::comments::render_cell_notes(&pending_cells));
+                        body.push_str(&crate::comments::render_cell_notes_at(
+                            &pending_cells,
+                            cell_origin,
+                        ));
                         pending_cells.clear();
                         finalize_block(
                             &mut body,
                             mark,
                             &mut block_id_counter,
-                            " data-src-kind=\"code\"",
+                            &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
                         );
                     }
                     continue;
                 }
                 let mark = body.len();
                 if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes(&pending_cells));
+                    body.push_str(&crate::comments::render_cell_notes_at(
+                        &pending_cells,
+                        cell_origin,
+                    ));
                     pending_cells.clear();
                 }
                 if let Some(title) = details {
@@ -729,13 +752,16 @@ pub fn render_html_nonced(
                     &mut body,
                     mark,
                     &mut block_id_counter,
-                    " data-src-kind=\"code\"",
+                    &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
                 );
             }
             Rendered::Widget { decl, value } => {
                 let mark = body.len();
                 if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes(&pending_cells));
+                    body.push_str(&crate::comments::render_cell_notes_at(
+                        &pending_cells,
+                        cell_origin,
+                    ));
                     pending_cells.clear();
                 }
                 body.push_str(&render_widget_html(decl, value));
@@ -743,7 +769,7 @@ pub fn render_html_nonced(
                     &mut body,
                     mark,
                     &mut block_id_counter,
-                    " data-src-kind=\"code\"",
+                    &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
                 );
             }
             Rendered::Callout {
