@@ -185,7 +185,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 
 | Function | Description |
 |---|---|
-| `sum(v)` / `sum(M)` / `sum(M, dim)` | Sum elements: vector → scalar; matrix → row of column sums (default dim 1) or column of row sums (dim 2). `sum(sum(M))` is the matlab idiom for total. |
+| `sum(v)` / `sum(M)` / `sum(M, dim)` | Sum elements: vector → scalar; matrix → row of column sums (default dim 1) or column of row sums (dim 2). A 1×N row with `dim = 1` (or an N×1 column with `dim = 2`) is returned unchanged; the long axis and the default still reduce to a scalar. `sum(sum(M))` is the matlab idiom for total. |
 | `prod(v)` | Product of all elements |
 | `cumsum(v)` / `cumsum(M)` / `cumsum(M, dim)` | Running totals; matrix → same shape, per-column by default. |
 | `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` / `[m, i] = max(v)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-argument form is elementwise over scalars/vectors/matrices with `+`-style broadcast (per element, NaN loses to non-NaN). **Multi-return** `[m, i]` returns the 1-based first-occurrence index alongside the value (vector / matrix / 3-arg axis forms only — not the two-argument elementwise form). Comparison key: real value for purely-real input, magnitude `|z|` for complex (diverges from MATLAB on equal magnitudes — first-occurrence wins). NaN skipped; all-NaN input errors. |
@@ -200,7 +200,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `hist(v)` / `hist(v, n)` | Histogram; returns 2×n matrix (bin centers, counts). Alias: `histogram()` |
 | `histogram(v); savefig(file)` | Save histogram to PNG or SVG |
-| `all(v)` | True if all elements nonzero |
+| `all(v)` | True if all elements nonzero. Accepts a scalar, vector, 1×N row, or N×1 column. |
 | `any(v)` | True if any element nonzero |
 
 ---
@@ -522,7 +522,7 @@ Mixed sparse+dense pairs auto-promote to dense.
 |---|---|
 | `print(x, ...)` | Print to stdout, space-separated |
 | `disp(x)` | Display a value (always appends newline) |
-| `fprintf(fmt, args...)` | Formatted print; specifiers: `%d %f %g %e %s %%`; flags: `- + 0 # ,`; escapes: `\n \t` |
+| `fprintf(fmt, args...)` | Formatted print. Specifiers: `%d %i %u %o %x %X %f %e %E %g %G %c %s %%`. Flags: `- +` space `0 # ,` (`*` width, `.*` precision). Escapes: `\n \t \r \b \f \\`. One scalar or string per specifier. `Inf`/`-Inf`/`NaN`. |
 | `sprintf(fmt, args...)` | Same as `fprintf` but returns a string instead of printing |
 | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns string |
 | `save("file.npy", x)` | Save array to NumPy .npy format |

@@ -455,6 +455,244 @@ impl SubplotState {
     }
 }
 
+fn hmix(h: &mut u64, v: u64) {
+    *h = h.wrapping_mul(0x100000001b3) ^ v;
+}
+
+fn hstr(h: &mut u64, s: &str) {
+    hmix(h, s.len() as u64);
+    for b in s.bytes() {
+        hmix(h, b as u64);
+    }
+}
+
+fn hf64(h: &mut u64, x: f64) {
+    hmix(h, x.to_bits());
+}
+
+fn hf64s(h: &mut u64, xs: &[f64]) {
+    hmix(h, xs.len() as u64);
+    for x in xs {
+        hf64(h, *x);
+    }
+}
+
+fn hf64ss(h: &mut u64, rows: &[Vec<f64>]) {
+    hmix(h, rows.len() as u64);
+    for row in rows {
+        hf64s(h, row);
+    }
+}
+
+fn hopt_f64(h: &mut u64, x: Option<f64>) {
+    match x {
+        Some(v) => {
+            hmix(h, 1);
+            hf64(h, v);
+        }
+        None => hmix(h, 0),
+    }
+}
+
+fn hopt_str(h: &mut u64, s: &Option<String>) {
+    match s {
+        Some(v) => {
+            hmix(h, 1);
+            hstr(h, v);
+        }
+        None => hmix(h, 0),
+    }
+}
+
+fn hstrs(h: &mut u64, xs: &[String]) {
+    hmix(h, xs.len() as u64);
+    for s in xs {
+        hstr(h, s);
+    }
+}
+
+fn hopt_strs(h: &mut u64, xs: &Option<Vec<String>>) {
+    match xs {
+        Some(v) => {
+            hmix(h, 1);
+            hstrs(h, v);
+        }
+        None => hmix(h, 0),
+    }
+}
+
+fn hcolor(h: &mut u64, c: SeriesColor) {
+    let (r, g, b) = c.to_rgb();
+    hmix(h, r as u64);
+    hmix(h, g as u64);
+    hmix(h, b as u64);
+}
+
+fn hopt_color(h: &mut u64, c: Option<SeriesColor>) {
+    match c {
+        Some(c) => {
+            hmix(h, 1);
+            hcolor(h, c);
+        }
+        None => hmix(h, 0),
+    }
+}
+
+fn hash_series(h: &mut u64, s: &Series) {
+    hstr(h, &s.label);
+    hf64s(h, &s.x_data);
+    hf64s(h, &s.y_data);
+    hcolor(h, s.color);
+    hmix(
+        h,
+        match s.style {
+            LineStyle::Solid => 1,
+            LineStyle::Dashed => 2,
+        },
+    );
+    hmix(
+        h,
+        match s.kind {
+            PlotKind::Line => 1,
+            PlotKind::Stem => 2,
+            PlotKind::Bar => 3,
+            PlotKind::Scatter => 4,
+        },
+    );
+}
+
+fn hash_heatmap(h: &mut u64, hm: &HeatmapData) {
+    hf64ss(h, &hm.z);
+    hstr(h, &hm.colorscale);
+    hmix(
+        h,
+        match hm.kind {
+            HeatmapKind::Imagesc => 1,
+            HeatmapKind::Heatmap => 2,
+            HeatmapKind::ImageRgba => 3,
+        },
+    );
+    hopt_strs(h, &hm.x_labels);
+    hopt_strs(h, &hm.y_labels);
+    match &hm.rgba {
+        Some(px) => {
+            hmix(h, 1);
+            hmix(h, px.len() as u64);
+            for b in px {
+                hmix(h, *b as u64);
+            }
+        }
+        None => hmix(h, 0),
+    }
+    hmix(h, hm.rgba_width as u64);
+    hmix(h, hm.rgba_height as u64);
+    hopt_f64(h, hm.value_min);
+    hopt_f64(h, hm.value_max);
+    hmix(
+        h,
+        match hm.origin {
+            HeatmapOrigin::Lower => 1,
+            HeatmapOrigin::Upper => 2,
+        },
+    );
+}
+
+fn hash_subplot(h: &mut u64, sp: &SubplotState) {
+    hstr(h, &sp.title);
+    hstr(h, &sp.xlabel);
+    hstr(h, &sp.ylabel);
+    hmix(h, sp.grid as u64);
+    hmix(h, sp.series.len() as u64);
+    for s in &sp.series {
+        hash_series(h, s);
+    }
+    hopt_f64(h, sp.xlim.0);
+    hopt_f64(h, sp.xlim.1);
+    hopt_f64(h, sp.ylim.0);
+    hopt_f64(h, sp.ylim.1);
+    hmix(h, sp.axis_equal as u64);
+    hmix(
+        h,
+        match sp.y_axis_direction {
+            AxisYDirection::Ij => 1,
+            AxisYDirection::Xy => 2,
+        },
+    );
+    hopt_strs(h, &sp.x_labels);
+    hmix(
+        h,
+        match sp.x_scale {
+            AxisScale::Linear => 1,
+            AxisScale::Log => 2,
+        },
+    );
+    hmix(
+        h,
+        match sp.y_scale {
+            AxisScale::Linear => 1,
+            AxisScale::Log => 2,
+        },
+    );
+    match &sp.heatmap {
+        Some(hm) => {
+            hmix(h, 1);
+            hash_heatmap(h, hm);
+        }
+        None => hmix(h, 0),
+    }
+    match &sp.surface {
+        Some(sf) => {
+            hmix(h, 1);
+            hf64ss(h, &sf.z);
+            hf64s(h, &sf.x);
+            hf64s(h, &sf.y);
+            hstr(h, &sf.colorscale);
+        }
+        None => hmix(h, 0),
+    }
+    hmix(h, sp.contours.len() as u64);
+    for c in &sp.contours {
+        hf64ss(h, &c.z);
+        hf64s(h, &c.x);
+        hf64s(h, &c.y);
+        hf64s(h, &c.levels);
+        hmix(h, c.filled as u64);
+        hopt_color(h, c.line_color);
+        hstr(h, &c.colorscale);
+    }
+    hmix(h, sp.quivers.len() as u64);
+    for q in &sp.quivers {
+        hf64s(h, &q.x);
+        hf64s(h, &q.y);
+        hf64ss(h, &q.u);
+        hf64ss(h, &q.v);
+        hf64(h, q.scale);
+        hopt_color(h, q.color);
+        hopt_str(h, &q.title);
+    }
+    hmix(h, sp.streamlines.len() as u64);
+    for s in &sp.streamlines {
+        hf64s(h, &s.x);
+        hf64s(h, &s.y);
+        hf64ss(h, &s.u);
+        hf64ss(h, &s.v);
+        hf64(h, s.density);
+        match &s.seeds {
+            Some(seeds) => {
+                hmix(h, 1);
+                hmix(h, seeds.len() as u64);
+                for (x, y) in seeds {
+                    hf64(h, *x);
+                    hf64(h, *y);
+                }
+            }
+            None => hmix(h, 0),
+        }
+        hopt_color(h, s.color);
+        hopt_str(h, &s.title);
+    }
+}
+
 /// Global per-thread figure state shared by all plot builtins.
 #[derive(Debug, Clone)]
 pub struct FigureState {
@@ -476,6 +714,36 @@ impl FigureState {
     }
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// Stable fingerprint of every field a notebook cell can change.
+    ///
+    /// Used to decide whether a cell actually drew or restyled the figure.
+    /// Equal hashes mean the cell left the figure untouched.
+    pub fn content_hash(&self) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        hmix(&mut h, self.hold as u64);
+        hmix(&mut h, self.subplot_rows as u64);
+        hmix(&mut h, self.subplot_cols as u64);
+        hmix(&mut h, self.current_subplot as u64);
+        hmix(&mut h, self.subplots.len() as u64);
+        for sp in &self.subplots {
+            hash_subplot(&mut h, sp);
+        }
+        h
+    }
+
+    /// True when some panel still has something to draw (a series, heatmap,
+    /// surface, contour, quiver, or streamline).
+    pub fn has_drawable_content(&self) -> bool {
+        self.subplots.iter().any(|s| {
+            !s.series.is_empty()
+                || s.heatmap.is_some()
+                || s.surface.is_some()
+                || !s.contours.is_empty()
+                || !s.quivers.is_empty()
+                || !s.streamlines.is_empty()
+        })
     }
     pub fn current(&self) -> &SubplotState {
         let i = self
@@ -1221,5 +1489,38 @@ mod series_color_parse_tests {
     fn existing_names_still_parse() {
         assert_eq!(SeriesColor::parse("r"), Some(SeriesColor::Red));
         assert_eq!(SeriesColor::parse("black"), Some(SeriesColor::Black));
+    }
+}
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::*;
+
+    #[test]
+    fn clone_hashes_equal_and_edits_change_the_hash() {
+        let fig = FigureState::new();
+        assert_eq!(fig.content_hash(), fig.clone().content_hash());
+        assert!(!fig.has_drawable_content());
+
+        let mut held = fig.clone();
+        held.hold = true;
+        assert_ne!(held.content_hash(), fig.content_hash());
+
+        let mut titled = fig.clone();
+        titled.current_mut().title = "t".to_string();
+        assert_ne!(titled.content_hash(), fig.content_hash());
+
+        let mut drawn = fig.clone();
+        drawn.current_mut().series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![0.0, 1.0],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        assert_ne!(drawn.content_hash(), fig.content_hash());
+        assert!(drawn.has_drawable_content());
+        assert_eq!(drawn.content_hash(), drawn.clone().content_hash());
     }
 }

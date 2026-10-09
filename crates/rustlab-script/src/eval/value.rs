@@ -1722,6 +1722,22 @@ impl Value {
                     });
                     Ok(Value::Matrix(data))
                 }
+                // A vector is a row. Compare it with a 1×N matrix of the
+                // same length elementwise; the result is a 0/1 matrix.
+                // Other matrix shapes (an N×1 column, a wider matrix) stay
+                // an error — they are not the same orientation.
+                (Value::Vector(v), Value::Matrix(m)) if m.nrows() == 1 && m.ncols() == v.len() => {
+                    let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
+                        Complex::new(cmp(v[j].re, m[[0, j]].re), 0.0)
+                    });
+                    Ok(Value::Matrix(data))
+                }
+                (Value::Matrix(m), Value::Vector(v)) if m.nrows() == 1 && m.ncols() == v.len() => {
+                    let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
+                        Complex::new(cmp(m[[0, j]].re, v[j].re), 0.0)
+                    });
+                    Ok(Value::Matrix(data))
+                }
                 _ => Err(format!(
                     "comparison requires compatible operands, got {} and {}",
                     lhs.type_name(),

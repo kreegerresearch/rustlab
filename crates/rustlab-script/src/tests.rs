@@ -19197,3 +19197,293 @@ mod log_axis_and_legend_tests {
         });
     }
 }
+
+/// `printf` flags, matrix `end`, and 1-D reductions.
+#[cfg(test)]
+mod printf_and_row_matrix_tests {
+    use crate::eval::builtins::apply_format;
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+    use ndarray::Array1;
+    use num_complex::Complex;
+
+    fn eval(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        for stmt in &stmts {
+            ev.exec_stmt(stmt).unwrap();
+        }
+        ev
+    }
+
+    fn eval_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        let mut msg = String::new();
+        for stmt in &stmts {
+            if let Err(e) = ev.exec_stmt(stmt) {
+                msg = e.to_string();
+                break;
+            }
+        }
+        assert!(!msg.is_empty(), "expected an error for: {src}");
+        msg
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name}: expected scalar, got {other:?}"),
+        }
+    }
+
+    fn shape(ev: &Evaluator, name: &str) -> (usize, usize) {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (m.nrows(), m.ncols()),
+            other => panic!("{name}: expected matrix, got {other:?}"),
+        }
+    }
+
+    fn cell(ev: &Evaluator, name: &str, i: usize, j: usize) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m[[i, j]].re,
+            other => panic!("{name}: expected matrix, got {other:?}"),
+        }
+    }
+
+    enum Arg {
+        N(f64),
+        S(&'static str),
+    }
+
+    fn vals(args: &[Arg]) -> Vec<Value> {
+        args.iter()
+            .map(|a| match a {
+                Arg::N(n) => Value::Scalar(*n),
+                Arg::S(s) => Value::Str((*s).to_string()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn apply_format_honors_flags_precision_and_new_specifiers() {
+        let cases: &[(&str, &[Arg], &str)] = &[
+            ("%d", &[Arg::N(42.0)], "42"),
+            ("%i", &[Arg::N(-42.0)], "-42"),
+            ("%d", &[Arg::N(3.9)], "3"),
+            ("%d", &[Arg::N(-3.9)], "-3"),
+            ("%+.2f", &[Arg::N(1.5)], "+1.50"),
+            ("%+.2f", &[Arg::N(-1.5)], "-1.50"),
+            ("%+8.2f", &[Arg::N(1.5)], "   +1.50"),
+            ("% .2f", &[Arg::N(1.5)], " 1.50"),
+            ("%08.2f", &[Arg::N(1.5)], "00001.50"),
+            ("%08.2f", &[Arg::N(-1.5)], "-0001.50"),
+            ("%#.0f", &[Arg::N(2.0)], "2."),
+            ("%.2e", &[Arg::N(1234.5)], "1.23e+03"),
+            ("%.2e", &[Arg::N(-0.0012345)], "-1.23e-03"),
+            ("%.2E", &[Arg::N(1234.5)], "1.23E+03"),
+            ("%g", &[Arg::N(1.23456789)], "1.23457"),
+            ("%g", &[Arg::N(1.23456789e7)], "1.23457e+07"),
+            ("%g", &[Arg::N(1.234e-5)], "1.234e-05"),
+            ("%g", &[Arg::N(1e-4)], "0.0001"),
+            ("%g", &[Arg::N(0.0)], "0"),
+            ("%g", &[Arg::N(1.5)], "1.5"),
+            ("%.3g", &[Arg::N(1234.5)], "1.23e+03"),
+            ("%G", &[Arg::N(1.5e7)], "1.5E+07"),
+            ("%.2s", &[Arg::S("hello")], "he"),
+            ("%5s", &[Arg::S("hi")], "   hi"),
+            ("%-5s", &[Arg::S("hi")], "hi   "),
+            ("%-5d", &[Arg::N(42.0)], "42   "),
+            ("%5d", &[Arg::N(42.0)], "   42"),
+            ("%+d", &[Arg::N(42.0)], "+42"),
+            ("% d", &[Arg::N(42.0)], " 42"),
+            ("% d", &[Arg::N(-3.0)], "-3"),
+            ("%05d", &[Arg::N(42.0)], "00042"),
+            ("%05d", &[Arg::N(-12.0)], "-0012"),
+            ("%.4d", &[Arg::N(7.0)], "0007"),
+            ("%.0d", &[Arg::N(0.0)], ""),
+            ("%#d", &[Arg::N(7.0)], "7"),
+            ("%,d", &[Arg::N(1_234_567.0)], "1,234,567"),
+            ("%,.2f", &[Arg::N(1_234_567.89)], "1,234,567.89"),
+            ("%*d", &[Arg::N(5.0), Arg::N(42.0)], "   42"),
+            ("%*d", &[Arg::N(-5.0), Arg::N(42.0)], "42   "),
+            ("%.*f", &[Arg::N(2.0), Arg::N(1.5)], "1.50"),
+            (
+                "%*.*f",
+                &[Arg::N(8.0), Arg::N(2.0), Arg::N(1.5)],
+                "    1.50",
+            ),
+            ("%x", &[Arg::N(255.0)], "ff"),
+            ("%X", &[Arg::N(255.0)], "FF"),
+            ("%#x", &[Arg::N(255.0)], "0xff"),
+            ("%#X", &[Arg::N(255.0)], "0XFF"),
+            ("%o", &[Arg::N(8.0)], "10"),
+            ("%#o", &[Arg::N(8.0)], "010"),
+            ("%c", &[Arg::N(65.0)], "A"),
+            ("%u", &[Arg::N(42.0)], "42"),
+            ("%u", &[Arg::N(-1.0)], "18446744073709551615"),
+            ("%f", &[Arg::N(f64::NAN)], "NaN"),
+            ("%f", &[Arg::N(f64::INFINITY)], "Inf"),
+            ("%f", &[Arg::N(f64::NEG_INFINITY)], "-Inf"),
+            ("%+f", &[Arg::N(f64::INFINITY)], "+Inf"),
+            ("% f", &[Arg::N(f64::INFINITY)], " Inf"),
+            ("%+f", &[Arg::N(f64::NAN)], "NaN"),
+            ("a\\r\\b\\f", &[], "a\r\u{0008}\u{000c}"),
+            ("\\q", &[], "\\q"),
+            ("100%%", &[], "100%"),
+        ];
+        for (fmt, args, expect) in cases {
+            let got = apply_format(fmt, &vals(args)).unwrap_or_else(|e| panic!("{fmt}: {e}"));
+            assert_eq!(&got, expect, "fmt {fmt:?}");
+        }
+    }
+
+    #[test]
+    fn apply_format_rejects_bad_inputs_and_ignores_extra_args() {
+        assert_eq!(
+            apply_format("%d", &vals(&[Arg::N(42.0), Arg::N(99.0)])).unwrap(),
+            "42"
+        );
+        assert!(apply_format("%d", &[]).unwrap_err().contains("not enough"));
+        assert!(apply_format("tail %", &[])
+            .unwrap_err()
+            .contains("trailing"));
+        assert!(apply_format("%q", &vals(&[Arg::N(1.0)]))
+            .unwrap_err()
+            .contains("unknown"));
+        assert!(apply_format("%ld", &vals(&[Arg::N(1.0)]))
+            .unwrap_err()
+            .contains("unknown"));
+        let vec = Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]));
+        assert!(apply_format("%d", &[vec]).is_err());
+        let z = Value::Complex(Complex::new(1.0, 2.0));
+        assert!(apply_format("%f", &[z]).is_err());
+    }
+
+    #[test]
+    fn sprintf_plus_flag_round_trip() {
+        let ev = eval("s = sprintf('%+.2f', 1.5)");
+        match ev.get("s").unwrap() {
+            Value::Str(s) => assert_eq!(s, "+1.50"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn matrix_single_index_end_matches_numel_on_read_and_write() {
+        let ev = eval(
+            "r = zeros(1, 3)
+             r(1) = 10
+             r(2) = 20
+             r(3) = 30
+             a = r(end)
+             r(end) = 99
+             b = r(1)
+             c = r(3)
+             chained = (r + 0)(end)
+             M = [1, 2, 3; 4, 5, 6]
+             last = M(end)
+             row_end = M(end, 1)",
+        );
+        assert_eq!(scalar(&ev, "a"), 30.0);
+        assert_eq!(scalar(&ev, "b"), 10.0);
+        assert_eq!(scalar(&ev, "c"), 99.0);
+        assert_eq!(scalar(&ev, "chained"), 99.0);
+        assert_eq!(scalar(&ev, "last"), 6.0);
+        assert_eq!(scalar(&ev, "row_end"), 4.0);
+    }
+
+    #[test]
+    fn one_d_matrix_reductions_honor_dim() {
+        let ev = eval(
+            "r = zeros(1, 3)
+             r(1) = 1
+             r(2) = 2
+             r(3) = 3
+             s1 = sum(r, 1)
+             s0 = sum(r)
+             s2 = sum(r, 2)
+             m1 = mean(r, 1)
+             p1 = prod(r, 1)
+             c = [1; 2; 3]
+             c2 = sum(c, 2)
+             c1 = sum(c, 1)
+             cs = cumsum(r, 1)
+             cs0 = cumsum(r)
+             mx1 = max(r, [], 1)
+             mx2 = max(r, [], 2)
+             mn = min(r)
+             md = median(r)
+             md1 = median(r, 1)
+             sd = std(r)
+             ix = argmax(r, 1)
+             i0 = argmax(r)",
+        );
+        assert_eq!(shape(&ev, "s1"), (1, 3));
+        assert_eq!(cell(&ev, "s1", 0, 2), 3.0);
+        assert_eq!(scalar(&ev, "s0"), 6.0);
+        assert_eq!(scalar(&ev, "s2"), 6.0);
+        assert_eq!(shape(&ev, "m1"), (1, 3));
+        assert_eq!(shape(&ev, "p1"), (1, 3));
+        assert_eq!(cell(&ev, "p1", 0, 0), 1.0);
+        assert_eq!(shape(&ev, "c2"), (3, 1));
+        assert_eq!(cell(&ev, "c2", 1, 0), 2.0);
+        assert_eq!(scalar(&ev, "c1"), 6.0);
+        assert_eq!(shape(&ev, "cs"), (1, 3));
+        assert_eq!(cell(&ev, "cs", 0, 1), 2.0);
+        assert_eq!(shape(&ev, "cs0"), (1, 3));
+        assert_eq!(cell(&ev, "cs0", 0, 2), 6.0);
+        assert_eq!(shape(&ev, "mx1"), (1, 3));
+        assert_eq!(scalar(&ev, "mx2"), 3.0);
+        assert_eq!(scalar(&ev, "mn"), 1.0);
+        assert_eq!(scalar(&ev, "md"), 2.0);
+        assert_eq!(shape(&ev, "md1"), (1, 3));
+        assert!((scalar(&ev, "sd") - 1.0).abs() < 1e-12);
+        assert_eq!(shape(&ev, "ix"), (1, 3));
+        assert_eq!(cell(&ev, "ix", 0, 0), 1.0);
+        assert_eq!(scalar(&ev, "i0"), 3.0);
+    }
+
+    #[test]
+    fn row_matrix_compares_with_vector_and_iterates() {
+        let ev = eval(
+            "v = [10, 20, 30]
+             r = zeros(1, 3)
+             r(1) = 10
+             r(2) = 20
+             r(3) = 99
+             cmp = v == r
+             ok = all(ones(1, 3))
+             s = 0
+             for i = ones(1, 3)
+               s = s + i
+             end",
+        );
+        assert_eq!(shape(&ev, "cmp"), (1, 3));
+        assert_eq!(cell(&ev, "cmp", 0, 0), 1.0);
+        assert_eq!(cell(&ev, "cmp", 0, 2), 0.0);
+        match ev.get("ok").unwrap() {
+            Value::Bool(b) => assert!(*b),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(scalar(&ev, "s"), 3.0);
+
+        let msg = eval_err(
+            "v = [1, 2, 3]
+             c = [1; 2; 3]
+             b = v == c",
+        );
+        assert!(msg.contains("comparison"), "{msg}");
+        let msg = eval_err(
+            "s = 0
+             for i = [1; 2; 3]
+               s = s + 1
+             end",
+        );
+        assert!(msg.contains("cannot iterate"), "{msg}");
+    }
+}

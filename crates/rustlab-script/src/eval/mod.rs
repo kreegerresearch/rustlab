@@ -743,6 +743,10 @@ impl Evaluator {
                 let iter_val = self.eval_expr(iter)?;
                 let elements = match iter_val {
                     Value::Vector(v) => v.to_vec(),
+                    // A 1×N matrix is the row-vector form. Iterate its
+                    // elements the same way a vector does. An N×1 column
+                    // and any wider matrix still cannot be iterated.
+                    Value::Matrix(m) if m.nrows() == 1 => m.row(0).iter().copied().collect(),
                     Value::Scalar(n) => vec![Complex::new(n, 0.0)],
                     other => {
                         return Err(ScriptError::runtime(format!(
@@ -1836,9 +1840,11 @@ impl Evaluator {
                     } else {
                         let len = match &container {
                             Value::Vector(v) => v.len(),
-                            Value::Matrix(m) => m.nrows(),
+                            // Linear index: `end` is the element count, matching
+                            // the write path (`IndexAssign`) and MATLAB.
+                            Value::Matrix(m) => m.nrows() * m.ncols(),
                             Value::SparseVector(sv) => sv.len,
-                            Value::SparseMatrix(sm) => sm.rows,
+                            Value::SparseMatrix(sm) => sm.rows * sm.cols,
                             // Single-index tensor access is linear over the
                             // column-major flat view, so `end` is the total
                             // element count (matches T(:) / T(k) semantics).
@@ -1989,19 +1995,48 @@ impl Evaluator {
             Expr::All => Ok(Value::All),
             Expr::Index { expr, args } => {
                 let container = self.eval_expr(expr)?;
-                // Bind `end` to length of the container for use inside index expressions
-                let end_val = match &container {
-                    Value::Vector(v) => v.len(),
-                    Value::Matrix(m) => m.nrows(),
-                    _ => 0,
+                // `end` inside a chained index. One index is linear
+                // (`numel` for a matrix). Two indexes on a matrix bind
+                // `end` per dimension, same as `M(i, j)`.
+                let idx_vals = if args.len() == 2 {
+                    if let Value::Matrix(m) = &container {
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(m.nrows() as f64));
+                        let row_val = self.eval_expr(&args[0])?;
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(m.ncols() as f64));
+                        let col_val = self.eval_expr(&args[1])?;
+                        self.env.remove("end");
+                        vec![row_val, col_val]
+                    } else {
+                        let end_val = match &container {
+                            Value::Vector(v) => v.len(),
+                            _ => 0,
+                        };
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(end_val as f64));
+                        let vals: Vec<Value> = args
+                            .iter()
+                            .map(|a| self.eval_expr(a))
+                            .collect::<Result<_, _>>()?;
+                        self.env.remove("end");
+                        vals
+                    }
+                } else {
+                    let end_val = match &container {
+                        Value::Vector(v) => v.len(),
+                        Value::Matrix(m) => m.nrows() * m.ncols(),
+                        _ => 0,
+                    };
+                    self.env
+                        .insert("end".to_string(), Value::Scalar(end_val as f64));
+                    let vals: Vec<Value> = args
+                        .iter()
+                        .map(|a| self.eval_expr(a))
+                        .collect::<Result<_, _>>()?;
+                    self.env.remove("end");
+                    vals
                 };
-                self.env
-                    .insert("end".to_string(), Value::Scalar(end_val as f64));
-                let idx_vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| self.eval_expr(a))
-                    .collect::<Result<_, _>>()?;
-                self.env.remove("end");
                 container
                     .index(idx_vals)
                     .map_err(|e| ScriptError::runtime(e))

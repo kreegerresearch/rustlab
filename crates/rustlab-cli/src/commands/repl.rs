@@ -364,9 +364,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "disp", brief: "Display a value (always prints newline)",
         detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n." },
     HelpEntry { name: "fprintf", brief: "Formatted print (C-style)",
-        detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %f %g %e %s %%\n  Flags:      - + 0 # , (comma inserts thousands separators)\n  Escapes:    \\n \\t \\\\\n  Width/precision: %8.2f  %-10s\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
+        detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %u %o %x %X %f %e %E %g %G %c %s %%\n  Flags:      - + <space> 0 # , (comma inserts thousands separators)\n  * width and .* precision consume the next argument.\n  Precision:  %s max chars, %d min digits, %g significant digits.\n  Escapes:    \\n \\t \\r \\b \\f \\\\\n  Non-finite: Inf, -Inf, NaN.\n  One scalar or string per specifier (no array recycling).\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
     HelpEntry { name: "sprintf", brief: "Formatted string (C-style, returns string)",
-        detail: "sprintf(fmt, arg1, arg2, ...)\n  Same format specifiers as fprintf, but returns the string instead of printing.\n  s = sprintf(\"%,.2f\", 1234567.89)  →  \"1,234,567.89\"" },
+        detail: "sprintf(fmt, arg1, arg2, ...)\n  Same format specifiers, flags, and escapes as fprintf, but returns the string.\n  s = sprintf(\"%,.2f\", 1234567.89)  →  \"1,234,567.89\"\n  s = sprintf(\"%+.2f\", 1.5)  →  \"+1.50\"" },
     HelpEntry { name: "commas", brief: "Format number with thousands separators",
         detail: "commas(x)  — format number with comma separators, returns string\n  commas(1234567)       →  \"1,234,567\"\n  commas(1234567.89)    →  \"1,234,567.89\"\n  commas(1234567.89, 2) →  \"1,234,567.89\"  (with precision)\n  commas(1234567, 0)    →  \"1,234,567\"" },
     // Formatting
@@ -374,9 +374,9 @@ pub const HELP: &[HelpEntry] = &[
         detail: "format short    — default display (4-6 digits)\n  format long     — full f64 precision (15 digits)\n  format hex      — IEEE-754 hex encoding of float bits\n  format commas   — thousands separators\n  format default  — alias for short\n  format          — show current mode\n\n  The session starts in short, or in whatever [display] format is set\n  in ~/.rustlabrc / $XDG_CONFIG_HOME/rustlab/config.toml (see rustlabrc).\n  An in-script or REPL `format` command always wins over the rc file.\n  Example:\n    format long\n    x = pi\n    x = 3.141592653589793" },
     // Aggregates
     HelpEntry { name: "all", brief: "True if all elements are nonzero",
-        detail: "all(v)  — true if every element of v is nonzero\n  Works on scalars, bools, and vectors." },
+        detail: "all(v)  — true if every element of v is nonzero\n  Works on scalars, bools, vectors, and 1×N or N×1 matrices." },
     HelpEntry { name: "any", brief: "True if any element is nonzero",
-        detail: "any(v)  — true if at least one element of v is nonzero" },
+        detail: "any(v)  — true if at least one element of v is nonzero\n  Works on scalars, bools, vectors, and 1×N or N×1 matrices." },
     // Matrix analysis
     HelpEntry { name: "rank", brief: "Matrix rank (SVD threshold)",
         detail: "rank(M)  — number of linearly independent rows/columns\n  Uses SVD-based threshold: eps * max(size) * max_sv" },
