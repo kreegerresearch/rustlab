@@ -83,6 +83,8 @@ fn build_state() -> (
         csp_nonce: "testnonce".to_string(),
         bind_port: std::sync::atomic::AtomicU16::new(8042),
         jail_root: None,
+        annotate: false,
+        comments_on: true,
     });
     (state, src_dir, plot_dir)
 }

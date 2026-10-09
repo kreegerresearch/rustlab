@@ -96,6 +96,13 @@ thread_local! {
     static NOTE_N: Cell<u32> = Cell::new(0);
     /// `None` means "use the format default" ([`CommentMode::for_format`]).
     static REQUESTED: Cell<Option<bool>> = Cell::new(None);
+    /// Added to every `data-src-*` offset while a block is rendered.
+    static ORIGIN: Cell<usize> = Cell::new(0);
+    /// Host-file byte ranges parallel to the rendered blocks. Empty
+    /// when no file was installed (unit tests, block-relative offsets).
+    static RANGES: std::cell::RefCell<Vec<Option<(usize, usize)>>> =
+        std::cell::RefCell::new(Vec::new());
+    static FILE_SRC: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
 }
 
 pub(crate) struct ModeGuard {
@@ -115,6 +122,130 @@ pub(crate) fn install(mode: CommentMode) -> ModeGuard {
 
 pub(crate) fn mode() -> CommentMode {
     MODE.with(|m| m.get())
+}
+
+fn file_off(n: usize) -> usize {
+    ORIGIN.with(|c| c.get().saturating_add(n))
+}
+
+pub(crate) fn set_origin(origin: usize) {
+    ORIGIN.with(|c| c.set(origin));
+}
+
+/// Remember `src` (the file annotate will write) for the next
+/// [`locate_installed`] call. Drop clears it.
+pub(crate) struct FileSourceGuard;
+
+impl Drop for FileSourceGuard {
+    fn drop(&mut self) {
+        FILE_SRC.with(|s| *s.borrow_mut() = None);
+        RANGES.with(|r| r.borrow_mut().clear());
+        ORIGIN.with(|c| c.set(0));
+    }
+}
+
+pub(crate) fn install_file_source(src: &str) -> FileSourceGuard {
+    FILE_SRC.with(|s| *s.borrow_mut() = Some(src.to_string()));
+    FileSourceGuard
+}
+
+pub(crate) fn range_of(block_idx: usize) -> Option<(usize, usize)> {
+    RANGES.with(|r| r.borrow().get(block_idx).copied().flatten())
+}
+
+pub(crate) fn src_attr(block_idx: usize) -> String {
+    match range_of(block_idx) {
+        Some((s, e)) => format!(" data-src-start=\"{s}\" data-src-end=\"{e}\""),
+        None => String::new(),
+    }
+}
+
+/// Fill [`RANGES`] from the installed file and these rendered blocks.
+/// A block whose text is not a substring of the file (template
+/// interpolation, an expanded embed) gets `None` and stays
+/// block-relative, so a later write cannot splice the wrong bytes.
+pub(crate) fn locate_installed(blocks: &[crate::execute::Rendered]) {
+    let Some(file) = FILE_SRC.with(|s| s.borrow().clone()) else {
+        RANGES.with(|r| r.borrow_mut().clear());
+        return;
+    };
+    RANGES.with(|r| *r.borrow_mut() = locate_ranges(&file, blocks));
+}
+
+fn locate_ranges(file: &str, blocks: &[crate::execute::Rendered]) -> Vec<Option<(usize, usize)>> {
+    use crate::execute::Rendered;
+    let mut cursor = 0usize;
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        let found = match b {
+            Rendered::Markdown(md) if !md.is_empty() => find_slice(file, cursor, md),
+            Rendered::Code { .. } => find_fence(file, cursor, FenceKind::Rustlab),
+            Rendered::Mermaid { .. } => find_fence(file, cursor, FenceKind::Mermaid),
+            Rendered::Widget { .. } => find_fence(file, cursor, FenceKind::Widget),
+            _ => None,
+        };
+        if let Some((s, e)) = found {
+            cursor = e;
+            out.push(Some((s, e)));
+        } else {
+            out.push(None);
+        }
+    }
+    out
+}
+
+fn find_slice(file: &str, cursor: usize, needle: &str) -> Option<(usize, usize)> {
+    if needle.is_empty() || cursor > file.len() {
+        return None;
+    }
+    let rel = file[cursor..].find(needle)?;
+    let start = cursor + rel;
+    Some((start, start + needle.len()))
+}
+
+#[derive(Clone, Copy)]
+enum FenceKind {
+    Rustlab,
+    Mermaid,
+    Widget,
+}
+
+fn find_fence(file: &str, cursor: usize, kind: FenceKind) -> Option<(usize, usize)> {
+    if cursor > file.len() {
+        return None;
+    }
+    let bytes = file.as_bytes();
+    let mut i = cursor;
+    while i < bytes.len() {
+        if i > 0 && bytes[i - 1] != b'\n' {
+            i = file[i..]
+                .find('\n')
+                .map(|n| i + n + 1)
+                .unwrap_or(file.len());
+            continue;
+        }
+        let line_end = file[i..].find('\n').map(|n| i + n).unwrap_or(file.len());
+        let line = file[i..line_end].trim();
+        let hit = match kind {
+            FenceKind::Widget => {
+                line == "```rustlab-widget" || line.starts_with("```rustlab-widget ")
+            }
+            FenceKind::Mermaid => line == "```mermaid" || line.starts_with("```mermaid "),
+            FenceKind::Rustlab => {
+                (line == "```rustlab" || line.starts_with("```rustlab "))
+                    && !line.starts_with("```rustlab-widget")
+            }
+        };
+        if hit {
+            return Some((i, line_end));
+        }
+        i = if line_end < file.len() {
+            line_end + 1
+        } else {
+            file.len()
+        };
+    }
+    None
 }
 
 /// CLI / rc resolution. `Some` forces on or off; `None` leaves the format default.
@@ -244,7 +375,7 @@ fn parse_header_fields(pre: &str) -> Option<CommentHeader> {
     // 0 id, 1 reply, 2 author, 3 date, 4 done
     let mut stage = 0u8;
     while let Some(t) = toks.next() {
-        if stage <= 0 && is_id_token(t) {
+        if stage == 0 && is_id_token(t) {
             header.id = Some(t[1..].to_string());
             stage = 1;
             continue;
@@ -345,6 +476,7 @@ pub(crate) struct Issue {
     pub message: String,
 }
 
+#[derive(Default)]
 struct Scan {
     marks: Vec<Mark>,
     issues: Vec<Issue>,
@@ -1084,6 +1216,9 @@ pub(crate) fn prepare(md: &str) -> Prepared {
     let show = mode().show;
     let scanned = scan(md);
     if scanned.marks.is_empty() && scanned.warns.is_empty() && scanned.escapes.is_empty() {
+        if mode().annotate && show {
+            return spans_only(md);
+        }
         return Prepared::identity();
     }
     if !show {
@@ -1182,7 +1317,8 @@ fn build_shown(md: &str, scanned: &Scan) -> Prepared {
             .unwrap_or_default();
         let open_html = format!(
             "<mark class=\"rl-cm rl-cm-mark\" data-src-start=\"{}\" data-src-end=\"{}\"{aria}>",
-            m.start, m.end
+            file_off(m.inner_start),
+            file_off(m.inner_end)
         );
         marks_out.push(MarkOut {
             open_ph: open_ph.clone(),
@@ -1221,13 +1357,17 @@ fn build_shown(md: &str, scanned: &Scan) -> Prepared {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        let html = render_note_html(m, num, &replies, annotate);
+        let html = render_note_html(m, &md[m.start..m.end], num, &replies, annotate);
         notes.push(NoteOut {
             placeholder: ph.clone(),
             html,
             block: m.block,
         });
         edits.push((m.start, m.end, ph));
+    }
+
+    if annotate {
+        push_verbatim_spans(md, scanned, &mut edits, &mut marks_out);
     }
 
     for w in &scanned.warns {
@@ -1331,7 +1471,13 @@ fn strip_wrapping_p(html: &str) -> String {
     t.to_string()
 }
 
-fn render_note_html(m: &Mark, num: u32, replies: &str, annotate: bool) -> String {
+fn attr_escape(s: &str) -> String {
+    crate::render::escape_html(s)
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+}
+
+fn render_note_html(m: &Mark, raw: &str, num: u32, replies: &str, annotate: bool) -> String {
     let body = render_body_html(&m.body);
     let id_attr = m
         .header
@@ -1351,10 +1497,101 @@ fn render_note_html(m: &Mark, num: u32, replies: &str, annotate: bool) -> String
     };
     let tag = if m.block { "div" } else { "span" };
     format!(
-        "<{tag} class=\"{class}\" id=\"cm-n{num}\" role=\"note\" tabindex=\"0\"{id_attr} data-src-start=\"{}\" data-src-end=\"{}\"><sup class=\"rl-cm-num\">{num}</sup><span class=\"rl-cm-body\">{meta}{body}{replies}</span>{buttons}</{tag}>",
-        m.start,
-        m.end,
+        "<{tag} class=\"{class}\" id=\"cm-n{num}\" role=\"note\" tabindex=\"0\"{id_attr} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><sup class=\"rl-cm-num\">{num}</sup><span class=\"rl-cm-body\">{meta}<span class=\"rl-cm-text\">{body}</span>{replies}</span>{buttons}</{tag}>",
+        file_off(m.start),
+        file_off(m.end),
+        attr_escape(raw),
+        attr_escape(&m.body),
         meta = header_label(&m.header),
+    )
+}
+
+fn spans_only(md: &str) -> Prepared {
+    let mut edits = Vec::new();
+    let mut marks_out = Vec::new();
+    push_verbatim_spans(md, &Scan::default(), &mut edits, &mut marks_out);
+    if edits.is_empty() {
+        return Prepared::identity();
+    }
+    Prepared {
+        markdown: Some(apply_edits(md, &mut edits)),
+        notes: Vec::new(),
+        marks: marks_out,
+        warns: Vec::new(),
+    }
+}
+
+fn push_verbatim_spans(
+    md: &str,
+    scanned: &Scan,
+    edits: &mut Vec<(usize, usize, String)>,
+    marks_out: &mut Vec<MarkOut>,
+) {
+    let covered: Vec<(usize, usize)> = scanned
+        .marks
+        .iter()
+        .map(|m| (m.start, m.end))
+        .chain(scanned.escapes.iter().map(|&(at, _)| (at, at + 3)))
+        .collect();
+    let bytes = md.as_bytes();
+    let mut i = 0;
+    let mut n = 0u32;
+    while i < bytes.len() {
+        if covered.iter().any(|&(s, e)| i >= s && i < e) || !verbatim_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len()
+            && verbatim_byte(bytes[i])
+            && !covered.iter().any(|&(s, e)| i >= s && i < e)
+        {
+            i += 1;
+        }
+        if !md[start..i].chars().any(|c| !c.is_whitespace()) {
+            continue;
+        }
+        let open_ph = format!("\u{E002}S{n}\u{E003}");
+        let close_ph = format!("\u{E004}S{n}\u{E003}");
+        marks_out.push(MarkOut {
+            open_ph: open_ph.clone(),
+            close_ph: close_ph.clone(),
+            open_html: format!(
+                "<span data-src-start=\"{}\" data-src-end=\"{}\">",
+                file_off(start),
+                file_off(i)
+            ),
+            close_html: "</span>".to_string(),
+        });
+        let mut repl = String::new();
+        repl.push_str(&open_ph);
+        repl.push_str(&md[start..i]);
+        repl.push_str(&close_ph);
+        edits.push((start, i, repl));
+        n += 1;
+    }
+}
+
+fn verbatim_byte(b: u8) -> bool {
+    !matches!(
+        b,
+        b'*' | b'_'
+            | b'['
+            | b']'
+            | b'('
+            | b')'
+            | b'`'
+            | b'#'
+            | b'|'
+            | b'<'
+            | b'>'
+            | b'$'
+            | b'\\'
+            | b'!'
+            | b'~'
+            | b'&'
+            | b'\n'
+            | b'\r'
     )
 }
 
@@ -1658,7 +1895,6 @@ pub(crate) struct CellNote {
     pub body: String,
     pub start: usize,
     pub end: usize,
-    #[allow(dead_code)]
     pub raw: String,
     #[allow(dead_code)]
     pub block: bool,
@@ -1732,6 +1968,13 @@ fn whole_line_note(md: &str, m: &Mark) -> bool {
         && line_start(md, m.start) == line_start(md, m.end.saturating_sub(1))
 }
 
+pub(crate) fn render_cell_notes_at(notes: &[CellNote], origin: usize) -> String {
+    set_origin(origin);
+    let html = render_cell_notes(notes);
+    set_origin(0);
+    html
+}
+
 pub(crate) fn render_cell_notes(notes: &[CellNote]) -> String {
     let mut out = String::new();
     for n in notes {
@@ -1748,7 +1991,7 @@ pub(crate) fn render_cell_notes(notes: &[CellNote]) -> String {
             body: n.body.clone(),
         };
         // Cell notes use the margin-note card, not a paragraph.
-        out.push_str(&render_note_html(&mark, num, "", mode().annotate));
+        out.push_str(&render_note_html(&mark, &n.raw, num, "", mode().annotate));
     }
     out
 }
@@ -2080,7 +2323,21 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
   }}
   function srcSpan(node) {{
     var el = node && node.nodeType === 1 ? node : node && node.parentElement;
-    return el && el.closest ? el.closest('[data-src-start]') : null;
+    while (el) {{
+      if (el.classList && el.classList.contains('rl-block')) {{
+        return el.getAttribute('data-src-kind') === 'code' ? el : null;
+      }}
+      if (el.hasAttribute && el.hasAttribute('data-src-start')) return el;
+      el = el.parentElement;
+    }}
+    return null;
+  }}
+  function expectOf(info) {{
+    if (info.mark) {{
+      var e = info.mark.getAttribute('data-cm-expect');
+      if (e) return e;
+    }}
+    return info.expect || '';
   }}
   function classify(range) {{
     if (!range) return null;
@@ -2095,9 +2352,13 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var mark2 = endEl && endEl.closest ? endEl.closest('.rl-cm-mark, .rl-cm-note, .rl-cm-blocknote') : null;
     if (mark && mark2 && mark !== mark2) return null;
     var code = ba.getAttribute('data-src-kind') === 'code';
+    if (code) {{
+      if (!ba.hasAttribute('data-src-start')) return null;
+      return {{ range: range, block: ba, mark: mark || mark2, code: true, span: ba }};
+    }}
     var span = srcSpan(a);
-    if (!span && !ba.hasAttribute('data-src-start')) return null;
-    return {{ range: range, block: ba, mark: mark || mark2, code: code, span: span }};
+    if (!span && !(mark || mark2)) return null;
+    return {{ range: range, block: ba, mark: mark || mark2, code: false, span: span }};
   }}
   function offsetsOf(info) {{
     var span = info.span || info.mark || info.block;
@@ -2221,7 +2482,7 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
         target: info.code ? 'cell' : 'prose',
         start: off.start,
         end: off.end,
-        expect: info.expect || '',
+        expect: expectOf(info),
         id: info.mark && info.mark.getAttribute('data-cm-id') || ''
       }}, 'comment');
       return;
@@ -2293,7 +2554,7 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
       comment: text,
       author: author,
       id: pending.mark && pending.mark.getAttribute('data-cm-id') || '',
-      expect: pending.expect || ''
+      expect: expectOf(pending)
     }}, 'comment');
   }});
   pop.querySelector('[data-act="highlight"]').addEventListener('click', function () {{ act('highlight'); }});
@@ -2303,8 +2564,7 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var t = ev.target;
     if (t.closest && t.closest('.rl-cm-edit')) {{
       var note = t.closest('.rl-cm-note, .rl-cm-blocknote');
-      var body = note.querySelector('.rl-cm-body');
-      openPop({{ range: null, block: blockOf(note), mark: note, code: false, span: note, editBody: body ? body.textContent : '', expect: '' }}, true);
+      openPop({{ range: null, block: blockOf(note), mark: note, code: false, span: note, editBody: note.getAttribute('data-cm-body') || '', expect: note.getAttribute('data-cm-expect') || '' }}, true);
       return;
     }}
     if (t.closest && t.closest('.rl-cm-delete')) {{
@@ -2385,15 +2645,18 @@ fn comment_body_forbidden(body: &str) -> bool {
 }
 
 fn insert_prose(file: &str, req: &AnnotateRequest<'_>) -> Result<String, AnnotateError> {
+    if !req.comment.is_empty() {
+        if let Some(hi) = highlight_covering_inner(file, req.start, req.end) {
+            // Bind a comment to an existing highlight; do not wrap again.
+            let c = format_comment(file, req);
+            let at = hi.1;
+            let spliced = format!("{} {}{}", &file[..at], c, &file[at..]);
+            return guard_splice(file, &spliced, at, at, &format!(" {c}"));
+        }
+    }
     check_prose_range(file, req.start, req.end, req.text)?;
     let piece = if req.comment.is_empty() {
         format!("=={}==", req.text)
-    } else if let Some(hi) = highlight_covering_inner(file, req.start, req.end) {
-        // Bind a comment to an existing highlight; do not wrap again.
-        let c = format_comment(file, req);
-        let at = hi.1;
-        let spliced = format!("{} {}{}", &file[..at], c, &file[at..]);
-        return guard_splice(file, &spliced, at, at, &format!(" {c}"));
     } else if req.comment.contains('\n') {
         format!(
             "=={}==\n%%\n{}: {}\n%%",
@@ -2676,9 +2939,7 @@ fn guard_splice(
     if !spliced.is_char_boundary(start) || start + piece.len() > spliced.len() {
         return Err(AnnotateError::BadRequest("splice failed".into()));
     }
-    if &spliced[..start] != &original[..start]
-        || &spliced[start + piece.len()..] != &original[end..]
-    {
+    if spliced[..start] != original[..start] || spliced[start + piece.len()..] != original[end..] {
         return Err(AnnotateError::BadRequest(
             "splice changed bytes outside the range".into(),
         ));
@@ -2908,6 +3169,58 @@ mod tests {
 
     fn md_block(s: &str) -> crate::execute::Rendered {
         crate::execute::Rendered::Markdown(s.to_string())
+    }
+
+    #[test]
+    fn file_source_shifts_offsets_past_frontmatter() {
+        let src = "---\ntitle: T\n---\nGroup delay is ==constant== %%why%%.\n";
+        let _file = install_file_source(src);
+        let _mode = install(CommentMode::for_watch(true, true));
+        let html = page(&[md_block("Group delay is ==constant== %%why%%.")]);
+        let word = src.find("constant").unwrap();
+        let note = src.find("%%why%%").unwrap();
+        let lead = src.find("Group delay is ").unwrap();
+        assert!(
+            html.contains(&format!("data-src-start=\"{word}\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("data-src-start=\"{note}\"")),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("data-src-start=\"{lead}\"")),
+            "{html}"
+        );
+        assert!(html.contains("data-cm-expect=\"%%why%%\""), "{html}");
+    }
+
+    #[test]
+    fn comment_on_an_existing_highlight_does_not_wrap_twice() {
+        let file = "Group delay is ==constant==.\n";
+        let start = file.find("constant").unwrap();
+        let end = start + "constant".len();
+        let out = apply_annotate(
+            file,
+            &AnnotateRequest {
+                op: "insert",
+                target: "prose",
+                start,
+                end,
+                text: "constant",
+                comment: "why",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-09",
+            },
+        )
+        .unwrap();
+        assert!(
+            out.contains("==constant== %%#c1 2026-10-09: why%%"),
+            "{out}"
+        );
+        assert!(!out.contains("===="), "{out}");
     }
 
     #[test]
