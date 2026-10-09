@@ -8,6 +8,22 @@ should re-validate against those entries when upgrading.
 
 ## 0.3.9
 
+### Added
+- **Notebook highlights and comments.** Prose `==highlight==` and
+  `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
+  as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.
+  A whole-line `%%` immediately before a fence comments on that cell.
+  Marks inside code fences, inline code, and math stay literal.
+  `--comments` / `--no-comments` (and `~/.rustlabrc` `[notebook] comments`)
+  control display. HTML and watch default to on, with an in-page
+  Comments checkbox. PDF and LaTeX default to off; `--comments` uses
+  `\hl` and a margin note. `notebook check` warns W006–W012, including
+  a missing `#cN` (W012). `watch --annotate` (implied by `--editable`)
+  mounts `POST /annotate/{slug}`: loopback Host and Origin, the file
+  jail, and `If-Match` against the page's source hash (409, no write,
+  when the file changed). Design: `dev/plans/notebook_comments.md`.
+  A per-comment reviewed/accepted flag is reserved and not implemented.
+
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder
   disclosure is closed until you open it. The folders that contain the

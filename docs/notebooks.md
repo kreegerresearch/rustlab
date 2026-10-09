@@ -1207,6 +1207,88 @@ Compare the main-lobe width against a rectangular window of equal length.
 Solutions render as an HTML `<details>` widget (collapsed by default) so
 readers can attempt the exercise before revealing the answer.
 
+## Highlights and comments
+
+Notebook prose can carry Obsidian highlights and comments. They live in
+the `.md` file. HTML, JSON, and `notebook watch` draw them. PDF and
+LaTeX leave them out unless you pass `--comments`.
+
+```markdown
+Group delay is ==constant== %%#c1: only for linear phase%%.
+
+%%#c2 @ada 2026-10-09: why this cutoff?%%
+
+%%#c3: comment on the next cell%%
+```rustlab
+x = 1
+```
+```
+
+`==text==` is a highlight. `%% ... %%` is a comment. A comment on the
+same line as a highlight, with one space between them, is bound to that
+highlight. Two spaces leave it unbound. A comment whose first and last
+lines are only `%%` is a block note. Optional header fields, before a
+colon, are `#cN`, `re #cN` (a reply), `@name`, and `YYYY-MM-DD`.
+
+A whole-line `%%` immediately before a fence, or before that fence's
+`<!-- hide -->` / `code:` / `caption:` / `details:` / `grid:` lines,
+comments on the cell. A blank line between the comment and the fence
+unbinds it. Marks inside a code fence, inline code, or math are
+literal. A backslash escapes a delimiter: `\==`.
+
+HTML draws a highlight as `<mark>` and a comment as a numbered margin
+note. Wide pages float the note in the right gutter. The note colors
+come from the active Catppuccin theme (`--rl-cm-mark-bg`,
+`--rl-cm-note-bg`, `--rl-cm-note-border`) and stay readable on all four
+palettes. The top bar has a **Comments** checkbox. Unchecking it hides
+notes and clears the highlight color. The choice is stored in
+`sessionStorage` for that tab (`rl-comments-visible`).
+
+`--comments` and `--comments=on` turn notes on. `--no-comments` and
+`--comments=off` turn them off. Passing both is an error. HTML, watch,
+markdown, and JSON default to on. PDF and LaTeX default to off: the
+highlight's words stay, and the `%%` comment is dropped. `--comments`
+on PDF uses `\hl` and a margin note (a footnote inside a table).
+`--no-comments` on markdown unwraps `==` and deletes `%%`.
+`~/.rustlabrc` `[notebook] comments = "on"` or `"off"` is the default
+when the command does not pass a flag.
+
+`notebook check` reports:
+
+| Code | Meaning |
+|------|---------|
+| W006 | unclosed `==` |
+| W007 | unclosed or stray `%%` |
+| W008 | a mark split by a blank line, heading, or fence |
+| W009 | nested `==` or `%%` |
+| W010 | duplicate `#cN` |
+| W011 | `re #cN` whose id is not in the file |
+| W012 | a well-formed `%%` with no `#cN` |
+
+`--fix` does not insert ids. An unclosed `%%` is W007 only. A bare
+`==` with no comment is not W012.
+
+`notebook watch --annotate` lets you add a highlight or comment from
+the page. `--editable` implies `--annotate`. The menu opens on a
+highlight, a note, a code cell, or a run of plain text. A selection
+that crosses markdown syntax has no source span, so the menu does not
+open. File offsets are stamped only while annotating. A `%%` before a
+`bash`, `python`, or `text` fence stays a prose note. The browser sends
+`POST /annotate/{slug}` with `If-Match` set to the source hash stamped
+on the page. A mismatch is 409 and the file is not written. The path
+is the notebook on disk, inside the file jail. Host and Origin must be
+loopback. Right-click (or the ContextMenu key, or Shift+F10) opens the
+menu. Shift+right-click keeps the browser menu. A touch or pen
+`pointerup` opens the comment popover. A mouse `mouseup` does not. The
+name field is remembered in `sessionStorage` (`rl-comment-name`) for
+that tab. Edit and Delete sit on the note card. Adding a comment while
+Comments is unchecked still saves it and shows a short confirmation.
+The reviewed/accepted checkbox is not implemented.
+
+One person uses one working copy. Git push and pull share the comments.
+`If-Match` notices that this copy changed under the page. It is not a
+lock for two people on one server.
+
 ## Color themes
 
 Notebook HTML, LaTeX, and PDF share one palette type (`ThemeColors` in
