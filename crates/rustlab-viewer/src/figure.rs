@@ -51,6 +51,10 @@ pub struct PanelState {
     /// 3D surface data + camera. When present, the panel renders a rotatable
     /// surface instead of the 2D egui_plot chart.
     pub surface: Option<(Surface3dData, SurfaceCamera)>,
+    /// Reused GPU texture for the software-rasterized surface. Taken out
+    /// for the draw call so the rasterizer can update it without aliasing
+    /// the surface borrow.
+    pub surface_tex: Option<egui::TextureHandle>,
     /// Zoom/pan bookkeeping: whether the script's limits still need to be
     /// pushed into the plot, and whether a Home reset is pending. See
     /// [`crate::view`].
@@ -69,6 +73,7 @@ impl PanelState {
             axis_equal: false,
             heatmap: None,
             surface: None,
+            surface_tex: None,
             view: PanelView::default(),
         }
     }
@@ -106,6 +111,61 @@ pub(crate) fn home_button_id(fig_id: u32, row: usize, col: usize) -> egui::Id {
     egui::Id::new(("rustlab_panel_home", fig_id, row, col))
 }
 
+/// Stable widget id for a panel's Expand / Grid button.
+pub(crate) fn expand_button_id(fig_id: u32, row: usize, col: usize) -> egui::Id {
+    egui::Id::new(("rustlab_panel_expand", fig_id, row, col))
+}
+
+/// Stable widget id for a multi-figure window's Fill / Restore button.
+pub(crate) fn fill_window_button_id(fig_id: u32) -> egui::Id {
+    egui::Id::new(("rustlab_fill_window", fig_id))
+}
+
+/// Footprint of the Expand / Grid button.
+const EXPAND_BUTTON_SIZE: egui::Vec2 = egui::Vec2::new(58.0, 18.0);
+
+/// Next expanded-panel index.
+///
+/// `toggle` is the panel whose Expand button (or title) was activated.
+/// Activating the panel that is already expanded returns to the grid.
+/// `esc` clears the expansion. An index past `n` is ignored.
+pub(crate) fn step_expanded(
+    current: Option<usize>,
+    toggle: Option<usize>,
+    esc: bool,
+    n: usize,
+) -> Option<usize> {
+    if esc || n <= 1 {
+        return None;
+    }
+    let current = current.filter(|&i| i < n);
+    match toggle {
+        Some(idx) if idx < n => {
+            if current == Some(idx) {
+                None
+            } else {
+                Some(idx)
+            }
+        }
+        _ => current,
+    }
+}
+
+/// Plot area inside one cell of a `rows`×`cols` grid that has `avail`
+/// points to spend, after the header strip and the 4 px cell padding.
+pub(crate) fn panel_content_size(
+    avail: egui::Vec2,
+    rows: usize,
+    cols: usize,
+    header_h: f32,
+) -> egui::Vec2 {
+    let rows = rows.max(1) as f32;
+    let cols = cols.max(1) as f32;
+    let cell_w = (avail.x / cols).max(1.0);
+    let cell_h = (avail.y / rows).max(1.0);
+    egui::vec2((cell_w - 8.0).max(1.0), (cell_h - 8.0 - header_h).max(1.0))
+}
+
 /// Draw a panel's Home button and report whether it was clicked.
 ///
 /// Painted by hand rather than through `ui.add(Button::new(..))` so the
@@ -137,6 +197,55 @@ fn home_button(ui: &mut egui::Ui, id: egui::Id) -> bool {
         .clicked()
 }
 
+/// Header button with a caller-chosen id and label (Expand / Grid, Fill).
+fn header_text_button(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    label: &str,
+    hover: &str,
+    size: egui::Vec2,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let response = ui.interact(rect, id, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        3.0,
+        visuals.bg_fill,
+        visuals.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(11.0),
+        visuals.fg_stroke.color,
+    );
+    response.on_hover_text(hover).clicked()
+}
+
+/// Draw the Expand / Grid button. `label` is "Expand" or "Grid".
+fn expand_button(ui: &mut egui::Ui, id: egui::Id, label: &str) -> bool {
+    let hover = if label == "Grid" {
+        "Return to the subplot grid (shortcut: Esc)"
+    } else {
+        "Show only this subplot. Esc returns to the grid. Double-click the title does the same."
+    };
+    header_text_button(ui, id, label, hover, EXPAND_BUTTON_SIZE)
+}
+
+/// Fill / Restore control for a floating figure window.
+pub(crate) fn fill_window_button(ui: &mut egui::Ui, id: egui::Id, label: &str) -> bool {
+    let hover = if label == "Restore" {
+        "Return this figure to a floating window (shortcut: Esc)"
+    } else {
+        "Expand this figure to fill the viewer window. Esc restores it."
+    };
+    header_text_button(ui, id, label, hover, egui::Vec2::new(88.0, 18.0))
+}
+
 /// A figure window containing a grid of subplot panels.
 pub struct FigureWindow {
     pub rows: usize,
@@ -145,6 +254,12 @@ pub struct FigureWindow {
     pub panels: Vec<PanelState>,
     /// Set to true when new data arrives; cleared after first redraw.
     pub dirty: bool,
+    /// When set, and this figure has more than one panel, only that panel
+    /// is drawn, filling the figure. Esc clears it.
+    pub expanded_panel: Option<usize>,
+    /// Multi-figure mode: this floating window is pinned to the viewer
+    /// window. Esc clears it.
+    pub filled: bool,
 }
 
 impl FigureWindow {
@@ -157,23 +272,43 @@ impl FigureWindow {
             title,
             panels,
             dirty: true,
+            expanded_panel: None,
+            filled: false,
         }
     }
 
     /// Render this figure's subplot grid into the given `Ui`.
     /// `fig_id` is used to generate unique egui widget IDs across figures.
     pub fn render(&mut self, ui: &mut egui::Ui, fig_id: u32) {
+        let multi = self.rows * self.cols > 1;
+        let expanded = self
+            .expanded_panel
+            .filter(|&i| i < self.panels.len() && multi);
+        let grid_rows = if expanded.is_some() {
+            1
+        } else {
+            self.rows.max(1)
+        };
+        let grid_cols = if expanded.is_some() {
+            1
+        } else {
+            self.cols.max(1)
+        };
         let avail = ui.available_size();
-        let cell_w = avail.x / self.cols as f32;
-        let cell_h = avail.y / self.rows as f32;
+        let cell_w = (avail.x / grid_cols as f32).max(1.0);
+        let cell_h = (avail.y / grid_rows as f32).max(1.0);
+        let mut toggle_expand: Option<usize> = None;
+        let cols_n = self.cols.max(1);
 
-        for row in 0..self.rows {
+        for row in 0..grid_rows {
             ui.horizontal(|ui| {
-                for col in 0..self.cols {
-                    let idx = row * self.cols + col;
+                for col in 0..grid_cols {
+                    let idx = expanded.unwrap_or(row * cols_n + col);
                     if idx >= self.panels.len() {
                         continue;
                     }
+                    let src_row = idx / cols_n;
+                    let src_col = idx % cols_n;
                     let panel = &mut self.panels[idx];
 
                     // Every panel gets a header strip, titled or not, so
@@ -188,12 +323,40 @@ impl FigureWindow {
                             egui::Vec2::new(header_w, header_h),
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                home_clicked = home_button(ui, home_button_id(fig_id, row, col));
+                                home_clicked =
+                                    home_button(ui, home_button_id(fig_id, src_row, src_col));
+                                if multi {
+                                    let label = if expanded == Some(idx) {
+                                        "Grid"
+                                    } else {
+                                        "Expand"
+                                    };
+                                    if expand_button(
+                                        ui,
+                                        expand_button_id(fig_id, src_row, src_col),
+                                        label,
+                                    ) {
+                                        toggle_expand = Some(idx);
+                                    }
+                                }
                                 if !panel.title.is_empty() {
                                     ui.vertical_centered(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(&panel.title).strong().size(14.0),
+                                        let sense = if multi {
+                                            egui::Sense::click()
+                                        } else {
+                                            egui::Sense::hover()
+                                        };
+                                        let resp = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&panel.title)
+                                                    .strong()
+                                                    .size(14.0),
+                                            )
+                                            .sense(sense),
                                         );
+                                        if multi && resp.double_clicked() {
+                                            toggle_expand = Some(idx);
+                                        }
                                     });
                                 }
                             },
@@ -202,22 +365,30 @@ impl FigureWindow {
                             panel.view.home_requested = true;
                         }
 
-                        // 3D surface panel: render via the custom software
-                        // renderer instead of egui_plot so users can rotate,
-                        // tilt, and zoom. Home is the same reset as the `R`
-                        // key — back to the default camera. (The latch is
-                        // consumed up front so it isn't still borrowed from
-                        // `panel` when the surface is.)
-                        let surface_home = panel.surface.is_some()
-                            && std::mem::take(&mut panel.view.home_requested);
+                        // 3D surface panel: software raster instead of egui_plot.
+                        // Home matches the `R` key (default camera). Take the
+                        // latch and the texture before borrowing the surface;
+                        // a 2-D panel puts both back.
+                        let surface_home = std::mem::take(&mut panel.view.home_requested);
+                        let mut tex = panel.surface_tex.take();
                         if let Some((data, cam)) = panel.surface.as_mut() {
                             if surface_home {
                                 *cam = SurfaceCamera::default();
                             }
-                            let size = egui::Vec2::new(cell_w - 8.0, cell_h - 8.0 - header_h);
-                            crate::surface::draw(ui, size, data, cam);
+                            // One cell of the (possibly expanded) grid. The
+                            // helper is the same size the 2-D path uses, so a
+                            // window resize and a subplot expand share one
+                            // formula.
+                            let size =
+                                panel_content_size(egui::vec2(cell_w, cell_h), 1, 1, header_h);
+                            crate::surface::draw(ui, size, data, cam, &mut tex);
+                            panel.surface_tex = tex;
                             return;
                         }
+                        if surface_home {
+                            panel.view.home_requested = true;
+                        }
+                        panel.surface_tex = tex;
 
                         // Reserve a gutter on the right for the colorbar
                         // legend when the panel has a heatmap with a known
@@ -228,20 +399,18 @@ impl FigureWindow {
                             .heatmap
                             .as_ref()
                             .and_then(|hm| match (hm.value_min, hm.value_max) {
-                                (Some(a), Some(b)) if b > a => {
-                                    Some((a, b, hm.colorscale.clone()))
-                                }
+                                (Some(a), Some(b)) if b > a => Some((a, b, hm.colorscale.clone())),
                                 _ => None,
                             })
                             .map(|(a, b, c)| (Some(a), Some(b), c))
                             .unwrap_or((None, None, String::new()));
                         let cbar_w = if cbar_vmin.is_some() { 56.0_f32 } else { 0.0 };
                         let plot_width = (cell_w - 8.0 - cbar_w).max(40.0);
-                        let plot_height = cell_h - 8.0 - header_h;
+                        let plot_height = (cell_h - 8.0 - header_h).max(1.0);
 
-                        let plot_id = format!("fig_{}_panel_{}_{}", fig_id, row, col);
+                        let plot_id = format!("fig_{}_panel_{}_{}", fig_id, src_row, src_col);
                         let mut plot = Plot::new(&plot_id)
-                            .id(panel_plot_id(fig_id, row, col))
+                            .id(panel_plot_id(fig_id, src_row, src_col))
                             .width(plot_width)
                             .height(plot_height)
                             .show_axes([true, true])
@@ -344,8 +513,7 @@ impl FigureWindow {
                                 } else {
                                     egui::TextureOptions::NEAREST
                                 };
-                                hm.texture =
-                                    Some(ui.ctx().load_texture("heatmap", image, opts));
+                                hm.texture = Some(ui.ctx().load_texture("heatmap", image, opts));
                             }
                         }
 
@@ -378,114 +546,112 @@ impl FigureWindow {
                         });
 
                         ui.horizontal(|ui| {
-                        plot.show(ui, |plot_ui| {
-                            let hovered = plot_ui.response().hovered();
-                            // The Home key is the keyboard twin of the
-                            // panel's Home button (and of `R` on 3D
-                            // surfaces). egui_plot's built-in double-click
-                            // reset is routed through the same path so it
-                            // restores the script's limits too, instead of
-                            // always auto-fitting.
-                            let home_gesture = (hovered
-                                && plot_ui.ctx().input(|i| i.key_pressed(egui::Key::Home)))
-                                || plot_ui.response().double_clicked();
-                            let action = if home_gesture {
-                                bounds_action(
-                                    panel.xlim,
-                                    panel.ylim,
-                                    PanelView {
-                                        home_requested: true,
-                                        ..panel.view
-                                    },
-                                )
-                            } else {
-                                action
-                            };
+                            plot.show(ui, |plot_ui| {
+                                let hovered = plot_ui.response().hovered();
+                                // The Home key is the keyboard twin of the
+                                // panel's Home button (and of `R` on 3D
+                                // surfaces). egui_plot's built-in double-click
+                                // reset is routed through the same path so it
+                                // restores the script's limits too, instead of
+                                // always auto-fitting.
+                                let home_gesture = (hovered
+                                    && plot_ui.ctx().input(|i| i.key_pressed(egui::Key::Home)))
+                                    || plot_ui.response().double_clicked();
+                                let action = if home_gesture {
+                                    bounds_action(
+                                        panel.xlim,
+                                        panel.ylim,
+                                        PanelView {
+                                            home_requested: true,
+                                            ..panel.view
+                                        },
+                                    )
+                                } else {
+                                    action
+                                };
 
-                            // Apply explicit bounds (x and y independently).
-                            // Axes the script left open are handed back to
-                            // auto-fit rather than frozen at whatever the
-                            // previous frame happened to show.
-                            let cur = plot_ui.plot_bounds();
-                            match action {
-                                BoundsAction::Keep => {}
-                                BoundsAction::AutoFit => plot_ui.set_auto_bounds(true),
-                                BoundsAction::Apply { auto_x, auto_y } => {
-                                    let (x0, x1) = match panel.xlim {
-                                        (Some(a), Some(b)) => (a, b),
-                                        _ => (*cur.range_x().start(), *cur.range_x().end()),
-                                    };
-                                    let (y0, y1) = match panel.ylim {
-                                        (Some(a), Some(b)) => (a, b),
-                                        _ => (*cur.range_y().start(), *cur.range_y().end()),
-                                    };
-                                    plot_ui.set_plot_bounds(PlotBounds::from_min_max(
-                                        [x0, y0],
-                                        [x1, y1],
-                                    ));
-                                    if auto_x || auto_y {
-                                        plot_ui.set_auto_bounds([auto_x, auto_y]);
+                                // Apply explicit bounds (x and y independently).
+                                // Axes the script left open are handed back to
+                                // auto-fit rather than frozen at whatever the
+                                // previous frame happened to show.
+                                let cur = plot_ui.plot_bounds();
+                                match action {
+                                    BoundsAction::Keep => {}
+                                    BoundsAction::AutoFit => plot_ui.set_auto_bounds(true),
+                                    BoundsAction::Apply { auto_x, auto_y } => {
+                                        let (x0, x1) = match panel.xlim {
+                                            (Some(a), Some(b)) => (a, b),
+                                            _ => (*cur.range_x().start(), *cur.range_x().end()),
+                                        };
+                                        let (y0, y1) = match panel.ylim {
+                                            (Some(a), Some(b)) => (a, b),
+                                            _ => (*cur.range_y().start(), *cur.range_y().end()),
+                                        };
+                                        plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                                            [x0, y0],
+                                            [x1, y1],
+                                        ));
+                                        if auto_x || auto_y {
+                                            plot_ui.set_auto_bounds([auto_x, auto_y]);
+                                        }
                                     }
                                 }
-                            }
 
-                            // Plain scroll wheel = zoom about the pointer,
-                            // both axes together. Drag still pans, and
-                            // ctrl+scroll / pinch keep working through
-                            // egui_plot's own zoom path.
-                            if hovered {
-                                let scroll = plot_ui.ctx().input(|i| i.smooth_scroll_delta.y);
-                                let factor = zoom_factor_from_scroll(scroll);
-                                if factor != 1.0 {
-                                    plot_ui.zoom_bounds_around_hovered(egui::Vec2::splat(factor));
+                                // Plain scroll wheel = zoom about the pointer,
+                                // both axes together. Drag still pans, and
+                                // ctrl+scroll / pinch keep working through
+                                // egui_plot's own zoom path.
+                                if hovered {
+                                    let scroll = plot_ui.ctx().input(|i| i.smooth_scroll_delta.y);
+                                    let factor = zoom_factor_from_scroll(scroll);
+                                    if factor != 1.0 {
+                                        plot_ui
+                                            .zoom_bounds_around_hovered(egui::Vec2::splat(factor));
+                                    }
                                 }
+
+                                // Render heatmap as a texture image, placed
+                                // in data coords so the egui_plot axis ticks
+                                // read in the same units (Hz, sec, m, …).
+                                if let Some((tex_id, xl, xh, yl, yh)) = hm_info {
+                                    let center =
+                                        egui_plot::PlotPoint::new((xl + xh) * 0.5, (yl + yh) * 0.5);
+                                    let size = egui::Vec2::new((xh - xl) as f32, (yh - yl) as f32);
+                                    plot_ui.image(PlotImage::new(tex_id, center, size));
+                                }
+
+                                for series in &panel.series {
+                                    render::render_series(plot_ui, series);
+                                }
+                            });
+
+                            // Latches cleared once the frame has drawn: the
+                            // limits now live in egui_plot's bounds memory, so
+                            // from here on the panel is the user's to zoom.
+                            panel.view.pending_limits = false;
+                            panel.view.home_requested = false;
+
+                            // Colorbar legend: thin gradient strip to the
+                            // right of the plot, painted only when the sender
+                            // pinned an explicit colour range. The gradient
+                            // is computed via `crate::surface::colormap_rgb`
+                            // so it matches the cell colours exactly.
+                            if let (Some(lo), Some(hi)) = (cbar_vmin, cbar_vmax) {
+                                draw_colorbar(ui, cbar_w, plot_height, lo, hi, &cbar_colorscale);
                             }
-
-                            // Render heatmap as a texture image, placed
-                            // in data coords so the egui_plot axis ticks
-                            // read in the same units (Hz, sec, m, …).
-                            if let Some((tex_id, xl, xh, yl, yh)) = hm_info {
-                                let center = egui_plot::PlotPoint::new(
-                                    (xl + xh) * 0.5,
-                                    (yl + yh) * 0.5,
-                                );
-                                let size = egui::Vec2::new(
-                                    (xh - xl) as f32,
-                                    (yh - yl) as f32,
-                                );
-                                plot_ui.image(PlotImage::new(tex_id, center, size));
-                            }
-
-                            for series in &panel.series {
-                                render::render_series(plot_ui, series);
-                            }
-                        });
-
-                        // Latches cleared once the frame has drawn: the
-                        // limits now live in egui_plot's bounds memory, so
-                        // from here on the panel is the user's to zoom.
-                        panel.view.pending_limits = false;
-                        panel.view.home_requested = false;
-
-                        // Colorbar legend: thin gradient strip to the
-                        // right of the plot, painted only when the sender
-                        // pinned an explicit colour range. The gradient
-                        // is computed via `crate::surface::colormap_rgb`
-                        // so it matches the cell colours exactly.
-                        if let (Some(lo), Some(hi)) = (cbar_vmin, cbar_vmax) {
-                            draw_colorbar(
-                                ui,
-                                cbar_w,
-                                plot_height,
-                                lo,
-                                hi,
-                                &cbar_colorscale,
-                            );
-                        }
                         }); // close ui.horizontal
                     }); // close ui.vertical
                 }
             });
+        }
+
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if esc {
+            self.expanded_panel = None;
+            self.filled = false;
+        } else if let Some(idx) = toggle_expand {
+            self.expanded_panel =
+                step_expanded(self.expanded_panel, Some(idx), false, self.panels.len());
         }
 
         self.dirty = false;
@@ -507,10 +673,7 @@ fn draw_colorbar(
 ) {
     use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 
-    let (rect, _resp) = ui.allocate_exact_size(
-        Vec2::new(width, height),
-        egui::Sense::hover(),
-    );
+    let (rect, _resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
     let painter = ui.painter_at(rect);
 
     // Reserve room at the top and bottom for the numeric labels and a
@@ -533,10 +696,7 @@ fn draw_colorbar(
         let color = Color32::from_rgb(r, g, b);
         let y = grad_top + i as f32;
         painter.rect_filled(
-            Rect::from_min_max(
-                Pos2::new(grad_left, y),
-                Pos2::new(grad_right, y + 1.0),
-            ),
+            Rect::from_min_max(Pos2::new(grad_left, y), Pos2::new(grad_right, y + 1.0)),
             0.0,
             color,
         );
@@ -572,4 +732,31 @@ fn draw_colorbar(
         font_id,
         text_color,
     );
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{panel_content_size, step_expanded};
+
+    #[test]
+    fn expand_toggles_one_panel_and_esc_clears_it() {
+        assert_eq!(step_expanded(None, Some(1), false, 4), Some(1));
+        assert_eq!(step_expanded(Some(1), Some(1), false, 4), None);
+        assert_eq!(step_expanded(Some(1), Some(0), false, 4), Some(0));
+        assert_eq!(step_expanded(Some(1), None, true, 4), None);
+        assert_eq!(step_expanded(Some(1), Some(0), true, 4), None);
+        assert_eq!(step_expanded(Some(3), None, false, 2), None);
+        assert_eq!(step_expanded(Some(0), Some(0), false, 1), None);
+    }
+
+    #[test]
+    fn panel_content_grows_with_the_window_and_stays_positive() {
+        let small = panel_content_size(egui::vec2(400.0, 300.0), 2, 2, 20.0);
+        let big = panel_content_size(egui::vec2(1200.0, 800.0), 2, 2, 20.0);
+        assert!(big.x > small.x && big.y > small.y);
+        let cramped = panel_content_size(egui::vec2(40.0, 30.0), 2, 2, 20.0);
+        assert!(cramped.x >= 1.0 && cramped.y >= 1.0);
+        let solo = panel_content_size(egui::vec2(800.0, 600.0), 1, 1, 20.0);
+        assert!(solo.x > 700.0 && solo.y > 500.0);
+    }
 }

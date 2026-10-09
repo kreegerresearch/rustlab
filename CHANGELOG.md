@@ -47,6 +47,30 @@ should re-validate against those entries when upgrading.
   previous cell's plot appearing again without drawing or calling
   `savefig` will no longer show that plot. Draw in the cell that
   should display it, or call `savefig`.
+
+### Fixed
+- **Viewer `surf` stays opaque while you rotate it.** The surface is one
+  sheet. The viewer used to drop every triangle whose screen winding was
+  not positive, and egui has no depth buffer, so the far side of a curve
+  (and the entire sheet when looking from below, including straight up
+  through the bottom pole) became a hole onto the background. Azimuth
+  just moved that hole. Both sides are now rasterized into a depth
+  buffer: nearer depth wins, NaN cells stay holes, and the orbit is not
+  clamped short of ±90° elevation. Ctrl/Cmd+left-drag rolls about the
+  view axis. SVG/PNG surfaces are still the static isometric wireframe.
+
+### Added
+- **Viewer windows expand.** The window opens at about 75% of the
+  monitor (at least 800×600 when the screen is larger, and never larger
+  than the monitor), is resizable, has a minimum size, and has a
+  maximize button. The plot uses the space the window gives it, including
+  on a HiDPI display. `F11` toggles fullscreen. Double-click on a 3D
+  surface toggles fullscreen; double-click on a 2D plot still resets
+  that subplot. A figure with more than one panel has an **Expand**
+  button (double-click the panel title does the same) that shows that
+  subplot alone; `Esc` returns to the grid. When several figures are
+  open, **Fill window** expands one of them to the viewer window and
+  `Esc` restores the floating window.
 - **Directory file-browser folders start collapsed.** Every folder
   disclosure is closed until you open it. The folders that contain the
   notebook on the page stay open, so the current file stays visible.

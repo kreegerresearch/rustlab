@@ -1998,12 +1998,17 @@ rustlab remote user@gpu-box --ssh-opt -p --ssh-opt 2222                         
 |---|---|---|
 | Scroll wheel | zoom both axes about the pointer | zoom the camera |
 | Shift + scroll | — | scale the Z axis (relief exaggeration) |
-| Left-drag | pan | rotate (yaw / pitch) |
+| Left-drag | pan | rotate (yaw / pitch), including through the poles |
+| Ctrl+left-drag (Cmd on macOS) | — | roll about the view axis |
 | Right-drag | — | pan |
 | **Home** button (panel header) | reset the view | reset the camera |
 | `Home` key (pointer over the panel) | reset the view | reset the camera |
 | `R` key (pointer over the panel) | — | reset the camera |
-| Double-click | reset the view | — |
+| Double-click | reset the view | toggle fullscreen |
+| `F11` | toggle fullscreen | toggle fullscreen |
+| **Expand** (or double-click the panel title) | show that subplot alone when the figure has more than one panel | same |
+| `Esc` | return to the subplot grid; if several figures are open, also restore a filled figure window | same |
+| **Fill window** | when several figures are open, expand that figure to the viewer window (Esc restores it) | same |
 
 "Reset the view" restores the script's `xlim`/`ylim` for that subplot when it set
 any (`plot_limits`, `xlim`, `ylim`), and otherwise re-fits the panel to its data.
@@ -2197,7 +2202,7 @@ Plot a Z-grid as a 3D surface. `Z` is a matrix (rows = Y samples, cols = X sampl
 Per-backend behaviour:
 
 - **Terminal** — heatmap of Z (no 3D interaction in a terminal).
-- **Viewer** (`viewer on`) — interactive 3D: left-drag rotate, scroll zoom, shift+scroll scale Z, right-drag pan, and the panel's **Home** button (or the `Home` / `R` keys) to reset the camera.
+- **Viewer** (`viewer on`) — interactive 3D: left-drag rotates (yaw and pitch, through the poles), Ctrl/Cmd+left-drag rolls, scroll zooms, shift+scroll scales Z, right-drag pans, double-click toggles fullscreen, and the panel's **Home** button (or the `Home` / `R` keys) resets the camera. The surface is drawn from both sides with a depth buffer, so spinning it does not open holes. `F11` toggles fullscreen for the whole viewer. A multi-panel figure has **Expand** (or double-click the title) to fill the window with one subplot; `Esc` returns to the grid.
 - **HTML** (`savefig("...html")`) — Plotly 3D surface (draggable in browser).
 - **SVG / PNG** — static isometric wireframe.
 - **Notebook** (`rustlab-notebook render`) — captured as a figure snapshot; HTML output embeds a Plotly 3D surface (rotate/zoom in browser), PDF output embeds the SVG wireframe.
