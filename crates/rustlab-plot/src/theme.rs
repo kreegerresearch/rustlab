@@ -154,6 +154,11 @@ pub struct ThemeColors {
     pub syn_operator: &'static str,
     // Footer
     pub footer_text: &'static str,
+    // Notebook highlights and margin notes. `cm_mark_bg` is Catppuccin
+    // yellow blended over `bg` so body text stays at least 4.5:1.
+    pub cm_mark_bg: &'static str,
+    pub cm_note_bg: &'static str,
+    pub cm_note_border: &'static str,
 }
 
 impl ThemeColors {
@@ -180,7 +185,7 @@ impl ThemeColors {
     /// Names are kebab-case of the [`ThemeColors`] fields (`bg_secondary`
     /// → `--rl-bg-secondary`). Order is the struct field order so HTML
     /// tests and future theme files can pin a contract.
-    pub fn css_tokens(&self) -> [(&'static str, &'static str); 23] {
+    pub fn css_tokens(&self) -> [(&'static str, &'static str); 26] {
         [
             ("--rl-bg", self.bg),
             ("--rl-bg-secondary", self.bg_secondary),
@@ -205,6 +210,9 @@ impl ThemeColors {
             ("--rl-syn-comment", self.syn_comment),
             ("--rl-syn-operator", self.syn_operator),
             ("--rl-footer-text", self.footer_text),
+            ("--rl-cm-mark-bg", self.cm_mark_bg),
+            ("--rl-cm-note-bg", self.cm_note_bg),
+            ("--rl-cm-note-border", self.cm_note_border),
         ]
     }
 
@@ -308,6 +316,10 @@ static MOCHA: ThemeColors = ThemeColors {
     syn_comment: "#787c92",
     syn_operator: "#89dceb",
     footer_text: "#81859c",
+    // yellow #f9e2af at 25% over base. Text contrast ~5.55.
+    cm_mark_bg: "#554f4e",
+    cm_note_bg: "#181825",
+    cm_note_border: "#89b4fa",
 };
 
 /// Catppuccin Macchiato (dark).
@@ -336,6 +348,10 @@ static MACCHIATO: ThemeColors = ThemeColors {
     syn_comment: "#7c8199",
     syn_operator: "#91d7e3",
     footer_text: "#898ea5",
+    // yellow #eed49f at 25% over base. Text contrast ~5.19.
+    cm_mark_bg: "#565253",
+    cm_note_bg: "#1e2030",
+    cm_note_border: "#8aadf4",
 };
 
 /// Catppuccin Frappé (dark).
@@ -367,6 +383,10 @@ static FRAPPE: ThemeColors = ThemeColors {
     syn_comment: "#868ca3",
     syn_operator: "#99d1db",
     footer_text: "#979caf",
+    // yellow #e5c890 at 20% over base. 25% sits on the 4.5 threshold.
+    cm_mark_bg: "#545255",
+    cm_note_bg: "#292c3c",
+    cm_note_border: "#98b3f0",
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -405,6 +425,10 @@ static LATTE: ThemeColors = ThemeColors {
     syn_operator: "#116e74",
     // surface2 #9ca0b0 is 2.30:1 on base.
     footer_text: "#686d82",
+    // yellow #df8e1d at 25% over base. Text contrast ~5.74.
+    cm_mark_bg: "#ebd8bf",
+    cm_note_bg: "#e6e9ef",
+    cm_note_border: "#094dd3",
 };
 
 #[cfg(test)]
@@ -464,7 +488,7 @@ mod tests {
     #[test]
     fn mocha_css_tokens_match_palette_fields() {
         let tokens = MOCHA.css_tokens();
-        assert_eq!(tokens.len(), 23);
+        assert_eq!(tokens.len(), 26);
         assert_eq!(tokens[0], ("--rl-bg", "#1e1e2e"));
         assert_eq!(tokens[2], ("--rl-text", "#cdd6f4"));
         assert_eq!(tokens[6], ("--rl-accent-primary", "#cba6f7"));
@@ -498,6 +522,23 @@ mod tests {
             let v = contrast_ratio(colors.accent_primary, colors.bg).unwrap();
             assert!(u >= 4.5, "{name} accent_secondary contrast {u:.2} < 4.5");
             assert!(v >= 4.5, "{name} accent_primary contrast {v:.2} < 4.5");
+        }
+    }
+
+    #[test]
+    fn comment_mark_and_note_meet_wcag_aa() {
+        for (name, colors) in [
+            ("mocha", &MOCHA),
+            ("macchiato", &MACCHIATO),
+            ("frappe", &FRAPPE),
+            ("latte", &LATTE),
+        ] {
+            let mark = contrast_ratio(colors.text, colors.cm_mark_bg).unwrap();
+            let note = contrast_ratio(colors.text, colors.cm_note_bg).unwrap();
+            let border = contrast_ratio(colors.cm_note_border, colors.cm_note_bg).unwrap();
+            assert!(mark >= 4.5, "{name} text/mark {mark:.2} < 4.5");
+            assert!(note >= 4.5, "{name} text/note {note:.2} < 4.5");
+            assert!(border >= 4.5, "{name} border/note {border:.2} < 4.5");
         }
     }
 

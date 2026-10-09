@@ -60,11 +60,25 @@ pub fn render_latex(
     let _html_theme = theme;
     let theme = Theme::Light.colors();
 
-    for block in blocks {
+    let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
+    for (bi, block) in blocks.iter().enumerate() {
         match block {
             Rendered::Markdown(md) => {
+                let mut md = md.clone();
+                if crate::comments::mode().latex
+                    && blocks
+                        .get(bi + 1)
+                        .is_some_and(crate::comments::is_fence_rendered)
+                {
+                    let (rest, notes) = crate::comments::peel_trailing_cell_comments(&md);
+                    pending_cells = notes;
+                    md = rest;
+                }
+                if md.trim().is_empty() {
+                    continue;
+                }
                 body.push_str(&markdown_to_latex_in(
-                    md,
+                    &md,
                     link,
                     Some(&mut prose_assets),
                     &anchors,
@@ -88,6 +102,10 @@ pub fn render_latex(
                 // panels. Plots stay full width after the panels. `code:`
                 // is HTML-only; PDF always shows the source.
                 let trimmed = text_output.trim();
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 if !hidden {
                     body.push_str(&lang_label("rustlab"));
                     body.push_str("\\begin{rlsource}\n");
@@ -145,6 +163,10 @@ pub fn render_latex(
                 details,
                 caption,
             } => {
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 if *hidden {
                     continue;
                 }
@@ -162,6 +184,10 @@ pub fn render_latex(
                 );
             }
             Rendered::Widget { decl, value } => {
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 // Static export: render the widget's label and current value.
                 let label = decl.label.as_deref().unwrap_or(&decl.name);
                 let val = match value {
@@ -345,7 +371,7 @@ pub fn render_latex(
 \newunicodechar{{┴}}{{+}}
 \newunicodechar{{┼}}{{+}}
 \usepackage[table]{{xcolor}}
-{palette}
+{comment_packages}{palette}
 \usepackage{{tcolorbox}}
 \tcbuselibrary{{breakable,skins}}
 \usepackage{{fancyvrb}}
@@ -414,6 +440,7 @@ pub fn render_latex(
         title = escape_latex(title),
         body = body,
         palette = palette,
+        comment_packages = crate::comments::latex_packages(),
     )
 }
 
@@ -535,7 +562,6 @@ fn emit_figures(
 /// build emits) and with fragments dropped — a sibling PDF does not share
 /// this page's hypertargets. Same-page `#heading` links stay, and only
 /// when that id was emitted as a `\hypertarget`.
-#[cfg(test)]
 fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     let mut anchors = HashSet::new();
     let mut used = HashSet::new();
@@ -555,6 +581,14 @@ struct HeadingCap {
     body: String,
 }
 
+pub(crate) fn markdown_fragment_to_latex(md: &str) -> String {
+    markdown_to_latex(md, &crate::render::LinkMode::single_file())
+}
+
+pub(crate) fn escape_latex_pub(s: &str) -> String {
+    escape_latex(s)
+}
+
 fn markdown_to_latex_in(
     md: &str,
     link: &crate::render::LinkMode,
@@ -563,7 +597,8 @@ fn markdown_to_latex_in(
     used: &mut HashSet<String>,
     empty_idx: &mut usize,
 ) -> String {
-    let md = transform_wikilinks(md);
+    let prepared = crate::comments::prepare_latex(md);
+    let md = transform_wikilinks(prepared.as_str(md));
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
     // Same single-tilde demotion as the HTML target: `~word~` stays literal
@@ -853,7 +888,7 @@ fn markdown_to_latex_in(
         }
     }
 
-    out
+    crate::comments::restore_latex(&out, &prepared)
 }
 
 fn emit(heading: &mut Option<HeadingCap>, out: &mut String, s: &str) {

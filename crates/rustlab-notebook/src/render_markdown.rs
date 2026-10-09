@@ -78,6 +78,13 @@ pub fn render_markdown(
     for block in blocks {
         match block {
             Rendered::Markdown(md) => {
+                let md_owned;
+                let md: &str = if crate::comments::mode().markdown_keep {
+                    md
+                } else {
+                    md_owned = crate::comments::strip_source(md);
+                    &md_owned
+                };
                 let transformed = match link_style {
                     LinkStyle::Standard => {
                         // Source `[[Foo]]` / `![[img]]` → standard markdown

@@ -172,6 +172,8 @@ pub struct NotebookSettings {
     pub theme: Option<ColorTheme>,
     /// `[notebook] code`. Missing key → built-in default open.
     pub code: Option<CodeFold>,
+    /// `[notebook] comments` = `"on"` | `"off"`. `None` leaves the format default.
+    pub comments: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -203,6 +205,11 @@ impl UserSettings {
     /// An invalid rc value is dropped at parse time, so this stays open.
     pub fn notebook_code_open(&self) -> bool {
         self.notebook.code.map(CodeFold::is_open).unwrap_or(true)
+    }
+
+    /// `[notebook] comments`, when set. `None` means the format default.
+    pub fn notebook_comments(&self) -> Option<bool> {
+        self.notebook.comments
     }
 
     /// Notebook page/plot theme: `[notebook] theme`, else `[plot] theme`,
@@ -555,6 +562,20 @@ fn parse_notebook_section(
                     type_name(other)
                 )),
             },
+            "comments" => {
+                let s = expect_string(v, path, "notebook.comments")?;
+                settings.notebook.comments = Some(match s {
+                    "on" => true,
+                    "off" => false,
+                    _ => {
+                        return Err(ConfigError::invalid(
+                            path,
+                            "notebook.comments",
+                            format!("expected \"on\" or \"off\"; got \"{s}\""),
+                        ));
+                    }
+                });
+            }
             other => unknown.push(format!("notebook.{other}")),
         }
     }
@@ -875,6 +896,30 @@ mod tests {
         .unwrap();
         assert_eq!(open.settings.notebook.code, Some(CodeFold::Open));
         assert!(open.settings.notebook_code_open());
+    }
+
+    #[test]
+    fn notebook_comments_on_off_and_invalid() {
+        let on = parse_toml(
+            "[notebook]\ncomments = \"on\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(on.settings.notebook_comments(), Some(true));
+        let off = parse_toml(
+            "[notebook]\ncomments = \"off\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(off.settings.notebook_comments(), Some(false));
+        let bad = parse_toml(
+            "[notebook]\ncomments = \"maybe\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        );
+        assert!(bad.is_err());
     }
 
     #[test]

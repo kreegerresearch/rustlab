@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod check;
+pub mod comments;
 pub mod embed;
 pub mod execute;
 pub mod fence_hl;
@@ -815,6 +816,10 @@ pub fn cmd_render_json(
     let blocks = parse::parse_notebook(&expanded);
     let rendered = execute::execute_notebook(&blocks);
 
+    let _comment_mode = comments::install(comments::CommentMode::for_format(
+        comments::FormatKind::Json,
+        comments::requested(),
+    ));
     let doc = render_json::render_json(&title, &rendered, theme);
     let json = if pretty {
         serde_json::to_string_pretty(&doc)
@@ -1339,6 +1344,12 @@ impl Format {
     }
 }
 
+/// CLI / rc display choice. `None` keeps each format's default
+/// (HTML, watch, markdown, and JSON on; LaTeX and PDF off).
+pub fn set_comment_display(requested: Option<bool>) {
+    comments::set_requested(requested);
+}
+
 fn render_output(
     out_path: &PathBuf,
     format: &Format,
@@ -1350,6 +1361,15 @@ fn render_output(
     source_md: Option<&str>,
     input: Option<&Path>,
 ) -> Result<(), String> {
+    let kind = match format {
+        Format::Html => comments::FormatKind::Html,
+        Format::Latex | Format::Pdf => comments::FormatKind::Latex,
+        Format::Markdown { .. } => comments::FormatKind::Markdown,
+    };
+    let _comment_mode = comments::install(comments::CommentMode::for_format(
+        kind,
+        comments::requested(),
+    ));
     match format {
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
