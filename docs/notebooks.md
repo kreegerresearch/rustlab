@@ -1237,7 +1237,10 @@ unbinds it. Marks inside a code fence, inline code, or math are
 literal. A backslash escapes a delimiter: `\==`.
 
 HTML draws a highlight as `<mark>` and a comment as a numbered margin
-note. Wide pages float the note in the right gutter. The note colors
+note. A reply (`re #cN`) is drawn inside its parent's card. The `#cN`
+id is not printed in the card header; it is `data-cm-id` and the card's
+tooltip. Inline notes and block notes use that same header. Wide pages
+float the note in the right gutter. The note colors
 come from the active Catppuccin theme (`--rl-cm-mark-bg`,
 `--rl-cm-note-bg`, `--rl-cm-note-border`) and stay readable on all four
 palettes. The top bar has a **Comments** checkbox. Unchecking it hides
@@ -1270,9 +1273,17 @@ when the command does not pass a flag.
 
 `notebook watch --annotate` lets you add a highlight or comment from
 the page. `--editable` implies `--annotate`. The menu opens on a
-highlight, a note, a code cell, or a run of plain text. A selection
-that crosses markdown syntax has no source span, so the menu does not
-open. File offsets are stamped only while annotating. A `%%` before a
+highlight, a note, a code cell, or a run of plain text. Right-clicking
+an existing note offers Edit comment and Delete. A plain-text selection
+offers Add comment and Highlight. A code cell offers Add comment only.
+The menu and the comment popover open next to the selection, clamped
+to the window, above the contents sidebar and the file browser. Edit
+and Delete on a card are one row of small buttons. A selection that
+crosses markdown syntax has no source span, so the menu does not
+open. File offsets are stamped only while annotating, and only on text
+the markdown parser already treated as text, so headings, lists,
+tables, and the other block syntax match a page that is not annotating.
+A `%%` before a
 `bash`, `python`, or `text` fence stays a prose note. The browser sends
 `POST /annotate/{slug}` with `If-Match` set to the source hash stamped
 on the page. A mismatch is 409 and the file is not written. The path

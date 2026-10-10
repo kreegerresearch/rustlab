@@ -23,6 +23,10 @@ should re-validate against those entries when upgrading.
   jail, and `If-Match` against the page's source hash (409, no write,
   when the file changed). Design: `dev/plans/notebook_comments.md`.
   A per-comment reviewed/accepted flag is reserved and not implemented.
+  Replies render inside the parent card. Comment ids stay on
+  `data-cm-id` and the card tooltip, not in the header. Annotating
+  stamps source offsets on parsed text, so headings and other block
+  syntax match a page that is not annotating.
 
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder
