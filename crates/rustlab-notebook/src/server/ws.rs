@@ -529,6 +529,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (parsed.body) {
       document.body.classList.toggle('no-toc', parsed.body.classList.contains('no-toc'));
       document.body.classList.toggle('has-files', parsed.body.classList.contains('has-files'));
+      document.body.classList.toggle('has-cm-margin', parsed.body.classList.contains('has-cm-margin'));
     }
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
@@ -1026,6 +1027,10 @@ mod tests {
             "WS-client script must land before </head>",
         );
         assert!(out.contains("hi"), "body content survived");
+        assert!(
+            out.contains("classList.toggle('has-cm-margin'"),
+            "a full reload must keep the comment column class"
+        );
     }
 
     #[test]

@@ -96,6 +96,15 @@ pub struct Notebook {
     /// both holders await file IO while holding it; never nested with any
     /// other lock on this struct.
     pub save_lock: tokio::sync::Mutex<()>,
+    /// Last annotate write in this process. One level. The client asks
+    /// for it with `{"op":"undo"}`; the previous bytes are not accepted
+    /// from the request. Cleared after a successful undo.
+    undo: std::sync::Mutex<Option<UndoSnap>>,
+}
+
+struct UndoSnap {
+    before: String,
+    after_hash: String,
 }
 
 impl Notebook {
@@ -118,6 +127,7 @@ impl Notebook {
             widget_decls: Mutex::new(Vec::new()),
             render_cache: Mutex::new(NotebookCache::default()),
             save_lock: tokio::sync::Mutex::new(()),
+            undo: std::sync::Mutex::new(None),
         }
     }
 }
@@ -174,6 +184,10 @@ pub struct ServerState {
     /// directory mode, `--jail-root` when given, `None` (= each notebook's
     /// own directory) for a single-file serve.
     pub jail_root: Option<PathBuf>,
+    /// `POST /annotate/{slug}` and the right-click UI. `--editable` implies this.
+    pub annotate: bool,
+    /// Initial Comments checkbox on watch pages.
+    pub comments_on: bool,
 }
 
 impl ServerState {
@@ -251,6 +265,10 @@ pub fn router(state: Arc<ServerState>) -> Router {
     // The write-back route exists only under `--editable`.
     if state.editable {
         r = r.route("/save/{slug}", post(save_source));
+    }
+    // Annotate is implied by --editable and also mounted for --annotate alone.
+    if state.annotate || state.editable {
+        r = r.route("/annotate/{slug}", post(annotate_source));
     }
 
     r.with_state(state.clone())
@@ -494,6 +512,143 @@ async fn save_source(
     }
 }
 
+async fn annotate_source(
+    State(state): State<Arc<ServerState>>,
+    AxPath(slug): AxPath<String>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    let port = state.bind_port.load(std::sync::atomic::Ordering::Relaxed);
+    if auth::authorize_mutate(&headers, port).is_err() {
+        let msg = auth::origin_rejection_body(&headers, port);
+        return (StatusCode::FORBIDDEN, msg).into_response();
+    }
+    if body.len() > 64 * 1024 {
+        return (StatusCode::BAD_REQUEST, "comment is too long").into_response();
+    }
+    let Some(nb) = state.notebook(&slug) else {
+        return (StatusCode::NOT_FOUND, "notebook not found").into_response();
+    };
+    if let Some(root) = &state.jail_root {
+        match nb.source_path.canonicalize() {
+            Ok(canon) if canon.starts_with(root) => {}
+            _ => {
+                return (StatusCode::FORBIDDEN, "path escapes notebook directory").into_response();
+            }
+        }
+    }
+    let _guard = nb.save_lock.lock().await;
+    let file = match tokio::fs::read_to_string(&nb.source_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read error: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let want = crate::comments::sha256_hex(file.as_bytes());
+    let Some(tag) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) else {
+        return (StatusCode::BAD_REQUEST, "If-Match required").into_response();
+    };
+    let tag = tag.trim().trim_matches('"').to_ascii_lowercase();
+    if tag != want {
+        return (StatusCode::CONFLICT, "source changed").into_response();
+    }
+    let v: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::BAD_REQUEST, "bad json").into_response(),
+    };
+    let op = json_str(&v, "op");
+    let target = json_str(&v, "target");
+    let text = json_str(&v, "text");
+    let comment = json_str(&v, "comment");
+    let author = json_str(&v, "author");
+    let id = json_str(&v, "id");
+    let expect = json_str(&v, "expect");
+    let today = crate::comments::utc_today();
+    if op == "undo" {
+        let before = {
+            let slot = nb.undo.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.as_ref() {
+                Some(snap) if snap.after_hash == want => snap.before.clone(),
+                Some(_) => {
+                    return (StatusCode::CONFLICT, "source changed").into_response();
+                }
+                None => {
+                    return (StatusCode::BAD_REQUEST, "nothing to undo").into_response();
+                }
+            }
+        };
+        let hash = crate::comments::sha256_hex(before.as_bytes());
+        return match tokio::fs::write(&nb.source_path, before.as_bytes()).await {
+            Ok(()) => {
+                *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                annotate_ok(&hash)
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write error: {e}"),
+            )
+                .into_response(),
+        };
+    }
+    let req = crate::comments::AnnotateRequest {
+        op: &op,
+        target: &target,
+        start: v.get("start").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        end: v.get("end").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        text: &text,
+        comment: &comment,
+        author: &author,
+        id: &id,
+        expect: &expect,
+        today: &today,
+    };
+    match crate::comments::apply_annotate(&file, &req) {
+        Ok(next) => {
+            let hash = crate::comments::sha256_hex(next.as_bytes());
+            match tokio::fs::write(&nb.source_path, next.as_bytes()).await {
+                Ok(()) => {
+                    *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = Some(UndoSnap {
+                        before: file,
+                        after_hash: hash.clone(),
+                    });
+                    annotate_ok(&hash)
+                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write error: {e}"),
+                )
+                    .into_response(),
+            }
+        }
+        Err(crate::comments::AnnotateError::BadRequest(msg)) => {
+            (StatusCode::BAD_REQUEST, msg).into_response()
+        }
+        Err(crate::comments::AnnotateError::Conflict(msg)) => {
+            (StatusCode::CONFLICT, msg).into_response()
+        }
+    }
+}
+
+fn annotate_ok(sha: &str) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        format!(r#"{{"sha256":"{sha}"}}"#),
+    )
+        .into_response()
+}
+
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 async fn raw_source(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
@@ -599,6 +754,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         })
     }
 
@@ -689,6 +846,319 @@ mod tests {
         assert_eq!(body.as_ref(), b"# nb\n");
     }
 
+    fn annotate_state(
+        source: &str,
+        annotate: bool,
+        editable: bool,
+        jail_root: Option<std::path::PathBuf>,
+    ) -> (Arc<ServerState>, std::path::PathBuf) {
+        let plot_dir = TempDir::new().unwrap();
+        let src = plot_dir.path().join("nb.md");
+        std::fs::write(&src, source).unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src.clone(),
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable,
+            link_slugs: HashMap::new(),
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root,
+            annotate,
+            comments_on: true,
+        });
+        (state, src)
+    }
+
+    fn annotate_body() -> String {
+        r#"{"op":"insert","target":"prose","start":8,"end":16,"text":"constant","comment":"why"}"#
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn annotate_route_absent_without_flag() {
+        let (state, _) = annotate_state("# hello constant world\n", false, false, None);
+        let app = router(state);
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn annotate_route_mounted_for_annotate_and_for_editable() {
+        for (annotate, editable) in [(true, false), (false, true)] {
+            let (state, _) = annotate_state("# hello constant world\n", annotate, editable, None);
+            let app = router(state);
+            let res = app
+                .oneshot(
+                    host(
+                        axum::http::Request::builder()
+                            .method("POST")
+                            .uri("/annotate/nb"),
+                    )
+                    .header("Origin", "http://127.0.0.1:8042")
+                    .body(Body::from(annotate_body()))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "annotate={annotate} editable={editable}"
+            );
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn annotate_rejects_bad_host_and_origin() {
+        let (state, src) = annotate_state("# hello constant world\n", true, false, None);
+        let before = std::fs::read_to_string(&src).unwrap();
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/annotate/nb")
+                    .header(header::HOST, "evil.example:8042")
+                    .header("Origin", "http://127.0.0.1:8042")
+                    .body(Body::from(annotate_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://evil.example")
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn annotate_rejects_a_path_outside_the_jail() {
+        let jail = TempDir::new().unwrap();
+        let (state, src) = annotate_state(
+            "# hello constant world\n",
+            true,
+            false,
+            Some(jail.path().to_path_buf()),
+        );
+        let before = std::fs::read_to_string(&src).unwrap();
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, "\"abc\"")
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn annotate_if_match_conflict_does_not_write() {
+        let source = "# hello constant world\n";
+        let (state, src) = annotate_state(source, true, false, None);
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(
+                    header::IF_MATCH,
+                    "\"0000000000000000000000000000000000000000000000000000000000000000\"",
+                )
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let written = std::fs::read_to_string(&src).unwrap();
+        assert_eq!(
+            body["sha256"].as_str().unwrap(),
+            crate::comments::sha256_hex(written.as_bytes())
+        );
+        assert!(written.contains("==constant=="), "{written}");
+        assert!(written.contains("why"), "{written}");
+        assert_ne!(written, source);
+    }
+
+    #[tokio::test]
+    async fn annotate_inside_a_fence_is_rejected() {
+        let source = "# T\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n\n~~~python\nprint(1)\n~~~\n";
+        let (state, src) = annotate_state(source, true, false, None);
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("a == b").unwrap();
+        let body = format!(
+            r#"{{"op":"insert","target":"prose","start":{start},"end":{},"text":"a == b","comment":"no"}}"#,
+            start + "a == b".len()
+        );
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(body))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.status().is_client_error(),
+            "fence target must be 4xx, got {}",
+            res.status()
+        );
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let info = source.find("rustlab").unwrap();
+        let body = format!(
+            r#"{{"op":"insert","target":"prose","start":{info},"end":{},"text":"rustlab","comment":""}}"#,
+            info + "rustlab".len()
+        );
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(body))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_client_error(), "{}", res.status());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn annotate_undo_restores_the_previous_bytes() {
+        let source = "# hello constant world\n";
+        let (state, src) = annotate_state(source, true, false, None);
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let next = body["sha256"].as_str().unwrap().to_string();
+        assert_ne!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{next}\""))
+                .body(Body::from(r#"{"op":"undo"}"#))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+        drop(state);
+    }
+
     #[tokio::test]
     async fn save_route_absent_when_not_editable() {
         let app = router(single_state("<h1>hello</h1>"));
@@ -737,6 +1207,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         let app = router(editable_state.clone());
         let res = app
@@ -785,6 +1257,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         let app = router(editable_state);
         let res = app
@@ -830,6 +1304,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         let app = router(editable_state);
         let res = app
@@ -926,6 +1402,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         let app = router(state);
         let res = app

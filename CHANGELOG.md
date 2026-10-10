@@ -8,6 +8,53 @@ should re-validate against those entries when upgrading.
 
 ## 0.3.9
 
+### Added
+- **Notebook highlights and comments.** Prose `==highlight==` and
+  `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
+  as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.
+  A whole-line `%%` immediately before a fence comments on that cell.
+  Marks inside code fences, inline code, and math stay literal.
+  `--comments` / `--no-comments` (and `~/.rustlabrc` `[notebook] comments`)
+  control display. HTML and watch default to on, with an in-page
+  Comments checkbox. PDF and LaTeX default to off; `--comments` uses
+  `\hl` and a margin note. `notebook check` warns W006–W012, including
+  a missing `#cN` (W012). `watch --annotate` (implied by `--editable`)
+  mounts `POST /annotate/{slug}`: loopback Host and Origin, the file
+  jail, and `If-Match` against the page's source hash (409, no write,
+  when the file changed). Design: `dev/plans/notebook_comments.md`.
+  A per-comment reviewed/accepted flag is reserved and not implemented.
+  Replies render inside the parent card. Comment ids stay on
+  `data-cm-id` and the card tooltip, not in the header. Annotating
+  stamps source offsets on parsed text, so headings and other block
+  syntax match a page that is not annotating. Every comment card
+  (inline, block, cell, and replies) sits in a right margin column
+  aligned with its numbered marker. The column stays in a directory
+  page with the file browser and the contents sidebar; the prose
+  shrinks. Turning Comments off, or `--no-comments` on static HTML,
+  drops the column. Under 800px the cards are a drawer at the bottom
+  of the section. PDF `--comments` puts block and cell notes in
+  `\marginpar` as well (a footnote inside a table). The annotate
+  popover is a card (Name, comment, Cancel / Highlight only / Save
+  comment). Ctrl or Cmd+Enter saves; Esc cancels. `render -f markdown
+  --comments-style=footnotes` turns notes into GitHub footnotes and
+  highlights into `<mark>`. `--comments-style=callouts` turns notes
+  into `> [!note]` and leaves `==` (Obsidian's preview hides a raw
+  `%%`; the callout style is how those notes stay visible there).
+  `rustlab-notebook strip` writes the `--no-comments` markdown
+  cleanup and leaves every code fence unchanged. `POST /annotate` returns the new source hash and rejects
+  any write whose offsets fall inside a code fence (400, file
+  unchanged). A cell comment is only a `%%` line above the fence.
+  Highlight is not offered on a code cell. The page offers Undo for
+  the last annotate write in this `watch` process; git history is
+  the archive. Cards share one full-width column. Markers on the
+  same line stack, the first of them level with the line. A note
+  taller than about six lines clamps until **more**. A card pushed
+  below its marker draws a connector. The source pane narrows so it
+  does not cover that column. PDF `--comments` numbers each note to
+  match the HTML marker, highlights with a light yellow `\hl`, indents
+  replies, and keeps the note column on the page (`marginfix`, right
+  margin 2.15in, note column 1.7in).
+
 ### Breaking / behavior changes
 - **`fprintf` / `sprintf` honor format flags and more specifiers.**
   `+`, a leading space, `0` (zero-pad between the sign and the digits),

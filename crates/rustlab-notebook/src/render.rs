@@ -473,8 +473,12 @@ pub fn render_html_nonced(
     // sections are stamped with it (`data-code-idx`) so the interactive
     // server's ▶ Run can address the block; inert in static output.
     let mut exec_idx = 0usize;
+    let _comment_page = crate::comments::enter_page();
+    crate::comments::locate_installed(blocks);
+    let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
+    let mut cell_origin = 0usize;
 
-    for block in blocks {
+    for (bi, block) in blocks.iter().enumerate() {
         // Auto-close solution/exercise when we hit a new exercise or solution marker
         if matches!(block, Rendered::ExerciseStart { .. }) {
             if in_solution {
@@ -493,22 +497,46 @@ pub fn render_html_nonced(
 
         match block {
             Rendered::Markdown(md) => {
+                let mut md = md.clone();
+                cell_origin = crate::comments::range_of(bi).map(|(s, _)| s).unwrap_or(0);
+                crate::comments::set_origin(cell_origin);
+                if crate::comments::mode().show
+                    && blocks
+                        .get(bi + 1)
+                        .is_some_and(crate::comments::is_fence_rendered)
+                {
+                    let (rest, notes) = crate::comments::peel_trailing_cell_comments(&md);
+                    pending_cells = notes;
+                    md = rest;
+                }
+                if md.trim().is_empty() {
+                    crate::comments::set_origin(0);
+                    continue;
+                }
                 let mark = body.len();
                 // Transform `[[wiki]]` / `![[embed]]` to standard markdown
                 // (wikilinks emit `.md` targets for the link resolver)
-                let md = transform_wikilinks(md);
+                let md = transform_wikilinks(&md);
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
                 let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
+                let (prose, margin) = crate::comments::split_page_margin(&html);
 
                 // Extract headings for nav and inject IDs
                 let html =
-                    inject_heading_ids(&html, &mut nav_items, &mut heading_idx, &mut heading_ids);
+                    inject_heading_ids(&prose, &mut nav_items, &mut heading_idx, &mut heading_ids);
 
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
                 body.push_str("</div>\n");
-                finalize_block(&mut body, mark, &mut block_id_counter, "");
+                body.push_str(&margin);
+                crate::comments::set_origin(0);
+                finalize_block(
+                    &mut body,
+                    mark,
+                    &mut block_id_counter,
+                    &crate::comments::src_attr(bi),
+                );
             }
             Rendered::Code {
                 source,
@@ -523,6 +551,7 @@ pub fn render_html_nonced(
             } => {
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
 
                 // Source, printed text, and errors share one indent (`.rl-cell`).
                 // The source alone sits in `<details class="rl-src">` so a
@@ -661,7 +690,11 @@ pub fn render_html_nonced(
                 }
 
                 body.push_str("</div>\n");
-                let attrs = format!(" data-code-idx=\"{exec_idx}\"");
+                body.push_str(&cell_margin);
+                let attrs = format!(
+                    " data-code-idx=\"{exec_idx}\" data-src-kind=\"code\"{}",
+                    crate::comments::src_attr(bi)
+                );
                 finalize_block(&mut body, mark, &mut block_id_counter, &attrs);
                 exec_idx += 1;
             }
@@ -675,9 +708,22 @@ pub fn render_html_nonced(
                 // the ordinal before the skip so code stamps stay aligned.
                 exec_idx += 1;
                 if *hidden {
+                    if !pending_cells.is_empty() {
+                        let mark = body.len();
+                        let cell_margin =
+                            take_cell_margin(&mut body, &mut pending_cells, cell_origin);
+                        body.push_str(&cell_margin);
+                        finalize_block(
+                            &mut body,
+                            mark,
+                            &mut block_id_counter,
+                            &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
+                        );
+                    }
                     continue;
                 }
                 let mark = body.len();
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
                 if let Some(title) = details {
                     body.push_str("<details class=\"code-details\">\n");
                     body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
@@ -691,12 +737,25 @@ pub fn render_html_nonced(
                 if details.is_some() {
                     body.push_str("</details>\n");
                 }
-                finalize_block(&mut body, mark, &mut block_id_counter, "");
+                body.push_str(&cell_margin);
+                finalize_block(
+                    &mut body,
+                    mark,
+                    &mut block_id_counter,
+                    &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
+                );
             }
             Rendered::Widget { decl, value } => {
                 let mark = body.len();
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
                 body.push_str(&render_widget_html(decl, value));
-                finalize_block(&mut body, mark, &mut block_id_counter, "");
+                body.push_str(&cell_margin);
+                finalize_block(
+                    &mut body,
+                    mark,
+                    &mut block_id_counter,
+                    &format!(" data-src-kind=\"code\"{}", crate::comments::src_attr(bi)),
+                );
             }
             Rendered::Callout {
                 kind,
@@ -713,8 +772,10 @@ pub fn render_html_nonced(
                 ));
                 let md = transform_wikilinks(content);
                 let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
-                body.push_str(&html);
+                let (prose, margin) = crate::comments::split_page_margin(&html);
+                body.push_str(&prose);
                 body.push_str("</div>\n");
+                body.push_str(&margin);
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::ExerciseStart { number } => {
@@ -781,13 +842,18 @@ pub fn render_html_nonced(
             // Single-file render: same chrome, just nothing to page to.
             None => (String::new(), String::new(), String::new()),
         };
-        format!(
+        let mut bar = format!(
             "<header class=\"topbar\">{prev}<span class=\"crumb\">{index}<span class=\"current\">{title}</span></span>{next}</header>\n",
             prev = prev_link,
             index = index_link,
             next = next_link,
             title = escape_html(title),
-        )
+        );
+        if let Some(on) = crate::comments::mode().toggle {
+            let toggle = crate::comments::toggle_html(on);
+            bar = bar.replace("</header>", &format!("{toggle}</header>"));
+        }
+        bar
     };
 
     // A notebook with no h1–h3 has nothing to put in a TOC; emitting the
@@ -800,17 +866,26 @@ pub fn render_html_nonced(
         .map(crate::file_browser::render_nav)
         .unwrap_or_default();
     let has_files = !files_block.is_empty();
-    let file_css = if has_files {
+    let mut file_css = if has_files {
         crate::file_browser::styles(theme)
     } else {
         String::new()
     };
+    let comment_mode = crate::comments::mode();
+    if comment_mode.show || comment_mode.toggle.is_some() || comment_mode.annotate {
+        file_css.push_str(crate::comments::comment_css());
+    }
     let mut body_classes: Vec<&str> = Vec::new();
     if !has_toc {
         body_classes.push("no-toc");
     }
     if has_files {
         body_classes.push("has-files");
+    }
+    // The class is on the content buffer, which does not yet include the
+    // stylesheet (that stylesheet also names `.rl-cm-margin`).
+    if body.contains("class=\"rl-cm-margin\"") {
+        body_classes.push("has-cm-margin");
     }
     let body_class = if body_classes.is_empty() {
         String::new()
@@ -834,7 +909,7 @@ pub fn render_html_nonced(
     let footer_nav = nav.map(|n| build_footer_nav(n)).unwrap_or_default();
 
     let c = theme;
-    let page = format!(
+    let mut page = format!(
         r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1462,7 +1537,19 @@ document.addEventListener('click', (e) => {{
         footer_nav = footer_nav,
         body = body,
         color_scheme = c.color_scheme(),
-        theme_vars = c.css_custom_properties(),
+        theme_vars = {
+            let vars = c.css_custom_properties();
+            if comment_mode.show || comment_mode.toggle.is_some() || comment_mode.annotate {
+                vars
+            } else {
+                // A comments-off page must not mention the mark/note class
+                // names. The theme tokens share those names (`--rl-cm-mark-bg`).
+                vars.lines()
+                    .filter(|l| !l.contains("rl-cm-"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        },
         bg = c.css_var("bg"),
         bg_secondary = c.css_var("bg-secondary"),
         text = c.css_var("text"),
@@ -1485,6 +1572,28 @@ document.addEventListener('click', (e) => {{
         syn_comment = c.css_var("syn-comment"),
         syn_operator = c.css_var("syn-operator"),
     );
+    if comment_mode.toggle.is_some() {
+        let script = crate::comments::toggle_script(nonce);
+        if let Some(i) = page.find("<main>") {
+            page.insert_str(i, &format!("{script}\n"));
+        }
+    }
+    if comment_mode.show || comment_mode.toggle.is_some() {
+        let script = crate::comments::margin_script(nonce);
+        if let Some(i) = page.rfind("</body>") {
+            page.insert_str(i, &script);
+        }
+    }
+    if comment_mode.annotate {
+        let chrome = format!(
+            "{}{}",
+            crate::comments::annotate_chrome(),
+            crate::comments::annotate_script(nonce)
+        );
+        if let Some(i) = page.rfind("</body>") {
+            page.insert_str(i, &chrome);
+        }
+    }
     page
 }
 
@@ -1585,7 +1694,9 @@ pub(crate) fn markdown_to_html_linked(
     link: Option<&LinkMode>,
     mut assets: Option<&mut crate::prose_media::ProseAssets<'_>>,
 ) -> String {
-    let (protected, math) = protect_math(md);
+    let prepared = crate::comments::prepare(md);
+    let source = prepared.as_str(md);
+    let (protected, math) = protect_math(source);
     let mut events = parse_single_tilde_safe(&protected, notebook_md_options());
     if let Some(assets) = assets.as_mut() {
         for ev in events.iter_mut() {
@@ -1611,11 +1722,12 @@ pub(crate) fn markdown_to_html_linked(
     let mut html = String::new();
     push_html(&mut html, events.into_iter());
     let html = restore_math(&html, &math);
-    if let Some(assets) = assets.as_ref() {
+    let html = if let Some(assets) = assets.as_ref() {
         assets.restore_stashed(&html)
     } else {
         html
-    }
+    };
+    crate::comments::restore(&html, &prepared)
 }
 
 /// Turn markdown image events into a placed `<img>` (or a placeholder).
@@ -2384,7 +2496,7 @@ fn strip_tags(s: &str) -> String {
     out
 }
 
-fn escape_html(s: &str) -> String {
+pub(crate) fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -3103,6 +3215,22 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
 ///
 /// Empty / whitespace-only chunks emit nothing (matches the
 /// existing renderer's behaviour for skipped blocks).
+/// Gutter markers go into the cell. The aside is returned so the caller
+/// can place it after the cell wrapper, as a section sibling.
+fn take_cell_margin(
+    body: &mut String,
+    pending: &mut Vec<crate::comments::CellNote>,
+    origin: usize,
+) -> String {
+    if pending.is_empty() {
+        return String::new();
+    }
+    let rendered = crate::comments::render_cell_notes_at(pending, origin);
+    pending.clear();
+    body.push_str(&rendered.markers);
+    rendered.margin
+}
+
 fn finalize_block(
     body: &mut String,
     mark: usize,
