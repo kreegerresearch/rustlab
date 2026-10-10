@@ -520,14 +520,16 @@ pub fn render_html_nonced(
                 // Convert markdown to HTML (math-protected shared pipeline),
                 // resolving cross-notebook `.md` links per `link` mode
                 let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
+                let (prose, margin) = crate::comments::split_page_margin(&html);
 
                 // Extract headings for nav and inject IDs
                 let html =
-                    inject_heading_ids(&html, &mut nav_items, &mut heading_idx, &mut heading_ids);
+                    inject_heading_ids(&prose, &mut nav_items, &mut heading_idx, &mut heading_ids);
 
                 body.push_str("<div class=\"prose\">\n");
                 body.push_str(&html);
                 body.push_str("</div>\n");
+                body.push_str(&margin);
                 crate::comments::set_origin(0);
                 finalize_block(
                     &mut body,
@@ -549,13 +551,7 @@ pub fn render_html_nonced(
             } => {
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
-                if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes_at(
-                        &pending_cells,
-                        cell_origin,
-                    ));
-                    pending_cells.clear();
-                }
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
 
                 // Source, printed text, and errors share one indent (`.rl-cell`).
                 // The source alone sits in `<details class="rl-src">` so a
@@ -694,6 +690,7 @@ pub fn render_html_nonced(
                 }
 
                 body.push_str("</div>\n");
+                body.push_str(&cell_margin);
                 let attrs = format!(
                     " data-code-idx=\"{exec_idx}\" data-src-kind=\"code\"{}",
                     crate::comments::src_attr(bi)
@@ -713,11 +710,9 @@ pub fn render_html_nonced(
                 if *hidden {
                     if !pending_cells.is_empty() {
                         let mark = body.len();
-                        body.push_str(&crate::comments::render_cell_notes_at(
-                            &pending_cells,
-                            cell_origin,
-                        ));
-                        pending_cells.clear();
+                        let cell_margin =
+                            take_cell_margin(&mut body, &mut pending_cells, cell_origin);
+                        body.push_str(&cell_margin);
                         finalize_block(
                             &mut body,
                             mark,
@@ -728,13 +723,7 @@ pub fn render_html_nonced(
                     continue;
                 }
                 let mark = body.len();
-                if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes_at(
-                        &pending_cells,
-                        cell_origin,
-                    ));
-                    pending_cells.clear();
-                }
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
                 if let Some(title) = details {
                     body.push_str("<details class=\"code-details\">\n");
                     body.push_str(&format!("<summary>{}</summary>\n", escape_html(title)));
@@ -748,6 +737,7 @@ pub fn render_html_nonced(
                 if details.is_some() {
                     body.push_str("</details>\n");
                 }
+                body.push_str(&cell_margin);
                 finalize_block(
                     &mut body,
                     mark,
@@ -757,14 +747,9 @@ pub fn render_html_nonced(
             }
             Rendered::Widget { decl, value } => {
                 let mark = body.len();
-                if !pending_cells.is_empty() {
-                    body.push_str(&crate::comments::render_cell_notes_at(
-                        &pending_cells,
-                        cell_origin,
-                    ));
-                    pending_cells.clear();
-                }
+                let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
                 body.push_str(&render_widget_html(decl, value));
+                body.push_str(&cell_margin);
                 finalize_block(
                     &mut body,
                     mark,
@@ -787,8 +772,10 @@ pub fn render_html_nonced(
                 ));
                 let md = transform_wikilinks(content);
                 let html = markdown_to_html_linked(&md, Some(link), Some(&mut prose_assets));
-                body.push_str(&html);
+                let (prose, margin) = crate::comments::split_page_margin(&html);
+                body.push_str(&prose);
                 body.push_str("</div>\n");
+                body.push_str(&margin);
                 finalize_block(&mut body, mark, &mut block_id_counter, "");
             }
             Rendered::ExerciseStart { number } => {
@@ -894,6 +881,11 @@ pub fn render_html_nonced(
     }
     if has_files {
         body_classes.push("has-files");
+    }
+    // The class is on the content buffer, which does not yet include the
+    // stylesheet (that stylesheet also names `.rl-cm-margin`).
+    if body.contains("class=\"rl-cm-margin\"") {
+        body_classes.push("has-cm-margin");
     }
     let body_class = if body_classes.is_empty() {
         String::new()
@@ -1584,6 +1576,12 @@ document.addEventListener('click', (e) => {{
         let script = crate::comments::toggle_script(nonce);
         if let Some(i) = page.find("<main>") {
             page.insert_str(i, &format!("{script}\n"));
+        }
+    }
+    if comment_mode.show || comment_mode.toggle.is_some() {
+        let script = crate::comments::margin_script(nonce);
+        if let Some(i) = page.rfind("</body>") {
+            page.insert_str(i, &script);
         }
     }
     if comment_mode.annotate {
@@ -3217,6 +3215,22 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
 ///
 /// Empty / whitespace-only chunks emit nothing (matches the
 /// existing renderer's behaviour for skipped blocks).
+/// Gutter markers go into the cell. The aside is returned so the caller
+/// can place it after the cell wrapper, as a section sibling.
+fn take_cell_margin(
+    body: &mut String,
+    pending: &mut Vec<crate::comments::CellNote>,
+    origin: usize,
+) -> String {
+    if pending.is_empty() {
+        return String::new();
+    }
+    let rendered = crate::comments::render_cell_notes_at(pending, origin);
+    pending.clear();
+    body.push_str(&rendered.markers);
+    rendered.margin
+}
+
 fn finalize_block(
     body: &mut String,
     mark: usize,

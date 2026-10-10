@@ -41,7 +41,7 @@ Collaboration is the file itself, through git. Each person edits their own worki
 | Highlight | `==text==` | `<mark class="rl-cm rl-cm-mark">text</mark>` |
 | Comment on that highlight | `==text== %%why?%%` | the `<mark>` plus a margin note, linked with `aria-describedby` |
 | Standalone comment | `See note.%%why?%%` | a margin note at that point in the paragraph |
-| Block comment | a `%%` pair on its own lines | a block note in the flow (see 1.3) |
+| Block comment | a `%%` pair on its own lines | the same margin card, with a numbered marker in the paragraph gutter (see 1.3) |
 | Comment on a code cell | a `%%` line or block immediately before the fence | the same margin note, attached to that cell (§7) |
 
 A `%%...%%` is bound to the highlight before it when the comment opens on the **same line**, with **at most one space** between the closing `==` and the opening `%%`. `==text==%%why?%%` and `==text== %%why?%%` are bound. Two spaces, or a newline, leaves a standalone comment.
@@ -60,8 +60,12 @@ The cutoff is 0.25.%%@michael 2026-10-08: confirm against the lesson%%
 ```
 
 ```html
-<p><span data-src-start="16" data-src-end="39">Group delay is </span><mark class="rl-cm rl-cm-mark" data-src-start="39" data-src-end="51" aria-describedby="cm-n1">constant</mark><span class="rl-cm-note" id="cm-n1" role="note" tabindex="0"><sup class="rl-cm-num">1</sup><span class="rl-cm-body">only for linear phase</span></span><span data-src-start="74" data-src-end="95">.
-The cutoff is 0.25.</span><span class="rl-cm-note" id="cm-n2" role="note" tabindex="0">…</span></p>
+<p>Group delay is <mark class="rl-cm rl-cm-mark" aria-describedby="cm-n1">constant</mark> <sup class="rl-cm-ref" id="cm-r1" data-cm-for="cm-n1">1</sup>.
+The cutoff is 0.25.<sup class="rl-cm-ref" id="cm-r2" data-cm-for="cm-n2">2</sup></p>
+<aside class="rl-cm-margin" aria-label="Comments">
+  <article class="rl-cm-card rl-cm-note" id="cm-n1" data-cm-anchor="cm-r1" role="note">…</article>
+  <article class="rl-cm-card rl-cm-note" id="cm-n2" data-cm-anchor="cm-r2" role="note">…</article>
+</aside>
 ```
 
 The offsets in that sketch are byte offsets into the file. An `--annotate` session stamps them on marks and on verbatim prose runs (bytes CommonMark will not rewrite). Static HTML, and a watch that is not annotating, omit the offsets so a length change above a block does not force a full page reload (§4.3).
@@ -82,16 +86,18 @@ Obsidian and rustlab read the same characters and show different things:
 
 ### 1.3 Notes
 
-- Comments are numbered 1…N in document order **per notebook**, across markdown blocks. The render loop passes a counter into `markdown_to_html_linked`, the way `ProseAssets` is threaded today.
-- **Inline notes, wide viewports** (≥ 1280px; `main` is `max-width: 960px`): the `.rl-cm-note` card floats in the right gutter, Tufte-sidenote style. No JS for placement.
-- **Narrow viewports and the file-browser layout:** only the superscript shows. Focusing it (tap or Tab) expands the card inline through `:focus-within`.
-- **Block notes.** A `%%` whose opener is the whole trimmed line, closed by a later line that is only `%%`, renders as `.rl-cm-blocknote` in the flow (a card under that paragraph), not in the gutter. Blank lines inside the block are part of the note. `==` still cannot cross a blank line.
-- **Print:** inline cards become an endnote list at the end of each block. Block notes stay in place.
+- Comments are numbered 1…N in document order **per notebook**, across markdown blocks. The render loop passes a counter into `markdown_to_html_linked`, the way `ProseAssets` is threaded today. Replies fold into the parent card and do not take a number.
+- **One right margin column.** When a page has comments, `body` gets `has-cm-margin` and each `section.rl-block` is a two-column grid: prose, then an `<aside class="rl-cm-margin">` of `--rl-cm-col: 18rem` (288px). The aside is a direct child of the section, so a partial reload keeps the cards with that block. Inline, block, cell, and reply cards all live in that aside. The prose holds only a `<sup class="rl-cm-ref">` (`[1]`, brackets from CSS). A directory page (`body.has-files`, file browser plus the contents sidebar) keeps the column and shrinks the prose. The column is not dropped to save width.
+- **Alignment.** A small nonce'd script sets each card `position: absolute` inside its aside, with `top` at the marker (`data-cm-anchor` → `cm-rN`). A running cursor stacks the next card below the previous one when they would overlap. The script skips that placement under 800px and when Comments is unchecked. With scripting off, the cards stay in normal flow inside the column, in document order. Hover or focus on a marker, its highlight, or its card adds `rl-cm-hot` to both: an outline on the mark and the superscript, and an accent bar on the card.
+- **Under 800px.** `@media (max-width: 799px)` sets `--rl-cm-col: 0` and moves the aside to the next grid row, at the bottom of the section. The `<summary>Comments</summary>` is a real drawer toggle. Cards are never placed in the paragraph.
+- **Block notes.** A `%%` whose opener is the whole trimmed line, closed by a later line that is only `%%`, is the same card, with the extra class `rl-cm-blocknote`. Its marker also has `rl-cm-ref-block` and floats at the right of that paragraph. Blank lines inside the block are part of the note. `==` still cannot cross a blank line.
+- **Toggle off.** `body:has(#rl-comments:not(:checked))` sets `--rl-cm-col: 0px`, drops the column gap, and hides `.rl-cm-margin`, `.rl-cm-ref`, and `.rl-cm-cellmark`. The highlight background clears. The prose reclaims the width. Static HTML `--no-comments` omits the marks, so `has-cm-margin` is absent.
+- **Print:** absolute placement is cleared, so cards stack in the margin column in document order. Edit and Delete are hidden.
 - **Accessibility:**
-  - `role="note"` and `tabindex="0"` on inline notes.
-  - A bound highlight points at its note with `aria-describedby`.
-  - The highlight does not rely on color alone: `<mark>` has a 1px bottom border, and the note has a number.
-- A note that belongs to a heading is emitted **after** the `</hN>`, not inside it. `inject_heading_ids` slugs the tag-stripped heading text, so a note inside the heading would change the anchor.
+  - `role="note"` and `tabindex="0"` on each card.
+  - A bound highlight points at its card with `aria-describedby="cm-nN"`.
+  - The highlight does not rely on color alone: `<mark>` has a 1px bottom border, and the marker and the card share a number.
+- A note that belongs to a heading is emitted **after** the `</hN>`, not inside it. `inject_heading_ids` slugs the tag-stripped heading text, so a note inside the heading would change the anchor. The marker stays with the heading text; the card is in the section's margin aside.
 
 ### 1.4 Where marks are not parsed
 
@@ -187,7 +193,7 @@ This header is **rustlab-specific**. Obsidian hides the whole `%%...%%`, so the 
 One control, two states. **Comments on** shows highlights and notes. **Comments off** keeps the words and hides the review chrome:
 
 - `<mark>` loses its background, border, and note link styling, and uses the body text color
-- `.rl-cm-note` and `.rl-cm-blocknote` are `display: none`
+- the margin column width goes to zero, and `.rl-cm-margin`, the numbered markers, and the cell-gutter markers are `display: none`
 
 The words of a highlight are still there. Nothing is re-rendered to flip the switch.
 
@@ -206,7 +212,7 @@ Optional `~/.rustlabrc` key `[notebook] comments = "on"` or `"off"`. The CLI win
 |---|---|---|---|
 | HTML (file and directory) | **on** | highlights become plain text, comments are omitted, no toggle | marks, notes, and the toggle |
 | `watch` | **on**, toggle starts on | markup is still rendered so the toggle works; the toggle **starts off** | markup rendered, toggle starts on |
-| PDF / LaTeX | **off** (clean document) | plain text, comments omitted | `\hl` highlights and margin or block notes |
+| PDF / LaTeX | **off** (clean document) | plain text, comments omitted | `\hl` highlights and `\marginpar` notes (a `\footnote` inside a table) |
 | Markdown | **on**: `==` and `%%` passed through | unwrap `==` to its text, delete `%%` | source marks unchanged |
 | Markdown `--obsidian` | **on**: syntax passed through, then the usual vault rewrites | same strip, then vault rewrites | syntax passed through. Obsidian shows highlights and hides `%%` |
 | JSON | **on**: `html` fields include marks and notes | `html` fields are the stripped render | same as on |
@@ -236,8 +242,11 @@ The control is a checkbox in `header.topbar`, with a visible label **Comments**.
 CSS does the work, so the switch functions with JS off:
 
 ```css
-body:has(#rl-comments:not(:checked)) .rl-cm-note,
-body:has(#rl-comments:not(:checked)) .rl-cm-blocknote { display: none; }
+body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }
+body:has(#rl-comments:not(:checked)) section.rl-block { column-gap: 0; }
+body:has(#rl-comments:not(:checked)) .rl-cm-margin,
+body:has(#rl-comments:not(:checked)) .rl-cm-ref,
+body:has(#rl-comments:not(:checked)) .rl-cm-cellmark { display: none; }
 body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   background: transparent;
   border-bottom-color: transparent;
@@ -260,7 +269,7 @@ The CSS and script are inlined. No CDN.
 ### 3.4 PDF
 
 - **Off (default):** the LaTeX emitter writes the highlight's text and drops every `%%`. No `\hl`, no margin notes. A cell comment is omitted. The listing is the code alone.
-- **On:** highlights use `\hl` from `soul` (or `\colorbox` if `soul` is unavailable). Inline comments use numbered `\marginpar`, or `\footnote` inside tables, where marginpar fails. Block comments are quote environments in the flow. A cell comment is a note immediately above that listing.
+- **On:** highlights use `\hl` from `soul` (or `\colorbox` if `soul` is unavailable). Inline, block, and cell comments use numbered `\marginpar`. A comment on a table row uses `\footnote`, because `\marginpar` inside a table does not fit. Blank lines inside a block note become `\\ ` so the margin note stays one paragraph.
 - Colors come from Latte's comment roles. LaTeX and PDF are always Latte on white paper.
 
 ### 3.5 Theme roles (`crates/rustlab-plot/src/theme.rs`)
@@ -380,9 +389,9 @@ The popover is the composer. What opens it depends on the input that just happen
 - **Touch and pen.** A `pointerup` whose `pointerType` is `"touch"` or `"pen"` opens the popover when the selection is valid (§4.3). A long-press `contextmenu` is not reliable for those inputs, so the popover is their menu. `matchMedia('(pointer: coarse)')` is only a layout hint, for larger hit targets. It does not decide whether `pointerup` opens the popover. A mouse event on a coarse-primary device stays on the mouse rule above.
 - **Keyboard.** ContextMenu or Shift+F10 opens the menu (§4.1). **Add comment** or **Edit comment** then opens the popover. The menu has no text field.
 
-The touch or pen popover shows the same actions the menu would have: **Highlight** next to **Comment** for unmarked prose, **Comment** alone for a cell, and **Edit** / **Delete** for an existing mark. **Highlight** and **Delete** from the mouse menu do not open the popover.
+The touch or pen popover shows the same actions the menu would have: **Highlight only** next to **Save comment** for unmarked prose, **Save comment** alone for a cell, and **Delete** next to **Save comment** for an existing mark. **Highlight** and **Delete** from the mouse menu do not open the popover.
 
-- It contains a comment textarea, an optional Name field (§2), and one primary button, **Comment** (or **Save** when editing).
+- It is a small card: optional Name field on top (§2), a multiline comment below it, then a right-aligned row **Cancel**, **Highlight only**, **Save comment**. **Save comment** is the primary button and uses the theme accent, readable on all four palettes. Ctrl+Enter or Cmd+Enter saves. Esc cancels. The comment box is focused when the card opens. The highlight stays painted while its menu is open.
 - A one-line prose comment writes `==selected text== %%#cN YYYY-MM-DD: comment%%`. `@name` is added only when the Name field is non-empty.
 - A comment that contains a newline writes a block note after the highlight.
 - A cell selection writes a cell comment (§7). The textarea is required. An empty cell comment is not written.
@@ -565,7 +574,7 @@ Not in this design. If a later version needs state that does not belong in the `
 
 ## 7. Comments on code cells
 
-A comment on code is a comment on the **whole cell**. It is a `%%` line, or a block `%%`, placed on the lines before that cell's fence. The same margin card is used. There is no highlight inside the listing, no line number, and no gutter marker on a line of code.
+A comment on code is a comment on the **whole cell**. It is a `%%` line, or a block `%%`, placed on the lines before that cell's fence. The card is the same margin card as a prose note. A numbered marker sits in the cell gutter, above the listing. There is no highlight inside the listing and no marker on a line of code.
 
 ### 7.1 What other tools do
 
@@ -617,9 +626,9 @@ This applies to every fence `parse_notebook` splits out: `rustlab`, mermaid, and
 
 **Why this one.** It is the prose comment syntax, in the file, on the cell as a whole. Editing the cell body does not move it, because `replace_code_block_source` copies the surrounding markdown unchanged. Moving the section in the markdown carries the note when the author moves those lines with the fence. Obsidian already hides a `%%` in that position, which matches §1.2. No new delimiter, no fence attribute, and no change to the rlab lexer.
 
-**Rendering.** The note is not a paragraph above the cell. The renderer takes a trailing cell-comment `%%` off the preceding markdown block and draws it as `.rl-cm-note` on the code section, with the same number superscript used as a badge on the cell. Wide viewports float the card in the gutter. Narrow viewports show the badge, and focus expands the card (`:focus-within`), the same as a prose note. The listing itself is unchanged: no `<mark>`, no per-line marker.
+**Rendering.** The note is not a paragraph above the cell and not a card under the listing. The renderer takes a trailing cell-comment `%%` off the preceding markdown block. The code section gets a `.rl-cm-cellmark` (the same `[N]` superscript, floated to the cell gutter) and the card goes in that section's `.rl-cm-margin` aside. Under 800px the aside is the section's bottom drawer, the same as a prose note (§1.3). The listing itself is unchanged: no `<mark>`, no per-line marker.
 
-**Toggle, CLI, PDF.** The Comments switch and `--no-comments` hide or omit the card and the badge the same way they omit any other note (§3). The code remains. `--comments` on PDF prints the note immediately above the listing. The default PDF drops it.
+**Toggle, CLI, PDF.** The Comments switch and `--no-comments` hide or omit the card and the marker the same way they omit any other note (§3). The code remains. `--comments` on PDF prints the note as `\marginpar`, the same as an inline or block note. The default PDF drops it.
 
 **Selection in `--annotate`.** A non-empty selection that starts and ends inside one code section uses the same context menu (§4.1). **Add comment** opens the popover and writes a cell comment. **Highlight** is not in that menu. A touch or pen `pointerup` inside the cell opens that popover directly, still without Highlight (§4.2). A mouse `pointerup` does not. The request is `target: "cell"` with the fence opener's byte offset. The server checks that offset is still a fence opener, inserts one `%%` line above the directive stack, and requires a non-empty comment. It does not copy the selected lines into the comment. A selection can contain `%%`, `==`, or a fence-like string of backticks, and copying it into the `%%` body would close the comment or break `parse_notebook`. The popover shows the selected lines as read-only context so the reader can see what they pointed at. Citing a line is something they type, in their own words. A selection that leaves the cell is rejected (§4.3).
 

@@ -1156,8 +1156,12 @@ fn find_inline_math_close(s: &[u8], from: usize, table: bool) -> Option<usize> {
 
 struct NoteOut {
     placeholder: String,
+    /// LaTeX replacement (`\marginpar` / `\footnote`). Empty for HTML.
     html: String,
-    block: bool,
+    /// Superscript left at the anchor. Empty for LaTeX.
+    marker: String,
+    /// Card placed in the margin aside. Empty for LaTeX.
+    card: String,
 }
 
 struct MarkOut {
@@ -1359,11 +1363,12 @@ fn build_shown(md: &str, scanned: &Scan) -> Prepared {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        let html = render_note_html(m, &md[m.start..m.end], num, &replies, annotate);
+        let card = render_note_html(m, &md[m.start..m.end], num, &replies, annotate);
         notes.push(NoteOut {
             placeholder: ph.clone(),
-            html,
-            block: m.block,
+            html: String::new(),
+            marker: marker_html(num, m.block),
+            card,
         });
         edits.push((m.start, m.end, ph));
     }
@@ -1459,11 +1464,11 @@ fn bound_note<'a>(md: &str, scanned: &'a Scan, hi: &Mark) -> Option<&'a Mark> {
 fn render_reply(m: &Mark) -> String {
     let body = render_body_html(&m.body);
     let who = header_label(&m.header);
-    // A span, not a div. The card lives inside a `<p>` (an inline note is
-    // itself a span), and a block-level reply would be hoisted out of the
-    // card by the HTML parser. `display: block` is applied in CSS.
+    // The card is an `<article>` in the margin column, not inside a `<p>`,
+    // so a reply can be a div. A div inside the old in-paragraph span was
+    // hoisted out of the card.
     format!(
-        "<span class=\"rl-cm-reply\">{who}{body}</span>",
+        "<div class=\"rl-cm-reply\">{who}{body}</div>",
         who = who,
         body = body
     )
@@ -1511,6 +1516,34 @@ fn attr_escape(s: &str) -> String {
         .replace('\r', "&#13;")
 }
 
+/// `[N]` left in the prose or the cell gutter. The card lives in the margin.
+fn marker_html(num: u32, block: bool) -> String {
+    let extra = if block { " rl-cm-ref-block" } else { "" };
+    format!(
+        "<sup class=\"rl-cm-ref{extra}\" id=\"cm-r{num}\" data-cm-for=\"cm-n{num}\">{num}</sup>"
+    )
+}
+
+fn margin_aside(cards: &str) -> String {
+    format!(
+        "<aside class=\"rl-cm-margin\" aria-label=\"Comments\"><details class=\"rl-cm-drawer\" open><summary class=\"rl-cm-margin-label\">Comments</summary>{cards}</details></aside>\n"
+    )
+}
+
+/// Split marker `restore` appends so a page can lift the aside out of a
+/// `.prose` or callout wrapper. Absent when the fragment has no notes.
+pub(crate) const MARGIN_SPLIT: &str = "<!--rl-cm-margin-->";
+
+pub(crate) fn split_page_margin(html: &str) -> (String, String) {
+    match html.find(MARGIN_SPLIT) {
+        Some(i) => (
+            html[..i].to_string(),
+            html[i + MARGIN_SPLIT.len()..].to_string(),
+        ),
+        None => (html.to_string(), String::new()),
+    }
+}
+
 fn render_note_html(m: &Mark, raw: &str, num: u32, replies: &str, annotate: bool) -> String {
     let body = render_body_html(&m.body);
     let id_attr = m
@@ -1524,20 +1557,22 @@ fn render_note_html(m: &Mark, raw: &str, num: u32, replies: &str, annotate: bool
     } else {
         ""
     };
-    let class = if m.block {
-        "rl-cm-blocknote"
-    } else {
-        "rl-cm-note"
-    };
-    // Inline notes stay a span so they remain inside the surrounding `<p>`.
-    // A div there is hoisted, which also pulls replies out of the card.
-    // Block notes are their own paragraph, so a div is correct. Both use
-    // `header_label` (author and date only); the `#cN` id is the tooltip
+    // One card for inline, block, and cell notes. `rl-cm-note` stays so
+    // the annotate client can find the card. The `#cN` id is the tooltip
     // and `data-cm-id`, not visible header text.
-    let tag = if m.block { "div" } else { "span" };
+    let class = if m.block {
+        "rl-cm-card rl-cm-note rl-cm-blocknote"
+    } else {
+        "rl-cm-card rl-cm-note"
+    };
     let title = note_title_attr(&m.header);
+    let replies_html = if replies.is_empty() {
+        String::new()
+    } else {
+        format!("<div class=\"rl-cm-replies\">{replies}</div>")
+    };
     format!(
-        "<{tag} class=\"{class}\" id=\"cm-n{num}\" role=\"note\" tabindex=\"0\"{id_attr}{title} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><sup class=\"rl-cm-num\">{num}</sup><span class=\"rl-cm-body\">{meta}<span class=\"rl-cm-text\">{body}</span>{replies}</span>{buttons}</{tag}>",
+        "<article class=\"{class}\" id=\"cm-n{num}\" data-cm-anchor=\"cm-r{num}\" role=\"note\" tabindex=\"0\"{id_attr}{title} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><header class=\"rl-cm-head\"><span class=\"rl-cm-num\">{num}</span> {meta}</header><span class=\"rl-cm-text\">{body}</span>{replies_html}{buttons}</article>",
         file_off(m.start),
         file_off(m.end),
         attr_escape(raw),
@@ -1661,18 +1696,24 @@ fn uncovered_lines(
 }
 
 pub(crate) fn restore(html: &str, prep: &Prepared) -> String {
+    let (prose, margin) = restore_parts(html, prep);
+    if margin.is_empty() {
+        prose
+    } else {
+        format!("{prose}{MARGIN_SPLIT}{margin}")
+    }
+}
+
+/// Prose keeps a numbered marker. Cards are one margin aside, in order.
+fn restore_parts(html: &str, prep: &Prepared) -> (String, String) {
     if !prep.changed() {
-        return html.to_string();
+        return (html.to_string(), String::new());
     }
     let mut html = move_sentinels_out_of_headings(html);
+    let mut cards = String::new();
     for n in &prep.notes {
-        if n.block {
-            let wrapped = format!("<p>{}</p>", n.placeholder);
-            html = html.replace(&wrapped, &n.html);
-            let wrapped_nl = format!("<p>{}</p>\n", n.placeholder);
-            html = html.replace(&wrapped_nl, &n.html);
-        }
-        html = html.replace(&n.placeholder, &n.html);
+        html = html.replace(&n.placeholder, &n.marker);
+        cards.push_str(&n.card);
     }
     for m in &prep.marks {
         html = html.replace(&m.open_ph, &m.open_html);
@@ -1681,7 +1722,12 @@ pub(crate) fn restore(html: &str, prep: &Prepared) -> String {
     for w in &prep.warns {
         html = html.replace(&w.ph, &w.html);
     }
-    html
+    let margin = if cards.is_empty() {
+        String::new()
+    } else {
+        margin_aside(&cards)
+    };
+    (html, margin)
 }
 
 fn move_sentinels_out_of_headings(html: &str) -> String {
@@ -1758,8 +1804,9 @@ pub(crate) fn strip_source(md: &str) -> String {
 ///
 /// With comments off, well-formed marks are stripped (highlight text kept,
 /// comments deleted). With comments on, highlights become sentinels that
-/// [`restore_latex`] turns into `\hl`, and notes become `\marginpar` (or
-/// `\footnote` on a table row). Unclosed delimiters stay literal.
+/// [`restore_latex`] turns into `\hl`, and notes (inline, block, and cell)
+/// become `\marginpar` (or `\footnote` on a table row). Unclosed
+/// delimiters stay literal.
 pub(crate) fn prepare_latex(md: &str) -> Prepared {
     if in_body() {
         return Prepared::identity();
@@ -1836,7 +1883,8 @@ fn build_latex(md: &str, scanned: &Scan) -> Prepared {
         notes.push(NoteOut {
             placeholder: ph.clone(),
             html,
-            block: m.block,
+            marker: String::new(),
+            card: String::new(),
         });
         edits.push((m.start, m.end, ph));
     }
@@ -1909,13 +1957,27 @@ fn latex_fragment(md: &str) -> String {
     crate::render_latex::markdown_fragment_to_latex(md)
 }
 
+/// `\marginpar` rejects `\par` and a blank line. Flatten those to `\\ `.
+fn marginpar_text(s: &str) -> String {
+    let flat = s.replace("\\par", " ");
+    let mut parts = Vec::new();
+    for line in flat.split(['\n', '\r']) {
+        let t = line.trim();
+        if !t.is_empty() {
+            parts.push(t);
+        }
+    }
+    parts.join("\\\\ ")
+}
+
 fn render_note_latex(m: &Mark, replies: &str, in_table: bool) -> String {
-    let body = latex_fragment(&m.body);
+    let body = marginpar_text(&latex_fragment(&m.body));
+    let replies = marginpar_text(replies);
     let inner = format!("{}{body}{replies}", latex_header_label(&m.header));
+    // A margin note inside a table breaks the alignment. Footnote there.
+    // Inline, block, and cell notes all use `\marginpar`.
     if in_table {
         format!("\\footnote{{{inner}}}")
-    } else if m.block {
-        format!("\\begin{{quote}}{inner}\\end{{quote}}\n")
     } else {
         format!("\\marginpar{{{inner}}}")
     }
@@ -2033,15 +2095,23 @@ fn whole_line_note(md: &str, m: &Mark) -> bool {
         && line_start(md, m.start) == line_start(md, m.end.saturating_sub(1))
 }
 
-pub(crate) fn render_cell_notes_at(notes: &[CellNote], origin: usize) -> String {
+pub(crate) struct CellNotesHtml {
+    /// Numbered gutter marker, inside the cell.
+    pub markers: String,
+    /// Margin aside for the same section, outside the cell wrapper.
+    pub margin: String,
+}
+
+pub(crate) fn render_cell_notes_at(notes: &[CellNote], origin: usize) -> CellNotesHtml {
     set_origin(origin);
     let html = render_cell_notes(notes);
     set_origin(0);
     html
 }
 
-pub(crate) fn render_cell_notes(notes: &[CellNote]) -> String {
-    let mut out = String::new();
+pub(crate) fn render_cell_notes(notes: &[CellNote]) -> CellNotesHtml {
+    let mut markers = String::new();
+    let mut cards = String::new();
     for n in notes {
         let num = next_note();
         let mark = Mark {
@@ -2051,14 +2121,22 @@ pub(crate) fn render_cell_notes(notes: &[CellNote]) -> String {
             inner_start: n.start,
             inner_end: n.end,
             line: 1,
-            block: false,
+            block: n.block,
             header: n.header.clone(),
             body: n.body.clone(),
         };
-        // Cell notes use the margin-note card, not a paragraph.
-        out.push_str(&render_note_html(&mark, &n.raw, num, "", mode().annotate));
+        markers.push_str(&format!(
+            "<div class=\"rl-cm-cellmark\">{}</div>",
+            marker_html(num, true)
+        ));
+        cards.push_str(&render_note_html(&mark, &n.raw, num, "", mode().annotate));
     }
-    out
+    let margin = if cards.is_empty() {
+        String::new()
+    } else {
+        margin_aside(&cards)
+    };
+    CellNotesHtml { markers, margin }
 }
 
 pub(crate) fn is_fence_rendered(block: &crate::execute::Rendered) -> bool {
@@ -2102,32 +2180,71 @@ pub(crate) fn comment_css() -> &'static str {
   border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   padding: 0 0.05em;
 }
-.rl-cm-note, .rl-cm-blocknote {
+.rl-cm-ref {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--rl-accent-primary);
+  margin-left: 0.12em;
+  cursor: pointer;
+}
+.rl-cm-ref::before { content: "["; }
+.rl-cm-ref::after { content: "]"; }
+.rl-cm-ref-block { float: right; margin: 0 0 0.2rem 0.4rem; }
+.rl-cm-cellmark { display: flex; justify-content: flex-end; }
+p:has(> .rl-cm-ref-block:only-child) { margin: 0.2rem 0; }
+/* Right margin column inside each section. The prose shrinks so the
+   column stays, including a directory page (`body.has-files`) with the
+   file browser and the TOC. Cards are never in the paragraph. With
+   scripting off they stack in this column in document order. */
+body.has-cm-margin { --rl-cm-col: 18rem; }
+body.has-cm-margin section.rl-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rl-cm-col, 18rem);
+  column-gap: 1rem;
+  align-items: start;
+}
+body.has-cm-margin section.rl-block > .rl-cm-margin {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
+  grid-column: 1;
+  min-width: 0;
+}
+.rl-cm-margin-label {
+  display: block;
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rl-text-dim, var(--rl-text));
+}
+.rl-cm-card, .rl-cm-note, .rl-cm-blocknote {
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
   border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 6px;
   font-size: 0.85rem;
   line-height: 1.35;
-}
-.rl-cm-note {
-  display: inline-block;
-  vertical-align: super;
-  margin-left: 0.15em;
-}
-.rl-cm-note .rl-cm-body, .rl-cm-blocknote .rl-cm-body { display: none; }
-.rl-cm-note:focus-within .rl-cm-body,
-.rl-cm-note:focus .rl-cm-body,
-.rl-cm-blocknote .rl-cm-body { display: inline; }
-.rl-cm-blocknote {
   display: block;
-  margin: 0.6rem 0;
-  padding: 0.4rem 0.6rem;
+  margin: 0 0 0.55rem;
+  padding: 0.4rem 0.55rem 0.45rem;
 }
-.rl-cm-blocknote .rl-cm-body { display: block; }
-.rl-cm-num { font-weight: 600; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); margin-right: 0.25em; }
-.rl-cm-meta { opacity: 0.85; margin-right: 0.35em; }
-.rl-cm-reply { display: block; margin: 0.35rem 0 0.2rem 1rem; }
+.rl-cm-head { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; margin-bottom: 0.2rem; }
+.rl-cm-num { font-weight: 700; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); }
+.rl-cm-meta { opacity: 0.85; }
+.rl-cm-text { display: block; }
+.rl-cm-reply {
+  display: block;
+  margin: 0.35rem 0 0.15rem 0.75rem;
+  padding-left: 0.45rem;
+  border-left: 2px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+}
 .rl-cm-actions {
   display: flex;
   flex-direction: row;
@@ -2135,26 +2252,32 @@ pub(crate) fn comment_css() -> &'static str {
   gap: 0.25rem;
   margin-top: 0.35rem;
 }
+.rl-cm-mark.rl-cm-hot, .rl-cm-ref.rl-cm-hot {
+  outline: 2px solid var(--rl-accent-primary);
+  outline-offset: 1px;
+}
+.rl-cm-card.rl-cm-hot {
+  border-color: var(--rl-accent-primary);
+  box-shadow: -3px 0 0 var(--rl-accent-primary);
+}
 .rl-cm-warn { cursor: help; }
 .rl-comments-toggle { margin-left: 0.8rem; font-size: 0.85rem; white-space: nowrap; }
 .rl-cm-confirm { margin-left: 0.6rem; font-size: 0.8rem; }
-body:has(#rl-comments:not(:checked)) .rl-cm-note,
-body:has(#rl-comments:not(:checked)) .rl-cm-blocknote { display: none; }
+body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }
+body:has(#rl-comments:not(:checked)) section.rl-block { column-gap: 0; }
+body:has(#rl-comments:not(:checked)) .rl-cm-margin,
+body:has(#rl-comments:not(:checked)) .rl-cm-ref,
+body:has(#rl-comments:not(:checked)) .rl-cm-cellmark { display: none; }
 body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   background: transparent;
   border-bottom-color: transparent;
   color: inherit;
 }
-@media (min-width: 1280px) {
-  body:not(.has-files) .rl-cm-note {
-    float: right;
-    clear: right;
-    margin-right: -16rem;
-    width: 14rem;
-    vertical-align: baseline;
-    padding: 0.35rem 0.5rem;
-  }
-  body:not(.has-files) .rl-cm-note .rl-cm-body { display: inline; }
+@media (min-width: 800px) {
+  .rl-cm-margin-label { pointer-events: none; list-style: none; }
+  .rl-cm-margin-label::-webkit-details-marker { display: none; }
+  .rl-cm-margin-label::marker { content: ""; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: none; }
 }
 #rl-cm-menu, #rl-cm-pop {
   position: fixed;
@@ -2168,7 +2291,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   border-radius: 6px;
   padding: 0.25rem;
 }
-#rl-cm-menu button, #rl-cm-pop button {
+#rl-cm-menu button {
   display: block;
   width: 100%;
   text-align: left;
@@ -2177,9 +2300,71 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   border: 2px solid transparent;
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
+  font: inherit;
+  cursor: pointer;
 }
-/* `display: block` above beats the user-agent `[hidden]` rule, which
-   would paint every menu item. This selector wins on specificity. */
+/* Composer. Name on top, comment full width, actions in one row at
+   the right. Tokens are the theme roles, so mocha and latte both
+   keep 4.5:1 (accent fill with the page background as the label). */
+#rl-cm-pop {
+  width: min(20rem, calc(100vw - 16px));
+  padding: 0.65rem 0.7rem 0.6rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+#rl-cm-pop-ctx { margin: 0 0 0.45rem; font-size: 0.8rem; }
+#rl-cm-pop-ctx:empty { display: none; }
+#rl-cm-pop label {
+  display: block;
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  color: var(--rl-text);
+}
+#rl-cm-pop input, #rl-cm-pop textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--rl-text);
+  background: var(--rl-bg, var(--rl-bg-secondary));
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+}
+#rl-cm-pop textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+  margin: 0 0 0.55rem;
+}
+.rl-cm-pop-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+#rl-cm-pop .rl-cm-pop-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--rl-text);
+  background: transparent;
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  padding: 0.28rem 0.55rem;
+}
+#rl-cm-pop #rl-cm-go {
+  color: var(--rl-bg);
+  background: var(--rl-accent-primary);
+  border-color: var(--rl-accent-primary);
+  font-weight: 600;
+}
+/* `display` on the buttons above beats the user-agent `[hidden]` rule.
+   This selector is at least as specific and comes later. */
 #rl-cm-menu button[hidden], #rl-cm-pop button[hidden] { display: none; }
 .rl-cm-actions button {
   display: inline-block;
@@ -2203,9 +2388,21 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-cm-menu button, #rl-cm-pop button { padding: 0.55rem 0.7rem; }
   .rl-cm-actions button { padding: 0.3rem 0.5rem; }
 }
+/* A side column does not fit. Cards drop to a drawer at the bottom of
+   the section. They stay out of the paragraph. */
+@media (max-width: 799px) {
+  body.has-cm-margin { --rl-cm-col: 0px; }
+  body.has-cm-margin section.rl-block { column-gap: 0; }
+  body.has-cm-margin section.rl-block > .rl-cm-margin {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 0.75rem;
+  }
+  .rl-cm-margin-label { pointer-events: auto; cursor: pointer; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: block; }
+}
 @media print {
-  .rl-cm-note { float: none; margin: 0.4rem 0; display: list-item; list-style: decimal; }
-  .rl-cm-note .rl-cm-body, .rl-cm-blocknote .rl-cm-body { display: block; }
+  .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; }
   .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions { display: none !important; }
 }
 "#
@@ -2264,6 +2461,108 @@ pub(crate) fn toggle_script(nonce: Option<&str>) -> String {
     )
 }
 
+/// Align each card with its marker. A narrow viewport, or Comments off,
+/// leaves the CSS layout alone (drawer, or no column).
+pub(crate) fn margin_script(nonce: Option<&str>) -> String {
+    let nonce_attr = crate::render::nonce_attr(nonce);
+    let js = r#"(function () {
+  var mq = window.matchMedia('(max-width: 799px)');
+  function clearPos(cards) {
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].style.position = '';
+      cards[i].style.top = '';
+      cards[i].style.left = '';
+      cards[i].style.right = '';
+    }
+  }
+  function placeNotes() {
+    var cards = document.querySelectorAll('.rl-cm-card');
+    var box = document.getElementById('rl-comments');
+    if (!cards.length || mq.matches || (box && !box.checked)) {
+      clearPos(cards);
+      return;
+    }
+    var cursor = -1;
+    var gap = 10;
+    var label = document.querySelector('.rl-cm-margin-label');
+    if (label && label.offsetParent !== null) {
+      var lr = label.getBoundingClientRect();
+      cursor = lr.bottom + window.scrollY + gap;
+    }
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var aside = card.closest('.rl-cm-margin');
+      if (!aside) continue;
+      var anchorId = card.getAttribute('data-cm-anchor');
+      var ref = anchorId ? document.getElementById(anchorId) : null;
+      var refTop = ref ? (ref.getBoundingClientRect().top + window.scrollY) : 0;
+      var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
+      var asideTop = aside.getBoundingClientRect().top + window.scrollY;
+      var top = Math.max(0, topDoc - asideTop) + 'px';
+      if (card.style.position !== 'absolute') card.style.position = 'absolute';
+      if (card.style.left !== '0px') card.style.left = '0';
+      if (card.style.right !== '0px') card.style.right = '0';
+      if (card.style.top !== top) card.style.top = top;
+      cursor = topDoc + card.offsetHeight + gap;
+    }
+  }
+  function hot(id, on) {
+    if (!id) return;
+    var card = document.getElementById(id);
+    if (card) card.classList.toggle('rl-cm-hot', on);
+    var anchor = card && card.getAttribute('data-cm-anchor');
+    var ref = anchor && document.getElementById(anchor);
+    if (ref) ref.classList.toggle('rl-cm-hot', on);
+    var marks = document.querySelectorAll('.rl-cm-mark[aria-describedby="' + id + '"]');
+    for (var i = 0; i < marks.length; i++) marks[i].classList.toggle('rl-cm-hot', on);
+  }
+  function cardIdOf(el) {
+    if (el.classList.contains('rl-cm-card')) return el.id;
+    return el.getAttribute('data-cm-for') || el.getAttribute('aria-describedby');
+  }
+  function bindHot() {
+    var nodes = document.querySelectorAll('.rl-cm-card, .rl-cm-ref, .rl-cm-mark[aria-describedby]');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.getAttribute('data-cm-bound')) continue;
+      el.setAttribute('data-cm-bound', '1');
+      (function (node) {
+        function set(on) { hot(cardIdOf(node), on); }
+        node.addEventListener('pointerenter', function () { set(true); });
+        node.addEventListener('pointerleave', function () { set(false); });
+        node.addEventListener('focusin', function () { set(true); });
+        node.addEventListener('focusout', function () { set(false); });
+      })(el);
+    }
+  }
+  var raf = 0;
+  function schedule() {
+    if (raf) return;
+    raf = requestAnimationFrame(function () {
+      raf = 0;
+      bindHot();
+      placeNotes();
+    });
+  }
+  schedule();
+  window.addEventListener('resize', schedule);
+  window.addEventListener('load', schedule);
+  if (window.ResizeObserver) {
+    var main = document.querySelector('main');
+    if (main) new ResizeObserver(schedule).observe(main);
+  }
+  if (mq.addEventListener) mq.addEventListener('change', schedule);
+  var box = document.getElementById('rl-comments');
+  if (box) box.addEventListener('change', schedule);
+  var prev = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prev) prev();
+    schedule();
+  };
+})();"#;
+    format!("<script{nonce_attr}>\n{js}\n</script>")
+}
+
 pub(crate) fn annotate_chrome() -> &'static str {
     r#"<div id="rl-cm-menu" role="menu" hidden>
 <button type="button" role="menuitem" data-act="add" tabindex="-1">Add comment</button>
@@ -2274,11 +2573,13 @@ pub(crate) fn annotate_chrome() -> &'static str {
 <div id="rl-cm-pop" hidden>
 <p id="rl-cm-pop-ctx"></p>
 <label>Name <input id="rl-cm-name" type="text" autocomplete="off"></label>
-<textarea id="rl-cm-text" rows="3"></textarea>
-<button type="button" id="rl-cm-go">Comment</button>
-<button type="button" data-act="highlight">Highlight</button>
-<button type="button" data-act="delete">Delete</button>
+<textarea id="rl-cm-text" rows="4"></textarea>
+<div class="rl-cm-pop-actions">
+<button type="button" data-act="delete" hidden>Delete</button>
 <button type="button" id="rl-cm-cancel">Cancel</button>
+<button type="button" data-act="highlight">Highlight only</button>
+<button type="button" id="rl-cm-go">Save comment</button>
+</div>
 </div>"#
 }
 
@@ -2504,12 +2805,13 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     if (vis[0]) vis[0].focus();
   }}
   function openPop(info, editing) {{
+    info.editing = !!editing;
     pending = info;
     pop.hidden = false;
     var ctx = document.getElementById('rl-cm-pop-ctx');
     ctx.textContent = info.code ? 'Comment on this cell' : '';
     document.getElementById('rl-cm-text').value = editing ? (info.editBody || '') : '';
-    document.getElementById('rl-cm-go').textContent = editing ? 'Save' : 'Comment';
+    document.getElementById('rl-cm-go').textContent = 'Save comment';
     var hi = pop.querySelector('[data-act="highlight"]');
     var del = pop.querySelector('[data-act="delete"]');
     hi.hidden = info.code || !!info.mark;
@@ -2668,7 +2970,7 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
       return;
     }}
     var off = offsetsOf(pending);
-    var op = document.getElementById('rl-cm-go').textContent === 'Save' ? 'edit' : 'insert';
+    var op = pending.editing ? 'edit' : 'insert';
     post({{
       op: op,
       target: pending.code ? 'cell' : 'prose',
@@ -2684,6 +2986,13 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
   pop.querySelector('[data-act="highlight"]').addEventListener('click', function () {{ act('highlight'); }});
   pop.querySelector('[data-act="delete"]').addEventListener('click', function () {{ act('delete'); }});
   document.getElementById('rl-cm-cancel').addEventListener('click', hidePop);
+  pop.addEventListener('keydown', function (ev) {{
+    if (ev.key === 'Escape') {{ ev.preventDefault(); hidePop(); }}
+    else if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {{
+      ev.preventDefault();
+      document.getElementById('rl-cm-go').click();
+    }}
+  }});
   document.addEventListener('click', function (ev) {{
     var t = ev.target;
     if (t.closest && t.closest('.rl-cm-edit')) {{
@@ -3389,7 +3698,7 @@ mod tests {
             "cell note should sit on the code section"
         );
         assert!(html.contains("data-cm-id=\"c3\""), "{html}");
-        assert!(html.contains("class=\"rl-cm-note\""), "{html}");
+        assert!(html.contains("rl-cm-card rl-cm-note"), "{html}");
         let prose_end = html.find("class=\"code-block\"").unwrap();
         assert!(
             !html[..prose_end].contains("why the gain"),
@@ -3423,6 +3732,29 @@ mod tests {
                 tex.contains("marginpar") || tex.contains("footnote"),
                 "{tex}"
             );
+            assert!(!tex.contains("\\begin{quote}"), "{tex}");
+        }
+        {
+            let _guard = install(CommentMode::for_format(FormatKind::Latex, Some(true)));
+            let block = "%%\n#c2 @ada 2026-10-09: block words\n\nmore\n%%\n";
+            let prep = prepare_latex(block);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(tex.contains("\\marginpar{"), "{tex}");
+            assert!(tex.contains("block words"), "{tex}");
+            assert!(!tex.contains("\\begin{quote}"), "{tex}");
+            assert!(!tex.contains("\\par"), "{tex}");
+            let cell = render_cell_notes_latex(&[CellNote {
+                header: CommentHeader::default(),
+                body: "why the gain".into(),
+                start: 0,
+                end: 4,
+                raw: "%%why the gain%%".into(),
+                block: true,
+            }]);
+            assert!(cell.contains("\\marginpar{"), "{cell}");
+            assert!(cell.contains("why the gain"), "{cell}");
+            assert!(!cell.contains("\\begin{quote}"), "{cell}");
         }
         let _guard = install(CommentMode::for_format(FormatKind::Latex, None));
         assert_eq!(latex_packages(), "");
@@ -3730,11 +4062,171 @@ mod tests {
         assert!(rule.contains("display: inline-block;"), "{rule}");
         assert!(rule.contains("width: auto;"), "{rule}");
         assert!(!rule.contains("width: 100%"), "{rule}");
-        let shared = css.find("#rl-cm-menu button, #rl-cm-pop button {").unwrap();
+        let shared = css.find("#rl-cm-menu button {").unwrap();
         let shared_rule = &css[shared..shared + 80];
+        assert!(
+            shared_rule.contains("display: block;"),
+            "menu rows stay stacked: {shared_rule}"
+        );
         assert!(
             !shared_rule.contains(".rl-cm-actions"),
             "card buttons must not share the full-width menu rule: {shared_rule}"
+        );
+        if let Some(at) = css.find("#rl-cm-menu button, #rl-cm-pop button {") {
+            let rule = &css[at..at + 90];
+            assert!(
+                !rule.contains("width: 100%") && !rule.contains("display: block"),
+                "popover buttons must not use the stacked menu rule: {rule}"
+            );
+        }
+    }
+
+    fn dir_page(blocks: &[crate::execute::Rendered]) -> String {
+        let nav = crate::NotebookNav {
+            index_href: Some("index.html".into()),
+            prev: None,
+            next: None,
+            files: Some(crate::CollectionBrowser {
+                label: "Notes".into(),
+                current_rel: Some("a.md".into()),
+                entries: vec![
+                    crate::FileEntry {
+                        title: "A".into(),
+                        rel_md: "a.md".into(),
+                        href: "a.html".into(),
+                    },
+                    crate::FileEntry {
+                        title: "B".into(),
+                        rel_md: "b.md".into(),
+                        href: "b.html".into(),
+                    },
+                ],
+            }),
+        };
+        crate::render::render_html_nonced(
+            "T",
+            blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            rustlab_plot::Theme::Dark.colors(),
+            Some(&nav),
+            &crate::render::LinkMode::single_file(),
+            Some("deadbeef"),
+        )
+    }
+
+    /// Cards sit in the margin aside, not in the paragraph, on a single-file
+    /// page and on a directory page (`body.has-files`). Unchecking Comments
+    /// drops the column. A viewport under 800px moves the aside under the
+    /// section instead of back into the prose.
+    #[test]
+    fn notes_live_in_the_margin_column() {
+        let md = "See ==x== %%#c1 @ada 2026-10-09: readable in the margin%%.";
+        let blocks = [md_block(md)];
+        for html in [page(&blocks), dir_page(&blocks)] {
+            let open = body_open_tag(&html);
+            assert!(
+                open.contains("has-cm-margin"),
+                "the page must reserve the margin column: {open}"
+            );
+            let prose = between(&html, "<div class=\"prose\">", "</div>");
+            assert!(
+                prose.contains("class=\"rl-cm-ref\""),
+                "the anchor marker stays in the prose: {prose}"
+            );
+            assert!(
+                !prose.contains("readable in the margin"),
+                "the comment body must not sit in the prose: {prose}"
+            );
+            assert!(
+                !prose.contains("rl-cm-card"),
+                "the card must not sit in the prose: {prose}"
+            );
+            let margin = between(&html, "<aside class=\"rl-cm-margin\"", "</aside>");
+            assert!(
+                margin.contains("readable in the margin"),
+                "the comment body is the margin card: {margin}"
+            );
+            assert!(margin.contains("rl-cm-card"), "{margin}");
+            assert!(margin.contains("@ada"), "{margin}");
+        }
+        let dir = dir_page(&blocks);
+        assert!(
+            body_open_tag(&dir).contains("has-files"),
+            "directory layout still has the file browser"
+        );
+        let css = comment_css();
+        assert!(css.contains("body.has-cm-margin { --rl-cm-col: 18rem; }"));
+        assert!(
+            css.contains("body.has-cm-margin section.rl-block"),
+            "every section, including body.has-files, keeps the column"
+        );
+        assert!(
+            !css.contains("body:not(.has-files)"),
+            "the file browser must not drop the margin column"
+        );
+        assert!(css.contains("body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }"));
+        assert!(css.contains(
+            "body:has(#rl-comments:not(:checked)) .rl-cm-margin,\nbody:has(#rl-comments:not(:checked)) .rl-cm-ref,"
+        ));
+        let narrow_at = css
+            .find("@media (max-width: 799px)")
+            .expect("narrow drawer");
+        let print_at = css.find("@media print").expect("print");
+        let narrow = &css[narrow_at..print_at];
+        assert!(narrow.contains("grid-column: 1;"), "{narrow}");
+        assert!(narrow.contains("grid-row: auto;"), "{narrow}");
+        assert!(
+            !narrow.contains("display: inline-block") && !css.contains(".rl-cm-note {\n    float:"),
+            "narrow layout must not put the card back in the paragraph: {narrow}"
+        );
+        let js = margin_script(None);
+        assert!(js.contains("max-width: 799px"));
+        assert!(js.contains("position = 'absolute'"));
+        assert!(js.contains("__rlAfterUpdate"));
+        assert!(page(&blocks).contains("max-width: 799px"));
+    }
+
+    #[test]
+    fn popover_is_a_card_and_saves_from_the_keyboard() {
+        let html = annotate_chrome();
+        let name = html.find("id=\"rl-cm-name\"").expect("name");
+        let text = html.find("id=\"rl-cm-text\"").expect("textarea");
+        let actions = html.find("rl-cm-pop-actions").expect("row");
+        assert!(
+            name < text && text < actions,
+            "name, then comment, then buttons"
+        );
+        let row = &html[actions..];
+        let cancel = row.find(">Cancel</button>").unwrap();
+        let highlight = row.find(">Highlight only</button>").unwrap();
+        let save = row.find(">Save comment</button>").unwrap();
+        assert!(cancel < highlight && highlight < save, "{row}");
+        let css = comment_css();
+        let actions_css = css.find(".rl-cm-pop-actions {").expect("actions css");
+        let actions_rule = &css[actions_css..actions_css + 160];
+        assert!(
+            actions_rule.contains("justify-content: flex-end;"),
+            "{actions_rule}"
+        );
+        assert!(css.contains("#rl-cm-pop textarea"));
+        assert!(css.contains("width: 100%"));
+        assert!(
+            css.contains("background: var(--rl-accent-primary);"),
+            "the primary button uses the theme accent on every palette"
+        );
+        assert!(css.contains("color: var(--rl-bg);"));
+        let js = annotate_script(None);
+        assert!(js.contains("info.editing = !!editing;"));
+        assert!(js.contains("pending.editing ? 'edit' : 'insert'"));
+        assert!(!js.contains("textContent === 'Save'"));
+        assert!(js.contains("textContent = 'Save comment'"));
+        assert!(js.contains("getElementById('rl-cm-text').focus()"));
+        assert!(js.contains("ev.key === 'Escape'"));
+        assert!(js.contains("ev.ctrlKey || ev.metaKey"));
+        assert!(
+            css.contains(".rl-cm-mark {") && css.contains("background: var(--rl-cm-mark-bg"),
+            "an open menu must leave the highlight painted"
         );
     }
 
@@ -3760,8 +4252,8 @@ mod tests {
         assert!(block.contains("data-cm-id=\"c8\""), "{block}");
         assert!(inline.contains("title=\"#c7\""), "{inline}");
         assert!(block.contains("title=\"#c8\""), "{block}");
-        assert!(inline.contains("class=\"rl-cm-note\""), "{inline}");
-        assert!(block.contains("class=\"rl-cm-blocknote\""), "{block}");
+        assert!(inline.contains("rl-cm-card rl-cm-note"), "{inline}");
+        assert!(block.contains("rl-cm-blocknote"), "{block}");
     }
 
     #[test]
@@ -3771,13 +4263,16 @@ Group delay is ==constant== %%#c1 @ada 2026-10-09: only linear%%.\n\
 \n\
 %%re #c1 @bea 2026-10-09: agree for an FIR%%.\n";
         let html = html_of(md);
+        let (prose, margin) = html
+            .split_once(MARGIN_SPLIT)
+            .unwrap_or_else(|| panic!("margin aside missing: {html}"));
         assert!(
-            html.contains("<span class=\"rl-cm-reply\">"),
-            "reply must be a span so it can live inside the card: {html}"
+            !prose.contains("only linear") && !prose.contains("agree for an FIR"),
+            "comment text must leave the prose: {prose}"
         );
         assert!(
-            !html.contains("<div class=\"rl-cm-reply\">"),
-            "a div reply is hoisted out of the span card: {html}"
+            margin.contains("<div class=\"rl-cm-reply\">"),
+            "reply stays inside the margin card: {margin}"
         );
         assert!(
             !html.contains("<p>.</p>"),
@@ -3785,6 +4280,10 @@ Group delay is ==constant== %%#c1 @ada 2026-10-09: only linear%%.\n\
         );
         let root = parse_html5_fragment(&html);
         let path = find_class_path(&root, "rl-cm-reply").expect("reply");
+        assert!(
+            path.iter().any(|c| c == "rl-cm-margin"),
+            "reply is not in the margin column: {path:?}\n{html}"
+        );
         assert!(
             path.iter()
                 .any(|c| c == "rl-cm-note" || c == "rl-cm-blocknote"),
@@ -4167,25 +4666,35 @@ Group delay is ==constant== %%#c1 @ada 2026-10-09: only linear%%.\n";
         &html[s..=e]
     }
 
+    fn between<'a>(html: &'a str, start: &str, end: &str) -> &'a str {
+        let s = html
+            .find(start)
+            .unwrap_or_else(|| panic!("missing {start}"))
+            + start.len();
+        let e = html[s..]
+            .find(end)
+            .unwrap_or_else(|| panic!("missing {end}"))
+            + s;
+        &html[s..e]
+    }
+
     /// A lone '.' is the sentence terminator when it shares a paragraph
-    /// with the note. Anywhere else it is the punctuation left behind
-    /// after a reply was hoisted out of that paragraph.
+    /// with the highlight or the margin marker. Anywhere else it is the
+    /// punctuation left behind after a reply was cut out of that paragraph.
     fn stray_dot_outside_note_paragraph(root: &HNode) -> bool {
-        fn contains_note(node: &HNode) -> bool {
-            if node
-                .classes
-                .iter()
-                .any(|c| c == "rl-cm-note" || c == "rl-cm-blocknote")
-            {
+        fn contains_anchor(node: &HNode) -> bool {
+            if node.classes.iter().any(|c| {
+                c == "rl-cm-mark" || c == "rl-cm-ref" || c == "rl-cm-note" || c == "rl-cm-blocknote"
+            }) {
                 return true;
             }
             node.children.iter().any(|c| match c {
-                HChild::El(el) => contains_note(el),
+                HChild::El(el) => contains_anchor(el),
                 HChild::Text(_) => false,
             })
         }
         fn walk(node: &HNode) -> bool {
-            let sentence = node.tag == "p" && contains_note(node);
+            let sentence = node.tag == "p" && contains_anchor(node);
             for child in &node.children {
                 match child {
                     HChild::Text(t) if !sentence && t.trim() == "." => return true,
