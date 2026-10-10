@@ -1264,15 +1264,20 @@ card. Edit and Delete are one compact row.
 When comments are shown, each section reserves an 18rem column
 (`--rl-cm-col`, 288px) beside the prose. A directory page with the
 file browser and the contents sidebar keeps that column and shrinks
-the prose to make room. A small script aligns each card with the top of its marker. Cards
-whose markers share a line sit side by side in that row, and the
-first card of the row stays level with the marker. A later row starts
-below the previous cards. The margin grows with the lowest card, so a
-long note is not clipped at the end of the section. Opening the
+the prose to make room. Cards are one full-width column. A small
+script stacks them: the first card whose marker is on a line sits
+level with that line, and the others on that line stack under it. A
+later card starts at its own marker, or below the previous card when
+that card still occupies the line. A note taller than about six lines
+is clamped, with a **more** control that expands it, so one long note
+does not push the rest of the column far from its markers. A card that
+does sit below its marker draws a short connector in the gap and
+shows its number larger. The margin grows with the lowest card, so a
+note is not clipped at the end of the section. Opening the
 source pane narrows that pane and shifts the page, so the pane does
 not cover the comment column. Hovering or focusing either the marker
 or the card emphasizes both. With scripting off, the cards stay in
-that column in document order. Unchecking **Comments** sets the column width to zero
+that column in document order, at full height. Unchecking **Comments** sets the column width to zero
 and hides the cards and the markers, so the prose takes the width
 back. The choice is stored in `sessionStorage` for that tab
 (`rl-comments-visible`). `--no-comments` on static HTML omits the
@@ -1286,10 +1291,15 @@ the active Catppuccin theme (`--rl-cm-mark-bg`, `--rl-cm-note-bg`,
 `--comments=off` turn them off. Passing both is an error. HTML, watch,
 markdown, and JSON default to on. PDF and LaTeX default to off: the
 highlight's words stay, and the `%%` comment is dropped. `--comments`
-on PDF uses `\hl` and `\marginpar` for inline, block, and cell notes
-(a footnote inside a table, where a margin note does not fit). The
-right margin is widened to 2.15in so the 1.7in note column stays on
-the page, and `marginfix` keeps stacked notes from colliding.
+on PDF uses `\hl` (a light yellow, `rlhl`) and a numbered
+`\marginpar` for inline, block, and cell notes (a footnote inside a
+table, where a margin note does not fit). The prose gets the same
+superscript number as the HTML marker, and the note starts with that
+number in bold. A reply is indented under its parent. A thin rule and
+`marginfix` keep stacked notes from running together. The space
+between a highlight and a following `%%` is not left in front of the
+sentence's punctuation. The right margin is widened to 2.15in so the
+1.7in note column stays on the page.
 `--no-comments` on markdown unwraps `==` and deletes `%%`, including
 a reply and a cell comment, and tidies the space or blank line the
 note left behind. `rustlab-notebook strip` does that same cleanup and

@@ -46,11 +46,14 @@ should re-validate against those entries when upgrading.
   unchanged). A cell comment is only a `%%` line above the fence.
   Highlight is not offered on a code cell. The page offers Undo for
   the last annotate write in this `watch` process; git history is
-  the archive. Cards that share a line sit side by side, level with
-  the marker, and the margin grows to fit them. The source pane
-  narrows so it does not cover that column. PDF `--comments` uses a
-  wider margin paragraph (`marginfix`, right margin 2.15in, note
-  column 1.7in).
+  the archive. Cards share one full-width column. Markers on the
+  same line stack, the first of them level with the line. A note
+  taller than about six lines clamps until **more**. A card pushed
+  below its marker draws a connector. The source pane narrows so it
+  does not cover that column. PDF `--comments` numbers each note to
+  match the HTML marker, highlights with a light yellow `\hl`, indents
+  replies, and keeps the note column on the page (`marginfix`, right
+  margin 2.15in, note column 1.7in).
 
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder

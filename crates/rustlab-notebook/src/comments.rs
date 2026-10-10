@@ -1766,8 +1766,10 @@ fn render_note_html(m: &Mark, raw: &str, num: u32, replies: &str, annotate: bool
     } else {
         format!("<div class=\"rl-cm-replies\">{replies}</div>")
     };
+    // The fold is the part a long note clamps. The button stays hidden
+    // until the placement script sees more than about six lines.
     format!(
-        "<article class=\"{class}\" id=\"cm-n{num}\" data-cm-anchor=\"cm-r{num}\" role=\"note\" tabindex=\"0\"{id_attr}{title} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><header class=\"rl-cm-head\"><span class=\"rl-cm-num\">{num}</span> {meta}</header><span class=\"rl-cm-text\">{body}</span>{replies_html}{buttons}</article>",
+        "<article class=\"{class}\" id=\"cm-n{num}\" data-cm-anchor=\"cm-r{num}\" role=\"note\" tabindex=\"0\"{id_attr}{title} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><header class=\"rl-cm-head\"><span class=\"rl-cm-num\">{num}</span> {meta}</header><div class=\"rl-cm-fold\"><span class=\"rl-cm-text\">{body}</span>{replies_html}</div><button type=\"button\" class=\"rl-cm-more\" hidden>more</button>{buttons}</article>",
         file_off(m.start),
         file_off(m.end),
         attr_escape(raw),
@@ -2239,6 +2241,12 @@ pub(crate) fn prepare_latex(md: &str) -> Prepared {
             warns: Vec::new(),
         };
     }
+    // One number sequence per page. A direct call (tests, a fragment)
+    // starts at 1. `render_latex` holds `enter_page` so a later cell
+    // note continues the prose numbers.
+    if !in_page() {
+        NOTE_N.with(|c| c.set(0));
+    }
     build_latex(md, &scanned)
 }
 
@@ -2254,6 +2262,12 @@ fn build_latex(md: &str, scanned: &Scan) -> Prepared {
     let mut notes = Vec::new();
     let mut marks_out = Vec::new();
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut note_n_assigned: HashMap<usize, u32> = HashMap::new();
+    for (idx, m) in scanned.marks.iter().enumerate() {
+        if m.kind == Kind::Note && !folded_reply(scanned, m) {
+            note_n_assigned.insert(idx, next_note());
+        }
+    }
     let mut hi_n = 0u32;
     for m in &scanned.marks {
         if m.kind != Kind::Hi {
@@ -2282,6 +2296,7 @@ fn build_latex(md: &str, scanned: &Scan) -> Prepared {
             edits.push((m.start, reply_cut_end(md, m.start, m.end), String::new()));
             continue;
         }
+        let num = note_n_assigned[&idx];
         let ph = format!("\u{E010}C{idx}\u{E011}");
         let replies = m
             .header
@@ -2295,14 +2310,17 @@ fn build_latex(md: &str, scanned: &Scan) -> Prepared {
             })
             .unwrap_or_default();
         let in_table = line_is_table_row(md, m.start);
-        let html = render_note_latex(m, &replies, in_table);
+        let html = render_note_latex(m, &replies, in_table, num);
         notes.push(NoteOut {
             placeholder: ph.clone(),
             html,
             marker: String::new(),
             card: String::new(),
         });
-        edits.push((m.start, m.end, ph));
+        // Eat the binding space before an inline note so
+        // `==constant== %%note%%.` does not print as `constant .`.
+        let (start, end) = latex_anchor_span(md, m);
+        edits.push((start, end, ph));
     }
     for &(at, kind) in &scanned.escapes {
         let s = match kind {
@@ -2339,8 +2357,10 @@ pub(crate) fn restore_latex(tex: &str, prep: &Prepared) -> String {
 pub(crate) fn latex_packages() -> &'static str {
     if mode().latex {
         // The note sits in the right margin, so that margin has to be
-        // wider than the note. marginfix packs notes that would collide.
-        "\\usepackage{soul}\n\\sethlcolor{yellow!35}\n\\usepackage{marginfix}\n\\geometry{left=1in,right=2.15in,top=1in,bottom=1in,marginparwidth=1.7in,marginparsep=0.25in}\n\\setlength{\\marginparpush}{4pt}\n"
+        // wider than the note. `rlhl` is a light Latte-paper yellow so
+        // `\hl` stays visible. marginfix separates notes that would
+        // land on the same line; the push is the minimum gap.
+        "\\usepackage{soul}\n\\definecolor{rlhl}{HTML}{F6D98A}\n\\sethlcolor{rlhl}\n\\usepackage{marginfix}\n\\geometry{left=1in,right=2.15in,top=1in,bottom=1in,marginparwidth=1.7in,marginparsep=0.25in}\n\\setlength{\\marginparpush}{8pt}\n"
     } else {
         ""
     }
@@ -2349,7 +2369,34 @@ pub(crate) fn latex_packages() -> &'static str {
 fn render_reply_latex(m: &Mark) -> String {
     let body = latex_fragment(&m.body);
     let who = latex_header_label(&m.header);
-    format!("\\\\ {who}{body}")
+    // One line down, indented under the parent note.
+    format!("\\\\ \\quad {who}{body}")
+}
+
+/// Bytes the note's anchor replaces.
+///
+/// A block note is replaced as written. An inline note also drops one
+/// space in front of it when that space would sit against punctuation
+/// or another space once the `%%` is gone (`==word== %%note%%.`).
+fn latex_anchor_span(md: &str, m: &Mark) -> (usize, usize) {
+    if m.block {
+        return (m.start, m.end);
+    }
+    let cut = reply_cut_end(md, m.start, m.end);
+    let bytes = md.as_bytes();
+    let mut start = m.start;
+    if start > 0 && bytes[start - 1] == b' ' {
+        let after = bytes.get(cut).copied();
+        if after.is_none()
+            || matches!(
+                after,
+                Some(b' ' | b'\n' | b'\r' | b'.' | b',' | b';' | b':' | b'!' | b'?')
+            )
+        {
+            start -= 1;
+        }
+    }
+    (start, cut)
 }
 
 fn latex_header_label(h: &CommentHeader) -> String {
@@ -2388,16 +2435,26 @@ fn marginpar_text(s: &str) -> String {
     parts.join("\\\\ ")
 }
 
-fn render_note_latex(m: &Mark, replies: &str, in_table: bool) -> String {
+fn render_note_latex(m: &Mark, replies: &str, in_table: bool, num: u32) -> String {
     let body = marginpar_text(&latex_fragment(&m.body));
-    let replies = marginpar_text(replies);
-    let inner = format!("{}{body}{replies}", latex_header_label(&m.header));
-    // A margin note inside a table breaks the alignment. Footnote there.
-    // Inline, block, and cell notes all use `\marginpar`.
+    let replies = if replies.is_empty() {
+        String::new()
+    } else {
+        marginpar_text(replies)
+    };
+    let head = latex_header_label(&m.header);
+    // Bold number, then a rule so the next note cannot sit flush
+    // against this one even when marginfix packs them.
+    let inner = format!(
+        "\\textbf{{{num}}}\\enspace {head}{body}{replies}\\\\[2pt]{{\\color{{black!40}}\\rule{{1.5in}}{{0.4pt}}}}"
+    );
+    let anchor = format!("\\textsuperscript{{\\textbf{{{num}}}}}");
+    // A margin note inside a table breaks the alignment. `\footnote`
+    // already prints its own mark there.
     if in_table {
         format!("\\footnote{{{inner}}}")
     } else {
-        format!("\\marginpar{{\\raggedright\\footnotesize {inner}}}")
+        format!("{anchor}\\marginpar{{\\raggedright\\footnotesize {inner}}}")
     }
 }
 
@@ -2415,7 +2472,8 @@ pub(crate) fn render_cell_notes_latex(notes: &[CellNote]) -> String {
             header: n.header.clone(),
             body: n.body.clone(),
         };
-        out.push_str(&render_note_latex(&mark, "", false));
+        let num = next_note();
+        out.push_str(&render_note_latex(&mark, "", false, num));
     }
     out
 }
@@ -2657,6 +2715,35 @@ body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
 .rl-cm-num { font-weight: 700; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); }
 .rl-cm-meta { opacity: 0.85; }
 .rl-cm-text { display: block; }
+.rl-cm-fold { display: block; }
+.rl-cm-card.rl-cm-clamped:not(.rl-cm-open) .rl-cm-fold {
+  max-height: calc(1.35em * 6);
+  overflow: hidden;
+}
+.rl-cm-more {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rl-accent-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.rl-cm-more[hidden] { display: none; }
+.rl-cm-link {
+  position: absolute;
+  left: -0.7rem;
+  width: 0.7rem;
+  border-left: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  opacity: 0.55;
+  pointer-events: none;
+}
+.rl-cm-link[hidden] { display: none; }
+.rl-cm-card.rl-cm-drift .rl-cm-num { font-size: 1rem; }
 .rl-cm-reply {
   display: block;
   margin: 0.35rem 0 0.15rem 0.75rem;
@@ -2830,7 +2917,8 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 .rl-cm-undo[hidden] { display: none; }
 @media print {
   .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; width: auto !important; }
-  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo { display: none !important; }
+  .rl-cm-card.rl-cm-clamped .rl-cm-fold { max-height: none; overflow: visible; }
+  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo, .rl-cm-more, .rl-cm-link { display: none !important; }
 }
 "#
 }
@@ -2888,8 +2976,11 @@ pub(crate) fn toggle_script(nonce: Option<&str>) -> String {
     )
 }
 
-/// Align each card with its marker. A narrow viewport, or Comments off,
-/// leaves the CSS layout alone (drawer, or no column).
+/// Align each card with its marker in one full-width column. Cards
+/// whose markers share a line stack under that line, the first of them
+/// level with it. A long card clamps to about six lines until More. A
+/// card pushed below its marker draws a connector. A narrow viewport,
+/// or Comments off, leaves the CSS layout alone.
 pub(crate) fn margin_script(nonce: Option<&str>) -> String {
     let nonce_attr = crate::render::nonce_attr(nonce);
     let js = r#"(function () {
@@ -2901,7 +2992,10 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       cards[i].style.left = '';
       cards[i].style.right = '';
       cards[i].style.width = '';
+      cards[i].classList.remove('rl-cm-drift');
       cards[i].removeAttribute('data-cm-slot');
+      var line = cards[i].querySelector('.rl-cm-link');
+      if (line) line.hidden = true;
     }
     var asides = document.querySelectorAll('.rl-cm-margin');
     for (var a = 0; a < asides.length; a++) asides[a].style.minHeight = '';
@@ -2910,6 +3004,45 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
     var anchorId = card.getAttribute('data-cm-anchor');
     var ref = anchorId ? document.getElementById(anchorId) : null;
     return ref ? (ref.getBoundingClientRect().top + window.scrollY) : 0;
+  }
+  function fitClamp(card) {
+    var fold = card.querySelector('.rl-cm-fold');
+    var more = card.querySelector('.rl-cm-more');
+    if (!fold || !more) return;
+    if (card.classList.contains('rl-cm-open')) {
+      more.hidden = false;
+      more.textContent = 'less';
+      return;
+    }
+    more.textContent = 'more';
+    if (card.classList.contains('rl-cm-clamped')) {
+      more.hidden = false;
+      return;
+    }
+    var lh = parseFloat(window.getComputedStyle(fold).lineHeight);
+    if (!(lh > 0)) lh = 18;
+    if (fold.scrollHeight > lh * 6 + 2) {
+      card.classList.add('rl-cm-clamped');
+      more.hidden = false;
+    }
+  }
+  function linkToMarker(card, drift) {
+    var line = card.querySelector('.rl-cm-link');
+    if (!line) {
+      line = document.createElement('span');
+      line.className = 'rl-cm-link';
+      line.setAttribute('aria-hidden', 'true');
+      card.appendChild(line);
+    }
+    if (drift > 14) {
+      line.hidden = false;
+      card.classList.add('rl-cm-drift');
+      line.style.top = (-drift) + 'px';
+      line.style.height = drift + 'px';
+    } else {
+      line.hidden = true;
+      card.classList.remove('rl-cm-drift');
+    }
   }
   function placeNotes() {
     var cards = document.querySelectorAll('.rl-cm-card');
@@ -2921,50 +3054,28 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       clearPos(cards);
       return;
     }
-    var gap = 10;
+    var gap = 8;
     var cursor = -1;
-    var i = 0;
-    while (i < cards.length) {
+    for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
       var aside = card.closest('.rl-cm-margin');
-      if (!aside) { i++; continue; }
+      if (!aside) continue;
+      fitClamp(card);
       var refTop = refTopOf(card);
-      var group = [card];
-      var j = i + 1;
-      while (j < cards.length) {
-        var next = cards[j];
-        if (next.closest('.rl-cm-margin') !== aside) break;
-        if (Math.abs(refTopOf(next) - refTop) >= 14) break;
-        group.push(next);
-        j++;
-      }
       var asideTop = aside.getBoundingClientRect().top + window.scrollY;
       var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
-      var n = group.length;
-      var rowH = 0;
-      for (var g = 0; g < n; g++) {
-        var c = group[g];
-        var slot = n + ':' + g + ':' + Math.round(topDoc);
-        var top = Math.max(0, topDoc - asideTop) + 'px';
-        if (c.getAttribute('data-cm-slot') !== slot) {
-          c.setAttribute('data-cm-slot', slot);
-          c.style.position = 'absolute';
-          if (n === 1) {
-            c.style.left = '0';
-            c.style.right = '0';
-            c.style.width = '';
-          } else {
-            var share = '((100% - ' + ((n - 1) * 6) + 'px) / ' + n + ')';
-            c.style.width = 'calc' + share;
-            c.style.left = 'calc(' + g + ' * (' + share + ' + 6px))';
-            c.style.right = 'auto';
-          }
-          c.style.top = top;
-        }
-        rowH = Math.max(rowH, c.offsetHeight);
+      var slot = String(Math.round(topDoc));
+      var top = Math.max(0, topDoc - asideTop);
+      if (card.getAttribute('data-cm-slot') !== slot) {
+        card.setAttribute('data-cm-slot', slot);
+        card.style.position = 'absolute';
+        card.style.left = '0';
+        card.style.right = '0';
+        card.style.width = '';
+        card.style.top = top + 'px';
       }
-      cursor = topDoc + rowH + gap;
-      i = j;
+      linkToMarker(card, topDoc - refTop);
+      cursor = topDoc + card.offsetHeight + gap;
     }
     var asides = document.querySelectorAll('.rl-cm-margin');
     for (var a = 0; a < asides.length; a++) {
@@ -3009,12 +3120,29 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       })(el);
     }
   }
+  function bindMore() {
+    var btns = document.querySelectorAll('.rl-cm-more');
+    for (var i = 0; i < btns.length; i++) {
+      var btn = btns[i];
+      if (btn.getAttribute('data-cm-bound')) continue;
+      btn.setAttribute('data-cm-bound', '1');
+      btn.addEventListener('click', function (ev) {
+        var card = ev.currentTarget.closest('.rl-cm-card');
+        if (!card) return;
+        var open = card.classList.toggle('rl-cm-open');
+        ev.currentTarget.textContent = open ? 'less' : 'more';
+        card.removeAttribute('data-cm-slot');
+        schedule();
+      });
+    }
+  }
   var raf = 0;
   function schedule() {
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = 0;
       bindHot();
+      bindMore();
       placeNotes();
     });
   }
@@ -4232,6 +4360,8 @@ mod tests {
         {
             let _guard = install(CommentMode::for_format(FormatKind::Latex, Some(true)));
             assert!(latex_packages().contains("soul"));
+            assert!(latex_packages().contains("F6D98A"), "{}", latex_packages());
+            assert!(latex_packages().contains("marginparpush}{8pt"));
             assert!(
                 latex_packages().contains("right=2.15in"),
                 "{}",
@@ -4242,12 +4372,31 @@ mod tests {
             let body = prep.markdown.clone().unwrap_or_default();
             let tex = restore_latex(&body, &prep);
             assert!(tex.contains("\\hl{constant}"), "{tex}");
+            assert!(tex.contains("\\textsuperscript{\\textbf{1}}"), "{tex}");
+            assert!(tex.contains("\\textbf{1}\\enspace"), "{tex}");
+            assert!(tex.contains("\\rule{1.5in}{0.4pt}"), "{tex}");
             assert!(tex.contains("why the phase"), "{tex}");
             assert!(
                 tex.contains("marginpar") || tex.contains("footnote"),
                 "{tex}"
             );
             assert!(!tex.contains("\\begin{quote}"), "{tex}");
+            let punct = "Group delay is ==constant== %%why the phase%%.";
+            let prep = prepare_latex(punct);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(
+                tex.contains("\\hl{constant}\\textsuperscript{\\textbf{1}}"),
+                "{tex}"
+            );
+            assert!(!tex.contains("constant ."), "{tex}");
+            let reply = "==x== %%#c1: parent%%\n%%re #c1: child%%\n";
+            let prep = prepare_latex(reply);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(tex.contains("\\quad"), "{tex}");
+            assert!(tex.contains("child"), "{tex}");
+            assert!(tex.contains("parent"), "{tex}");
         }
         {
             let _guard = install(CommentMode::for_format(FormatKind::Latex, Some(true)));
@@ -4972,6 +5121,23 @@ mod tests {
         assert!(js.contains("classList.toggle('has-cm-margin'"));
         assert!(js.contains("data-cm-slot"), "{js}");
         assert!(js.contains("minHeight"), "{js}");
+        assert!(js.contains("style.left = '0'"), "{js}");
+        assert!(js.contains("style.right = '0'"), "{js}");
+        assert!(
+            !js.contains("share"),
+            "cards share a column, not a row: {js}"
+        );
+        assert!(js.contains("rl-cm-clamped"), "{js}");
+        assert!(js.contains("rl-cm-link"), "{js}");
+        assert!(css.contains("calc(1.35em * 6)"));
+        assert!(
+            page(&blocks).contains("rl-cm-fold"),
+            "the card body can clamp"
+        );
+        assert!(
+            page(&blocks).contains("rl-cm-more"),
+            "a long card can expand"
+        );
         assert!(
             !js.contains("label.getBoundingClientRect"),
             "placement must not start below the Comments label"
