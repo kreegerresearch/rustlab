@@ -1340,8 +1340,10 @@ fn build_shown(md: &str, scanned: &Scan) -> Prepared {
             continue;
         }
         // A reply with a parent in this document is rendered inside that card.
+        // Drop a lone trailing period on the reply's own line so it does not
+        // survive in the prose as a punctuation artifact.
         if folded_reply(scanned, m) {
-            edits.push((m.start, m.end, String::new()));
+            edits.push((m.start, reply_cut_end(md, m.start, m.end), String::new()));
             continue;
         }
         let num = note_n_assigned[&idx];
@@ -1413,6 +1415,35 @@ fn folded_reply(scanned: &Scan, m: &Mark) -> bool {
     })
 }
 
+/// End offset for deleting a folded reply.
+///
+/// A reply that is the only text on its line may be followed by a period
+/// (`%%re #c1: ok%%.`). That mark is removed from the markdown, so the
+/// period would render as its own prose fragment. Eat it. A period after
+/// an inline reply stays: it belongs to the surrounding sentence.
+fn reply_cut_end(md: &str, start: usize, end: usize) -> usize {
+    let line_s = line_start(md, start);
+    if !md[line_s..start].trim().is_empty() {
+        return end;
+    }
+    let bytes = md.as_bytes();
+    let mut i = end;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i < bytes.len() && matches!(bytes[i], b'.' | b',' | b';' | b':' | b'!' | b'?') {
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j] != b'\n' && bytes[j] != b'\r' {
+            if bytes[j] != b' ' && bytes[j] != b'\t' {
+                return end;
+            }
+            j += 1;
+        }
+        return i + 1;
+    }
+    end
+}
+
 fn bound_note<'a>(md: &str, scanned: &'a Scan, hi: &Mark) -> Option<&'a Mark> {
     scanned.marks.iter().find(|n| {
         n.kind == Kind::Note
@@ -1428,8 +1459,11 @@ fn bound_note<'a>(md: &str, scanned: &'a Scan, hi: &Mark) -> Option<&'a Mark> {
 fn render_reply(m: &Mark) -> String {
     let body = render_body_html(&m.body);
     let who = header_label(&m.header);
+    // A span, not a div. The card lives inside a `<p>` (an inline note is
+    // itself a span), and a block-level reply would be hoisted out of the
+    // card by the HTML parser. `display: block` is applied in CSS.
     format!(
-        "<div class=\"rl-cm-reply\">{who}{body}</div>",
+        "<span class=\"rl-cm-reply\">{who}{body}</span>",
         who = who,
         body = body
     )
@@ -1495,15 +1529,29 @@ fn render_note_html(m: &Mark, raw: &str, num: u32, replies: &str, annotate: bool
     } else {
         "rl-cm-note"
     };
+    // Inline notes stay a span so they remain inside the surrounding `<p>`.
+    // A div there is hoisted, which also pulls replies out of the card.
+    // Block notes are their own paragraph, so a div is correct. Both use
+    // `header_label` (author and date only); the `#cN` id is the tooltip
+    // and `data-cm-id`, not visible header text.
     let tag = if m.block { "div" } else { "span" };
+    let title = note_title_attr(&m.header);
     format!(
-        "<{tag} class=\"{class}\" id=\"cm-n{num}\" role=\"note\" tabindex=\"0\"{id_attr} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><sup class=\"rl-cm-num\">{num}</sup><span class=\"rl-cm-body\">{meta}<span class=\"rl-cm-text\">{body}</span>{replies}</span>{buttons}</{tag}>",
+        "<{tag} class=\"{class}\" id=\"cm-n{num}\" role=\"note\" tabindex=\"0\"{id_attr}{title} data-src-start=\"{}\" data-src-end=\"{}\" data-cm-expect=\"{}\" data-cm-body=\"{}\"><sup class=\"rl-cm-num\">{num}</sup><span class=\"rl-cm-body\">{meta}<span class=\"rl-cm-text\">{body}</span>{replies}</span>{buttons}</{tag}>",
         file_off(m.start),
         file_off(m.end),
         attr_escape(raw),
         attr_escape(&m.body),
+        title = title,
         meta = header_label(&m.header),
     )
+}
+
+fn note_title_attr(h: &CommentHeader) -> String {
+    match &h.id {
+        Some(id) => format!(" title=\"#{}\"", crate::render::escape_html(id)),
+        None => String::new(),
+    }
 }
 
 fn spans_only(md: &str) -> Prepared {
@@ -1527,72 +1575,89 @@ fn push_verbatim_spans(
     edits: &mut Vec<(usize, usize, String)>,
     marks_out: &mut Vec<MarkOut>,
 ) {
+    // Stamp offsets only on ranges CommonMark has already classified as
+    // text. Wrapping the source before the parse (the old verbatim-byte
+    // walk) swallowed the space after `#`, list markers, setext underlines,
+    // table delimiters, and footnote labels, so annotate mode rendered a
+    // different tree than a normal page. Syntax stays outside the span, and
+    // the text bytes are unchanged, so the second parse matches the first
+    // apart from the `<span data-src-*>` wrappers restore inserts.
     let covered: Vec<(usize, usize)> = scanned
         .marks
         .iter()
         .map(|m| (m.start, m.end))
         .chain(scanned.escapes.iter().map(|&(at, _)| (at, at + 3)))
+        .chain(scanned.warns.iter().map(|w| (w.at, w.at + 2)))
         .collect();
-    let bytes = md.as_bytes();
-    let mut i = 0;
     let mut n = 0u32;
-    while i < bytes.len() {
-        if covered.iter().any(|&(s, e)| i >= s && i < e) || !verbatim_byte(bytes[i]) {
-            i += 1;
-            continue;
+    for (start, end) in prose_text_ranges(md) {
+        for (start, end) in uncovered_lines(md, start, end, &covered) {
+            if !md[start..end].chars().any(|c| !c.is_whitespace()) {
+                continue;
+            }
+            let open_ph = format!("\u{E002}S{n}\u{E003}");
+            let close_ph = format!("\u{E004}S{n}\u{E003}");
+            marks_out.push(MarkOut {
+                open_ph: open_ph.clone(),
+                close_ph: close_ph.clone(),
+                open_html: format!(
+                    "<span data-src-start=\"{}\" data-src-end=\"{}\">",
+                    file_off(start),
+                    file_off(end)
+                ),
+                close_html: "</span>".to_string(),
+            });
+            let mut repl = String::new();
+            repl.push_str(&open_ph);
+            repl.push_str(&md[start..end]);
+            repl.push_str(&close_ph);
+            edits.push((start, end, repl));
+            n += 1;
         }
-        let start = i;
-        while i < bytes.len()
-            && verbatim_byte(bytes[i])
-            && !covered.iter().any(|&(s, e)| i >= s && i < e)
-        {
-            i += 1;
-        }
-        if !md[start..i].chars().any(|c| !c.is_whitespace()) {
-            continue;
-        }
-        let open_ph = format!("\u{E002}S{n}\u{E003}");
-        let close_ph = format!("\u{E004}S{n}\u{E003}");
-        marks_out.push(MarkOut {
-            open_ph: open_ph.clone(),
-            close_ph: close_ph.clone(),
-            open_html: format!(
-                "<span data-src-start=\"{}\" data-src-end=\"{}\">",
-                file_off(start),
-                file_off(i)
-            ),
-            close_html: "</span>".to_string(),
-        });
-        let mut repl = String::new();
-        repl.push_str(&open_ph);
-        repl.push_str(&md[start..i]);
-        repl.push_str(&close_ph);
-        edits.push((start, i, repl));
-        n += 1;
     }
 }
 
-fn verbatim_byte(b: u8) -> bool {
-    !matches!(
-        b,
-        b'*' | b'_'
-            | b'['
-            | b']'
-            | b'('
-            | b')'
-            | b'`'
-            | b'#'
-            | b'|'
-            | b'<'
-            | b'>'
-            | b'$'
-            | b'\\'
-            | b'!'
-            | b'~'
-            | b'&'
-            | b'\n'
-            | b'\r'
-    )
+/// Byte ranges pulldown emits as `Event::Text` under the notebook options.
+fn prose_text_ranges(md: &str) -> Vec<(usize, usize)> {
+    let opts = crate::render::notebook_md_options();
+    pulldown_cmark::Parser::new_ext(md, opts)
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            pulldown_cmark::Event::Text(_) if range.start < range.end => {
+                Some((range.start, range.end))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Split `[start, end)` around covered marks and around newlines.
+fn uncovered_lines(
+    md: &str,
+    start: usize,
+    end: usize,
+    covered: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
+    let bytes = md.as_bytes();
+    let mut out = Vec::new();
+    let mut i = start;
+    while i < end {
+        if covered.iter().any(|&(s, e)| i >= s && i < e) || bytes[i] == b'\n' || bytes[i] == b'\r' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < end
+            && bytes[j] != b'\n'
+            && bytes[j] != b'\r'
+            && !covered.iter().any(|&(s, e)| j >= s && j < e)
+        {
+            j += 1;
+        }
+        out.push((i, j));
+        i = j;
+    }
+    out
 }
 
 pub(crate) fn restore(html: &str, prep: &Prepared) -> String {
@@ -1751,7 +1816,7 @@ fn build_latex(md: &str, scanned: &Scan) -> Prepared {
             continue;
         }
         if folded_reply(scanned, m) {
-            edits.push((m.start, m.end, String::new()));
+            edits.push((m.start, reply_cut_end(md, m.start, m.end), String::new()));
             continue;
         }
         let ph = format!("\u{E010}C{idx}\u{E011}");
@@ -2062,7 +2127,14 @@ pub(crate) fn comment_css() -> &'static str {
 .rl-cm-blocknote .rl-cm-body { display: block; }
 .rl-cm-num { font-weight: 600; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); margin-right: 0.25em; }
 .rl-cm-meta { opacity: 0.85; margin-right: 0.35em; }
-.rl-cm-reply { margin: 0.35rem 0 0.2rem 1rem; }
+.rl-cm-reply { display: block; margin: 0.35rem 0 0.2rem 1rem; }
+.rl-cm-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
 .rl-cm-warn { cursor: help; }
 .rl-comments-toggle { margin-left: 0.8rem; font-size: 0.85rem; white-space: nowrap; }
 .rl-cm-confirm { margin-left: 0.6rem; font-size: 0.8rem; }
@@ -2086,14 +2158,17 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 }
 #rl-cm-menu, #rl-cm-pop {
   position: fixed;
-  z-index: 50;
+  /* Above the TOC sidebar (100), the file browser (120, or 180 when the
+     narrow browser is open), and the top bar (150). The edit toolbar
+     stays higher. */
+  z-index: 400;
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
   border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
   border-radius: 6px;
   padding: 0.25rem;
 }
-#rl-cm-menu button, #rl-cm-pop button, .rl-cm-actions button {
+#rl-cm-menu button, #rl-cm-pop button {
   display: block;
   width: 100%;
   text-align: left;
@@ -2103,6 +2178,18 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
 }
+.rl-cm-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  background: transparent;
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.1rem 0.4rem;
+}
 #rl-cm-menu button:hover, #rl-cm-menu button:focus,
 #rl-cm-pop button:hover, #rl-cm-pop button:focus,
 .rl-cm-actions button:hover, .rl-cm-actions button:focus {
@@ -2110,7 +2197,8 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   outline: none;
 }
 @media (pointer: coarse) {
-  #rl-cm-menu button, #rl-cm-pop button, .rl-cm-actions button { padding: 0.55rem 0.7rem; }
+  #rl-cm-menu button, #rl-cm-pop button { padding: 0.55rem 0.7rem; }
+  .rl-cm-actions button { padding: 0.3rem 0.5rem; }
 }
 @media print {
   .rl-cm-note { float: none; margin: 0.4rem 0; display: list-item; list-style: decimal; }
@@ -2379,21 +2467,35 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     }});
   }}
   function visibleItems() {{ return items.filter(function (b) {{ return !b.hidden; }}); }}
-  function openMenu(x, y, info) {{
-    var which;
-    if (info.mark) {{
-      var bare = info.mark.classList.contains('rl-cm-mark') && !info.mark.getAttribute('aria-describedby');
-      which = bare ? ['add', 'delete'] : ['edit', 'delete'];
-    }} else if (info.code) {{
-      which = ['add'];
-    }} else {{
-      which = ['add', 'highlight'];
+  function targetMark(node) {{
+    var el = node && node.nodeType === 1 ? node : node && node.parentElement;
+    return el && el.closest ? el.closest('.rl-cm-mark, .rl-cm-note, .rl-cm-blocknote') : null;
+  }}
+  // Edit/Delete only when the pointer target is an existing mark or note.
+  // A plain-text selection is Add comment / Highlight. A code cell is Add
+  // comment only. A bare highlight (no bound note) is Add comment / Delete.
+  function actionsFor(hit, code) {{
+    if (hit) {{
+      var bare = hit.classList.contains('rl-cm-mark') && !hit.getAttribute('aria-describedby');
+      return bare ? ['add', 'delete'] : ['edit', 'delete'];
     }}
+    return code ? ['add'] : ['add', 'highlight'];
+  }}
+  function place(el, x, y) {{
+    el.hidden = false;
+    var w = el.offsetWidth || 200;
+    var h = el.offsetHeight || 40;
+    var left = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+    var top = Math.max(8, Math.min(y, window.innerHeight - h - 8));
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+  }}
+  function openMenu(x, y, info, which) {{
     showItems(which);
     pending = info;
-    menu.hidden = false;
-    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - 180)) + 'px';
-    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - 160)) + 'px';
+    info.x = x;
+    info.y = y;
+    place(menu, x, y);
     focusIdx = 0;
     var vis = visibleItems();
     if (vis[0]) vis[0].focus();
@@ -2409,8 +2511,16 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var del = pop.querySelector('[data-act="delete"]');
     hi.hidden = info.code || !!info.mark;
     del.hidden = !info.mark;
-    pop.style.left = '12px';
-    pop.style.top = '4rem';
+    var x = info.x || 8;
+    var y = info.y || 8;
+    if (info.range && info.range.getBoundingClientRect) {{
+      var r = info.range.getBoundingClientRect();
+      if (r.width || r.height) {{
+        x = r.left;
+        y = r.bottom + 6;
+      }}
+    }}
+    place(pop, x, y);
     document.getElementById('rl-cm-text').focus();
   }}
   function confirmSaved(kind) {{
@@ -2510,14 +2620,19 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
   document.addEventListener('contextmenu', function (ev) {{
     if (!inMain(ev.target) || inEditor(ev.target)) return;
     if (ev.shiftKey) return;
+    var hit = targetMark(ev.target);
     var info = classify(selectionRange());
-    var mark = ev.target.closest && ev.target.closest('.rl-cm-mark, .rl-cm-note, .rl-cm-blocknote');
-    if (!info && mark && inMain(mark)) {{
-      info = {{ range: null, block: blockOf(mark), mark: mark, code: false, span: mark }};
+    if (hit) {{
+      if (!info) info = {{ range: null, block: blockOf(hit), code: false, span: hit }};
+      info.mark = hit;
+      info.span = hit;
+    }} else if (info) {{
+      info.mark = null;
+    }} else {{
+      return;
     }}
-    if (!info) return;
     ev.preventDefault();
-    openMenu(ev.clientX, ev.clientY, info);
+    openMenu(ev.clientX, ev.clientY, info, actionsFor(hit, !!(info && info.code)));
   }});
   document.addEventListener('keydown', function (ev) {{
     var k = ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey);
@@ -2525,13 +2640,19 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var info = classify(selectionRange());
     if (!info) return;
     ev.preventDefault();
+    var hit = targetMark(info.range.startContainer);
+    info.mark = hit;
     var rect = info.range.getBoundingClientRect();
-    openMenu(rect.left, rect.bottom, info);
+    openMenu(rect.left, rect.bottom, info, actionsFor(hit, info.code));
   }});
   document.addEventListener('pointerup', function (ev) {{
     if (ev.pointerType !== 'touch' && ev.pointerType !== 'pen') return;
     var info = classify(selectionRange());
     if (!info) return;
+    var hit = targetMark(ev.target);
+    info.mark = hit;
+    info.x = ev.clientX;
+    info.y = ev.clientY;
     openPop(info, false);
   }});
   document.getElementById('rl-cm-go').addEventListener('click', function () {{
@@ -2564,7 +2685,8 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var t = ev.target;
     if (t.closest && t.closest('.rl-cm-edit')) {{
       var note = t.closest('.rl-cm-note, .rl-cm-blocknote');
-      openPop({{ range: null, block: blockOf(note), mark: note, code: false, span: note, editBody: note.getAttribute('data-cm-body') || '', expect: note.getAttribute('data-cm-expect') || '' }}, true);
+      var box = note.getBoundingClientRect();
+      openPop({{ range: null, block: blockOf(note), mark: note, code: false, span: note, editBody: note.getAttribute('data-cm-body') || '', expect: note.getAttribute('data-cm-expect') || '', x: box.left, y: box.bottom + 6 }}, true);
       return;
     }}
     if (t.closest && t.closest('.rl-cm-delete')) {{
@@ -3523,5 +3645,546 @@ mod tests {
         assert!(js.contains("rl-comment-name"));
         assert!(!js.contains("oncontextmenu"));
         assert!(!js.contains("mouseup"));
+    }
+
+    /// Menu rows. Mirrors `actionsFor` in the annotate script: the click
+    /// target decides, not the fact that a selection exists.
+    fn menu_actions(on_mark: bool, bare_highlight: bool, in_code: bool) -> &'static [&'static str] {
+        if on_mark {
+            if bare_highlight {
+                &["add", "delete"]
+            } else {
+                &["edit", "delete"]
+            }
+        } else if in_code {
+            &["add"]
+        } else {
+            &["add", "highlight"]
+        }
+    }
+
+    #[test]
+    fn context_menu_actions_follow_the_click_target() {
+        assert_eq!(menu_actions(true, false, false), ["edit", "delete"]);
+        assert_eq!(menu_actions(true, false, true), ["edit", "delete"]);
+        assert_eq!(menu_actions(true, true, false), ["add", "delete"]);
+        assert_eq!(menu_actions(false, false, false), ["add", "highlight"]);
+        assert_eq!(menu_actions(false, false, true), ["add"]);
+        let js = annotate_script(None);
+        assert!(js.contains("function actionsFor(hit, code)"));
+        assert!(js.contains("return bare ? ['add', 'delete'] : ['edit', 'delete'];"));
+        assert!(js.contains("return code ? ['add'] : ['add', 'highlight'];"));
+        assert!(
+            js.contains("var hit = targetMark(ev.target);"),
+            "the context menu must classify the right-click target"
+        );
+        assert!(
+            js.contains("info.mark = null;"),
+            "a plain-text selection must not inherit a nearby mark"
+        );
+        assert!(js.contains("actionsFor(hit,"));
+    }
+
+    #[test]
+    fn menu_and_popover_clamp_above_the_sidebar() {
+        let css = comment_css();
+        let z_at = css.find("z-index:").expect("z-index");
+        let z_line = &css[z_at..z_at + 16];
+        assert!(
+            z_line.contains("400"),
+            "menu z-index must clear the sidebar (100) and file browser (180): {z_line}"
+        );
+        assert!(!css.contains("z-index: 50;"));
+        let js = annotate_script(None);
+        assert!(js.contains("function place(el, x, y)"));
+        assert!(js.contains("window.innerWidth - w - 8"));
+        assert!(js.contains("window.innerHeight - h - 8"));
+        assert!(js.contains("place(menu, x, y)"));
+        assert!(js.contains("place(pop, x, y)"));
+        assert!(
+            !js.contains("12px"),
+            "popover must not be pinned to the left edge"
+        );
+        assert!(!js.contains("'4rem'"));
+    }
+
+    #[test]
+    fn comment_card_actions_are_a_compact_row() {
+        let css = comment_css();
+        let at = css.find(".rl-cm-actions {").expect("actions rule");
+        let rule = &css[at..at + 160];
+        assert!(rule.contains("display: flex;"), "{rule}");
+        assert!(rule.contains("flex-direction: row;"), "{rule}");
+        let btn = css.find(".rl-cm-actions button {").expect("action button");
+        let rule = &css[btn..btn + 280];
+        assert!(rule.contains("display: inline-block;"), "{rule}");
+        assert!(rule.contains("width: auto;"), "{rule}");
+        assert!(!rule.contains("width: 100%"), "{rule}");
+        let shared = css.find("#rl-cm-menu button, #rl-cm-pop button {").unwrap();
+        let shared_rule = &css[shared..shared + 80];
+        assert!(
+            !shared_rule.contains(".rl-cm-actions"),
+            "card buttons must not share the full-width menu rule: {shared_rule}"
+        );
+    }
+
+    #[test]
+    fn note_headers_hide_ids_and_match() {
+        let inline = html_of("See ==x== %%#c7 @ada 2026-10-09: inline words%%.");
+        let block = html_of("%%\n#c8 @ada 2026-10-09: block words\n%%\n");
+        let inline_meta = element_inner(&inline, "<span class=\"rl-cm-meta\">");
+        let block_meta = element_inner(&block, "<span class=\"rl-cm-meta\">");
+        assert_eq!(
+            inline_meta, block_meta,
+            "inline and block cards share one header"
+        );
+        assert_eq!(inline_meta, "@ada 2026-10-09");
+        assert!(!inline_meta.contains("#c"), "{inline_meta}");
+        let inline_text = element_inner(&inline, "<span class=\"rl-cm-text\">");
+        let block_text = element_inner(&block, "<span class=\"rl-cm-text\">");
+        assert!(inline_text.contains("inline words"), "{inline_text}");
+        assert!(block_text.contains("block words"), "{block_text}");
+        assert!(!inline_text.contains("#c"), "{inline_text}");
+        assert!(!block_text.contains("#c"), "{block_text}");
+        assert!(inline.contains("data-cm-id=\"c7\""), "{inline}");
+        assert!(block.contains("data-cm-id=\"c8\""), "{block}");
+        assert!(inline.contains("title=\"#c7\""), "{inline}");
+        assert!(block.contains("title=\"#c8\""), "{block}");
+        assert!(inline.contains("class=\"rl-cm-note\""), "{inline}");
+        assert!(block.contains("class=\"rl-cm-blocknote\""), "{block}");
+    }
+
+    #[test]
+    fn html5_fragment_keeps_reply_inside_the_card() {
+        let md = "\
+Group delay is ==constant== %%#c1 @ada 2026-10-09: only linear%%.\n\
+\n\
+%%re #c1 @bea 2026-10-09: agree for an FIR%%.\n";
+        let html = html_of(md);
+        assert!(
+            html.contains("<span class=\"rl-cm-reply\">"),
+            "reply must be a span so it can live inside the card: {html}"
+        );
+        assert!(
+            !html.contains("<div class=\"rl-cm-reply\">"),
+            "a div reply is hoisted out of the span card: {html}"
+        );
+        assert!(
+            !html.contains("<p>.</p>"),
+            "reply-line punctuation leaked into the prose: {html}"
+        );
+        let root = parse_html5_fragment(&html);
+        let path = find_class_path(&root, "rl-cm-reply").expect("reply");
+        assert!(
+            path.iter()
+                .any(|c| c == "rl-cm-note" || c == "rl-cm-blocknote"),
+            "HTML5 parse hoisted the reply out of the card: {path:?}\n{html}"
+        );
+        // The sentence terminator after the highlight stays in that
+        // paragraph. A '.' in its own paragraph, or anywhere that does
+        // not share the note's paragraph, is the hoisted-reply artifact.
+        assert!(
+            !stray_dot_outside_note_paragraph(&root),
+            "a stray '.' survived outside the note's sentence: {html}"
+        );
+    }
+
+    #[test]
+    fn annotate_matches_plain_block_structure() {
+        let md = "\
+# Filter notes\n\
+\n\
+## Stopband\n\
+\n\
+Setext title\n\
+------------\n\
+\n\
+- alpha item\n\
+- beta item\n\
+\n\
+1. first step\n\
+2. second step\n\
+\n\
+- [ ] unchecked task\n\
+\n\
+> A quoted line\n\
+\n\
+> [!NOTE]\n\
+> Callout line in the quote\n\
+\n\
+| band | gain |\n\
+| --- | --- |\n\
+| pass | 0 |\n\
+\n\
+See [[Sibling|the sibling]] and a picture ![[wave.png]].\n\
+\n\
+A footnote[^n1] sits here, with **bold** and [a link](other.md).\n\
+\n\
+[^n1]: footnote body\n\
+\n\
+Group delay is ==constant== %%#c1 @ada 2026-10-09: only linear%%.\n";
+        let blocks = vec![
+            md_block(md),
+            crate::execute::Rendered::Callout {
+                kind: crate::parse::CalloutKind::Note,
+                title: None,
+                content: "Pay attention to [[Sibling|the sibling]].".into(),
+            },
+        ];
+        let plain = page(&blocks);
+        let ann = {
+            let _mode = install(CommentMode {
+                annotate: true,
+                ..CommentMode::html_default()
+            });
+            page(&blocks)
+        };
+        assert!(
+            plain.contains("<h1"),
+            "plain page lost the heading: {plain}"
+        );
+        assert!(
+            ann.contains("<h1"),
+            "annotate mode broke the ATX heading: {ann}"
+        );
+        assert!(
+            ann.contains("<nav class=\"sidebar\">"),
+            "annotate page has no TOC sidebar: {ann}"
+        );
+        let body = body_open_tag(&ann);
+        assert!(
+            !body.contains("no-toc"),
+            "annotate page suppressed the sidebar: {body}"
+        );
+        assert!(plain.contains("<nav class=\"sidebar\">"), "{plain}");
+        let plain_main = normalize_structure(main_inner(&plain));
+        let ann_main = normalize_structure(main_inner(&ann));
+        assert_same_structure(&ann_main, &plain_main);
+        assert!(
+            ann.contains("data-src-start="),
+            "annotate mode should stamp source offsets"
+        );
+    }
+
+    fn element_inner(html: &str, open: &str) -> String {
+        let s = html
+            .find(open)
+            .unwrap_or_else(|| panic!("missing {open} in {html}"));
+        let from = s + open.len();
+        let e = html[from..]
+            .find("</span>")
+            .unwrap_or_else(|| panic!("unclosed span after {open}"))
+            + from;
+        html[from..e].to_string()
+    }
+
+    fn main_inner(html: &str) -> String {
+        let s = html.find("<main>").expect("main") + "<main>".len();
+        let e = html[s..].find("</main>").expect("/main") + s;
+        html[s..e].to_string()
+    }
+
+    fn normalize_structure(html: String) -> String {
+        let html = strip_attr(&html, "data-src-start");
+        let html = strip_attr(&html, "data-src-end");
+        // Section ids hash the chunk, so the source-span bytes change
+        // `id="b-…"`. The tags around them are what this test compares.
+        let html = strip_section_ids(&html);
+        let html = strip_class_span(&html, "rl-cm-actions");
+        unwrap_bare_spans(&html)
+    }
+
+    fn strip_section_ids(html: &str) -> String {
+        let key = " id=\"b-";
+        let mut out = String::with_capacity(html.len());
+        let mut rest = html;
+        while let Some(i) = rest.find(key) {
+            out.push_str(&rest[..i]);
+            let after = &rest[i + key.len()..];
+            if let Some(end) = after.find('"') {
+                rest = &after[end + 1..];
+            } else {
+                out.push_str(&rest[i..]);
+                return out;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn strip_attr(html: &str, name: &str) -> String {
+        let key = format!(" {name}=\"");
+        let mut out = String::with_capacity(html.len());
+        let mut rest = html;
+        while let Some(i) = rest.find(&key) {
+            out.push_str(&rest[..i]);
+            let after = &rest[i + key.len()..];
+            if let Some(end) = after.find('"') {
+                rest = &after[end + 1..];
+            } else {
+                out.push_str(&rest[i..]);
+                return out;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn strip_class_span(html: &str, class: &str) -> String {
+        let open = format!("<span class=\"{class}\">");
+        let mut out = String::with_capacity(html.len());
+        let mut rest = html;
+        while let Some(i) = rest.find(&open) {
+            out.push_str(&rest[..i]);
+            if let Some(rel) = rest[i..].find("</span>") {
+                rest = &rest[i + rel + "</span>".len()..];
+            } else {
+                out.push_str(&rest[i..]);
+                return out;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn unwrap_bare_spans(html: &str) -> String {
+        let mut html = html.to_string();
+        while let Some(start) = html.find("<span>") {
+            let Some(rel) = html[start..].find("</span>") else {
+                break;
+            };
+            let end = start + rel;
+            let inner = html[start + "<span>".len()..end].to_string();
+            html.replace_range(start..end + "</span>".len(), &inner);
+        }
+        html
+    }
+
+    fn assert_same_structure(ann: &str, plain: &str) {
+        if ann == plain {
+            return;
+        }
+        let n = ann
+            .bytes()
+            .zip(plain.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let a_end = (n + 220).min(ann.len());
+        let b_end = (n + 220).min(plain.len());
+        panic!(
+            "annotate HTML diverges from plain at byte {n}\nannotate: {}\nplain:    {}",
+            &ann[n..a_end],
+            &plain[n..b_end]
+        );
+    }
+
+    struct HNode {
+        tag: String,
+        classes: Vec<String>,
+        children: Vec<HChild>,
+    }
+
+    enum HChild {
+        El(HNode),
+        Text(String),
+    }
+
+    /// HTML5 fragment parse, enough of the "in body" insertion mode to
+    /// hoist a block element out of an open `<p>` (the bug a `<div>` reply
+    /// inside a `<span>` card hits). A `<span>` does not close the paragraph.
+    fn parse_html5_fragment(html: &str) -> HNode {
+        let bytes = html.as_bytes();
+        let mut root = HNode {
+            tag: "body".into(),
+            classes: Vec::new(),
+            children: Vec::new(),
+        };
+        let mut stack: Vec<HNode> = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'<' {
+                if html[i..].starts_with("<!--") {
+                    if let Some(rel) = html[i + 4..].find("-->") {
+                        i = i + 4 + rel + 3;
+                        continue;
+                    }
+                }
+                let close = html[i + 1..].find('>').unwrap_or(html.len() - i - 1);
+                let raw = &html[i + 1..i + 1 + close];
+                i = i + 1 + close + 1;
+                let end_tag = raw.starts_with('/');
+                let raw = raw.trim().trim_start_matches('/').trim();
+                if raw.ends_with('/') && !end_tag {
+                    // handled after the tag is known
+                }
+                let self_close = raw.ends_with('/');
+                let raw = raw.trim_end_matches('/').trim();
+                let mut parts = raw.split_whitespace();
+                let tag = parts.next().unwrap_or("").to_ascii_lowercase();
+                if tag.is_empty() || tag.starts_with('!') {
+                    continue;
+                }
+                if end_tag {
+                    html_pop_until(&mut root, &mut stack, &tag);
+                    continue;
+                }
+                let mut classes = Vec::new();
+                let attrs: Vec<&str> = parts.collect();
+                let attr_line = attrs.join(" ");
+                if let Some(pos) = attr_line.find("class=\"") {
+                    let rest = &attr_line[pos + "class=\"".len()..];
+                    if let Some(end) = rest.find('"') {
+                        classes.extend(rest[..end].split_whitespace().map(|s| s.to_string()));
+                    }
+                }
+                if is_html_block(&tag) && stack.iter().any(|n| n.tag == "p") {
+                    html_pop_until(&mut root, &mut stack, "p");
+                }
+                stack.push(HNode {
+                    tag: tag.clone(),
+                    classes,
+                    children: Vec::new(),
+                });
+                if self_close || matches!(tag.as_str(), "br" | "hr" | "img" | "meta" | "link") {
+                    html_pop_until(&mut root, &mut stack, &tag);
+                }
+            } else {
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'<' {
+                    i += 1;
+                }
+                let text = html[start..i].to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.children.push(HChild::Text(text));
+                } else {
+                    root.children.push(HChild::Text(text));
+                }
+            }
+        }
+        while let Some(node) = stack.pop() {
+            if let Some(parent) = stack.last_mut() {
+                parent.children.push(HChild::El(node));
+            } else {
+                root.children.push(HChild::El(node));
+            }
+        }
+        root
+    }
+
+    fn is_html_block(tag: &str) -> bool {
+        matches!(
+            tag,
+            "address"
+                | "article"
+                | "aside"
+                | "blockquote"
+                | "div"
+                | "dl"
+                | "fieldset"
+                | "figcaption"
+                | "figure"
+                | "footer"
+                | "form"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "header"
+                | "hr"
+                | "li"
+                | "main"
+                | "nav"
+                | "ol"
+                | "p"
+                | "pre"
+                | "section"
+                | "table"
+                | "ul"
+        )
+    }
+
+    fn html_pop_until(root: &mut HNode, stack: &mut Vec<HNode>, tag: &str) {
+        let Some(pos) = stack.iter().rposition(|n| n.tag == tag) else {
+            return;
+        };
+        let mut node = stack.pop().unwrap();
+        while stack.len() > pos {
+            let mut parent = stack.pop().unwrap();
+            parent.children.push(HChild::El(node));
+            node = parent;
+        }
+        if let Some(parent) = stack.last_mut() {
+            parent.children.push(HChild::El(node));
+        } else {
+            root.children.push(HChild::El(node));
+        }
+    }
+
+    fn find_class_path(root: &HNode, class: &str) -> Option<Vec<String>> {
+        fn walk(node: &HNode, class: &str, path: &mut Vec<String>) -> bool {
+            path.push(node.tag.clone());
+            path.extend(node.classes.iter().cloned());
+            if node.classes.iter().any(|c| c == class) {
+                return true;
+            }
+            let mark = path.len();
+            for child in &node.children {
+                if let HChild::El(el) = child {
+                    if walk(el, class, path) {
+                        return true;
+                    }
+                }
+            }
+            path.truncate(mark - 1 - node.classes.len());
+            false
+        }
+        let mut path = Vec::new();
+        if walk(root, class, &mut path) {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    fn body_open_tag(html: &str) -> &str {
+        let s = html.find("<body").expect("body");
+        let e = html[s..].find('>').expect("body close") + s;
+        &html[s..=e]
+    }
+
+    /// A lone '.' is the sentence terminator when it shares a paragraph
+    /// with the note. Anywhere else it is the punctuation left behind
+    /// after a reply was hoisted out of that paragraph.
+    fn stray_dot_outside_note_paragraph(root: &HNode) -> bool {
+        fn contains_note(node: &HNode) -> bool {
+            if node
+                .classes
+                .iter()
+                .any(|c| c == "rl-cm-note" || c == "rl-cm-blocknote")
+            {
+                return true;
+            }
+            node.children.iter().any(|c| match c {
+                HChild::El(el) => contains_note(el),
+                HChild::Text(_) => false,
+            })
+        }
+        fn walk(node: &HNode) -> bool {
+            let sentence = node.tag == "p" && contains_note(node);
+            for child in &node.children {
+                match child {
+                    HChild::Text(t) if !sentence && t.trim() == "." => return true,
+                    HChild::El(el) if walk(el) => return true,
+                    _ => {}
+                }
+            }
+            false
+        }
+        walk(root)
     }
 }

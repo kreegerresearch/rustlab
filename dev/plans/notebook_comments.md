@@ -394,7 +394,7 @@ The popover is plain HTML inlined in the page. The same nonce'd script binds `po
 
 `parse_notebook` does not store offsets. The renderer stamps them.
 
-Shipped v1 stamps those offsets only while `watch --annotate` is on, and only on marks plus verbatim prose runs (no `*_[]()``#|<>$\!~&` and no newline). A selection across markdown syntax has no span, so the menu does not open. Math, callouts, and a rendered string that no longer matches the host file (template interpolation, an embed) are not mapped. Static HTML omits the offsets.
+Shipped v1 stamps those offsets only while `watch --annotate` is on. Spans cover CommonMark text events (and existing marks), not the block syntax around them, so an annotating page has the same headings, lists, tables, quotes, footnotes, and links as a page that is not annotating. A selection across markdown syntax has no single span, so the menu does not open. Math, callouts, and a rendered string that no longer matches the host file (template interpolation, an embed) are not mapped. Static HTML omits the offsets.
 
 - Each markdown `section.rl-block` gets `data-src-start` and `data-src-end`: the block's byte range in the **raw file**, including the frontmatter offset `parse.rs::body_offset` accounts for.
 - Every prose text run inside that section gets the same attributes for the slice it rendered, via the source map in §1.6.
