@@ -26,6 +26,8 @@ pub fn render_latex(
     theme: &ThemeColors,
     link: &crate::render::LinkMode,
 ) -> String {
+    // Prose notes and a following cell note share one number sequence.
+    let _comment_page = crate::comments::enter_page();
     let mut body = String::new();
     let mut plot_idx = 0;
     let mut in_exercise = false;
