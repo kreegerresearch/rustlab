@@ -273,7 +273,7 @@ The CSS and script are inlined. No CDN.
 ### 3.4 PDF
 
 - **Off (default):** the LaTeX emitter writes the highlight's text and drops every `%%`. No `\hl`, no margin notes. A cell comment is omitted. The listing is the code alone.
-- **On:** highlights use `\hl` from `soul`. Inline, block, and cell comments use numbered `\marginpar`, set `\raggedright\footnotesize`. When comments are on, a second `\geometry` sets a 1.7in margin column (`marginparwidth=1.7in`, `marginparsep=0.2in`) and `marginfix` plus a small `\marginparpush` keep stacked notes from colliding. A comment on a table row uses `\footnote`, because `\marginpar` inside a table does not fit. Blank lines inside a block note become `\\ ` so the margin note stays one paragraph.
+- **On:** highlights use `\hl` from `soul`. Inline, block, and cell comments use numbered `\marginpar`, set `\raggedright\footnotesize`. When comments are on, a second `\geometry` widens the right margin to 2.15in so a 1.7in note column (`marginparwidth=1.7in`, `marginparsep=0.25in`) stays on the page. `marginfix` plus a small `\marginparpush` keep stacked notes from colliding. A comment on a table row uses `\footnote`, because `\marginpar` inside a table does not fit. Blank lines inside a block note become `\\ ` so the margin note stays one paragraph.
 - Colors come from Latte's comment roles. LaTeX and PDF are always Latte on white paper.
 
 ### 3.5 Theme roles (`crates/rustlab-plot/src/theme.rs`)
