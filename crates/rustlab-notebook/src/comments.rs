@@ -3064,8 +3064,13 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       var refTop = refTopOf(card);
       var asideTop = aside.getBoundingClientRect().top + window.scrollY;
       var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
-      var slot = String(Math.round(topDoc));
+      // `top` is relative to this aside. A later pass can keep the same
+      // document Y while the aside has moved (the previous section grew),
+      // so the slot is the relative offset. Otherwise the card stays
+      // parked on the stale `top` and drifts off its marker.
       var top = Math.max(0, topDoc - asideTop);
+      var placed = asideTop + top;
+      var slot = String(Math.round(top));
       if (card.getAttribute('data-cm-slot') !== slot) {
         card.setAttribute('data-cm-slot', slot);
         card.style.position = 'absolute';
@@ -3074,8 +3079,8 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
         card.style.width = '';
         card.style.top = top + 'px';
       }
-      linkToMarker(card, topDoc - refTop);
-      cursor = topDoc + card.offsetHeight + gap;
+      linkToMarker(card, placed - refTop);
+      cursor = placed + card.offsetHeight + gap;
     }
     var asides = document.querySelectorAll('.rl-cm-margin');
     for (var a = 0; a < asides.length; a++) {
@@ -5120,6 +5125,10 @@ mod tests {
         assert!(js.contains("__rlAfterUpdate"));
         assert!(js.contains("classList.toggle('has-cm-margin'"));
         assert!(js.contains("data-cm-slot"), "{js}");
+        assert!(
+            js.contains("var slot = String(Math.round(top))"),
+            "slot must be the offset inside the aside, not the document Y: {js}"
+        );
         assert!(js.contains("minHeight"), "{js}");
         assert!(js.contains("style.left = '0'"), "{js}");
         assert!(js.contains("style.right = '0'"), "{js}");
