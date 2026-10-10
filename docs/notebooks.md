@@ -1233,8 +1233,24 @@ colon, are `#cN`, `re #cN` (a reply), `@name`, and `YYYY-MM-DD`.
 A whole-line `%%` immediately before a fence, or before that fence's
 `<!-- hide -->` / `code:` / `caption:` / `details:` / `grid:` lines,
 comments on the cell. A blank line between the comment and the fence
-unbinds it. Marks inside a code fence, inline code, or math are
-literal. A backslash escapes a delimiter: `\==`.
+unbinds it. Marks inside a code fence, inline code, or math are literal. A
+backslash escapes a delimiter: `\==`.
+
+**Code fences are never rewritten.** This holds for every fence
+(` ``` ` and `~~~`, any info string, including `rustlab`, `python`,
+`text`, mermaid, and widget). Render, `strip`, `--no-comments`, and
+`--comments-style` leave the fence bytes alone, so `a == b`, a `%%`
+in a string, and a `%%` comment line inside the cell stay in the
+listing and in the program. A cell comment is only ever a `%%` line
+inserted above the fence and its `<!-- hide -->` / `code:` /
+`caption:` / `details:` / `grid:` lines. It is not written inside the
+cell. `POST /annotate` rejects any insert, edit, or delete whose
+offsets fall inside a fence or its info string (400, file unchanged).
+The one exception is a cell insert, and that write names the opening
+fence line and places the `%%` above the directive stack. Highlight is
+not offered for a code-cell selection. A notebook with a cell comment
+executes the same cell source, and produces the same output and
+figures, as the same notebook without that comment.
 
 HTML draws a highlight as `<mark>`. Every comment — inline, block,
 cell, and its replies — is a card in a right margin column, never in
@@ -1248,11 +1264,15 @@ card. Edit and Delete are one compact row.
 When comments are shown, each section reserves an 18rem column
 (`--rl-cm-col`, 288px) beside the prose. A directory page with the
 file browser and the contents sidebar keeps that column and shrinks
-the prose to make room. A small script aligns each card with the top
-of its marker and stacks the next card downward when they would
-overlap. Hovering or focusing either the marker or the card
-emphasizes both. With scripting off, the cards stay in that column in
-document order. Unchecking **Comments** sets the column width to zero
+the prose to make room. A small script aligns each card with the top of its marker. Cards
+whose markers share a line sit side by side in that row, and the
+first card of the row stays level with the marker. A later row starts
+below the previous cards. The margin grows with the lowest card, so a
+long note is not clipped at the end of the section. Opening the
+source pane narrows that pane and shifts the page, so the pane does
+not cover the comment column. Hovering or focusing either the marker
+or the card emphasizes both. With scripting off, the cards stay in
+that column in document order. Unchecking **Comments** sets the column width to zero
 and hides the cards and the markers, so the prose takes the width
 back. The choice is stored in `sessionStorage` for that tab
 (`rl-comments-visible`). `--no-comments` on static HTML omits the
@@ -1268,7 +1288,24 @@ markdown, and JSON default to on. PDF and LaTeX default to off: the
 highlight's words stay, and the `%%` comment is dropped. `--comments`
 on PDF uses `\hl` and `\marginpar` for inline, block, and cell notes
 (a footnote inside a table, where a margin note does not fit).
-`--no-comments` on markdown unwraps `==` and deletes `%%`.
+`--no-comments` on markdown unwraps `==` and deletes `%%`, including
+a reply and a cell comment, and tidies the space or blank line the
+note left behind. `rustlab-notebook strip` does that same cleanup and
+writes GitHub-ready Markdown (stdout, `-o`, or `--in-place`; a
+directory needs `-o` or `--in-place`). It does not rewrite a code
+fence.
+
+`--comments-style` is markdown-only. `keep` (the default) leaves `==`
+and `%%`. `footnotes` turns each note into a GitHub footnote (`[^c1]`)
+and each highlight into `<mark>`. `callouts` turns each note into an
+Obsidian callout (`> [!note]`) and leaves `==`, so a vault still shows
+the highlights. `--no-comments` cannot be combined with `footnotes` or
+`callouts`. Default `--obsidian` still passes `%%` through. Obsidian's
+own preview hides those comments; rustlab HTML, `watch`, and a PDF
+rendered with `--comments` are where the notes are visible.
+`--comments-style=callouts` is the option that makes the notes visible
+inside Obsidian.
+
 `~/.rustlabrc` `[notebook] comments = "on"` or `"off"` is the default
 when the command does not pass a flag.
 
@@ -1306,7 +1343,15 @@ tables, and the other block syntax match a page that is not annotating.
 A `%%` before a
 `bash`, `python`, or `text` fence stays a prose note. The browser sends
 `POST /annotate/{slug}` with `If-Match` set to the source hash stamped
-on the page. A mismatch is 409 and the file is not written. The path
+on the page. A mismatch is 409 and the file is not written. A target
+inside a code fence is 400 and the file is not written. A successful
+write returns the new source hash. The page stores it, and a toast
+offers Undo for that one write. Undo posts `{"op":"undo"}` on the same
+route and the same `If-Match` check. The server restores the bytes
+from before that write. It does not accept a file body from the
+browser. Undo is one level, for this `watch` process. Git history is
+the durable archive: deleting a comment removes it from the file, and
+the commit that added it is how you get it back later. The path
 is the notebook on disk, inside the file jail. Host and Origin must be
 loopback. Right-click (or the ContextMenu key, or Shift+F10) opens the
 menu. Shift+right-click keeps the browser menu. A touch or pen

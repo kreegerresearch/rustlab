@@ -96,6 +96,15 @@ pub struct Notebook {
     /// both holders await file IO while holding it; never nested with any
     /// other lock on this struct.
     pub save_lock: tokio::sync::Mutex<()>,
+    /// Last annotate write in this process. One level. The client asks
+    /// for it with `{"op":"undo"}`; the previous bytes are not accepted
+    /// from the request. Cleared after a successful undo.
+    undo: std::sync::Mutex<Option<UndoSnap>>,
+}
+
+struct UndoSnap {
+    before: String,
+    after_hash: String,
 }
 
 impl Notebook {
@@ -118,6 +127,7 @@ impl Notebook {
             widget_decls: Mutex::new(Vec::new()),
             render_cache: Mutex::new(NotebookCache::default()),
             save_lock: tokio::sync::Mutex::new(()),
+            undo: std::sync::Mutex::new(None),
         }
     }
 }
@@ -558,6 +568,32 @@ async fn annotate_source(
     let id = json_str(&v, "id");
     let expect = json_str(&v, "expect");
     let today = crate::comments::utc_today();
+    if op == "undo" {
+        let before = {
+            let slot = nb.undo.lock().unwrap_or_else(|e| e.into_inner());
+            match slot.as_ref() {
+                Some(snap) if snap.after_hash == want => snap.before.clone(),
+                Some(_) => {
+                    return (StatusCode::CONFLICT, "source changed").into_response();
+                }
+                None => {
+                    return (StatusCode::BAD_REQUEST, "nothing to undo").into_response();
+                }
+            }
+        };
+        let hash = crate::comments::sha256_hex(before.as_bytes());
+        return match tokio::fs::write(&nb.source_path, before.as_bytes()).await {
+            Ok(()) => {
+                *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                annotate_ok(&hash)
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("write error: {e}"),
+            )
+                .into_response(),
+        };
+    }
     let req = crate::comments::AnnotateRequest {
         op: &op,
         target: &target,
@@ -571,14 +607,23 @@ async fn annotate_source(
         today: &today,
     };
     match crate::comments::apply_annotate(&file, &req) {
-        Ok(next) => match tokio::fs::write(&nb.source_path, next.as_bytes()).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("write error: {e}"),
-            )
-                .into_response(),
-        },
+        Ok(next) => {
+            let hash = crate::comments::sha256_hex(next.as_bytes());
+            match tokio::fs::write(&nb.source_path, next.as_bytes()).await {
+                Ok(()) => {
+                    *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = Some(UndoSnap {
+                        before: file,
+                        after_hash: hash.clone(),
+                    });
+                    annotate_ok(&hash)
+                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("write error: {e}"),
+                )
+                    .into_response(),
+            }
+        }
         Err(crate::comments::AnnotateError::BadRequest(msg)) => {
             (StatusCode::BAD_REQUEST, msg).into_response()
         }
@@ -586,6 +631,15 @@ async fn annotate_source(
             (StatusCode::CONFLICT, msg).into_response()
         }
     }
+}
+
+fn annotate_ok(sha: &str) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        format!(r#"{{"sha256":"{sha}"}}"#),
+    )
+        .into_response()
 }
 
 fn json_str(v: &serde_json::Value, key: &str) -> String {
@@ -989,11 +1043,120 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let written = std::fs::read_to_string(&src).unwrap();
+        assert_eq!(
+            body["sha256"].as_str().unwrap(),
+            crate::comments::sha256_hex(written.as_bytes())
+        );
         assert!(written.contains("==constant=="), "{written}");
         assert!(written.contains("why"), "{written}");
         assert_ne!(written, source);
+    }
+
+    #[tokio::test]
+    async fn annotate_inside_a_fence_is_rejected() {
+        let source = "# T\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n\n~~~python\nprint(1)\n~~~\n";
+        let (state, src) = annotate_state(source, true, false, None);
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("a == b").unwrap();
+        let body = format!(
+            r#"{{"op":"insert","target":"prose","start":{start},"end":{},"text":"a == b","comment":"no"}}"#,
+            start + "a == b".len()
+        );
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(body))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.status().is_client_error(),
+            "fence target must be 4xx, got {}",
+            res.status()
+        );
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let info = source.find("rustlab").unwrap();
+        let body = format!(
+            r#"{{"op":"insert","target":"prose","start":{info},"end":{},"text":"rustlab","comment":""}}"#,
+            info + "rustlab".len()
+        );
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(body))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_client_error(), "{}", res.status());
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn annotate_undo_restores_the_previous_bytes() {
+        let source = "# hello constant world\n";
+        let (state, src) = annotate_state(source, true, false, None);
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{digest}\""))
+                .body(Body::from(annotate_body()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let next = body["sha256"].as_str().unwrap().to_string();
+        assert_ne!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let app = router(Arc::clone(&state));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{next}\""))
+                .body(Body::from(r#"{"op":"undo"}"#))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+        drop(state);
     }
 
     #[tokio::test]

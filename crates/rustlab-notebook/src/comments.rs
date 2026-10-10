@@ -12,6 +12,17 @@ use std::collections::HashMap;
 
 // ── render mode (thread-local; set on the rendering thread) ───────────────
 
+/// How a markdown render treats notes when comments stay in the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MarkdownCommentStyle {
+    /// Pass `==` and `%%` through.
+    Keep,
+    /// GitHub footnotes. Highlights become `<mark>`.
+    Footnotes,
+    /// Obsidian callouts (`> [!note]`). Highlights stay `==`.
+    Callouts,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct CommentMode {
     /// HTML/JSON: render marks. `false` strips well-formed marks.
@@ -25,6 +36,8 @@ pub(crate) struct CommentMode {
     pub latex: bool,
     /// Markdown emitter keeps `==` / `%%`. `--no-comments` turns this off.
     pub markdown_keep: bool,
+    /// Markdown-only. Ignored when `markdown_keep` is false (that path strips).
+    pub markdown_style: MarkdownCommentStyle,
 }
 
 impl CommentMode {
@@ -35,6 +48,7 @@ impl CommentMode {
             annotate: false,
             latex: false,
             markdown_keep: true,
+            markdown_style: MarkdownCommentStyle::Keep,
         }
     }
 
@@ -44,6 +58,7 @@ impl CommentMode {
             FormatKind::Latex => false,
             _ => true,
         });
+        let markdown_style = markdown_style_requested();
         match kind {
             FormatKind::Html | FormatKind::Json => Self {
                 show: on,
@@ -51,6 +66,7 @@ impl CommentMode {
                 annotate: false,
                 latex: false,
                 markdown_keep: true,
+                markdown_style,
             },
             FormatKind::Latex => Self {
                 show: false,
@@ -58,6 +74,7 @@ impl CommentMode {
                 annotate: false,
                 latex: on,
                 markdown_keep: true,
+                markdown_style,
             },
             FormatKind::Markdown => Self {
                 show: false,
@@ -65,6 +82,7 @@ impl CommentMode {
                 annotate: false,
                 latex: false,
                 markdown_keep: on,
+                markdown_style,
             },
         }
     }
@@ -77,6 +95,7 @@ impl CommentMode {
             annotate,
             latex: false,
             markdown_keep: true,
+            markdown_style: MarkdownCommentStyle::Keep,
         }
     }
 }
@@ -96,6 +115,7 @@ thread_local! {
     static NOTE_N: Cell<u32> = Cell::new(0);
     /// `None` means "use the format default" ([`CommentMode::for_format`]).
     static REQUESTED: Cell<Option<bool>> = Cell::new(None);
+    static MD_STYLE: Cell<MarkdownCommentStyle> = Cell::new(MarkdownCommentStyle::Keep);
     /// Added to every `data-src-*` offset while a block is rendered.
     static ORIGIN: Cell<usize> = Cell::new(0);
     /// Host-file byte ranges parallel to the rendered blocks. Empty
@@ -255,6 +275,31 @@ pub(crate) fn set_requested(v: Option<bool>) {
 
 pub(crate) fn requested() -> Option<bool> {
     REQUESTED.with(|c| c.get())
+}
+
+pub(crate) fn set_markdown_style(style: MarkdownCommentStyle) {
+    MD_STYLE.with(|c| c.set(style));
+}
+
+pub(crate) fn markdown_style_requested() -> MarkdownCommentStyle {
+    MD_STYLE.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) struct MarkdownStyleGuard(MarkdownCommentStyle);
+
+#[cfg(test)]
+impl Drop for MarkdownStyleGuard {
+    fn drop(&mut self) {
+        set_markdown_style(self.0);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn push_markdown_style(style: MarkdownCommentStyle) -> MarkdownStyleGuard {
+    let prev = markdown_style_requested();
+    set_markdown_style(style);
+    MarkdownStyleGuard(prev)
 }
 
 pub(crate) struct PageGuard {
@@ -1083,6 +1128,71 @@ fn detect_fence_open(s: &[u8], i: usize) -> Option<(usize, u8, usize)> {
     Some((j, fc, len))
 }
 
+/// Top-level fenced code blocks, including the info string and the
+/// closing line. `` ` `` and `~` fences. An inner fence is content of
+/// the outer one: there is no nesting.
+fn fenced_code_ranges(md: &str) -> Vec<(usize, usize)> {
+    let b = md.as_bytes();
+    let n = b.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    if md.starts_with("---\n") || md.starts_with("---\r\n") {
+        let rest = if md.starts_with("---\r\n") { 5 } else { 4 };
+        if let Some(rel) = md[rest..].find("\n---") {
+            let mut end = rest + rel + 4;
+            if end < n && b[end] == b'\r' {
+                end += 1;
+            }
+            if end < n && b[end] == b'\n' {
+                end += 1;
+            }
+            let close_line = line_content(md, rest + rel + 1);
+            if close_line.trim() == "---" {
+                i = end;
+            }
+        }
+    }
+    let mut at_line_start = i == 0 || (i > 0 && b[i - 1] == b'\n');
+    while i < n {
+        if at_line_start {
+            if let Some((_, fc, flen)) = detect_fence_open(b, i) {
+                let start = i;
+                i = line_end(b, i);
+                while i < n {
+                    let next = line_end(b, i);
+                    let mut line = &md[i..next.min(n)];
+                    line = line.strip_suffix('\n').unwrap_or(line);
+                    line = line.strip_suffix('\r').unwrap_or(line);
+                    let close = is_close_fence(line.as_bytes(), fc, flen);
+                    i = next;
+                    if close {
+                        break;
+                    }
+                }
+                out.push((start, i));
+                at_line_start = true;
+                continue;
+            }
+        }
+        at_line_start = b[i] == b'\n';
+        i += 1;
+    }
+    out
+}
+
+fn fence_contains(file: &str, start: usize, end: usize) -> bool {
+    let fences = fenced_code_ranges(file);
+    if start == end {
+        // A zero-width insert on the opening line (the info string) is
+        // still inside the fence. The byte just after the closer is not.
+        fences.iter().any(|&(s, e)| start >= s && start < e)
+    } else {
+        fences
+            .iter()
+            .any(|&(s, e)| ranges_overlap(start, end, s, e))
+    }
+}
+
 fn is_close_fence(line: &[u8], fc: u8, fence_len: usize) -> bool {
     let mut j = 0;
     let mut spaces = 0;
@@ -1237,15 +1347,13 @@ pub(crate) fn prepare(md: &str) -> Prepared {
 }
 
 fn strip_with(scanned: &Scan, md: &str) -> String {
-    // Replace from the end so earlier offsets stay valid.
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     for m in &scanned.marks {
         if m.kind == Kind::Hi {
             edits.push((m.start, m.end, md[m.inner_start..m.inner_end].to_string()));
         } else {
-            // Delete the comment only. A single binding space stays, so
-            // `==keep== %%gone%% and` becomes `keep  and` after unwrap.
-            edits.push((m.start, m.end, String::new()));
+            let (s, e) = note_removal(md, m);
+            edits.push((s, e, String::new()));
         }
     }
     for &(at, kind) in &scanned.escapes {
@@ -1255,7 +1363,94 @@ fn strip_with(scanned: &Scan, md: &str) -> String {
         };
         edits.push((at, at + 3, s.to_string()));
     }
-    apply_edits(md, &mut edits)
+    collapse_blank_runs_outside_fences(&apply_edits(md, &mut edits))
+}
+
+/// Bytes to delete for one note so the prose does not keep a double
+/// space, a lone trailing period, or a blank line that was only the note.
+fn note_removal(md: &str, m: &Mark) -> (usize, usize) {
+    if m.block {
+        // Drop the block through the closer, and keep the newline after
+        // it, so `prev\n%%\nbody\n%%\nnext` becomes `prev\n\nnext`.
+        return (line_start(md, m.start), m.end);
+    }
+    if note_is_line_local(md, m) {
+        return (line_start(md, m.start), line_end(md.as_bytes(), m.start));
+    }
+    let cut = reply_cut_end(md, m.start, m.end);
+    let bytes = md.as_bytes();
+    let mut start = m.start;
+    if start > 0 && bytes[start - 1] == b' ' {
+        let after = bytes.get(cut).copied();
+        if after.is_none()
+            || matches!(
+                after,
+                Some(b' ' | b'\n' | b'\r' | b'.' | b',' | b';' | b':' | b'!' | b'?')
+            )
+        {
+            start -= 1;
+        }
+    }
+    (start, cut)
+}
+
+/// A note that is the only text on its line, after a lone trailing
+/// period or comma is included in the cut.
+fn note_is_line_local(md: &str, m: &Mark) -> bool {
+    let line_s = line_start(md, m.start);
+    if !md[line_s..m.start].trim().is_empty() {
+        return false;
+    }
+    let cut = reply_cut_end(md, m.start, m.end);
+    md[cut..]
+        .split(['\n', '\r'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+}
+
+fn collapse_blank_runs_outside_fences(md: &str) -> String {
+    let fences = fenced_code_ranges(md);
+    let b = md.as_bytes();
+    let mut out = String::with_capacity(md.len());
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(end) = fences
+            .iter()
+            .find(|&&(s, e)| i >= s && i < e)
+            .map(|&(_, e)| e)
+        {
+            out.push_str(&md[i..end]);
+            i = end;
+            continue;
+        }
+        if b[i] == b'\n' || b[i] == b'\r' {
+            let start = i;
+            let mut nls = 0;
+            while i < b.len() && (b[i] == b'\n' || b[i] == b'\r') {
+                if b[i] == b'\n' {
+                    nls += 1;
+                }
+                i += 1;
+            }
+            if nls >= 3 {
+                out.push_str("\n\n");
+            } else {
+                out.push_str(&md[start..i]);
+            }
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i] != b'\n' && b[i] != b'\r' {
+            if fences.iter().any(|&(s, _)| s == i) {
+                break;
+            }
+            i += 1;
+        }
+        out.push_str(&md[start..i]);
+    }
+    out
 }
 
 fn apply_edits(md: &str, edits: &mut Vec<(usize, usize, String)>) -> String {
@@ -1800,6 +1995,227 @@ pub(crate) fn strip_source(md: &str) -> String {
     strip_with(&scanned, md)
 }
 
+/// Markdown emitter when comments stay on. `Keep` returns `md` unchanged.
+pub(crate) fn rewrite_markdown_comments(md: &str) -> String {
+    match mode().markdown_style {
+        MarkdownCommentStyle::Keep => md.to_string(),
+        MarkdownCommentStyle::Footnotes => footnotes_markdown(md),
+        MarkdownCommentStyle::Callouts => callouts_markdown(md),
+    }
+}
+
+fn footnotes_markdown(md: &str) -> String {
+    let scanned = scan(md);
+    let replies = reply_index(&scanned);
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let mut defs = String::new();
+    let mut seq = 0u32;
+    for m in &scanned.marks {
+        if m.kind == Kind::Hi {
+            edits.push((
+                m.start,
+                m.end,
+                format!(
+                    "<mark>{}</mark>",
+                    escape_html_text(&md[m.inner_start..m.inner_end])
+                ),
+            ));
+        }
+    }
+    for (idx, m) in scanned.marks.iter().enumerate() {
+        if m.kind != Kind::Note {
+            continue;
+        }
+        if folded_reply(&scanned, m) {
+            let (s, e) = note_removal(md, m);
+            edits.push((s, e, String::new()));
+            continue;
+        }
+        seq += 1;
+        let id = footnote_id(m, seq);
+        let label = format!("[^{id}]");
+        if m.block {
+            edits.push((line_start(md, m.start), m.end, format!("{label}\n")));
+        } else if note_is_line_local(md, m) {
+            edits.push((
+                line_start(md, m.start),
+                line_end(md.as_bytes(), m.start),
+                format!("{label}\n"),
+            ));
+        } else {
+            edits.push((m.start, m.end, label));
+        }
+        defs.push_str(&footnote_definition(
+            &id,
+            m,
+            replies.get(&idx).map(Vec::as_slice).unwrap_or(&[]),
+            &scanned,
+        ));
+    }
+    for &(at, kind) in &scanned.escapes {
+        let s = match kind {
+            Kind::Hi => "==",
+            Kind::Note => "%%",
+        };
+        edits.push((at, at + 3, s.to_string()));
+    }
+    let mut out = apply_edits(md, &mut edits);
+    if !defs.is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(&defs);
+    }
+    out
+}
+
+fn callouts_markdown(md: &str) -> String {
+    let scanned = scan(md);
+    let replies = reply_index(&scanned);
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for (idx, m) in scanned.marks.iter().enumerate() {
+        if m.kind != Kind::Note {
+            continue;
+        }
+        if folded_reply(&scanned, m) {
+            let (s, e) = note_removal(md, m);
+            edits.push((s, e, String::new()));
+            continue;
+        }
+        let callout = callout_block(
+            m,
+            replies.get(&idx).map(Vec::as_slice).unwrap_or(&[]),
+            &scanned,
+        );
+        if m.block {
+            edits.push((line_start(md, m.start), m.end, callout));
+        } else if note_is_line_local(md, m) {
+            edits.push((
+                line_start(md, m.start),
+                line_end(md.as_bytes(), m.start),
+                callout,
+            ));
+        } else {
+            let (s, e) = note_removal(md, m);
+            edits.push((s, e, String::new()));
+            let le = line_end(md.as_bytes(), m.start);
+            edits.push((le, le, callout));
+        }
+    }
+    apply_edits(md, &mut edits)
+}
+
+fn reply_index(scanned: &Scan) -> HashMap<usize, Vec<usize>> {
+    let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, m) in scanned.marks.iter().enumerate() {
+        if m.kind != Kind::Note {
+            continue;
+        }
+        let Some(re) = &m.header.reply_to else {
+            continue;
+        };
+        if let Some(parent) = scanned
+            .marks
+            .iter()
+            .position(|p| p.kind == Kind::Note && p.header.id.as_deref() == Some(re.as_str()))
+        {
+            out.entry(parent).or_default().push(idx);
+        }
+    }
+    out
+}
+
+fn footnote_id(m: &Mark, seq: u32) -> String {
+    if let Some(id) = &m.header.id {
+        let ok = id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+        if ok && !id.is_empty() {
+            return id.clone();
+        }
+    }
+    format!("n{seq}")
+}
+
+fn footnote_definition(id: &str, m: &Mark, reply_idxs: &[usize], scanned: &Scan) -> String {
+    let mut text = m.body.clone();
+    for &ri in reply_idxs {
+        let r = &scanned.marks[ri];
+        text.push_str("\n\n");
+        if let Some(a) = &r.header.author {
+            text.push('@');
+            text.push_str(a);
+            text.push_str(": ");
+        }
+        text.push_str(&r.body);
+    }
+    let mut out = format!("[^{id}]: ");
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            out.push_str("    ");
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if text.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+fn callout_block(m: &Mark, reply_idxs: &[usize], scanned: &Scan) -> String {
+    let mut s = String::from("> [!note]\n");
+    let mut head = String::new();
+    if let Some(a) = &m.header.author {
+        head.push('@');
+        head.push_str(a);
+    }
+    if let Some(d) = &m.header.date {
+        if !head.is_empty() {
+            head.push(' ');
+        }
+        head.push_str(d);
+    }
+    if !head.is_empty() {
+        s.push_str("> ");
+        s.push_str(&head);
+        s.push('\n');
+    }
+    push_callout_body(&mut s, &m.body);
+    for &ri in reply_idxs {
+        let r = &scanned.marks[ri];
+        s.push_str(">\n");
+        let mut line = String::new();
+        if let Some(a) = &r.header.author {
+            line.push('@');
+            line.push_str(a);
+            line.push_str(": ");
+        }
+        line.push_str(&r.body);
+        push_callout_body(&mut s, &line);
+    }
+    s
+}
+
+fn push_callout_body(out: &mut String, body: &str) {
+    if body.is_empty() {
+        out.push_str(">\n");
+        return;
+    }
+    for line in body.lines() {
+        out.push_str("> ");
+        out.push_str(line);
+        out.push('\n');
+    }
+}
+
+fn escape_html_text(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Rewrite `md` for the LaTeX pipeline.
 ///
 /// With comments off, well-formed marks are stripped (highlight text kept,
@@ -1922,7 +2338,10 @@ pub(crate) fn restore_latex(tex: &str, prep: &Prepared) -> String {
 /// depend on that package.
 pub(crate) fn latex_packages() -> &'static str {
     if mode().latex {
-        "\\usepackage{soul}\n\\sethlcolor{yellow!35}\n"
+        // A second \\geometry overrides the template's 1in margin so
+        // \\marginpar has a column. marginfix packs notes that would
+        // otherwise collide or run off the page.
+        "\\usepackage{soul}\n\\sethlcolor{yellow!35}\n\\usepackage{marginfix}\n\\geometry{margin=1in,marginparwidth=1.7in,marginparsep=0.2in}\n\\setlength{\\marginparpush}{4pt}\n"
     } else {
         ""
     }
@@ -1979,7 +2398,7 @@ fn render_note_latex(m: &Mark, replies: &str, in_table: bool) -> String {
     if in_table {
         format!("\\footnote{{{inner}}}")
     } else {
-        format!("\\marginpar{{{inner}}}")
+        format!("\\marginpar{{\\raggedright\\footnotesize {inner}}}")
     }
 }
 
@@ -2401,9 +2820,18 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   .rl-cm-margin-label { pointer-events: auto; cursor: pointer; }
   section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: block; }
 }
+.rl-cm-undo {
+  position: fixed; right: 16px; bottom: 16px; z-index: 450;
+  background: var(--rl-bg-secondary, #313244); color: var(--rl-text, #cdd6f4);
+  border: 1px solid var(--rl-border, #45475a); border-radius: 8px;
+  padding: 8px 12px; font: 13px/1.3 -apple-system, system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.rl-cm-undo button { margin-left: 8px; }
+.rl-cm-undo[hidden] { display: none; }
 @media print {
-  .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; }
-  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions { display: none !important; }
+  .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; width: auto !important; }
+  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo { display: none !important; }
 }
 "#
 }
@@ -2473,7 +2901,16 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       cards[i].style.top = '';
       cards[i].style.left = '';
       cards[i].style.right = '';
+      cards[i].style.width = '';
+      cards[i].removeAttribute('data-cm-slot');
     }
+    var asides = document.querySelectorAll('.rl-cm-margin');
+    for (var a = 0; a < asides.length; a++) asides[a].style.minHeight = '';
+  }
+  function refTopOf(card) {
+    var anchorId = card.getAttribute('data-cm-anchor');
+    var ref = anchorId ? document.getElementById(anchorId) : null;
+    return ref ? (ref.getBoundingClientRect().top + window.scrollY) : 0;
   }
   function placeNotes() {
     var cards = document.querySelectorAll('.rl-cm-card');
@@ -2485,28 +2922,63 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       clearPos(cards);
       return;
     }
-    var cursor = -1;
     var gap = 10;
-    var label = document.querySelector('.rl-cm-margin-label');
-    if (label && label.offsetParent !== null) {
-      var lr = label.getBoundingClientRect();
-      cursor = lr.bottom + window.scrollY + gap;
-    }
-    for (var i = 0; i < cards.length; i++) {
+    var cursor = -1;
+    var i = 0;
+    while (i < cards.length) {
       var card = cards[i];
       var aside = card.closest('.rl-cm-margin');
-      if (!aside) continue;
-      var anchorId = card.getAttribute('data-cm-anchor');
-      var ref = anchorId ? document.getElementById(anchorId) : null;
-      var refTop = ref ? (ref.getBoundingClientRect().top + window.scrollY) : 0;
-      var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
+      if (!aside) { i++; continue; }
+      var refTop = refTopOf(card);
+      var group = [card];
+      var j = i + 1;
+      while (j < cards.length) {
+        var next = cards[j];
+        if (next.closest('.rl-cm-margin') !== aside) break;
+        if (Math.abs(refTopOf(next) - refTop) >= 14) break;
+        group.push(next);
+        j++;
+      }
       var asideTop = aside.getBoundingClientRect().top + window.scrollY;
-      var top = Math.max(0, topDoc - asideTop) + 'px';
-      if (card.style.position !== 'absolute') card.style.position = 'absolute';
-      if (card.style.left !== '0px') card.style.left = '0';
-      if (card.style.right !== '0px') card.style.right = '0';
-      if (card.style.top !== top) card.style.top = top;
-      cursor = topDoc + card.offsetHeight + gap;
+      var topDoc = cursor < 0 ? refTop : Math.max(cursor, refTop);
+      var n = group.length;
+      var rowH = 0;
+      for (var g = 0; g < n; g++) {
+        var c = group[g];
+        var slot = n + ':' + g + ':' + Math.round(topDoc);
+        var top = Math.max(0, topDoc - asideTop) + 'px';
+        if (c.getAttribute('data-cm-slot') !== slot) {
+          c.setAttribute('data-cm-slot', slot);
+          c.style.position = 'absolute';
+          if (n === 1) {
+            c.style.left = '0';
+            c.style.right = '0';
+            c.style.width = '';
+          } else {
+            var share = '((100% - ' + ((n - 1) * 6) + 'px) / ' + n + ')';
+            c.style.width = 'calc' + share;
+            c.style.left = 'calc(' + g + ' * (' + share + ' + 6px))';
+            c.style.right = 'auto';
+          }
+          c.style.top = top;
+        }
+        rowH = Math.max(rowH, c.offsetHeight);
+      }
+      cursor = topDoc + rowH + gap;
+      i = j;
+    }
+    var asides = document.querySelectorAll('.rl-cm-margin');
+    for (var a = 0; a < asides.length; a++) {
+      var asideEl = asides[a];
+      var kids = asideEl.querySelectorAll('.rl-cm-card');
+      var bottom = 0;
+      for (var k = 0; k < kids.length; k++) {
+        if (kids[k].style.position !== 'absolute') continue;
+        var t = parseFloat(kids[k].style.top) || 0;
+        bottom = Math.max(bottom, t + kids[k].offsetHeight);
+      }
+      var mh = bottom ? (bottom + 'px') : '';
+      if (asideEl.style.minHeight !== mh) asideEl.style.minHeight = mh;
     }
   }
   function hot(id, on) {
@@ -2583,7 +3055,8 @@ pub(crate) fn annotate_chrome() -> &'static str {
 <button type="button" data-act="highlight">Highlight only</button>
 <button type="button" id="rl-cm-go">Save comment</button>
 </div>
-</div>"#
+</div>
+<div id="rl-cm-undo" class="rl-cm-undo" hidden role="status">Saved. <button type="button" id="rl-cm-undo-btn">Undo</button></div>"#
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
@@ -2853,6 +3326,14 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var i = p.indexOf('/n/');
     return i >= 0 ? decodeURIComponent(p.slice(i + 3)) : '';
   }}
+  function setFileHash(hex) {{
+    var m = document.querySelector('meta[name="rl-source-sha256"]');
+    if (m && hex) m.setAttribute('content', hex);
+  }}
+  function showUndo(on) {{
+    var t = document.getElementById('rl-cm-undo');
+    if (t) t.hidden = !on;
+  }}
   function post(body, kind) {{
     var expect = fileHash();
     fetch('/annotate/' + encodeURIComponent(slug()), {{
@@ -2871,13 +3352,17 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
         window.alert('Could not update the note.');
         return;
       }}
+      res.json().then(function (j) {{
+        if (j && j.sha256) setFileHash(j.sha256);
+      }}).catch(function () {{}});
       var name = nameEl.value.trim();
       if (name && !/[ %:]/.test(name)) {{
         try {{ sessionStorage.setItem('rl-comment-name', name); }} catch (e) {{}}
       }}
-      confirmSaved(kind);
+      if (body.op !== 'undo') confirmSaved(kind);
       hideMenu();
       hidePop();
+      showUndo(body.op !== 'undo');
     }}).catch(function () {{ window.alert('Could not update the note.'); }});
   }}
   function act(name) {{
@@ -3014,6 +3499,10 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
   }});
   document.addEventListener('scroll', hideMenu, true);
   document.addEventListener('selectionchange', function () {{ if (!pop.hidden) return; }});
+  var undoBtn = document.getElementById('rl-cm-undo-btn');
+  if (undoBtn) undoBtn.addEventListener('click', function () {{
+    post({{ op: 'undo' }}, 'undo');
+  }});
 }})();
 </script>"#
     )
@@ -3063,6 +3552,14 @@ pub fn apply_annotate(file: &str, req: &AnnotateRequest<'_>) -> Result<String, A
     if comment_body_forbidden(req.comment) {
         return Err(AnnotateError::BadRequest(
             "comment must not contain %% , == , or a fence".into(),
+        ));
+    }
+    // Every fence type, including its info string. A cell comment is the
+    // one write that names a fence, and it is inserted above that fence.
+    let cell_insert = req.op == "insert" && req.target == "cell";
+    if !cell_insert && fence_contains(file, req.start, req.end) {
+        return Err(AnnotateError::BadRequest(
+            "target offsets are inside a code fence".into(),
         ));
     }
     match req.op {
@@ -3125,8 +3622,11 @@ fn insert_cell(file: &str, req: &AnnotateRequest<'_>) -> Result<String, Annotate
             "cell offset is not a fence".into(),
         ));
     }
-    let line = line_content(file, req.start);
-    if detect_fence_open(line.as_bytes(), 0).is_none() {
+    // A ``` line inside an outer fence is content, not a cell boundary.
+    if !fenced_code_ranges(file)
+        .iter()
+        .any(|&(s, _)| s == req.start)
+    {
         return Err(AnnotateError::BadRequest(
             "cell offset is not a fence".into(),
         ));
@@ -3519,6 +4019,13 @@ mod tests {
         assert!(codes(md).is_empty(), "{:?}", issues(md));
         let html = html_of(md);
         assert!(!html.contains("rl-cm-mark"), "{html}");
+        assert!(!html.contains("<mark"), "{html}");
+        let text: String = html
+            .split('<')
+            .map(|part| part.split_once('>').map(|(_, t)| t).unwrap_or(part))
+            .collect();
+        assert!(text.contains("a == b"), "{text}");
+        assert!(text.contains("%% note"), "{text}");
     }
 
     #[test]
@@ -3772,9 +4279,275 @@ mod tests {
     #[test]
     fn strip_unwraps_and_drops_comments() {
         let s = strip_source("==keep== %%gone%% and ==plain==");
-        assert_eq!(s, "keep  and plain");
+        assert_eq!(s, "keep and plain");
         let broken = strip_source("==nope");
         assert_eq!(broken, "==nope");
+        assert_eq!(strip_source("word %%note%%."), "word.");
+        assert_eq!(strip_source("%%#c9: only%%\nNext\n"), "Next\n");
+    }
+
+    #[test]
+    fn strip_and_rewrite_leave_code_math_and_strings() {
+        let src = concat!(
+            "Inline math stays literal, as in $a == b$.\n\n",
+            "```rustlab\n",
+            "a == b\n",
+            "disp(\"x %% y\")\n",
+            "s = \"has %% inside\"\n",
+            "```\n\n",
+            "~~~text\n",
+            "x %% y\n",
+            "==not a highlight==\n",
+            "~~~\n",
+        );
+        assert_eq!(strip_source(src), src);
+        let _foot = push_markdown_style(MarkdownCommentStyle::Footnotes);
+        let _mode = install(CommentMode::for_format(FormatKind::Markdown, Some(true)));
+        assert_eq!(rewrite_markdown_comments(src), src);
+        drop(_mode);
+        let _mode = install(CommentMode::for_format(FormatKind::Markdown, Some(true)));
+        set_markdown_style(MarkdownCommentStyle::Callouts);
+        // for_format already copied Footnotes. Re-install after the change.
+        drop(_mode);
+        let _mode = install(CommentMode::for_format(FormatKind::Markdown, Some(true)));
+        assert_eq!(mode().markdown_style, MarkdownCommentStyle::Callouts);
+        assert_eq!(rewrite_markdown_comments(src), src);
+        drop(_mode);
+
+        let fence = src.find("```rustlab").unwrap();
+        let start = fence + src[fence..].find("a == b").unwrap();
+        let err = apply_annotate(
+            src,
+            &AnnotateRequest {
+                op: "insert",
+                target: "prose",
+                start,
+                end: start + "a == b".len(),
+                text: "a == b",
+                comment: "no",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, AnnotateError::BadRequest(ref m) if m.contains("code fence")),
+            "{err}"
+        );
+        let pct = fence + src[fence..].find("%% y").unwrap();
+        let err = apply_annotate(
+            src,
+            &AnnotateRequest {
+                op: "edit",
+                target: "prose",
+                start: pct,
+                end: pct + 2,
+                text: "",
+                comment: "no",
+                author: "",
+                id: "",
+                expect: "%%",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AnnotateError::BadRequest(_)), "{err}");
+        let info = src.find("rustlab").unwrap();
+        let err = apply_annotate(
+            src,
+            &AnnotateRequest {
+                op: "insert",
+                target: "prose",
+                start: info,
+                end: info + "rustlab".len(),
+                text: "rustlab",
+                comment: "",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AnnotateError::BadRequest(_)), "{err}");
+    }
+
+    #[test]
+    fn cell_comment_is_inserted_above_the_fence_only() {
+        let file = "<!-- hide -->\n```rustlab\na == b\n```\n";
+        let at = file.find("```rustlab").unwrap();
+        let out = apply_annotate(
+            file,
+            &AnnotateRequest {
+                op: "insert",
+                target: "cell",
+                start: at,
+                end: at,
+                text: "",
+                comment: "why",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap();
+        assert!(out.contains("%%#c1"), "{out}");
+        assert!(out.find("%%#c1").unwrap() < out.find("<!-- hide -->").unwrap());
+        assert!(out.ends_with(file), "{out}");
+
+        let inner = "```rustlab\n```python\ny = 1\n```\n";
+        let at = inner.find("```python").unwrap();
+        let err = apply_annotate(
+            inner,
+            &AnnotateRequest {
+                op: "insert",
+                target: "cell",
+                start: at,
+                end: at,
+                text: "",
+                comment: "no",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AnnotateError::BadRequest(_)), "{err}");
+
+        let tilde = "~~~python\nprint(1)\n~~~\n";
+        let err = apply_annotate(
+            tilde,
+            &AnnotateRequest {
+                op: "insert",
+                target: "prose",
+                start: 4,
+                end: 10,
+                text: "python",
+                comment: "no",
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-10",
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, AnnotateError::BadRequest(_)), "{err}");
+    }
+
+    #[test]
+    fn strip_footnotes_and_callouts_are_golden() {
+        let src = concat!(
+            "Group delay is ==constant== %%#c1: only for linear phase%%.\n",
+            "%%re #c1 @ada 2026-10-09: agree for an FIR%%\n",
+            "The cutoff sits near one quarter of the sample rate.\n",
+            "%%\n",
+            "#c2 @michael 2026-10-09: why the cutoff\n",
+            "%%\n",
+            "The ripple stays small.\n",
+            "%%#c3: comment on the next cell%%\n",
+            "```rustlab\n",
+            "a == b\n",
+            "s = \"x %% y\"\n",
+            "```\n",
+        );
+        let stripped = strip_source(src);
+        assert_eq!(
+            stripped,
+            concat!(
+                "Group delay is constant.\n",
+                "The cutoff sits near one quarter of the sample rate.\n",
+                "\n",
+                "The ripple stays small.\n",
+                "```rustlab\n",
+                "a == b\n",
+                "s = \"x %% y\"\n",
+                "```\n",
+            )
+        );
+        let _style = push_markdown_style(MarkdownCommentStyle::Footnotes);
+        let _mode = install(CommentMode::for_format(FormatKind::Markdown, Some(true)));
+        let notes = rewrite_markdown_comments(src);
+        assert!(notes.contains("<mark>constant</mark>"), "{notes}");
+        assert!(notes.contains("[^c1]"), "{notes}");
+        assert!(notes.contains("[^c1]: only for linear phase"), "{notes}");
+        assert!(notes.contains("    @ada: agree for an FIR"), "{notes}");
+        assert!(notes.contains("[^c2]"), "{notes}");
+        assert!(notes.contains("[^c3]"), "{notes}");
+        assert!(
+            notes.contains("```rustlab\na == b\ns = \"x %% y\"\n```"),
+            "{notes}"
+        );
+        let fence_at = notes.find("```rustlab").unwrap();
+        assert!(!notes[..fence_at].contains("%%"), "{notes}");
+        drop(_mode);
+        set_markdown_style(MarkdownCommentStyle::Callouts);
+        let _mode = install(CommentMode::for_format(FormatKind::Markdown, Some(true)));
+        let calls = rewrite_markdown_comments(src);
+        assert!(calls.contains("==constant=="), "{calls}");
+        assert!(calls.contains("> [!note]"), "{calls}");
+        assert!(
+            calls.contains("> @ada: agree for an FIR") || calls.contains("@ada"),
+            "{calls}"
+        );
+        assert!(
+            calls.contains("```rustlab\na == b\ns = \"x %% y\"\n```"),
+            "{calls}"
+        );
+        let fence_at = calls.find("```rustlab").unwrap();
+        assert!(!calls[..fence_at].contains("%%"), "{calls}");
+    }
+
+    #[test]
+    fn cell_comment_does_not_change_execution() {
+        let code = "x = 1:4\ny = x .* x\ndisp(y(1))\nplot(x, y)\na = 1\nb = 1\nok = a == b\ns = \"x %% y\"\ndisp(s)";
+        let bare = format!("```rustlab\n{code}\n```\n");
+        let noted = format!("%%#c1: why this cell%%\n```rustlab\n{code}\n```\n");
+        let bare_blocks = crate::parse::parse_notebook(&bare);
+        let noted_blocks = crate::parse::parse_notebook(&noted);
+        let bare_src = code_sources(&bare_blocks);
+        let noted_src = code_sources(&noted_blocks);
+        assert_eq!(bare_src, noted_src);
+        assert_eq!(bare_src, vec![code.to_string()]);
+        let bare_run = crate::execute::execute_notebook(&bare_blocks);
+        let noted_run = crate::execute::execute_notebook(&noted_blocks);
+        assert_eq!(code_results(&bare_run), code_results(&noted_run));
+    }
+
+    fn code_sources(blocks: &[crate::parse::Block]) -> Vec<String> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::parse::Block::Code { source, .. } => Some(source.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn code_results(
+        blocks: &[crate::execute::Rendered],
+    ) -> Vec<(String, String, Option<String>, String)> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                crate::execute::Rendered::Code {
+                    source,
+                    text_output,
+                    error,
+                    figures,
+                    ..
+                } => Some((
+                    source.clone(),
+                    text_output.clone(),
+                    error.clone(),
+                    format!("{figures:?}"),
+                )),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -4013,6 +4786,10 @@ mod tests {
         assert!(js.contains("return bare ? ['add', 'delete'] : ['edit', 'delete'];"));
         assert!(js.contains("return code ? ['add'] : ['add', 'highlight'];"));
         assert!(
+            js.contains("hi.hidden = info.code || !!info.mark;"),
+            "Highlight only is not offered for a code cell"
+        );
+        assert!(
             js.contains("var hit = targetMark(ev.target);"),
             "the context menu must classify the right-click target"
         );
@@ -4188,6 +4965,12 @@ mod tests {
         assert!(js.contains("position = 'absolute'"));
         assert!(js.contains("__rlAfterUpdate"));
         assert!(js.contains("classList.toggle('has-cm-margin'"));
+        assert!(js.contains("data-cm-slot"), "{js}");
+        assert!(js.contains("minHeight"), "{js}");
+        assert!(
+            !js.contains("label.getBoundingClientRect"),
+            "placement must not start below the Comments label"
+        );
         assert!(page(&blocks).contains("max-width: 799px"));
     }
 

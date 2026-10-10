@@ -1350,6 +1350,62 @@ pub fn set_comment_display(requested: Option<bool>) {
     comments::set_requested(requested);
 }
 
+/// Markdown render style. `None` and `"keep"` leave `==` / `%%` in the
+/// file. `"footnotes"` and `"callouts"` rewrite notes. Unknown names error.
+pub fn set_markdown_comment_style(name: Option<&str>) -> Result<(), String> {
+    let style = match name.unwrap_or("keep") {
+        "keep" => comments::MarkdownCommentStyle::Keep,
+        "footnotes" => comments::MarkdownCommentStyle::Footnotes,
+        "callouts" => comments::MarkdownCommentStyle::Callouts,
+        other => {
+            return Err(format!(
+                "--comments-style expected keep, footnotes, or callouts, got {other}"
+            ));
+        }
+    };
+    comments::set_markdown_style(style);
+    Ok(())
+}
+
+/// Drop every well-formed `%%` and unwrap `==` to its text. Code fences,
+/// inline code, and math are left byte-for-byte. Does not execute the
+/// notebook. A directory needs `-o` or `--in-place`. A single file with
+/// neither flag is written to stdout.
+pub fn cmd_strip(input: PathBuf, output: Option<PathBuf>, in_place: bool) -> Result<(), String> {
+    if output.is_some() && in_place {
+        return Err("--output and --in-place cannot be combined".into());
+    }
+    if input.is_dir() && output.is_none() && !in_place {
+        return Err("stripping a directory needs -o <DIR> or --in-place".into());
+    }
+    let files = if input.is_dir() {
+        list_md_files_recursive(&input)
+    } else if input.is_file() {
+        vec![input.clone()]
+    } else {
+        return Err(format!("cannot read {}", input.display()));
+    };
+    for src in &files {
+        let original = std::fs::read_to_string(src)
+            .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let stripped = comments::strip_source(&original);
+        if !input.is_dir() && output.is_none() && !in_place {
+            print!("{stripped}");
+            continue;
+        }
+        let dest = if in_place {
+            src.clone()
+        } else if input.is_dir() {
+            let rel = src.strip_prefix(&input).unwrap_or(src.as_path());
+            output.as_ref().unwrap().join(rel)
+        } else {
+            output.clone().unwrap()
+        };
+        write_output(&dest, stripped.as_bytes());
+    }
+    Ok(())
+}
+
 fn render_output(
     out_path: &PathBuf,
     format: &Format,
@@ -3442,6 +3498,22 @@ More.\n";
         assert!(!cleaned.contains(GENERATED_HEADER));
         assert!(!cleaned.contains(OUTPUT_BLOCK_START));
         assert!(cleaned.contains("```rustlab\nprint(1)\n```"));
+    }
+
+    #[test]
+    fn cmd_strip_writes_clean_markdown_and_leaves_the_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        let source = "See ==keep== %%gone%%.\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n";
+        std::fs::write(&path, source).unwrap();
+        let out = dir.path().join("clean.md");
+        cmd_strip(path.clone(), Some(out.clone()), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        let cleaned = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            cleaned,
+            "See keep.\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n"
+        );
     }
 
     #[test]

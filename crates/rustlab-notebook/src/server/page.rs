@@ -92,9 +92,13 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button:hover {{ border-color: {accent}; }}
   #rl-toolbar button.active {{ background: {accent}; color: {bg}; border-color: {accent}; }}
   #rl-toolbar button[hidden] {{ display: none; }}
+  body {{ --rl-pane-w: min(760px, max(360px, 42vw)); }}
+  /* A comment column needs the pane narrower, or the fixed pane paints
+     over the margin. The column stays 18rem; the pane gives up width. */
+  body.has-cm-margin {{ --rl-pane-w: min(560px, max(280px, 32vw)); }}
   #rl-source-pane {{
     position: fixed; top: 0; right: 0; height: 100vh;
-    width: 42vw; min-width: 360px; max-width: 760px;
+    width: var(--rl-pane-w); min-width: 0; max-width: var(--rl-pane-w);
     background: {code_bg}; border-left: 1px solid {border};
     z-index: 99998; display: flex; flex-direction: column;
     transform: translateX(101%); transition: transform .18s ease;
@@ -102,9 +106,9 @@ fn chrome_style(c: &ThemeColors) -> String {
   }}
   body.rl-source-open #rl-source-pane {{ transform: translateX(0); }}
   /* With the pane open, main's viewport-centring margin (50% of the FULL
-     width) would ignore the 42vw the pane took and squeeze the content
-     against it — pin the margin to the sidebar edge instead. */
-  body.rl-source-open main {{ margin-left: 220px; margin-right: 42vw; max-width: none; }}
+     width) would ignore the pane and squeeze the content against it —
+     pin the margin to the pane width instead. */
+  body.rl-source-open main {{ margin-left: 220px; margin-right: var(--rl-pane-w); max-width: none; }}
   body.no-toc.rl-source-open main {{ margin-left: 0; }}
   body.has-files.rl-source-open main {{ margin-left: calc(220px + var(--fb-w, 16.5rem)); }}
   body.has-files.no-toc.rl-source-open main {{ margin-left: var(--fb-w, 16.5rem); }}
@@ -122,7 +126,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-editor-host {{ height: 100%; }}
   @media (max-width: 768px) {{
     body.rl-source-open main {{ margin-right: 0; }}
-    #rl-source-pane {{ width: 100vw; max-width: none; }}
+    #rl-source-pane {{ width: 100vw; max-width: none; min-width: 0; }}
   }}
 </style>
 "##,

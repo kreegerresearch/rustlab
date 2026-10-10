@@ -35,7 +35,21 @@ should re-validate against those entries when upgrading.
   of the section. PDF `--comments` puts block and cell notes in
   `\marginpar` as well (a footnote inside a table). The annotate
   popover is a card (Name, comment, Cancel / Highlight only / Save
-  comment). Ctrl or Cmd+Enter saves; Esc cancels.
+  comment). Ctrl or Cmd+Enter saves; Esc cancels. `render -f markdown
+  --comments-style=footnotes` turns notes into GitHub footnotes and
+  highlights into `<mark>`. `--comments-style=callouts` turns notes
+  into `> [!note]` and leaves `==` (Obsidian's preview hides a raw
+  `%%`; the callout style is how those notes stay visible there).
+  `rustlab-notebook strip` writes the `--no-comments` markdown
+  cleanup and leaves every code fence unchanged. `POST /annotate` returns the new source hash and rejects
+  any write whose offsets fall inside a code fence (400, file
+  unchanged). A cell comment is only a `%%` line above the fence.
+  Highlight is not offered on a code cell. The page offers Undo for
+  the last annotate write in this `watch` process; git history is
+  the archive. Cards that share a line sit side by side, level with
+  the marker, and the margin grows to fit them. The source pane
+  narrows so it does not cover that column. PDF `--comments` uses a
+  wider margin paragraph (`marginfix`, 1.7in).
 
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder
