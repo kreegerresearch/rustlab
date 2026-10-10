@@ -4,8 +4,10 @@
 #
 # Per-backend behaviour (automatic, no code changes needed):
 #   - Terminal:      heatmap of Z
-#   - Viewer on:     interactive 3D (drag rotate, scroll zoom, right-drag pan,
-#                    Home button / Home / R to reset the camera)
+#   - Viewer on:     interactive 3D (drag rotates through the poles,
+#                    ctrl-drag rolls, scroll zooms, right-drag pans,
+#                    double-click or F11 toggles fullscreen,
+#                    Home button / Home / R resets the camera)
 #   - .html savefig: Plotly 3D surface (drag in browser)
 #   - .svg/.png:     static isometric wireframe
 

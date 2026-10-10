@@ -48,13 +48,20 @@ fn main() {
         println!();
         println!("Navigating a plot (each subplot independently):");
         println!("  scroll         Zoom about the pointer (2D) / zoom the camera (3D)");
-        println!("  left-drag      Pan (2D) / rotate (3D)");
+        println!("  left-drag      Pan (2D) / rotate yaw and pitch (3D), through the poles");
+        println!("  ctrl-drag      3D only: roll about the view axis (Cmd on macOS)");
         println!("  shift+scroll   3D only: scale the Z axis");
         println!("  right-drag     3D only: pan");
         println!("  Home           Reset the view — the panel's Home button, the Home key");
-        println!("                 while hovering it, or a double-click. Restores the");
-        println!("                 script's xlim/ylim if it set any, else fits the data");
-        println!("  R              3D only: restore the default camera (same as Home)");
+        println!("                 while hovering it, or a double-click on a 2D plot.");
+        println!("                 Restores the script's xlim/ylim if it set any, else fits");
+        println!("                 the data. On a 3D surface, Home or R restores the camera.");
+        println!("  F11            Toggle fullscreen");
+        println!("  double-click   2D: same reset as Home. 3D surface: toggle fullscreen");
+        println!("  Expand / title A multi-panel figure: Expand (or double-click the panel");
+        println!("                 title) shows that subplot alone. Esc returns to the grid.");
+        println!("  Fill window    When several figures are open, fills the viewer window.");
+        println!("                 Esc restores the floating window.");
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -101,7 +108,15 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
-            .with_inner_size([1024.0, 768.0]),
+            // First-frame size is replaced from the monitor (about 75%)
+            // once the window exists. This is the fallback before that,
+            // and the size headless launches start from.
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([480.0, 360.0])
+            .with_resizable(true)
+            .with_maximize_button(true)
+            .with_minimize_button(true)
+            .with_decorations(true),
         ..Default::default()
     };
 

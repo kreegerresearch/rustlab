@@ -11,6 +11,9 @@ use crate::surface::Surface3dData;
 pub struct ViewerApp {
     rx: mpsc::Receiver<ViewerMsg>,
     figures: HashMap<u32, FigureWindow>,
+    /// The first frame sizes the OS window from the monitor. Headless
+    /// tests have no monitor size and skip the command.
+    window_fitted: bool,
 }
 
 impl ViewerApp {
@@ -18,6 +21,7 @@ impl ViewerApp {
         Self {
             rx,
             figures: HashMap::new(),
+            window_fitted: false,
         }
     }
 
@@ -203,6 +207,7 @@ impl ViewerApp {
     /// headless test can drive the real render path through `Context::run`
     /// without constructing an `eframe::Frame`.
     fn render_ui(&mut self, ctx: &egui::Context) {
+        self.apply_window_chrome(ctx);
         // Dark theme is fixed once at startup (main.rs).
         if self.figures.is_empty() {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -223,19 +228,87 @@ impl ViewerApp {
             });
         } else {
             egui::CentralPanel::default().show(ctx, |_ui| {});
+            let screen = ctx.screen_rect();
             let ids: Vec<u32> = self.figures.keys().copied().collect();
             for id in ids {
                 let fig = self.figures.get_mut(&id).unwrap();
                 let title = display_figure_title(id, &fig.title);
-                egui::Window::new(&title)
+                let filled = fig.filled;
+                let mut window = egui::Window::new(&title)
                     .id(egui::Id::new(format!("fig_{}", id)))
-                    .resizable(true)
-                    .show(ctx, |ui| {
-                        fig.render(ui, id);
-                    });
+                    .resizable(!filled);
+                if filled {
+                    let inset = 6.0;
+                    let size = (screen.size() - egui::vec2(inset * 2.0, inset * 2.0))
+                        .max(egui::vec2(1.0, 1.0));
+                    window = window
+                        .fixed_pos(screen.min + egui::vec2(inset, inset))
+                        .fixed_size(size);
+                } else {
+                    let size = default_figure_size(screen.size());
+                    window = window
+                        .default_size(size)
+                        .min_width(280.0_f32.min(screen.width().max(1.0)))
+                        .min_height(200.0_f32.min(screen.height().max(1.0)));
+                }
+                window.show(ctx, |ui| {
+                    let label = if fig.filled { "Restore" } else { "Fill window" };
+                    if crate::figure::fill_window_button(
+                        ui,
+                        crate::figure::fill_window_button_id(id),
+                        label,
+                    ) {
+                        fig.filled = !fig.filled;
+                    }
+                    fig.render(ui, id);
+                });
             }
         }
     }
+
+    /// Size the OS window on the first frame, and toggle fullscreen on F11.
+    /// Esc is applied inside each figure so a click on Expand in the same
+    /// frame can still be ordered against it.
+    fn apply_window_chrome(&mut self, ctx: &egui::Context) {
+        if !self.window_fitted {
+            self.window_fitted = true;
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(default_window_size(
+                    monitor,
+                )));
+            }
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            let on = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
+        }
+    }
+}
+
+/// Initial OS-window size: 75% of the monitor, at least 800×600 when the
+/// monitor is larger than that, and never larger than the monitor.
+pub(crate) fn default_window_size(monitor: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(
+        fit_span(monitor.x, 0.75, 800.0),
+        fit_span(monitor.y, 0.75, 600.0),
+    )
+}
+
+/// Default size of one floating figure when several are open.
+pub(crate) fn default_figure_size(screen: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(
+        fit_span(screen.x, 0.45, 480.0),
+        fit_span(screen.y, 0.45, 360.0),
+    )
+}
+
+fn fit_span(full: f32, frac: f32, preferred_min: f32) -> f32 {
+    if !full.is_finite() || full <= 1.0 {
+        return preferred_min.max(1.0);
+    }
+    let target = full * frac;
+    let lo = preferred_min.min(full);
+    target.clamp(lo, full)
 }
 
 /// Build the user-facing title for a figure window.
@@ -281,6 +354,62 @@ mod tests {
         assert_eq!(display_figure_title(3, ""), "Figure 3");
     }
 
+    #[test]
+    fn default_window_tracks_the_monitor_without_exceeding_it() {
+        let big = default_window_size(egui::vec2(1920.0, 1080.0));
+        assert!((big.x - 1440.0).abs() < 1.0, "{big:?}");
+        assert!((big.y - 810.0).abs() < 1.0, "{big:?}");
+        let laptop = default_window_size(egui::vec2(1024.0, 768.0));
+        assert!(laptop.x <= 1024.0 && laptop.y <= 768.0, "{laptop:?}");
+        assert!(laptop.x >= 800.0 && laptop.y >= 600.0, "{laptop:?}");
+        let tiny = default_window_size(egui::vec2(400.0, 300.0));
+        assert!(tiny.x <= 400.0 && tiny.y <= 300.0, "{tiny:?}");
+        assert!(tiny.x > 1.0 && tiny.y > 1.0);
+        let bad = default_window_size(egui::vec2(f32::NAN, -10.0));
+        assert!(bad.x.is_finite() && bad.y.is_finite() && bad.x > 0.0 && bad.y > 0.0);
+        let fig = default_figure_size(egui::vec2(1600.0, 1000.0));
+        assert!(
+            (fig.x - 720.0).abs() < 1.0 && (fig.y - 450.0).abs() < 1.0,
+            "{fig:?}"
+        );
+    }
+
+    #[test]
+    fn f11_requests_fullscreen() {
+        let (_tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events: vec![egui::Event::Key {
+                key: egui::Key::F11,
+                physical_key: Some(egui::Key::F11),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let output = ctx.run(input, |ctx| {
+            app.process_messages(ctx);
+            app.render_ui(ctx);
+        });
+        let root = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("root viewport");
+        assert!(
+            root.commands
+                .iter()
+                .any(|c| matches!(c, egui::ViewportCommand::Fullscreen(true))),
+            "F11 should request fullscreen: {:?}",
+            root.commands
+        );
+    }
+
     use rustlab_proto::{
         WireColor, WireHeatmap, WireLineStyle, WirePlotKind, WireSeries, WireSurface,
     };
@@ -314,8 +443,7 @@ mod tests {
         ctx.enable_accesskit();
         for _ in 0..n {
             let mut input = egui::RawInput::default();
-            input.screen_rect =
-                Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
+            input.screen_rect = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size));
             let output = ctx.run(input, |ctx| {
                 app.process_messages(ctx);
                 app.render_ui(ctx);
@@ -388,7 +516,11 @@ mod tests {
         tx.send(ViewerMsg::Redraw { fig_id: id_b }).unwrap();
 
         run_frames(&mut app, 3);
-        assert_eq!(app.figures.len(), 2, "both sessions' figures should be live");
+        assert_eq!(
+            app.figures.len(),
+            2,
+            "both sessions' figures should be live"
+        );
     }
 
     /// A second connection's `Reset` (sent by `connect_viewer` on every new
@@ -939,6 +1071,93 @@ mod tests {
         );
     }
 
+    /// Expand isolates one subplot; Esc returns to the grid.
+    #[test]
+    fn expand_subplot_then_esc_restores_the_grid() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        let id = 21u32;
+        tx.send(ViewerMsg::FigureOpen {
+            id,
+            rows: 1,
+            cols: 2,
+            title: "two".into(),
+        })
+        .unwrap();
+        for panel in 0..2u16 {
+            tx.send(ViewerMsg::PanelLabels {
+                fig_id: id,
+                panel,
+                title: format!("p{panel}"),
+                xlabel: String::new(),
+                ylabel: String::new(),
+            })
+            .unwrap();
+            tx.send(ViewerMsg::PanelUpdate {
+                fig_id: id,
+                panel,
+                series: vec![line_series()],
+            })
+            .unwrap();
+        }
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        assert!(app.figures[&id].expanded_panel.is_none());
+        h.click_widget(&mut app, crate::figure::expand_button_id(id, 0, 1));
+        assert_eq!(app.figures[&id].expanded_panel, Some(1));
+        h.frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.figures[&id].expanded_panel.is_none());
+    }
+
+    /// Several figures: Fill window pins one, Esc releases it.
+    #[test]
+    fn fill_window_then_esc_restores_the_floating_figure() {
+        let (tx, rx) = mpsc::channel();
+        let mut app = ViewerApp::new(rx);
+        for (i, pid) in [11u32, 22u32].into_iter().enumerate() {
+            let id = (pid << 16) | i as u32;
+            tx.send(ViewerMsg::FigureOpen {
+                id,
+                rows: 1,
+                cols: 1,
+                title: format!("f{i}"),
+            })
+            .unwrap();
+            tx.send(ViewerMsg::PanelUpdate {
+                fig_id: id,
+                panel: 0,
+                series: vec![line_series()],
+            })
+            .unwrap();
+        }
+        let h = Harness::new();
+        h.frames(&mut app, 2);
+        let id = 11u32 << 16;
+        assert!(!app.figures[&id].filled);
+        h.click_widget(&mut app, crate::figure::fill_window_button_id(id));
+        assert!(app.figures[&id].filled);
+        h.frame(
+            &mut app,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: Some(egui::Key::Escape),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(!app.figures[&id].filled);
+    }
+
     /// 3D surfaces get the same visible Home — equivalent to pressing `R`.
     #[test]
     fn home_button_resets_the_surface_camera() {
@@ -976,6 +1195,8 @@ mod tests {
                 .as_mut()
                 .unwrap();
             cam.yaw = 1.25;
+            cam.pitch = -1.2;
+            cam.roll = 0.4;
             cam.zoom = 3.0;
         }
         h.frames(&mut app, 1);
@@ -985,6 +1206,8 @@ mod tests {
         let (_, cam) = app.figures[&id].panels[0].surface.as_ref().unwrap();
         let default = crate::surface::SurfaceCamera::default();
         assert!((cam.yaw - default.yaw).abs() < 1e-6, "yaw reset");
+        assert!((cam.pitch - default.pitch).abs() < 1e-6, "pitch reset");
+        assert!((cam.roll - default.roll).abs() < 1e-6, "roll reset");
         assert!((cam.zoom - default.zoom).abs() < 1e-6, "zoom reset");
     }
 
@@ -1083,5 +1306,4 @@ mod tests {
             "x: {b:?}"
         );
     }
-
 }
