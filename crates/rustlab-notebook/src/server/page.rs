@@ -350,7 +350,14 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
   }}
 
   // Read-only panes refresh on re-render; the editor keeps its buffer.
-  window.__rlAfterUpdate = () => {{ if (open && !EDITABLE) loadReadonly(); }};
+  // Chain whatever the page already registered (comment placement). This
+  // script is injected last, so a plain assignment would drop that hook
+  // and a saved comment would stay in document order until a resize.
+  var prevAfter = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = () => {{
+    if (prevAfter) prevAfter();
+    if (open && !EDITABLE) loadReadonly();
+  }};
   // Veto the WS-client's reconnect hard-reload while the editor has
   // unsaved changes, so a transient disconnect can't discard them.
   window.__rlBlockReload = () => EDITABLE && cm != null && !cm.isClean();
@@ -395,6 +402,10 @@ mod tests {
             "no CodeMirror in read-only mode"
         );
         assert!(out.contains("<main><p>hi</p></main>"));
+        assert!(
+            out.contains("var prevAfter = window.__rlAfterUpdate;"),
+            "chrome must chain the comment-placement hook"
+        );
     }
 
     #[test]

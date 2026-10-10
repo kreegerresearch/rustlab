@@ -2477,6 +2477,9 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
   }
   function placeNotes() {
     var cards = document.querySelectorAll('.rl-cm-card');
+    // A partial reload swaps the section, not the body class. The column
+    // exists exactly while a margin aside is in the page.
+    document.body.classList.toggle('has-cm-margin', !!document.querySelector('.rl-cm-margin'));
     var box = document.getElementById('rl-comments');
     if (!cards.length || mq.matches || (box && !box.checked)) {
       clearPos(cards);
@@ -4184,6 +4187,7 @@ mod tests {
         assert!(js.contains("max-width: 799px"));
         assert!(js.contains("position = 'absolute'"));
         assert!(js.contains("__rlAfterUpdate"));
+        assert!(js.contains("classList.toggle('has-cm-margin'"));
         assert!(page(&blocks).contains("max-width: 799px"));
     }
 
