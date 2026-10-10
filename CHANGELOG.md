@@ -49,7 +49,8 @@ should re-validate against those entries when upgrading.
   the archive. Cards that share a line sit side by side, level with
   the marker, and the margin grows to fit them. The source pane
   narrows so it does not cover that column. PDF `--comments` uses a
-  wider margin paragraph (`marginfix`, 1.7in).
+  wider margin paragraph (`marginfix`, right margin 2.15in, note
+  column 1.7in).
 
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder

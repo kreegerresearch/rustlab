@@ -2338,10 +2338,9 @@ pub(crate) fn restore_latex(tex: &str, prep: &Prepared) -> String {
 /// depend on that package.
 pub(crate) fn latex_packages() -> &'static str {
     if mode().latex {
-        // A second \\geometry overrides the template's 1in margin so
-        // \\marginpar has a column. marginfix packs notes that would
-        // otherwise collide or run off the page.
-        "\\usepackage{soul}\n\\sethlcolor{yellow!35}\n\\usepackage{marginfix}\n\\geometry{margin=1in,marginparwidth=1.7in,marginparsep=0.2in}\n\\setlength{\\marginparpush}{4pt}\n"
+        // The note sits in the right margin, so that margin has to be
+        // wider than the note. marginfix packs notes that would collide.
+        "\\usepackage{soul}\n\\sethlcolor{yellow!35}\n\\usepackage{marginfix}\n\\geometry{left=1in,right=2.15in,top=1in,bottom=1in,marginparwidth=1.7in,marginparsep=0.25in}\n\\setlength{\\marginparpush}{4pt}\n"
     } else {
         ""
     }
@@ -4233,6 +4232,12 @@ mod tests {
         {
             let _guard = install(CommentMode::for_format(FormatKind::Latex, Some(true)));
             assert!(latex_packages().contains("soul"));
+            assert!(
+                latex_packages().contains("right=2.15in"),
+                "{}",
+                latex_packages()
+            );
+            assert!(latex_packages().contains("marginparwidth=1.7in"));
             let prep = prepare_latex(md);
             let body = prep.markdown.clone().unwrap_or_default();
             let tex = restore_latex(&body, &prep);

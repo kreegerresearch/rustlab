@@ -1287,7 +1287,9 @@ the active Catppuccin theme (`--rl-cm-mark-bg`, `--rl-cm-note-bg`,
 markdown, and JSON default to on. PDF and LaTeX default to off: the
 highlight's words stay, and the `%%` comment is dropped. `--comments`
 on PDF uses `\hl` and `\marginpar` for inline, block, and cell notes
-(a footnote inside a table, where a margin note does not fit).
+(a footnote inside a table, where a margin note does not fit). The
+right margin is widened to 2.15in so the 1.7in note column stays on
+the page, and `marginfix` keeps stacked notes from colliding.
 `--no-comments` on markdown unwraps `==` and deletes `%%`, including
 a reply and a cell comment, and tidies the space or blank line the
 note left behind. `rustlab-notebook strip` does that same cleanup and
