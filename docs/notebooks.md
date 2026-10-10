@@ -1236,22 +1236,38 @@ comments on the cell. A blank line between the comment and the fence
 unbinds it. Marks inside a code fence, inline code, or math are
 literal. A backslash escapes a delimiter: `\==`.
 
-HTML draws a highlight as `<mark>` and a comment as a numbered margin
-note. A reply (`re #cN`) is drawn inside its parent's card. The `#cN`
-id is not printed in the card header; it is `data-cm-id` and the card's
-tooltip. Inline notes and block notes use that same header. Wide pages
-float the note in the right gutter. The note colors
-come from the active Catppuccin theme (`--rl-cm-mark-bg`,
-`--rl-cm-note-bg`, `--rl-cm-note-border`) and stay readable on all four
-palettes. The top bar has a **Comments** checkbox. Unchecking it hides
-notes and clears the highlight color. The choice is stored in
-`sessionStorage` for that tab (`rl-comments-visible`).
+HTML draws a highlight as `<mark>`. Every comment — inline, block,
+cell, and its replies — is a card in a right margin column, never in
+the paragraph. The prose keeps a numbered superscript (`[1]`) on the
+highlight. A block note and a cell note get the same number in the
+gutter of that paragraph or cell. The card header is the number,
+`@author`, and the date. The `#cN` id is `data-cm-id` and the card's
+tooltip, not printed text. Replies are indented inside the parent
+card. Edit and Delete are one compact row.
+
+When comments are shown, each section reserves an 18rem column
+(`--rl-cm-col`, 288px) beside the prose. A directory page with the
+file browser and the contents sidebar keeps that column and shrinks
+the prose to make room. A small script aligns each card with the top
+of its marker and stacks the next card downward when they would
+overlap. Hovering or focusing either the marker or the card
+emphasizes both. With scripting off, the cards stay in that column in
+document order. Unchecking **Comments** sets the column width to zero
+and hides the cards and the markers, so the prose takes the width
+back. The choice is stored in `sessionStorage` for that tab
+(`rl-comments-visible`). `--no-comments` on static HTML omits the
+marks, so there is no column. A viewport under 800px cannot fit the
+column: the cards move to a Comments drawer at the bottom of the
+section. They stay out of the paragraph. The note colors come from
+the active Catppuccin theme (`--rl-cm-mark-bg`, `--rl-cm-note-bg`,
+`--rl-cm-note-border`) and stay readable on all four palettes.
 
 `--comments` and `--comments=on` turn notes on. `--no-comments` and
 `--comments=off` turn them off. Passing both is an error. HTML, watch,
 markdown, and JSON default to on. PDF and LaTeX default to off: the
 highlight's words stay, and the `%%` comment is dropped. `--comments`
-on PDF uses `\hl` and a margin note (a footnote inside a table).
+on PDF uses `\hl` and `\marginpar` for inline, block, and cell notes
+(a footnote inside a table, where a margin note does not fit).
 `--no-comments` on markdown unwraps `==` and deletes `%%`.
 `~/.rustlabrc` `[notebook] comments = "on"` or `"off"` is the default
 when the command does not pass a flag.
@@ -1277,7 +1293,11 @@ highlight, a note, a code cell, or a run of plain text. Right-clicking
 an existing note offers Edit comment and Delete. A plain-text selection
 offers Add comment and Highlight. A code cell offers Add comment only.
 The menu and the comment popover open next to the selection, clamped
-to the window, above the contents sidebar and the file browser. Edit
+to the window, above the contents sidebar and the file browser. The
+popover is a small card: an optional Name field, a full-width comment
+box, then Cancel, Highlight only, and Save comment. Ctrl+Enter or
+Cmd+Enter saves. Esc cancels. The comment box is focused when the card
+opens. The highlight stays marked while the menu is open. Edit
 and Delete on a card are one row of small buttons. A selection that
 crosses markdown syntax has no source span, so the menu does not
 open. File offsets are stamped only while annotating, and only on text

@@ -26,7 +26,16 @@ should re-validate against those entries when upgrading.
   Replies render inside the parent card. Comment ids stay on
   `data-cm-id` and the card tooltip, not in the header. Annotating
   stamps source offsets on parsed text, so headings and other block
-  syntax match a page that is not annotating.
+  syntax match a page that is not annotating. Every comment card
+  (inline, block, cell, and replies) sits in a right margin column
+  aligned with its numbered marker. The column stays in a directory
+  page with the file browser and the contents sidebar; the prose
+  shrinks. Turning Comments off, or `--no-comments` on static HTML,
+  drops the column. Under 800px the cards are a drawer at the bottom
+  of the section. PDF `--comments` puts block and cell notes in
+  `\marginpar` as well (a footnote inside a table). The annotate
+  popover is a card (Name, comment, Cancel / Highlight only / Save
+  comment). Ctrl or Cmd+Enter saves; Esc cancels.
 
 ### Breaking / behavior changes
 - **Directory file-browser folders start collapsed.** Every folder
