@@ -2178,6 +2178,9 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   border-radius: 4px;
   padding: 0.25rem 0.5rem;
 }
+/* `display: block` above beats the user-agent `[hidden]` rule, which
+   would paint every menu item. This selector wins on specificity. */
+#rl-cm-menu button[hidden], #rl-cm-pop button[hidden] { display: none; }
 .rl-cm-actions button {
   display: inline-block;
   width: auto;
@@ -3683,6 +3686,13 @@ mod tests {
             "a plain-text selection must not inherit a nearby mark"
         );
         assert!(js.contains("actionsFor(hit,"));
+        let css = comment_css();
+        assert!(
+            css.contains(
+                "#rl-cm-menu button[hidden], #rl-cm-pop button[hidden] { display: none; }"
+            ),
+            "display:block on menu buttons must not override the hidden attribute"
+        );
     }
 
     #[test]
