@@ -211,6 +211,32 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Unwrap highlights and drop comments, leaving GitHub-ready Markdown.
+    ///
+    /// Does not execute the notebook. Code fences, inline code, and math
+    /// are copied unchanged. `==text==` becomes `text`. Every `%%` comment
+    /// (inline, block, cell, reply) is removed.
+    #[command(
+        long_about = "Unwrap ==highlights== and delete %%comments%% from notebook Markdown.\n\n\
+            The notebook is not executed. Fenced code, inline code, and math are copied\n\
+            unchanged, so `a == b` and a string containing %% stay literal.\n\n\
+            Examples:\n  \
+            rustlab-notebook strip note.md                 # cleaned Markdown on stdout\n  \
+            rustlab-notebook strip note.md -o clean.md\n  \
+            rustlab-notebook strip note.md --in-place\n  \
+            rustlab-notebook strip notebooks/ -o out/      # directory needs -o or --in-place"
+    )]
+    Strip {
+        /// Input .md file or directory of .md files (recursive).
+        input: PathBuf,
+        /// Write here instead of stdout. A directory input writes each
+        /// file under this directory, keeping relative paths.
+        #[arg(short, long, conflicts_with = "in_place")]
+        output: Option<PathBuf>,
+        /// Replace the input file (or each file under a directory).
+        #[arg(long, conflicts_with = "output")]
+        in_place: bool,
+    },
     /// Render a notebook (or a directory of notebooks) to HTML, Markdown, LaTeX, PDF, or JSON
     #[command(
         long_about = "Render a notebook (or a directory of notebooks) to HTML, Markdown, LaTeX, PDF, or JSON.\n\n\
@@ -308,6 +334,13 @@ enum Command {
         /// unless `--comments` is passed.
         #[arg(long = "no-comments", conflicts_with = "comments")]
         no_comments: bool,
+        /// Markdown only. `keep` (default) leaves `==` and `%%`.
+        /// `footnotes` turns notes into GitHub footnotes and highlights
+        /// into `<mark>`. `callouts` turns notes into `> [!note]` and
+        /// leaves `==` so Obsidian still shows highlights. Cannot be
+        /// combined with `--no-comments`.
+        #[arg(long, value_name = "keep|footnotes|callouts")]
+        comments_style: Option<String>,
     },
     /// Render notebooks and lint each output against trusted external linters.
     ///
@@ -574,15 +607,21 @@ fn main() {
             jail_root,
             comments,
             no_comments,
+            comments_style,
         } => {
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
             let colors = theme.colors();
-            rustlab_notebook::set_comment_display(resolve_comments(
-                comments.as_deref(),
-                no_comments,
-                &settings,
-            ));
+            let comments_on = resolve_comments(comments.as_deref(), no_comments, &settings);
+            rustlab_notebook::set_comment_display(comments_on);
+            if let Err(e) = resolve_comments_style(
+                comments_style.as_deref(),
+                comments_on == Some(false),
+                format == CliFormat::Markdown,
+            ) {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            }
             // Explicit --jail-root applies to every render path below
             // (single file, directory, JSON); directory renders otherwise
             // default to the collection root inside cmd_render_dir.
@@ -664,6 +703,16 @@ fn main() {
             let changed = rustlab_notebook::cmd_clean(input, output, check);
             if check && changed > 0 {
                 std::process::exit(1);
+            }
+        }
+        Command::Strip {
+            input,
+            output,
+            in_place,
+        } => {
+            if let Err(e) = rustlab_notebook::cmd_strip(input, output, in_place) {
+                eprintln!("error: {e}");
+                std::process::exit(2);
             }
         }
         Command::Check { input, fix, strict } => {
@@ -917,6 +966,30 @@ fn resolve_comments(
         });
     }
     settings.notebook_comments()
+}
+
+/// `keep` is the default and is valid on every format. `footnotes` and
+/// `callouts` are markdown-only and are not a strip.
+fn resolve_comments_style(
+    style: Option<&str>,
+    comments_off: bool,
+    markdown: bool,
+) -> Result<(), String> {
+    let name = style.unwrap_or("keep");
+    if name != "keep" {
+        if !markdown {
+            return Err(
+                "--comments-style applies only to --format markdown (use `strip` or --no-comments)"
+                    .into(),
+            );
+        }
+        if comments_off {
+            return Err(format!(
+                "--comments-style={name} cannot be combined with --no-comments"
+            ));
+        }
+    }
+    rustlab_notebook::set_markdown_comment_style(Some(name))
 }
 
 fn resolve_theme(cli: Option<&str>, settings: &UserSettings) -> Theme {
