@@ -684,6 +684,18 @@ remote image is blocked in the browser; a `data:image/*` URL stays inline.
 Any other attribute on `<img>` (`onerror`, `width`, an unquoted `src`)
 stays escaped text and is not copied.
 
+Watch shows a prose SVG with `<img>` only. The copy under `/plots/` and
+the notebook source under `/raw/` are served with
+`Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+and `X-Content-Type-Options: nosniff`, so opening the SVG URL does not
+run a script inside it on the watch origin. `--editable` and inline cell
+save refuse a save that adds an SVG prose image the file does not already
+reference (`![…](….svg)`, `![[….svg]]`, or `<img src="….svg">`). A notebook
+that already has that figure can still be saved, and an SVG mentioned
+only in a code span is not a prose image. Put the `.svg` next to the
+notebook and add the image line on disk to introduce one. A save writes
+only that notebook's `.md`.
+
 ### GFM-superset features
 
 The renderer enables the GFM features that GitHub and Obsidian both

@@ -39,7 +39,10 @@ pub async fn upgrade_socket(
             let nb = nb.clone();
             let render_tx = state.render_tx.get().cloned();
             let editable = state.editable;
-            ws.on_upgrade(move |socket| handle_socket(socket, nb, slug, render_tx, editable))
+            let jail_root = state.jail_root.clone();
+            ws.on_upgrade(move |socket| {
+                handle_socket(socket, nb, slug, render_tx, editable, jail_root)
+            })
         }
         None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
@@ -64,6 +67,7 @@ async fn handle_socket(
     slug: String,
     render_tx: Option<UnboundedSender<RenderRequest>>,
     editable: bool,
+    jail_root: Option<std::path::PathBuf>,
 ) {
     let mut rx = nb.broadcast.subscribe();
     // Upgrade already required a loopback Origin; inbound mutates on
@@ -128,7 +132,7 @@ async fn handle_socket(
                             // The per-request verdict goes back on THIS
                             // socket only; the running status broadcasts.
                             let idx = req.idx;
-                            match handle_cell_save(&nb, editable, req).await {
+                            match handle_cell_save(&nb, editable, jail_root.as_deref(), req).await {
                                 Ok(()) => {
                                     let ok = cell_saved_envelope(idx, Ok(()));
                                     if socket.send(Message::Text(ok.into())).await.is_err() {
@@ -326,10 +330,16 @@ fn locate_code_block(
 /// `save_lock` across the whole read-modify-write so concurrent cell
 /// saves (another tab) and whole-doc `POST /save` writes serialise.
 /// Every rejection path leaves the file untouched.
-async fn handle_cell_save(nb: &Notebook, editable: bool, req: SaveRunBlock) -> Result<(), String> {
+async fn handle_cell_save(
+    nb: &Notebook,
+    editable: bool,
+    jail_root: Option<&std::path::Path>,
+    req: SaveRunBlock,
+) -> Result<(), String> {
     if !editable {
         return Err("cell editing requires --editable".to_string());
     }
+    super::http::notebook_md_target(&nb.source_path, jail_root).map_err(|e| e.to_string())?;
 
     let _guard = nb.save_lock.lock().await;
 
@@ -381,6 +391,10 @@ async fn handle_cell_save(nb: &Notebook, editable: bool, req: SaveRunBlock) -> R
             "edited source would not round-trip (does it contain a ``` line?) — save rejected"
                 .to_string(),
         );
+    }
+
+    if crate::prose_media::introduces_svg_prose_image(&on_disk, &spliced) {
+        return Err(crate::prose_media::SVG_PROSE_REJECTION.to_string());
     }
 
     tokio::fs::write(&nb.source_path, spliced.as_bytes())
@@ -934,7 +948,7 @@ mod tests {
         async fn rejects_without_editable() {
             let dir = TempDir::new().unwrap();
             let nb = notebook_at(&dir, SRC);
-            let err = handle_cell_save(&nb, false, req(0, "a = 9;", "a = 1;"))
+            let err = handle_cell_save(&nb, false, None, req(0, "a = 9;", "a = 1;"))
                 .await
                 .unwrap_err();
             assert!(err.contains("--editable"));
@@ -946,7 +960,7 @@ mod tests {
             let dir = TempDir::new().unwrap();
             let nb = notebook_at(&dir, SRC);
             // Browser thinks the block still reads "a = 0;" — stale.
-            let err = handle_cell_save(&nb, true, req(0, "a = 9;", "a = 0;"))
+            let err = handle_cell_save(&nb, true, None, req(0, "a = 9;", "a = 0;"))
                 .await
                 .unwrap_err();
             assert!(err.contains("changed on disk"), "{err}");
@@ -957,7 +971,7 @@ mod tests {
         async fn rejects_embedded_notebooks() {
             let dir = TempDir::new().unwrap();
             let nb = notebook_at(&dir, "![[other]]\n\n```rustlab\na = 1;\n```\n");
-            let err = handle_cell_save(&nb, true, req(0, "a = 9;", "a = 1;"))
+            let err = handle_cell_save(&nb, true, None, req(0, "a = 9;", "a = 1;"))
                 .await
                 .unwrap_err();
             assert!(err.contains("embed"), "{err}");
@@ -967,7 +981,7 @@ mod tests {
         async fn rejects_body_that_breaks_the_fence() {
             let dir = TempDir::new().unwrap();
             let nb = notebook_at(&dir, SRC);
-            let err = handle_cell_save(&nb, true, req(0, "x = 1;\n```\nescape!", "a = 1;"))
+            let err = handle_cell_save(&nb, true, None, req(0, "x = 1;\n```\nescape!", "a = 1;"))
                 .await
                 .unwrap_err();
             assert!(err.contains("rejected"), "{err}");
@@ -982,7 +996,7 @@ mod tests {
         async fn happy_path_splices_only_the_target() {
             let dir = TempDir::new().unwrap();
             let nb = notebook_at(&dir, SRC);
-            handle_cell_save(&nb, true, req(1, "b = 99;", "b = 2;"))
+            handle_cell_save(&nb, true, None, req(1, "b = 99;", "b = 2;"))
                 .await
                 .unwrap();
             let on_disk = std::fs::read_to_string(&nb.source_path).unwrap();
@@ -990,6 +1004,30 @@ mod tests {
             assert!(!on_disk.contains("b = 2;"));
             assert!(on_disk.contains("a = 1;"), "sibling block untouched");
             assert!(on_disk.contains("# T"), "prose untouched");
+        }
+
+        #[tokio::test]
+        async fn refuses_to_write_a_non_md_path() {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("eval.svg");
+            std::fs::write(&path, "<svg></svg>").unwrap();
+            let nb = Notebook::new("nb".into(), path.clone(), "nb".into(), String::new());
+            let err = handle_cell_save(&nb, true, None, req(0, "a = 9;", "a = 1;"))
+                .await
+                .unwrap_err();
+            assert!(err.contains(".md"), "{err}");
+            assert_eq!(std::fs::read(&path).unwrap(), b"<svg></svg>");
+        }
+
+        #[tokio::test]
+        async fn svg_inside_a_code_cell_is_not_a_prose_image() {
+            let dir = TempDir::new().unwrap();
+            let nb = notebook_at(&dir, SRC);
+            handle_cell_save(&nb, true, None, req(0, "s = \"![x](eval.svg)\";", "a = 1;"))
+                .await
+                .unwrap();
+            let on_disk = std::fs::read_to_string(&nb.source_path).unwrap();
+            assert!(on_disk.contains("![x](eval.svg)"));
         }
     }
 
