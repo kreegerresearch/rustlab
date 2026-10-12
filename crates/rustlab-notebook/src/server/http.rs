@@ -1277,8 +1277,10 @@ mod tests {
         (state, src)
     }
 
-    async fn post_save(state: Arc<ServerState>, body: &str) -> axum::response::Response {
-        router(state)
+    async fn post_save(state: &Arc<ServerState>, body: &str) -> axum::response::Response {
+        // The caller keeps `state` so the plot tempdir (and the notebook
+        // file inside it) outlives the request.
+        router(Arc::clone(state))
             .oneshot(
                 host(
                     axum::http::Request::builder()
@@ -1305,7 +1307,7 @@ mod tests {
         ];
         for body in attacks {
             let (state, src) = editable_state(original);
-            let res = post_save(state, body).await;
+            let res = post_save(&state, body).await;
             assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
             let text = to_bytes(res.into_body(), 8 * 1024).await.unwrap();
             let text = String::from_utf8_lossy(&text);
@@ -1322,7 +1324,7 @@ mod tests {
         let original = "# notes\n\n![diagram](fig.svg)\n";
         let (state, src) = editable_state(original);
         let next = "# notes\n\nMore prose.\n\n![diagram](fig.svg)\n\n![photo](dot.png)\n";
-        let res = post_save(state, next).await;
+        let res = post_save(&state, next).await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(std::fs::read_to_string(&src).unwrap(), next);
     }
@@ -1331,7 +1333,7 @@ mod tests {
     async fn save_allows_an_svg_mention_inside_a_code_fence() {
         let (state, src) = editable_state("# notes\n");
         let next = "# notes\n\n```\n![x](eval.svg)\n```\n";
-        let res = post_save(state, next).await;
+        let res = post_save(&state, next).await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(std::fs::read_to_string(&src).unwrap(), next);
     }
@@ -1366,7 +1368,7 @@ mod tests {
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
         });
-        let res = post_save(state, "# not an svg\n").await;
+        let res = post_save(&state, "# not an svg\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         assert_eq!(std::fs::read(&src).unwrap(), bytes);
     }
@@ -1404,7 +1406,7 @@ mod tests {
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: Some(jail.path().to_path_buf()),
         });
-        let res = post_save(state, "# pwn\n").await;
+        let res = post_save(&state, "# pwn\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret\n");
 
