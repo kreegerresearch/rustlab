@@ -8,6 +8,84 @@ should re-validate against those entries when upgrading.
 
 ## 0.3.9
 
+### Breaking / behavior changes
+- **`fprintf` / `sprintf` honor format flags and more specifiers.**
+  `+`, a leading space, `0` (zero-pad between the sign and the digits),
+  and `#` are applied. `*` and `.*` consume the next argument as the
+  width or precision. Precision limits `%s`, sets a minimum digit count
+  for integers (`%.0d` of 0 is empty), and is significant digits for
+  `%g`/`%G`. New specifiers: `%u %o %x %X %c %E %G`. New escapes:
+  `\r \b \f`. Non-finite values print as `Inf`, `-Inf`, and `NaN`.
+  The `,` thousands-separator flag is unchanged. A vector or matrix is
+  still an error — values are not recycled across elements. `%l` / `%ld`
+  stay unknown. Migration: a script that passed `+`, `0`, `#`, or a
+  space flag and expected them to be ignored will now see the sign,
+  padding, or alternate form. `%u` of a negative number wraps as a
+  64-bit unsigned value instead of erroring as an unknown specifier.
+- **A matrix single index treats `end` as the element count.** `M(end)`
+  and `(M)(end)` read and write the last element in column-major order,
+  including a 1×N row (`zeros(1, n)`). Two indexes still bind `end` per
+  axis, so `M(end, end)` is the corner. A 1×N or N×1 matrix honors
+  `dim` the way a vector does: reducing the length-1 axis returns the
+  matrix unchanged (`sum(r, 1)` on a row); the default and the long
+  axis still reduce to a scalar. This applies to `sum`, `mean`, `prod`,
+  `median`, `std`, `cumsum`, `max`/`min` with a dimension, and
+  `argmin`/`argmax`. A vector now compares elementwise with a 1×N
+  matrix of the same length (`==`, `!=`, `<`, `<=`, `>`, `>=`); the
+  result is a 0/1 matrix. `all`/`any` accept a 1×N or N×1 matrix.
+  `for i = r` walks the elements of a 1×N matrix. An N×1 column still
+  cannot be iterated, and `fft` of a 1×N matrix is unchanged.
+  Migration: `r(end)` on a 1×N matrix used to mean `r(1)`. `sum(r, 1)`
+  on that row used to be the scalar total; it is now the row itself.
+  Use `sum(r)` or `sum(r, 2)` for the total.
+- **A notebook cell emits a plot only when it changes the figure.**
+  `hold on` still keeps the axes, so a later `plot` overlays. A cell
+  that only computes does not repeat the held figure. `savefig`
+  snapshots are unchanged. Each notebook render starts from a reset
+  figure, so `hold on` does not leak into the next notebook or the
+  next `notebook watch` render. Migration: a cell that relied on a
+  previous cell's plot appearing again without drawing or calling
+  `savefig` will no longer show that plot. Draw in the cell that
+  should display it, or call `savefig`.
+
+- **`notebook watch` will not save a newly added SVG prose image, and it writes only the notebook `.md`.**
+  `POST /save`, an inline cell save, and `POST /annotate` (including
+  undo) reject a body that introduces `![…](….svg)`, `![[….svg]]`, a
+  reference-style image, or a raw `<img src="….svg">` that the file on
+  disk does not already reference. A highlight or comment is checked
+  on the document that would be written (`==![x](eval.svg)==` and a
+  `%%` note that contains an image both count). Nothing is written. A
+  notebook that already references that SVG can still be saved or
+  annotated, and an SVG mentioned only inside a code fence or inline
+  code is not a prose image. All three write paths write only that
+  notebook's `.md`, and only when the resolved path (symlink followed)
+  is a `.md` file inside the jail — for annotate, even when
+  `--jail-root` is unset. Migration: to add an SVG diagram,
+  put the `.svg` in the notebook directory and add the image line in
+  the `.md` on disk. The next in-browser save that keeps that reference
+  is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
+
+### Fixed
+- **An SVG prose image served by `notebook watch` cannot script the watch origin.**
+  `GET /plots/…` (including `image/svg+xml`) and `GET /raw/{slug}` send
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+  and `X-Content-Type-Options: nosniff`. `sandbox` does not allow
+  scripts, so the response has an opaque origin. Opening the SVG URL,
+  or loading it with `<object>`, `<embed>`, or `<iframe>`, cannot
+  `fetch` `POST /save` as the watch page. The HTML page keeps its nonce
+  policy. Vendored `/assets` get `nosniff` only. Prose SVGs are still
+  drawn with `<img>`, which does not run SVG script;
+  `Content-Disposition: attachment` is not set.
+- **Viewer `surf` stays opaque while you rotate it.** The surface is one
+  sheet. The viewer used to drop every triangle whose screen winding was
+  not positive, and egui has no depth buffer, so the far side of a curve
+  (and the entire sheet when looking from below, including straight up
+  through the bottom pole) became a hole onto the background. Azimuth
+  just moved that hole. Both sides are now rasterized into a depth
+  buffer: nearer depth wins, NaN cells stay holes, and the orbit is not
+  clamped short of ±90° elevation. Ctrl/Cmd+left-drag rolls about the
+  view axis. SVG/PNG surfaces are still the static isometric wireframe.
+
 ### Added
 - **Notebook highlights and comments.** Prose `==highlight==` and
   `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
@@ -54,82 +132,6 @@ should re-validate against those entries when upgrading.
   match the HTML marker, highlights with a light yellow `\hl`, indents
   replies, and keeps the note column on the page (`marginfix`, right
   margin 2.15in, note column 1.7in).
-
-### Breaking / behavior changes
-- **`fprintf` / `sprintf` honor format flags and more specifiers.**
-  `+`, a leading space, `0` (zero-pad between the sign and the digits),
-  and `#` are applied. `*` and `.*` consume the next argument as the
-  width or precision. Precision limits `%s`, sets a minimum digit count
-  for integers (`%.0d` of 0 is empty), and is significant digits for
-  `%g`/`%G`. New specifiers: `%u %o %x %X %c %E %G`. New escapes:
-  `\r \b \f`. Non-finite values print as `Inf`, `-Inf`, and `NaN`.
-  The `,` thousands-separator flag is unchanged. A vector or matrix is
-  still an error — values are not recycled across elements. `%l` / `%ld`
-  stay unknown. Migration: a script that passed `+`, `0`, `#`, or a
-  space flag and expected them to be ignored will now see the sign,
-  padding, or alternate form. `%u` of a negative number wraps as a
-  64-bit unsigned value instead of erroring as an unknown specifier.
-- **A matrix single index treats `end` as the element count.** `M(end)`
-  and `(M)(end)` read and write the last element in column-major order,
-  including a 1×N row (`zeros(1, n)`). Two indexes still bind `end` per
-  axis, so `M(end, end)` is the corner. A 1×N or N×1 matrix honors
-  `dim` the way a vector does: reducing the length-1 axis returns the
-  matrix unchanged (`sum(r, 1)` on a row); the default and the long
-  axis still reduce to a scalar. This applies to `sum`, `mean`, `prod`,
-  `median`, `std`, `cumsum`, `max`/`min` with a dimension, and
-  `argmin`/`argmax`. A vector now compares elementwise with a 1×N
-  matrix of the same length (`==`, `!=`, `<`, `<=`, `>`, `>=`); the
-  result is a 0/1 matrix. `all`/`any` accept a 1×N or N×1 matrix.
-  `for i = r` walks the elements of a 1×N matrix. An N×1 column still
-  cannot be iterated, and `fft` of a 1×N matrix is unchanged.
-  Migration: `r(end)` on a 1×N matrix used to mean `r(1)`. `sum(r, 1)`
-  on that row used to be the scalar total; it is now the row itself.
-  Use `sum(r)` or `sum(r, 2)` for the total.
-- **A notebook cell emits a plot only when it changes the figure.**
-  `hold on` still keeps the axes, so a later `plot` overlays. A cell
-  that only computes does not repeat the held figure. `savefig`
-  snapshots are unchanged. Each notebook render starts from a reset
-  figure, so `hold on` does not leak into the next notebook or the
-  next `notebook watch` render. Migration: a cell that relied on a
-  previous cell's plot appearing again without drawing or calling
-  `savefig` will no longer show that plot. Draw in the cell that
-  should display it, or call `savefig`.
-
-- **`notebook watch` will not save a newly added SVG prose image, and it writes only the notebook `.md`.**
-  `POST /save` and an inline cell save reject a body that introduces
-  `![…](….svg)`, `![[….svg]]`, a reference-style image, or a raw
-  `<img src="….svg">` that the file on disk does not already reference.
-  Nothing is written. A notebook that already references that SVG can
-  still be saved, and an SVG mentioned only inside a code fence or
-  inline code is not a prose image. Both write paths write only that
-  notebook's `.md`, and only when the resolved path (symlink followed)
-  is a `.md` file inside the jail. Migration: to add an SVG diagram,
-  put the `.svg` in the notebook directory and add the image line in
-  the `.md` on disk. The next in-browser save that keeps that reference
-  is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
-
-### Fixed
-- **An SVG prose image served by `notebook watch` cannot script the watch origin.**
-  `GET /plots/…` (including `image/svg+xml`) and `GET /raw/{slug}` send
-  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
-  and `X-Content-Type-Options: nosniff`. `sandbox` does not allow
-  scripts, so the response has an opaque origin. Opening the SVG URL,
-  or loading it with `<object>`, `<embed>`, or `<iframe>`, cannot
-  `fetch` `POST /save` as the watch page. The HTML page keeps its nonce
-  policy. Vendored `/assets` get `nosniff` only. Prose SVGs are still
-  drawn with `<img>`, which does not run SVG script;
-  `Content-Disposition: attachment` is not set.
-- **Viewer `surf` stays opaque while you rotate it.** The surface is one
-  sheet. The viewer used to drop every triangle whose screen winding was
-  not positive, and egui has no depth buffer, so the far side of a curve
-  (and the entire sheet when looking from below, including straight up
-  through the bottom pole) became a hole onto the background. Azimuth
-  just moved that hole. Both sides are now rasterized into a depth
-  buffer: nearer depth wins, NaN cells stay holes, and the orbit is not
-  clamped short of ±90° elevation. Ctrl/Cmd+left-drag rolls about the
-  view axis. SVG/PNG surfaces are still the static isometric wireframe.
-
-### Added
 - **Viewer windows expand.** The window opens at about 75% of the
   monitor (at least 800×600 when the screen is larger, and never larger
   than the monitor), is resizable, has a minimum size, and has a

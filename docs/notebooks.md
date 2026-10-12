@@ -689,12 +689,15 @@ the notebook source under `/raw/` are served with
 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
 and `X-Content-Type-Options: nosniff`, so opening the SVG URL does not
 run a script inside it on the watch origin. `--editable` and inline cell
-save refuse a save that adds an SVG prose image the file does not already
-reference (`![…](….svg)`, `![[….svg]]`, or `<img src="….svg">`). A notebook
-that already has that figure can still be saved, and an SVG mentioned
-only in a code span is not a prose image. Put the `.svg` next to the
-notebook and add the image line on disk to introduce one. A save writes
-only that notebook's `.md`.
+save, and `POST /annotate` (including undo), refuse a write that adds
+an SVG prose image the file does not already reference (`![…](….svg)`,
+`![[….svg]]`, or `<img src="….svg">`). `==` and `%%` are not markdown, so
+`==![x](eval.svg)==` and a comment that contains an image count as
+prose images. A
+notebook that already has that figure can still be saved or annotated,
+and an SVG mentioned only in a code span is not a prose image. Put the
+`.svg` next to the notebook and add the image line on disk to introduce
+one. A save or annotate writes only that notebook's `.md`.
 
 ### GFM-superset features
 
@@ -1375,7 +1378,17 @@ write returns the new source hash. The page stores it, and a toast
 offers Undo for that one write. Undo posts `{"op":"undo"}` on the same
 route and the same `If-Match` check. The server restores the bytes
 from before that write. It does not accept a file body from the
-browser. Undo is one level, for this `watch` process. Git history is
+browser. Annotate and undo use the same write checks as `POST /save`:
+the path must resolve to a `.md` file inside the jail (the notebook's
+own directory when `--jail-root` is unset; symlinks are followed), and
+the document that would be written must not add an SVG prose image the
+file does not already reference. A comment or highlight whose text is
+`![x](eval.svg)`, `![[eval.svg]]`, or `<img src="eval.svg">` is refused
+(400, file unchanged) when that SVG is new. The same mention inside a
+code fence or inline code is not a prose image and is kept. Deleting
+the only reference is allowed; undoing that delete is refused, because
+undo would put the SVG back. Undo is one level, for this `watch`
+process. Git history is
 the durable archive: deleting a comment removes it from the file, and
 the commit that added it is how you get it back later. The path
 is the notebook on disk, inside the file jail. Host and Origin must be

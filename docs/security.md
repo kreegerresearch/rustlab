@@ -149,26 +149,34 @@ process cwd at execute time, captured once), not the jail root, and
 outside the root are rejected; widen with `--jail-root` rather than
 disabling the jail.
 
-`POST /save/{slug}` (only when `--editable`) and an inline cell save
-write that notebook's `.md` and nothing else. The path must end in
+`POST /save/{slug}` (only when `--editable`), an inline cell save, and
+`POST /annotate/{slug}` (when `--annotate` or `--editable`, including
+undo) write that notebook's `.md` and nothing else. The path must end in
 `.md`, and resolving it through the same jail check (symlinks followed)
-must land on a `.md` file inside the jail. A `.md` name that points at
-an SVG, or at a file outside the jail, is refused and the target is
-left untouched. The route cannot create `eval.svg` or any other
-non-`.md` path: the slug selects a notebook already in the server map.
+must land on a `.md` file inside the jail. Annotate uses that check even
+when `--jail-root` is unset: the jail is then the notebook's own
+directory. A `.md` name that points at an SVG, or at a file outside the
+jail, is refused and the target is left untouched. The route cannot
+create `eval.svg` or any other non-`.md` path: the slug selects a
+notebook already in the server map.
 
-A save that *adds* an SVG prose image is also refused, and the file is
-not written. The check uses the same markdown parse as the renderer, so
-it sees `![alt](fig.svg)`, `![[fig.svg]]`, a reference-style image, and
-a raw `<img src="fig.svg">` (percent-decoding and a `?query` / `#fragment`
-do not hide the name). A reference already in the file on disk can be
-saved again, and an SVG mentioned only inside a code fence or inline
-code is not a prose image. To add a new SVG diagram, put the file in
-the notebook directory and add the image line on disk; the next save
-that keeps that reference is accepted. SVG prose images stay a feature
-and are still copied and shown with `<img>`. Rejecting every save that
-mentions an SVG would stop `--editable` from saving a notebook that
-already has a diagram.
+A save, cell save, or annotate (including undo) that *adds* an SVG
+prose image is also refused, and the file is not written. The check
+uses the same markdown parse as the renderer, so it sees
+`![alt](fig.svg)`, `![[fig.svg]]`, a reference-style image, and a raw
+`<img src="fig.svg">` (percent-decoding and a `?query` / `#fragment` do
+not hide the name). `==` and `%%` are not markdown: a highlight
+`==![x](eval.svg)==` or a comment that contains an image is a prose
+image when that SVG was not already in the file. A reference already
+in the file on disk can be saved or annotated again, and an SVG
+mentioned only inside a code fence or inline code is not a prose
+image. To add a new SVG diagram, put the file in the notebook
+directory and add the image line on disk; the next save or annotate
+that keeps that reference is accepted. Deleting the only reference is
+allowed; undo of that delete is refused, because it would add the SVG
+back. SVG prose images stay a feature and are still copied and shown
+with `<img>`. Rejecting every save that mentions an SVG would stop
+`--editable` from saving a notebook that already has a diagram.
 
 REPL / `rustlab run` leave the jail unset (no behaviour change).
 

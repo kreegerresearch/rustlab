@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 
 use pulldown_cmark::{Event, Parser, Tag};
 
-/// Shown when `POST /save` or a cell save would add an SVG prose image
-/// that the file does not already reference.
+/// Shown when `POST /save`, a cell save, or `POST /annotate` (including
+/// undo) would add an SVG prose image that the file does not already
+/// reference.
 pub const SVG_PROSE_REJECTION: &str =
     "refusing to add an SVG prose image; edit the notebook file on disk to add one";
 
@@ -683,6 +684,25 @@ mod tests {
             "![kept](fig.svg)\n![x](eval.svg)\n"
         ));
         assert!(introduces_svg_prose_image("", "![[eval.svg]]\n"));
+        // `==` is not markdown, so a highlight of image syntax is still
+        // a prose image. Wrapping a reference the file already has is not
+        // a new dest.
+        assert!(introduces_svg_prose_image(
+            "# notes\n",
+            "# notes\n\n==![x](eval.svg)==\n"
+        ));
+        assert!(!introduces_svg_prose_image(
+            "![x](eval.svg)\n",
+            "==![x](eval.svg)==\n"
+        ));
+        assert!(introduces_svg_prose_image(
+            "# notes\n",
+            "# notes\n\n%%#c1: ![x](eval.svg)%%\n"
+        ));
+        assert!(!introduces_svg_prose_image(
+            "# notes\n",
+            "# notes\n\n%%#c1: see `![x](eval.svg)`%%\n"
+        ));
     }
 
     #[test]

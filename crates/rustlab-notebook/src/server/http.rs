@@ -504,9 +504,10 @@ fn user_file_response(content_type: &'static str, body: Body) -> Response {
         .into_response()
 }
 
-/// `POST /save` and cell save may write only this notebook's `.md`, and
-/// only when that file resolves inside the jail. A symlink whose target
-/// leaves the jail, or whose target is not a `.md` file, is refused.
+/// `POST /save`, cell save, and `POST /annotate` (including undo) may
+/// write only this notebook's `.md`, and only when that file resolves
+/// inside the jail. A symlink whose target leaves the jail, or whose
+/// target is not a `.md` file, is refused.
 pub(crate) fn notebook_md_target(
     path: &std::path::Path,
     jail_root: Option<&std::path::Path>,
@@ -606,15 +607,12 @@ async fn annotate_source(
     let Some(nb) = state.notebook(&slug) else {
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
-    if let Some(root) = &state.jail_root {
-        match nb.source_path.canonicalize() {
-            Ok(canon) if canon.starts_with(root) => {}
-            _ => {
-                return (StatusCode::FORBIDDEN, "path escapes notebook directory").into_response();
-            }
-        }
-    }
     let _guard = nb.save_lock.lock().await;
+    // Same target rule as `POST /save`, including when `jail_root` is
+    // unset (the notebook's own directory is the jail).
+    if let Err(msg) = notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
+        return (StatusCode::FORBIDDEN, msg).into_response();
+    }
     let file = match tokio::fs::read_to_string(&nb.source_path).await {
         Ok(s) => s,
         Err(e) => {
@@ -658,6 +656,17 @@ async fn annotate_source(
                 }
             }
         };
+        // Undo restores bytes the browser does not send. Those bytes can
+        // put back an SVG prose image the current file no longer has
+        // (deleting the only reference, then undoing). Same introduce-only
+        // rule as a forward annotate.
+        if crate::prose_media::introduces_svg_prose_image(&file, &before) {
+            return (
+                StatusCode::BAD_REQUEST,
+                crate::prose_media::SVG_PROSE_REJECTION,
+            )
+                .into_response();
+        }
         let hash = crate::comments::sha256_hex(before.as_bytes());
         return match tokio::fs::write(&nb.source_path, before.as_bytes()).await {
             Ok(()) => {
@@ -685,6 +694,19 @@ async fn annotate_source(
     };
     match crate::comments::apply_annotate(&file, &req) {
         Ok(next) => {
+            // `==` / `%%` are not markdown, so a highlight or comment can
+            // plant `![x](eval.svg)` (or a raw `<img src="….svg">`) that
+            // the next render copies. Refuse only a dest the file does
+            // not already reference. A mention inside a code fence or
+            // inline code is not a prose image. Do not record undo: the
+            // file is unchanged.
+            if crate::prose_media::introduces_svg_prose_image(&file, &next) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    crate::prose_media::SVG_PROSE_REJECTION,
+                )
+                    .into_response();
+            }
             let hash = crate::comments::sha256_hex(next.as_bytes());
             match tokio::fs::write(&nb.source_path, next.as_bytes()).await {
                 Ok(()) => {
@@ -1249,6 +1271,277 @@ mod tests {
         drop(state);
     }
 
+    async fn post_annotate(
+        state: &Arc<ServerState>,
+        if_match: &str,
+        body: &str,
+    ) -> axum::response::Response {
+        router(Arc::clone(state))
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/annotate/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .header(header::IF_MATCH, format!("\"{if_match}\""))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn prose_insert(start: usize, end: usize, text: &str, comment: &str) -> String {
+        serde_json::json!({
+            "op": "insert",
+            "target": "prose",
+            "start": start,
+            "end": end,
+            "text": text,
+            "comment": comment,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn annotate_rejects_a_new_svg_prose_image_and_does_not_write() {
+        let source = "# hello constant world\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("constant").unwrap();
+        let end = start + "constant".len();
+        // `==` / `%%` are not markdown, so the image in the comment (or a
+        // highlight that pulls image syntax out of an HTML block) is a new
+        // prose reference. Inline code is not.
+        let attacks = [
+            prose_insert(start, end, "constant", "![x](eval.svg)"),
+            prose_insert(start, end, "constant", "![[eval.svg]]"),
+            prose_insert(start, end, "constant", "<img src=\"eval.svg\" alt=\"x\">"),
+            prose_insert(start, end, "constant", "![x][fig]\n\n[fig]: eval.svg"),
+        ];
+        for body in &attacks {
+            let (state, src) = annotate_state(source, true, false, None);
+            let res = post_annotate(&state, &digest, body).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+            let text = to_bytes(res.into_body(), 8 * 1024).await.unwrap();
+            let text = String::from_utf8_lossy(&text);
+            assert!(
+                text.contains(crate::prose_media::SVG_PROSE_REJECTION),
+                "{text}"
+            );
+            assert_eq!(std::fs::read_to_string(&src).unwrap(), source);
+        }
+
+        // A one-line HTML block hides `![x](eval.svg)`. Wrapping the whole
+        // line in `==` ends the block, so the result is a new prose image
+        // (`==<div>![x](eval.svg)==`).
+        let hidden = "<div>![x](eval.svg)\n";
+        let digest = crate::comments::sha256_hex(hidden.as_bytes());
+        let line = "<div>![x](eval.svg)";
+        let (state, src) = annotate_state(hidden, true, false, None);
+        let res = post_annotate(&state, &digest, &prose_insert(0, line.len(), line, "")).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = to_bytes(res.into_body(), 8 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&text).contains(crate::prose_media::SVG_PROSE_REJECTION));
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), hidden);
+
+        let fenced = "```rustlab\nx = 1\n```\n";
+        let digest = crate::comments::sha256_hex(fenced.as_bytes());
+        let at = fenced.find("```rustlab").unwrap();
+        let (state, src) = annotate_state(fenced, true, false, None);
+        let body = serde_json::json!({
+            "op": "insert",
+            "target": "cell",
+            "start": at,
+            "end": at,
+            "text": "",
+            "comment": "![x](eval.svg)",
+        })
+        .to_string();
+        let res = post_annotate(&state, &digest, &body).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), fenced);
+    }
+
+    #[tokio::test]
+    async fn annotate_allows_an_existing_svg_and_code_mentions() {
+        let source = "# see ![x](eval.svg) please\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let needle = "![x](eval.svg)";
+        let start = source.find(needle).unwrap();
+        let (state, src) = annotate_state(source, true, false, None);
+        let res = post_annotate(
+            &state,
+            &digest,
+            &prose_insert(start, start + needle.len(), needle, ""),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(&src).unwrap();
+        assert!(
+            written.contains("==![x](eval.svg)=="),
+            "highlight of an existing figure stays: {written}"
+        );
+
+        let source = "# hello constant world\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("constant").unwrap();
+        let end = start + "constant".len();
+        let (state, src) = annotate_state(source, true, false, None);
+        let res = post_annotate(
+            &state,
+            &digest,
+            &prose_insert(start, end, "constant", "see `![x](eval.svg)` please"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let written = std::fs::read_to_string(&src).unwrap();
+        assert!(written.contains("`![x](eval.svg)`"), "{written}");
+        assert!(!crate::prose_media::introduces_svg_prose_image(
+            source, &written
+        ));
+
+        let source = "![kept](fig.svg)\n\n# hello constant world\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("constant").unwrap();
+        let end = start + "constant".len();
+        let (state, src) = annotate_state(source, true, false, None);
+        let res = post_annotate(
+            &state,
+            &digest,
+            &prose_insert(start, end, "constant", "again ![kept](fig.svg)"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_ne!(std::fs::read_to_string(&src).unwrap(), source);
+
+        let source = "# hello constant world\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let start = source.find("constant").unwrap();
+        let end = start + "constant".len();
+        let (state, src) = annotate_state(source, true, false, None);
+        let res = post_annotate(
+            &state,
+            &digest,
+            &prose_insert(start, end, "constant", "![photo](dot.png)"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(std::fs::read_to_string(&src).unwrap().contains("dot.png"));
+    }
+
+    #[tokio::test]
+    async fn annotate_undo_refuses_to_reintroduce_an_svg_prose_image() {
+        let source = "# hello\n\n%%#c1: ![x](eval.svg)%%\n";
+        let digest = crate::comments::sha256_hex(source.as_bytes());
+        let expect = "%%#c1: ![x](eval.svg)%%";
+        let start = source.find(expect).unwrap();
+        let (state, src) = annotate_state(source, true, false, None);
+        let body = serde_json::json!({
+            "op": "delete",
+            "target": "prose",
+            "start": start,
+            "end": start + expect.len(),
+            "expect": expect,
+        })
+        .to_string();
+        let res = post_annotate(&state, &digest, &body).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "removing the only SVG ref is allowed"
+        );
+        let bytes = to_bytes(res.into_body(), 1024).await.unwrap();
+        let body_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let next = body_json["sha256"].as_str().unwrap().to_string();
+        let removed = std::fs::read_to_string(&src).unwrap();
+        assert!(!removed.contains("eval.svg"), "{removed}");
+
+        let res = post_annotate(&state, &next, r#"{"op":"undo"}"#).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let text = to_bytes(res.into_body(), 8 * 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&text).contains(crate::prose_media::SVG_PROSE_REJECTION));
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), removed);
+    }
+
+    fn annotate_nb(
+        path: std::path::PathBuf,
+        jail_root: Option<std::path::PathBuf>,
+    ) -> Arc<ServerState> {
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            path,
+            "nb".to_string(),
+            String::new(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir: TempDir::new().unwrap(),
+            editable: false,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root,
+            annotate: true,
+            comments_on: true,
+        })
+    }
+
+    #[tokio::test]
+    async fn annotate_refuses_a_non_md_target_even_without_a_jail_root() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("eval.svg");
+        let bytes = b"<svg></svg>";
+        std::fs::write(&src, bytes).unwrap();
+        let state = annotate_nb(src.clone(), None);
+        let res = post_annotate(&state, "abc", &annotate_body()).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let text = to_bytes(res.into_body(), 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&text).contains("save only writes the notebook .md file"));
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn annotate_refuses_a_symlink_that_leaves_the_jail_or_is_not_markdown() {
+        let jail = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "secret\n").unwrap();
+        let link = jail.path().join("nb.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        // `jail_root` unset: the notebook directory is still the jail.
+        let state = annotate_nb(link.clone(), None);
+        let res = post_annotate(&state, "abc", &annotate_body()).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret\n");
+
+        let state = annotate_nb(link, Some(jail.path().to_path_buf()));
+        let res = post_annotate(&state, "abc", &annotate_body()).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret\n");
+
+        let svg = jail.path().join("eval.svg");
+        std::fs::write(&svg, b"<svg></svg>").unwrap();
+        let alias = jail.path().join("alias.md");
+        std::os::unix::fs::symlink(&svg, &alias).unwrap();
+        let state = annotate_nb(alias, None);
+        let res = post_annotate(&state, "abc", &annotate_body()).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let text = to_bytes(res.into_body(), 1024).await.unwrap();
+        assert!(String::from_utf8_lossy(&text).contains("save only writes the notebook .md file"));
+        assert_eq!(std::fs::read(&svg).unwrap(), b"<svg></svg>");
+    }
+
     #[tokio::test]
     async fn save_route_absent_when_not_editable() {
         let app = router(single_state("<h1>hello</h1>"));
@@ -1751,6 +2044,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         (state, src)
     }
@@ -1845,6 +2140,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         let res = post_save(&state, "# not an svg\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -1883,6 +2180,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(8042),
             jail_root: Some(jail.path().to_path_buf()),
+            annotate: false,
+            comments_on: true,
         });
         let res = post_save(&state, "# pwn\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
