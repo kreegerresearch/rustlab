@@ -375,7 +375,7 @@ pub struct CommentHeader {
 }
 
 impl CommentHeader {
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.id.is_none()
             && self.reply_to.is_none()
@@ -535,8 +535,6 @@ struct WarnDelim {
     at: usize,
     kind: Kind,
     line: usize,
-    #[allow(dead_code)]
-    code: &'static str,
 }
 
 fn scan(md: &str) -> Scan {
@@ -664,7 +662,6 @@ fn pair(md: &str, found: &(Vec<Delim>, Vec<(usize, Kind)>)) -> Scan {
                 at: d.at,
                 kind: d.kind,
                 line: d.line,
-                code: "rustlab:W008",
             });
         } else {
             let code = if d.kind == Kind::Hi {
@@ -681,7 +678,6 @@ fn pair(md: &str, found: &(Vec<Delim>, Vec<(usize, Kind)>)) -> Scan {
                 at: d.at,
                 kind: d.kind,
                 line: d.line,
-                code,
             });
         }
         i += 1;
@@ -2478,12 +2474,6 @@ pub(crate) fn render_cell_notes_latex(notes: &[CellNote]) -> String {
     out
 }
 
-#[allow(dead_code)]
-pub(crate) fn source_has_marks(md: &str) -> bool {
-    let (delims, escapes) = find_delims(md, &opaque_ranges(md));
-    !delims.is_empty() || !escapes.is_empty()
-}
-
 // ── check ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn issues(md: &str) -> Vec<Issue> {
@@ -2499,7 +2489,6 @@ pub(crate) struct CellNote {
     pub start: usize,
     pub end: usize,
     pub raw: String,
-    #[allow(dead_code)]
     pub block: bool,
 }
 
@@ -3511,7 +3500,6 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
       return;
     }}
     if (name === 'delete') {{
-      var raw = info.mark ? info.mark.getAttribute('data-src-start') : null;
       post({{
         op: 'delete',
         target: info.code ? 'cell' : 'prose',
@@ -3630,7 +3618,6 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     if (!menu.contains(t) && !pop.contains(t)) {{ hideMenu(); }}
   }});
   document.addEventListener('scroll', hideMenu, true);
-  document.addEventListener('selectionchange', function () {{ if (!pop.hidden) return; }});
   var undoBtn = document.getElementById('rl-cm-undo-btn');
   if (undoBtn) undoBtn.addEventListener('click', function () {{
     post({{ op: 'undo' }}, 'undo');
@@ -4052,11 +4039,6 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
     (y as i32, m as u32, d as u32)
 }
 
-// The aria-describedby wiring in `build_shown` currently leaves the
-// attribute off (note numbers are assigned later in the same pass).
-// A second walk fills it in once every note placeholder exists.
-fn _bind_describedby_is_applied_in_restore() {}
-
 // ── tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -4220,14 +4202,6 @@ mod tests {
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-    }
-
-    #[test]
-    fn source_has_marks_sees_delimiters_and_escapes() {
-        assert!(!source_has_marks("plain prose"));
-        assert!(source_has_marks("==keep=="));
-        assert!(source_has_marks(r"\%%"));
-        assert!(!source_has_marks("```rustlab\na == b\n```"));
     }
 
     fn page(blocks: &[crate::execute::Rendered]) -> String {
