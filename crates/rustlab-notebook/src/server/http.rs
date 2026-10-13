@@ -508,10 +508,14 @@ fn user_file_response(content_type: &'static str, body: Body) -> Response {
 /// write only this notebook's `.md`, and only when that file resolves
 /// inside the jail. A symlink whose target leaves the jail, or whose
 /// target is not a `.md` file, is refused.
+///
+/// The returned path is the canonical target. Callers read and replace
+/// that path, not the path the request named, so a symlink swap after
+/// the check cannot retarget the write.
 pub(crate) fn notebook_md_target(
     path: &std::path::Path,
     jail_root: Option<&std::path::Path>,
-) -> Result<(), &'static str> {
+) -> Result<PathBuf, &'static str> {
     if !extension_is_md(path) {
         return Err("save only writes the notebook .md file");
     }
@@ -528,7 +532,37 @@ pub(crate) fn notebook_md_target(
     if !extension_is_md(&resolved) {
         return Err("save only writes the notebook .md file");
     }
-    Ok(())
+    Ok(resolved)
+}
+
+/// Write `data` to a temp file in `path`'s directory, then `rename` it
+/// over `path`. `rename` replaces the directory entry and does not follow
+/// a symlink that appears at `path` after the jail check. The temp file
+/// is removed if the rename fails.
+pub(crate) async fn atomic_replace(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("notebook.md");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(".{file_name}.{}.{nonce}.tmp", std::process::id()));
+    if let Err(e) = tokio::fs::write(&tmp, data).await {
+        return Err(e);
+    }
+    match tokio::fs::rename(&tmp, path).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            Err(e)
+        }
+    }
 }
 
 fn extension_is_md(path: &std::path::Path) -> bool {
@@ -555,10 +589,11 @@ async fn save_source(
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
     let _guard = nb.save_lock.lock().await;
-    if let Err(msg) = notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
-        return (StatusCode::FORBIDDEN, msg).into_response();
-    }
-    let previous = match tokio::fs::read_to_string(&nb.source_path).await {
+    let target = match notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::FORBIDDEN, msg).into_response(),
+    };
+    let previous = match tokio::fs::read_to_string(&target).await {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -580,7 +615,7 @@ async fn save_source(
         )
             .into_response();
     }
-    match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
+    match atomic_replace(&target, body.as_bytes()).await {
         Ok(()) => (StatusCode::OK, "saved").into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -609,11 +644,13 @@ async fn annotate_source(
     };
     let _guard = nb.save_lock.lock().await;
     // Same target rule as `POST /save`, including when `jail_root` is
-    // unset (the notebook's own directory is the jail).
-    if let Err(msg) = notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
-        return (StatusCode::FORBIDDEN, msg).into_response();
-    }
-    let file = match tokio::fs::read_to_string(&nb.source_path).await {
+    // unset (the notebook's own directory is the jail). Read and replace
+    // the canonical path from that check.
+    let canon = match notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::FORBIDDEN, msg).into_response(),
+    };
+    let file = match tokio::fs::read_to_string(&canon).await {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -667,8 +704,11 @@ async fn annotate_source(
             )
                 .into_response();
         }
+        if before.len() > crate::comments::MAX_ANNOTATE_BYTES {
+            return (StatusCode::BAD_REQUEST, "notebook is too large to annotate").into_response();
+        }
         let hash = crate::comments::sha256_hex(before.as_bytes());
-        return match tokio::fs::write(&nb.source_path, before.as_bytes()).await {
+        return match atomic_replace(&canon, before.as_bytes()).await {
             Ok(()) => {
                 *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 annotate_ok(&hash)
@@ -708,7 +748,7 @@ async fn annotate_source(
                     .into_response();
             }
             let hash = crate::comments::sha256_hex(next.as_bytes());
-            match tokio::fs::write(&nb.source_path, next.as_bytes()).await {
+            match atomic_replace(&canon, next.as_bytes()).await {
                 Ok(()) => {
                     *nb.undo.lock().unwrap_or_else(|e| e.into_inner()) = Some(UndoSnap {
                         before: file,
@@ -2196,5 +2236,30 @@ mod tests {
             "a .md symlink to an svg must not be a write target"
         );
         assert_eq!(std::fs::read(&svg).unwrap(), b"<svg></svg>");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn atomic_replace_writes_the_canonical_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "old\n").unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let canon = notebook_md_target(&link, Some(dir.path())).unwrap();
+        assert_eq!(canon, std::fs::canonicalize(&real).unwrap());
+        atomic_replace(&canon, b"new\n").await.unwrap();
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let temps: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(temps.is_empty(), "{temps:?}");
     }
 }

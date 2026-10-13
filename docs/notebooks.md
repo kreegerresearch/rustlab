@@ -1310,7 +1310,10 @@ markdown, and JSON default to on. PDF and LaTeX default to off: the
 highlight's words stay, and the `%%` comment is dropped. `--comments`
 on PDF uses `\hl` (a light yellow, `rlhl`) and a numbered
 `\marginpar` for inline, block, and cell notes (a footnote inside a
-table, where a margin note does not fit). The prose gets the same
+table, where a margin note does not fit). The note body is escaped
+text: `$` and `\` are characters, not math or commands. A `%%` note
+that contains `$...$` still pairs, so with comments off (the default)
+that math is deleted with the note and is not compiled. The prose gets the same
 superscript number as the HTML marker, and the note starts with that
 number in bold. A reply is indented under its parent. A thin rule and
 `marginfix` keep stacked notes from running together. The space
@@ -1322,7 +1325,8 @@ a reply and a cell comment, and tidies the space or blank line the
 note left behind. `rustlab-notebook strip` does that same cleanup and
 writes GitHub-ready Markdown (stdout, `-o`, or `--in-place`; a
 directory needs `-o` or `--in-place`). It does not rewrite a code
-fence.
+fence, and it does not follow a symlink: a symlinked input is refused,
+and a symlink inside a directory is skipped.
 
 `--comments-style` is markdown-only. `keep` (the default) leaves `==`
 and `%%`. `footnotes` turns each note into a GitHub footnote (`[^c1]`)
@@ -1382,7 +1386,11 @@ browser. Annotate and undo use the same write checks as `POST /save`:
 the path must resolve to a `.md` file inside the jail (the notebook's
 own directory when `--jail-root` is unset; symlinks are followed), and
 the document that would be written must not add an SVG prose image the
-file does not already reference. A comment or highlight whose text is
+file does not already reference. The write replaces the canonical `.md`
+by renaming a temporary file in that directory over it. A comment body
+may not contain `\`, `$`, `%%`, `==`, or a fence line. A notebook over
+1 MiB, or one that would end up with more than 400 comments, is refused.
+A comment or highlight whose text is
 `![x](eval.svg)`, `![[eval.svg]]`, or `<img src="eval.svg">` is refused
 (400, file unchanged) when that SVG is new. The same mention inside a
 code fence or inline code is not a prose image and is kept. Deleting

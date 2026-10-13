@@ -496,9 +496,18 @@ pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize 
 
 /// Recursively walk `dir`, collecting every `.md` file. Skips `README.md`
 /// to match the renderer's "project metadata, not a notebook" rule.
+///
+/// Symlinks are not followed. A symlink file or directory is skipped
+/// with a warning. A regular file is canonicalised and kept only when
+/// that path is still under `dir`, so a directory entry cannot name a
+/// file outside the tree.
 pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
+    let root = match std::fs::canonicalize(dir) {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let mut stack = vec![root.clone()];
     while let Some(d) = stack.pop() {
         let entries = match std::fs::read_dir(&d) {
             Ok(e) => e,
@@ -517,17 +526,46 @@ pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
             if hidden {
                 continue;
             }
-            if p.is_dir() {
+            // `DirEntry::file_type` does not follow symlinks.
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                eprintln!("warning: skipping symlink {} (not followed)", p.display());
+                continue;
+            }
+            if ft.is_dir() {
                 stack.push(p);
-            } else if p.extension().map_or(false, |e| e == "md")
+            } else if ft.is_file()
+                && p.extension().map_or(false, |e| e == "md")
                 && p.file_name().map_or(true, |n| n != "README.md")
             {
-                out.push(p);
+                match std::fs::canonicalize(&p) {
+                    Ok(canon) if canon.starts_with(&root) => out.push(p),
+                    Ok(canon) => {
+                        eprintln!(
+                            "warning: skipping {} (resolves to {} outside {})",
+                            p.display(),
+                            canon.display(),
+                            root.display()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: skipping {}: {e}", p.display());
+                    }
+                }
             }
         }
     }
     out.sort();
     out
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 /// Per-render summary the watcher uses for telemetry: how many
@@ -1375,6 +1413,9 @@ pub fn cmd_strip(input: PathBuf, output: Option<PathBuf>, in_place: bool) -> Res
     if output.is_some() && in_place {
         return Err("--output and --in-place cannot be combined".into());
     }
+    if is_symlink(&input) {
+        return Err(format!("refusing to follow symlink {}", input.display()));
+    }
     if input.is_dir() && output.is_none() && !in_place {
         return Err("stripping a directory needs -o <DIR> or --in-place".into());
     }
@@ -1738,6 +1779,13 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
 }
 
 fn write_output(path: &PathBuf, data: &[u8]) {
+    if is_symlink(path) {
+        eprintln!(
+            "warning: refusing to write through symlink {}",
+            path.display()
+        );
+        return;
+    }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -2310,6 +2358,54 @@ mod tests {
         let found = list_md_files_recursive(dir.path());
         assert_eq!(found.len(), 1, "hidden entries leaked: {found:?}");
         assert!(found[0].ends_with("real.md"));
+    }
+
+    #[test]
+    fn strip_in_place_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "%%keep me%%\n").unwrap();
+        std::fs::write(dir.path().join("real.md"), "%%gone%%\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, dir.path().join("link.md")).unwrap();
+            let linked = outside.path().join("nested");
+            std::fs::create_dir(&linked).unwrap();
+            let nested = linked.join("out.md");
+            std::fs::write(&nested, "%%outside%%\n").unwrap();
+            std::os::unix::fs::symlink(&linked, dir.path().join("sub")).unwrap();
+            cmd_strip(dir.path().to_path_buf(), None, true).unwrap();
+            assert_eq!(std::fs::read_to_string(&secret).unwrap(), "%%keep me%%\n");
+            assert_eq!(std::fs::read_to_string(&nested).unwrap(), "%%outside%%\n");
+            let cleaned = std::fs::read_to_string(dir.path().join("real.md")).unwrap();
+            assert!(!cleaned.contains("gone"), "{cleaned}");
+            assert!(std::fs::symlink_metadata(dir.path().join("link.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            let err = cmd_strip(dir.path().join("link.md"), None, true).unwrap_err();
+            assert!(err.contains("symlink"), "{err}");
+            assert_eq!(std::fs::read_to_string(&secret).unwrap(), "%%keep me%%\n");
+        }
+    }
+
+    #[test]
+    fn write_output_refuses_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "safe").unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.md");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            write_output(&link, b"pwned");
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "safe");
+            assert!(std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
     }
 
     #[test]

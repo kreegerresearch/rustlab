@@ -66,6 +66,18 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A `%%` note cannot inject TeX into a PDF, and comment writes do not follow a swapped path.**
+  A note that contains `$...$` is paired, so the math is part of the
+  note. With comments off (the PDF default) the note is deleted. With
+  `--comments` the body is escaped text, not math. `pdflatex` is passed
+  `-no-shell-escape`; that flag is not treated as enabling shell-escape.
+  A `javascript:`, `data:`, `vbscript:`, or `blob:` link is plain text
+  in the PDF, not an `\href`. `strip --in-place` does not follow
+  symlinks. `POST /save`, cell save, and `POST /annotate` (including
+  undo) write a temporary file in the canonical target's directory and
+  `rename` it over that path. Annotate rejects a comment body that
+  contains `\` or `$`, a notebook larger than 1 MiB, and a file that
+  would have more than 400 comments.
 - **An SVG prose image served by `notebook watch` cannot script the watch origin.**
   `GET /plots/…` (including `image/svg+xml`) and `GET /raw/{slug}` send
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`

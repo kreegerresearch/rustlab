@@ -2,7 +2,9 @@
 //!
 //! Obsidian syntax, rendered as `<mark>` and margin notes. The scanner
 //! skips fences, indented code, inline code, math, HTML comments, and
-//! YAML frontmatter. See `dev/plans/notebook_comments.md`.
+//! YAML frontmatter when looking for delimiters. A `%%` note still pairs
+//! across math, inline code, and HTML comments so that body cannot leak
+//! into the document. See `dev/plans/notebook_comments.md`.
 //!
 //! [`CommentHeader::state`] is reserved for a later per-comment
 //! reviewed/accepted flag. It is never parsed and never written.
@@ -543,7 +545,7 @@ fn scan(md: &str) -> Scan {
     pair(md, &delims)
 }
 
-fn find_delims(md: &str, opaque: &[(usize, usize)]) -> (Vec<Delim>, Vec<(usize, Kind)>) {
+fn find_delims(md: &str, opaque: &[Opaque]) -> (Vec<Delim>, Vec<(usize, Kind)>) {
     let b = md.as_bytes();
     let mut delims = Vec::new();
     let mut escapes = Vec::new();
@@ -769,7 +771,7 @@ fn find_closer(
 /// Returns `(count, index of the last one)`.
 fn count_past_barrier(
     md: &str,
-    opaque: &[(usize, usize)],
+    opaque: &[Opaque],
     delims: &[Delim],
     open_i: usize,
     barrier: usize,
@@ -798,13 +800,7 @@ fn count_past_barrier(
     (count, last)
 }
 
-fn next_barrier(
-    md: &str,
-    opaque: &[(usize, usize)],
-    from: usize,
-    _kind: Kind,
-    block_note: bool,
-) -> usize {
+fn next_barrier(md: &str, opaque: &[Opaque], from: usize, kind: Kind, block_note: bool) -> usize {
     let b = md.as_bytes();
     if from >= b.len() {
         return b.len();
@@ -817,31 +813,57 @@ fn next_barrier(
     }
     let mut i = from;
     while i < b.len() {
-        if let Some(&(start, end)) = opaque.iter().find(|&&(s, e)| e > i && s >= from) {
-            if start >= from {
-                return start;
+        if let Some(span) = first_opaque_after(opaque, i, from) {
+            // A `%%` note pairs across math, inline code, and HTML
+            // comments. Stopping at the `$` left the math in the
+            // document, where LaTeX compiles it (`\input`, `\openout`).
+            // Fences, indented code, and frontmatter stay barriers, and
+            // highlights do not cross math: unwrapping `==` keeps the
+            // inner bytes.
+            if span.soft && kind == Kind::Note {
+                if let Some(stop) = newline_barrier(md, i, span.start, block_note) {
+                    return stop;
+                }
+                i = span.end;
+                continue;
             }
-            i = end;
-            continue;
+            return span.start;
         }
+        return newline_barrier(md, i, b.len(), block_note).unwrap_or(b.len());
+    }
+    b.len()
+}
+
+/// Heading or blank-line stop in `[from, limit)`.
+fn newline_barrier(md: &str, mut i: usize, limit: usize, block_note: bool) -> Option<usize> {
+    let b = md.as_bytes();
+    let limit = limit.min(b.len());
+    while i < limit {
         if b[i] == b'\n' {
             let next = i + 1;
             if next >= b.len() {
-                return b.len();
+                return Some(b.len());
             }
             let line = line_content(md, next);
             if is_atx_heading(line) {
-                return next;
+                return Some(next);
             }
             if !block_note && line.trim().is_empty() {
-                return next;
+                return Some(next);
             }
             i = next;
             continue;
         }
         i += 1;
     }
-    b.len()
+    None
+}
+
+/// First opaque span that ends after `i` and starts at or after `from`.
+/// Spans are sorted and non-overlapping, so the end keys are sorted too.
+fn first_opaque_after(ranges: &[Opaque], i: usize, from: usize) -> Option<&Opaque> {
+    let idx = ranges.partition_point(|r| r.end <= i);
+    ranges[idx..].iter().find(|r| r.start >= from)
 }
 
 fn line_is_blank_at(md: &str, at: usize) -> bool {
@@ -896,20 +918,37 @@ fn line_no(md: &str, at: usize) -> usize {
     md[..at].bytes().filter(|&b| b == b'\n').count() + 1
 }
 
-fn opaque_end_at(ranges: &[(usize, usize)], i: usize) -> Option<usize> {
-    ranges
-        .iter()
-        .find(|&&(s, e)| i >= s && i < e)
-        .map(|&(_, e)| e)
+fn opaque_end_at(ranges: &[Opaque], i: usize) -> Option<usize> {
+    // Last span that starts at or before `i`, then test membership.
+    let idx = ranges.partition_point(|r| r.start <= i);
+    if idx == 0 {
+        return None;
+    }
+    let r = &ranges[idx - 1];
+    if i < r.end {
+        Some(r.end)
+    } else {
+        None
+    }
 }
 
 fn ranges_overlap(a0: usize, a1: usize, b0: usize, b1: usize) -> bool {
     a0 < b1 && b0 < a1
 }
 
+/// A region the scanner does not read. `soft` spans (math, inline code,
+/// HTML comments) are not `%%` barriers: the note body stays inside the
+/// note. Fences, indented code, and frontmatter are hard.
+#[derive(Clone, Copy)]
+struct Opaque {
+    start: usize,
+    end: usize,
+    soft: bool,
+}
+
 /// Regions the scanner does not read: frontmatter, fences, indented code,
 /// inline code, math, HTML comments.
-fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
+fn opaque_ranges(md: &str) -> Vec<Opaque> {
     let b = md.as_bytes();
     let n = b.len();
     let mut out = Vec::new();
@@ -926,7 +965,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
             }
             let close_line = line_content(md, rest + rel + 1);
             if close_line.trim() == "---" {
-                out.push((0, end));
+                out.push(Opaque {
+                    start: 0,
+                    end,
+                    soft: false,
+                });
                 i = end;
             }
         }
@@ -942,7 +985,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
                 if blank || indent >= 4 {
                     let eol = line_end(b, i);
                     if !blank {
-                        out.push((i, eol));
+                        out.push(Opaque {
+                            start: i,
+                            end: eol,
+                            soft: false,
+                        });
                     }
                     prev_blank = blank;
                     i = eol;
@@ -955,7 +1002,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
                 in_indented = false;
             } else if prev_blank && indent >= 4 && !blank {
                 let eol = line_end(b, i);
-                out.push((i, eol));
+                out.push(Opaque {
+                    start: i,
+                    end: eol,
+                    soft: false,
+                });
                 i = eol;
                 at_line_start = true;
                 prev_blank = false;
@@ -976,7 +1027,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
                         break;
                     }
                 }
-                out.push((start, i));
+                out.push(Opaque {
+                    start,
+                    end: i,
+                    soft: false,
+                });
                 at_line_start = true;
                 prev_blank = false;
                 in_indented = false;
@@ -988,7 +1043,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
             let start = i;
             if let Some(rel) = md[i + 4..].find("-->") {
                 i = i + 4 + rel + 3;
-                out.push((start, i));
+                out.push(Opaque {
+                    start,
+                    end: i,
+                    soft: true,
+                });
                 at_line_start =
                     i > 0 && i <= n && (i == n || b.get(i.saturating_sub(1)) == Some(&b'\n'));
                 if i > 0 && b[i - 1] == b'\n' {
@@ -1020,7 +1079,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
                 }
             }
             if let Some(ce) = close {
-                out.push((run_start, ce));
+                out.push(Opaque {
+                    start: run_start,
+                    end: ce,
+                    soft: true,
+                });
                 at_line_start = ce > 0 && b[ce - 1] == b'\n';
                 i = ce;
                 continue;
@@ -1036,7 +1099,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
         }
         if b[i] == b'$' && i + 1 < n && b[i + 1] == b'$' {
             if let Some(close) = find_display_math_close(b, i + 2) {
-                out.push((i, close + 2));
+                out.push(Opaque {
+                    start: i,
+                    end: close + 2,
+                    soft: true,
+                });
                 i = close + 2;
                 at_line_start = i > 0 && i <= n && b.get(i.saturating_sub(1)) == Some(&b'\n');
                 continue;
@@ -1044,7 +1111,11 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
         }
         if b[i] == b'$' && is_inline_math_open(b, i) {
             if let Some(close) = find_inline_math_close(b, i + 1, line_is_table_row(md, i)) {
-                out.push((i, close + 1));
+                out.push(Opaque {
+                    start: i,
+                    end: close + 1,
+                    soft: true,
+                });
                 i = close + 1;
                 at_line_start = false;
                 continue;
@@ -1059,19 +1130,24 @@ fn opaque_ranges(md: &str) -> Vec<(usize, usize)> {
     merge_ranges(out)
 }
 
-fn merge_ranges(mut v: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+fn merge_ranges(mut v: Vec<Opaque>) -> Vec<Opaque> {
     if v.is_empty() {
         return v;
     }
-    v.sort_by_key(|&(s, _)| s);
+    v.sort_by_key(|o| o.start);
     let mut out = Vec::new();
     let mut cur = v[0];
-    for &(s, e) in v.iter().skip(1) {
-        if s <= cur.1 {
-            cur.1 = cur.1.max(e);
+    for o in v.into_iter().skip(1) {
+        if o.start <= cur.end && o.soft == cur.soft {
+            cur.end = cur.end.max(o.end);
+        } else if o.start < cur.end {
+            // Overlap of different hardness: a fence glued to math stays
+            // a barrier.
+            cur.end = cur.end.max(o.end);
+            cur.soft = false;
         } else {
             out.push(cur);
-            cur = (s, e);
+            cur = o;
         }
     }
     out.push(cur);
@@ -2363,7 +2439,9 @@ pub(crate) fn latex_packages() -> &'static str {
 }
 
 fn render_reply_latex(m: &Mark) -> String {
-    let body = latex_fragment(&m.body);
+    // Escaped text. Re-parsing the body as markdown would compile `$...$`
+    // inside `\marginpar` as TeX math.
+    let body = marginpar_text(&crate::render_latex::escape_latex_pub(&m.body));
     let who = latex_header_label(&m.header);
     // One line down, indented under the parent note.
     format!("\\\\ \\quad {who}{body}")
@@ -2413,11 +2491,6 @@ fn latex_header_label(h: &CommentHeader) -> String {
     }
 }
 
-fn latex_fragment(md: &str) -> String {
-    let _g = enter_body();
-    crate::render_latex::markdown_fragment_to_latex(md)
-}
-
 /// `\marginpar` rejects `\par` and a blank line. Flatten those to `\\ `.
 fn marginpar_text(s: &str) -> String {
     let flat = s.replace("\\par", " ");
@@ -2432,7 +2505,7 @@ fn marginpar_text(s: &str) -> String {
 }
 
 fn render_note_latex(m: &Mark, replies: &str, in_table: bool, num: u32) -> String {
-    let body = marginpar_text(&latex_fragment(&m.body));
+    let body = marginpar_text(&crate::render_latex::escape_latex_pub(&m.body));
     let replies = if replies.is_empty() {
         String::new()
     } else {
@@ -3630,6 +3703,11 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
 // ── annotate splice ────────────────────────────────────────────────────────
 
 const BODY_CAP: usize = 64 * 1024;
+/// Notebook source `apply_annotate` will read. Larger files are rejected
+/// before the scanner walks them.
+pub(crate) const MAX_ANNOTATE_BYTES: usize = 1024 * 1024;
+/// Well-formed `%%` notes allowed in one file after a splice.
+const MAX_NOTES: usize = 400;
 
 #[derive(Debug)]
 pub enum AnnotateError {
@@ -3660,6 +3738,11 @@ pub struct AnnotateRequest<'a> {
 }
 
 pub fn apply_annotate(file: &str, req: &AnnotateRequest<'_>) -> Result<String, AnnotateError> {
+    if file.len() > MAX_ANNOTATE_BYTES {
+        return Err(AnnotateError::BadRequest(
+            "notebook is too large to annotate".into(),
+        ));
+    }
     if req.comment.len() > BODY_CAP || req.expect.len() > BODY_CAP || req.text.len() > BODY_CAP {
         return Err(AnnotateError::BadRequest("comment is too long".into()));
     }
@@ -3670,7 +3753,7 @@ pub fn apply_annotate(file: &str, req: &AnnotateRequest<'_>) -> Result<String, A
     }
     if comment_body_forbidden(req.comment) {
         return Err(AnnotateError::BadRequest(
-            "comment must not contain %% , == , or a fence".into(),
+            "comment must not contain %% , == , \\ , $ , or a fence".into(),
         ));
     }
     // Every fence type, including its info string. A cell comment is the
@@ -3681,17 +3764,37 @@ pub fn apply_annotate(file: &str, req: &AnnotateRequest<'_>) -> Result<String, A
             "target offsets are inside a code fence".into(),
         ));
     }
-    match req.op {
-        "insert" if req.target == "cell" => insert_cell(file, req),
-        "insert" => insert_prose(file, req),
-        "edit" => edit_comment(file, req),
-        "delete" => delete_mark(file, req),
-        _ => Err(AnnotateError::BadRequest("unknown op".into())),
+    let next = match req.op {
+        "insert" if req.target == "cell" => insert_cell(file, req)?,
+        "insert" => insert_prose(file, req)?,
+        "edit" => edit_comment(file, req)?,
+        "delete" => delete_mark(file, req)?,
+        _ => return Err(AnnotateError::BadRequest("unknown op".into())),
+    };
+    // Delete may reduce an already-over-cap file; inserts and edits may not
+    // push it over. The size cap also covers the bytes the splice added.
+    if req.op != "delete" {
+        if next.len() > MAX_ANNOTATE_BYTES {
+            return Err(AnnotateError::BadRequest(
+                "notebook is too large to annotate".into(),
+            ));
+        }
+        let notes = scan(&next)
+            .marks
+            .iter()
+            .filter(|m| m.kind == Kind::Note)
+            .count();
+        if notes > MAX_NOTES {
+            return Err(AnnotateError::BadRequest(format!(
+                "too many comments ({notes}; limit {MAX_NOTES})"
+            )));
+        }
     }
+    Ok(next)
 }
 
 fn comment_body_forbidden(body: &str) -> bool {
-    if body.contains("%%") || body.contains("==") {
+    if body.contains("%%") || body.contains("==") || body.contains('\\') || body.contains('$') {
         return true;
     }
     body.lines().any(|l| l.trim().starts_with("```"))
@@ -3877,7 +3980,7 @@ fn check_prose_range(
     let opaque = opaque_ranges(file);
     if opaque
         .iter()
-        .any(|&(s, e)| ranges_overlap(start, end, s, e))
+        .any(|o| ranges_overlap(start, end, o.start, o.end))
     {
         return Err(AnnotateError::BadRequest(
             "selection overlaps code or math".into(),
@@ -4407,6 +4510,135 @@ mod tests {
         assert!(tex.contains("constant"), "{tex}");
         assert!(!tex.contains("why the phase"), "{tex}");
         assert!(!tex.contains("\\hl{"), "{tex}");
+    }
+
+    #[test]
+    fn note_math_is_not_tex() {
+        let openout = "%% $\\hbox{\\immediate\\openout5=pwned.txt\\immediate\\write5{owned}}$ %%";
+        let input = "%% $\\input{plain.txt}$ %%";
+        // Comments off (PDF default): the note pairs across the math and
+        // the whole body is deleted, so neither command reaches TeX.
+        {
+            let _guard = install(CommentMode::for_format(FormatKind::Latex, None));
+            for src in [openout, input] {
+                assert!(
+                    !strip_source(src).contains('\\'),
+                    "strip left a command in {}",
+                    strip_source(src)
+                );
+                let prep = prepare_latex(src);
+                let body = prep.markdown.clone().unwrap_or_default();
+                let tex = restore_latex(&body, &prep);
+                assert!(!tex.contains("\\immediate"), "{tex}");
+                assert!(!tex.contains("\\openout"), "{tex}");
+                assert!(!tex.contains("\\write"), "{tex}");
+                assert!(!tex.contains("\\hbox"), "{tex}");
+                assert!(!tex.contains("\\input"), "{tex}");
+                assert!(!tex.contains("plain.txt"), "{tex}");
+                assert!(!tex.contains('$'), "{tex}");
+            }
+        }
+        // Comments on: the body is escaped text inside the margin note,
+        // not an InlineMath event.
+        {
+            let _guard = install(CommentMode::for_format(FormatKind::Latex, Some(true)));
+            let prep = prepare_latex(openout);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(tex.contains("\\marginpar{"), "{tex}");
+            assert!(tex.contains("\\textbackslash{}"), "{tex}");
+            assert!(tex.contains("\\$"), "{tex}");
+            assert!(!tex.contains("\\immediate"), "{tex}");
+            assert!(!tex.contains("\\openout"), "{tex}");
+            assert!(!tex.contains("\\write"), "{tex}");
+            assert!(!tex.contains("\\hbox"), "{tex}");
+            let prep = prepare_latex(input);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(!tex.contains("\\input{"), "{tex}");
+            assert!(tex.contains("\\textbackslash{}"), "{tex}");
+            assert!(tex.contains("plain.txt"), "{tex}");
+            // A link written in the note is text, not an \\href.
+            let link = "%%#c1: see [x](javascript:alert(1))%%";
+            let prep = prepare_latex(link);
+            let body = prep.markdown.clone().unwrap_or_default();
+            let tex = restore_latex(&body, &prep);
+            assert!(!tex.contains("\\href"), "{tex}");
+            assert!(tex.contains("javascript"), "{tex}");
+        }
+        // A highlight does not pair across math (unwrapping would keep
+        // the bytes). An inline note still stops at a blank line.
+        let hi = strip_source("==$\\input{plain.txt}$==");
+        assert!(hi.contains("=="), "highlight paired across math: {hi}");
+        assert!(hi.contains("\\input"), "{hi}");
+        let split = "%% hello\n\n$\\input{plain.txt}$ %%";
+        assert!(
+            strip_source(split).contains("\\input"),
+            "{}",
+            strip_source(split)
+        );
+        // Delimiters inside math are still not marks.
+        assert_eq!(strip_source("$a == b$"), "$a == b$");
+    }
+
+    #[test]
+    fn annotate_rejects_tex_metacharacters_size_and_note_count() {
+        let src = "hello world";
+        fn req(comment: &str) -> AnnotateRequest<'_> {
+            AnnotateRequest {
+                op: "insert",
+                target: "prose",
+                start: 0,
+                end: 5,
+                text: "hello",
+                comment,
+                author: "",
+                id: "",
+                expect: "",
+                today: "2026-10-13",
+            }
+        }
+        for comment in ["\\input{x}", "$x$", "a\\b", "cost $5"] {
+            let err = apply_annotate(src, &req(comment)).unwrap_err();
+            assert!(
+                matches!(err, AnnotateError::BadRequest(ref m) if m.contains('\\') || m.contains('$')),
+                "{comment}: {err}"
+            );
+        }
+        let ok = apply_annotate(src, &req("fine")).unwrap();
+        assert!(ok.contains("fine"), "{ok}");
+        assert!(!ok.contains('\\'));
+
+        let mut big = "hello ".to_string();
+        big.push_str(&"x".repeat(MAX_ANNOTATE_BYTES));
+        let err = apply_annotate(&big, &req("n")).unwrap_err();
+        assert!(
+            matches!(err, AnnotateError::BadRequest(ref m) if m.contains("too large")),
+            "{err}"
+        );
+
+        let mut many = String::from("hello ");
+        for i in 0..MAX_NOTES {
+            many.push_str(&format!("%%#c{}: n%% ", i + 1));
+        }
+        let err = apply_annotate(&many, &req("one more")).unwrap_err();
+        assert!(
+            matches!(err, AnnotateError::BadRequest(ref m) if m.contains("too many")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn opaque_end_at_binary_search_matches_membership() {
+        let md = "pre $ab$ mid `cd` post";
+        let ranges = opaque_ranges(md);
+        let math = md.find('$').unwrap();
+        assert_eq!(opaque_end_at(&ranges, math), Some(math + 4));
+        assert_eq!(opaque_end_at(&ranges, math + 1), Some(math + 4));
+        assert!(opaque_end_at(&ranges, math + 4).is_none());
+        let tick = md.find('`').unwrap();
+        assert_eq!(opaque_end_at(&ranges, tick), Some(tick + 4));
+        assert!(opaque_end_at(&ranges, 0).is_none());
     }
 
     #[test]

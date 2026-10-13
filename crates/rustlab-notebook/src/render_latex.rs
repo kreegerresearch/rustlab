@@ -564,6 +564,10 @@ fn emit_figures(
 /// build emits) and with fragments dropped — a sibling PDF does not share
 /// this page's hypertargets. Same-page `#heading` links stay, and only
 /// when that id was emitted as a `\hypertarget`.
+///
+/// Test entry point. Document rendering calls [`markdown_to_latex_in`]
+/// with the anchors it already collected.
+#[cfg(test)]
 fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     let mut anchors = HashSet::new();
     let mut used = HashSet::new();
@@ -581,10 +585,6 @@ struct HeadingCap {
     plain: String,
     saw: bool,
     body: String,
-}
-
-pub(crate) fn markdown_fragment_to_latex(md: &str) -> String {
-    markdown_to_latex(md, &crate::render::LinkMode::single_file())
 }
 
 pub(crate) fn escape_latex_pub(s: &str) -> String {
@@ -734,7 +734,15 @@ fn markdown_to_latex_in(
                 Tag::Link { dest_url, .. } => {
                     let dest = crate::render::rewrite_link_dest_pdf(&dest_url, link)
                         .unwrap_or_else(|| dest_url.to_string());
-                    let live = if let Some(frag) = dest.strip_prefix('#') {
+                    // `javascript:` / `data:` / `vbscript:` / `blob:` must
+                    // not become `\href`. The link text is emitted as
+                    // ordinary escaped text. Hypertarget ids are generated
+                    // separately and are not user URLs.
+                    let dangerous = crate::render::is_dangerous_url(&dest)
+                        || crate::render::is_dangerous_url(&dest_url);
+                    let live = if dangerous {
+                        false
+                    } else if let Some(frag) = dest.strip_prefix('#') {
                         anchors.contains(&percent_decode(frag))
                     } else {
                         true
@@ -1383,6 +1391,27 @@ mod tests {
         );
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
+    }
+
+    #[test]
+    fn md_to_latex_does_not_href_dangerous_schemes() {
+        let single = crate::render::LinkMode::single_file();
+        for url in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,hi",
+            "vbscript:msg",
+            "blob:abc",
+        ] {
+            let out = markdown_to_latex(&format!("[click]({url})"), &single);
+            assert!(!out.contains("\\href"), "{url} -> {out}");
+            assert!(out.contains("click"), "{url} -> {out}");
+        }
+        let ok = markdown_to_latex("[click](https://example.com)", &single);
+        assert!(ok.contains("\\href{https://example.com}{click}"), "{ok}");
+        let anchor = markdown_to_latex("## Setup\n\n[Setup](#setup)", &single);
+        assert!(anchor.contains("\\href"), "{anchor}");
+        assert!(anchor.contains("\\hypertarget"), "{anchor}");
     }
 
     #[test]
