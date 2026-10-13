@@ -46,7 +46,7 @@ pub fn render_series(ui: &mut egui_plot::PlotUi, series: &WireSeries) {
         WirePlotKind::Scatter => {
             let pts = Points::new(PlotPoints::new(points))
                 .color(color)
-                .radius(3.0)
+                .radius(3.0_f32)
                 .name(&series.label);
             ui.points(pts);
         }
@@ -70,7 +70,7 @@ pub fn render_series(ui: &mut egui_plot::PlotUi, series: &WireSeries) {
             // Marker tips
             let pts = Points::new(PlotPoints::new(points))
                 .color(color)
-                .radius(3.0)
+                .radius(3.0_f32)
                 .name(&series.label);
             ui.points(pts);
         }

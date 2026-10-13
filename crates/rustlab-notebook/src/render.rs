@@ -1979,7 +1979,8 @@ fn emit_mermaid_html(body: &mut String, source: &str, _plot_dir: &std::path::Pat
 /// Strip an XML declaration `<?xml ... ?>` from the start of an SVG
 /// string so it inlines cleanly inside HTML. Whitespace before the
 /// declaration is preserved as-is (the renderer typically emits none).
-#[cfg_attr(not(feature = "mermaid"), allow(dead_code))]
+/// Only the mermaid renderer produces that SVG.
+#[cfg(feature = "mermaid")]
 fn strip_xml_decl(svg: &str) -> &str {
     let trimmed = svg.trim_start();
     if let Some(rest) = trimmed.strip_prefix("<?xml") {
