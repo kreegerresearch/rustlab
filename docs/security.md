@@ -59,7 +59,11 @@ port. That residual risk is accepted: the watch server is a
 single-user localhost tool.
 
 `--editable` still writes notebook sources back to disk. A browser tab
-on the watch origin can save; a page on another origin cannot.
+on the watch origin can save; a page on another origin cannot. The save
+writes only that notebook's own `.md` (see H4). Opening a notebook file
+such as an SVG is not a page on the watch origin: those responses use
+the sandbox policy in H3, so a script inside the file cannot present a
+loopback `Origin`.
 
 ## H3 — HTML / XSS + CSP
 
@@ -99,6 +103,22 @@ on the watch origin can save; a page on another origin cannot.
   text in HTML and `\textcolor` in PDF — not `minted`, and not a CDN or
   client-side highlighter. The spans are emitted by the renderer (they
   do not pass through the raw-HTML allow-list).
+- `GET /plots/…` and `GET /raw/{slug}` are notebook bytes, not the HTML
+  page. They send
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+  and `X-Content-Type-Options: nosniff`. `sandbox` has no `allow-scripts`,
+  so the document has an opaque origin and cannot run script or `fetch`
+  this server with the watch origin. That is what stops an SVG prose
+  image (`Content-Type: image/svg+xml`) whose `<script>` would otherwise
+  run when the URL is opened directly, or loaded with `<object>`,
+  `<embed>`, or `<iframe>`. `<img src="….svg">` does not execute SVG
+  script; the renderer emits only that tag for a prose image (never an
+  inline `<svg>`, `<object>`, `<embed>`, or `<iframe>`). The page CSP
+  above is unchanged. Vendored `/assets` (KaTeX, Plotly, CodeMirror)
+  get `nosniff` only — they are the scripts and styles the page loads,
+  not notebook files, and a document CSP on them would not be the page
+  policy. `Content-Disposition: attachment` is not set: a prose SVG is a
+  real `<img>`, and attachment would stop the browser from drawing it.
 
 ## H4 — Path jail
 
@@ -128,6 +148,27 @@ process cwd at execute time, captured once), not the jail root, and
 `sub/../file` is allowed when the result stays inside. Absolute paths
 outside the root are rejected; widen with `--jail-root` rather than
 disabling the jail.
+
+`POST /save/{slug}` (only when `--editable`) and an inline cell save
+write that notebook's `.md` and nothing else. The path must end in
+`.md`, and resolving it through the same jail check (symlinks followed)
+must land on a `.md` file inside the jail. A `.md` name that points at
+an SVG, or at a file outside the jail, is refused and the target is
+left untouched. The route cannot create `eval.svg` or any other
+non-`.md` path: the slug selects a notebook already in the server map.
+
+A save that *adds* an SVG prose image is also refused, and the file is
+not written. The check uses the same markdown parse as the renderer, so
+it sees `![alt](fig.svg)`, `![[fig.svg]]`, a reference-style image, and
+a raw `<img src="fig.svg">` (percent-decoding and a `?query` / `#fragment`
+do not hide the name). A reference already in the file on disk can be
+saved again, and an SVG mentioned only inside a code fence or inline
+code is not a prose image. To add a new SVG diagram, put the file in
+the notebook directory and add the image line on disk; the next save
+that keeps that reference is accepted. SVG prose images stay a feature
+and are still copied and shown with `<img>`. Rejecting every save that
+mentions an SVG would stop `--editable` from saving a notebook that
+already has a diagram.
 
 REPL / `rustlab run` leave the jail unset (no behaviour change).
 

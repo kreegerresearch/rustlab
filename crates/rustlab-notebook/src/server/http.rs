@@ -466,6 +466,58 @@ fn html_response(state: &ServerState, html: String) -> Response {
         .into_response()
 }
 
+/// Headers for a notebook file (`/plots`, `/raw`). The page CSP is not
+/// used here: these responses are not the HTML document.
+fn user_file_response(content_type: &'static str, body: Body) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::HeaderName::from_static("content-security-policy"),
+                auth::USER_FILE_CSP,
+            ),
+            (
+                header::HeaderName::from_static("x-content-type-options"),
+                "nosniff",
+            ),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// `POST /save` and cell save may write only this notebook's `.md`, and
+/// only when that file resolves inside the jail. A symlink whose target
+/// leaves the jail, or whose target is not a `.md` file, is refused.
+pub(crate) fn notebook_md_target(
+    path: &std::path::Path,
+    jail_root: Option<&std::path::Path>,
+) -> Result<(), &'static str> {
+    if !extension_is_md(path) {
+        return Err("save only writes the notebook .md file");
+    }
+    let root = match jail_root {
+        Some(root) => root.to_path_buf(),
+        None => path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .ok_or("save only writes the notebook .md file")?,
+    };
+    let resolved = rustlab_script::path_jail::check_under_root(path, &root)
+        .map_err(|_| "path escapes notebook directory")?;
+    if !extension_is_md(&resolved) {
+        return Err("save only writes the notebook .md file");
+    }
+    Ok(())
+}
+
+fn extension_is_md(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
 async fn save_source(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
@@ -484,6 +536,31 @@ async fn save_source(
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
     let _guard = nb.save_lock.lock().await;
+    if let Err(msg) = notebook_md_target(&nb.source_path, state.jail_root.as_deref()) {
+        return (StatusCode::FORBIDDEN, msg).into_response();
+    }
+    let previous = match tokio::fs::read_to_string(&nb.source_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read error: {e}"),
+            )
+                .into_response();
+        }
+    };
+    // SVG prose images are a real feature (diagrams copied and shown in
+    // `<img>`). Rejecting every save that mentions one would break
+    // `--editable` for notebooks that already have them. A *new*
+    // reference is how a same-origin script would plant `![x](eval.svg)`
+    // for the next render to copy and serve, so that step is refused.
+    if crate::prose_media::introduces_svg_prose_image(&previous, &body) {
+        return (
+            StatusCode::BAD_REQUEST,
+            crate::prose_media::SVG_PROSE_REJECTION,
+        )
+            .into_response();
+    }
     match tokio::fs::write(&nb.source_path, body.as_bytes()).await {
         Ok(()) => (StatusCode::OK, "saved").into_response(),
         Err(e) => (
@@ -502,11 +579,7 @@ async fn raw_source(
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
     match tokio::fs::read(&nb.source_path).await {
-        Ok(bytes) => (
-            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
-            Body::from(bytes),
-        )
-            .into_response(),
+        Ok(bytes) => user_file_response("text/markdown; charset=utf-8", Body::from(bytes)),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("read error: {e}"),
@@ -517,7 +590,20 @@ async fn raw_source(
 
 async fn asset(AxPath(path): AxPath<String>) -> Response {
     match assets::asset_for_path(&path) {
-        Some(a) => ([(header::CONTENT_TYPE, a.content_type)], a.bytes).into_response(),
+        // Vendored scripts and styles. `nosniff` only: a document CSP
+        // here is not the page policy, and these files are not notebook
+        // bytes. The page CSP still decides how they load.
+        Some(a) => (
+            [
+                (header::CONTENT_TYPE, a.content_type),
+                (
+                    header::HeaderName::from_static("x-content-type-options"),
+                    "nosniff",
+                ),
+            ],
+            a.bytes,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "asset not found").into_response(),
     }
 }
@@ -540,7 +626,7 @@ async fn plot(State(state): State<Arc<ServerState>>, AxPath(path): AxPath<String
     match tokio::fs::read(&target).await {
         Ok(bytes) => {
             let ct = content_type_for(&target);
-            ([(header::CONTENT_TYPE, ct)], Body::from(bytes)).into_response()
+            user_file_response(ct, Body::from(bytes))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             (StatusCode::NOT_FOUND, "plot not found").into_response()
@@ -554,7 +640,11 @@ async fn plot(State(state): State<Arc<ServerState>>, AxPath(path): AxPath<String
 }
 
 fn content_type_for(path: &std::path::Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
         Some("svg") => "image/svg+xml",
         Some("gif") => "image/gif",
         Some("png") => "image/png",
@@ -1021,5 +1111,313 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::OK);
+    }
+
+    fn header_value(res: &axum::response::Response, name: &str) -> String {
+        res.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn assert_user_file_headers(res: &axum::response::Response, content_type_prefix: &str) {
+        let ct = header_value(res, "content-type");
+        assert!(
+            ct.starts_with(content_type_prefix),
+            "content-type {ct} does not start with {content_type_prefix}"
+        );
+        assert_eq!(
+            header_value(res, "content-security-policy"),
+            auth::USER_FILE_CSP
+        );
+        assert_eq!(header_value(res, "x-content-type-options"), "nosniff");
+        assert!(header_value(res, "content-disposition").is_empty());
+    }
+
+    /// The PoC: `eval.svg` is a prose image the watch server copies into
+    /// the plot tempdir and serves as `image/svg+xml`. Before the sandbox
+    /// header, opening that URL (top-level navigation, or `<object>` /
+    /// `<embed>` / `<iframe>`) ran the SVG script on the watch origin, so
+    /// `fetch('/save/…')` sent a loopback `Origin` and bypassed the page
+    /// CSP nonce. `<img src>` does not run SVG script; the regression is
+    /// the response headers, which force an opaque origin and disable
+    /// script even when the bytes still contain `<script>`.
+    #[tokio::test]
+    async fn svg_and_other_plot_files_are_sandboxed() {
+        let state = single_state("<h1>hello</h1>");
+        let root = state.plot_dir.path();
+        let svg = root.join("nb/eval.svg");
+        std::fs::create_dir_all(svg.parent().unwrap()).unwrap();
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/save/nb",{method:"POST",headers:{"Content-Type":"text/markdown"},body:"pwned"})</script></svg>"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("nb/dot.png"), b"\x89PNG").unwrap();
+        std::fs::write(root.join("nb/anim.gif"), b"GIF89a").unwrap();
+        std::fs::write(root.join("nb/blob.bin"), b"not-an-image").unwrap();
+
+        let cases = [
+            ("/plots/nb/eval.svg", "image/svg+xml"),
+            ("/plots/nb/dot.png", "image/png"),
+            ("/plots/nb/anim.gif", "image/gif"),
+            ("/plots/nb/blob.bin", "application/octet-stream"),
+        ];
+        for (uri, ct) in cases {
+            let app = router(state.clone());
+            let res = app
+                .oneshot(
+                    host(axum::http::Request::builder().uri(uri))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            assert_user_file_headers(&res, ct);
+            if uri.ends_with(".svg") {
+                let body = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+                let s = String::from_utf8_lossy(&body);
+                assert!(s.contains("<script>"), "bytes are unchanged: {s}");
+                assert!(s.contains("/save/nb"), "{s}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_markdown_is_sandboxed_like_other_notebook_files() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/raw/nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_user_file_headers(&res, "text/markdown");
+    }
+
+    #[tokio::test]
+    async fn html_page_keeps_its_nonce_csp() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/n/nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let csp = header_value(&res, "content-security-policy");
+        assert!(csp.contains("default-src 'self'"), "{csp}");
+        assert!(csp.contains("nonce-testnonce"), "{csp}");
+        assert!(!csp.contains("sandbox"), "{csp}");
+        assert_ne!(csp, auth::USER_FILE_CSP);
+    }
+
+    #[tokio::test]
+    async fn vendored_assets_are_nosniff_and_not_sandboxed() {
+        for (uri, ct) in [
+            ("/assets/katex/katex.min.css", "text/css"),
+            ("/assets/katex/katex.min.js", "application/javascript"),
+            ("/assets/katex/fonts/KaTeX_Main-Regular.woff2", "font/woff2"),
+        ] {
+            let app = router(single_state("<h1>hello</h1>"));
+            let res = app
+                .oneshot(
+                    host(axum::http::Request::builder().uri(uri))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            let got = header_value(&res, "content-type");
+            assert!(got.starts_with(ct), "{uri} content-type {got}");
+            assert_eq!(header_value(&res, "x-content-type-options"), "nosniff");
+            assert!(
+                header_value(&res, "content-security-policy").is_empty(),
+                "{uri} must not carry the document sandbox policy"
+            );
+        }
+    }
+
+    fn editable_state(initial_md: &str) -> (Arc<ServerState>, PathBuf) {
+        let plot_dir = TempDir::new().unwrap();
+        let src = plot_dir.path().join("nb.md");
+        std::fs::write(&src, initial_md).unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src.clone(),
+            "nb".to_string(),
+            "<h1>hello</h1>".to_string(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        (state, src)
+    }
+
+    async fn post_save(state: &Arc<ServerState>, body: &str) -> axum::response::Response {
+        // The caller keeps `state` so the plot tempdir (and the notebook
+        // file inside it) outlives the request.
+        router(Arc::clone(state))
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/save/nb"),
+                )
+                .header("Origin", "http://127.0.0.1:8042")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_rejects_a_new_svg_prose_image_and_does_not_write() {
+        let original = "# notes\n\n![kept](fig.svg)\n";
+        let attacks = [
+            "![x](eval.svg)\n",
+            "![[eval.svg]]\n",
+            "<img src=\"eval.svg\" alt=\"x\">\n",
+            "![x][fig]\n\n[fig]: eval.svg\n",
+            "![kept](fig.svg)\n\n![new](other.svg)\n",
+        ];
+        for body in attacks {
+            let (state, src) = editable_state(original);
+            let res = post_save(&state, body).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+            let text = to_bytes(res.into_body(), 8 * 1024).await.unwrap();
+            let text = String::from_utf8_lossy(&text);
+            assert!(
+                text.contains(crate::prose_media::SVG_PROSE_REJECTION),
+                "{text}"
+            );
+            assert_eq!(std::fs::read_to_string(&src).unwrap(), original);
+        }
+    }
+
+    #[tokio::test]
+    async fn save_allows_edits_that_keep_an_existing_svg_figure() {
+        let original = "# notes\n\n![diagram](fig.svg)\n";
+        let (state, src) = editable_state(original);
+        let next = "# notes\n\nMore prose.\n\n![diagram](fig.svg)\n\n![photo](dot.png)\n";
+        let res = post_save(&state, next).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), next);
+    }
+
+    #[tokio::test]
+    async fn save_allows_an_svg_mention_inside_a_code_fence() {
+        let (state, src) = editable_state("# notes\n");
+        let next = "# notes\n\n```\n![x](eval.svg)\n```\n";
+        let res = post_save(&state, next).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), next);
+    }
+
+    #[tokio::test]
+    async fn save_refuses_a_non_md_target() {
+        let plot_dir = TempDir::new().unwrap();
+        let src = plot_dir.path().join("eval.svg");
+        let bytes = b"<svg></svg>";
+        std::fs::write(&src, bytes).unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            src.clone(),
+            "nb".to_string(),
+            String::new(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir,
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: None,
+        });
+        let res = post_save(&state, "# not an svg\n").await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read(&src).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_refuses_a_symlink_that_leaves_the_jail_or_is_not_markdown() {
+        let jail = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "secret\n").unwrap();
+        let link = jail.path().join("nb.md");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".to_string(),
+            link.clone(),
+            "nb".to_string(),
+            String::new(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".to_string(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".to_string()],
+            plot_dir: TempDir::new().unwrap(),
+            editable: true,
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".to_string(),
+            link_slugs: HashMap::new(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".to_string(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: Some(jail.path().to_path_buf()),
+        });
+        let res = post_save(&state, "# pwn\n").await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret\n");
+
+        let svg = jail.path().join("eval.svg");
+        std::fs::write(&svg, "<svg></svg>").unwrap();
+        let alias = jail.path().join("alias.md");
+        std::os::unix::fs::symlink(&svg, &alias).unwrap();
+        assert!(
+            notebook_md_target(&alias, Some(jail.path())).is_err(),
+            "a .md symlink to an svg must not be a write target"
+        );
+        assert_eq!(std::fs::read(&svg).unwrap(), b"<svg></svg>");
     }
 }

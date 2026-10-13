@@ -100,6 +100,19 @@ pub fn origin_rejection_body(headers: &HeaderMap, port: u16) -> String {
     )
 }
 
+/// CSP for a non-HTML response that carries notebook bytes (`/plots/…`,
+/// `/raw/{slug}`), including `image/svg+xml`.
+///
+/// `sandbox` without `allow-scripts` gives the document an opaque origin
+/// and disables script, so opening an SVG (or loading it via
+/// `<object>`, `<embed>`, or `<iframe>`) cannot run its script or
+/// `fetch` this server with the watch origin. `style-src 'unsafe-inline'`
+/// keeps presentation styles when the file is opened directly. `<img>`
+/// does not execute SVG script; this header is what covers top-level
+/// navigation. HTML pages use [`csp_header`] instead. Vendored `/assets`
+/// are not notebook files and do not get this policy.
+pub const USER_FILE_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
 /// Build the Content-Security-Policy header value for watch-served pages.
 ///
 /// `connect-src` does not list `ws://[::1]:*`. Chromium treats that token
@@ -208,6 +221,21 @@ mod tests {
         assert!(csp.contains("script-src 'self' 'nonce-abc' 'strict-dynamic'"));
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
         assert!(csp.contains("frame-ancestors 'none'"));
+    }
+
+    #[test]
+    fn user_file_csp_sandboxes_active_content_without_touching_page_policy() {
+        assert!(USER_FILE_CSP.contains("default-src 'none'"));
+        assert!(USER_FILE_CSP.contains("style-src 'unsafe-inline'"));
+        assert!(USER_FILE_CSP.contains("sandbox"));
+        assert!(
+            !USER_FILE_CSP.contains("allow-scripts"),
+            "sandbox must not re-enable script"
+        );
+        let page = csp_header("abc");
+        assert!(page.contains("nonce-abc"));
+        assert!(!page.contains("sandbox"));
+        assert_ne!(page, USER_FILE_CSP);
     }
 
     #[test]

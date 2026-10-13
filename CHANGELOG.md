@@ -48,7 +48,30 @@ should re-validate against those entries when upgrading.
   `savefig` will no longer show that plot. Draw in the cell that
   should display it, or call `savefig`.
 
+- **`notebook watch` will not save a newly added SVG prose image, and it writes only the notebook `.md`.**
+  `POST /save` and an inline cell save reject a body that introduces
+  `![…](….svg)`, `![[….svg]]`, a reference-style image, or a raw
+  `<img src="….svg">` that the file on disk does not already reference.
+  Nothing is written. A notebook that already references that SVG can
+  still be saved, and an SVG mentioned only inside a code fence or
+  inline code is not a prose image. Both write paths write only that
+  notebook's `.md`, and only when the resolved path (symlink followed)
+  is a `.md` file inside the jail. Migration: to add an SVG diagram,
+  put the `.svg` in the notebook directory and add the image line in
+  the `.md` on disk. The next in-browser save that keeps that reference
+  is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
+
 ### Fixed
+- **An SVG prose image served by `notebook watch` cannot script the watch origin.**
+  `GET /plots/…` (including `image/svg+xml`) and `GET /raw/{slug}` send
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+  and `X-Content-Type-Options: nosniff`. `sandbox` does not allow
+  scripts, so the response has an opaque origin. Opening the SVG URL,
+  or loading it with `<object>`, `<embed>`, or `<iframe>`, cannot
+  `fetch` `POST /save` as the watch page. The HTML page keeps its nonce
+  policy. Vendored `/assets` get `nosniff` only. Prose SVGs are still
+  drawn with `<img>`, which does not run SVG script;
+  `Content-Disposition: attachment` is not set.
 - **Viewer `surf` stays opaque while you rotate it.** The surface is one
   sheet. The viewer used to drop every triangle whose screen winding was
   not positive, and egui has no depth buffer, so the far side of a curve

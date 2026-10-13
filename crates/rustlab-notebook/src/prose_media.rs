@@ -7,7 +7,15 @@
 //! placeholder and a stderr warning. Remote URLs are not fetched. Wide PDF
 //! tables are a `tabularx` in `render_latex`, not this module.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+
+use pulldown_cmark::{Event, Parser, Tag};
+
+/// Shown when `POST /save` or a cell save would add an SVG prose image
+/// that the file does not already reference.
+pub const SVG_PROSE_REJECTION: &str =
+    "refusing to add an SVG prose image; edit the notebook file on disk to add one";
 
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "webp"];
 const PDF_EXTS: &[&str] = &["png", "jpg", "jpeg", "svg"];
@@ -417,6 +425,148 @@ fn parse_safe_img(tag: &str) -> Option<(String, String)> {
     Some((src?, alt.unwrap_or_default()))
 }
 
+/// Paths of SVG prose images [`crate::render`] would copy.
+///
+/// Uses the same wikilink rewrite and markdown options as the renderer,
+/// so a fenced or inline code sample that mentions `![x](fig.svg)` is not
+/// a prose image. Counts markdown images (including reference-style and
+/// `![[fig.svg]]` embeds) and any raw `<img>` whose quoted `src` ends in
+/// `.svg`. The key drops a `?query` or `#fragment` and percent-decodes, so
+/// `fig.svg` and `fig%2esvg?v=1` are one reference.
+pub fn svg_prose_image_dests(md: &str) -> BTreeSet<String> {
+    let md = crate::render::transform_wikilinks(md);
+    let mut out = BTreeSet::new();
+    let parser = Parser::new_ext(&md, crate::render::notebook_md_options());
+    for event in parser {
+        match event {
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                if let Some(key) = svg_image_key(&dest_url) {
+                    out.insert(key);
+                }
+            }
+            Event::Html(html) | Event::InlineHtml(html) => collect_img_svg_srcs(&html, &mut out),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// True when `after` references an SVG prose image that `before` does not.
+pub fn introduces_svg_prose_image(before: &str, after: &str) -> bool {
+    !svg_prose_image_dests(after).is_subset(&svg_prose_image_dests(before))
+}
+
+fn collect_img_svg_srcs(html: &str, out: &mut BTreeSet<String>) {
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if is_img_open(html, i) {
+            if let Some(end) = end_of_tag(html, i) {
+                if let Some(src) = img_quoted_src(&html[i..end]) {
+                    if let Some(key) = svg_image_key(&src) {
+                        out.insert(key);
+                    }
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+}
+
+/// Quoted `src` on an `<img>` tag. Extra attributes do not hide the src:
+/// the renderer refuses to copy an unsafe tag, and a save still refuses
+/// to persist a new SVG reference so a sanitiser gap cannot start serving it.
+fn img_quoted_src(tag: &str) -> Option<String> {
+    let s = tag.trim();
+    let s = s.strip_prefix('<')?.trim_end();
+    let s = s.strip_suffix('>')?.trim();
+    let s = s.strip_suffix('/').unwrap_or(s).trim();
+    let bytes = s.as_bytes();
+    if bytes.len() < 3 || !s[..3].eq_ignore_ascii_case("img") {
+        return None;
+    }
+    if bytes.len() > 3 && !bytes[3].is_ascii_whitespace() {
+        return None;
+    }
+    let mut i = 3;
+    let mut src = None;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let start = i;
+        while i < bytes.len()
+            && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b':')
+        {
+            i += 1;
+        }
+        if start == i {
+            return src;
+        }
+        let name = s[start..i].to_ascii_lowercase();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'=' {
+            return src;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return src;
+        }
+        let quote = bytes[i];
+        if quote != b'"' && quote != b'\'' {
+            return src;
+        }
+        i += 1;
+        let vstart = i;
+        while i < bytes.len() && bytes[i] != quote {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return src;
+        }
+        let value = html_unescape(&s[vstart..i]);
+        i += 1;
+        if name == "src" && src.is_none() {
+            src = Some(value);
+        }
+    }
+    src
+}
+
+fn svg_image_key(dest: &str) -> Option<String> {
+    let dest = dest.trim();
+    if dest.is_empty() || crate::render::has_url_scheme(dest) || dest.starts_with("//") {
+        return None;
+    }
+    let dest = dest
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+        .unwrap_or(dest)
+        .trim();
+    let path = dest.split(['?', '#']).next().unwrap_or(dest).trim();
+    if path.is_empty() {
+        return None;
+    }
+    let decoded = crate::render::percent_decode(path);
+    let name = decoded.rsplit(['/', '\\']).next().unwrap_or(&decoded);
+    let ext = name.rsplit_once('.')?.1;
+    if ext.eq_ignore_ascii_case("svg") {
+        Some(decoded)
+    } else {
+        None
+    }
+}
+
 fn html_unescape(s: &str) -> String {
     s.replace("&quot;", "\"")
         .replace("&#39;", "'")
@@ -499,5 +649,63 @@ mod tests {
         );
         assert!(tex.contains("A \\& B"), "{tex}");
         assert!(plots.path().join("prose-1.png").is_file());
+    }
+
+    #[test]
+    fn svg_prose_refs_cover_the_forms_the_renderer_copies() {
+        let inline = svg_prose_image_dests("![x](eval.svg)\n");
+        assert!(inline.contains("eval.svg"), "{inline:?}");
+        let embed = svg_prose_image_dests("![[figs/Eval.SVG|diagram]]\n");
+        assert!(embed.contains("figs/Eval.SVG"), "{embed:?}");
+        let raw = svg_prose_image_dests("<img src=\"eval.svg\" onerror=\"alert(1)\">\n");
+        assert!(raw.contains("eval.svg"), "{raw:?}");
+        let reference = svg_prose_image_dests("![x][fig]\n\n[fig]: ./eval.svg \"t\"\n");
+        assert!(reference.contains("./eval.svg"), "{reference:?}");
+        let encoded = svg_prose_image_dests("![x](eval%2esvg?cache=1)\n");
+        assert!(encoded.contains("eval.svg"), "{encoded:?}");
+        let png = svg_prose_image_dests("![x](dot.png)\n");
+        assert!(png.is_empty(), "{png:?}");
+        let fenced = svg_prose_image_dests("```\n![x](eval.svg)\n```\n");
+        assert!(fenced.is_empty(), "{fenced:?}");
+        let code = svg_prose_image_dests("see `![x](eval.svg)` please\n");
+        assert!(code.is_empty(), "{code:?}");
+    }
+
+    #[test]
+    fn introduces_svg_prose_image_ignores_refs_already_on_disk() {
+        let before = "![kept](fig.svg)\n";
+        assert!(!introduces_svg_prose_image(
+            before,
+            "![kept](fig.svg)\n\nmore text\n"
+        ));
+        assert!(introduces_svg_prose_image(
+            before,
+            "![kept](fig.svg)\n![x](eval.svg)\n"
+        ));
+        assert!(introduces_svg_prose_image("", "![[eval.svg]]\n"));
+    }
+
+    #[test]
+    fn svg_prose_image_is_an_img_not_an_inline_document() {
+        let nb = tempfile::tempdir().unwrap();
+        let svg =
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>fetch('/save/nb')</script></svg>";
+        std::fs::write(nb.path().join("eval.svg"), svg).unwrap();
+        let plots = tempfile::tempdir().unwrap();
+        let mut assets = ProseAssets::with_base(plots.path(), "/plots/nb", nb.path().to_path_buf());
+        let html =
+            crate::render::markdown_to_html_linked("![x](eval.svg)\n", None, Some(&mut assets));
+        assert!(html.contains("<img "), "{html}");
+        assert!(html.contains("src=\"/plots/nb/prose-1.svg\""), "{html}");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.to_ascii_lowercase().contains("<object"));
+        assert!(!html.to_ascii_lowercase().contains("<embed"));
+        assert!(!html.to_ascii_lowercase().contains("<iframe"));
+        assert!(!html.contains("<svg"), "{html}");
+        let copied = std::fs::read_to_string(plots.path().join("prose-1.svg")).unwrap();
+        assert!(
+            copied.contains("<script>"),
+            "the file is copied, not inlined"
+        );
     }
 }
