@@ -3595,11 +3595,16 @@ workspace — is not copied into the lambda. A nested lambda
 `v(end)` inside a lambda is the last element at the call. `end` is not
 one of the stored names. `feval("sq", x)` stores `sq` when that
 variable exists. `feval` of a name computed at the call
-(`feval(name, x)`) stores the whole workspace, because that name is
-not written in the lambda. A function handle keeps the same behaviour
-it had before: `h = @sin; h(x)` looks `sin` up again in the stored
-workspace, so a variable named `sin` created before the lambda is what
-`h(x)` calls or indexes.
+(`feval(name, x)`), and a handle whose target is `feval`, stores the
+whole workspace, because that name is not written in the lambda.
+There is no copy-on-write: a name the body mentions is copied in full,
+once per lambda, including a large matrix.
+
+`@sin` is the builtin `sin`, even when a variable named `sin` exists.
+`sin = [1, 2, 3]; h = @sin; h(0)` is `0`, not an index into that
+vector. A handle to a user function ignores a variable of the same
+name too. `@f` while `f` holds a lambda copies that lambda, so later
+changes to `f` do not change the handle.
 
 `disp` of a lambda prints `@(x, y) <expr>`. Lambdas are not written
 into the persistent function cache.

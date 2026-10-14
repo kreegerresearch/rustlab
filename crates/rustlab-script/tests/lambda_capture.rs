@@ -360,19 +360,51 @@ fn handle_to_a_lambda_and_to_a_builtin() {
 }
 
 #[test]
-fn handle_redispatch_still_sees_a_later_binding_of_the_target_name() {
-    // `h = @sin` while `sin` is the builtin stores a handle. A later
-    // variable named `sin` is visible to `h(x)`, because the handle
-    // re-enters call dispatch in the snapshot. The unreferenced matrix
-    // is not part of that.
-    let ev = run("h = @sin; sin = @(x) x + 100; big = zeros(8, 8); f = @(x) h(x); y = f(1);");
-    assert!((scalar(&ev, "y") - 101.0).abs() < 1e-12);
-    expect_users(lambda(&ev, "f"), &["h", "sin"]);
+fn handle_calls_the_function_not_a_shadowing_variable() {
+    // `@sin` is the builtin even when a variable named sin exists.
+    // Indexing that vector would reject 0; sin(0) is 0.
+    let ev = run("sin = [1, 2, 3]; h = @sin; y = h(0);");
+    assert!(matches!(ev.get("h").unwrap(), Value::FuncHandle(_)));
+    assert!(scalar(&ev, "y").abs() < 1e-12);
+
+    let ev = run(
+        "function y = sq(x)\n  y = x * x;\nend\nsq = [10, 20, 30]; h = @sq; y = h(4); z = sq(1);",
+    );
+    assert!((scalar(&ev, "y") - 16.0).abs() < 1e-12, "handle must call the user function");
+    assert!((scalar(&ev, "z") - 10.0).abs() < 1e-12, "a direct call still indexes the variable");
+
+    // `@f` while f holds a lambda copies that lambda. Later writes to f
+    // do not change the handle.
+    let ev = run("f = @(x) x + 1; g = @f; f = @(x) x + 100; y = g(3);");
+    assert!(matches!(ev.get("g").unwrap(), Value::Lambda { .. }));
+    assert!((scalar(&ev, "y") - 4.0).abs() < 1e-12);
+
+    // A lambda that calls the handle does not copy the shadowing value.
+    let ev = run("h = @sin; sin = [10, 20, 30]; big = zeros(8, 8); f = @(x) h(x); y = f(0);");
+    assert!(scalar(&ev, "y").abs() < 1e-12);
+    expect_users(lambda(&ev, "f"), &["h"]);
     assert_eq!(matrix_copies(lambda(&ev, "f")), 0);
 
-    let ev = run("h = @sin; sin = [10, 20, 30]; big = zeros(8, 8); f = @(i) h(i); y = f(2);");
-    assert!((scalar(&ev, "y") - 20.0).abs() < 1e-12);
-    expect_users(lambda(&ev, "f"), &["h", "sin"]);
+    let ev = run("h = @sin; sin = @(x) x + 100; big = zeros(8, 8); f = @(x) h(x); y = f(0);");
+    assert!(scalar(&ev, "y").abs() < 1e-12);
+    expect_users(lambda(&ev, "f"), &["h"]);
+    assert_eq!(matrix_copies(lambda(&ev, "f")), 0);
+
+    let ev = run("sin = [1, 2, 3]; h = @sin; r = arrayfun(h, [0]);");
+    match ev.get("r").unwrap() {
+        Value::Vector(v) => assert!(v[0].re.abs() < 1e-12),
+        other => panic!("arrayfun: {}", other.type_name()),
+    }
+
+    // `@feval` is dynamic: the lambda that calls it keeps the workspace.
+    let ev = run(
+        "h = @feval; big = zeros(4, 4); sq = @(x) x^2; f = @(name, v) h(name, v); y = f(\"sq\", 5);",
+    );
+    assert!((scalar(&ev, "y") - 25.0).abs() < 1e-12);
+    let f = lambda(&ev, "f");
+    assert!(user_keys(f).contains("big"));
+    assert!(user_keys(f).contains("sq"));
+    assert_eq!(matrix_copies(f), 1);
 }
 
 #[test]

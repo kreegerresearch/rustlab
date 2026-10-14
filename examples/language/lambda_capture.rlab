@@ -59,3 +59,26 @@ if h(3) != 4
     error("loop lambda");
 end
 print(elapsed);
+
+# @name is the function, not a variable of the same name.
+sin = [1, 2, 3];
+h = @sin;
+if h(0) != 0
+    error("handle indexed the variable named sin");
+end
+
+function y = sq(x)
+    y = x * x;
+end
+sq = [10, 20, 30];
+h = @sq;
+if h(4) != 16
+    error("handle did not call the shadowed user function");
+end
+
+f = @(x) x + 1;
+g = @f;
+f = @(x) x + 100;
+if g(3) != 4
+    error("handle to a lambda did not keep the lambda from creation");
+end
