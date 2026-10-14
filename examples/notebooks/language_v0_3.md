@@ -24,8 +24,7 @@ convention. The caller destructures with `[p, q] = ...`; a bare
 
 ```rustlab
 function [m, idx] = max_with_pos(v)
-  m = max(v)
-  idx = argmax(v)
+  [m, idx] = max(v)
 end
 
 [best, where] = max_with_pos([3, 1, 4, 1, 5, 9, 2, 6]);

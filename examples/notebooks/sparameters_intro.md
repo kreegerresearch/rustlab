@@ -301,11 +301,10 @@ count (the writer always emits the actual count), but using the matching
 suffix is the convention.
 
 ```rustlab
-% Save and re-read from a scratch path. (The repo ships a bundled
-% example at examples/rf/data/lna_demo.s2p that you can load
-% with `sparameters("path/to/file.s2p")` directly when running outside
-% the notebook renderer.)
-tmp = "/tmp/lna_copy.s2p";
+% Save and re-read a scratch file in this notebook's directory. The
+% renderer jails file I/O there, so an absolute /tmp path is rejected.
+% (The repo also ships examples/rf/data/lna_demo.s2p.)
+tmp = "lna_copy.s2p";
 save(tmp, s)
 s_copy = sparameters(tmp);
 fprintf("Round-trip |S21| diff at 1 GHz: %.2e\n", ...

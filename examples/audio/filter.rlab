@@ -2,7 +2,7 @@
 # Sample rate: 44100 Hz   Frame: 256 samples   Cutoff: ~1 kHz
 #
 # Run via one of the platform launchers in this directory, or pipe manually:
-#   <source> | rustlab run examples/audio/filter.r | <sink>
+#   <source> | rustlab run examples/audio/filter.rlab | <sink>
 
 sr     = 44100.0;
 cutoff = 1000.0 / (sr / 2.0);   # normalise to [0, 1]

@@ -39,9 +39,9 @@ subsequent code blocks.
 `Fs`, `N`, and `x` are now in scope. Verify:
 
 ```rustlab
-disp(sprintf("Fs = %d Hz", Fs))
-disp(sprintf("N  = %d",    N))
-disp(sprintf("x is %d samples", length(x)))
+fprintf("Fs = %d Hz\n", Fs)
+fprintf("N  = %d\n", N)
+fprintf("x is %d samples\n", length(x))
 ```
 
 <!-- rustlab:output-start -->
@@ -61,7 +61,7 @@ Plot the magnitude spectrum of `x` defined in the embedded setup:
 clf
 X = fft(x);
 freq = (0:N/2-1)*Fs/N;
-plot(freq, 20*log10(abs(X(1:N/2))))
+plot(freq, 20*log10(abs(X(1:end/2))))
 xlabel("Frequency (Hz)")
 ylabel("Magnitude (dB)")
 title("Spectrum of test signal from _setup.md")

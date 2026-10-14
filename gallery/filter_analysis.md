@@ -21,7 +21,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/filter_analysis/plot-1-5cbce121.svg)
+![plot 1](plots/filter_analysis/plot-1-61e60f29.svg)
 
 <!-- rustlab:output-end -->
 
@@ -41,7 +41,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/filter_analysis/plot-2-529d5342.svg)
+![plot 2](plots/filter_analysis/plot-2-d77de675.svg)
 
 <!-- rustlab:output-end -->
 

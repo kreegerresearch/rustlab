@@ -1,6 +1,6 @@
 # Multi-figure handles demo
-# Run: cargo run --bin rustlab -- run examples/multi_figure.r
-# With viewer: cargo run --bin rustlab --features viewer -- run examples/multi_figure.r
+# Run: rustlab run --plot none examples/plot/multi_figure.rlab
+# With viewer: rustlab run --plot viewer examples/plot/multi_figure.rlab
 #
 # Demonstrates figure handles:
 #   fig = figure()    — create new figure, get numeric handle

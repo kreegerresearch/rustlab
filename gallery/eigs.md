@@ -126,7 +126,7 @@ print(Dlm(1))     % largest eigenvalue
 
 <!-- rustlab:output-start -->
 ```text
-3128.5075505695595
+3128.5075505695604
 ```
 
 <!-- rustlab:output-end -->
@@ -155,7 +155,7 @@ print(Dg(1))               % smallest λ ≈ smallest eigs(L) / 2
 
 <!-- rustlab:output-start -->
 ```text
-35.74622472905614
+35.74622472905966
 ```
 
 <!-- rustlab:output-end -->

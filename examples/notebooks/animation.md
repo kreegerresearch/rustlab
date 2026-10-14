@@ -48,6 +48,8 @@ saveanim("wave.html", 30)
 
 ### Same loop, animated GIF
 
+The GIF cell reuses `X`, `Y`, and `n_frames` from the HTML cell above.
+
 ```rustlab
 figure();
 for k = 1:n_frames

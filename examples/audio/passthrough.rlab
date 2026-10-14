@@ -2,7 +2,7 @@
 #
 # Usage (macOS):
 #   sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
-#     | rustlab run examples/audio/passthrough.r \
+#     | rustlab run examples/audio/passthrough.rlab \
 #     | sox -t raw -r 44100 -e float -b 32 -c 1 - -d
 
 adc = audio_in(44100.0, 256);

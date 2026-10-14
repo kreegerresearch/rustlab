@@ -332,10 +332,11 @@ network inline (the repo ships
 load with `sparameters(path)` outside the notebook):
 
 ```rustlab
-% Synthesize a small 2-port S + noise block in memory by writing a
-% Touchstone file to a scratch path and reading it back. (The same
-% data is bundled in examples/rf/data/lna_with_noise.s2p.)
-tmp = "/tmp/_notebook_noise.s2p";
+% Synthesize a small 2-port by writing a Touchstone file next to this
+% notebook and reading it back. The renderer jails file I/O to that
+% directory. (The same data is bundled in
+% examples/rf/data/lna_with_noise.s2p.)
+tmp = "_notebook_noise.s2p";
 % S-only network for clarity:
 S = zeros3(4, 2, 2);
 for k = 1:4

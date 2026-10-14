@@ -66,12 +66,9 @@ L = laplacian_2d(nx, ny, dx, dy);
 Lx = (nx + 1) * dx;
 Ly = (ny + 1) * dy;
 
-V_exact = zeros(ny, nx);
-for jj = 1:nx
-  for ii = 1:ny
-    V_exact(ii, jj) = sin(pi*ii*dx/Lx) * sin(pi*jj*dy/Ly);
-  end
-end
+% Separable eigenfunction: V(i, j) = sin(π i dx / Lx) sin(π j dy / Ly)
+[J, I] = meshgrid(1:nx, 1:ny);
+V_exact = sin(pi * I * dx / Lx) .* sin(pi * J * dy / Ly);
 v_exact = V_exact(:)';
 
 % Apply L to v_exact, then solve — should recover v_exact to 1e-10.

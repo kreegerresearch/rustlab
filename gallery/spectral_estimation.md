@@ -39,7 +39,7 @@ $$\hat{P}_{xx}[k] = \frac{1}{N} \left| \sum_{n=0}^{N-1} x[n]\,e^{-j2\pi kn/N} \r
 
 ```rustlab
 X = fft(x);
-Pxx = abs(X(1:N/2)).^2 / N;
+Pxx = abs(X(1:end/2)).^2 / N;
 f = linspace(0, 0.5, N/2);
 plot(f, 10*log10(Pxx))
 title("Periodogram")
@@ -67,7 +67,7 @@ $$\hat{P}_{ww}[k] = \frac{1}{\sum w[n]^2} \left| \sum_{n=0}^{N-1} x[n]\,w[n]\,e^
 w = window("hann", N);
 xw = x .* w;
 Xw = fft(xw);
-Pww = abs(Xw(1:N/2)).^2 / sum(w.^2);
+Pww = abs(Xw(1:end/2)).^2 / sum(w.^2);
 plot(f, 10*log10(Pww))
 title("Hann-Windowed Periodogram")
 xlabel("Frequency (cycles/sample)")

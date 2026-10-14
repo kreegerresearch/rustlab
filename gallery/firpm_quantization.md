@@ -112,7 +112,7 @@ ylim([-80, -20])
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/firpm_quantization/plot-2-fbbd0a5f.svg)
+![plot 2](plots/firpm_quantization/plot-2-b13b7177.svg)
 
 <!-- rustlab:output-end -->
 
@@ -125,14 +125,17 @@ pass_end   = round(0.20 * n_fft);
 stop_start = round(0.30 * n_fft) + 1;
 
 % Peak-to-peak passband ripple (dB)
-ripple_float = max(20*log10(abs(Hz_float(2, 1:pass_end)))) - min(20*log10(abs(Hz_float(2, 1:pass_end))));
-ripple_naive = max(20*log10(abs(Hz_naive(2, 1:pass_end)))) - min(20*log10(abs(Hz_naive(2, 1:pass_end))));
-ripple_q     = max(20*log10(abs(Hz_q(2,     1:pass_end)))) - min(20*log10(abs(Hz_q(2,     1:pass_end))));
+Pb_f = 20*log10(abs(Hz_float(2, 1:pass_end)));
+Pb_n = 20*log10(abs(Hz_naive(2, 1:pass_end)));
+Pb_q = 20*log10(abs(Hz_q(2,     1:pass_end)));
+ripple_float = max(Pb_f) - min(Pb_f);
+ripple_naive = max(Pb_n) - min(Pb_n);
+ripple_q     = max(Pb_q) - min(Pb_q);
 
-% Peak stopband level (dB)
-stop_float = max(20*log10(abs(Hz_float(2, stop_start:n_fft))));
-stop_naive = max(20*log10(abs(Hz_naive(2, stop_start:n_fft))));
-stop_q     = max(20*log10(abs(Hz_q(2,     stop_start:n_fft))));
+% Peak stopband level (dB). `end` is the last frequency bin.
+stop_float = max(20*log10(abs(Hz_float(2, stop_start:end))));
+stop_naive = max(20*log10(abs(Hz_naive(2, stop_start:end))));
+stop_q     = max(20*log10(abs(Hz_q(2,     stop_start:end))));
 
 % Improvements (positive = firpmq better than naive)
 ripple_improvement = ripple_naive - ripple_q;

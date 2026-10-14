@@ -38,7 +38,7 @@ title("First-order: G(s) = 1/(s+1)")
 ([1×1991]  0.999900  0.999899  0.999898  0.999897  0.999896  0.999895  0.999894  0.999893  ... (1991 total), [1×1991]  -0.009999  -0.010045  -0.010092  -0.010139  -0.010186  -0.010233  -0.010281  -0.010328  ... (1991 total), [1×1991]  0.010000  0.010046  0.010093  0.010140  0.010187  0.010234  0.010282  0.010329  ... (1991 total))
 ```
 
-![plot 1](plots/nyquist_stability/plot-1-f559a5dc.svg)
+![plot 1](plots/nyquist_stability/plot-1-c48bf0f1.svg)
 
 <!-- rustlab:output-end -->
 
@@ -71,7 +71,7 @@ title("Lightly damped: G(s) = 1/(s² + 0.3s + 1)")
 ([1×1082]  1.000091  1.000100  1.000110  1.000120  1.000132  1.000145  1.000159  1.000174  ... (1082 total), [1×1082]  -0.003001  -0.003143  -0.003292  -0.003448  -0.003611  -0.003782  -0.003962  -0.004149  ... (1082 total), [1×1082]  0.010000  0.010474  0.010970  0.011490  0.012034  0.012604  0.013201  0.013826  ... (1082 total))
 ```
 
-![plot 2](plots/nyquist_stability/plot-2-fb51ed54.svg)
+![plot 2](plots/nyquist_stability/plot-2-02126f1d.svg)
 
 <!-- rustlab:output-end -->
 
@@ -95,7 +95,7 @@ min |1+G| = 0.3768 at omega = 1.4548 rad/s
 Sensitivity peak Ms = 2.654
 ```
 
-![plot 3](plots/nyquist_stability/plot-3-dcc245fc.svg)
+![plot 3](plots/nyquist_stability/plot-3-5ef8584d.svg)
 
 <!-- rustlab:output-end -->
 
@@ -133,7 +133,7 @@ title("LQR loop: locus stays outside the unit disk around -1")
 ([1×1856]  0.414292  0.414292  0.414293  0.414294  0.414295  0.414295  0.414296  0.414297  ... (1856 total), [1×1856]  0.007346  0.007380  0.007414  0.007449  0.007483  0.007518  0.007553  0.007588  ... (1856 total), [1×1856]  0.010000  0.010046  0.010093  0.010140  0.010187  0.010234  0.010282  0.010329  ... (1856 total))
 ```
 
-![plot 4](plots/nyquist_stability/plot-4-64900f65.svg)
+![plot 4](plots/nyquist_stability/plot-4-390eeda4.svg)
 
 <!-- rustlab:output-end -->
 
@@ -150,7 +150,7 @@ fprintf("min |1+L(jw)| over the grid = %.4f\n", min(d));
 min |1+L(jw)| over the grid = 1.0001
 ```
 
-![plot 5](plots/nyquist_stability/plot-5-56a7a0ab.svg)
+![plot 5](plots/nyquist_stability/plot-5-0b1d0c78.svg)
 
 <!-- rustlab:output-end -->
 
@@ -217,7 +217,7 @@ max |re_s - re_t| = 0.00e+00
 max |im_s - im_t| = 0.00e+00
 ```
 
-![plot 7](plots/nyquist_stability/plot-7-8bae1de0.svg)
+![plot 7](plots/nyquist_stability/plot-7-360401fc.svg)
 
 <!-- rustlab:output-end -->
 

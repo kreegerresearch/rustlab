@@ -30,11 +30,7 @@ dx = 0.01; dy = 0.01;
 eps0 = 8.854e-12;       % vacuum permittivity (SI)
 
 eps_map = ones(ny, nx);
-for jj = (nx/2):nx
-  for ii = 1:ny
-    eps_map(ii, jj) = 4.0;
-  end
-end
+eps_map(:, (nx/2):nx) = 4.0;   % right half, scalar broadcast
 
 imagesc(real(eps_map));
 title("Relative permittivity ε_r")

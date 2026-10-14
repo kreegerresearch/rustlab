@@ -49,7 +49,7 @@ bar(months, sales, "Monthly Sales")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/string_arrays/plot-1-282f33a9.svg)
+![plot 1](plots/string_arrays/plot-1-07ea924f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -68,7 +68,7 @@ bar(regions, q2, "Q2 Revenue");
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/string_arrays/plot-2-25e8157b.svg)
+![plot 2](plots/string_arrays/plot-2-2bd039f3.svg)
 
 <!-- rustlab:output-end -->
 

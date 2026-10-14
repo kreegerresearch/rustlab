@@ -30,15 +30,10 @@ off-diagonal noise:
 clf
 classes = {"cat", "dog", "fox", "owl", "bee", "ant"};
 n = length(classes);
-C = zeros(n, n);
+[J, I] = meshgrid(1:n, 1:n);
+C = 8 * exp(-((I - J).^2) / 4);
 for i = 1:n
-  for j = 1:n
-    if i == j
-      C(i, j) = 80 + 5*sin(i);
-    else
-      C(i, j) = 8 * exp(-((i-j)^2) / 4);
-    end
-  end
+  C(i, i) = 80 + 5*sin(i);   % strong diagonal
 end
 print(size(C))
 ```

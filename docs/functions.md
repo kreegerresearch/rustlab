@@ -3351,6 +3351,8 @@ Assign to a specific position. Vectors are auto-created and grown as needed.
 ```
 v(3) = 99         # create or update element 3
 M(2, 1) = 0.5    # update matrix element (row 2, col 1)
+M(end, end) = 9  # corner; `end` is per axis on a two-index write
+M(end, :) = row  # last row
 ```
 Inside a loop:
 ```

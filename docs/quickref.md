@@ -19,7 +19,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `pi`, `e` | Built-in constants |
 | `Inf`, `NaN` | IEEE infinity and Not-a-Number |
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
-| `v(1)`, `v(end)`, `v(2:4)` | 1-based indexing; `end` = last element; slice returns Vector |
+| `v(1)`, `v(end)`, `v(2:4)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector |
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
 | `v(i) = val`, `M(r,c) = val` | Indexed assignment; vectors auto-grow as needed |

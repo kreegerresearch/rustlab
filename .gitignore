@@ -42,6 +42,9 @@ dev/issues/
 # stay because they don't match `toml_results.toml`.)
 examples/**/*.csv
 examples/**/*.html
+# Notebook cells that round-trip Touchstone write a scratch .s2p beside
+# the source. The path jail refuses /tmp; these files are not fixtures.
+examples/notebooks/*.s2p
 **/toml_results.toml
 *.html
 
