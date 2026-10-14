@@ -5574,6 +5574,43 @@ w = 4
         assert!(!restored.contains('$'), "no bare $ may survive into HTML");
     }
 
+    /// Inline math is single-line (KaTeX, GitHub, and this scanner). A
+    /// formula wrapped onto the next line is left as literal `$…$` in
+    /// HTML. `examples/notebooks/eigs.md` had `$(m, n) =` / `(n_x, n_y)$`
+    /// split that way. PDF's pulldown-cmark parser still keeps one
+    /// newline inside `$…$`; notebooks stay on one line so HTML and
+    /// GitHub match the PDF.
+    #[test]
+    fn inline_math_does_not_cross_a_newline() {
+        let broken = "lives at $(m, n) =\n(n_x, n_y)$ — the wave";
+        let (rewritten, stash) = protect_math(broken);
+        assert!(
+            stash.is_empty(),
+            "a newline is not an inline-math span: {stash:?}"
+        );
+        assert!(rewritten.contains("$(m, n) ="), "{rewritten}");
+
+        let fixed = "lives at $(m, n) = (n_x, n_y)$ — the wave";
+        let (rewritten, stash) = protect_math(fixed);
+        let restored = restore_math(&rewritten, &stash);
+        assert_eq!(restored, r"lives at \((m, n) = (n_x, n_y)\) — the wave");
+        assert!(!restored.contains('$'));
+    }
+
+    #[test]
+    fn eigs_notebook_largest_mode_formula_is_one_line() {
+        let src = include_str!("../../../examples/notebooks/eigs.md");
+        assert!(
+            src.contains("$(m, n) = (n_x, n_y)$"),
+            "keep this formula on one line; inline math cannot cross a newline"
+        );
+        let (_, stash) = protect_math(src);
+        assert!(
+            stash.iter().any(|s| s == "$(m, n) = (n_x, n_y)$"),
+            "formula was not recognized as math: {stash:?}"
+        );
+    }
+
     #[test]
     fn restore_math_leaves_currency_prose_untouched() {
         // protect_math doesn't treat unpaired/price `$` as math, so it never

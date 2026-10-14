@@ -131,9 +131,9 @@ print(Dlm(1))     % largest eigenvalue
 
 <!-- rustlab:output-end -->
 
-For grid Laplacians, the largest eigenvalue lives at $(m, n) =
-(n_x, n_y)$ — the highest-frequency standing wave that fits on the
-grid before aliasing.
+For grid Laplacians, the largest eigenvalue lives at $(m, n) = (n_x, n_y)$
+— the highest-frequency standing wave that fits on the grid before
+aliasing.
 
 ## Generalized eigenproblem — `eigs(A, B, n)`
 
