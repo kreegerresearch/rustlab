@@ -2044,7 +2044,7 @@ impl Evaluator {
             Expr::Lambda { params, body } => Ok(Value::Lambda {
                 params: params.clone(),
                 body: body.clone(),
-                captured_env: self.env.clone(),
+                captured_env: self.capture_lambda_env(params, body),
             }),
             Expr::FuncHandle(name) => {
                 // If the name is a lambda stored in env, capture it directly so it
@@ -2425,6 +2425,78 @@ impl Evaluator {
                 other.type_name()
             ))),
         }
+    }
+
+    /// Snapshot the bindings a lambda body can see.
+    ///
+    /// MATLAB-style: by value, at creation. Later writes to the outer
+    /// workspace do not change the lambda. Only free names are copied,
+    /// so a large unreferenced matrix is not cloned into every closure
+    /// (and a closure stored in the workspace is not cloned into the
+    /// next one). Built-in constants are always included. They are a
+    /// handful of scalars, and a user function called from the lambda
+    /// seeds `pi` / `i` / `j` from the caller's environment — that
+    /// caller is this snapshot.
+    ///
+    /// A dynamic `feval`, or a call through a function handle whose
+    /// target is `feval`, still clones the whole environment. The name
+    /// those look up is not in the syntax. A handle to any other name
+    /// also keeps that name's binding when one exists, because invoking
+    /// the handle re-dispatches a normal call in this snapshot.
+    fn capture_lambda_env(&self, params: &[String], body: &Expr) -> HashMap<String, Value> {
+        let analysis = crate::free_vars::analyze_lambda(params, body);
+        if analysis.dynamic_feval {
+            return self.env.clone();
+        }
+        let mut names = analysis.names;
+        if self.expand_handle_targets(&mut names) {
+            return self.env.clone();
+        }
+        // Same set `clear` preserves. User functions copy `i`, `j`,
+        // `pi`, `e`, `Inf`, and `NaN` from the caller, which is this
+        // snapshot, so a shadowed `pi` still reaches `addpi` called
+        // from the lambda. `true` / `false` ride along; they are the
+        // same kind of constant and cost nothing next to a matrix.
+        const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
+        let mut captured = HashMap::with_capacity(names.len() + CONSTS.len());
+        for name in names {
+            if let Some(v) = self.env.get(&name) {
+                captured.insert(name, v.clone());
+            }
+        }
+        for name in CONSTS {
+            if captured.contains_key(*name) {
+                continue;
+            }
+            if let Some(v) = self.env.get(*name) {
+                captured.insert((*name).to_string(), v.clone());
+            }
+        }
+        captured
+    }
+
+    /// Names reached by following `FuncHandle` values a call in the
+    /// lambda will re-dispatch (`h = @sin; h(x)` becomes `sin(x)` in
+    /// the snapshot). Returns `true` when that chain reaches `feval`,
+    /// which looks a name up dynamically.
+    fn expand_handle_targets(&self, names: &mut BTreeSet<String>) -> bool {
+        let mut pending: Vec<String> = names.iter().cloned().collect();
+        let mut i = 0;
+        while i < pending.len() {
+            let name = pending[i].clone();
+            i += 1;
+            let Some(Value::FuncHandle(target)) = self.env.get(&name) else {
+                continue;
+            };
+            if target == "feval" {
+                return true;
+            }
+            let target = target.clone();
+            if names.insert(target.clone()) {
+                pending.push(target);
+            }
+        }
+        false
     }
 
     /// Call a lambda value with its captured environment.

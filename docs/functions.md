@@ -3577,6 +3577,33 @@ x *= 2    # x is now 24
 x /= 4   # x is now 6
 ```
 
+### Anonymous functions: `@(x) expr`
+```
+gain = 0.5
+attenuate = @(x) x * gain
+attenuate(10)    # 5
+gain = 99
+attenuate(10)    # still 5 — gain was copied when the lambda was created
+```
+The lambda stores the names its body actually mentions, and the values
+those names have at the moment the lambda is created. A later
+assignment to one of those names does not change the lambda. A variable
+the body never mentions — including a large matrix sitting in the
+workspace — is not copied into the lambda. A nested lambda
+(`@(g) @(x) x + g + a`) keeps the names the inner body will need.
+
+`v(end)` inside a lambda is the last element at the call. `end` is not
+one of the stored names. `feval("sq", x)` stores `sq` when that
+variable exists. `feval` of a name computed at the call
+(`feval(name, x)`) stores the whole workspace, because that name is
+not written in the lambda. A function handle keeps the same behaviour
+it had before: `h = @sin; h(x)` looks `sin` up again in the stored
+workspace, so a variable named `sin` created before the lambda is what
+`h(x)` calls or indexes.
+
+`disp` of a lambda prints `@(x, y) <expr>`. Lambdas are not written
+into the persistent function cache.
+
 ### Suppress output: `;`
 ```
 h = fir_lowpass(64, 1000.0, 44100.0, "hann");   # no output printed

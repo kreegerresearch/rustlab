@@ -66,6 +66,22 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A lambda copies only the names its body uses.** `f = @(x) x + a`
+  used to clone the entire workspace into the closure. The next lambda
+  then cloned that closure, so lambdas created in a loop, nested, or
+  kept side by side copied a large unreferenced matrix again and again
+  (eight closures beside a 128×128 matrix held 255 copies of it). The
+  closure now keeps the free variables of the body, by value, at the
+  moment it is created. A later write to one of those names still does
+  not change the lambda. `v(end)` inside a lambda is still the last
+  element at the call. `feval` of a name that is not a string literal,
+  and a call through a handle whose target is `feval`, still copy the
+  whole workspace, because that name is not in the syntax. A handle
+  such as `@sin` also keeps a workspace variable of the same name when
+  one exists, so `h(x)` can still index or call that binding. A name
+  the body actually mentions is still copied in full — there is no
+  copy-on-write — so mentioning a large matrix still copies that
+  matrix once per lambda.
 - **A `%%` note cannot inject TeX into a PDF, and comment writes do not follow a swapped path.**
   A note that contains `$...$` is paired, so the math is part of the
   note. With comments off (the PDF default) the note is deleted. With

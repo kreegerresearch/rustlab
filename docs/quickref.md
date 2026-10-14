@@ -57,7 +57,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `function [out] = name(args)` … `end` | User-defined function (single output) |
 | `function [a, b, ...] = name(args)` … `end` | Multi-output user function (matlab convention); destructure with `[p, q, ...] = name(...)`; bare `v = name(...)` picks only the first output |
 | `return` | Early return from a function |
-| `@(x, y) expr` | Anonymous function (lambda); captures current env by snapshot |
+| `@(x, y) expr` | Anonymous function (lambda); snapshots the free variables of the body at creation |
 | `@name` | Function handle — reference to a builtin or user function |
 | `arrayfun(f, v)` | Apply callable to each element; scalar results → Vector, vector results → Matrix |
 | `parmap(f, xs)` | Parallel map across the rayon thread pool. `f` is a lambda or function handle; `xs` is a 1-D iterable. Output shape follows `f`'s return: scalar → Vector, length-`d` Vector → `(N, d)` Matrix, `m×n` Matrix → `(m, n, N)` Tensor3 (use `result(:, :, k)` to extract the k-th per-call matrix). All trials must return the same shape. Per-task RNG is deterministic given `seed(N)`. Pure-lambda contract: no plotting / file I/O / audio / seed inside the lambda body. See `dev/plans/parmap_parreduce.md` (v1) and `dev/plans/parmap_nonscalar_outputs.md` (vector/matrix outputs). |

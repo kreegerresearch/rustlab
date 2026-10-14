@@ -1067,7 +1067,7 @@ opens). Do not reintroduce `request_repaint_after` polling in
 
 **How `Call` nodes are evaluated:** At eval time, if the name exists in `env` as a `Vector`, `Matrix`, `Tuple`, `Str`, or sparse variant, it is treated as 1-based indexing — `end` is temporarily bound to the container length. String indexing returns a string: `s(3)` → single char, `s(1:5)` → substring, `s(:)` → full copy. If the name holds a `Lambda`, it is called with its captured environment. Otherwise it is a `BuiltinRegistry` call.
 
-**Lambda / anonymous functions:** `@(x, y) expr` creates a `Value::Lambda` that captures the current env by snapshot. `@name` creates a `Value::FuncHandle` that lazily resolves to a lambda clone (if `name` holds a lambda) or dispatches to a builtin/user function. `arrayfun(f, v)` maps any callable over a vector, returning a `Vector` (all scalar outputs) or a `Matrix` (all vector outputs of equal length). `feval("name", args...)` calls a function by string name.
+**Lambda / anonymous functions:** `@(x, y) expr` creates a `Value::Lambda` whose `captured_env` is the free variables of the body (see `free_vars.rs`), snapshotted by value at creation, plus the built-in constants present in that environment. Nested lambdas add their free names, minus their parameters. `end` is not a free variable; indexing binds it at the call. A dynamic `feval` (non-literal target), including inside a nested lambda, still clones the whole environment. A `FuncHandle` in the capture set also keeps its target binding when one exists, so `h = @sin; h(x)` re-dispatches in the snapshot. `@name` creates a `Value::FuncHandle` that lazily resolves to a lambda clone (if `name` holds a lambda) or dispatches to a builtin/user function. `arrayfun(f, v)` maps any callable over a vector, returning a `Vector` (all scalar outputs) or a `Matrix` (all vector outputs of equal length). `feval("name", args...)` calls a function by string name.
 
 **Profiling:** `profile(fn1, fn2)` inside a script enables selective tracking of named functions. `profile()` with no args tracks all calls. `profile_report()` prints a mid-script report to stderr. `--profile` CLI flag (on `rustlab run`) tracks all calls without modifying the script. `Profiler` uses a `higher_order_depth` counter so inner callbacks inside `arrayfun` or user functions are not recorded individually — only the outer call's total time is captured. Zero overhead when disabled.
 
@@ -1244,7 +1244,7 @@ primary     = NUMBER | STRING | IDENT
 | Clear figure | `clf` | Bare command (no parens); resets figure state (equivalent to `figure()`) |
 | Hold/Grid/Viewer | `hold on`, `grid off`, `viewer on` | Bare keyword commands; also accept function-call form `hold("on")` |
 | Viewer status | `viewer` | Bare `viewer` (no arg) reports connection state + current figure routing (rustlab-viewer / HTML file / TUI) |
-| Lambda | `f = @(x) x^2` | Creates anonymous function; captures env by snapshot at creation |
+| Lambda | `f = @(x) x^2` | Anonymous function; snapshots the free variables of the body at creation |
 | Function handle | `@sin`, `@myFn` | Reference to builtin or user-defined function |
 | Higher-order | `arrayfun(@sin, v)` / `parmap(@sin, v)` | Maps callable over vector. `arrayfun` is sequential; `parmap` is parallel via rayon (1-D iterables, scalar outputs in v1) — see `dev/plans/parmap_parreduce.md`. |
 | Dynamic call | `feval("name", args...)` | Call function by string name |

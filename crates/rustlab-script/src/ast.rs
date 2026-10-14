@@ -188,7 +188,8 @@ pub enum Expr {
         expr: Box<Expr>,
         args: Vec<Expr>,
     },
-    /// `@(params) body` — anonymous function (lambda); captures env at creation time
+    /// `@(params) body` — anonymous function. At creation the evaluator
+    /// snapshots the free variables of `body` (see `free_vars`).
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,

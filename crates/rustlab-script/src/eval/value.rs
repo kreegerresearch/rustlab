@@ -216,7 +216,9 @@ pub enum Value {
         c: CMatrix,
         d: CMatrix,
     },
-    /// Anonymous function: `@(params) expr`. Captures the environment lexically at creation time.
+    /// Anonymous function: `@(params) expr`. `captured_env` is the
+    /// creation-time snapshot of the body's free variables (plus the
+    /// built-in constants), not the whole workspace.
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,

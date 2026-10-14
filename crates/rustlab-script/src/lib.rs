@@ -35,6 +35,7 @@ pub mod cache_registry;
 pub mod cache_value;
 pub mod error;
 pub mod eval;
+mod free_vars;
 pub mod highlight;
 pub mod lexer;
 pub mod parser;
