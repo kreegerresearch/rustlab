@@ -11,19 +11,35 @@ use std::process::Command;
 /// shell-escape is never present.
 pub fn pdf_engine_args(engine: &str) -> Option<Vec<&'static str>> {
     match engine {
-        "pdflatex" => Some(vec!["-interaction=nonstopmode", "-halt-on-error"]),
+        // `-no-shell-escape` is explicit. It does not stop `\input` or
+        // `\openout` (those are primitive); note bodies are escaped so
+        // they never reach TeX as commands. The flag is still passed so
+        // a later edit cannot drop it by accident.
+        "pdflatex" => Some(vec![
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            "-no-shell-escape",
+        ]),
+        // tectonic has no shell-escape unless `-Z shell-escape` is passed.
+        // It does not accept `-no-shell-escape`.
         "tectonic" => Some(vec![]),
         _ => None,
     }
 }
 
 /// True if any arg would enable TeX shell escape (defence-in-depth for tests).
+///
+/// `-no-shell-escape` and `--no-shell-escape` contain the substring
+/// `shell-escape` and must not count as enabling.
 pub fn args_enable_shell_escape(args: &[&str]) -> bool {
     args.iter().any(|a| {
+        if *a == "-no-shell-escape" || *a == "--no-shell-escape" {
+            return false;
+        }
         *a == "-shell-escape"
             || *a == "--shell-escape"
+            || *a == "shell-escape" // tectonic `-Z shell-escape`
             || a.contains("shell-escape")
-            || (*a == "shell-escape") // tectonic `-Z shell-escape`
     })
 }
 
@@ -105,8 +121,16 @@ fn convert_one_svg(svg: &Path, pdf: &Path) -> Result<(), String> {
             "inkscape failed to convert {} → {}\n  inkscape 1.x CLI: {}\n  legacy -A CLI: {}",
             svg.display(),
             pdf.display(),
-            if modern_err.is_empty() { "(no output)" } else { &modern_err },
-            if legacy_err.is_empty() { "(no output)" } else { &legacy_err },
+            if modern_err.is_empty() {
+                "(no output)"
+            } else {
+                &modern_err
+            },
+            if legacy_err.is_empty() {
+                "(no output)"
+            } else {
+                &legacy_err
+            },
         ))
     }
 }
@@ -136,12 +160,10 @@ pub fn select_pdf_engine() -> Result<(&'static str, Vec<&'static str>), String> 
     } else if which_exists("tectonic") {
         Ok(("tectonic", pdf_engine_args("tectonic").unwrap()))
     } else {
-        Err(
-            "neither pdflatex nor tectonic found in PATH\n\
+        Err("neither pdflatex nor tectonic found in PATH\n\
              Install TeX Live: https://tug.org/texlive/\n\
              Or tectonic:      https://tectonic-typesetting.github.io/"
-                .to_string(),
-        )
+            .to_string())
     }
 }
 
@@ -153,7 +175,9 @@ mod tests {
     fn pdflatex_args_never_enable_shell_escape() {
         let args = pdf_engine_args("pdflatex").unwrap();
         assert!(!args_enable_shell_escape(&args), "{args:?}");
-        assert!(!args.iter().any(|a| a.contains("shell")));
+        assert!(args.iter().any(|a| *a == "-no-shell-escape"), "{args:?}");
+        assert!(!args_enable_shell_escape(&["-no-shell-escape"]));
+        assert!(!args_enable_shell_escape(&["--no-shell-escape"]));
     }
 
     #[test]
@@ -167,6 +191,8 @@ mod tests {
         assert!(args_enable_shell_escape(&["-shell-escape"]));
         assert!(args_enable_shell_escape(&["-Z", "shell-escape"]));
         assert!(args_enable_shell_escape(&["--shell-escape"]));
+        assert!(!args_enable_shell_escape(&["-no-shell-escape"]));
+        assert!(!args_enable_shell_escape(&["--no-shell-escape"]));
         assert!(!args_enable_shell_escape(&[
             "-interaction=nonstopmode",
             "-halt-on-error"
@@ -202,8 +228,11 @@ mod tests {
             return; // soft-skip: cannot assert the missing-binary path
         }
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("plot.svg"), b"<svg xmlns='http://www.w3.org/2000/svg'/>")
-            .unwrap();
+        std::fs::write(
+            dir.path().join("plot.svg"),
+            b"<svg xmlns='http://www.w3.org/2000/svg'/>",
+        )
+        .unwrap();
         let err = convert_svgs_to_pdf(dir.path()).unwrap_err();
         assert!(
             err.to_lowercase().contains("inkscape"),

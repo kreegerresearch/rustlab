@@ -339,11 +339,13 @@ async fn handle_cell_save(
     if !editable {
         return Err("cell editing requires --editable".to_string());
     }
-    super::http::notebook_md_target(&nb.source_path, jail_root).map_err(|e| e.to_string())?;
 
     let _guard = nb.save_lock.lock().await;
 
-    let on_disk = tokio::fs::read_to_string(&nb.source_path)
+    let target =
+        super::http::notebook_md_target(&nb.source_path, jail_root).map_err(|e| e.to_string())?;
+
+    let on_disk = tokio::fs::read_to_string(&target)
         .await
         .map_err(|e| format!("could not read notebook: {e}"))?;
 
@@ -397,7 +399,7 @@ async fn handle_cell_save(
         return Err(crate::prose_media::SVG_PROSE_REJECTION.to_string());
     }
 
-    tokio::fs::write(&nb.source_path, spliced.as_bytes())
+    super::http::atomic_replace(&target, spliced.as_bytes())
         .await
         .map_err(|e| format!("could not write notebook: {e}"))
 }
@@ -543,6 +545,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (parsed.body) {
       document.body.classList.toggle('no-toc', parsed.body.classList.contains('no-toc'));
       document.body.classList.toggle('has-files', parsed.body.classList.contains('has-files'));
+      document.body.classList.toggle('has-cm-margin', parsed.body.classList.contains('has-cm-margin'));
     }
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
@@ -1064,6 +1067,10 @@ mod tests {
             "WS-client script must land before </head>",
         );
         assert!(out.contains("hi"), "body content survived");
+        assert!(
+            out.contains("classList.toggle('has-cm-margin'"),
+            "a full reload must keep the comment column class"
+        );
     }
 
     #[test]

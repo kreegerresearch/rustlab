@@ -24,12 +24,28 @@ remote multi-user authentication, and re-enabling TeX shell-escape.
 
 ## H1 — PDF without shell-escape
 
-`rustlab-notebook` never passes `-shell-escape` (or tectonic
-`-Z shell-escape`) to the PDF engine. Plot SVGs are converted to PDF with
-a **fixed-argv** Inkscape invocation (`Command`, no shell) before TeX
-runs; the `.tex` uses `\includegraphics` rather than `\includesvg` /
-`svg.sty`. The `--format latex` output gets the same `.pdf` companions
-written next to each `.svg` so the emitted `.tex` compiles as-is.
+`rustlab-notebook` never enables TeX shell-escape. `pdflatex` is invoked
+with `-no-shell-escape` (tectonic has no shell-escape unless
+`-Z shell-escape` is passed, and that flag is not passed). The check
+that rejects a shell-escape argument treats `-no-shell-escape` and
+`--no-shell-escape` as *not* enabling — a substring match on
+`shell-escape` would flag the disabling form. Plot SVGs are converted
+to PDF with a **fixed-argv** Inkscape invocation (`Command`, no shell)
+before TeX runs; the `.tex` uses `\includegraphics` rather than
+`\includesvg` / `svg.sty`. The `--format latex` output gets the same
+`.pdf` companions written next to each `.svg` so the emitted `.tex`
+compiles as-is.
+
+`-no-shell-escape` does not stop `\input` or `\openout`. Those are
+TeX primitives. A `%%` comment is paired across `$...$`, inline code,
+and HTML comments, so the note body is not left in the document as
+math. With comments off (the PDF default) the note is deleted. With
+`--comments` the note body is escaped text inside `\marginpar` (every
+`\` and `$` is a character, not a command or math shift). Refusing a
+denylist of command names is not the control. A markdown link whose
+scheme is `javascript:`, `data:`, `vbscript:`, or `blob:` is plain text
+in the PDF, not an `\href`. Same-page `\hypertarget` ids are generated
+by the renderer and are not that check.
 
 If Inkscape is missing and the notebook has SVG plots, PDF render fails
 with an install hint (LaTeX render warns and still writes the `.tex`).
@@ -149,26 +165,44 @@ process cwd at execute time, captured once), not the jail root, and
 outside the root are rejected; widen with `--jail-root` rather than
 disabling the jail.
 
-`POST /save/{slug}` (only when `--editable`) and an inline cell save
-write that notebook's `.md` and nothing else. The path must end in
+`POST /save/{slug}` (only when `--editable`), an inline cell save, and
+`POST /annotate/{slug}` (when `--annotate` or `--editable`, including
+undo) write that notebook's `.md` and nothing else. The path must end in
 `.md`, and resolving it through the same jail check (symlinks followed)
-must land on a `.md` file inside the jail. A `.md` name that points at
-an SVG, or at a file outside the jail, is refused and the target is
-left untouched. The route cannot create `eval.svg` or any other
-non-`.md` path: the slug selects a notebook already in the server map.
+must land on a `.md` file inside the jail. Annotate uses that check even
+when `--jail-root` is unset: the jail is then the notebook's own
+directory. The read and the write both use that canonical path. The
+bytes go to a temporary file in the same directory, then `rename`
+replaces the canonical path. `rename` does not follow a symlink, so a
+swap of the directory entry after the check cannot retarget the write
+onto another file. A `.md` name that points at an SVG, or at a file
+outside the jail, is refused and the target is left untouched. The route
+cannot create `eval.svg` or any other non-`.md` path: the slug selects a
+notebook already in the server map.
 
-A save that *adds* an SVG prose image is also refused, and the file is
-not written. The check uses the same markdown parse as the renderer, so
-it sees `![alt](fig.svg)`, `![[fig.svg]]`, a reference-style image, and
-a raw `<img src="fig.svg">` (percent-decoding and a `?query` / `#fragment`
-do not hide the name). A reference already in the file on disk can be
-saved again, and an SVG mentioned only inside a code fence or inline
-code is not a prose image. To add a new SVG diagram, put the file in
-the notebook directory and add the image line on disk; the next save
-that keeps that reference is accepted. SVG prose images stay a feature
-and are still copied and shown with `<img>`. Rejecting every save that
-mentions an SVG would stop `--editable` from saving a notebook that
-already has a diagram.
+`rustlab-notebook strip` does not follow symlinks. A symlink file or
+directory named as the input is refused. A symlink inside a directory
+is skipped with a warning and is not rewritten, and the walk does not
+descend a symlinked directory. A regular file is kept only when its
+canonical path is still under the input directory.
+
+A save, cell save, or annotate (including undo) that *adds* an SVG
+prose image is also refused, and the file is not written. The check
+uses the same markdown parse as the renderer, so it sees
+`![alt](fig.svg)`, `![[fig.svg]]`, a reference-style image, and a raw
+`<img src="fig.svg">` (percent-decoding and a `?query` / `#fragment` do
+not hide the name). `==` and `%%` are not markdown: a highlight
+`==![x](eval.svg)==` or a comment that contains an image is a prose
+image when that SVG was not already in the file. A reference already
+in the file on disk can be saved or annotated again, and an SVG
+mentioned only inside a code fence or inline code is not a prose
+image. To add a new SVG diagram, put the file in the notebook
+directory and add the image line on disk; the next save or annotate
+that keeps that reference is accepted. Deleting the only reference is
+allowed; undo of that delete is refused, because it would add the SVG
+back. SVG prose images stay a feature and are still copied and shown
+with `<img>`. Rejecting every save that mentions an SVG would stop
+`--editable` from saving a notebook that already has a diagram.
 
 REPL / `rustlab run` leave the jail unset (no behaviour change).
 

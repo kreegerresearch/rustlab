@@ -3422,24 +3422,17 @@ const IMPURE_BUILTINS: &[&str] = &[
     "zlabel",
 ];
 
-// Compile-time assertion that Evaluator and Value are Send. The parallel-
-// map (`parmap`) implementation in `dev/plans/parmap_parreduce.md` Phase 2
-// depends on this: rayon workers carry per-thread `Evaluator` clones, and
-// captured-env / argument / result `Value`s cross thread boundaries.
-//
-// If a future Value variant adds a non-Send type (e.g., `Cell`, `Rc`, a
-// raw pointer), this compile assertion will fail and the parmap plan
-// needs to either fix the offending variant or partition Value into a
-// Send subset. Catching it here is much better than hitting it during
-// Phase 2 wiring.
-#[allow(dead_code)]
-fn _assert_send<T: Send>() {}
-#[allow(dead_code)]
-fn _assert_sync<T: Sync>() {}
-#[allow(dead_code)]
-fn _assert_evaluator_and_value_are_send_sync() {
-    _assert_send::<Evaluator>();
-    _assert_send::<Value>();
-    _assert_sync::<Evaluator>();
-    _assert_sync::<Value>();
-}
+// Compile-time assertion that Evaluator and Value are Send + Sync.
+// `parmap` depends on this: rayon workers carry per-thread `Evaluator`
+// clones, and captured-env / argument / result `Value`s cross thread
+// boundaries. The anonymous const is type-checked even though nothing
+// calls it, so a future non-Send variant (`Cell`, `Rc`, a raw pointer)
+// fails this crate instead of the first cross-thread use.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+    assert_send::<Evaluator>();
+    assert_send::<Value>();
+    assert_sync::<Evaluator>();
+    assert_sync::<Value>();
+};

@@ -66,6 +66,10 @@ theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, l
 # Missing key, or an unrecognised value (warns once), means open.
 # LaTeX/PDF always show the source.
 # code = "open"           # open | collapsed
+# Highlights (`==`) and comments (`%%`) in HTML, markdown, JSON, and
+# notebook watch. "off" matches `--no-comments`. PDF and LaTeX stay off
+# unless the command passes `--comments`. CLI wins over this key.
+# comments = "on"         # on | off
 
 [repl]
 # rustyline history cap (most recent N lines written back to

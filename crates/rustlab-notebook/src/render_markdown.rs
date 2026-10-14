@@ -78,6 +78,20 @@ pub fn render_markdown(
     for block in blocks {
         match block {
             Rendered::Markdown(md) => {
+                let md_owned;
+                let md: &str = if crate::comments::mode().markdown_keep {
+                    match crate::comments::mode().markdown_style {
+                        crate::comments::MarkdownCommentStyle::Keep => md,
+                        crate::comments::MarkdownCommentStyle::Footnotes
+                        | crate::comments::MarkdownCommentStyle::Callouts => {
+                            md_owned = crate::comments::rewrite_markdown_comments(md);
+                            &md_owned
+                        }
+                    }
+                } else {
+                    md_owned = crate::comments::strip_source(md);
+                    &md_owned
+                };
                 let transformed = match link_style {
                     LinkStyle::Standard => {
                         // Source `[[Foo]]` / `![[img]]` → standard markdown

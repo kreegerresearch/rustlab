@@ -708,7 +708,7 @@ fn draw_colorbar(
             Pos2::new(grad_right, grad_bottom),
         ),
         0.0,
-        Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color),
+        Stroke::new(1.0_f32, ui.visuals().widgets.noninteractive.fg_stroke.color),
         egui::StrokeKind::Inside,
     );
 

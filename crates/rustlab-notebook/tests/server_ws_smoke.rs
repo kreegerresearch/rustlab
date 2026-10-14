@@ -64,6 +64,8 @@ fn single_state_with(
         csp_nonce: "testnonce".to_string(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
         jail_root: None,
+        annotate: false,
+        comments_on: true,
     })
 }
 
@@ -1101,6 +1103,8 @@ async fn directory_link_navigation_opens_target_websocket() {
         csp_nonce: NAV_NONCE.into(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
         jail_root: None,
+        annotate: false,
+        comments_on: true,
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1221,6 +1225,8 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         csp_nonce: NAV_NONCE.into(),
         bind_port: std::sync::atomic::AtomicU16::new(0),
         jail_root: None,
+        annotate: false,
+        comments_on: true,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -63,12 +63,7 @@ pub struct Finding {
 /// references against sibling notebooks.
 /// `root_dir` is the vault root (top of a `notebook watch` tree); used
 /// for fallback embed resolution.
-pub fn check_source(
-    source: &str,
-    file: &Path,
-    host_dir: &Path,
-    root_dir: &Path,
-) -> Vec<Finding> {
+pub fn check_source(source: &str, file: &Path, host_dir: &Path, root_dir: &Path) -> Vec<Finding> {
     let mut findings = Vec::new();
     findings.extend(check_unmatched_sentinels(source));
     findings.extend(check_unclosed_rustlab_fences(source));
@@ -79,9 +74,25 @@ pub fn check_source(
     findings.extend(check_plot_urls_resolve(source, file));
     findings.extend(check_fragment_targets(source, host_dir));
     findings.extend(check_code_fold(source));
+    findings.extend(check_comments(source));
     // Stable order: by (line, code).
     findings.sort_by_key(|f| (f.line.unwrap_or(0), f.code));
     findings
+}
+
+/// **W006–W012** — highlights (`==`) and comments (`%%`). Not auto-fixable:
+/// `--fix` does not insert `#cN` ids.
+fn check_comments(source: &str) -> Vec<Finding> {
+    crate::comments::issues(source)
+        .into_iter()
+        .map(|iss| Finding {
+            severity: Severity::Warning,
+            line: Some(iss.line),
+            code: iss.code,
+            message: iss.message,
+            auto_fixable: false,
+        })
+        .collect()
 }
 
 // ── individual checks ──────────────────────────────────────────────────────
@@ -111,9 +122,8 @@ pub fn check_unmatched_sentinels(source: &str) -> Vec<Finding> {
                     severity: Severity::Error,
                     line: Some(line_no),
                     code: "rustlab:E001",
-                    message:
-                        "rustlab:output-end sentinel without a matching output-start above"
-                            .to_string(),
+                    message: "rustlab:output-end sentinel without a matching output-start above"
+                        .to_string(),
                     auto_fixable: false,
                 });
             } else {
@@ -178,11 +188,7 @@ pub fn check_unclosed_rustlab_fences(source: &str) -> Vec<Finding> {
 /// expander. Targets that the expander would fail to find render as
 /// inline error callouts at render time; surfacing them up-front lets
 /// a CI hook catch them before publish.
-pub fn check_unresolved_embeds(
-    source: &str,
-    host_dir: &Path,
-    root_dir: &Path,
-) -> Vec<Finding> {
+pub fn check_unresolved_embeds(source: &str, host_dir: &Path, root_dir: &Path) -> Vec<Finding> {
     let mut findings = Vec::new();
     for (idx, line) in source.lines().enumerate() {
         for (_, _, eref) in embed::find_embed_refs_in_line(line) {
@@ -226,8 +232,7 @@ pub fn check_frontmatter_terminated(source: &str) -> Vec<Finding> {
         severity: Severity::Error,
         line: Some(1),
         code: "rustlab:E004",
-        message: "frontmatter opened with `---` but never closed with a second `---`"
-            .to_string(),
+        message: "frontmatter opened with `---` but never closed with a second `---`".to_string(),
         auto_fixable: false,
     }]
 }
@@ -816,10 +821,7 @@ mod tests {
 
     #[test]
     fn w001_duplicate_headers_fires() {
-        let src = format!(
-            "{h}\n\n{h}\n\n# Body\n",
-            h = crate::GENERATED_HEADER
-        );
+        let src = format!("{h}\n\n{h}\n\n# Body\n", h = crate::GENERATED_HEADER);
         assert_codes(&check_duplicate_generated_headers(&src), &["rustlab:W001"]);
     }
 
@@ -913,8 +915,7 @@ mod tests {
         let dir = frag_fixture();
         // h4 headings get no generated id in the rendered page — a
         // fragment to one dangles and must warn.
-        let findings =
-            check_fragment_targets("[deep](target.md#deep-heading)", dir.path());
+        let findings = check_fragment_targets("[deep](target.md#deep-heading)", dir.path());
         assert_eq!(findings.len(), 1, "{findings:?}");
         // Dedup sequence matches the renderer: the first PLAIN `## Setup`
         // takes `setup` (the {#custom} one consumed no slug), the second
@@ -1016,5 +1017,91 @@ graph LR
     fn w005_ignores_the_comment_inside_a_fence() {
         let src = "```rustlab\n<!-- code: folded -->\n```\n";
         assert!(check_code_fold(src).is_empty());
+    }
+
+    // ── W006–W012: highlights and comments ───────────────────────────────
+
+    fn comment_findings(src: &str) -> Vec<Finding> {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("n.md");
+        check_source(src, &file, dir.path(), dir.path())
+            .into_iter()
+            .filter(|f| {
+                matches!(
+                    f.code,
+                    "rustlab:W006"
+                        | "rustlab:W007"
+                        | "rustlab:W008"
+                        | "rustlab:W009"
+                        | "rustlab:W010"
+                        | "rustlab:W011"
+                        | "rustlab:W012"
+                )
+            })
+            .collect()
+    }
+
+    fn one(src: &str, code: &str, line: usize) {
+        let findings = comment_findings(src);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.code == code && f.line == Some(line) && !f.auto_fixable),
+            "expected {code} on line {line}, got {findings:#?}"
+        );
+    }
+
+    #[test]
+    fn w006_through_w012_lines_and_sort() {
+        one("==unclosed\n", "rustlab:W006", 1);
+        one("%%unclosed\n", "rustlab:W007", 1);
+        one("==start\n\nend==\n", "rustlab:W008", 1);
+        one("==hello %%no%% ==\n", "rustlab:W009", 1);
+        one("%%#c1: a%%\n%%#c1: b%%\n", "rustlab:W010", 2);
+        one("%%re #c9: nope%%\n", "rustlab:W011", 1);
+        one("%%looks off%%\n", "rustlab:W012", 1);
+
+        let findings = comment_findings("%%looks off%%\n\n==unclosed\n");
+        let codes: Vec<&str> = findings.iter().map(|f| f.code).collect();
+        assert_eq!(codes, vec!["rustlab:W012", "rustlab:W006"], "{findings:#?}");
+        let lines: Vec<usize> = findings.iter().map(|f| f.line.unwrap()).collect();
+        assert_eq!(lines, vec![1, 3]);
+    }
+
+    #[test]
+    fn w012_missing_id_and_not_on_id_unclosed_or_bare_highlight() {
+        let missing = comment_findings("%%looks off%%\n");
+        assert_eq!(missing.len(), 1, "{missing:#?}");
+        assert_eq!(missing[0].code, "rustlab:W012");
+        assert_eq!(missing[0].line, Some(1));
+        assert!(!missing[0].auto_fixable);
+
+        assert!(comment_findings("%%#c1: text%%\n").is_empty());
+
+        let unclosed = comment_findings("%%unclosed\n");
+        assert!(
+            unclosed.iter().any(|f| f.code == "rustlab:W007"),
+            "{unclosed:#?}"
+        );
+        assert!(
+            !unclosed.iter().any(|f| f.code == "rustlab:W012"),
+            "{unclosed:#?}"
+        );
+
+        let bare = comment_findings("==only highlight==\n");
+        assert!(!bare.iter().any(|f| f.code == "rustlab:W012"), "{bare:#?}");
+    }
+
+    #[test]
+    fn comment_marks_inside_a_fence_are_not_findings() {
+        let src = "```rustlab\na == b\n# comment\n% comment\n%% note\n```\n";
+        assert!(comment_findings(src).is_empty(), "{src}");
+    }
+
+    #[test]
+    fn check_fix_does_not_mark_a_missing_comment_id_auto_fixable() {
+        let findings = comment_findings("%%looks off%%\n");
+        assert!(!findings.is_empty());
+        assert!(findings.iter().all(|f| !f.auto_fixable));
     }
 }

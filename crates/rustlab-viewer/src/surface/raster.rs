@@ -74,7 +74,8 @@ pub(crate) fn raster_pixel_size(logical: egui::Vec2, pixels_per_point: f32) -> (
 
 /// Fraction of pixels that are not the panel fill. Axis lines count when
 /// they were drawn; coverage tests pass `axes: false`.
-pub(crate) fn coverage_fraction(image: &RasterImage) -> f64 {
+#[cfg(test)]
+fn coverage_fraction(image: &RasterImage) -> f64 {
     let bg = fill_rgb();
     let n = image.width as usize * image.height as usize;
     if n == 0 {
@@ -534,6 +535,7 @@ fn put_px(
     image.rgba[o + 3] = 255;
 }
 
+#[cfg(test)]
 fn fill_rgb() -> [u8; 3] {
     let c = surface_fill();
     [c.r(), c.g(), c.b()]
@@ -547,7 +549,8 @@ fn fill_rgba() -> [u8; 4] {
 /// Screen-space area of the domain rectangle (the four corners). At
 /// pitch = ±90° a graph z = f(x, y) projects to exactly this rectangle,
 /// so a depth image's coverage should match it from either pole.
-pub(crate) fn domain_quad_fraction(
+#[cfg(test)]
+fn domain_quad_fraction(
     data: &Surface3dData,
     cam: &SurfaceCamera,
     logical_size: egui::Vec2,

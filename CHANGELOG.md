@@ -49,19 +49,35 @@ should re-validate against those entries when upgrading.
   should display it, or call `savefig`.
 
 - **`notebook watch` will not save a newly added SVG prose image, and it writes only the notebook `.md`.**
-  `POST /save` and an inline cell save reject a body that introduces
-  `![…](….svg)`, `![[….svg]]`, a reference-style image, or a raw
-  `<img src="….svg">` that the file on disk does not already reference.
-  Nothing is written. A notebook that already references that SVG can
-  still be saved, and an SVG mentioned only inside a code fence or
-  inline code is not a prose image. Both write paths write only that
+  `POST /save`, an inline cell save, and `POST /annotate` (including
+  undo) reject a body that introduces `![…](….svg)`, `![[….svg]]`, a
+  reference-style image, or a raw `<img src="….svg">` that the file on
+  disk does not already reference. A highlight or comment is checked
+  on the document that would be written (`==![x](eval.svg)==` and a
+  `%%` note that contains an image both count). Nothing is written. A
+  notebook that already references that SVG can still be saved or
+  annotated, and an SVG mentioned only inside a code fence or inline
+  code is not a prose image. All three write paths write only that
   notebook's `.md`, and only when the resolved path (symlink followed)
-  is a `.md` file inside the jail. Migration: to add an SVG diagram,
+  is a `.md` file inside the jail — for annotate, even when
+  `--jail-root` is unset. Migration: to add an SVG diagram,
   put the `.svg` in the notebook directory and add the image line in
   the `.md` on disk. The next in-browser save that keeps that reference
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A `%%` note cannot inject TeX into a PDF, and comment writes do not follow a swapped path.**
+  A note that contains `$...$` is paired, so the math is part of the
+  note. With comments off (the PDF default) the note is deleted. With
+  `--comments` the body is escaped text, not math. `pdflatex` is passed
+  `-no-shell-escape`; that flag is not treated as enabling shell-escape.
+  A `javascript:`, `data:`, `vbscript:`, or `blob:` link is plain text
+  in the PDF, not an `\href`. `strip --in-place` does not follow
+  symlinks. `POST /save`, cell save, and `POST /annotate` (including
+  undo) write a temporary file in the canonical target's directory and
+  `rename` it over that path. Annotate rejects a comment body that
+  contains `\` or `$`, a notebook larger than 1 MiB, and a file that
+  would have more than 400 comments.
 - **An SVG prose image served by `notebook watch` cannot script the watch origin.**
   `GET /plots/…` (including `image/svg+xml`) and `GET /raw/{slug}` send
   `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
@@ -83,6 +99,51 @@ should re-validate against those entries when upgrading.
   view axis. SVG/PNG surfaces are still the static isometric wireframe.
 
 ### Added
+- **Notebook highlights and comments.** Prose `==highlight==` and
+  `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
+  as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.
+  A whole-line `%%` immediately before a fence comments on that cell.
+  Marks inside code fences, inline code, and math stay literal.
+  `--comments` / `--no-comments` (and `~/.rustlabrc` `[notebook] comments`)
+  control display. HTML and watch default to on, with an in-page
+  Comments checkbox. PDF and LaTeX default to off; `--comments` uses
+  `\hl` and a margin note. `notebook check` warns W006–W012, including
+  a missing `#cN` (W012). `watch --annotate` (implied by `--editable`)
+  mounts `POST /annotate/{slug}`: loopback Host and Origin, the file
+  jail, and `If-Match` against the page's source hash (409, no write,
+  when the file changed). Design: `dev/plans/notebook_comments.md`.
+  A per-comment reviewed/accepted flag is reserved and not implemented.
+  Replies render inside the parent card. Comment ids stay on
+  `data-cm-id` and the card tooltip, not in the header. Annotating
+  stamps source offsets on parsed text, so headings and other block
+  syntax match a page that is not annotating. Every comment card
+  (inline, block, cell, and replies) sits in a right margin column
+  aligned with its numbered marker. The column stays in a directory
+  page with the file browser and the contents sidebar; the prose
+  shrinks. Turning Comments off, or `--no-comments` on static HTML,
+  drops the column. Under 800px the cards are a drawer at the bottom
+  of the section. PDF `--comments` puts block and cell notes in
+  `\marginpar` as well (a footnote inside a table). The annotate
+  popover is a card (Name, comment, Cancel / Highlight only / Save
+  comment). Ctrl or Cmd+Enter saves; Esc cancels. `render -f markdown
+  --comments-style=footnotes` turns notes into GitHub footnotes and
+  highlights into `<mark>`. `--comments-style=callouts` turns notes
+  into `> [!note]` and leaves `==` (Obsidian's preview hides a raw
+  `%%`; the callout style is how those notes stay visible there).
+  `rustlab-notebook strip` writes the `--no-comments` markdown
+  cleanup and leaves every code fence unchanged. `POST /annotate` returns the new source hash and rejects
+  any write whose offsets fall inside a code fence (400, file
+  unchanged). A cell comment is only a `%%` line above the fence.
+  Highlight is not offered on a code cell. The page offers Undo for
+  the last annotate write in this `watch` process; git history is
+  the archive. Cards share one full-width column. Markers on the
+  same line stack, the first of them level with the line. A note
+  taller than about six lines clamps until **more**. A card pushed
+  below its marker draws a connector. The source pane narrows so it
+  does not cover that column. PDF `--comments` numbers each note to
+  match the HTML marker, highlights with a light yellow `\hl`, indents
+  replies, and keeps the note column on the page (`marginfix`, right
+  margin 2.15in, note column 1.7in).
 - **Viewer windows expand.** The window opens at about 75% of the
   monitor (at least 800×600 when the screen is larger, and never larger
   than the monitor), is resizable, has a minimum size, and has a

@@ -57,6 +57,11 @@ pub struct ServerOpts {
     /// Explicit path-jail root (`--jail-root`). `None` → the collection
     /// root in directory mode, the notebook's own directory otherwise.
     pub jail_root: Option<PathBuf>,
+    /// Right-click annotate UI and `POST /annotate`. `--editable` implies this.
+    pub annotate: bool,
+    /// Initial Comments checkbox. Markup is always rendered in watch so
+    /// the reader can reveal notes. The CLI default is on.
+    pub comments_on: bool,
 }
 
 /// Per-render page context the server threads into the renderer: the CSP
@@ -67,6 +72,8 @@ pub struct ServerOpts {
 pub(super) struct PageCtx<'a> {
     pub nonce: Option<&'a str>,
     pub jail_root: Option<&'a Path>,
+    pub comments_on: bool,
+    pub annotate: bool,
 }
 
 /// Start the interactive server against `input` and block until
@@ -99,6 +106,8 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
         is_dir,
         theme,
         opts.editable,
+        opts.annotate || opts.editable,
+        opts.comments_on,
         csp_nonce,
         jail_root,
     )?;
@@ -130,6 +139,12 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
             eprintln!(
                 "[watch] --editable: in-browser edits write back to source .md \
                  (loopback Origin + Host required; see docs/security.md)"
+            );
+        }
+        if opts.annotate || opts.editable {
+            eprintln!(
+                "[watch] --annotate: right-click to highlight or comment \
+                 (loopback Origin + Host required; single-user If-Match)"
             );
         }
 
@@ -164,6 +179,8 @@ fn build_state(
     is_dir: bool,
     theme: &'static ThemeColors,
     editable: bool,
+    annotate: bool,
+    comments_on: bool,
     csp_nonce: String,
     jail_root: Option<PathBuf>,
 ) -> Result<Arc<http::ServerState>> {
@@ -347,6 +364,8 @@ fn build_state(
             PageCtx {
                 nonce: Some(&csp_nonce),
                 jail_root: jail_root.as_deref(),
+                comments_on,
+                annotate,
             },
         )
         .with_context(|| format!("rendering {} for server", path.display()))?;
@@ -390,6 +409,8 @@ fn build_state(
         csp_nonce,
         bind_port: std::sync::atomic::AtomicU16::new(0),
         jail_root,
+        annotate,
+        comments_on,
     }))
 }
 
@@ -463,6 +484,20 @@ pub(super) fn listing_and_rels(state: &http::ServerState) -> (Vec<(String, Strin
 /// Insert `<meta name="rl-slug">` immediately after `<head>` so scripts
 /// in the head can see the internal id before the body exists. Slugs are
 /// `[a-z0-9-]`; anything else is escaped.
+fn stamp_source_hash(html: &str, source: &str) -> String {
+    let meta = crate::comments::source_hash_meta(source);
+    let Some(head) = html.find("<head>") else {
+        return html.to_string();
+    };
+    let at = head + "<head>".len();
+    let mut out = String::with_capacity(html.len() + meta.len() + 1);
+    out.push_str(&html[..at]);
+    out.push('\n');
+    out.push_str(&meta);
+    out.push_str(&html[at..]);
+    out
+}
+
 fn stamp_rl_slug(html: &str, slug: &str) -> String {
     let safe = slug
         .replace('&', "&amp;")
@@ -656,6 +691,10 @@ pub(super) fn render_for_server_cancellable(
     // Path jail for this render (thread-local; the render runs on a
     // spawn_blocking thread, so it must be installed here, not in start()).
     let _jail = execute::JailRootGuard::new(page.jail_root.map(Path::to_path_buf));
+    let _comment_mode = crate::comments::install(crate::comments::CommentMode::for_watch(
+        page.comments_on,
+        page.annotate,
+    ));
 
     // Match `cmd_render`/`cmd_render_cached`: change the process cwd to the
     // notebook's parent directory for the duration of execution so the
@@ -728,6 +767,12 @@ pub(super) fn render_for_server_cancellable(
     let notebook_open =
         render::resolve_source_open(None, frontmatter, Some(render::rc_source_open()));
     let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
+    // File offsets live on the sections. An edit above a block moves
+    // every later offset, so the partial-diff would repaint the rest of
+    // the page. Only annotate sessions need those offsets.
+    let _file = page
+        .annotate
+        .then(|| crate::comments::install_file_source(&source));
     let html = render::render_html_nonced(
         &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
     );
@@ -736,6 +781,11 @@ pub(super) fn render_for_server_cancellable(
     // multi-segment, so the WS client and source pane cannot read the
     // internal slug from `location.pathname`.
     let html = stamp_rl_slug(&html, slug);
+    let html = if page.annotate {
+        stamp_source_hash(&html, &source)
+    } else {
+        html
+    };
     let html = ws::inject_ws_client_nonced(&html, page.nonce);
     let html = page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
     // Inline cell editing needs --editable AND an embed-free notebook:
@@ -937,6 +987,8 @@ mod tests {
             true,
             Theme::default().colors(),
             false,
+            false,
+            true,
             "testnonce".into(),
             None,
         )
@@ -962,6 +1014,8 @@ mod tests {
             true,
             Theme::default().colors(),
             false,
+            false,
+            true,
             "testnonce".into(),
             None,
         )
@@ -988,6 +1042,8 @@ mod tests {
             true,
             Theme::default().colors(),
             false,
+            false,
+            true,
             "testnonce".into(),
             None,
         )
@@ -1018,6 +1074,8 @@ mod tests {
             true,
             Theme::default().colors(),
             false,
+            false,
+            true,
             "testnonce".into(),
             None,
         )
@@ -1068,7 +1126,17 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         std::fs::write(dir.path().join("gamma.md"), "# Gamma\n\nthird.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let app = serve_test(state);
 
         // Middle page: breadcrumb topbar + footer prev/next to neighbours.
@@ -1142,7 +1210,17 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(root).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let app = serve_test(state);
         let index = get_body(&app, "/").await;
         let filters = get_body(&app, "/n/ch2/filters").await;
@@ -1250,7 +1328,17 @@ mod tests {
         let path = dir.path().join("only.md");
         std::fs::write(&path, "# Only\n\n## Part\n").unwrap();
         let canon = std::fs::canonicalize(&path).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            false,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let app = serve_test(state);
         let page = get_body(&app, "/n/only").await;
         assert!(
@@ -1277,7 +1365,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lesson.md"), "# Lesson\n").unwrap();
         let canon = std::fs::canonicalize(&root).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             state.order.len(),
             1,
@@ -1301,7 +1399,17 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let titles: Vec<&str> = state
             .order
             .iter()
@@ -1321,7 +1429,17 @@ mod tests {
         std::fs::write(dir.path().join("root.md"), "# Root\n").unwrap();
         std::fs::write(dir.path().join("ch1").join("deep.md"), "# Deep\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
         match state.link_mode_for(deep_slug) {
             crate::render::LinkMode::Server {
@@ -1360,7 +1478,17 @@ mod tests {
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
         // Served listing.
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let served: Vec<String> = state
             .order
             .iter()
@@ -1419,7 +1547,17 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("01.md"), "# One\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
         let app = serve_test(state);
         let index = get_body(&app, "/").await;
@@ -1461,7 +1599,17 @@ mod tests {
         std::fs::write(dir.path().join("ch2").join("notes.md"), "# Notes\n").unwrap();
 
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         // Read slugs from the state rather than hardcoding slugify/dedup
         // output — walk order decides which same-stem file carries `-2`.
         let slug_of = |rel: &str| -> String {
@@ -1563,7 +1711,17 @@ mod tests {
         std::fs::write(dir.path().join("ch3").join("filters.md"), "# Ch3\n").unwrap();
         std::fs::write(dir.path().join("intro.md"), "# Intro\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let slug = |rel: &str| state.link_slugs.get(rel).unwrap().clone();
         let ch2 = slug("ch2/filters.md");
         let ch3 = slug("ch3/filters.md");
@@ -1607,7 +1765,17 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nonly one.\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            false,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         assert!(state.single, "single-file mode");
         let slug = state.order[0].clone();
         let app = serve_test(state);
@@ -1647,7 +1815,17 @@ mod tests {
         let nb = dir.path().join("solo.md");
         std::fs::write(&nb, "# Solo\n\nSee [other](ch2/notes.md).\n").unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            false,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let slug = state.order[0].clone();
         let app = serve_test(state);
         let page = get_body(&app, &format!("/n/{slug}")).await;
@@ -1669,7 +1847,17 @@ mod tests {
         std::fs::write(dir.path().join("beta.md"), "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         assert!(!state.single, "directory mode is not single");
         assert_eq!(state.order.len(), 2);
         assert!(state.notebook("alpha").is_some());
@@ -1732,7 +1920,17 @@ mod tests {
         std::fs::write(&beta, "# Beta\n\nsecond.\n").unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
 
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let nb_alpha = state.notebook("alpha").unwrap().clone();
         let nb_beta = state.notebook("beta").unwrap().clone();
         let mut sub_alpha = nb_alpha.broadcast.subscribe();
@@ -1836,7 +2034,17 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(&nb).unwrap();
-        let state = build_state(&canon, false, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            false,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let slug = state.order[0].clone();
         let app = serve_test(state);
 
@@ -1925,7 +2133,17 @@ mod tests {
         )
         .unwrap();
         let canon = std::fs::canonicalize(dir.path()).unwrap();
-        let state = build_state(&canon, true, theme, false, "testnonce".into(), None).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
         let note = state
             .order
             .iter()

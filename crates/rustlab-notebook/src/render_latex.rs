@@ -26,6 +26,8 @@ pub fn render_latex(
     theme: &ThemeColors,
     link: &crate::render::LinkMode,
 ) -> String {
+    // Prose notes and a following cell note share one number sequence.
+    let _comment_page = crate::comments::enter_page();
     let mut body = String::new();
     let mut plot_idx = 0;
     let mut in_exercise = false;
@@ -60,11 +62,25 @@ pub fn render_latex(
     let _html_theme = theme;
     let theme = Theme::Light.colors();
 
-    for block in blocks {
+    let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
+    for (bi, block) in blocks.iter().enumerate() {
         match block {
             Rendered::Markdown(md) => {
+                let mut md = md.clone();
+                if crate::comments::mode().latex
+                    && blocks
+                        .get(bi + 1)
+                        .is_some_and(crate::comments::is_fence_rendered)
+                {
+                    let (rest, notes) = crate::comments::peel_trailing_cell_comments(&md);
+                    pending_cells = notes;
+                    md = rest;
+                }
+                if md.trim().is_empty() {
+                    continue;
+                }
                 body.push_str(&markdown_to_latex_in(
-                    md,
+                    &md,
                     link,
                     Some(&mut prose_assets),
                     &anchors,
@@ -88,6 +104,10 @@ pub fn render_latex(
                 // panels. Plots stay full width after the panels. `code:`
                 // is HTML-only; PDF always shows the source.
                 let trimmed = text_output.trim();
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 if !hidden {
                     body.push_str(&lang_label("rustlab"));
                     body.push_str("\\begin{rlsource}\n");
@@ -145,6 +165,10 @@ pub fn render_latex(
                 details,
                 caption,
             } => {
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 if *hidden {
                     continue;
                 }
@@ -162,6 +186,10 @@ pub fn render_latex(
                 );
             }
             Rendered::Widget { decl, value } => {
+                if !pending_cells.is_empty() {
+                    body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
+                    pending_cells.clear();
+                }
                 // Static export: render the widget's label and current value.
                 let label = decl.label.as_deref().unwrap_or(&decl.name);
                 let val = match value {
@@ -345,7 +373,7 @@ pub fn render_latex(
 \newunicodechar{{┴}}{{+}}
 \newunicodechar{{┼}}{{+}}
 \usepackage[table]{{xcolor}}
-{palette}
+{comment_packages}{palette}
 \usepackage{{tcolorbox}}
 \tcbuselibrary{{breakable,skins}}
 \usepackage{{fancyvrb}}
@@ -414,6 +442,7 @@ pub fn render_latex(
         title = escape_latex(title),
         body = body,
         palette = palette,
+        comment_packages = crate::comments::latex_packages(),
     )
 }
 
@@ -535,6 +564,9 @@ fn emit_figures(
 /// build emits) and with fragments dropped — a sibling PDF does not share
 /// this page's hypertargets. Same-page `#heading` links stay, and only
 /// when that id was emitted as a `\hypertarget`.
+///
+/// Test entry point. Document rendering calls [`markdown_to_latex_in`]
+/// with the anchors it already collected.
 #[cfg(test)]
 fn markdown_to_latex(md: &str, link: &crate::render::LinkMode) -> String {
     let mut anchors = HashSet::new();
@@ -555,6 +587,10 @@ struct HeadingCap {
     body: String,
 }
 
+pub(crate) fn escape_latex_pub(s: &str) -> String {
+    escape_latex(s)
+}
+
 fn markdown_to_latex_in(
     md: &str,
     link: &crate::render::LinkMode,
@@ -563,7 +599,8 @@ fn markdown_to_latex_in(
     used: &mut HashSet<String>,
     empty_idx: &mut usize,
 ) -> String {
-    let md = transform_wikilinks(md);
+    let prepared = crate::comments::prepare_latex(md);
+    let md = transform_wikilinks(prepared.as_str(md));
     let mut opts = notebook_md_options();
     opts.insert(Options::ENABLE_MATH);
     // Same single-tilde demotion as the HTML target: `~word~` stays literal
@@ -697,7 +734,15 @@ fn markdown_to_latex_in(
                 Tag::Link { dest_url, .. } => {
                     let dest = crate::render::rewrite_link_dest_pdf(&dest_url, link)
                         .unwrap_or_else(|| dest_url.to_string());
-                    let live = if let Some(frag) = dest.strip_prefix('#') {
+                    // `javascript:` / `data:` / `vbscript:` / `blob:` must
+                    // not become `\href`. The link text is emitted as
+                    // ordinary escaped text. Hypertarget ids are generated
+                    // separately and are not user URLs.
+                    let dangerous = crate::render::is_dangerous_url(&dest)
+                        || crate::render::is_dangerous_url(&dest_url);
+                    let live = if dangerous {
+                        false
+                    } else if let Some(frag) = dest.strip_prefix('#') {
                         anchors.contains(&percent_decode(frag))
                     } else {
                         true
@@ -853,7 +898,7 @@ fn markdown_to_latex_in(
         }
     }
 
-    out
+    crate::comments::restore_latex(&out, &prepared)
 }
 
 fn emit(heading: &mut Option<HeadingCap>, out: &mut String, s: &str) {
@@ -1346,6 +1391,27 @@ mod tests {
         );
         assert!(out.contains("\\href{https://example.com}"));
         assert!(out.contains("{click}"));
+    }
+
+    #[test]
+    fn md_to_latex_does_not_href_dangerous_schemes() {
+        let single = crate::render::LinkMode::single_file();
+        for url in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,hi",
+            "vbscript:msg",
+            "blob:abc",
+        ] {
+            let out = markdown_to_latex(&format!("[click]({url})"), &single);
+            assert!(!out.contains("\\href"), "{url} -> {out}");
+            assert!(out.contains("click"), "{url} -> {out}");
+        }
+        let ok = markdown_to_latex("[click](https://example.com)", &single);
+        assert!(ok.contains("\\href{https://example.com}{click}"), "{ok}");
+        let anchor = markdown_to_latex("## Setup\n\n[Setup](#setup)", &single);
+        assert!(anchor.contains("\\href"), "{anchor}");
+        assert!(anchor.contains("\\hypertarget"), "{anchor}");
     }
 
     #[test]

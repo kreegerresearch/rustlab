@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod check;
+pub mod comments;
 pub mod embed;
 pub mod execute;
 pub mod fence_hl;
@@ -495,9 +496,18 @@ pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize 
 
 /// Recursively walk `dir`, collecting every `.md` file. Skips `README.md`
 /// to match the renderer's "project metadata, not a notebook" rule.
+///
+/// Symlinks are not followed. A symlink file or directory is skipped
+/// with a warning. A regular file is canonicalised and kept only when
+/// that path is still under `dir`, so a directory entry cannot name a
+/// file outside the tree.
 pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
+    let root = match std::fs::canonicalize(dir) {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let mut stack = vec![root.clone()];
     while let Some(d) = stack.pop() {
         let entries = match std::fs::read_dir(&d) {
             Ok(e) => e,
@@ -516,17 +526,46 @@ pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
             if hidden {
                 continue;
             }
-            if p.is_dir() {
+            // `DirEntry::file_type` does not follow symlinks.
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() {
+                eprintln!("warning: skipping symlink {} (not followed)", p.display());
+                continue;
+            }
+            if ft.is_dir() {
                 stack.push(p);
-            } else if p.extension().map_or(false, |e| e == "md")
+            } else if ft.is_file()
+                && p.extension().map_or(false, |e| e == "md")
                 && p.file_name().map_or(true, |n| n != "README.md")
             {
-                out.push(p);
+                match std::fs::canonicalize(&p) {
+                    Ok(canon) if canon.starts_with(&root) => out.push(p),
+                    Ok(canon) => {
+                        eprintln!(
+                            "warning: skipping {} (resolves to {} outside {})",
+                            p.display(),
+                            canon.display(),
+                            root.display()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("warning: skipping {}: {e}", p.display());
+                    }
+                }
             }
         }
     }
     out.sort();
     out
+}
+
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 /// Per-render summary the watcher uses for telemetry: how many
@@ -815,6 +854,10 @@ pub fn cmd_render_json(
     let blocks = parse::parse_notebook(&expanded);
     let rendered = execute::execute_notebook(&blocks);
 
+    let _comment_mode = comments::install(comments::CommentMode::for_format(
+        comments::FormatKind::Json,
+        comments::requested(),
+    ));
     let doc = render_json::render_json(&title, &rendered, theme);
     let json = if pretty {
         serde_json::to_string_pretty(&doc)
@@ -1339,6 +1382,71 @@ impl Format {
     }
 }
 
+/// CLI / rc display choice. `None` keeps each format's default
+/// (HTML, watch, markdown, and JSON on; LaTeX and PDF off).
+pub fn set_comment_display(requested: Option<bool>) {
+    comments::set_requested(requested);
+}
+
+/// Markdown render style. `None` and `"keep"` leave `==` / `%%` in the
+/// file. `"footnotes"` and `"callouts"` rewrite notes. Unknown names error.
+pub fn set_markdown_comment_style(name: Option<&str>) -> Result<(), String> {
+    let style = match name.unwrap_or("keep") {
+        "keep" => comments::MarkdownCommentStyle::Keep,
+        "footnotes" => comments::MarkdownCommentStyle::Footnotes,
+        "callouts" => comments::MarkdownCommentStyle::Callouts,
+        other => {
+            return Err(format!(
+                "--comments-style expected keep, footnotes, or callouts, got {other}"
+            ));
+        }
+    };
+    comments::set_markdown_style(style);
+    Ok(())
+}
+
+/// Drop every well-formed `%%` and unwrap `==` to its text. Code fences,
+/// inline code, and math are left byte-for-byte. Does not execute the
+/// notebook. A directory needs `-o` or `--in-place`. A single file with
+/// neither flag is written to stdout.
+pub fn cmd_strip(input: PathBuf, output: Option<PathBuf>, in_place: bool) -> Result<(), String> {
+    if output.is_some() && in_place {
+        return Err("--output and --in-place cannot be combined".into());
+    }
+    if is_symlink(&input) {
+        return Err(format!("refusing to follow symlink {}", input.display()));
+    }
+    if input.is_dir() && output.is_none() && !in_place {
+        return Err("stripping a directory needs -o <DIR> or --in-place".into());
+    }
+    let files = if input.is_dir() {
+        list_md_files_recursive(&input)
+    } else if input.is_file() {
+        vec![input.clone()]
+    } else {
+        return Err(format!("cannot read {}", input.display()));
+    };
+    for src in &files {
+        let original = std::fs::read_to_string(src)
+            .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
+        let stripped = comments::strip_source(&original);
+        if !input.is_dir() && output.is_none() && !in_place {
+            print!("{stripped}");
+            continue;
+        }
+        let dest = if in_place {
+            src.clone()
+        } else if input.is_dir() {
+            let rel = src.strip_prefix(&input).unwrap_or(src.as_path());
+            output.as_ref().unwrap().join(rel)
+        } else {
+            output.clone().unwrap()
+        };
+        write_output(&dest, stripped.as_bytes());
+    }
+    Ok(())
+}
+
 fn render_output(
     out_path: &PathBuf,
     format: &Format,
@@ -1350,6 +1458,15 @@ fn render_output(
     source_md: Option<&str>,
     input: Option<&Path>,
 ) -> Result<(), String> {
+    let kind = match format {
+        Format::Html => comments::FormatKind::Html,
+        Format::Latex | Format::Pdf => comments::FormatKind::Latex,
+        Format::Markdown { .. } => comments::FormatKind::Markdown,
+    };
+    let _comment_mode = comments::install(comments::CommentMode::for_format(
+        kind,
+        comments::requested(),
+    ));
     match format {
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
@@ -1662,6 +1779,13 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
 }
 
 fn write_output(path: &PathBuf, data: &[u8]) {
+    if is_symlink(path) {
+        eprintln!(
+            "warning: refusing to write through symlink {}",
+            path.display()
+        );
+        return;
+    }
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -2234,6 +2358,54 @@ mod tests {
         let found = list_md_files_recursive(dir.path());
         assert_eq!(found.len(), 1, "hidden entries leaked: {found:?}");
         assert!(found[0].ends_with("real.md"));
+    }
+
+    #[test]
+    fn strip_in_place_does_not_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.md");
+        std::fs::write(&secret, "%%keep me%%\n").unwrap();
+        std::fs::write(dir.path().join("real.md"), "%%gone%%\n").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&secret, dir.path().join("link.md")).unwrap();
+            let linked = outside.path().join("nested");
+            std::fs::create_dir(&linked).unwrap();
+            let nested = linked.join("out.md");
+            std::fs::write(&nested, "%%outside%%\n").unwrap();
+            std::os::unix::fs::symlink(&linked, dir.path().join("sub")).unwrap();
+            cmd_strip(dir.path().to_path_buf(), None, true).unwrap();
+            assert_eq!(std::fs::read_to_string(&secret).unwrap(), "%%keep me%%\n");
+            assert_eq!(std::fs::read_to_string(&nested).unwrap(), "%%outside%%\n");
+            let cleaned = std::fs::read_to_string(dir.path().join("real.md")).unwrap();
+            assert!(!cleaned.contains("gone"), "{cleaned}");
+            assert!(std::fs::symlink_metadata(dir.path().join("link.md"))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            let err = cmd_strip(dir.path().join("link.md"), None, true).unwrap_err();
+            assert!(err.contains("symlink"), "{err}");
+            assert_eq!(std::fs::read_to_string(&secret).unwrap(), "%%keep me%%\n");
+        }
+    }
+
+    #[test]
+    fn write_output_refuses_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.md");
+        std::fs::write(&real, "safe").unwrap();
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.md");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            write_output(&link, b"pwned");
+            assert_eq!(std::fs::read_to_string(&real).unwrap(), "safe");
+            assert!(std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
     }
 
     #[test]
@@ -3422,6 +3594,22 @@ More.\n";
         assert!(!cleaned.contains(GENERATED_HEADER));
         assert!(!cleaned.contains(OUTPUT_BLOCK_START));
         assert!(cleaned.contains("```rustlab\nprint(1)\n```"));
+    }
+
+    #[test]
+    fn cmd_strip_writes_clean_markdown_and_leaves_the_source() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("note.md");
+        let source = "See ==keep== %%gone%%.\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n";
+        std::fs::write(&path, source).unwrap();
+        let out = dir.path().join("clean.md");
+        cmd_strip(path.clone(), Some(out.clone()), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        let cleaned = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            cleaned,
+            "See keep.\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n"
+        );
     }
 
     #[test]

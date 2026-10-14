@@ -362,6 +362,8 @@ fn schedule_render(
         let nb_cache = nb.clone();
         let nonce = state.csp_nonce.clone();
         let jail_root = state.jail_root.clone();
+        let comments_on = state.comments_on;
+        let annotate = state.annotate;
         let render_result = tokio::task::spawn_blocking(move || {
             let mut cache = nb_cache.render_cache.lock().unwrap();
             super::render_for_server_cancellable(
@@ -379,6 +381,8 @@ fn schedule_render(
                 super::PageCtx {
                     nonce: Some(&nonce),
                     jail_root: jail_root.as_deref(),
+                    comments_on,
+                    annotate,
                 },
             )
         })
@@ -574,6 +578,8 @@ mod tests {
             csp_nonce: "testnonce".to_string(),
             bind_port: std::sync::atomic::AtomicU16::new(0),
             jail_root: None,
+            annotate: false,
+            comments_on: true,
         });
         (state, nb)
     }

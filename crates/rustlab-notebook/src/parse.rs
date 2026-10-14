@@ -188,6 +188,8 @@ pub fn parse_notebook(src: &str) -> Vec<Block> {
         } else if trimmed == "```rustlab-widget" || trimmed.starts_with("```rustlab-widget ") {
             // Flush any pending markdown before the widget declaration.
             if !markdown_buf.is_empty() {
+                let blank = markdown_buf.ends_with('\n');
+                crate::comments::preserve_unbound_comment_gap(&mut markdown_buf, blank);
                 blocks.push(Block::Markdown(markdown_buf.clone()));
                 markdown_buf.clear();
             }
@@ -502,9 +504,13 @@ fn extract_code_directives(markdown_buf: &mut String) -> CodeDirectives {
         }
     }
 
-    // Trim trailing whitespace left behind
+    // Trim trailing whitespace left behind. A blank line before the
+    // directive stack must survive when the last prose line is a `%%`
+    // comment, or that comment would bind to the fence.
+    let had_blank = markdown_buf.len() != markdown_buf.trim_end().len();
     let trimmed_len = markdown_buf.trim_end().len();
     markdown_buf.truncate(trimmed_len);
+    crate::comments::preserve_unbound_comment_gap(markdown_buf, had_blank);
 
     directives
 }
@@ -541,8 +547,10 @@ fn extract_mermaid_directives(markdown_buf: &mut String) -> MermaidDirectives {
         }
     }
 
+    let had_blank = markdown_buf.len() != markdown_buf.trim_end().len();
     let trimmed_len = markdown_buf.trim_end().len();
     markdown_buf.truncate(trimmed_len);
+    crate::comments::preserve_unbound_comment_gap(markdown_buf, had_blank);
 
     directives
 }
@@ -967,7 +975,11 @@ y = 2
             .iter()
             .filter(|b| matches!(b, Block::Code { .. }))
             .collect();
-        assert_eq!(code_source_open(codes[0]), Some(false), "closest to the fence wins");
+        assert_eq!(
+            code_source_open(codes[0]),
+            Some(false),
+            "closest to the fence wins"
+        );
         assert_eq!(
             code_source_open(codes[1]),
             Some(false),
@@ -1340,7 +1352,10 @@ y = 2
         let blocks = parse_notebook(src);
         assert!(matches!(
             &blocks[0],
-            Block::Callout { kind: CalloutKind::Warning, .. }
+            Block::Callout {
+                kind: CalloutKind::Warning,
+                ..
+            }
         ));
 
         let src2 = "> [!IMPORTANT]- Title\n> Body.";
@@ -1473,7 +1488,11 @@ tail prose
     fn splice_identity_is_parse_equivalent() {
         let before = parse_notebook(SPLICE_SRC);
         let out = replace_code_block_source(SPLICE_SRC, 0, "a = 1;").unwrap();
-        assert_eq!(before, parse_notebook(&out), "same-source splice is a parse no-op");
+        assert_eq!(
+            before,
+            parse_notebook(&out),
+            "same-source splice is a parse no-op"
+        );
     }
 
     #[test]
@@ -1504,9 +1523,9 @@ real = 1;
         assert!(out.contains("real = 2;"));
         assert!(out.contains("name = \"g\""), "widget body untouched");
         let after = parse_notebook(&out);
-        assert!(
-            after.iter().any(|b| matches!(b, Block::Code { source, .. } if source == "real = 2;")),
-        );
+        assert!(after
+            .iter()
+            .any(|b| matches!(b, Block::Code { source, .. } if source == "real = 2;")),);
         assert!(after.iter().any(|b| matches!(b, Block::Widget { .. })));
     }
 

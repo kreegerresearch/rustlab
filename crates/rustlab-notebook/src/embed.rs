@@ -145,14 +145,13 @@ pub(crate) fn find_embed_refs_in_line(line: &str) -> Vec<(usize, usize, EmbedRef
 // ─────────────────────────── Path resolver ─────────────────────────────
 
 #[derive(Debug)]
-#[allow(dead_code)] // Variants other than NotFound exist for resolver-shape parity;
-                    // expander surfaces these via embed_error_block instead.
 pub(crate) enum EmbedError {
-    NotFound { target: String },
-    HeadingNotFound { target: String, heading: String },
-    BlockIdNotFound { target: String, id: String },
-    Cycle { chain: Vec<PathBuf> },
-    DepthExceeded,
+    NotFound {
+        /// Missing-file versus jail-escape detail. Callers outside tests
+        /// only check `is_err()`; the escape test reads this string.
+        #[cfg_attr(not(test), allow(dead_code))]
+        target: String,
+    },
 }
 
 /// Resolve an embed target (with or without `.md` extension) against the
