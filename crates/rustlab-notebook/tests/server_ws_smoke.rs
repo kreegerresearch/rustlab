@@ -1143,7 +1143,10 @@ async fn directory_link_navigation_opens_target_websocket() {
         body_b.contains("nonce=\"navnonce\""),
         "WS client script was not given the CSP nonce"
     );
-    assert!(body_b.contains("/n/${slug}/ws"), "page B WS client missing");
+    assert!(
+        body_b.contains("/n/${encodeSlug(slug)}/ws"),
+        "page B WS client missing"
+    );
     assert!(
         !body_b.contains("__RL_TOKEN") && !body_b.contains("token="),
         "session token leaked back into the served page"

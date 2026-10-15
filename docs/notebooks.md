@@ -209,9 +209,15 @@ Behaviour:
   `.md` under it** (recursive, `README.md` skipped) behind a
   generated index page at `/`. In a directory, each notebook lives at
   `/n/<relative-path>` with the `.md` stripped (`ch2/filters.md` →
-  `/n/ch2/filters`). An old `/n/<stem>` URL redirects there. A second
-  file with the same name is a different path, so the public URL does
-  not grow a `-N` suffix. A single file stays at `/n/<stem>`. Passing
+  `/n/ch2/filters`). The same path is the notebook's identity for
+  `/raw/`, `/save/`, `/annotate/`, `/plots/`, and the live-reload
+  socket, so `ch1/intro.md` and `ch2/intro.md` do not share a key.
+  An old `/n/<stem>` URL redirects there only when exactly one
+  notebook has that file name (the name itself, or the old lowercased
+  form such as `my-notes` for `My Notes.md`). Two matches return a
+  404 that lists both paths. `/n/<stem>-N` is no longer an alias.
+  A file at the collection root still serves `/n/<stem>` directly.
+  A single file stays at `/n/<stem>`. Passing
   a directory *with* `--obsidian`/`--output` still selects the
   re-render-on-save mode instead.
 - **Directory pages get the same navigation as `render`.** In
@@ -257,7 +263,7 @@ Behaviour:
   that's cleaned up on exit.
 - **Live reload on save** with block-level diffing. The rendered
   page includes a tiny WebSocket client that connects back to
-  `/n/<internal-id>/ws` (one channel per notebook, so a save to one
+  `/n/<path>/ws` (the same identity as the page; one channel per notebook, so a save to one
   notebook in directory mode only reloads that page). On every
   save of the watched `.md`, the server
   re-renders (debounced 250 ms) and chooses the smallest payload

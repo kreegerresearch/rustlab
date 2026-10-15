@@ -271,6 +271,11 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
   }}
   const slug = notebookSlug();
   if (!slug) return;
+  // Encode each segment. encodeURIComponent(slug) would turn `/` into
+  // `%2F` and miss the wildcard route.
+  function encodeSlug(s) {{
+    return String(s).split('/').map(encodeURIComponent).join('/');
+  }}
   const EDITABLE = {editable_js};
   const toggle = document.getElementById('rl-source-toggle');
   const pane = document.getElementById('rl-source-pane');
@@ -282,7 +287,7 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
   function setStatus(t) {{ if (status) status.textContent = t; }}
 
   async function fetchSource() {{
-    const r = await fetch('/raw/' + slug, {{ cache: 'no-store' }});
+    const r = await fetch('/raw/' + encodeSlug(slug), {{ cache: 'no-store' }});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return await r.text();
   }}
@@ -311,7 +316,7 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     if (!cm) return;
     setStatus('saving…');
     try {{
-      const r = await fetch('/save/' + slug, {{
+      const r = await fetch('/save/' + encodeSlug(slug), {{
         method: 'POST',
         headers: {{ 'Content-Type': 'text/markdown' }},
         body: cm.getValue(),
@@ -399,7 +404,7 @@ mod tests {
             out.contains(">Source<"),
             "button reads Source in read-only mode"
         );
-        assert!(out.contains("/raw/' + slug"));
+        assert!(out.contains("/raw/' + encodeSlug(slug)"));
         // No editor assets referenced.
         assert!(
             !out.contains("/assets/codemirror/"),
@@ -439,7 +444,10 @@ mod tests {
             "default CodeMirror font colors must not be re-emitted"
         );
         assert!(out.contains("/assets/codemirror/mode/markdown/markdown.min.js"));
-        assert!(out.contains("/save/' + slug"), "save POST target present");
+        assert!(
+            out.contains("/save/' + encodeSlug(slug)"),
+            "save POST target present"
+        );
         assert!(out.contains("CodeMirror("), "editor is constructed");
         // Reconnect-reload guard + clean-on-save protect unsaved edits.
         assert!(

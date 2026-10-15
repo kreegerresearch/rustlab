@@ -8,9 +8,9 @@
 //! | Path | Handler |
 //! |---|---|
 //! | `GET /` | single: redirect to the one notebook; directory: the index listing |
-//! | `GET /n/{*path}` | directory: `/n/<relative path without .md>`; single-file: `/n/<slug>`. Old `/n/<stem>` redirects. A `{slug}/ws` path with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
-//! | `GET /raw/{slug}` | raw `.md` source from disk (drives the split-view source pane) |
-//! | `POST /save/{slug}` | write edited source back to disk — **only mounted when `--editable`** |
+//! | `GET /n/{*path}` | directory: `/n/<relative path without .md>`; single-file: `/n/<slug>`. An old `/n/<stem>` redirects only when that stem names one notebook. A path ending in `/ws` with `Upgrade: websocket` is the live-reload socket (see [`super::ws`]); matchit will not register that route beside this wildcard |
+//! | `GET /raw/{*slug}` | raw `.md` source from disk (drives the split-view source pane). `slug` may contain `/` |
+//! | `POST /save/{*slug}` | write edited source back to disk — **only mounted when `--editable`** |
 //! | `GET /assets/{path}` | embedded KaTeX/Plotly/CodeMirror bundle from [`super::assets`] |
 //! | `GET /plots/{path}` | served from the per-server tempdir (`<slug>/<file>`) |
 //!
@@ -47,8 +47,10 @@ use super::{assets, ws};
 /// holds exactly one of these; in directory mode, one per discovered
 /// `.md`.
 pub struct Notebook {
-    /// URL-safe identifier (the `{slug}` in `/n/{slug}`). Unique within
-    /// a server instance.
+    /// Notebook identity, unique within a server instance. Directory
+    /// mode: the collection-relative path with `.md` stripped
+    /// (`ch2/intro`). Single-file mode: the URL-safe file stem. A route
+    /// parameter, never a filesystem path.
     pub slug: String,
     /// Absolute path to the source `.md`. The `--editable` save handler
     /// writes here; the raw handler reads here.
@@ -155,9 +157,10 @@ pub struct ServerState {
     /// Index-page heading (directory name, or the lone notebook's title).
     pub index_title: String,
     /// Cross-notebook link resolution: normalized collection-root-relative
-    /// path (`"ch1/notes.md"`) → slug. Keyed by path, not stem — the walk
-    /// is recursive and same-stem files hold distinct `-N` slugs. Single-
-    /// file mode holds just that file, keyed by its bare filename.
+    /// path (`"ch1/notes.md"`) → identity. In directory mode the identity
+    /// is that path with `.md` stripped (`ch1/notes`), so two files named
+    /// `intro.md` do not share a key. Single-file mode holds just that
+    /// file, keyed by its bare filename, and the identity is `slugify`'d.
     pub link_slugs: HashMap<String, String>,
     /// Rendered body of the collection root's `index.md`, shown on `/` —
     /// matching the static build, which hoists it into `index.html`.
@@ -191,9 +194,30 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    /// Look up a notebook by slug.
+    /// Look up a notebook by its identity.
+    ///
+    /// `slug` is a map key (`ch2/intro` in directory mode, a URL-safe stem
+    /// for a single file). Callers must reject `..` before calling this.
+    /// The value is never joined onto the collection root.
     pub fn notebook(&self, slug: &str) -> Option<&Arc<Notebook>> {
         self.notebooks.get(slug)
+    }
+
+    /// Invert `link_slugs` (relative `.md` path → identity) to identity →
+    /// path. Identities are unique, so this cannot drop a notebook that
+    /// shares a file name with another folder.
+    pub(crate) fn rel_by_slug(&self) -> HashMap<&str, &str> {
+        let map: HashMap<&str, &str> = self
+            .link_slugs
+            .iter()
+            .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
+            .collect();
+        debug_assert_eq!(
+            map.len(),
+            self.link_slugs.len(),
+            "two notebooks share an identity; a collection path was dropped"
+        );
+        map
     }
 
     /// The single notebook, when in single-file mode.
@@ -258,17 +282,18 @@ pub fn router(state: Arc<ServerState>) -> Router {
         // a WebSocket and otherwise serves the page (including a notebook
         // whose public path ends in `/ws`).
         .route("/n/{*path}", get(notebook_page))
-        .route("/raw/{slug}", get(raw_source))
+        .route("/raw/{*slug}", get(raw_source))
         .route("/assets/{*path}", get(asset))
         .route("/plots/{*path}", get(plot));
 
-    // The write-back route exists only under `--editable`.
+    // The write-back route exists only under `--editable`. The wildcard
+    // is required because a directory identity contains `/`.
     if state.editable {
-        r = r.route("/save/{slug}", post(save_source));
+        r = r.route("/save/{*slug}", post(save_source));
     }
     // Annotate is implied by --editable and also mounted for --annotate alone.
     if state.annotate || state.editable {
-        r = r.route("/annotate/{slug}", post(annotate_source));
+        r = r.route("/annotate/{*slug}", post(annotate_source));
     }
 
     r.with_state(state.clone())
@@ -298,11 +323,7 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         let loc = format!("/n/{}", nb.slug);
         return Redirect::temporary(&loc).into_response();
     }
-    let rel_of: HashMap<&str, &str> = state
-        .link_slugs
-        .iter()
-        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
-        .collect();
+    let rel_of = state.rel_by_slug();
     let entries: Vec<(String, String)> = state
         .order
         .iter()
@@ -340,22 +361,27 @@ async fn legacy_redirect() -> Redirect {
 
 /// What `GET /n/{path}` should do. The path is never joined to the
 /// filesystem: a hit is a key already in `link_slugs`, or (for an old
-/// stem URL) an internal slug.
+/// unambiguous stem URL) a redirect to that notebook's path.
 enum PageHit {
     Serve(String),
     Redirect(String),
+    /// 404 HTML listing every notebook that shares the requested stem.
+    Ambiguous(String),
     Bad,
     Missing,
 }
 
 /// Resolve a captured `/n/` path.
 ///
-/// Directory mode: `{decoded}.md` in `link_slugs` wins (so two
-/// `filters.md` files are `/n/ch2/filters` and `/n/ch3/filters`). A
-/// single-segment path that is only an internal slug redirects to that
-/// notebook's public path when the two differ. `..`, `.`, empty
-/// segments, `\\`, and NUL are rejected. Single-file mode serves
-/// `/n/<slug>` and does not interpret the path as a collection path.
+/// Directory mode: `{decoded}.md` in `link_slugs` wins, so `/n/intro`
+/// is the root `intro.md` even when `a/intro.md` also exists, and
+/// `/n/ch2/filters` is that file. A single-segment path that misses
+/// every relative path is an old `/n/<stem>` bookmark: it redirects
+/// only when exactly one notebook has that stem (the file name, or the
+/// old lowercased `slugify` form). Two matches return a disambiguation
+/// page. `..`, `.`, empty segments, `\`, and NUL are rejected.
+/// Single-file mode serves `/n/<slug>` and does not interpret the path
+/// as a collection path.
 fn resolve_watch_page(state: &ServerState, path: &str) -> PageHit {
     if path.contains('\\') || path.contains('\0') {
         return PageHit::Bad;
@@ -393,24 +419,83 @@ fn resolve_watch_page(state: &ServerState, path: &str) -> PageHit {
     if let Some(slug) = state.link_slugs.get(&key) {
         return PageHit::Serve(slug.clone());
     }
-    // Legacy `/n/<stem>` (and `/n/<stem>-N`). Path match already won.
+    // Legacy `/n/<stem>`. An exact path already won, so a root
+    // `intro.md` is served above and is not part of this search.
+    // `/n/<stem>-N` is not an alias: it 404s unless a file is named that.
     if !decoded.contains('/') {
-        if let Some(nb) = state.notebook(&decoded) {
-            let rel = state
-                .link_slugs
-                .iter()
-                .find(|(_, s)| s.as_str() == nb.slug.as_str())
-                .map(|(r, _)| r.as_str());
-            if let Some(rel) = rel {
-                let public = crate::render::watch_public_rel(rel);
+        let mut hits: Vec<(String, String)> = Vec::new();
+        for (rel, slug) in &state.link_slugs {
+            if stem_matches(rel, &decoded) {
+                hits.push((slug.clone(), rel.clone()));
+            }
+        }
+        hits.sort();
+        hits.dedup();
+        match hits.len() {
+            0 => {}
+            1 => {
+                let public = crate::render::watch_public_rel(&hits[0].1);
                 if public != decoded {
                     return PageHit::Redirect(format!("/n/{public}"));
                 }
-                return PageHit::Serve(nb.slug.clone());
+                return PageHit::Serve(hits[0].0.clone());
             }
+            _ => return PageHit::Ambiguous(disambiguation_page(state, &decoded, &hits)),
         }
     }
     PageHit::Missing
+}
+
+/// File-name stem equals `decoded`, or its old URL-safe form does
+/// (`My Notes.md` still answers `/n/my-notes` when it is the only match).
+fn stem_matches(rel_md: &str, decoded: &str) -> bool {
+    let file = rel_md.rsplit('/').next().unwrap_or(rel_md);
+    let stem = file.strip_suffix(".md").unwrap_or(file);
+    stem == decoded || slugify(stem) == decoded
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// 404 body for an old stem URL that names more than one notebook.
+/// Titles and paths are escaped. There is no script.
+fn disambiguation_page(state: &ServerState, stem: &str, hits: &[(String, String)]) -> String {
+    let mut rows = hits.to_vec();
+    rows.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut items = String::new();
+    for (slug, rel) in &rows {
+        let href = format!("/n/{}", crate::render::watch_public_rel(rel));
+        let title = state
+            .notebook(slug)
+            .map(|nb| nb.title.as_str())
+            .unwrap_or(rel.as_str());
+        items.push_str(&format!(
+            "<li><a href=\"{href}\">{}</a> ({})</li>\n",
+            escape_html(title),
+            escape_html(rel),
+        ));
+    }
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><title>Ambiguous notebook</title></head>\n\
+<body>\n<h1>More than one notebook matches {stem}</h1>\n\
+<p>This short name is not unique. Open one of these notebooks:</p>\n<ul>\n{items}</ul>\n</body></html>\n",
+        stem = escape_html(stem),
+    )
+}
+
+/// `true` when `slug` must not be used as a map key: empty, `.`, `..`,
+/// `\`, or NUL. The caller has already percent-decoded it. This does
+/// not touch the filesystem.
+pub(crate) fn slug_segments_unsafe(slug: &str) -> bool {
+    if slug.is_empty() || slug.contains('\\') || slug.contains('\0') {
+        return true;
+    }
+    slug.split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
 }
 
 async fn notebook_page(
@@ -437,14 +522,18 @@ async fn notebook_page(
     serve_notebook_path(state, path).await
 }
 
-/// Internal live-reload socket: exactly one slug segment plus `/ws`.
-/// Public page paths such as `ch2/filters` do not match.
+/// Live-reload socket: the notebook identity plus a trailing `/ws`.
+///
+/// `ch2/intro/ws` is the socket for `ch2/intro`. `ch2/intro/ws/ws` is
+/// the socket for a notebook whose path is `ch2/intro/ws`. A path that
+/// does not end in `/ws` is a page. A GET without `Upgrade: websocket`
+/// falls through to the page lookup, so `ch2/intro/ws.md` stays reachable.
 fn ws_slug(path: &str) -> Option<String> {
-    let (slug, rest) = path.split_once('/')?;
-    if rest == "ws" && !slug.is_empty() {
-        Some(slug.to_string())
-    } else {
+    let slug = path.strip_suffix("/ws")?;
+    if slug.is_empty() || slug.ends_with('/') {
         None
+    } else {
+        Some(slug.to_string())
     }
 }
 
@@ -464,6 +553,12 @@ pub(super) async fn serve_notebook_path(state: Arc<ServerState>, path: String) -
             None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
         },
         PageHit::Redirect(loc) => Redirect::temporary(&loc).into_response(),
+        PageHit::Ambiguous(html) => (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
         PageHit::Bad => (StatusCode::BAD_REQUEST, "bad path").into_response(),
         PageHit::Missing => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
     }
@@ -584,6 +679,9 @@ async fn save_source(
         let body = auth::origin_rejection_body(&headers, port);
         return (StatusCode::FORBIDDEN, body).into_response();
     }
+    if slug_segments_unsafe(&slug) {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    }
 
     let Some(nb) = state.notebook(&slug) else {
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
@@ -635,6 +733,9 @@ async fn annotate_source(
     if auth::authorize_mutate(&headers, port).is_err() {
         let msg = auth::origin_rejection_body(&headers, port);
         return (StatusCode::FORBIDDEN, msg).into_response();
+    }
+    if slug_segments_unsafe(&slug) {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
     }
     if body.len() > 64 * 1024 {
         return (StatusCode::BAD_REQUEST, "comment is too long").into_response();
@@ -792,6 +893,9 @@ async fn raw_source(
     State(state): State<Arc<ServerState>>,
     AxPath(slug): AxPath<String>,
 ) -> Response {
+    if slug_segments_unsafe(&slug) {
+        return (StatusCode::BAD_REQUEST, "bad path").into_response();
+    }
     let Some(nb) = state.notebook(&slug) else {
         return (StatusCode::NOT_FOUND, "notebook not found").into_response();
     };
@@ -923,6 +1027,18 @@ mod tests {
         assert_eq!(slugify("--trim--"), "trim");
         assert_eq!(slugify("***"), "notebook");
         assert_eq!(slugify("Already-Slug"), "already-slug");
+    }
+
+    #[test]
+    fn ws_slug_keeps_directory_separators() {
+        assert_eq!(ws_slug("a/intro/ws").as_deref(), Some("a/intro"));
+        assert_eq!(ws_slug("intro/ws").as_deref(), Some("intro"));
+        assert_eq!(ws_slug("a/intro/ws/ws").as_deref(), Some("a/intro/ws"));
+        assert!(ws_slug("a/intro").is_none());
+        assert!(ws_slug("ws").is_none());
+        assert!(slug_segments_unsafe("a/../intro"));
+        assert!(slug_segments_unsafe("a/./intro"));
+        assert!(!slug_segments_unsafe("a/intro"));
     }
 
     #[tokio::test]

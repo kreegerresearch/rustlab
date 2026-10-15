@@ -118,10 +118,11 @@ pub enum LinkMode {
     /// `/n/ch2/filters`). Single-file serves emit `/n/<slug>`.
     ///
     /// `slugs` maps normalized collection-root-relative paths
-    /// (`"ch1/notes.md"`) to internal slugs. Keyed by path, not stem: the
-    /// server walk is recursive and same-stem files in different
-    /// directories hold distinct `-N` suffixed slugs. Those slugs stay
-    /// internal (WebSocket, `/raw/`, `/save/`, plots). `current_rel_dir` is
+    /// (`"ch1/notes.md"`) to notebook identities. In directory mode that
+    /// identity is the same path with `.md` stripped, so `ch1/intro.md`
+    /// and `ch2/intro.md` do not share a key. WebSocket, `/raw/`,
+    /// `/save/`, `/annotate/`, and plot directories use that identity.
+    /// `current_rel_dir` is
     /// the linking notebook's directory relative to the root (`""` at the
     /// root), used to resolve `./` and `../`. When `index_at_root` is set
     /// (directory mode), root `index.md` maps to `/` — the index page's
@@ -253,7 +254,14 @@ fn rewrite_link_dest_to(
 /// the path the server already listed — it is not a filesystem join.
 pub(crate) fn watch_public_rel(rel_md: &str) -> String {
     let bare = rel_md.strip_suffix(".md").unwrap_or(rel_md);
-    bare.split('/')
+    encode_watch_segments(bare)
+}
+
+/// Percent-encode each `/`-separated segment of a notebook identity or
+/// public path. `/` stays a separator so `/plots/ch2/intro/…` is several
+/// path segments, not one `%2F`-encoded segment.
+pub(crate) fn encode_watch_segments(path: &str) -> String {
+    path.split('/')
         .filter(|s| !s.is_empty())
         .map(encode_path_segment)
         .collect::<Vec<_>>()
