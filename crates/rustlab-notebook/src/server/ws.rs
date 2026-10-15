@@ -448,7 +448,11 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   }
   const slug = notebookSlug();
   if (!slug) return;
-  const url = `ws://${location.host}/n/${slug}/ws`;
+  // One encodeURIComponent() would hide the slashes in `ch2/intro`.
+  function encodeSlug(s) {
+    return String(s).split('/').map(encodeURIComponent).join('/');
+  }
+  const url = `ws://${location.host}/n/${encodeSlug(slug)}/ws`;
   let ws;
   let reconnectDelay = 500;
   let reconnectTries = 0;

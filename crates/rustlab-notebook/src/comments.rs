@@ -3520,6 +3520,9 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
     var i = p.indexOf('/n/');
     return i >= 0 ? decodeURIComponent(p.slice(i + 3)) : '';
   }}
+  function encodeSlug(s) {{
+    return String(s).split('/').map(encodeURIComponent).join('/');
+  }}
   function setFileHash(hex) {{
     var m = document.querySelector('meta[name="rl-source-sha256"]');
     if (m && hex) m.setAttribute('content', hex);
@@ -3530,7 +3533,7 @@ pub(crate) fn annotate_script(nonce: Option<&str>) -> String {
   }}
   function post(body, kind) {{
     var expect = fileHash();
-    fetch('/annotate/' + encodeURIComponent(slug()), {{
+    fetch('/annotate/' + encodeSlug(slug()), {{
       method: 'POST',
       headers: {{
         'Content-Type': 'application/json',

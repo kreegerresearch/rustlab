@@ -235,8 +235,8 @@ fn build_state(
     for path in &sources {
         // Warn-and-skip, matching cmd_render_dir: one unreadable file
         // (an editor's stale lock, a permissions hiccup) must not refuse
-        // to start the whole server. Read BEFORE assigning the slug so a
-        // skipped file doesn't consume a collision suffix.
+        // to start the whole server. Read before assigning an identity so
+        // a skipped file is not listed.
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
@@ -244,7 +244,6 @@ fn build_state(
                 continue;
             }
         };
-        let slug = unique_slug(path, &mut used);
         let title = crate::extract_title(&source, &path.to_path_buf());
         let (fm, _) = crate::parse::extract_frontmatter(&source);
         // Sort on the path relative to the collection root, not the bare
@@ -252,7 +251,8 @@ fn build_state(
         // `ch2/01-start.md` must stay in chapter order. Keying on the
         // filename alone interleaved chapters and made same-named files in
         // different directories compare equal. Joined with `/` regardless
-        // of platform — the same string doubles as the link-resolver key.
+        // of platform — the same string doubles as the link-resolver key
+        // and, in directory mode, the notebook identity.
         let rel = if is_dir {
             path.strip_prefix(canonical_input)
                 .unwrap_or(path)
@@ -267,6 +267,37 @@ fn build_state(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default()
         };
+        // Directory identity is the collection-relative path with one
+        // `.md` stripped (`ch2/intro.md` → `ch2/intro`), case preserved.
+        // A stem-only id (`intro`, then `intro-2`) made `/raw`, `/save`,
+        // `/annotate`, plot dirs, and the live-reload channel address the
+        // file name, and a same-stem URL could only name one of them.
+        // Single-file watch keeps the URL-safe stem: there is no
+        // collection path, and existing `/n/<stem>` bookmarks stay valid.
+        let slug = if is_dir {
+            match directory_identity(&rel) {
+                Some(s) => s,
+                None => {
+                    eprintln!(
+                        "warning: refusing notebook {} — path is not a safe identity",
+                        path.display()
+                    );
+                    continue;
+                }
+            }
+        } else {
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            http::slugify(&stem)
+        };
+        if !used.insert(slug.clone()) {
+            anyhow::bail!(
+                "two notebooks share the identity '{slug}' ({}); refusing to drop one",
+                path.display()
+            );
+        }
         sort_keys.push((fm.order, rel));
         entries.push((slug, path.clone(), title));
     }
@@ -437,39 +468,32 @@ fn warn_unresolved_md_links(html: &str) {
     }
 }
 
-/// Derive a unique, URL-safe slug for `path`, deduping collisions with a
-/// `-N` suffix. Mutates `used` to record the chosen slug.
+/// Directory-watch identity for a collection-relative `.md` path.
 ///
-/// Suffixes are positional over the sorted walk: adding or removing a
-/// same-stem file renumbers its collision group on the next start, so
-/// `/n/<slug>` URLs are stable across restarts only for a fixed file set —
-/// don't treat them as durable identities.
-fn unique_slug(path: &Path, used: &mut HashSet<String>) -> String {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let base = http::slugify(&stem);
-    if used.insert(base.clone()) {
-        return base;
-    }
-    let mut n = 2;
-    loop {
-        let cand = format!("{base}-{n}");
-        if used.insert(cand.clone()) {
-            return cand;
+/// `ch2/intro.md` → `ch2/intro`. One `.md` suffix is stripped. Case and
+/// `/` are kept, so `ch1/intro.md` and `ch2/intro.md` (and `Intro.md`)
+/// stay distinct. This string is a map key and a URL path. It is never
+/// joined onto the collection root. `.`, `..`, empty, `\`, and NUL
+/// segments are rejected — a listing should not produce them.
+fn directory_identity(rel_md: &str) -> Option<String> {
+    let bare = rel_md.strip_suffix(".md").unwrap_or(rel_md);
+    let mut parts = Vec::new();
+    for seg in bare.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." || seg.contains('\\') || seg.contains('\0') {
+            return None;
         }
-        n += 1;
+        parts.push(seg);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
     }
 }
 
 /// `(slug, title)` and collection-relative paths, both in listing order.
 pub(super) fn listing_and_rels(state: &http::ServerState) -> (Vec<(String, String)>, Vec<String>) {
-    let rel_of: std::collections::HashMap<&str, &str> = state
-        .link_slugs
-        .iter()
-        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
-        .collect();
+    let rel_of = state.rel_by_slug();
     let mut listing = Vec::new();
     let mut rels = Vec::new();
     for slug in &state.order {
@@ -481,9 +505,7 @@ pub(super) fn listing_and_rels(state: &http::ServerState) -> (Vec<(String, Strin
     (listing, rels)
 }
 
-/// Insert `<meta name="rl-slug">` immediately after `<head>` so scripts
-/// in the head can see the internal id before the body exists. Slugs are
-/// `[a-z0-9-]`; anything else is escaped.
+/// Insert the source-hash meta immediately after `<head>`.
 fn stamp_source_hash(html: &str, source: &str) -> String {
     let meta = crate::comments::source_hash_meta(source);
     let Some(head) = html.find("<head>") else {
@@ -498,6 +520,10 @@ fn stamp_source_hash(html: &str, source: &str) -> String {
     out
 }
 
+/// Insert `<meta name="rl-slug">` immediately after `<head>` so scripts
+/// in the head can see the notebook identity before the body exists.
+/// Directory identities contain `/` and may contain any listed path
+/// characters; `&`, `"`, and `<` are escaped.
 fn stamp_rl_slug(html: &str, slug: &str) -> String {
     let safe = slug
         .replace('&', "&amp;")
@@ -598,11 +624,7 @@ pub(super) fn collection_browser(
     if state.single {
         return None;
     }
-    let rel_of: std::collections::HashMap<&str, &str> = state
-        .link_slugs
-        .iter()
-        .map(|(rel, slug)| (slug.as_str(), rel.as_str()))
-        .collect();
+    let rel_of = state.rel_by_slug();
     let rels: Vec<String> = state
         .order
         .iter()
@@ -758,8 +780,13 @@ pub(super) fn render_for_server_cancellable(
         },
     };
 
+    // `slug` is a relative identity (`ch2/intro`), not a path the client
+    // chose. Joining it under the plot tempdir keeps each notebook's
+    // artefacts apart, including two files that share a stem. The href
+    // percent-encodes each segment so a space survives the round trip
+    // through axum's decoder. The handler still rejects `..`.
     let plot_dir = plot_root.join(slug);
-    let plot_href = format!("/plots/{slug}");
+    let plot_href = format!("/plots/{}", crate::render::encode_watch_segments(slug));
     // Same resolution as batch HTML: frontmatter, else rc, else open.
     // A remembered reader toggle in the page script still wins on live
     // updates for cells they have opened or closed.
@@ -949,6 +976,59 @@ mod tests {
         (res.status(), loc)
     }
 
+    /// GET `uri` and return status plus body. Does not require 200.
+    async fn get_full(app: &axum::Router, uri: &str) -> (axum::http::StatusCode, String) {
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .header(
+                        axum::http::header::HOST,
+                        format!("127.0.0.1:{TEST_BIND_PORT}"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let body = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    async fn post_full(
+        app: &axum::Router,
+        uri: &str,
+        content_type: &str,
+        extra: &[(&str, &str)],
+        body: &str,
+    ) -> (axum::http::StatusCode, String) {
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(
+                axum::http::header::HOST,
+                format!("127.0.0.1:{TEST_BIND_PORT}"),
+            )
+            .header(
+                axum::http::header::ORIGIN,
+                format!("http://127.0.0.1:{TEST_BIND_PORT}"),
+            )
+            .header(axum::http::header::CONTENT_TYPE, content_type);
+        for (name, value) in extra {
+            req = req.header(*name, *value);
+        }
+        let res = app
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
     #[test]
     fn default_opts_are_sensible() {
         let o = ServerOpts::default();
@@ -958,13 +1038,17 @@ mod tests {
     }
 
     #[test]
-    fn unique_slug_dedupes_collisions() {
-        let mut used = HashSet::new();
-        // Two different dirs, same stem → distinct slugs.
-        let a = unique_slug(Path::new("/x/intro.md"), &mut used);
-        let b = unique_slug(Path::new("/y/intro.md"), &mut used);
-        assert_eq!(a, "intro");
-        assert_eq!(b, "intro-2");
+    fn directory_identity_keeps_the_collection_path() {
+        assert_eq!(directory_identity("intro.md").as_deref(), Some("intro"));
+        assert_eq!(directory_identity("a/intro.md").as_deref(), Some("a/intro"));
+        assert_eq!(
+            directory_identity("a/b/intro.md").as_deref(),
+            Some("a/b/intro")
+        );
+        assert_eq!(directory_identity("c/Intro.md").as_deref(), Some("c/Intro"));
+        assert!(directory_identity("a/../intro.md").is_none());
+        assert!(directory_identity("../intro.md").is_none());
+        assert!(directory_identity(".md").is_none());
     }
 
     #[test]
@@ -1735,16 +1819,20 @@ mod tests {
         assert!(page2.contains(">filters.md<"));
         assert!(page2.contains("href=\"/n/ch2/filters\""));
         assert!(page2.contains("href=\"/n/ch3/filters\""));
-        // The public URL is the path, even when the internal slug is `filters-2`.
         assert!(!page2.contains("href=\"/n/filters-2\""));
         assert!(!page3.contains("href=\"/n/filters-2\""));
+        assert_eq!(ch2, "ch2/filters");
+        assert_eq!(ch3, "ch3/filters");
 
-        let (st, loc) = get_redirect(&app, &format!("/n/{ch2}")).await;
-        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(loc.as_deref(), Some("/n/ch2/filters"));
-        let (st, loc) = get_redirect(&app, &format!("/n/{ch3}")).await;
-        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(loc.as_deref(), Some("/n/ch3/filters"));
+        // Two files share the stem, so the old short URL must not pick one.
+        let (st, body) = get_full(&app, "/n/filters").await;
+        assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+        assert!(body.contains("href=\"/n/ch2/filters\""), "{body}");
+        assert!(body.contains("href=\"/n/ch3/filters\""), "{body}");
+        assert!(!body.contains("<script"), "{body}");
+        let (st, loc) = get_redirect(&app, "/n/filters-2").await;
+        assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+        assert!(loc.is_none(), "filters-2 redirected to {loc:?}");
 
         let bad = get_status(&app, "/n/ch2/%2e%2e/intro").await;
         assert!(
@@ -2147,13 +2235,13 @@ mod tests {
         let note = state
             .order
             .iter()
-            .find(|s| s.starts_with("note"))
+            .find(|s| s.as_str() == "ch1/note")
             .cloned()
             .expect("nested slug");
         let escape = state
             .order
             .iter()
-            .find(|s| s.starts_with("escape"))
+            .find(|s| s.as_str() == "ch1/escape")
             .cloned()
             .expect("escape slug");
         let app = serve_test(state);
@@ -2177,5 +2265,273 @@ mod tests {
         assert!(escaped.contains("missing-figure"), "{escaped}");
         let (status, _, _) = get_bytes(&app, &format!("/plots/{escape}/prose-1.png")).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
+    }
+
+    /// `intro.md` at the root, under `a/`, and under `a/b/`, plus `c/Intro.md`.
+    fn write_same_stem_collection(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        std::fs::create_dir_all(root.join("c")).unwrap();
+        let mut root_png = crate::prose_media::TINY_PNG.to_vec();
+        root_png.extend_from_slice(b"ROOT");
+        let mut a_png = crate::prose_media::TINY_PNG.to_vec();
+        a_png.extend_from_slice(b"AAA");
+        let mut ab_png = crate::prose_media::TINY_PNG.to_vec();
+        ab_png.extend_from_slice(b"ABB");
+        std::fs::write(root.join("dot.png"), &root_png).unwrap();
+        std::fs::write(root.join("a").join("dot.png"), &a_png).unwrap();
+        std::fs::write(root.join("a/b").join("dot.png"), &ab_png).unwrap();
+        std::fs::write(
+            root.join("intro.md"),
+            "# hello constant world\n\nROOT-INTRO\n\n![p](dot.png)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("a/intro.md"),
+            "# A\n\nDIR-A-INTRO\n\n![p](dot.png)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("a/b/intro.md"),
+            "# AB\n\nDIR-AB-INTRO\n\n![p](dot.png)\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("c/Intro.md"), "# Case\n\nCASE-INTRO\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn same_stem_notebooks_stay_distinct_in_the_browser_and_on_disk() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        write_same_stem_collection(dir.path());
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            true,
+            true,
+            false,
+            "testnonce".into(),
+            Some(canon.clone()),
+        )
+        .unwrap();
+        let id = |rel: &str| state.link_slugs.get(rel).unwrap().clone();
+        assert_eq!(id("intro.md"), "intro");
+        assert_eq!(id("a/intro.md"), "a/intro");
+        assert_eq!(id("a/b/intro.md"), "a/b/intro");
+        assert_eq!(id("c/Intro.md"), "c/Intro");
+        assert_eq!(state.notebooks.len(), 4, "a same-stem file was dropped");
+
+        let root_plot = std::fs::read(state.plot_dir.path().join("intro/prose-1.png")).unwrap();
+        let a_plot = std::fs::read(state.plot_dir.path().join("a/intro/prose-1.png")).unwrap();
+        let ab_plot = std::fs::read(state.plot_dir.path().join("a/b/intro/prose-1.png")).unwrap();
+        assert!(root_plot.ends_with(b"ROOT"));
+        assert!(a_plot.ends_with(b"AAA"));
+        assert!(ab_plot.ends_with(b"ABB"));
+        assert_ne!(root_plot, a_plot);
+        assert_ne!(a_plot, ab_plot);
+
+        let nb_a = state.notebook("a/intro").unwrap().clone();
+        let mut live_a = nb_a.broadcast.subscribe();
+        let mut live_ab = state.notebook("a/b/intro").unwrap().broadcast.subscribe();
+        let mut live_root = state.notebook("intro").unwrap().broadcast.subscribe();
+
+        let app = serve_test(state.clone());
+        let index = get_body(&app, "/").await;
+        let names = crate::file_browser::path_texts(&index);
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "intro.md").count(),
+            3,
+            "file browser dropped a same-named notebook: {names:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "Intro.md").count(),
+            1,
+            "case-distinct file missing: {names:?}"
+        );
+        assert!(index.contains("href=\"/n/intro\""));
+        assert!(index.contains("href=\"/n/a/intro\""));
+        assert!(index.contains("href=\"/n/a/b/intro\""));
+        assert!(index.contains("href=\"/n/c/Intro\""));
+
+        let root_page = get_body(&app, "/n/intro").await;
+        let a_page = get_body(&app, "/n/a/intro").await;
+        let ab_page = get_body(&app, "/n/a/b/intro").await;
+        let case_page = get_body(&app, "/n/c/Intro").await;
+        assert!(root_page.contains("ROOT-INTRO"), "{root_page}");
+        assert!(a_page.contains("DIR-A-INTRO") && !a_page.contains("DIR-AB-INTRO"));
+        assert!(ab_page.contains("DIR-AB-INTRO") && !ab_page.contains("DIR-A-INTRO"));
+        assert!(case_page.contains("CASE-INTRO"));
+        assert!(root_page.contains("content=\"intro\""));
+        assert!(a_page.contains("content=\"a/intro\""));
+        assert!(ab_page.contains("content=\"a/b/intro\""));
+        assert!(case_page.contains("content=\"c/Intro\""));
+        assert_eq!(
+            crate::file_browser::path_texts(&a_page)
+                .iter()
+                .filter(|n| n.as_str() == "intro.md")
+                .count(),
+            3
+        );
+
+        let raw_a = get_body(&app, "/raw/a/intro").await;
+        assert!(raw_a.contains("DIR-A-INTRO"));
+        assert!(!raw_a.contains("DIR-AB-INTRO"));
+        let (st, _, bytes) = get_bytes(&app, "/plots/a/intro/prose-1.png").await;
+        assert_eq!(st, axum::http::StatusCode::OK);
+        assert!(bytes.ends_with(b"AAA"));
+        let (st, _, bytes) = get_bytes(&app, "/plots/a/b/intro/prose-1.png").await;
+        assert_eq!(st, axum::http::StatusCode::OK);
+        assert!(bytes.ends_with(b"ABB"));
+        let (st, _, bytes) = get_bytes(&app, "/plots/intro/prose-1.png").await;
+        assert_eq!(st, axum::http::StatusCode::OK);
+        assert!(bytes.ends_with(b"ROOT"));
+
+        // Root path wins over the nested files that share the stem.
+        let (st, loc) = get_redirect(&app, "/n/intro").await;
+        assert_eq!(st, axum::http::StatusCode::OK);
+        assert!(loc.is_none());
+        // The differently cased file is the only stem match for `/n/Intro`.
+        let (st, loc) = get_redirect(&app, "/n/Intro").await;
+        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(loc.as_deref(), Some("/n/c/Intro"));
+
+        let before_root = std::fs::read_to_string(canon.join("intro.md")).unwrap();
+        let before_ab = std::fs::read_to_string(canon.join("a/b/intro.md")).unwrap();
+        let before_case = std::fs::read_to_string(canon.join("c/Intro.md")).unwrap();
+        let (st, body) = post_full(
+            &app,
+            "/save/a/intro",
+            "text/markdown",
+            &[],
+            "# A\n\nDIR-A-INTRO\n\nedited-a\n",
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::OK, "{body}");
+        assert!(std::fs::read_to_string(canon.join("a/intro.md"))
+            .unwrap()
+            .contains("edited-a"));
+        assert_eq!(
+            std::fs::read_to_string(canon.join("intro.md")).unwrap(),
+            before_root
+        );
+        assert_eq!(
+            std::fs::read_to_string(canon.join("a/b/intro.md")).unwrap(),
+            before_ab
+        );
+        assert_eq!(
+            std::fs::read_to_string(canon.join("c/Intro.md")).unwrap(),
+            before_case
+        );
+
+        let (st, _) = post_full(
+            &app,
+            "/save/a/%2e%2e/intro",
+            "text/markdown",
+            &[],
+            "# hijack\n",
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(canon.join("intro.md")).unwrap(),
+            before_root,
+            "slug traversal wrote another notebook"
+        );
+        let (st, _) = get_full(&app, "/raw/a/%2e%2e/intro").await;
+        assert_eq!(st, axum::http::StatusCode::BAD_REQUEST);
+
+        let hash = crate::comments::sha256_hex(before_root.as_bytes());
+        let (st, body) = post_full(
+            &app,
+            "/annotate/intro",
+            "application/json",
+            &[("If-Match", hash.as_str())],
+            r#"{"op":"insert","target":"prose","start":8,"end":16,"text":"constant","comment":"why"}"#,
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::OK, "{body}");
+        let annotated = std::fs::read_to_string(canon.join("intro.md")).unwrap();
+        assert!(annotated.contains("why"), "{annotated}");
+        assert!(!std::fs::read_to_string(canon.join("a/intro.md"))
+            .unwrap()
+            .contains("why"));
+        assert_eq!(
+            std::fs::read_to_string(canon.join("a/b/intro.md")).unwrap(),
+            before_ab
+        );
+
+        render_loop::schedule_render(theme, state, nb_a, None);
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(20), live_a.recv()).await;
+        assert!(
+            matches!(msg, Ok(Ok(_))),
+            "live reload did not reach a/intro: {msg:?}"
+        );
+        assert!(live_ab.try_recv().is_err(), "live reload updated a/b/intro");
+        assert!(
+            live_root.try_recv().is_err(),
+            "live reload updated the root intro"
+        );
+    }
+
+    #[test]
+    fn batch_render_same_stem_writes_distinct_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_same_stem_collection(dir.path());
+        let out = tempfile::tempdir().unwrap();
+        crate::cmd_render_dir(
+            dir.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            crate::Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .unwrap();
+        let root = std::fs::read_to_string(out.path().join("intro.html")).unwrap();
+        let a = std::fs::read_to_string(out.path().join("a/intro.html")).unwrap();
+        let ab = std::fs::read_to_string(out.path().join("a/b/intro.html")).unwrap();
+        let case = std::fs::read_to_string(out.path().join("c/Intro.html")).unwrap();
+        assert!(root.contains("ROOT-INTRO"));
+        assert!(a.contains("DIR-A-INTRO"));
+        assert!(ab.contains("DIR-AB-INTRO"));
+        assert!(case.contains("CASE-INTRO"));
+        assert_ne!(root, a);
+        assert_ne!(a, ab);
+        let root_png = std::fs::read(out.path().join("plots/intro/prose-1.png")).unwrap();
+        let a_png = std::fs::read(out.path().join("a/plots/intro/prose-1.png")).unwrap();
+        let ab_png = std::fs::read(out.path().join("a/b/plots/intro/prose-1.png")).unwrap();
+        assert!(root_png.ends_with(b"ROOT"));
+        assert!(a_png.ends_with(b"AAA"));
+        assert!(ab_png.ends_with(b"ABB"));
+    }
+
+    #[tokio::test]
+    async fn legacy_stem_redirects_only_when_the_name_is_unique() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch2")).unwrap();
+        std::fs::write(dir.path().join("ch2/only.md"), "# Only\n").unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            false,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(state.link_slugs.get("ch2/only.md").unwrap(), "ch2/only");
+        let app = serve_test(state);
+        let (st, loc) = get_redirect(&app, "/n/only").await;
+        assert_eq!(st, axum::http::StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(loc.as_deref(), Some("/n/ch2/only"));
+        let page = get_body(&app, "/n/ch2/only").await;
+        assert!(page.contains("Only"));
+        let (st, loc) = get_redirect(&app, "/n/missing").await;
+        assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
+        assert!(loc.is_none());
     }
 }

@@ -178,7 +178,10 @@ swap of the directory entry after the check cannot retarget the write
 onto another file. A `.md` name that points at an SVG, or at a file
 outside the jail, is refused and the target is left untouched. The route
 cannot create `eval.svg` or any other non-`.md` path: the slug selects a
-notebook already in the server map.
+notebook already in the server map. In a directory watch the slug is the
+collection-relative path with `.md` stripped and may contain `/`. It is
+only a map key. A `..`, `.`, empty, `\`, or NUL segment is rejected
+before lookup, and the slug is never joined onto the collection root.
 
 `rustlab-notebook strip` does not follow symlinks. A symlink file or
 directory named as the input is refused. A symlink inside a directory

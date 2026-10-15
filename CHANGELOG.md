@@ -9,6 +9,19 @@ should re-validate against those entries when upgrading.
 ## 0.3.9
 
 ### Breaking / behavior changes
+- **Directory `notebook watch` identifies a notebook by its collection path.**
+  `ch2/intro.md` is `/n/ch2/intro` for the page, `/raw/ch2/intro`,
+  `/save/ch2/intro`, `/annotate/ch2/intro`, `/plots/ch2/intro/`, and the
+  live-reload socket `/n/ch2/intro/ws`. An old `/n/<stem>` URL redirects
+  only when exactly one notebook has that file name (the name as written,
+  or the previous lowercased form, so `/n/my-notes` still finds a lone
+  `My Notes.md`). Two files named `filters.md` no longer send
+  `/n/filters` to one of them: that URL is a 404 listing both paths.
+  `/n/filters-2` is not an alias. A notebook at the collection root
+  still serves `/n/intro` directly, even when a nested `intro.md`
+  exists. A single-file `watch` stays at `/n/<stem>`. Migration:
+  replace bookmarks of `/n/<stem>` and `/n/<stem>-N` for a nested
+  notebook with `/n/<folder>/<stem>`.
 - **`@name` calls the function, not a variable of the same name.**
   `sin = [1, 2, 3]; h = @sin; h(0)` is the builtin `sin(0)` (0). It
   used to be looked up again as a normal call, so a vector or lambda
@@ -75,6 +88,13 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **Same-named notebooks in different folders stay separate in `notebook watch`.**
+  The file browser lists every `intro.md`. Saving or annotating one
+  does not write the other. Plot files and live reload follow the
+  notebook you have open. Previously the internal id was the file
+  stem (`intro`, then `intro-2`), so a short URL, a case-only
+  difference (`Intro.md` / `intro.md`), and every map keyed by that
+  id could address the wrong file.
 - **A lambda copies only the names its body uses.** `f = @(x) x + a`
   used to clone the entire workspace into the closure. The next lambda
   then cloned that closure, so lambdas created in a loop, nested, or

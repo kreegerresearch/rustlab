@@ -306,7 +306,7 @@ fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
 /// for this notebook is cancelled first. `force_from` is one-shot: it
 /// applies to this render only, and if this render is preempted the
 /// force is dropped with it (the user just clicks ▶ Run again).
-fn schedule_render(
+pub(super) fn schedule_render(
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
     nb: Arc<Notebook>,
@@ -551,6 +551,25 @@ mod tests {
         // A non-canonical spelling of the same file still resolves.
         let alt = dir.path().join("./note.md");
         assert_eq!(match_slug(&by_path, &alt).as_deref(), Some("note"));
+    }
+
+    #[test]
+    fn match_slug_filename_fallback_refuses_two_intros() {
+        let dir = TempDir::new().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let pa = a.join("intro.md");
+        let pb = b.join("intro.md");
+        std::fs::write(&pa, "a").unwrap();
+        std::fs::write(&pb, "b").unwrap();
+        let mut by_path = Map::new();
+        by_path.insert(std::fs::canonicalize(&pa).unwrap(), "a/intro".to_string());
+        by_path.insert(std::fs::canonicalize(&pb).unwrap(), "b/intro".to_string());
+        let other = dir.path().join("intro.md");
+        std::fs::write(&other, "x").unwrap();
+        assert!(match_slug(&by_path, &other).is_none());
     }
 
     /// Build a single-notebook state for the coordinator test.

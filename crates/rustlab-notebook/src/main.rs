@@ -101,7 +101,7 @@ enum Command {
             rustlab-notebook watch notebooks/ -o vault/ --obsidian         # re-render on save, vault-native two-dir\n  \
             rustlab-notebook watch notebooks/ --debounce-ms 500            # quieter editor, slower triggers\n\n\
             Re-render-on-save is markdown-only currently.\n\n\
-            A directory watch shows a file browser of file names. Pages are /n/<relative-path> without .md; an old /n/<stem> redirects. A single file stays /n/<stem> and has no file browser.")]
+            A directory watch shows a file browser of file names. Pages are /n/<relative-path> without .md. An old /n/<stem> redirects only when that name is unique; otherwise the page lists the matches. A single file stays /n/<stem> and has no file browser.")]
     Watch {
         /// Notebook .md file (interactive server mode) or directory of .md
         /// files (with --obsidian / --output).
