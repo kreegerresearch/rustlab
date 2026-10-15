@@ -9,6 +9,15 @@ should re-validate against those entries when upgrading.
 ## 0.3.9
 
 ### Breaking / behavior changes
+- **`@name` calls the function, not a variable of the same name.**
+  `sin = [1, 2, 3]; h = @sin; h(0)` is the builtin `sin(0)` (0). It
+  used to be looked up again as a normal call, so a vector or lambda
+  stored under that name was what the handle indexed or called. A user
+  function shadowed by a variable is still what the handle calls; the
+  direct call `sq(1)` still sees the variable. `@f` while `f` holds a
+  lambda still copies that lambda, so a later write to `f` does not
+  change the handle. Migration: call the variable (`sin(i)` or `f(x)`)
+  when that value is what you want. A handle is the function.
 - **`fprintf` / `sprintf` honor format flags and more specifiers.**
   `+`, a leading space, `0` (zero-pad between the sign and the digits),
   and `#` are applied. `*` and `.*` consume the next argument as the
@@ -66,6 +75,22 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A lambda copies only the names its body uses.** `f = @(x) x + a`
+  used to clone the entire workspace into the closure. The next lambda
+  then cloned that closure, so lambdas created in a loop, nested, or
+  kept side by side copied a large unreferenced matrix again and again
+  (eight closures beside a 128×128 matrix held 255 copies of it). The
+  closure now keeps the free variables of the body, by value, at the
+  moment it is created. A later write to one of those names still does
+  not change the lambda. `v(end)` inside a lambda is still the last
+  element at the call. `feval` of a name that is not a string literal,
+  and a call through a handle whose target is `feval`, still copy the
+  whole workspace, because that name is not in the syntax. A name the
+  body actually mentions is still copied in full — there is no
+  copy-on-write — so mentioning a large matrix still copies that
+  matrix once per lambda. `@name` does not also copy a variable of
+  the same name; the handle calls the function (see the breaking note
+  above).
 - **A `%%` note cannot inject TeX into a PDF, and comment writes do not follow a swapped path.**
   A note that contains `$...$` is paired, so the math is part of the
   note. With comments off (the PDF default) the note is deleted. With

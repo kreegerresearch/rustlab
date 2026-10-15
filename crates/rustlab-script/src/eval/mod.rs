@@ -1889,10 +1889,18 @@ impl Evaluator {
                             // Pass the variable name so profiler records it as "f", not "<lambda>"
                             self.eval_lambda_call(name, &params, &body, captured_env, arg_vals)
                         }
-                        Value::FuncHandle(target) => self.eval_expr(&Expr::Call {
-                            name: target,
-                            args: args.clone(),
-                        }),
+                        Value::FuncHandle(target) => {
+                            // `@name` is the function, never a workspace
+                            // variable of the same name. Arguments are
+                            // evaluated here; dispatch does not re-enter
+                            // `Expr::Call`, which would index a vector
+                            // named `sin` or call a lambda stored there.
+                            let vals: Vec<Value> = args
+                                .iter()
+                                .map(|a| self.eval_expr(a))
+                                .collect::<Result<_, _>>()?;
+                            self.dispatch_func_handle(&target, vals, call_nargout)
+                        }
                         _ => {
                             let vals: Vec<Value> = args
                                 .iter()
@@ -2044,7 +2052,7 @@ impl Evaluator {
             Expr::Lambda { params, body } => Ok(Value::Lambda {
                 params: params.clone(),
                 body: body.clone(),
-                captured_env: self.env.clone(),
+                captured_env: self.capture_lambda_env(params, body),
             }),
             Expr::FuncHandle(name) => {
                 // If the name is a lambda stored in env, capture it directly so it
@@ -2379,6 +2387,43 @@ impl Evaluator {
         }
     }
 
+    /// Call the function named by a `@name` handle.
+    ///
+    /// User function, then builtin. A workspace variable of the same
+    /// name is not consulted: `sin = [1, 2, 3]; h = @sin; h(0)` is
+    /// `sin(0)`. `@feval` is the exception, because `feval` is not a
+    /// builtin — it is the evaluator's dynamic call, and that call
+    /// still looks names up in the current environment (the lambda
+    /// snapshot, when the handle is invoked from a lambda).
+    ///
+    /// A handle taken while the name holds a lambda is not a
+    /// `FuncHandle` at all: `Expr::FuncHandle` clones that lambda at
+    /// creation, so `g = @f` keeps the lambda even if `f` later changes.
+    fn dispatch_func_handle(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        nargout: usize,
+    ) -> Result<Value, ScriptError> {
+        if name == "feval" {
+            if args.is_empty() {
+                return Err(ScriptError::runtime(
+                    "feval: first argument must be a string function name".to_string(),
+                ));
+            }
+            let fn_name = args[0].to_str().map_err(|_| {
+                ScriptError::runtime(
+                    "feval: first argument must be a string function name".to_string(),
+                )
+            })?;
+            return self.eval_feval(&fn_name, args.into_iter().skip(1).collect());
+        }
+        if let Some(func) = self.user_fns.get(name).cloned() {
+            return self.eval_user_fn(func, args);
+        }
+        self.call_builtin_tracked_nargout(name, args, nargout)
+    }
+
     /// Call a function by string name — dispatches to user_fns, env lambdas, then builtins.
     fn eval_feval(&mut self, name: &str, args: Vec<Value>) -> Result<Value, ScriptError> {
         if let Some(func) = self.user_fns.get(name).cloned() {
@@ -2415,8 +2460,10 @@ impl Evaluator {
             }
             Value::FuncHandle(name) => {
                 // Suppress inner tracking — outer (arrayfun) captures total time.
+                // Same rule as a direct `h(x)`: the handle names a function,
+                // not a variable that happens to share that name.
                 self.profiler.enter_higher_order();
-                let result = self.eval_feval(&name, args);
+                let result = self.dispatch_func_handle(&name, args, 1);
                 self.profiler.exit_higher_order();
                 result
             }
@@ -2425,6 +2472,68 @@ impl Evaluator {
                 other.type_name()
             ))),
         }
+    }
+
+    /// Snapshot the bindings a lambda body can see.
+    ///
+    /// MATLAB-style: by value, at creation. Later writes to the outer
+    /// workspace do not change the lambda. Only free names are copied,
+    /// so a large unreferenced matrix is not cloned into every closure
+    /// (and a closure stored in the workspace is not cloned into the
+    /// next one). Built-in constants are always included. They are a
+    /// handful of scalars, and a user function called from the lambda
+    /// seeds `pi` / `i` / `j` from the caller's environment — that
+    /// caller is this snapshot.
+    ///
+    /// A dynamic `feval`, or a call through a handle whose target is
+    /// `feval`, still clones the whole environment. The name those look
+    /// up is not in the syntax. Any other `@name` handle does not pull
+    /// a same-named variable into the snapshot: calling the handle does
+    /// not look that variable up.
+    ///
+    /// Values that are referenced are cloned in full. There is no
+    /// copy-on-write, so a lambda that mentions a large matrix copies
+    /// that matrix once.
+    fn capture_lambda_env(&self, params: &[String], body: &Expr) -> HashMap<String, Value> {
+        let analysis = crate::free_vars::analyze_lambda(params, body);
+        if analysis.dynamic_feval || self.captured_handle_is_feval(&analysis.names) {
+            return self.env.clone();
+        }
+        let names = analysis.names;
+        // Same set `clear` preserves. User functions copy `i`, `j`,
+        // `pi`, `e`, `Inf`, and `NaN` from the caller, which is this
+        // snapshot, so a shadowed `pi` still reaches `addpi` called
+        // from the lambda. `true` / `false` ride along; they are the
+        // same kind of constant and cost nothing next to a matrix.
+        const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
+        let mut captured = HashMap::with_capacity(names.len() + CONSTS.len());
+        for name in names {
+            if let Some(v) = self.env.get(&name) {
+                captured.insert(name, v.clone());
+            }
+        }
+        for name in CONSTS {
+            if captured.contains_key(*name) {
+                continue;
+            }
+            if let Some(v) = self.env.get(*name) {
+                captured.insert((*name).to_string(), v.clone());
+            }
+        }
+        captured
+    }
+
+    /// `true` when a free name holds `@feval`. Calling that handle looks
+    /// a name up dynamically, so the snapshot has to be the whole
+    /// environment. Other handles name a function and do not capture
+    /// a variable of the same name.
+    fn captured_handle_is_feval(&self, names: &BTreeSet<String>) -> bool {
+        names.iter().any(|name| {
+            matches!(
+                self.env.get(name),
+                Some(Value::FuncHandle(target)) if target == "feval"
+            )
+        })
     }
 
     /// Call a lambda value with its captured environment.

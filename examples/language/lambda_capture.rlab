@@ -1,0 +1,84 @@
+# Free-variable capture.
+#
+# A lambda copies the names its body mentions, at the moment it is
+# created. A large array the body never mentions stays out of the
+# closure, so a loop that builds lambdas does not stack copies of it.
+# Before that change, one lambda beside zeros(2000, 2000) copied the
+# whole 64_000_000-byte matrix, and five rebinds of f = @(x) f(x)+1
+# held six copies (384_000_520 bytes, 1.7 s on a debug build).
+
+big = zeros(64, 64);
+a = 5;
+f = @(x) x + a;
+# The inner lambda is built when make runs, against make's snapshot
+# of a (still 5) and the parameter g. Changing a in between does not
+# leak into that snapshot.
+make = @(g) @(x) x + g + a;
+a = 99;
+y = f(1);
+if y != 6
+    error("later write to a changed the lambda");
+end
+inner = make(10);
+y = inner(1);
+if y != 16
+    error("nested lambda did not see the creation-time a");
+end
+
+# The new f closes over the previous f, not over big.
+f = @(x) 0;
+f = @(x) f(x) + 1;
+y = f(1);
+if y != 1
+    error("rebind did not close over the previous lambda");
+end
+
+v = [10, 20, 30, 40, 50];
+g = @(i) v(end);
+if g(1) != 50
+    error("end was not the last element at the call");
+end
+
+function out = make_local()
+    temp = zeros(4, 4);
+    a = 7;
+    out = @(x) x + a;
+end
+f = make_local();
+if f(1) != 8
+    error("lambda inside a function dropped its local");
+end
+
+# Creating many lambdas beside big used to copy big every time.
+tic;
+for k = 1:50
+    h = @(x) x + 1;
+end
+elapsed = toc;
+if h(3) != 4
+    error("loop lambda");
+end
+print(elapsed);
+
+# @name is the function, not a variable of the same name.
+sin = [1, 2, 3];
+h = @sin;
+if h(0) != 0
+    error("handle indexed the variable named sin");
+end
+
+function y = sq(x)
+    y = x * x;
+end
+sq = [10, 20, 30];
+h = @sq;
+if h(4) != 16
+    error("handle did not call the shadowed user function");
+end
+
+f = @(x) x + 1;
+g = @f;
+f = @(x) x + 100;
+if g(3) != 4
+    error("handle to a lambda did not keep the lambda from creation");
+end

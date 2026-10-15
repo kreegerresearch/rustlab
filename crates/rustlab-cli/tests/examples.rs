@@ -162,6 +162,10 @@ fn example_lambda() {
     run_example_ok("language", "lambda");
 }
 #[test]
+fn example_lambda_capture() {
+    run_example_ok("language", "lambda_capture");
+}
+#[test]
 fn example_lambda_pipeline() {
     run_example_ok("language", "lambda_pipeline");
 }
