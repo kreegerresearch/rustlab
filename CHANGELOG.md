@@ -91,6 +91,11 @@ should re-validate against those entries when upgrading.
   matrix once per lambda. `@name` does not also copy a variable of
   the same name; the handle calls the function (see the breaking note
   above).
+- **Two-index matrix assignment honors `end` on each axis.**
+  `M(end, end) = v`, `M(end, :) = row`, and `M(:, end) = col` (and the
+  same forms on a sparse matrix) used to bind `end` to 0 and reject the
+  write. Reads already bound `end` per axis. A single index is unchanged:
+  `M(end)` is still the last column-major element.
 - **A `%%` note cannot inject TeX into a PDF, and comment writes do not follow a swapped path.**
   A note that contains `$...$` is paired, so the math is part of the
   note. With comments off (the PDF default) the note is deleted. With

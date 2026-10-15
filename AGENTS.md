@@ -1065,7 +1065,7 @@ opens). Do not reintroduce `request_repaint_after` polling in
 
 **`BUILTIN_CONSTS`:** These constant names (`i`, `j`, `pi`, `e`, `Inf`, `NaN`, `true`, `false`) survive `clear_vars()` — they are re-inserted automatically so the REPL never loses them.
 
-**How `Call` nodes are evaluated:** At eval time, if the name exists in `env` as a `Vector`, `Matrix`, `Tuple`, `Str`, or sparse variant, it is treated as 1-based indexing — `end` is temporarily bound to the container length. String indexing returns a string: `s(3)` → single char, `s(1:5)` → substring, `s(:)` → full copy. If the name holds a `Lambda`, it is called with its captured environment. Otherwise it is a `BuiltinRegistry` call.
+**How `Call` nodes are evaluated:** At eval time, if the name exists in `env` as a `Vector`, `Matrix`, `Tuple`, `Str`, or sparse variant, it is treated as 1-based indexing. A single index binds `end` to the element count (column-major on a matrix, so `M(end)` is the last element). Two indexes bind `end` per axis, on both read and write, so `M(end, end)` is the corner. String indexing returns a string: `s(3)` → single char, `s(1:5)` → substring, `s(:)` → full copy. If the name holds a `Lambda`, it is called with its captured environment. Otherwise it is a `BuiltinRegistry` call.
 
 **Lambda / anonymous functions:** `@(x, y) expr` creates a `Value::Lambda` whose `captured_env` is the free variables of the body (see `free_vars.rs`), snapshotted by value at creation, plus the built-in constants present in that environment. Nested lambdas add their free names, minus their parameters. `end` is not a free variable; indexing binds it at the call. A dynamic `feval` (non-literal target), including inside a nested lambda, and a handle whose target is `feval`, still clone the whole environment. Referenced values are deep-copied once per lambda (no copy-on-write). `@name` creates a `Value::FuncHandle` that calls the builtin or user function of that name and does not consult a same-named workspace variable (`dispatch_func_handle`). If `name` holds a lambda at creation, `Expr::FuncHandle` clones that lambda instead, so `g = @f` keeps it. `arrayfun(f, v)` maps any callable over a vector, returning a `Vector` (all scalar outputs) or a `Matrix` (all vector outputs of equal length). `feval("name", args...)` calls a function by string name.
 
@@ -1226,7 +1226,7 @@ primary     = NUMBER | STRING | IDENT
 | Compound assign | `x += 1`, `-=`, `*=`, `/=` | Desugared to `x = x op expr` in parser |
 | Suppress output | `x = expr;` | Trailing `;` on any statement |
 | Range | `1:10`, `0:0.5:2`, `10:-1:1` | Creates a real `Vector` |
-| 1-based index | `v(3)`, `v(2:5)`, `v(end)` | `end` = `len(v)`; slice returns Vector |
+| 1-based index | `v(3)`, `v(2:5)`, `v(end)` | `end` = `len(v)` for a vector; on a matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write) |
 | Indexed assign (single element) | `v(i) = val`, `M(r,c) = val` | Vectors auto-created/grown; matrices must exist |
 | Region assign — matrix | `M(i, :) = vec`, `M(:, j) = vec`, `M(rows, cols) = mat`, `M(:, :) = scalar` | Row / column / submatrix / broadcast writes. Indices may be Scalar, `:`, or Vector. RHS must match the target region shape; scalar/complex RHS broadcasts. Sparse matrices: only single-element form supported. Added in 0.3.4. |
 | Region assign — vector | `v(:) = vec`, `v([1,3,5]) = vec`, `v(1:2:end) = vec`, `v(idx) = scalar` | Strided / explicit-list LHS into a Vector. RHS length must match the index count; scalar/complex RHS broadcasts. Added in 0.3.4. |

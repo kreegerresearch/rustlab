@@ -17,16 +17,16 @@ starting from $z = 0$. If $|z|$ exceeds 2 within `max_iter` steps, the
 point has *escaped*; the iteration count at escape determines the colour.
 Points that never escape are in the Mandelbrot set.
 
-The implementation below works on a full row at a time — `zr` and `zi`
-are length-800 vectors, and the `< 4` comparison produces a 0/1 mask
-that accumulates the iteration count element-wise.
+One row function covers every view. `zr` and `zi` are length-800
+vectors, and the `< 4` comparison is a 0/1 mask that accumulates the
+iteration count element-wise. The full-frame and both zooms only
+change the window and `max_iter`.
 
 ```rustlab
-function row = mandelbrot_row(k)
-  nx = 800; ny = 600; max_iter = 100;
-  cr = linspace(-2.5, 1.0, nx);
-  y_all = linspace(-1.2, 1.2, ny);
-  ci = y_all(k);
+function row = mandelbrot_band(k, cr_lo, cr_hi, y_lo, y_hi, max_iter)
+  nx = 800; ny = 600;
+  cr = linspace(cr_lo, cr_hi, nx);
+  ci = linspace(y_lo, y_hi, ny)(k);
   zr = zeros(nx);
   zi = zeros(nx);
   counts = zeros(nx);
@@ -39,6 +39,10 @@ function row = mandelbrot_row(k)
     zr = zr2 - zi2 + cr;
   end
   row = counts;
+end
+
+function row = mandelbrot_row(k)
+  row = mandelbrot_band(k, -2.5, 1.0, -1.2, 1.2, 100);
 end
 ```
 
@@ -94,27 +98,8 @@ rich area of spiralling filaments. A higher iteration count reveals
 finer boundary detail.
 
 ```rustlab
-function row = mandelbrot_zoom(k)
-  nx = 800; ny = 600; max_iter = 250;
-  cr = linspace(-0.9, -0.6, nx);
-  y_all = linspace(0.0, 0.3, ny);
-  ci = y_all(k);
-  zr = zeros(nx);
-  zi = zeros(nx);
-  counts = zeros(nx);
-  for iter = 1:max_iter
-    zr2 = zr .* zr;
-    zi2 = zi .* zi;
-    mask = (zr2 + zi2) < 4;
-    counts = counts + mask;
-    zi = 2 * zr .* zi + ci;
-    zr = zr2 - zi2 + cr;
-  end
-  row = counts;
-end
-
 clf
-Z = parmap(@mandelbrot_zoom, 1:600);
+Z = parmap(@(k) mandelbrot_band(k, -0.9, -0.6, 0.0, 0.3, 250), 1:600);
 imagesc(Z, "hot")
 title("Seahorse Valley — 250 iterations")
 ```
@@ -126,27 +111,8 @@ main cardioid meets the period-2 bulb. The self-similar miniature
 copies of the full set are visible at higher iteration counts.
 
 ```rustlab
-function row = mandelbrot_elephant(k)
-  nx = 800; ny = 600; max_iter = 300;
-  cr = linspace(0.15, 0.4, nx);
-  y_all = linspace(-0.15, 0.15, ny);
-  ci = y_all(k);
-  zr = zeros(nx);
-  zi = zeros(nx);
-  counts = zeros(nx);
-  for iter = 1:max_iter
-    zr2 = zr .* zr;
-    zi2 = zi .* zi;
-    mask = (zr2 + zi2) < 4;
-    counts = counts + mask;
-    zi = 2 * zr .* zi + ci;
-    zr = zr2 - zi2 + cr;
-  end
-  row = counts;
-end
-
 clf
-E = parmap(@mandelbrot_elephant, 1:600);
+E = parmap(@(k) mandelbrot_band(k, 0.15, 0.4, -0.15, 0.15, 300), 1:600);
 imagesc(E, "hot")
 title("Elephant Valley — 300 iterations")
 ```

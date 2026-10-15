@@ -35,8 +35,8 @@ print(Fx(21, 21))         % ≈ 0
 print(Fy(21, 21))         % ≈ 0
 
 % Top-right corner (x = y = 2): ∇F = (2x, 2y) = (4, 4)
-print(Fx(41, 41))         % ≈ 4
-print(Fy(41, 41))         % ≈ 4
+print(Fx(end, end))       % ≈ 4
+print(Fy(end, end))       % ≈ 4
 ```
 
 `gradient(F)` without `dx`, `dy` defaults both to 1. The result is a tuple

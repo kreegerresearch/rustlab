@@ -7,11 +7,11 @@
 #
 # Run with sox (macOS):
 #   sox -d -t raw -r 44100 -e float -b 32 -c 1 - \
-#     | rustlab run examples/audio/spectrum_monitor.r
+#     | rustlab run examples/audio/spectrum_monitor.rlab
 #
 # Run with arecord (Linux):
 #   arecord -f FLOAT_LE -r 44100 -c 1 -t raw \
-#     | rustlab run examples/audio/spectrum_monitor.r
+#     | rustlab run examples/audio/spectrum_monitor.rlab
 #
 # Or use the wrapper:
 #   ./examples/audio/spectrum_monitor.sh

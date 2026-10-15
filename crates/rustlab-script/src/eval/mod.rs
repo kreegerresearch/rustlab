@@ -791,8 +791,10 @@ impl Evaluator {
                     return self.exec_index_delete(name, indices, *suppress);
                 }
 
-                // Evaluate indices with `end` bound to current container length (if any).
-                // Tensor3 with 3 indices gets per-dim `end` binding.
+                // Evaluate indices with `end` bound the same way reads do.
+                // Tensor3 with 3 indices, and a matrix/sparse with 2 indices,
+                // bind `end` per axis. A single index binds `end` to the
+                // element count. Anything else (no container yet) binds 0.
                 let idx_vals: Vec<Value> = if indices.len() == 3
                     && matches!(self.env.get(name.as_str()), Some(Value::Tensor3(_)))
                 {
@@ -811,6 +813,36 @@ impl Evaluator {
                     let kv = self.eval_expr(&indices[2])?;
                     self.env.remove("end");
                     vec![iv, jv, kv]
+                } else if indices.len() == 2 {
+                    let dims = match self.env.get(name.as_str()) {
+                        Some(Value::Matrix(m)) => Some((m.nrows(), m.ncols())),
+                        Some(Value::SparseMatrix(sm)) => Some((sm.rows, sm.cols)),
+                        _ => None,
+                    };
+                    if let Some((nrows, ncols)) = dims {
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(nrows as f64));
+                        let row_val = self.eval_expr(&indices[0])?;
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(ncols as f64));
+                        let col_val = self.eval_expr(&indices[1])?;
+                        self.env.remove("end");
+                        vec![row_val, col_val]
+                    } else {
+                        let container_len = match self.env.get(name.as_str()) {
+                            Some(Value::Vector(v)) => v.len(),
+                            Some(Value::SparseVector(sv)) => sv.len,
+                            _ => 0,
+                        };
+                        self.env
+                            .insert("end".to_string(), Value::Scalar(container_len as f64));
+                        let vals: Vec<Value> = indices
+                            .iter()
+                            .map(|a| self.eval_expr(a))
+                            .collect::<Result<_, _>>()?;
+                        self.env.remove("end");
+                        vals
+                    }
                 } else {
                     let container_len = match self.env.get(name.as_str()) {
                         Some(Value::Vector(v)) => v.len(),

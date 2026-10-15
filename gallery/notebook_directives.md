@@ -64,7 +64,7 @@ grid on
 <details>
 <summary>Show all magnitude responses</summary>
 
-![plot 2](plots/notebook_directives/plot-2-ecbe0f35.svg)
+![plot 2](plots/notebook_directives/plot-2-416c6e99.svg)
 
 </details>
 
@@ -188,7 +188,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 7](plots/notebook_directives/plot-7-8e60ad68.svg)
+![plot 7](plots/notebook_directives/plot-7-9088fd54.svg)
 
 <!-- rustlab:output-end -->
 

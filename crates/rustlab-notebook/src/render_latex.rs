@@ -1645,6 +1645,26 @@ mod tests {
         assert!(out.contains("\\$"), "no literal \\$ in output: {out:?}");
     }
 
+    /// A one-line inline formula stays in math mode (`$` and `_` are
+    /// not escaped). pulldown-cmark will also keep a single newline
+    /// inside `$…$`, so PDF can typeset a wrapped formula that the HTML
+    /// scanner and GitHub both leave as text. Notebooks keep inline
+    /// math on one line so all three targets agree; see
+    /// `inline_math_does_not_cross_a_newline`.
+    #[test]
+    fn md_to_latex_inline_math_must_be_one_line() {
+        let fixed = markdown_to_latex(
+            "lives at $(m, n) = (n_x, n_y)$ before aliasing.",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(
+            fixed.contains("$(m, n) = (n_x, n_y)$"),
+            "formula left math mode: {fixed:?}"
+        );
+        assert!(!fixed.contains("\\$"), "math dollar was escaped: {fixed:?}");
+        assert!(!fixed.contains("\\_"), "subscript was escaped: {fixed:?}");
+    }
+
     // ── render_latex (integration) ──
 
     #[test]

@@ -102,7 +102,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/sparameters_intro/plot-1-565668bf.svg)
+![plot 1](plots/sparameters_intro/plot-1-590be02c.svg)
 
 <!-- rustlab:output-end -->
 
@@ -133,8 +133,6 @@ disp(att)
 ```text
 sparameters: 2-port S, 3 frequencies [1 GHz .. 3 GHz], Z0 = 50 Ω
 ```
-
-![plot 2](plots/sparameters_intro/plot-2-565668bf.svg)
 
 <!-- rustlab:output-end -->
 
@@ -175,8 +173,6 @@ sparameters: 2-port Y, 3 frequencies [1 GHz .. 3 GHz], Z0 = 50 Ω
 sparameters: 2-port ABCD, 3 frequencies [1 GHz .. 3 GHz], Z0 = 50 Ω
 ```
 
-![plot 3](plots/sparameters_intro/plot-3-565668bf.svg)
-
 <!-- rustlab:output-end -->
 
 A useful sanity check: ABCD of a series-impedance element is
@@ -200,8 +196,6 @@ fprintf("ABCD of series-25Ω: A=%.3f B=%.3f C=%.3f D=%.3f\n", ...
 ```text
 ABCD of series-25Ω: A=1.000 B=25.000 C=0.000 D=1.000
 ```
-
-![plot 4](plots/sparameters_intro/plot-4-565668bf.svg)
 
 <!-- rustlab:output-end -->
 
@@ -227,8 +221,6 @@ fprintf("Cascade |S21|: %.4f dB     |S11|: %.4f\n", ...
 ```text
 Cascade |S21|: -20.0000 dB     |S11|: 0.0000
 ```
-
-![plot 5](plots/sparameters_intro/plot-5-565668bf.svg)
 
 <!-- rustlab:output-end -->
 
@@ -257,8 +249,6 @@ fprintf("Synthetic DUT |S21| = %.4f, recovered = %.4f\n", ...
 Synthetic DUT |S21| = 0.5012, recovered = 0.5012
 ```
 
-![plot 6](plots/sparameters_intro/plot-6-565668bf.svg)
-
 <!-- rustlab:output-end -->
 
 The recovered value matches the synthetic DUT to machine precision.
@@ -284,8 +274,6 @@ After newref(att, 75): Z0 = 75 Ω
 Round-trip |S21| diff = 5.55e-17
 ```
 
-![plot 7](plots/sparameters_intro/plot-7-565668bf.svg)
-
 <!-- rustlab:output-end -->
 
 ## Smith chart — reflection coefficients on the unit disk
@@ -300,7 +288,7 @@ smith(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 8](plots/sparameters_intro/plot-8-6627fc86.svg)
+![plot 2](plots/sparameters_intro/plot-2-b4821972.svg)
 
 <!-- rustlab:output-end -->
 
@@ -330,7 +318,7 @@ marker(1,  "open")        % right edge
 ```
 
 <!-- rustlab:output-start -->
-![plot 9](plots/sparameters_intro/plot-9-44966f2b.svg)
+![plot 3](plots/sparameters_intro/plot-3-fe43e207.svg)
 
 <!-- rustlab:output-end -->
 
@@ -346,7 +334,7 @@ title("S21 locus")
 ```
 
 <!-- rustlab:output-start -->
-![plot 10](plots/sparameters_intro/plot-10-48b491ad.svg)
+![plot 4](plots/sparameters_intro/plot-4-c3208811.svg)
 
 <!-- rustlab:output-end -->
 
@@ -367,7 +355,7 @@ smith(s, "grid", "ZY")
 ```
 
 <!-- rustlab:output-start -->
-![plot 11](plots/sparameters_intro/plot-11-ddb390d5.svg)
+![plot 5](plots/sparameters_intro/plot-5-6cf89a5f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -389,7 +377,7 @@ title("|Γ| = 0.5 circle")
 ```
 
 <!-- rustlab:output-start -->
-![plot 12](plots/sparameters_intro/plot-12-fa2f3052.svg)
+![plot 6](plots/sparameters_intro/plot-6-f54bee12.svg)
 
 <!-- rustlab:output-end -->
 
@@ -406,11 +394,10 @@ count (the writer always emits the actual count), but using the matching
 suffix is the convention.
 
 ```rustlab
-% Save and re-read from a scratch path. (The repo ships a bundled
-% example at examples/rf/data/lna_demo.s2p that you can load
-% with `sparameters("path/to/file.s2p")` directly when running outside
-% the notebook renderer.)
-tmp = "/tmp/lna_copy.s2p";
+% Save and re-read a scratch file in this notebook's directory. The
+% renderer jails file I/O there, so an absolute /tmp path is rejected.
+% (The repo also ships examples/rf/data/lna_demo.s2p.)
+tmp = "lna_copy.s2p";
 save(tmp, s)
 s_copy = sparameters(tmp);
 fprintf("Round-trip |S21| diff at 1 GHz: %.2e\n", ...

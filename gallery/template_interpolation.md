@@ -45,6 +45,12 @@ ratio = 1/3;
 | Scientific | `${big_number:%.3e}` | 1.235e+06 |
 | Percentage | `${ratio:%.1f%%}` | 0.3% |
 | Integer | `${n_samples:%d}` | 1024 |
+| Signed | `${ratio:%+.3f}` | +0.333 |
+| Zero-pad | `${n_samples:%05d}` | 01024 |
+
+`+`, a leading space, `0`, and `#` are real flags (a leading `+` forces
+the sign; `0` pads between the sign and the digits). Width and
+precision may also come from the next argument via `*` and `.*`.
 
 ## Escaping
 

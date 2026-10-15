@@ -19398,6 +19398,34 @@ mod printf_and_row_matrix_tests {
     }
 
     #[test]
+    fn matrix_two_index_end_assignment_binds_per_axis() {
+        let ev = eval(
+            "M = [1, 2, 3; 4, 5, 6]
+             M(end, end) = 9
+             corner = M(2, 3)
+             M(end, :) = [7, 8, 9]
+             r1 = M(2, 1)
+             r3 = M(2, 3)
+             M(:, end) = [5; 6]
+             c1 = M(1, 3)
+             c2 = M(2, 3)
+             row = zeros(1, 4)
+             row(1, end) = 40
+             row_last = row(1, 4)
+             S = sparse([1, 2], [1, 2], [3, 4], 2, 2)
+             S(end, end) = 11
+             s_corner = S(2, 2)",
+        );
+        assert_eq!(scalar(&ev, "corner"), 9.0);
+        assert_eq!(scalar(&ev, "r1"), 7.0);
+        assert_eq!(scalar(&ev, "r3"), 9.0);
+        assert_eq!(scalar(&ev, "c1"), 5.0);
+        assert_eq!(scalar(&ev, "c2"), 6.0);
+        assert_eq!(scalar(&ev, "row_last"), 40.0);
+        assert_eq!(scalar(&ev, "s_corner"), 11.0);
+    }
+
+    #[test]
     fn one_d_matrix_reductions_honor_dim() {
         let ev = eval(
             "r = zeros(1, 3)

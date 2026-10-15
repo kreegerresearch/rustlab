@@ -67,7 +67,7 @@ rfplot(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/amplifier_analysis/plot-1-d021e799.svg)
+![plot 1](plots/amplifier_analysis/plot-1-98800323.svg)
 
 <!-- rustlab:output-end -->
 
@@ -92,7 +92,7 @@ title("Forward gain |S21| in dB")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/amplifier_analysis/plot-2-53c0ca9c.svg)
+![plot 2](plots/amplifier_analysis/plot-2-32043776.svg)
 
 <!-- rustlab:output-end -->
 
@@ -103,7 +103,7 @@ title("S21 phase (wrapped, degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/amplifier_analysis/plot-3-ccdf945f.svg)
+![plot 3](plots/amplifier_analysis/plot-3-17224531.svg)
 
 <!-- rustlab:output-end -->
 
@@ -117,7 +117,7 @@ title("S21 unwrapped phase (degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/amplifier_analysis/plot-4-4dc99b8f.svg)
+![plot 4](plots/amplifier_analysis/plot-4-6ccd8e49.svg)
 
 <!-- rustlab:output-end -->
 
@@ -131,7 +131,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-02df3555.svg)
+![plot 5](plots/amplifier_analysis/plot-5-39046543.svg)
 
 <!-- rustlab:output-end -->
 
@@ -320,7 +320,7 @@ title("S11, S22 with input stability circles overlaid")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/amplifier_analysis/plot-6-a0363a0a.svg)
+![plot 6](plots/amplifier_analysis/plot-6-84da185f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -356,7 +356,7 @@ title("Gain circles at 3 GHz (MAG ≈ 11.7 dB)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 7](plots/amplifier_analysis/plot-7-7a169d6f.svg)
+![plot 7](plots/amplifier_analysis/plot-7-440fae19.svg)
 
 <!-- rustlab:output-end -->
 
@@ -389,8 +389,6 @@ Original: 6 points,  Interpolated: 26 points
 |S21| at 2.5 GHz (interp): 9.70 dB
 ```
 
-![plot 8](plots/amplifier_analysis/plot-8-7a169d6f.svg)
-
 <!-- rustlab:output-end -->
 
 Extrapolation past the original sweep range is **rejected** with a clear
@@ -414,7 +412,7 @@ grid on
 ```
 
 <!-- rustlab:output-start -->
-![plot 9](plots/amplifier_analysis/plot-9-f712cd46.svg)
+![plot 8](plots/amplifier_analysis/plot-8-f712cd46.svg)
 
 <!-- rustlab:output-end -->
 
@@ -438,10 +436,11 @@ network inline (the repo ships
 load with `sparameters(path)` outside the notebook):
 
 ```rustlab
-% Synthesize a small 2-port S + noise block in memory by writing a
-% Touchstone file to a scratch path and reading it back. (The same
-% data is bundled in examples/rf/data/lna_with_noise.s2p.)
-tmp = "/tmp/_notebook_noise.s2p";
+% Synthesize a small 2-port by writing a Touchstone file next to this
+% notebook and reading it back. The renderer jails file I/O to that
+% directory. (The same data is bundled in
+% examples/rf/data/lna_with_noise.s2p.)
+tmp = "_notebook_noise.s2p";
 % S-only network for clarity:
 S = zeros3(4, 2, 2);
 for k = 1:4

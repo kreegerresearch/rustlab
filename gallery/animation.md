@@ -50,6 +50,8 @@ saveanim("wave.html", 30)
 
 ### Same loop, animated GIF
 
+The GIF cell reuses `X`, `Y`, and `n_frames` from the HTML cell above.
+
 ```rustlab
 figure();
 for k = 1:n_frames
@@ -63,7 +65,7 @@ saveanim("wave.gif", 30)
 ```
 
 <!-- rustlab:output-start -->
-![animation 2](plots/animation/anim-2-25179a24.gif)
+![animation 2](plots/animation/anim-2-74022a6d.gif)
 
 <!-- rustlab:output-end -->
 
