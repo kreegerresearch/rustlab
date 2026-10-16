@@ -1559,6 +1559,30 @@ mod vector_calc_tests {
     }
 
     #[test]
+    fn gradient_1d_matches_matlab_endpoints() {
+        use crate::vector_calc::{gradient_1d, gradient_1d_coords};
+        use num_complex::Complex;
+        // y = x^2 on 0,1,2,3,4. Interior is 2x; endpoints are first-order.
+        let y: Vec<Complex<f64>> = [0.0, 1.0, 4.0, 9.0, 16.0]
+            .into_iter()
+            .map(|r| Complex::new(r, 0.0))
+            .collect();
+        let g = gradient_1d(&y, 1.0).unwrap();
+        let got: Vec<f64> = g.iter().map(|c| c.re).collect();
+        assert_eq!(got, vec![1.0, 2.0, 4.0, 6.0, 7.0]);
+        assert!(gradient_1d(&y, 0.0).is_err());
+        let x = [0.0, 1.0, 3.0];
+        let y3: Vec<Complex<f64>> = [0.0, 1.0, 9.0]
+            .into_iter()
+            .map(|r| Complex::new(r, 0.0))
+            .collect();
+        let g = gradient_1d_coords(&y3, &x).unwrap();
+        // Endpoints: (1-0)/1 = 1, (9-1)/2 = 4.
+        assert!((g[0].re - 1.0).abs() < 1e-12);
+        assert!((g[2].re - 4.0).abs() < 1e-12);
+    }
+
+    #[test]
     fn nonpositive_step_errors() {
         let f = from_real_fn(3, 3, |_, _| 0.0);
         assert!(gradient_2d(&f, 0.0, 1.0).is_err());

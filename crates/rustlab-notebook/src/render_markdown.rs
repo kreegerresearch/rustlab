@@ -141,7 +141,8 @@ pub fn render_markdown(
                         .push_str(&format!("<details>\n<summary>{}</summary>\n\n", heading));
                 }
 
-                let trimmed_out = text_output.trim();
+                let stripped_out = rustlab_script::eval::table::strip_table_html(text_output);
+                let trimmed_out = stripped_out.trim();
                 if !trimmed_out.is_empty() {
                     output_chunk.push_str("```text\n");
                     output_chunk.push_str(trimmed_out);

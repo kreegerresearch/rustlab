@@ -1202,10 +1202,11 @@ range_expr  = expr (":" expr (":" expr)?)?     # a:b or a:step:b → Vector
 expr        = term (("+"|"-") term)*
 term        = factor (("*"|"/"|".*"|"./") factor)*
 factor      = postfix (("^"|".^") factor)?     # right-associative
-postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")")*
+postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")" | "{" arglist "}")*
                 # ' = conjugate transpose; .' = plain transpose
                 # .field = struct access; .method(args) = method-call sugar
                 # (args) after any non-Var expr = chained index: f(a)(i)
+                # {rows, vars} after a table = content index: T{rows, vars}
 
 primary     = NUMBER | STRING | IDENT
             | IDENT "(" range_arglist ")"       # call or 1-based index
@@ -1256,6 +1257,7 @@ primary     = NUMBER | STRING | IDENT
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
 | Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
 | String array | `{"a", "b", "c"}` | `Value::StringArray`; all elements must be strings; 1-based indexing |
+| Table | `T = table(a, b)` | Named columns, one row count. `T.var` reads or appends a column. `T(rows, vars)` is a sub-table. `T{rows, vars}` returns one variable's cells. `T.Properties.VariableNames` lists the names. A vector is one column; a matrix splits per column. A 0/1 vector stays numeric |
 | Underscore literals | `1_000_000`, `3.141_592` | Digit separators stripped at lex time; like Rust/Python/C++ |
 | Imaginary literals | `2j`, `1.5i`, `3e8j` | `Token::Imaginary` at lex time → `Expr::Imag` → `Value::Complex`; binds to the literal (immune to a shadowed `i`/`j` variable); printed complex values (`1+2j`) round-trip as input |
 | Format mode | `format commas` / `format default` | Bare command; toggles thousands separators in auto-print output |
@@ -1281,6 +1283,7 @@ primary     = NUMBER | STRING | IDENT
 | `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
 | `randi` | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Integer scalar or vector drawn uniformly |
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
+| `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
 | `len` | `len(v)` | Number of elements |
 | `length` | `length(v)` | Alias for `len`. Scalar / complex / bool return `1`; matrix returns `max(size(M))`; Tensor3 returns the longest axis. The `length(scalar)` form was added in 0.3.4 (previously errored) so generic helpers can call `length(x)` without `length([x])` boxing. |
 | `numel` | `numel(x)` | Total elements (rows×cols for matrices, m·n·p for tensor3) |
@@ -1294,7 +1297,7 @@ primary     = NUMBER | STRING | IDENT
 | `permute` | `permute(A, [d1, d2, d3])` | Reorder tensor3 axes; `order` is a permutation of `[1, 2, 3]` |
 | `squeeze` | `squeeze(A)` | Drop singleton dimensions from a tensor3 (→ Matrix / Vector / Scalar) |
 | `print` | `print(x)` | Print to stdout |
-| `plot` | `plot(x)` | Terminal line chart (blocks until keypress) |
+| `plot` | `plot(x)` / `plot(x, y)` / `plot(x1, y1, x2, y2, ...)` | Terminal line chart. Several `(x, y)` pairs draw several series; a line spec (`r`, `b--`, `ko`) may follow a pair. `:` and `-.` draw dashed. A dangling x is an error. `plot(y1, y2)` is one pair. |
 | `stem` | `stem(x)` | Terminal stem chart (blocks until keypress) |
 | `window` | `window(name, n)` | Real window vector |
 | `fft` | `fft(v)` / `fft(v, n)` | Complex spectrum with exactly `length(v)` (or `n`) bins — **length-preserving** (0.3.7-dev breaking change: no silent pad-to-pow2). Radix-2 for powers of two, hand-rolled Bluestein chirp-z otherwise; `n` zero-pads or truncates first (any positive integer). Axis idiom: `fftfreq(length(X), fs)`. |
@@ -1365,7 +1368,11 @@ primary     = NUMBER | STRING | IDENT
 | `s2td` | `s2td(s, i, j)` / `s2td(s, i, j, "impulse"\|"step")` | Phase 6: time-domain (step / impulse) response of a single Sij(f) trace via IFFT. Builds a 2N-point conjugate-symmetric spectrum from the user's one-sided data, IFFTs, takes the real part. Returns Tuple `[t, y]` of length 2N. Requires a uniformly spaced freq grid (rejects with a clear message otherwise — caller can use `interp_freq` first). No DC extrapolation: for spectra starting at f₀ > 0, the result is the baseband-equivalent (band-limited-pulse) response — standard VNA TDR behaviour. Cumsum integration for "step" mode. |
 | `s2smm` / `smm2s` | `s2smm(s)` / `smm2s(smm)` | Phase 6: 4-port single-ended ↔ mixed-mode conversion via the standard Bockelman/Eisenstadt orthogonal transformation `M = (1/√2)·[[1,0,-1,0],[0,1,0,-1],[1,0,1,0],[0,1,0,1]]`. Forward: `Smm = M · Sse · Mᵀ`. Inverse: `Sse = Mᵀ · Smm · M`. Port pairing: ports (1, 3) → diff pair 1, (2, 4) → diff pair 2; result port order `[d1, d2, c1, c2]`. Tags transition `S ↔ Smm`. 4-port only. |
 | Touchstone v2 tolerance | n/a (parser behaviour) | Phase 6: reader now accepts `[Version] 2.0` plus `[Number of Ports]`, `[Number of Frequencies]`, `[Number of Noise Frequencies]`, `[Two-Port Data Order]`, `[Matrix Format]`, `[Network Data]`, `[Noise Data]`, `[End]`, `[Begin/End Information]`. `[Reference] <scalar>` overrides the `# R` header default; per-port `[Reference]` lists and `[Mixed-Mode-Order]` tables still error clearly. |
-| `svd` | `svd(A)` | SVD via symmetric eigendecomposition of A'A (real). Nargout-aware: `s = svd(A)` → singular-value vector (descending); `[U, S, V] = svd(A)` → Tuple [U, sigma_vector, V] |
+| `svd` | `svd(A)` / `svd(A, "econ")` / `svd(A, 0)` | SVD of a real or complex matrix, including wide and rank-deficient shapes. `s = svd(A)` → singular-value vector (length `min(m,n)`, descending). `[U, s, V] = svd(A)` → full `U` `m×m`, `V` `n×n`, `s` still a vector. `"econ"` / `0` → thin `U` `m×k`, `V` `n×k`. Economy reconstructs as `U*diag(s)*V'`. |
+| `pinv` | `pinv(A)` / `pinv(A, tol)` | Moore-Penrose pseudoinverse (`n×m`). Reciprocals only for `σ > tol`. Default tol `max(m,n)*eps*σ_max`. `pinv(0)` is 0. |
+| `fzero` | `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)` | Real root of a lambda or function handle. A bracket must change sign (Brent). A scalar start searches outward until `f` changes sign against `f(x0)`. |
+| `fliplr` | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses. An N×1 matrix is unchanged. |
+| `nextpow2` | `nextpow2(x)` | Smallest integer `p` with `2^p >= |x|`, elementwise. Complex uses `|z|`. `0 → 0`. |
 | `state_init` | `state_init(n)` | Allocate FirState history buffer of length n; returns `Value::FirState` |
 | `filter_stream` | `filter_stream(frame, h, state)` | Overlap-save FIR frame filter; returns Tuple `[y, state]`; history updated in-place |
 | `audio_in` | `audio_in(sr, frame_size)` | Create `Value::AudioIn` descriptor (metadata only; no I/O) |
@@ -1387,6 +1394,11 @@ primary     = NUMBER | STRING | IDENT
 | `spzeros` | `spzeros(m, n)` | m×n all-zero sparse matrix |
 | `full` | `full(S)` | Convert sparse to dense; identity for dense inputs |
 | `nnz` | `nnz(S)` | Number of stored non-zero entries; numel for dense |
+| `table` | `table(a, b, ...)` / `table(..., "VariableNames", names)` | Table of named columns with one row count. A bare variable names its column; an expression is `VarN`. A matrix is one numeric column per matrix column. A vector stays one column. A string array is one text column. A scalar `true`/`false` is a one-row logical column |
+| `height` | `height(x)` | Rows: `size(x, 1)`. A vector is `1 × length`, so `height(v)` is 1 |
+| `width` | `width(x)` | Columns: `size(x, 2)`. `width(v)` of a vector is `length(v)` |
+| `head` | `head(T)` / `head(T, n)` | First rows of a table (default 8), as a table |
+| `tail` | `tail(T)` / `tail(T, n)` | Last rows of a table (default 8), as a table |
 | `iscell` | `iscell(x)` | `true` if x is a string array, `false` otherwise |
 | `issparse` | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros` | `nonzeros(S)` | Vector of non-zero values in storage order |
@@ -1397,9 +1409,9 @@ primary     = NUMBER | STRING | IDENT
 | `solve` | `x = solve(F, b)` | Back-solve a right-hand side `b` through a cached factor `F` returned by `chol()` or `lu()`. Refuses a complex `b` against a real factor — refactor with the complex matrix in that case. |
 | `eig` | `e = eig(A)` / `[V, D] = eig(A)` / `e = eig(A, B)` / `[V, D] = eig(A, B)` / `eig(A [, B], "vector"\|"matrix")` | Nargout-aware dense eigendecomposition. 1-output returns the `N×1` column vector of eigenvalues; 2-output returns `[V, D]` where `V` is the eigenvector matrix and `D` is a **diagonal matrix** of eigenvalues (matlab convention; `diag(D)` extracts the vector). The optional trailing string flag (matlab convention) overrides D's shape: `"vector"` forces an N×1 column, `"matrix"` forces an N×N diagonal — composes with both the standard and generalized forms. Two-arg form solves the generalized problem `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`; requires B invertible. SPD-aware Cholesky reduction and QZ for non-invertible B are deferred. Algorithm: hand-rolled Hessenberg reduction + shifted QR for eigenvalues, then shifted inverse iteration for each eigenvector. |
 | `eigs` | `[V, D] = eigs(A, n [, which])` / `[V, D] = eigs(A, B, n [, which])` | Sparse partial eigensolver. Returns the `n` smallest (`"sm"`, default) or largest (`"lm"`) eigenpairs. Standard problem `A x = λ x` or generalized `A x = λ B x` for B SPD. Auto-routes Hermitian inputs to hand-rolled Lanczos (with full reorthogonalization), general inputs to hand-rolled Arnoldi. The small dense problem is solved via Jacobi (symmetric) or shifted-QR (general). Implicit restart and shift-invert are deferred to a follow-up. |
-| `loglog` | `loglog(x, y [, opts])` | Log-log line plot — x and y must be strictly positive. Implemented as a pre-transform via log10 (axes labeled "log10(x)", "log10(y)"). Same option syntax as `plot()`. |
-| `semilogx` | `semilogx(x, y [, opts])` | Log-x linear-y plot. Pre-transform shim. |
-| `semilogy` | `semilogy(x, y [, opts])` | Linear-x log-y plot. Pre-transform shim. |
+| `loglog` | `loglog(x, y [, opts])` | Log-log line plot. Data stays in real units; both axes are `AxisScale::Log` with decade ticks. x and y must be strictly positive. |
+| `semilogx` | `semilogx(x, y [, opts])` | Logarithmic x, linear y. Real data, decade ticks on x. x must be strictly positive. |
+| `semilogy` | `semilogy(x, y [, opts])` | Linear x, logarithmic y. Real data, decade ticks on y. y must be strictly positive. |
 | `polar` | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)`. theta in radians; both real-valued. |
 | `frame` | `frame()` | Snapshot the current figure into the per-thread animation frame buffer, then strip trace data from FIGURE so the next loop iteration starts clean. Subplot layout, axis labels, titles, limits, hold, and grid setting are preserved. `figure()` / `figure(N)` clears the buffer. |
 | `saveanim` | `saveanim(path)` / `saveanim(path, fps)` | Flush the animation buffer to disk. Path extension picks the format: `.html` / `.htm` → self-contained Plotly animation with play/pause + slider; `.gif` → animated GIF (per-frame NeuQuant palette). `fps` defaults to 10. Errors on empty buffer or unsupported extension. Buffer is drained on success. MP4 / SVG animation deferred. |
@@ -1421,6 +1433,8 @@ primary     = NUMBER | STRING | IDENT
 | `ellipke` | `K = ellipke(m)` / `[K, E] = ellipke(m)` | Complete elliptic integrals of the first/second kind via 12-iteration AGM. **Parameter convention m = k²** (pass the squared modulus). Domain [0, 1]; `m = 1` → `(Inf, 1)` exactly. Elementwise over scalar/vector/matrix; registered via `register_nargout` (single output = K). |
 | `pin_dirichlet` | `[A, b] = pin_dirichlet(A, b, mask_or_indices, values)` | Dirichlet enforcement: pinned rows of A become identity rows (whole row zeroed — correct for `laplacian_eps_2d` too), `b(k)` gets the value. Mask (matrix/tensor, column-major `ij2k`/`ijk2k` order) or 1-based index vector; scalar or per-pin values; sparse (ordering hint preserved) or dense square A; b orientation preserved. `nargout==1` is an error (dropping the modified b is a physics footgun). |
 | `trapz` | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration; unit or explicit spacing. Matrices integrate per column → 1×ncols row (1-D-shaped inputs stay scalar, matching `sum`/`mean`); `length(x)` must equal `rows(M)`. |
+| `cumtrapz` | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` / `cumtrapz(X, Y, dim)` | Cumulative trapezoidal integral. First sample is 0. A scalar second argument is a dimension. Vectors and 1×N / N×1 keep orientation; a true matrix defaults to dim 1. |
+| `diff` | `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times (`n = 0` returns `X`). Vectors and 1×N / N×1 keep orientation; a true matrix defaults to dim 1. |
 | `min` | `min(v)` / `min(M)` / `min(a, b)` / `min(M, [], dim)` / `[m, i] = min(...)` | Vector or 1-D matrix → scalar. Matrix → row of column mins (default dim 1). Two-argument form is elementwise over any mix of scalars/vectors/matrices with `+`-style implicit expansion (per element, NaN loses to non-NaN). 3-arg empty-placeholder form selects axis. **Multi-return** `[m, i]` available for the 1-arg vector/matrix and 3-arg axis forms; index is the 1-based first-occurrence position. Multi-return on the two-argument elementwise form errors. **Comparison key:** real value for purely-real input; magnitude `|z|` for complex input (diverges from MATLAB on equal magnitudes — rustlab uses first-occurrence, MATLAB uses phase-angle tie-break). NaN entries are skipped; all-NaN input errors. |
 | `max` | `max(v)` / `max(M)` / `max(a, b)` / `max(M, [], dim)` / `[m, i] = max(...)` | Same shape and semantic rules as `min`. |
 | `argmin` | `argmin(v)` / `argmin(M)` / `argmin(M, dim)` | Vector → scalar 1-based index. Matrix → row of per-column argmins (default dim 1); `dim=2` → column of per-row argmins. Comparison key and NaN/tie-break rules match `min` exactly, so `[~, i] = min(v)` and `argmin(v)` always agree. |
@@ -1432,7 +1446,7 @@ primary     = NUMBER | STRING | IDENT
 | `contourf` | `contourf(Z)` / `contourf(X, Y, Z [, nlevels|levels [, "title"]])` | Filled contours. Same level handling as `contour`. HTML: Plotly contour with `coloring="fill"` (exact). SVG/PNG: per-cell discrete-band approximation (exact polygon fill is HTML-only in v1). Colormap: viridis. |
 | `quiver` | `quiver(X, Y, U, V [, scale or "normalized" or "title" or "color"])` / `quiver(U, V [, ...])` | Arrow plot of a 2-D vector field. Arrows auto-scale to the 95th percentile of the field magnitudes with per-arrow clamp to one cell × scale (outliers can't blank the plot); `"normalized"` stores unit vectors (direction-only view; checked before the title fallback); decimation = stride indexing, documented. NaN entries skipped. Honours `hold on` for overlay on `imagesc` / `contour`. Terminal: not rendered (deferred warning, silenced by savefig/saveanim). HTML: scatter line trace with null-separated arrows. SVG/PNG: plotters line + head polyline per cell. |
 | `streamplot` | `streamplot(X, Y, U, V [, density or seeds or "title" or "color"])` | Streamlines integrated via RK4 forward+backward from a seed grid (or explicit Nx2 seeds matrix), clipped at the domain boundary. NaN in `U` / `V` terminates a trace locally. Midpoint arrowhead per streamline. Same `hold on` / backend behaviour as `quiver`. Default density ≈ one seed per grid cell. |
-| `gradient` | `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` | 2-D gradient of a scalar field on a uniform grid; rows index y, columns index x. 2nd-order central interior, 2nd-order one-sided boundaries. Each axis must have length ≥ 3. Complex inputs supported. |
+| `gradient` | `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` | 1-D: endpoints first-order, interior central, same orientation as the vector (or 1×N / N×1). 2-D: rows index y, columns index x; 2nd-order central interior, 2nd-order one-sided boundaries; each axis length ≥ 3. Complex inputs supported. |
 | `divergence` | `divergence(Fx, Fy)` / `divergence(Fx, Fy, dx, dy)` | 2-D divergence ∂Fx/∂x + ∂Fy/∂y; Fx and Fy must share shape. Same stencils as `gradient`. |
 | `curl` | `curl(Fx, Fy)` / `curl(Fx, Fy, dx, dy)` | Z-component of ∇×F (2-D scalar curl ∂Fy/∂x − ∂Fx/∂y). Same stencils as `gradient`. |
 | `gradient3` | `[Fx, Fy, Fz] = gradient3(F)` / `gradient3(F, dx, dy, dz)` | 3-D gradient on a uniform grid. F is a Tensor3; axis 0 = y, axis 1 = x, axis 2 = z. Returns three Tensor3s. Same stencils and shape requirements as `gradient`. |

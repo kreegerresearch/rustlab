@@ -75,6 +75,7 @@ pub const IMPURE_BUILTINS: &[&str] = &[
     "randn",
     "randperm",
     "readmatrix",
+    "rng",
     "save",
     "scatter",
     "stem",
@@ -319,7 +320,7 @@ fn visit_expr_collect_call_names(e: &Expr, out: &mut BTreeSet<String>) {
         }
         Expr::Transpose(e) | Expr::NonConjTranspose(e) => visit_expr_collect_call_names(e, out),
         Expr::Field { object, .. } => visit_expr_collect_call_names(object, out),
-        Expr::Index { expr, args } => {
+        Expr::Index { expr, args } | Expr::ContentIndex { expr, args } => {
             visit_expr_collect_call_names(expr, out);
             for a in args {
                 visit_expr_collect_call_names(a, out);
@@ -519,7 +520,7 @@ fn visit_expr_for_var_refs(e: &Expr, out: &mut BTreeSet<String>) {
         }
         Expr::Transpose(e) | Expr::NonConjTranspose(e) => visit_expr_for_var_refs(e, out),
         Expr::Field { object, .. } => visit_expr_for_var_refs(object, out),
-        Expr::Index { expr, args } => {
+        Expr::Index { expr, args } | Expr::ContentIndex { expr, args } => {
             visit_expr_for_var_refs(expr, out);
             for a in args {
                 visit_expr_for_var_refs(a, out);
@@ -649,7 +650,7 @@ fn visit_expr_for_impure_calls(e: &Expr, out: &mut BTreeSet<String>) {
         }
         Expr::Transpose(e) | Expr::NonConjTranspose(e) => visit_expr_for_impure_calls(e, out),
         Expr::Field { object, .. } => visit_expr_for_impure_calls(object, out),
-        Expr::Index { expr, args } => {
+        Expr::Index { expr, args } | Expr::ContentIndex { expr, args } => {
             visit_expr_for_impure_calls(expr, out);
             for a in args {
                 visit_expr_for_impure_calls(a, out);

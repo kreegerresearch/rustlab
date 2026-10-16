@@ -103,7 +103,8 @@ pub fn render_latex(
                 // Source, printed text, and errors are separate breakable
                 // panels. Plots stay full width after the panels. `code:`
                 // is HTML-only; PDF always shows the source.
-                let trimmed = text_output.trim();
+                let stripped = rustlab_script::eval::table::strip_table_html(text_output);
+                let trimmed = stripped.trim();
                 if !pending_cells.is_empty() {
                     body.push_str(&crate::comments::render_cell_notes_latex(&pending_cells));
                     pending_cells.clear();

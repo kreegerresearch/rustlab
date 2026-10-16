@@ -44,7 +44,6 @@
 use crate::error::DspError;
 use num_complex::Complex;
 use rayon::prelude::*;
-#[cfg(test)]
 use rustlab_core::C64;
 use rustlab_core::{CMatrix, CTensor3};
 
@@ -617,6 +616,89 @@ pub fn curl_3d(
     let cy = d_along_axis_3d(fx, 2, dz) - d_along_axis_3d(fz, 1, dx);
     let cz = d_along_axis_3d(fy, 1, dx) - d_along_axis_3d(fx, 0, dy);
     Ok((cx, cy, cz))
+}
+
+/// 1-D gradient with uniform spacing `h`, matching MATLAB `gradient`.
+///
+/// Length 0 is empty. Length 1 is 0. Endpoints are first-order
+/// `(f[1]-f[0])/h`; interior points are central `(f[i+1]-f[i-1])/(2h)`.
+/// This is not the 2-D stencil (`gradient_2d` keeps second-order one-sided
+/// boundaries and requires length ≥ 3).
+pub fn gradient_1d(f: &[C64], h: f64) -> Result<Vec<C64>, DspError> {
+    if !h.is_finite() || h == 0.0 {
+        return Err(DspError::InvalidParameter(format!(
+            "gradient: spacing must be a finite non-zero number, got {h}"
+        )));
+    }
+    let n = f.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n == 1 {
+        return Ok(vec![C64::new(0.0, 0.0)]);
+    }
+    let mut g = vec![C64::new(0.0, 0.0); n];
+    g[0] = (f[1] - f[0]) / h;
+    g[n - 1] = (f[n - 1] - f[n - 2]) / h;
+    let two_h = 2.0 * h;
+    for i in 1..n - 1 {
+        g[i] = (f[i + 1] - f[i - 1]) / two_h;
+    }
+    Ok(g)
+}
+
+/// 1-D gradient on explicit sample coordinates `x` (MATLAB `gradient(f, x)`).
+///
+/// Endpoints use the adjacent spacing. Interior points use the nonuniform
+/// weights that reduce to the central difference when the spacing is constant:
+/// `g(i) = (dx2²·(f(i)-f(i-1)) + dx1²·(f(i+1)-f(i))) / (dx1·dx2·(dx1+dx2))`.
+pub fn gradient_1d_coords(f: &[C64], x: &[f64]) -> Result<Vec<C64>, DspError> {
+    if f.len() != x.len() {
+        return Err(DspError::InvalidParameter(format!(
+            "gradient: coordinate vector length {} does not match data length {}",
+            x.len(),
+            f.len()
+        )));
+    }
+    if x.iter().any(|v| !v.is_finite()) {
+        return Err(DspError::InvalidParameter(
+            "gradient: coordinates must be finite".to_string(),
+        ));
+    }
+    let n = f.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n == 1 {
+        return Ok(vec![C64::new(0.0, 0.0)]);
+    }
+    let mut g = vec![C64::new(0.0, 0.0); n];
+    let dx0 = x[1] - x[0];
+    if dx0 == 0.0 {
+        return Err(DspError::InvalidParameter(
+            "gradient: adjacent coordinates must differ".to_string(),
+        ));
+    }
+    g[0] = (f[1] - f[0]) / dx0;
+    let dxn = x[n - 1] - x[n - 2];
+    if dxn == 0.0 {
+        return Err(DspError::InvalidParameter(
+            "gradient: adjacent coordinates must differ".to_string(),
+        ));
+    }
+    g[n - 1] = (f[n - 1] - f[n - 2]) / dxn;
+    for i in 1..n - 1 {
+        let dx1 = x[i] - x[i - 1];
+        let dx2 = x[i + 1] - x[i];
+        if dx1 == 0.0 || dx2 == 0.0 {
+            return Err(DspError::InvalidParameter(
+                "gradient: adjacent coordinates must differ".to_string(),
+            ));
+        }
+        let num = (f[i] - f[i - 1]) * (dx2 * dx2) + (f[i + 1] - f[i]) * (dx1 * dx1);
+        g[i] = num / (dx1 * dx2 * (dx1 + dx2));
+    }
+    Ok(g)
 }
 
 // ─── Test helpers ────────────────────────────────────────────────────────────

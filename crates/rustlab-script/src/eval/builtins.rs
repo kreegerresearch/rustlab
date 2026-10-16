@@ -12,7 +12,8 @@ use rustlab_dsp::{
     butterworth_highpass, butterworth_lowpass, curl_2d, curl_3d, cwt_morlet, cwt_stream,
     cwt_stream_init, default_scales, default_segment_len, divergence_2d, divergence_3d, fft,
     fftfreq, fftshift, fir_bandpass, fir_bandpass_kaiser, fir_highpass, fir_highpass_kaiser,
-    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_2d, gradient_3d,
+    fir_lowpass, fir_lowpass_kaiser, fir_notch, firpm, firpmq, freqz, gradient_1d,
+    gradient_1d_coords, gradient_2d, gradient_3d,
     ifft, pwelch_psd, pwelch_stream, pwelch_stream_init, quantize_scalar, snr_db,
     stft as stft_math, stft_stream, stft_stream_init, upfirdn, waterfall as waterfall_math,
     waterfall_current_history, waterfall_current_spectrum, waterfall_state_fs,
@@ -163,6 +164,7 @@ impl BuiltinRegistry {
         r.register("randn", builtin_randn);
         r.register("randi", builtin_randi);
         r.register("seed", builtin_seed);
+        r.register("rng", builtin_rng);
         r.register("nproc", builtin_nproc);
         // Tensor3 (rank-3) constructors
         r.register("zeros3", builtin_zeros3);
@@ -183,11 +185,20 @@ impl BuiltinRegistry {
         r.register("argmax", builtin_argmax);
         r.register_nargout("sort", builtin_sort_nargout);
         r.register("trapz", builtin_trapz);
+        r.register("cumtrapz", builtin_cumtrapz);
+        r.register("diff", builtin_diff);
+        r.register("fliplr", builtin_fliplr);
+        r.register("nextpow2", builtin_nextpow2);
         r.register("len", builtin_len);
         r.register("length", builtin_len); // alias for len
         r.register("numel", builtin_numel);
         r.register("size", builtin_size);
         r.register("ndims", builtin_ndims);
+        r.register("table", builtin_table);
+        r.register("height", builtin_height);
+        r.register("width", builtin_width);
+        r.register("head", builtin_head);
+        r.register("tail", builtin_tail);
         // I/O
         r.register("print", builtin_print);
         r.register("plot", builtin_plot);
@@ -296,6 +307,7 @@ impl BuiltinRegistry {
         r.register("place", builtin_place);
         r.register("freqresp", builtin_freqresp);
         r.register_nargout("svd", builtin_svd);
+        r.register("pinv", builtin_pinv);
         // S-parameters (RF Toolbox — Phase 1: type + Touchstone I/O + inspection)
         r.register("sparameters", builtin_sparameters);
         r.register("nports", builtin_nports);
@@ -1177,13 +1189,97 @@ fn unpack_dxdy(args: &[Value], name: &str, start: usize) -> Result<(f64, f64), S
     }
 }
 
-/// `[Fx, Fy] = gradient(F)` or `gradient(F, dx, dy)`.
+/// `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` on a vector or a
+/// 1×N / N×1 matrix: MATLAB's 1-D gradient (first-order endpoints, central
+/// interior), returned in the same orientation.
+/// `[Fx, Fy] = gradient(F)` / `gradient(F, dx, dy)` on a true 2-D matrix:
+/// the existing second-order field gradient.
 fn builtin_gradient(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("gradient", &args, 1, 3)?;
+    if gradient_arg_is_1d(&args[0]) {
+        return builtin_gradient_1d(args);
+    }
     let f = to_cmatrix_arg(&args[0], "gradient", "F")?;
     let (dx, dy) = unpack_dxdy(&args, "gradient", 1)?;
     let (fx, fy) = gradient_2d(&f, dx, dy)?;
     Ok(Value::Tuple(vec![Value::Matrix(fx), Value::Matrix(fy)]))
+}
+
+fn gradient_arg_is_1d(v: &Value) -> bool {
+    match v {
+        Value::Vector(_) | Value::Scalar(_) | Value::Complex(_) => true,
+        Value::Matrix(m) => m.nrows() <= 1 || m.ncols() <= 1,
+        _ => false,
+    }
+}
+
+fn builtin_gradient_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.len() == 3 {
+        return Err(ScriptError::type_err(
+            "gradient: a vector takes gradient(v), gradient(v, h), or gradient(v, x); \
+             dx and dy are for a 2-D matrix"
+                .to_string(),
+        ));
+    }
+    let samples = gradient_samples(&args[0])?;
+    let g = if args.len() == 1 {
+        gradient_1d(&samples, 1.0)?
+    } else {
+        match &args[1] {
+            Value::Scalar(h) => gradient_1d(&samples, *h)?,
+            Value::Complex(c) if c.im.abs() < 1e-12 => gradient_1d(&samples, c.re)?,
+            Value::Vector(v) => {
+                let x: Vec<f64> = v.iter().map(|c| c.re).collect();
+                gradient_1d_coords(&samples, &x)?
+            }
+            Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+                let x: Vec<f64> = m.iter().map(|c| c.re).collect();
+                gradient_1d_coords(&samples, &x)?
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "gradient: spacing must be a scalar or a coordinate vector, got {}",
+                    other.type_name()
+                )))
+            }
+        }
+    };
+    Ok(repack_like(&args[0], g))
+}
+
+fn gradient_samples(v: &Value) -> Result<Vec<C64>, ScriptError> {
+    match v {
+        Value::Vector(vec) => Ok(vec.iter().copied().collect()),
+        Value::Matrix(m) => Ok(m.iter().copied().collect()),
+        Value::Scalar(n) => Ok(vec![Complex::new(*n, 0.0)]),
+        Value::Complex(c) => Ok(vec![*c]),
+        other => Err(ScriptError::type_err(format!(
+            "gradient: expected a vector or matrix, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// Put a flat sample list back into the shape of `like` (vector, row, or column).
+fn repack_like(like: &Value, data: Vec<C64>) -> Value {
+    match like {
+        // A single row, including 1×1, stays a row. A single column stays a column.
+        Value::Matrix(m) if m.nrows() <= 1 => Value::Matrix(
+            Array2::from_shape_vec((1, data.len()), data).expect("row shape matches data"),
+        ),
+        Value::Matrix(m) if m.ncols() <= 1 => Value::Matrix(
+            Array2::from_shape_vec((data.len(), 1), data).expect("column shape matches data"),
+        ),
+        Value::Scalar(_) | Value::Complex(_) if data.len() == 1 => {
+            let c = data[0];
+            if c.im.abs() < 1e-12 {
+                Value::Scalar(c.re)
+            } else {
+                Value::Complex(c)
+            }
+        }
+        _ => Value::Vector(Array1::from_vec(data)),
+    }
 }
 
 /// `D = divergence(Fx, Fy)` or `divergence(Fx, Fy, dx, dy)`.
@@ -1563,6 +1659,94 @@ fn builtin_seed(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     crate::eval::rng::seed_rng(s as u64);
     Ok(Value::None)
+}
+
+/// `rng` — MATLAB-style front end for [`builtin_seed`].
+///
+/// `rng(seed)` and `rng("default")` (seed 0) restart the stream at that seed.
+/// `rng("shuffle")` re-seeds from OS entropy. `s = rng()` returns a struct
+/// with fields `Type` (`"twister"`) and `Seed`. Passing that struct back to
+/// `rng(s)` restarts at `Seed`; it does not resume a half-consumed `StdRng`,
+/// which has no stable serializable position. The only generator name
+/// accepted is `"twister"` (or `"default"`).
+fn builtin_rng(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() {
+        return Ok(rng_state_value());
+    }
+    if args.len() > 2 {
+        return Err(ScriptError::type_err(
+            "rng: expected rng(), rng(seed), rng(\"shuffle\"), rng(\"default\"), or rng(seed, \"twister\")"
+                .to_string(),
+        ));
+    }
+    if args.len() == 2 {
+        let gen = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+        if !matches!(gen.to_lowercase().as_str(), "twister" | "default") {
+            return Err(ScriptError::type_err(format!(
+                "rng: unsupported generator '{gen}' (only \"twister\" is available)"
+            )));
+        }
+    }
+    apply_rng_setting(&args[0])?;
+    Ok(Value::None)
+}
+
+fn rng_state_value() -> Value {
+    let mut map = HashMap::new();
+    map.insert("Type".to_string(), Value::Str("twister".to_string()));
+    let seed = match crate::eval::rng::current_master_seed() {
+        Some(s) => Value::Scalar(s as f64),
+        // Entropy mode has no master seed. NaN marks "not an explicit seed"
+        // so rng(s) after rng("shuffle") shuffles again instead of pinning 0.
+        None => Value::Scalar(f64::NAN),
+    };
+    map.insert("Seed".to_string(), seed);
+    Value::Struct(map)
+}
+
+fn apply_rng_setting(arg: &Value) -> Result<(), ScriptError> {
+    match arg {
+        Value::Struct(map) => {
+            let seed = map.get("Seed").ok_or_else(|| {
+                ScriptError::type_err("rng: struct must have a Seed field".to_string())
+            })?;
+            let s = seed.to_scalar().map_err(|e| ScriptError::type_err(e))?;
+            if s.is_nan() {
+                crate::eval::rng::seed_rng_from_entropy();
+                return Ok(());
+            }
+            apply_rng_number(s)
+        }
+        Value::Str(s) => match s.to_lowercase().as_str() {
+            "shuffle" => {
+                crate::eval::rng::seed_rng_from_entropy();
+                Ok(())
+            }
+            "default" | "twister" => {
+                crate::eval::rng::seed_rng(0);
+                Ok(())
+            }
+            other => Err(ScriptError::type_err(format!(
+                "rng: expected a seed, \"shuffle\", or \"default\", got \"{other}\""
+            ))),
+        },
+        other => {
+            let s = other
+                .to_scalar()
+                .map_err(|e| ScriptError::type_err(format!("rng: {e}")))?;
+            apply_rng_number(s)
+        }
+    }
+}
+
+fn apply_rng_number(s: f64) -> Result<(), ScriptError> {
+    if !s.is_finite() || s < 0.0 || s.fract() != 0.0 {
+        return Err(ScriptError::type_err(format!(
+            "rng: expected a non-negative integer seed, got {s}"
+        )));
+    }
+    crate::eval::rng::seed_rng(s as u64);
+    Ok(())
 }
 
 /// `nproc()` — number of logical CPUs available to the process.
@@ -2727,6 +2911,306 @@ fn builtin_trapz(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
+/// `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` / `cumtrapz(X, Y, dim)`.
+///
+/// Cumulative trapezoidal integral. The first sample along the integration
+/// axis is 0. A scalar second argument is a dimension, not an x-axis.
+/// Vectors and 1×N / N×1 matrices integrate along the vector and keep that
+/// orientation. A true matrix defaults to dimension 1 (down each column).
+fn builtin_cumtrapz(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(ScriptError::type_err(
+            "cumtrapz: expected cumtrapz(Y), cumtrapz(X, Y), cumtrapz(Y, dim), or cumtrapz(X, Y, dim)"
+                .to_string(),
+        ));
+    }
+    let (x_opt, data, dim) = parse_cumtrapz_args(args)?;
+    let samples_of = |col: &[C64]| -> Result<Vec<C64>, ScriptError> {
+        if let Some(x) = &x_opt {
+            if x.len() != col.len() {
+                return Err(ScriptError::type_err(format!(
+                    "cumtrapz: x has {} samples but the data has {}",
+                    x.len(),
+                    col.len()
+                )));
+            }
+        }
+        Ok(cumtrapz_strip(col, x_opt.as_deref()))
+    };
+    match data {
+        Value::Vector(v) => {
+            let y = samples_of(&v.iter().copied().collect::<Vec<_>>())?;
+            Ok(Value::Vector(Array1::from_vec(y)))
+        }
+        Value::Matrix(m) if m.nrows() <= 1 || m.ncols() <= 1 => {
+            let flat: Vec<C64> = m.iter().copied().collect();
+            let y = samples_of(&flat)?;
+            Ok(repack_like(&Value::Matrix(m), y))
+        }
+        Value::Matrix(m) => {
+            let dim = dim.unwrap_or(1);
+            if dim == 1 {
+                let mut cols: Vec<Vec<C64>> = Vec::with_capacity(m.ncols());
+                for col in m.columns() {
+                    let samples: Vec<C64> = col.iter().copied().collect();
+                    cols.push(samples_of(&samples)?);
+                }
+                let nrows = cols.first().map(|c| c.len()).unwrap_or(0);
+                let out = Array2::from_shape_fn((nrows, cols.len()), |(i, j)| cols[j][i]);
+                Ok(Value::Matrix(out))
+            } else if dim == 2 {
+                let mut rows: Vec<Vec<C64>> = Vec::with_capacity(m.nrows());
+                for row in m.rows() {
+                    let samples: Vec<C64> = row.iter().copied().collect();
+                    rows.push(samples_of(&samples)?);
+                }
+                let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+                let out = Array2::from_shape_fn((rows.len(), ncols), |(i, j)| rows[i][j]);
+                Ok(Value::Matrix(out))
+            } else {
+                Err(ScriptError::type_err(format!(
+                    "cumtrapz: dim must be 1 or 2, got {dim}"
+                )))
+            }
+        }
+        Value::Scalar(n) => Ok(Value::Scalar(0.0 * n)),
+        Value::Complex(_) => Ok(Value::Scalar(0.0)),
+        other => Err(ScriptError::type_err(format!(
+            "cumtrapz: argument must be a vector or matrix, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn parse_cumtrapz_args(
+    args: Vec<Value>,
+) -> Result<(Option<Vec<f64>>, Value, Option<usize>), ScriptError> {
+    match args.len() {
+        1 => Ok((None, args.into_iter().next().unwrap(), None)),
+        2 => {
+            let mut it = args.into_iter();
+            let a = it.next().unwrap();
+            let b = it.next().unwrap();
+            if let Some(dim) = as_dim_scalar(&b) {
+                Ok((None, a, Some(dim)))
+            } else {
+                Ok((Some(coord_vector(&a, "cumtrapz")?), b, None))
+            }
+        }
+        _ => {
+            let mut it = args.into_iter();
+            let x = it.next().unwrap();
+            let y = it.next().unwrap();
+            let d = it.next().unwrap();
+            let dim = as_dim_scalar(&d)
+                .ok_or_else(|| ScriptError::type_err("cumtrapz: dim must be 1 or 2".to_string()))?;
+            Ok((Some(coord_vector(&x, "cumtrapz")?), y, Some(dim)))
+        }
+    }
+}
+
+fn as_dim_scalar(v: &Value) -> Option<usize> {
+    let s = match v {
+        Value::Scalar(n) => *n,
+        Value::Complex(c) if c.im.abs() < 1e-12 => c.re,
+        _ => return None,
+    };
+    if s == 1.0 || s == 2.0 {
+        Some(s as usize)
+    } else {
+        None
+    }
+}
+
+fn coord_vector(v: &Value, name: &str) -> Result<Vec<f64>, ScriptError> {
+    match v {
+        Value::Vector(vec) => Ok(vec.iter().map(|c| c.re).collect()),
+        Value::Matrix(m) if m.nrows() <= 1 || m.ncols() <= 1 => {
+            Ok(m.iter().map(|c| c.re).collect())
+        }
+        other => Err(ScriptError::type_err(format!(
+            "{name}: x must be a vector, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn cumtrapz_strip(v: &[C64], x: Option<&[f64]>) -> Vec<C64> {
+    let mut z = vec![C64::new(0.0, 0.0); v.len()];
+    if v.len() < 2 {
+        return z;
+    }
+    let mut acc = C64::new(0.0, 0.0);
+    for i in 0..v.len() - 1 {
+        let dx = match x {
+            Some(xs) => xs[i + 1] - xs[i],
+            None => 1.0,
+        };
+        acc += (v[i] + v[i + 1]) * 0.5 * dx;
+        z[i + 1] = acc;
+    }
+    z
+}
+
+/// `diff(X)` / `diff(X, n)` / `diff(X, n, dim)`.
+///
+/// First difference, repeated `n` times (default 1). Vectors and 1×N / N×1
+/// matrices difference along the vector and keep that orientation. A true
+/// matrix defaults to dimension 1. The result is empty along an axis shorter
+/// than `n + 1`. `n = 0` returns `X`.
+fn builtin_diff(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 3 {
+        return Err(ScriptError::type_err(
+            "diff: expected diff(X), diff(X, n), or diff(X, n, dim)".to_string(),
+        ));
+    }
+    let n = if args.len() >= 2 {
+        let s = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        if !s.is_finite() || s < 0.0 || s.fract() != 0.0 {
+            return Err(ScriptError::type_err(format!(
+                "diff: n must be a non-negative integer, got {s}"
+            )));
+        }
+        s as usize
+    } else {
+        1
+    };
+    let dim = if args.len() == 3 {
+        as_dim_scalar(&args[2])
+            .ok_or_else(|| ScriptError::type_err("diff: dim must be 1 or 2".to_string()))?
+    } else {
+        1
+    };
+    match &args[0] {
+        Value::Vector(v) => {
+            let y = diff_repeated(&v.iter().copied().collect::<Vec<_>>(), n);
+            Ok(Value::Vector(Array1::from_vec(y)))
+        }
+        Value::Matrix(m) if m.nrows() <= 1 || m.ncols() <= 1 => {
+            let flat: Vec<C64> = m.iter().copied().collect();
+            let y = diff_repeated(&flat, n);
+            Ok(repack_like(&args[0], y))
+        }
+        Value::Matrix(m) => {
+            if dim == 1 {
+                let mut cols = Vec::with_capacity(m.ncols());
+                for col in m.columns() {
+                    let samples: Vec<C64> = col.iter().copied().collect();
+                    cols.push(diff_repeated(&samples, n));
+                }
+                let nrows = cols.first().map(|c| c.len()).unwrap_or(0);
+                let out = Array2::from_shape_fn((nrows, cols.len()), |(i, j)| cols[j][i]);
+                Ok(Value::Matrix(out))
+            } else {
+                let mut rows = Vec::with_capacity(m.nrows());
+                for row in m.rows() {
+                    let samples: Vec<C64> = row.iter().copied().collect();
+                    rows.push(diff_repeated(&samples, n));
+                }
+                let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+                let out = Array2::from_shape_fn((rows.len(), ncols), |(i, j)| rows[i][j]);
+                Ok(Value::Matrix(out))
+            }
+        }
+        Value::Scalar(_) | Value::Complex(_) => {
+            if n == 0 {
+                Ok(args[0].clone())
+            } else {
+                Ok(Value::Matrix(Array2::zeros((0, 1))))
+            }
+        }
+        other => Err(ScriptError::type_err(format!(
+            "diff: argument must be a vector or matrix, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn diff_repeated(v: &[C64], n: usize) -> Vec<C64> {
+    let mut cur = v.to_vec();
+    for _ in 0..n {
+        if cur.len() < 2 {
+            return Vec::new();
+        }
+        cur = (0..cur.len() - 1).map(|i| cur[i + 1] - cur[i]).collect();
+    }
+    cur
+}
+
+/// `fliplr(A)` — reverse the columns. A vector is a row (`size` is `[1, n]`),
+/// so it is reversed. An N×1 matrix is unchanged. A scalar is unchanged.
+fn builtin_fliplr(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("fliplr", &args, 1)?;
+    match &args[0] {
+        Value::Vector(v) => {
+            let mut data: Vec<C64> = v.iter().copied().collect();
+            data.reverse();
+            Ok(Value::Vector(Array1::from_vec(data)))
+        }
+        Value::Matrix(m) => {
+            let (nr, nc) = (m.nrows(), m.ncols());
+            let out = Array2::from_shape_fn((nr, nc), |(i, j)| m[[i, nc - 1 - j]]);
+            Ok(Value::Matrix(out))
+        }
+        Value::Scalar(_) | Value::Complex(_) => Ok(args[0].clone()),
+        other => Err(ScriptError::type_err(format!(
+            "fliplr: expected a vector or matrix, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `nextpow2(x)` — smallest integer `p` with `2^p >= |x|`, elementwise.
+/// `nextpow2(0)` is 0. Non-finite values pass through (`Inf` → `Inf`, `NaN` → `NaN`).
+fn builtin_nextpow2(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("nextpow2", &args, 1)?;
+    let one = |c: C64| -> C64 {
+        let p = nextpow2_scalar(c.norm());
+        Complex::new(p, 0.0)
+    };
+    match &args[0] {
+        Value::Scalar(n) => {
+            let p = nextpow2_scalar(n.abs());
+            if p.is_nan() {
+                Ok(Value::Scalar(f64::NAN))
+            } else {
+                Ok(Value::Scalar(p))
+            }
+        }
+        Value::Complex(c) => {
+            let p = nextpow2_scalar(c.norm());
+            Ok(Value::Scalar(p))
+        }
+        Value::Vector(v) => Ok(Value::Vector(Array1::from_iter(v.iter().copied().map(one)))),
+        Value::Matrix(m) => Ok(Value::Matrix(Array2::from_shape_fn(m.dim(), |(i, j)| {
+            one(m[[i, j]])
+        }))),
+        other => Err(ScriptError::type_err(format!(
+            "nextpow2: expected a numeric array, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn nextpow2_scalar(abs_x: f64) -> f64 {
+    if abs_x.is_nan() {
+        return f64::NAN;
+    }
+    if abs_x.is_infinite() {
+        return f64::INFINITY;
+    }
+    if abs_x == 0.0 {
+        return 0.0;
+    }
+    let mut p = abs_x.log2().ceil();
+    // log2 of an exact power of two can round up by a hair. If 2^(p-1)
+    // already covers |x|, that smaller exponent is the answer.
+    if p.is_finite() && (p - 1.0).exp2() >= abs_x {
+        p -= 1.0;
+    }
+    p
+}
+
 fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("len", &args, 1)?;
     match &args[0] {
@@ -2748,6 +3232,7 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
+        Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
         other => Err(ScriptError::type_err(format!(
             "len: unsupported type {}",
             other
@@ -2764,6 +3249,7 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
         Value::IntArray { data, .. } => data.len(),
         Value::StringArray(v) => v.len(),
+        Value::Table(t) => t.height() * t.width(),
         other => {
             return Err(ScriptError::type_err(format!(
                 "numel: unsupported type {}",
@@ -2806,6 +3292,7 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::SparseVector(sv) => (1, sv.len),
         Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         Value::StringArray(v) => (1, v.len()),
+        Value::Table(t) => (t.height(), t.width()),
         other => {
             return Err(ScriptError::type_err(format!(
                 "size: unsupported type {}",
@@ -2845,7 +3332,8 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
         | Value::SparseMatrix(_)
         | Value::StringArray(_)
         | Value::Bool(_)
-        | Value::Str(_) => 2,
+        | Value::Str(_)
+        | Value::Table(_) => 2,
         other => {
             return Err(ScriptError::type_err(format!(
                 "ndims: unsupported type {}",
@@ -2854,6 +3342,103 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     Ok(Value::Scalar(n as f64))
+}
+
+fn builtin_table(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Direct `table(a, b)` is intercepted in the evaluator so bare names
+    // become column names. This path is `feval("table", ...)`: every
+    // argument is already a value, so columns are named Var1, Var2, ...
+    let mut override_names = None;
+    let mut i = 0;
+    while i < args.len() {
+        let key = match &args[i] {
+            Value::Str(s) if super::table::is_varnames(s) => true,
+            _ => false,
+        };
+        if key {
+            if override_names.is_some() {
+                return Err(ScriptError::type_err(
+                    "table: VariableNames specified more than once".to_string(),
+                ));
+            }
+            if i + 1 >= args.len() {
+                return Err(ScriptError::type_err(
+                    "table: VariableNames needs a string array of names".to_string(),
+                ));
+            }
+            let names_val = args.remove(i + 1);
+            args.remove(i);
+            override_names =
+                Some(super::table::names_from_value(names_val).map_err(ScriptError::type_err)?);
+        } else {
+            i += 1;
+        }
+    }
+    let inputs = args
+        .into_iter()
+        .map(|value| super::table::TableInput { name: None, value })
+        .collect();
+    super::table::build_table(inputs, override_names)
+        .map(Value::Table)
+        .map_err(ScriptError::type_err)
+}
+
+fn shape_rows_cols(v: &Value) -> Result<(usize, usize), ScriptError> {
+    match v {
+        Value::Table(t) => Ok((t.height(), t.width())),
+        Value::Vector(vec) => Ok((1, vec.len())),
+        Value::Matrix(m) => Ok((m.nrows(), m.ncols())),
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } | Value::Bool(_) => Ok((1, 1)),
+        Value::IntArray { rows, cols, .. } => Ok((*rows, *cols)),
+        Value::SparseVector(sv) => Ok((1, sv.len)),
+        Value::SparseMatrix(sm) => Ok((sm.rows, sm.cols)),
+        Value::StringArray(items) => Ok((1, items.len())),
+        other => Err(ScriptError::type_err(format!(
+            "unsupported type {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn builtin_height(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("height", &args, 1)?;
+    let (rows, _) = shape_rows_cols(&args[0]).map_err(|e| {
+        ScriptError::type_err(format!("height: {e}"))
+    })?;
+    Ok(Value::Scalar(rows as f64))
+}
+
+fn builtin_width(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("width", &args, 1)?;
+    let (_, cols) = shape_rows_cols(&args[0]).map_err(|e| {
+        ScriptError::type_err(format!("width: {e}"))
+    })?;
+    Ok(Value::Scalar(cols as f64))
+}
+
+fn table_edge(name: &str, args: Vec<Value>, from_start: bool) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 1, 2)?;
+    let Value::Table(t) = &args[0] else {
+        return Err(ScriptError::type_err(format!(
+            "{name}: expected a table, got {}",
+            args[0].type_name()
+        )));
+    };
+    let n = if args.len() == 2 {
+        args[1].to_usize().map_err(|e| ScriptError::type_err(format!("{name}: {e}")))?
+    } else {
+        8
+    };
+    let out = if from_start { t.head(n) } else { t.tail(n) };
+    Ok(Value::Table(out))
+}
+
+fn builtin_head(args: Vec<Value>) -> Result<Value, ScriptError> {
+    table_edge("head", args, true)
+}
+
+fn builtin_tail(args: Vec<Value>) -> Result<Value, ScriptError> {
+    table_edge("tail", args, false)
 }
 
 // ─── FFT builtins ──────────────────────────────────────────────────────────
@@ -4402,6 +4987,281 @@ fn parse_trailing_plot_args(builtin: &str, rem: &[Value]) -> (PlotOpts, String) 
     (opts, title)
 }
 
+/// A compact MATLAB line spec: a base colour, a line style (`-`, `--`, `:`,
+/// `-.`), a marker (`o`, `.`), or a combination such as `r--` or `ko`.
+/// `:` and `-.` draw dashed — the renderers only have solid and dashed.
+/// An extended colour name (`"Gold"`) is not a line spec, so it can still
+/// be a title.
+struct ParsedLineSpec {
+    color: Option<SeriesColor>,
+    style: Option<LineStyle>,
+    marker: bool,
+}
+
+fn parse_line_spec(s: &str) -> Option<ParsedLineSpec> {
+    if SeriesColor::is_base_spec(s) {
+        return Some(ParsedLineSpec {
+            color: SeriesColor::parse(s),
+            style: None,
+            marker: false,
+        });
+    }
+    let mut rest = s;
+    let mut color = None;
+    if let Some(first) = rest.chars().next() {
+        let letter = first.to_ascii_lowercase().to_string();
+        if matches!(
+            letter.as_str(),
+            "r" | "g" | "b" | "c" | "m" | "y" | "k" | "w"
+        ) {
+            color = SeriesColor::parse(&letter);
+            rest = &rest[first.len_utf8()..];
+        }
+    }
+    let style = if let Some(tail) = rest.strip_prefix("--") {
+        rest = tail;
+        Some(LineStyle::Dashed)
+    } else if let Some(tail) = rest.strip_prefix("-.") {
+        rest = tail;
+        Some(LineStyle::Dashed)
+    } else if let Some(tail) = rest.strip_prefix(':') {
+        rest = tail;
+        Some(LineStyle::Dashed)
+    } else if let Some(tail) = rest.strip_prefix('-') {
+        rest = tail;
+        Some(LineStyle::Solid)
+    } else {
+        None
+    };
+    let marker = if rest == "o" || rest == "." {
+        rest = "";
+        true
+    } else {
+        false
+    };
+    if !rest.is_empty() || (color.is_none() && style.is_none() && !marker) {
+        return None;
+    }
+    Some(ParsedLineSpec {
+        color,
+        style,
+        marker,
+    })
+}
+
+fn is_plot_xy_data(v: &Value) -> bool {
+    matches!(v, Value::Vector(_) | Value::Scalar(_) | Value::Complex(_))
+}
+
+fn numeric_series_len(v: &Value) -> Option<usize> {
+    match v {
+        Value::Vector(vec) => Some(vec.len()),
+        Value::Scalar(_) | Value::Complex(_) => Some(1),
+        _ => None,
+    }
+}
+
+/// True when `rem` (the arguments after the pairs already parsed) still
+/// contains a vector that would be another series. String option values are
+/// skipped, and so is a scalar option value such as `"linewidth", 3`. A
+/// vector after a non-spec string is another series, not an option value.
+fn tail_hides_another_series(rem: &[Value]) -> bool {
+    let mut i = 0;
+    while i < rem.len() {
+        if numeric_series_len(&rem[i]).is_some_and(|n| n != 1) {
+            return true;
+        }
+        if rem[i].to_str().is_ok() && i + 1 < rem.len() {
+            if numeric_series_len(&rem[i + 1]).is_some_and(|n| n != 1) {
+                return true;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn plot_real_samples(v: &Value) -> Result<Vec<f64>, ScriptError> {
+    match v {
+        Value::Vector(vec) => Ok(vec.iter().map(|c| c.re).collect()),
+        Value::Scalar(n) => Ok(vec![*n]),
+        Value::Complex(c) => Ok(vec![c.re]),
+        other => Err(ScriptError::type_err(format!(
+            "plot: expected numeric data, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+struct PlotPair {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    color: Option<SeriesColor>,
+    style: Option<LineStyle>,
+    marker: bool,
+}
+
+/// `plot(x1, y1, x2, y2, ...)` with an optional line spec after each pair.
+///
+/// Returns `Ok(None)` when the call is a single series (including
+/// `plot(y1, y2)`, which is one x/y pair) so the existing path keeps its
+/// title and colour rules. Two or more pairs are drawn here. A dangling
+/// numeric argument is an error — it is not dropped.
+fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
+    // A true 2-D matrix is the column-series form plot(M) / plot(X, M).
+    if args
+        .iter()
+        .any(|a| matches!(a, Value::Matrix(m) if m.nrows() > 1 && m.ncols() > 1))
+    {
+        return Ok(None);
+    }
+    let mut i = 0;
+    let mut pairs: Vec<PlotPair> = Vec::new();
+    while i < args.len() && is_plot_xy_data(&args[i]) {
+        if i + 1 < args.len() && is_plot_xy_data(&args[i + 1]) {
+            let x = plot_real_samples(&args[i])?;
+            let y = plot_real_samples(&args[i + 1])?;
+            if x.len() != y.len() {
+                return Err(ScriptError::type_err(format!(
+                    "plot: x length ({}) must match y length ({})",
+                    x.len(),
+                    y.len()
+                )));
+            }
+            i += 2;
+            let mut pair = PlotPair {
+                x,
+                y,
+                color: None,
+                style: None,
+                marker: false,
+            };
+            if i < args.len() {
+                if let Ok(s) = args[i].to_str() {
+                    if let Some(spec) = parse_line_spec(&s) {
+                        pair.color = spec.color;
+                        pair.style = spec.style;
+                        pair.marker = spec.marker;
+                        i += 1;
+                    }
+                }
+            }
+            pairs.push(pair);
+        } else if pairs.is_empty() {
+            // plot(y) or plot(y, "title") — one series, not a pair list.
+            return Ok(None);
+        } else {
+            return Err(ScriptError::type_err(
+                "plot: incomplete x/y pair (each series needs both x and y)".to_string(),
+            ));
+        }
+    }
+    if pairs.len() < 2 {
+        // One series plus options. A numeric option value (`"linewidth", 3`)
+        // is not another series. A vector after a non-spec string is: that
+        // used to be dropped after a warning.
+        if pairs.len() == 1 && tail_hides_another_series(&args[i..]) {
+            let bad = args[i]
+                .to_str()
+                .unwrap_or_else(|_| args[i].type_name().to_string());
+            return Err(ScriptError::type_err(format!(
+                "plot: expected a line spec between x/y pairs, got '{bad}'"
+            )));
+        }
+        return Ok(None);
+    }
+    let (opts, title) = parse_trailing_plot_args("plot", &args[i..]);
+    // A multi-pair call must not quietly ignore a leftover that is neither
+    // a key/value option nor a single title. Re-check the tail: after an
+    // optional leading colour spec and key/value pairs, at most one string
+    // remains.
+    reject_unparsed_plot_tail(&args[i..])?;
+
+    FIGURE.with(|fig| {
+        let mut fig = fig.borrow_mut();
+        if !fig.hold {
+            let sp = fig.current_mut();
+            sp.clear_2d_overlays();
+            sp.title.clear();
+        }
+        for pair in pairs {
+            let color = pair.color.or(opts.color);
+            let style = pair.style.clone().unwrap_or_else(|| opts.style.clone());
+            // A marker with no line style is points. A spec that also names a
+            // line (`r--o`) draws the line — a series is one kind.
+            let marker = (pair.marker && pair.style.is_none())
+                || (pair.style.is_none() && !pair.marker && opts.wants_markers());
+            let color = color.unwrap_or_else(|| fig.next_color());
+            let sp = fig.current_mut();
+            if !title.is_empty() && sp.title.is_empty() {
+                sp.title = title.clone();
+            }
+            sp.series.push(rustlab_plot::Series {
+                label: opts.label.clone().unwrap_or_default(),
+                x_data: pair.x,
+                y_data: pair.y,
+                color,
+                style,
+                kind: if marker {
+                    rustlab_plot::PlotKind::Scatter
+                } else {
+                    rustlab_plot::PlotKind::Line
+                },
+            });
+        }
+    });
+    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    Ok(Some(()))
+}
+
+/// Error when a multi-pair tail is not key/value options plus an optional
+/// title. A single leftover string is the title. A leading base colour
+/// spec (the odd-length case `parse_trailing_plot_args` already accepts)
+/// is a default colour, not an error.
+fn reject_unparsed_plot_tail(rem: &[Value]) -> Result<(), ScriptError> {
+    let mut items = rem;
+    if items.len() % 2 == 1 {
+        if let Some(Ok(s)) = items.first().map(|v| v.to_str()) {
+            if SeriesColor::is_base_spec(&s) {
+                items = &items[1..];
+            }
+        }
+    }
+    let mut i = 0;
+    while i + 1 < items.len() {
+        let k = items[i].to_str().map_err(|_| {
+            ScriptError::type_err(
+                "plot: extra arguments after x/y pairs must be \"key\", \"value\" options or a title"
+                    .to_string(),
+            )
+        })?;
+        let known = matches!(
+            k.to_lowercase().as_str(),
+            "color" | "colour" | "label" | "style" | "marker"
+        );
+        if !known {
+            return Err(ScriptError::type_err(format!(
+                "plot: unexpected argument '{k}' after x/y pairs"
+            )));
+        }
+        if items[i + 1].to_str().is_err() {
+            return Err(ScriptError::type_err(format!(
+                "plot: option '{k}' needs a string value"
+            )));
+        }
+        i += 2;
+    }
+    if items.len() - i > 1 {
+        return Err(ScriptError::type_err(format!(
+            "plot: {} unexpected argument(s) after x/y pairs",
+            items.len() - i
+        )));
+    }
+    Ok(())
+}
+
 // ─── plot builtin ──────────────────────────────────────────────────────────
 
 fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -4440,6 +5300,11 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             fig.borrow_mut().current_mut().x_labels = Some(labels_for_state);
         });
         render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        sync_figure_outputs();
+        return Ok(Value::None);
+    }
+
+    if plot_multiple_pairs(&args)?.is_some() {
         sync_figure_outputs();
         return Ok(Value::None);
     }
@@ -5091,9 +5956,8 @@ fn assert_strictly_positive(name: &str, role: &str, v: &CVector) -> Result<(), S
     Ok(())
 }
 
-/// `loglog(x, y [, opts])` — log-log plot. Pre-transforms both axes
-/// via `log10` and labels the axes with the `log10(...)` convention.
-/// `x` and `y` must be strictly positive.
+/// `loglog(x, y [, opts])` — log-log plot. The data stays in real units;
+/// the axes are logarithmic. `x` and `y` must be strictly positive.
 /// Flag the current subplot's axis scale(s) as logarithmic after a log plot.
 /// The data stays in real units; the backends do the log positioning and
 /// decade-tick labelling (MATLAB behaviour).
@@ -7639,11 +8503,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                     .fold(0.0_f64, f64::max)
             } else if p == 2.0 {
                 // Spectral norm = largest singular value.
-                let (rows, cols) = (m.nrows(), m.ncols());
-                let ar: Vec<Vec<f64>> = (0..rows)
-                    .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
-                    .collect();
-                let (_, sv, _) = svd_via_ata(&ar, rows, cols);
+                let (_, sv, _) = svd_full(m)?;
                 sv.first().copied().unwrap_or(0.0)
             } else {
                 return Err(ScriptError::type_err(format!(
@@ -11921,39 +12781,35 @@ fn builtin_freqresp(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
-/// svd(A) — SVD via symmetric eigendecomposition of A'A.
-///   nargout <= 1: returns the singular-value vector (descending), so
-///                 `s = svd(A)` gives what a numerically-literate user
-///                 expects instead of an opaque 3-tuple.
-///   nargout >= 2: returns Tuple [U, sigma_vector, V] with
-///                 A ≈ U * diag(sigma) * V' (destructure with
-///                 `[U, S, V] = svd(A)`).
+/// svd(A) / svd(A, "econ") — singular value decomposition.
+///
+/// `s = svd(A)` returns the singular values (length `min(m, n)`, descending).
+/// `[U, s, V] = svd(A)` returns full factors: `U` is `m×m`, `V` is `n×n`,
+/// and `s` is still that vector (not an `m×n` diagonal matrix).
+/// `svd(A, "econ")` or `svd(A, 0)` returns the thin factors `U` `m×k` and
+/// `V` `n×k` (`k = min(m, n)`), so `U * diag(s) * V'` reconstructs `A`
+/// for every shape. The full factors of a non-square matrix reconstruct
+/// as `U(:, 1:k) * diag(s) * V(:, 1:k)'`.
 fn builtin_svd(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
-    check_args("svd", &args, 1)?;
-    let m = to_cmatrix_arg(&args[0], "svd", "A")?;
-    let max_im: f64 = m.iter().map(|c| c.im.abs()).fold(0.0_f64, f64::max);
-    let max_re: f64 = m.iter().map(|c| c.re.abs()).fold(0.0_f64, f64::max);
-    let rows = m.nrows();
-    let cols = m.ncols();
-    let ns = rows.min(cols);
-    // Complex input: compute the true SVD via the Hermitian eigendecomposition
-    // of AᴴA (the real-part-only path below would return the SVD of Re(A)).
-    let (u, sigma, v) = if max_im > 1e-10 * max_re.max(1e-300) {
-        let (u, sigma, v) = svd_complex(&m);
-        (u, sigma, v)
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(
+            "svd: expected svd(A) or svd(A, \"econ\")".to_string(),
+        ));
+    }
+    let econ = if args.len() == 2 {
+        svd_wants_economy(&args[1])?
     } else {
-        let ar: Vec<Vec<f64>> = (0..rows)
-            .map(|i| (0..cols).map(|j| m[[i, j]].re).collect())
-            .collect();
-        let (u_r, sv, v_r) = svd_via_ata(&ar, rows, cols);
-        (
-            Array2::from_shape_fn((rows, rows), |(i, j)| Complex::new(u_r[i][j], 0.0)),
-            sv,
-            Array2::from_shape_fn((cols, cols), |(i, j)| Complex::new(v_r[i][j], 0.0)),
-        )
+        false
     };
+    let a = to_cmatrix_arg(&args[0], "svd", "A")?;
+    let (mut u, sigma, mut v) = svd_full(&a)?;
+    let k = sigma.len();
+    if econ {
+        u = take_columns(&u, k);
+        v = take_columns(&v, k);
+    }
     let sigma_vec = Value::Vector(Array1::from_iter(
-        sigma[..ns].iter().map(|&s| Complex::new(s, 0.0)),
+        sigma.iter().map(|&s| Complex::new(s, 0.0)),
     ));
     if nargout < 2 {
         return Ok(sigma_vec);
@@ -11965,250 +12821,328 @@ fn builtin_svd(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     ]))
 }
 
-/// SVD of a complex matrix `A` via the Hermitian eigendecomposition of
-/// `S = AᴴA`. The complex Hermitian `S` is embedded in a real `2c×2c`
-/// symmetric matrix `[[Re S, -Im S], [Im S, Re S]]` so the existing real
-/// Jacobi eigensolver can be reused (each eigenvalue of `S` appears twice;
-/// a real eigenvector `[x; y]` maps to the complex eigenvector `x + i·y`).
-/// Returns `(U, sigma, V)` with `A ≈ U · diag(sigma) · Vᴴ`; `U` columns beyond
-/// the numerical rank are completed to an orthonormal basis.
-fn svd_complex(a: &CMatrix) -> (CMatrix, Vec<f64>, CMatrix) {
-    let rows = a.nrows();
-    let cols = a.ncols();
-
-    // S = AᴴA (cols×cols, Hermitian positive semidefinite).
-    let mut s = Array2::<C64>::zeros((cols, cols));
-    for i in 0..cols {
-        for j in 0..cols {
-            let mut acc = Complex::new(0.0, 0.0);
-            for k in 0..rows {
-                acc += a[[k, i]].conj() * a[[k, j]];
-            }
-            s[[i, j]] = acc;
-        }
+/// `pinv(A)` / `pinv(A, tol)` — Moore-Penrose pseudoinverse from the SVD.
+///
+/// `B` is `n×m` for an `m×n` `A`, with `A*B*A ≈ A`. Singular values at or
+/// below `tol` are treated as zero. The default tolerance is
+/// `max(m, n) * eps * σ_max`. `pinv(0)` is 0.
+fn builtin_pinv(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(
+            "pinv: expected pinv(A) or pinv(A, tol)".to_string(),
+        ));
     }
-
-    // Real symmetric embedding (2c×2c).
-    let c2 = 2 * cols;
-    let mut emb = Array2::<f64>::zeros((c2, c2));
-    for i in 0..cols {
-        for j in 0..cols {
-            let (re, im) = (s[[i, j]].re, s[[i, j]].im);
-            emb[[i, j]] = re;
-            emb[[i + cols, j + cols]] = re;
-            emb[[i, j + cols]] = -im;
-            emb[[i + cols, j]] = im;
+    let scalar_in = matches!(args[0], Value::Scalar(_) | Value::Complex(_));
+    let a = to_cmatrix_arg(&args[0], "pinv", "A")?;
+    let (m, n) = (a.nrows(), a.ncols());
+    let (u, sigma, v) = svd_full(&a)?;
+    let smax = sigma.first().copied().unwrap_or(0.0);
+    let tol = if args.len() == 2 {
+        let t = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        if !t.is_finite() || t < 0.0 {
+            return Err(ScriptError::type_err(format!(
+                "pinv: tol must be a non-negative finite number, got {t}"
+            )));
         }
-    }
-
-    let (evals, evecs) = rustlab_core::sparse_eig::sym_eig_jacobi(&emb);
-    // Sort eigenvalues descending; take every other (the doubled values).
-    let mut order: Vec<usize> = (0..c2).collect();
-    order.sort_by(|&p, &q| evals[q].partial_cmp(&evals[p]).unwrap());
-
-    let mut sigma = Vec::with_capacity(cols);
-    let mut vmat = Array2::<C64>::zeros((cols, cols));
-    for c in 0..cols {
-        let ci = order[2 * c];
-        sigma.push(evals[ci].max(0.0).sqrt());
-        let mut nrm = 0.0_f64;
-        for r in 0..cols {
-            let z = Complex::new(evecs[[r, ci]], evecs[[r + cols, ci]]);
-            vmat[[r, c]] = z;
-            nrm += z.norm_sqr();
-        }
-        let nrm = nrm.sqrt();
-        if nrm > 0.0 {
-            for r in 0..cols {
-                vmat[[r, c]] /= nrm;
-            }
-        }
-    }
-
-    // Left singular vectors: u_i = A v_i / sigma_i for sigma_i > tol.
-    let mut umat = Array2::<C64>::zeros((rows, rows));
-    let tol = 1e-12 * sigma.first().copied().unwrap_or(0.0).max(1e-300);
-    let mut filled = 0usize;
-    for c in 0..cols.min(rows) {
-        if sigma[c] > tol {
-            for r in 0..rows {
-                let mut acc = Complex::new(0.0, 0.0);
-                for k in 0..cols {
-                    acc += a[[r, k]] * vmat[[k, c]];
+        t
+    } else {
+        (m.max(n) as f64) * f64::EPSILON * smax
+    };
+    let mut b = Array2::<C64>::zeros((n, m));
+    let k = sigma.len();
+    for t in 0..k {
+        if sigma[t] > tol {
+            let inv_s = 1.0 / sigma[t];
+            for j in 0..n {
+                for i in 0..m {
+                    b[[j, i]] += v[[j, t]] * inv_s * u[[i, t]].conj();
                 }
-                umat[[r, c]] = acc / sigma[c];
             }
-            filled += 1;
         }
     }
-    // Complete U to an orthonormal basis via modified Gram-Schmidt over e_k.
-    let mut next_col = filled;
-    let mut basis = 0usize;
-    while next_col < rows && basis < rows {
-        let mut v: Vec<C64> = (0..rows)
-            .map(|r| Complex::new(if r == basis { 1.0 } else { 0.0 }, 0.0))
-            .collect();
-        for c in 0..next_col {
-            let mut dot = Complex::new(0.0, 0.0);
-            for r in 0..rows {
-                dot += umat[[r, c]].conj() * v[r];
-            }
-            for r in 0..rows {
-                v[r] -= dot * umat[[r, c]];
-            }
-        }
-        let nrm: f64 = v.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
-        if nrm > 1e-10 {
-            for r in 0..rows {
-                umat[[r, next_col]] = v[r] / nrm;
-            }
-            next_col += 1;
-        }
-        basis += 1;
+    if scalar_in {
+        let z = b[[0, 0]];
+        return Ok(if z.im.abs() < 1e-12 {
+            Value::Scalar(z.re)
+        } else {
+            Value::Complex(z)
+        });
     }
-
-    (umat, sigma, vmat)
+    Ok(Value::Matrix(b))
 }
 
-/// SVD via symmetric Jacobi eigendecomposition of A'A.
-/// For a rows×cols real matrix A:
-///   1. Compute S = A'A  (cols×cols, symmetric PSD)
-///   2. Find eigendecomposition S = V * diag(lambda) * V' via symmetric Jacobi
-///   3. Singular values sigma_i = sqrt(lambda_i), sorted descending
-///   4. Left singular vectors: u_i = A * v_i / sigma_i
-///   5. Fill remaining U columns via Gram-Schmidt
-fn svd_via_ata(
-    a: &[Vec<f64>],
-    rows: usize,
-    cols: usize,
-) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
-    // Step 1: Compute S = A'A  (cols×cols)
-    let mut s = vec![vec![0.0f64; cols]; cols];
-    for i in 0..cols {
-        for j in 0..cols {
-            s[i][j] = (0..rows).map(|k| a[k][i] * a[k][j]).sum();
+fn svd_wants_economy(arg: &Value) -> Result<bool, ScriptError> {
+    match arg {
+        Value::Scalar(x) if *x == 0.0 => Ok(true),
+        Value::Str(s) if s.eq_ignore_ascii_case("econ") || s.eq_ignore_ascii_case("economy") => {
+            Ok(true)
+        }
+        other => Err(ScriptError::type_err(format!(
+            "svd: second argument must be \"econ\" or 0, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn take_columns(a: &Array2<C64>, k: usize) -> Array2<C64> {
+    let k = k.min(a.ncols());
+    Array2::from_shape_fn((a.nrows(), k), |(i, j)| a[[i, j]])
+}
+
+/// Full SVD: `U` is `m×m`, `sigma` has length `k = min(m, n)` (descending,
+/// non-negative), `V` is `n×n`. Built from the Hermitian eigendecomposition
+/// of the smaller Gram matrix (`A Aᴴ` when `m ≤ n`, else `Aᴴ A`), so a wide
+/// matrix never indexes a left-singular vector past its row count.
+fn svd_full(a: &CMatrix) -> Result<(Array2<C64>, Vec<f64>, Array2<C64>), ScriptError> {
+    if a.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+        return Err(ScriptError::runtime(
+            "svd: matrix entries must be finite".to_string(),
+        ));
+    }
+    let (m, n) = (a.nrows(), a.ncols());
+    if m == 0 || n == 0 {
+        return Ok((Array2::eye(m), Vec::new(), Array2::eye(n)));
+    }
+    let k = m.min(n);
+    // Smaller Gram. `left` means its eigenvectors are the left singular vectors.
+    let (gram, left) = if m <= n {
+        (gram_aah(a), true)
+    } else {
+        (gram_aha(a), false)
+    };
+    let (evals, evecs) = hermitian_eigh(&gram)?;
+    let mut order: Vec<usize> = (0..evals.len()).collect();
+    order.sort_by(|&p, &q| {
+        evals[q]
+            .partial_cmp(&evals[p])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut sigma = Vec::with_capacity(k);
+    for &idx in order.iter().take(k) {
+        let lam = evals[idx];
+        if !lam.is_finite() {
+            return Err(ScriptError::runtime(
+                "svd: eigensolver produced a non-finite eigenvalue".to_string(),
+            ));
+        }
+        sigma.push(lam.max(0.0).sqrt());
+    }
+    let smax = sigma.first().copied().unwrap_or(0.0);
+    let tol = (m.max(n) as f64) * f64::EPSILON * smax;
+
+    let mut u = Array2::<C64>::zeros((m, m));
+    let mut v = Array2::<C64>::zeros((n, n));
+    if left {
+        for col in 0..k {
+            let src = order[col];
+            for r in 0..m {
+                u[[r, col]] = evecs[[r, src]];
+            }
+            normalize_column(&mut u, col);
+        }
+        let mut v_filled = vec![false; n];
+        for col in 0..k {
+            if sigma[col] > tol {
+                for r in 0..n {
+                    let mut acc = C64::new(0.0, 0.0);
+                    for i in 0..m {
+                        acc += a[[i, r]].conj() * u[[i, col]];
+                    }
+                    v[[r, col]] = acc / sigma[col];
+                }
+                normalize_column(&mut v, col);
+                v_filled[col] = true;
+            }
+        }
+        complete_orthonormal(&mut v, &v_filled);
+    } else {
+        for col in 0..k {
+            let src = order[col];
+            for r in 0..n {
+                v[[r, col]] = evecs[[r, src]];
+            }
+            normalize_column(&mut v, col);
+        }
+        let mut u_filled = vec![false; m];
+        for col in 0..k {
+            if sigma[col] > tol {
+                for r in 0..m {
+                    let mut acc = C64::new(0.0, 0.0);
+                    for j in 0..n {
+                        acc += a[[r, j]] * v[[j, col]];
+                    }
+                    u[[r, col]] = acc / sigma[col];
+                }
+                normalize_column(&mut u, col);
+                u_filled[col] = true;
+            }
+        }
+        complete_orthonormal(&mut u, &u_filled);
+    }
+    Ok((u, sigma, v))
+}
+
+fn gram_aah(a: &CMatrix) -> Array2<C64> {
+    let (m, n) = (a.nrows(), a.ncols());
+    let mut g = Array2::<C64>::zeros((m, m));
+    for i in 0..m {
+        for j in 0..=i {
+            let mut acc = C64::new(0.0, 0.0);
+            for k in 0..n {
+                acc += a[[i, k]] * a[[j, k]].conj();
+            }
+            g[[i, j]] = acc;
+            if i != j {
+                g[[j, i]] = acc.conj();
+            }
         }
     }
+    g
+}
 
-    // Step 2: Symmetric Jacobi eigendecomposition of S
-    // Accumulate eigenvectors in V (cols×cols identity initially)
-    let mut v: Vec<Vec<f64>> = (0..cols)
-        .map(|i| {
-            let mut row = vec![0.0f64; cols];
-            row[i] = 1.0;
-            row
-        })
-        .collect();
+fn gram_aha(a: &CMatrix) -> Array2<C64> {
+    let (m, n) = (a.nrows(), a.ncols());
+    let mut g = Array2::<C64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..=i {
+            let mut acc = C64::new(0.0, 0.0);
+            for k in 0..m {
+                acc += a[[k, i]].conj() * a[[k, j]];
+            }
+            g[[i, j]] = acc;
+            if i != j {
+                g[[j, i]] = acc.conj();
+            }
+        }
+    }
+    g
+}
 
-    let tol = 1e-14;
-    for _ in 0..500 * cols * cols {
-        let mut converged = true;
-        for p in 0..cols {
-            for q in (p + 1)..cols {
-                let spq = s[p][q];
-                if spq.abs() <= tol {
+/// Eigenpairs of a Hermitian matrix. Real input uses Jacobi directly.
+/// Complex input is embedded in a real symmetric matrix of twice the
+/// size; each eigenvalue is doubled there, so duplicate eigenvectors
+/// (overlap above 0.5) are dropped.
+fn hermitian_eigh(g: &Array2<C64>) -> Result<(Vec<f64>, Array2<C64>), ScriptError> {
+    let p = g.nrows();
+    let max_im = g.iter().map(|c| c.im.abs()).fold(0.0_f64, f64::max);
+    let max_re = g.iter().map(|c| c.re.abs()).fold(0.0_f64, f64::max);
+    if max_im <= 1e-12 * max_re.max(1.0) {
+        let real = Array2::from_shape_fn((p, p), |(i, j)| g[[i, j]].re);
+        let (evals, evecs) = rustlab_core::sparse_eig::sym_eig_jacobi(&real);
+        let c = Array2::from_shape_fn((p, p), |(i, j)| Complex::new(evecs[[i, j]], 0.0));
+        return Ok((evals, c));
+    }
+    let c2 = 2 * p;
+    let mut emb = Array2::<f64>::zeros((c2, c2));
+    for i in 0..p {
+        for j in 0..p {
+            let (re, im) = (g[[i, j]].re, g[[i, j]].im);
+            emb[[i, j]] = re;
+            emb[[i + p, j + p]] = re;
+            emb[[i, j + p]] = -im;
+            emb[[i + p, j]] = im;
+        }
+    }
+    let (evals, evecs) = rustlab_core::sparse_eig::sym_eig_jacobi(&emb);
+    let mut order: Vec<usize> = (0..c2).collect();
+    order.sort_by(|&a, &b| {
+        evals[b]
+            .partial_cmp(&evals[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut chosen_evals = Vec::with_capacity(p);
+    let mut chosen: Vec<Vec<C64>> = Vec::with_capacity(p);
+    for ci in order {
+        if chosen.len() == p {
+            break;
+        }
+        let mut z = vec![C64::new(0.0, 0.0); p];
+        let mut nrm = 0.0_f64;
+        for r in 0..p {
+            z[r] = Complex::new(evecs[[r, ci]], evecs[[r + p, ci]]);
+            nrm += z[r].norm_sqr();
+        }
+        let nrm = nrm.sqrt();
+        if nrm < 1e-14 {
+            continue;
+        }
+        for z_r in &mut z {
+            *z_r /= nrm;
+        }
+        let duplicate = chosen.iter().any(|prev| {
+            let dot: C64 = prev.iter().zip(z.iter()).map(|(a, b)| a.conj() * b).sum();
+            dot.norm() > 0.5
+        });
+        if duplicate {
+            continue;
+        }
+        chosen_evals.push(evals[ci]);
+        chosen.push(z);
+    }
+    if chosen.len() != p {
+        return Err(ScriptError::runtime(
+            "svd: Hermitian eigensolver did not produce a full basis".to_string(),
+        ));
+    }
+    let mut out = Array2::<C64>::zeros((p, p));
+    for (col, vec) in chosen.into_iter().enumerate() {
+        for r in 0..p {
+            out[[r, col]] = vec[r];
+        }
+    }
+    Ok((chosen_evals, out))
+}
+
+fn normalize_column(a: &mut Array2<C64>, col: usize) {
+    let nrm = (0..a.nrows())
+        .map(|r| a[[r, col]].norm_sqr())
+        .sum::<f64>()
+        .sqrt();
+    if nrm > 0.0 {
+        for r in 0..a.nrows() {
+            a[[r, col]] /= nrm;
+        }
+    }
+}
+
+/// Fill every column that is not already an orthonormal singular vector
+/// by modified Gram-Schmidt against the columns that are, trying the
+/// standard basis until one survives.
+fn complete_orthonormal(a: &mut Array2<C64>, filled: &[bool]) {
+    let (rows, cols) = a.dim();
+    let mut filled = filled.to_vec();
+    if filled.len() < cols {
+        filled.resize(cols, false);
+    }
+    for col in 0..cols {
+        if filled[col] {
+            continue;
+        }
+        for basis in 0..rows {
+            let mut cand = vec![C64::new(0.0, 0.0); rows];
+            cand[basis] = C64::new(1.0, 0.0);
+            for c in 0..cols {
+                if !filled[c] {
                     continue;
                 }
-                let spp = s[p][p];
-                let sqq = s[q][q];
-                let diff = sqq - spp;
-                let theta = 0.5 * diff / spq;
-                let t = if theta >= 0.0 {
-                    1.0 / (theta + (1.0 + theta * theta).sqrt())
-                } else {
-                    -1.0 / (-theta + (1.0 + theta * theta).sqrt())
-                };
-                let c = 1.0 / (1.0 + t * t).sqrt();
-                let s_rot = t * c;
-                // Update S: symmetric Jacobi rotation
-                s[p][p] = spp - t * spq;
-                s[q][q] = sqq + t * spq;
-                s[p][q] = 0.0;
-                s[q][p] = 0.0;
-                for r in 0..cols {
-                    if r == p || r == q {
-                        continue;
-                    }
-                    let srp = s[r][p];
-                    let srq = s[r][q];
-                    let new_rp = c * srp - s_rot * srq;
-                    let new_rq = s_rot * srp + c * srq;
-                    s[r][p] = new_rp;
-                    s[p][r] = new_rp;
-                    s[r][q] = new_rq;
-                    s[q][r] = new_rq;
+                let mut dot = C64::new(0.0, 0.0);
+                for r in 0..rows {
+                    dot += a[[r, c]].conj() * cand[r];
                 }
-                // Accumulate V
-                for i in 0..cols {
-                    let vip = v[i][p];
-                    let viq = v[i][q];
-                    v[i][p] = c * vip - s_rot * viq;
-                    v[i][q] = s_rot * vip + c * viq;
+                for r in 0..rows {
+                    cand[r] -= dot * a[[r, c]];
                 }
-                converged = false;
+            }
+            let nrm = cand.iter().map(|z| z.norm_sqr()).sum::<f64>().sqrt();
+            if nrm > 1e-10 {
+                for r in 0..rows {
+                    a[[r, col]] = cand[r] / nrm;
+                }
+                filled[col] = true;
+                break;
             }
         }
-        if converged {
-            break;
-        }
     }
-
-    // Step 3: Extract eigenvalues (diagonal of S) and sort descending
-    let mut pairs: Vec<(f64, usize)> = (0..cols).map(|j| (s[j][j].max(0.0).sqrt(), j)).collect();
-    pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut sv = vec![0.0f64; cols];
-    let mut v_out: Vec<Vec<f64>> = vec![vec![0.0f64; cols]; cols];
-    for (new_j, &(sigma, old_j)) in pairs.iter().enumerate() {
-        sv[new_j] = sigma;
-        for i in 0..cols {
-            v_out[i][new_j] = v[i][old_j];
-        }
-    }
-
-    // Step 4: Compute U = A * V / sigma (left singular vectors)
-    let mut u: Vec<Vec<f64>> = vec![vec![0.0f64; rows]; rows];
-    let rank = pairs.iter().filter(|&&(s, _)| s > 1e-12).count();
-    for j in 0..rank {
-        let sigma = sv[j];
-        // u_j = A * v_j / sigma
-        for i in 0..rows {
-            let val: f64 = (0..cols).map(|k| a[i][k] * v_out[k][j]).sum();
-            u[i][j] = val / sigma;
-        }
-    }
-
-    // Step 5: Fill remaining U columns via modified Gram-Schmidt
-    let mut basis: Vec<Vec<f64>> = (0..rank)
-        .map(|j| (0..rows).map(|i| u[i][j]).collect())
-        .collect();
-    let mut extra_idx = rank;
-    for e in 0..rows {
-        if extra_idx >= rows {
-            break;
-        }
-        let mut cand = vec![0.0f64; rows];
-        cand[e] = 1.0;
-        for bv in &basis {
-            let dot: f64 = cand.iter().zip(bv).map(|(a, b)| a * b).sum();
-            for i in 0..rows {
-                cand[i] -= dot * bv[i];
-            }
-        }
-        let norm: f64 = cand.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm > 1e-10 {
-            for x in &mut cand {
-                *x /= norm;
-            }
-            for i in 0..rows {
-                u[i][extra_idx] = cand[i];
-            }
-            basis.push(cand);
-            extra_idx += 1;
-        }
-    }
-
-    (u, sv, v_out)
 }
 
 // ─── Streaming DSP ────────────────────────────────────────────────────────────

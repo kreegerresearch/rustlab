@@ -1690,7 +1690,7 @@ impl Parser {
         }
     }
 
-    // postfix = primary ("'" | ".'" | "." IDENT ["(" args ")"] | "(" args ")")*
+    // postfix = primary ("'" | ".'" | "." IDENT ["(" args ")"] | "(" args ")" | "{" args "}")*
     fn parse_postfix(&mut self) -> Result<Expr, ScriptError> {
         let mut expr = self.parse_primary()?;
         loop {
@@ -1750,6 +1750,23 @@ impl Parser {
                             field,
                         };
                     }
+                }
+                // Table contents: T{rows, vars}. A brace literal is primary,
+                // so this only fires after an expression (`T{...}`, `f(x){...}`).
+                Token::LBrace => {
+                    self.advance();
+                    self.skip_newlines();
+                    let args = if self.peek_token() == &Token::RBrace {
+                        vec![]
+                    } else {
+                        self.parse_arglist()?
+                    };
+                    self.skip_newlines();
+                    self.expect(&Token::RBrace)?;
+                    expr = Expr::ContentIndex {
+                        expr: Box::new(expr),
+                        args,
+                    };
                 }
                 _ => break,
             }
@@ -1923,6 +1940,7 @@ impl Parser {
                 next,
                 Some(Token::Comma)
                     | Some(Token::RParen)
+                    | Some(Token::RBrace)
                     | Some(Token::Newline)
                     | Some(Token::Eof)
                     | None

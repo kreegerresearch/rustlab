@@ -409,6 +409,16 @@ fn feed_expr(h: &mut blake3::Hasher, e: &Expr) {
                 feed_expr(h, a);
             }
         }
+        Expr::ContentIndex { expr, args } => {
+            // New tag: do not reuse 0x2e, or a content index would hash
+            // like a parenthesis index and collide in the persistent cache.
+            h.update(&[0x31]);
+            feed_expr(h, expr);
+            h.update(&(args.len() as u64).to_le_bytes());
+            for a in args {
+                feed_expr(h, a);
+            }
+        }
         Expr::Lambda { params, body } => {
             h.update(&[0x2f]);
             feed_names(h, params);
@@ -1020,6 +1030,14 @@ fn feed_expr_canonical(
         }
         Expr::Index { expr, args } => {
             h.update(&[0x2e]);
+            feed_expr_canonical(h, expr, stack, ctx);
+            h.update(&(args.len() as u64).to_le_bytes());
+            for a in args {
+                feed_expr_canonical(h, a, stack, ctx);
+            }
+        }
+        Expr::ContentIndex { expr, args } => {
+            h.update(&[0x31]);
             feed_expr_canonical(h, expr, stack, ctx);
             h.update(&(args.len() as u64).to_le_bytes());
             for a in args {

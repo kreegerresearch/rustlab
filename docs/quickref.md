@@ -74,11 +74,16 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `dare(A, B, Q, R)` | Discrete Algebraic Riccati Equation → P |
 | `place(A, B, poles)` | Ackermann pole placement (SISO) → K |
 | `freqresp(A, B, C, D, w)` | H(jω) from state-space at each frequency ω |
-| `svd(A)` | Jacobi SVD. `s = svd(A)` → singular-value vector (descending); `[U, s, V] = svd(A)` → full decomposition |
+| `svd(A)` / `svd(A, "econ")` | SVD (real or complex, including wide and rank-deficient). `s = svd(A)` → singular-value vector (descending). `[U, s, V] = svd(A)` → full `U` `m×m`, `V` `n×n`. `"econ"` or `0` → thin `U` `m×k`, `V` `n×k`. `s` is a vector; `U*diag(s)*V'` reconstructs in the economy form |
+| `pinv(A)` / `pinv(A, tol)` | Moore-Penrose pseudoinverse (`n×m`). Default tol `max(m,n)*eps*σmax`. `pinv(0)` is 0 |
+| `fzero(f, x0)` / `fzero(f, [a,b])` | Real root. Scalar start searches outward; a bracket uses Brent. Optional `tol` |
 | `{"a", "b", "c"}` | String array literal (all elements must be strings) |
 | `sa(i)` | String array indexing (1-based); `end` supported |
 | `s.field` | Struct field access |
 | `s.field = val` | Struct field assignment (auto-creates struct) |
+| `T = table(a, b)` | Named columns, one row count. A variable names its column |
+| `T.x` / `T.x = v` | Read, replace, or append a column |
+| `T(rows, vars)` | Sub-table. `T{rows, var}` returns one column's cells |
 
 ---
 
@@ -91,6 +96,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `abs(v)` | Absolute value / modulus |
 | `log(v)` | Natural logarithm |
 | `log10(v)`, `log2(v)` | Base-10 and base-2 logarithms |
+| `nextpow2(x)` | Smallest integer `p` with `2^p >= |x|` (complex uses `|z|`). `nextpow2(0)` is 0 |
 | `sin(v)`, `cos(v)` | Trig (radians) |
 | `asin(v)`, `acos(v)`, `atan(v)` | Inverse trig |
 | `atan2(y, x)` | Four-quadrant arctangent |
@@ -116,17 +122,20 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). Zero-arg form added in 0.3.4. |
 | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Random integers |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
+| `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
 | `diag(v)` | Diagonal matrix from vector; or extract diagonal |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
+| `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
 | `transpose(M)` | Non-conjugate transpose |
 | `horzcat(A, B, ...)` | Horizontal concatenation (also `[A, B]`) |
 | `vertcat(A, B, ...)` | Vertical concatenation (also `[A; B]`) |
 | `meshgrid(x, y)` | Returns `[X, Y]` matrices for 2D grids |
-| `[Fx,Fy] = gradient(F[, dx, dy])` | 2-D gradient (rows index y, cols index x); 2nd-order interior + boundary |
+| `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` | 1-D gradient. Endpoints first-order, interior central. Same orientation as `v` |
+| `[Fx,Fy] = gradient(F[, dx, dy])` | 2-D gradient (rows index y, cols index x); 2nd-order interior + one-sided boundary |
 | `divergence(Fx, Fy[, dx, dy])` | 2-D divergence ∂Fx/∂x + ∂Fy/∂y |
 | `curl(Fx, Fy[, dx, dy])` | 2-D scalar curl ∂Fy/∂x − ∂Fx/∂y (z-component of ∇×F) |
 
@@ -198,6 +207,8 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `std(v)` | Standard deviation (N-1 denominator) |
 | `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
+| `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
+| `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times. Vectors keep orientation; matrices default to dim 1 |
 | `hist(v)` / `hist(v, n)` | Histogram; returns 2×n matrix (bin centers, counts). Alias: `histogram()` |
 | `histogram(v); savefig(file)` | Save histogram to PNG or SVG |
 | `all(v)` | True if all elements nonzero. Accepts a scalar, vector, 1×N row, or N×1 column. |
@@ -461,6 +472,25 @@ yields a `double`**. Integers flow through other builtins by widening to double
 
 ---
 
+## Tables
+
+| Syntax / Function | Description |
+|---|---|
+| `T = table(a, b, ...)` | Columns share a row count. A bare variable names its column; an expression is `VarN` |
+| `table(..., "VariableNames", {"x","y"})` | Rename every column. The option name is a string literal |
+| `T.x` | Column as a vector, a string array, or (one-row logical) `true`/`false` |
+| `T.x = v` | Replace or append one column. Length must equal `height(T)` |
+| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a 0/1 mask. Vars: the same, or names |
+| `T{rows, var}` | Cells of exactly one variable (scalar, vector, string, or string array) |
+| `T.Properties.VariableNames` | String array of column names. `Properties` is read-only |
+| `height(T)` / `width(T)` | Row count / column count. Also `size(..., 1)` / `size(..., 2)` for a matrix or vector |
+| `size(T)` | `[height, width]`. `ndims` is 2, `numel` is `height*width` |
+| `head(T)` / `head(T, n)` / `tail(T, n)` | First or last rows (default 8), as a table |
+
+A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
+
+---
+
 ## Sparse Vectors & Matrices
 
 | Function | Description |
@@ -547,6 +577,7 @@ Mixed sparse+dense pairs auto-promote to dense.
 | Function | Description |
 |---|---|
 | `plot(v)` / `plot(x, v)` | Line plot (sample-indexed or explicit x-axis) |
+| `plot(x1, y1, x2, y2, ...)` | One series per pair. A line spec (`r`, `b--`, `ko`) may follow a pair. A dangling x is an error. `plot(y1, y2)` is one pair |
 | `plot(v, "color", "r", "label", "name", "style", "dashed")` | Key-value options; colors: `r g b c m y k w` or full names |
 | `stem(v)` / `stem(v, "title")` | Stem plot |
 | `bar(y)` / `bar(x, y)` / `bar(y, "title")` | Bar chart |
@@ -563,9 +594,9 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
 | `quiver(X, Y, U, V [, scale | "normalized" | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; 95th-percentile auto-scale with per-arrow clamp (outliers cannot blank the plot); `"normalized"` = unit-length arrows; decimate via stride indexing. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
 | `streamplot(X, Y, U, V [, density | seeds | "title" | "c"])` | RK4 streamlines from a default 10×10 seed grid or an explicit Nx2 seeds matrix; midpoint arrowhead per line. Same overlay/backend behaviour as `quiver`. |
-| `loglog(x, y [, opts])` | Log-log plot (x, y > 0); pre-transforms via log10 |
-| `semilogx(x, y [, opts])` | Log-x, linear-y plot (x > 0) |
-| `semilogy(x, y [, opts])` | Linear-x, log-y plot (y > 0) |
+| `loglog(x, y [, opts])` | Log-log axes (x, y > 0). Data is not replaced by log10; ticks are decades |
+| `semilogx(x, y [, opts])` | Logarithmic x, linear y (x > 0). Real data, decade ticks |
+| `semilogy(x, y [, opts])` | Linear x, logarithmic y (y > 0). Real data, decade ticks |
 | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)` |
 
 ---

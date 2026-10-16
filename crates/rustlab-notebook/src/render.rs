@@ -570,9 +570,7 @@ pub fn render_html_nonced(
                 // disclosure above the author's disclosure (not nested inside
                 // it) and puts output, errors, and plots in the author's
                 // disclosure; the output inside it uses the same `.rl-cell`.
-                let trimmed_output = text_output.trim();
                 let show_source = !hidden;
-                let show_output = !trimmed_output.is_empty();
                 let show_error = error.is_some();
                 let source_html = if show_source {
                     // `open` omitted when the resolved state is collapsed.
@@ -588,12 +586,7 @@ pub fn render_html_nonced(
                 } else {
                     String::new()
                 };
-                let mut text_html = String::new();
-                if show_output {
-                    text_html.push_str("<pre class=\"output\">");
-                    text_html.push_str(&escape_html(trimmed_output));
-                    text_html.push_str("</pre>\n");
-                }
+                let mut text_html = html_for_text_output(text_output);
                 if show_error {
                     text_html.push_str("<pre class=\"error\">");
                     text_html.push_str(&escape_html(error.as_deref().unwrap_or("")));
@@ -1295,6 +1288,42 @@ document.addEventListener('click', (e) => {{
     font-size: 0.85rem;
     white-space: pre-wrap;
     line-height: 1.5;
+  }}
+  /* Table display. The colors are the notebook theme tokens (`--rl-*`,
+     with the palette literal as fallback). No extra stylesheet and no CDN. */
+  table.rl-table {{
+    border-collapse: collapse;
+    margin: 0.6rem 0 0.2rem;
+    background: {output_bg};
+    color: {text};
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    border: 1px solid {border};
+    border-radius: 6px;
+    overflow: hidden;
+  }}
+  table.rl-table th {{
+    text-align: left;
+    font-weight: 600;
+    color: {accent_primary};
+    background: {bg_secondary};
+    border-bottom: 2px solid {accent_primary};
+    padding: 0.4rem 0.8rem;
+  }}
+  table.rl-table td {{
+    padding: 0.3rem 0.8rem;
+    border-bottom: 1px solid {border};
+    color: {text};
+  }}
+  table.rl-table td.rl-num {{
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }}
+  table.rl-table tr:last-child td {{
+    border-bottom: none;
+  }}
+  table.rl-table tbody tr:nth-child(even) td {{
+    background: {bg_secondary};
   }}
   .error {{
     background: {error_bg};
@@ -2510,6 +2539,42 @@ pub(crate) fn escape_html(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Plain captured text becomes `<pre class="output">`. A table's HTML span
+/// (emitted only while a notebook is executing) becomes a real `<table>`
+/// when it matches the generator's tags; anything else is escaped into the
+/// pre so a forged sentinel cannot inject markup.
+fn html_for_text_output(text: &str) -> String {
+    use rustlab_script::eval::table::{is_safe_table_html, split_table_output, OutputPiece};
+    let mut html = String::new();
+    for piece in split_table_output(text) {
+        match piece {
+            OutputPiece::Text(t) => {
+                let t = t.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                html.push_str("<pre class=\"output\">");
+                html.push_str(&escape_html(t));
+                html.push_str("</pre>\n");
+            }
+            OutputPiece::Table(inner) if is_safe_table_html(inner) => {
+                html.push_str(inner.trim());
+                html.push('\n');
+            }
+            OutputPiece::Table(inner) => {
+                let t = inner.trim();
+                if t.is_empty() {
+                    continue;
+                }
+                html.push_str("<pre class=\"output\">");
+                html.push_str(&escape_html(t));
+                html.push_str("</pre>\n");
+            }
+        }
+    }
+    html
 }
 
 /// ` nonce="…"` for a `<script>` opening tag, or `""` when no CSP nonce
@@ -4492,6 +4557,65 @@ mod tests {
         assert!(html.contains("class=\"output\""));
         assert!(html.contains("ans = 42"));
         assert!(html.contains("class=\"rl-cell\""));
+    }
+
+    /// A table's captured HTML span becomes a real themed `<table>`.
+    /// A forged span is escaped into the output pre.
+    #[test]
+    fn render_html_inserts_a_safe_table_and_escapes_a_forged_one() {
+        use rustlab_script::eval::table::{TABLE_HTML_BEGIN, TABLE_HTML_END};
+        let safe_table = "<table class=\"rl-table\"><thead><tr><th>x</th></tr></thead><tbody><tr><td class=\"rl-num\">1</td></tr></tbody></table>";
+        let safe = format!("  x\n  _\n\n  1\n{TABLE_HTML_BEGIN}{safe_table}{TABLE_HTML_END}");
+        let blocks = vec![Rendered::Code {
+            source: "T = table(x)".to_string(),
+            text_output: safe,
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("table.rl-table"), "{html}");
+        assert!(html.contains("var(--rl-"), "{html}");
+        let table_at = html.find("<table class=\"rl-table\">").expect("table");
+        let pre_at = html.find("<pre class=\"output\">").expect("pre");
+        assert!(pre_at < table_at, "the text form stays in <pre>, the table follows");
+        assert!(html.contains("</pre>\n<table class=\"rl-table\">"));
+
+        let forged = format!("{TABLE_HTML_BEGIN}<script>alert(1)</script>{TABLE_HTML_END}");
+        let blocks = vec![Rendered::Code {
+            source: "T".to_string(),
+            text_output: forged,
+            error: None,
+            figures: Vec::new(),
+            animations: Vec::new(),
+            hidden: false,
+            details: None,
+            grid_cols: None,
+            source_open: None,
+        }];
+        let html = render_html(
+            "Test",
+            &blocks,
+            &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+            "plots",
+            test_theme(),
+            None,
+            &LinkMode::single_file(),
+        );
+        assert!(html.contains("&lt;script&gt;"), "{html}");
+        assert!(!html.contains("<script>alert(1)</script>"), "{html}");
     }
 
     /// Source and printed output share `.rl-cell`. Plot markup stays outside

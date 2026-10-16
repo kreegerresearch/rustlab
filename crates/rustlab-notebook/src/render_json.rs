@@ -136,7 +136,7 @@ pub fn render_json(title: &str, blocks: &[Rendered], theme: &ThemeColors) -> Doc
                     language: "rustlab",
                     source: source.clone(),
                     source_hash: hash_source(source),
-                    text_output: text_output.clone(),
+                    text_output: rustlab_script::eval::table::strip_table_html(text_output),
                     error: error.clone(),
                     plots,
                     hidden: *hidden,

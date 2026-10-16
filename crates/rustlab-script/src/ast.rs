@@ -188,6 +188,13 @@ pub enum Expr {
         expr: Box<Expr>,
         args: Vec<Expr>,
     },
+    /// `expr{args}` — table content index. `T{rows, vars}` returns the
+    /// cells of one variable, not a sub-table. A `{...}` literal is
+    /// `CellArray`, not this form.
+    ContentIndex {
+        expr: Box<Expr>,
+        args: Vec<Expr>,
+    },
     /// `@(params) body` — anonymous function. At creation the evaluator
     /// snapshots the free variables of `body` (see `free_vars`).
     Lambda {
