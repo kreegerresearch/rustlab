@@ -1,3 +1,4 @@
+use super::table::Table;
 use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -259,6 +260,8 @@ pub enum Value {
     SparseMatrix(SparseMat),
     /// String array: `{"a", "b", "c"}`.
     StringArray(Vec<String>),
+    /// Named columns of equal height. See `eval::table`.
+    Table(Table),
     /// Cached sparse factorization handle from `chol(A)` / `lu(A)`,
     /// consumed by `solve(F, b)`. Reusing a factor across many RHS is
     /// the canonical fast path for parameter sweeps and animations.
@@ -390,6 +393,7 @@ impl Value {
             Value::SparseVector(_) => "sparse_vector",
             Value::SparseMatrix(_) => "sparse_matrix",
             Value::StringArray(_) => "string_array",
+            Value::Table(_) => "table",
             Value::SparseFactor(_) => "sparse_factor",
         }
     }
@@ -807,6 +811,9 @@ impl Value {
                 other => other,
             })
             .collect();
+        if let Value::Table(t) = self {
+            return t.select(&indices);
+        }
         // Indexing *into* an integer array: index the widened (double) form,
         // then re-tag the selection with the original class (values are exact).
         if let Value::IntArray {
@@ -2817,6 +2824,7 @@ impl fmt::Display for Value {
                 sf.scalar(),
                 sf.nnz()
             ),
+            Value::Table(t) => write!(f, "{t}"),
         }
     }
 }

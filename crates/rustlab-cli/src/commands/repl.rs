@@ -360,6 +360,16 @@ pub const HELP: &[HelpEntry] = &[
         detail: "isfield(s, \"x\")  — returns true if struct s has field 'x'" },
     HelpEntry { name: "rmfield", brief: "Remove a field from a struct (returns new struct)",
         detail: "s2 = rmfield(s, \"x\")  — returns a copy of s with field 'x' removed" },
+    HelpEntry { name: "table", brief: "Build a table from named columns",
+        detail: "T = table(a, b)\n  T = table(a, b, 'VariableNames', {\"x\", \"y\"})\n\n  Columns share one row count. A bare variable names its column; an\n  expression is Var1, Var2, ... A matrix becomes one column per matrix\n  column (A1, A2, ...). A vector stays one column. A string array is one\n  text column. A scalar true/false is a one-row logical column — rustlab\n  has no logical arrays, so a 0/1 vector stays numeric.\n\n  T.x reads a column. T.x = v replaces or appends one (length must match).\n  T(rows, vars) is a sub-table. T{rows, vars} returns one variable's cells.\n  T.Properties.VariableNames lists the names. height, width, size, head, tail.\n\n  Not included: row names, renaming through Properties, T(rows, vars) =\n  assignment, multi-column T{...}, joins, sortrows, timetables, categoricals." },
+    HelpEntry { name: "height", brief: "Number of rows",
+        detail: "height(T)  — rows of a table. Also size(A, 1) for a matrix or vector." },
+    HelpEntry { name: "width", brief: "Number of columns",
+        detail: "width(T)  — variables in a table. Also size(A, 2) for a matrix.\n  A vector's size is 1×length, so width(v) is length(v)." },
+    HelpEntry { name: "head", brief: "First rows of a table",
+        detail: "head(T)     — first 8 rows (or the whole table if it is shorter)\n  head(T, n)  — first n rows, as a table" },
+    HelpEntry { name: "tail", brief: "Last rows of a table",
+        detail: "tail(T)     — last 8 rows (or the whole table if it is shorter)\n  tail(T, n)  — last n rows, as a table" },
     // Output
     HelpEntry { name: "disp", brief: "Display a value (always prints newline)",
         detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n." },
@@ -816,6 +826,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
         Value::SparseVector(_) => "sparse_vector",
         Value::SparseMatrix(_) => "sparse_matrix",
         Value::StringArray(_) => "string_array",
+        Value::Table(_) => "table",
         Value::SparseFactor(_) => "sparse_factor",
     }
 }
@@ -857,6 +868,7 @@ fn whos_size(v: &rustlab_script::Value) -> String {
             )
         }
         Value::StringArray(v) => format!("1×{}", v.len()),
+        Value::Table(t) => format!("{}×{}", t.height(), t.width()),
         Value::IntArray { rows, cols, .. } => format!("{}×{}", rows, cols),
         Value::All => "—".to_string(),
         _ => "1×1".to_string(),
@@ -959,6 +971,7 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
             format!("{{{}{}}}", preview.join(", "), suffix)
         }
         Value::SparseFactor(_) => format!("{}", v),
+        Value::Table(t) => format!("{}×{} table", t.height(), t.width()),
     }
 }
 
@@ -1242,6 +1255,8 @@ pub static CATEGORIES: &[CategoryRow] = &[
         names: &["widget"] },
     CategoryRow { toolbox: "language", subcategory: "Structs",
         names: &["struct", "isstruct", "fieldnames", "isfield", "rmfield"] },
+    CategoryRow { toolbox: "language", subcategory: "Tables",
+        names: &["table", "height", "width", "head", "tail"] },
     CategoryRow { toolbox: "language", subcategory: "Cell arrays",
         names: &["iscell"] },
     CategoryRow { toolbox: "language", subcategory: "Integer types",

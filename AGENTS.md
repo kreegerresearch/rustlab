@@ -1202,10 +1202,11 @@ range_expr  = expr (":" expr (":" expr)?)?     # a:b or a:step:b → Vector
 expr        = term (("+"|"-") term)*
 term        = factor (("*"|"/"|".*"|"./") factor)*
 factor      = postfix (("^"|".^") factor)?     # right-associative
-postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")")*
+postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")" | "{" arglist "}")*
                 # ' = conjugate transpose; .' = plain transpose
                 # .field = struct access; .method(args) = method-call sugar
                 # (args) after any non-Var expr = chained index: f(a)(i)
+                # {rows, vars} after a table = content index: T{rows, vars}
 
 primary     = NUMBER | STRING | IDENT
             | IDENT "(" range_arglist ")"       # call or 1-based index
@@ -1256,6 +1257,7 @@ primary     = NUMBER | STRING | IDENT
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
 | Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
 | String array | `{"a", "b", "c"}` | `Value::StringArray`; all elements must be strings; 1-based indexing |
+| Table | `T = table(a, b)` | Named columns, one row count. `T.var` reads or appends a column. `T(rows, vars)` is a sub-table. `T{rows, vars}` returns one variable's cells. `T.Properties.VariableNames` lists the names. A vector is one column; a matrix splits per column. A 0/1 vector stays numeric |
 | Underscore literals | `1_000_000`, `3.141_592` | Digit separators stripped at lex time; like Rust/Python/C++ |
 | Imaginary literals | `2j`, `1.5i`, `3e8j` | `Token::Imaginary` at lex time → `Expr::Imag` → `Value::Complex`; binds to the literal (immune to a shadowed `i`/`j` variable); printed complex values (`1+2j`) round-trip as input |
 | Format mode | `format commas` / `format default` | Bare command; toggles thousands separators in auto-print output |
@@ -1392,6 +1394,11 @@ primary     = NUMBER | STRING | IDENT
 | `spzeros` | `spzeros(m, n)` | m×n all-zero sparse matrix |
 | `full` | `full(S)` | Convert sparse to dense; identity for dense inputs |
 | `nnz` | `nnz(S)` | Number of stored non-zero entries; numel for dense |
+| `table` | `table(a, b, ...)` / `table(..., "VariableNames", names)` | Table of named columns with one row count. A bare variable names its column; an expression is `VarN`. A matrix is one numeric column per matrix column. A vector stays one column. A string array is one text column. A scalar `true`/`false` is a one-row logical column |
+| `height` | `height(x)` | Rows: `size(x, 1)`. A vector is `1 × length`, so `height(v)` is 1 |
+| `width` | `width(x)` | Columns: `size(x, 2)`. `width(v)` of a vector is `length(v)` |
+| `head` | `head(T)` / `head(T, n)` | First rows of a table (default 8), as a table |
+| `tail` | `tail(T)` / `tail(T, n)` | Last rows of a table (default 8), as a table |
 | `iscell` | `iscell(x)` | `true` if x is a string array, `false` otherwise |
 | `issparse` | `issparse(x)` | 1 if sparse, 0 otherwise |
 | `nonzeros` | `nonzeros(S)` | Vector of non-zero values in storage order |

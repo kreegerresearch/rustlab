@@ -124,7 +124,7 @@ fn walk(
             walk(stop, bound, names, dynamic_feval);
         }
         Expr::Field { object, .. } => walk(object, bound, names, dynamic_feval),
-        Expr::Index { expr, args } => {
+        Expr::Index { expr, args } | Expr::ContentIndex { expr, args } => {
             walk(expr, bound, names, dynamic_feval);
             for a in args {
                 walk(a, bound, names, dynamic_feval);

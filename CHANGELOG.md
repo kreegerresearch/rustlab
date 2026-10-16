@@ -181,9 +181,28 @@ should re-validate against those entries when upgrading.
   gradient and keeps that orientation. A true matrix is still the 2-D
   `[Fx, Fy]` tuple. `rng` is the same generator as `seed`; `rng(s)`
   restarts at the seed and does not resume mid-stream. `fzero` takes a
-  lambda or a function handle. A `table` type is not included: there is
-  no row-aligned heterogeneous value, and a struct pretending to be one
-  would not support `T(rows, vars)` or `T{rows, vars}`.
+  lambda or a function handle.
+- **`table` — named columns that share a row count.**
+  `T = table(a, b)` names each column from the variable (`Var1`, `Var2`,
+  … for an expression). `'VariableNames', {"x","y"}` renames them; the
+  option name has to be a string literal. A matrix is one numeric column
+  per matrix column (`A` → `A1`, `A2` when it has more than one column).
+  A rustlab vector stays one column. A string or string array is one
+  text column. A scalar `true`/`false` is a one-row logical column; a
+  0/1 vector stays numeric, because there is no logical array.
+  `T.x` reads a column. `T.x = v` replaces or appends one, and the
+  length must match the height (an empty table takes the new length).
+  `T(rows, vars)` returns a sub-table. `T{rows, vars}` returns the cells
+  of exactly one variable. `T.Properties.VariableNames`, `height`,
+  `width`, `size`, `head`, and `tail` are the size helpers. The REPL
+  prints an aligned text table. A notebook HTML page inserts a
+  `<table class="rl-table">` colored with the page theme; LaTeX,
+  Markdown, and JSON keep the text form.
+  Not included: row names, writing `Properties`, `T(rows, vars) =`,
+  a multi-column `T{...}` (that is a comma-separated list), joins,
+  `sortrows`, `summary`, `addvars` / `removevars` / `renamevars`,
+  nested tables, categoricals, datetimes, `readtable` / `writetable`
+  / `table2array`, and `T(rows)` with one subscript (`T(rows, :)`).
 - **Notebook highlights and comments.** Prose `==highlight==` and
   `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
   as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.

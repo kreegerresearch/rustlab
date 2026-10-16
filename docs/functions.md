@@ -3753,6 +3753,94 @@ s2 = rmfield(s, "z")
 
 ---
 
+## Tables
+
+A table is a list of named columns that all have the same number of rows. Columns may differ in type: a numeric vector, a string or string array, or a one-row logical value. `class(T)` is `"table"`.
+
+### `table(a, b, ...)` / `table(..., "VariableNames", names)`
+Build a table. A bare variable names its column. Any other expression is named `Var1`, `Var2`, … in order. `"VariableNames"` (any capitalization, and it must be a string *literal*) followed by a string or a string array replaces those names. A computed string is data, not the option.
+
+```
+x = [1; 2; 3]
+name = {"a", "b", "c"}
+T = table(x, name)
+U = table(x, name, "VariableNames", {"level", "label"})
+```
+
+A matrix becomes one numeric column per matrix column. A multi-column matrix named `A` is `A1`, `A2`, …. A single-column matrix keeps its name. A rustlab vector (`[1, 2, 3]`, one row) is **one** column — it is not split the way a MATLAB 1×N matrix is. A string array is one text column, not one column per string.
+
+A scalar `true` or `false` is a logical column of height 1. rustlab has no logical arrays, so a vector of zeros and ones stays numeric.
+
+Every column must have the same length. Names must be a letter followed by letters, digits, or `_`. `Properties` is reserved. Duplicate names are an error.
+
+`feval("table", ...)` sees values, not names, so those columns are `VarN` unless `"VariableNames"` is passed.
+
+### `T.var` / `T.var = value`
+`T.var` returns the column: a numeric vector (even when it has one row), a string array, or — for a one-row logical column — `true` / `false`.
+
+`T.var = value` replaces that column or appends a new one. The new column's length must equal `height(T)`. A table with no columns yet takes the new length. A multi-column matrix is an error (it is not split). A scalar is a one-row column; it is not broadcast down the table.
+
+```
+T.extra = [10; 20; 30]
+T.extra          % the vector 10, 20, 30
+```
+
+### `T.Properties.VariableNames`
+`T.Properties` is a struct. Its only field is `VariableNames`, a string array of the column names in order. Assigning to `T.Properties` is an error. Rename columns by passing `"VariableNames"` to `table`.
+
+```
+names = T.Properties.VariableNames
+names(1)          % first column name
+```
+
+`.name(` is a method call, so `T.Properties.VariableNames(1)` calls a function named `VariableNames`. Index the string array itself, as above.
+
+### `T(rows, vars)`
+Two subscripts, both required. The result is a table.
+
+- Rows: `:`, a scalar, a numeric vector, or a 0/1 mask whose length is `height(T)`.
+- Variables: `:`, numeric indices, a variable name, a string array of names, or a 0/1 mask whose length is `width(T)`.
+
+`end` is the height on the row side and the width on the variable side. Selecting the same variable twice is an error. An empty variable selection is an error. `T(rows)` with one subscript is an error — write `T(rows, :)`.
+
+```
+T(2, :)            % one-row table, every column
+T(end, "x")        % last row, column x
+T([1, 0, 1], :)    % rows where the mask is 1
+```
+
+`T(rows, vars) = ...` is not supported. Assign a whole column with `T.name = value`.
+
+### `T{rows, vars}`
+Same two subscripts, and exactly one variable. The result is the cells, not a table.
+
+- One numeric row → scalar (or complex). Several → vector.
+- One text row → string. Several → string array.
+- One logical row → `true` / `false`. Several → a 0/1 vector.
+
+```
+T{2, "x"}          % the number in row 2
+T{:, "name"}       % the whole text column
+```
+
+Selecting more than one variable is an error. In MATLAB that is a comma-separated list; rustlab has no place to put it. Use `T(rows, vars)` for a sub-table. `{}` on anything other than a table is an error.
+
+### `height(x)` / `width(x)` / `size(T)`
+`height` is `size(x, 1)` and `width` is `size(x, 2)`, for a table and for the same shapes `size` already accepts. A vector's size is `1 × length`, so `height(v)` is 1 and `width(v)` is `length(v)`.
+
+`size(T)` is `[height, width]`. `size(T, 1)` and `size(T, 2)` are those two numbers. `ndims(T)` is 2. `numel(T)` is `height * width`. `length(T)` is `max(height, width)`.
+
+### `head(T)` / `head(T, n)` / `tail(T)` / `tail(T, n)`
+The first or last rows, as a table. `n` defaults to 8. `n` larger than the height returns the whole table. `n = 0` returns a table with the same names and no rows. Both functions accept only a table.
+
+### Display
+The REPL prints an aligned text table (numeric columns right-aligned). In a notebook HTML page the same value is also a `<table class="rl-table">` colored with the notebook theme (`--rl-*` tokens). No extra stylesheet and no CDN. LaTeX, Markdown, and JSON keep the text table.
+
+### Not included
+Row names. Writing `T.Properties` or renaming through assignment. `T(rows, vars) =`. A multi-column `T{rows, vars}`. Timetables. `join` / `innerjoin` / `stack` / `unstack`. `sortrows`. `summary`. `addvars` / `removevars` / `movevars` / `renamevars` / `splitvars` / `mergevars`. Nested tables. `istable` (`class(T)` is `"table"`). Categorical, datetime, units, or descriptions. `readtable` / `writetable` / `table2array`. One-subscript `T(rows)`.
+
+---
+
 ## Cell Arrays (String Arrays)
 
 String arrays hold ordered collections of strings and are created with brace syntax.

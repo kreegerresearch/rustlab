@@ -79,7 +79,7 @@ In source form, [`docs/quickref.md`](quickref.md) is the canonical capability in
 
 ---
 
-## 4. The language in 20 rules
+## 4. The language in 21 rules
 
 These rules cover ~95% of what you need to write correct `.rlab` code. Full grammar: `docs/functions.md` § Language.
 
@@ -103,6 +103,7 @@ These rules cover ~95% of what you need to write correct `.rlab` code. Full gram
 18. **`run file.rlab`** (bare statement, no quotes needed) executes another script and merges its variables/functions into the current scope — the script equivalent of an include.
 19. **Tensor3** is the rank-3 type: build with `zeros3(m, n, p)` / `reshape(v, m, n, p)` / `cat(3, A, B)`; slice pages with `T(:, :, k)`. No broadcasting between Matrix and Tensor3, and no `*` between two Tensor3s — use `.*`.
 20. **Sparse matrices** come from `sparse(I, J, V, m, n)`, `speye`, `spdiags`, `laplacian_1d/2d/3d`; solve with `spsolve(A, b)` or factor once with `F = chol(A)` / `F = lu(A)` then `solve(F, b)` many times. Mixed sparse+dense arithmetic promotes to dense.
+21. **Tables** are named columns with one shared row count: `T = table(x, name)`. A bare variable names its column; `"VariableNames", {"a","b"}` renames them (the option is a string literal). A matrix splits into one numeric column per matrix column; a vector stays one column; a string array is one text column; a 0/1 vector stays numeric (only a scalar `true`/`false` is logical, and only for one row). `T.x` reads a column, `T.x = v` replaces or appends one (the length must match), `T(rows, vars)` is a sub-table, `T{rows, var}` returns one column's cells, and `T.Properties.VariableNames` lists the names. `height`, `width`, `size`, `head`, `tail`. There is no `T(rows, vars) =`, no row names, and no joins.
 
 A minimal end-to-end script:
 

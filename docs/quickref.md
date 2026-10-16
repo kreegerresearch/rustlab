@@ -81,6 +81,9 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `sa(i)` | String array indexing (1-based); `end` supported |
 | `s.field` | Struct field access |
 | `s.field = val` | Struct field assignment (auto-creates struct) |
+| `T = table(a, b)` | Named columns, one row count. A variable names its column |
+| `T.x` / `T.x = v` | Read, replace, or append a column |
+| `T(rows, vars)` | Sub-table. `T{rows, var}` returns one column's cells |
 
 ---
 
@@ -466,6 +469,25 @@ yields a `double`**. Integers flow through other builtins by widening to double
 | `fieldnames(s)` | Print all field names |
 | `isfield(s, "name")` | True if struct has the named field |
 | `rmfield(s, "name")` | Return new struct with named field removed |
+
+---
+
+## Tables
+
+| Syntax / Function | Description |
+|---|---|
+| `T = table(a, b, ...)` | Columns share a row count. A bare variable names its column; an expression is `VarN` |
+| `table(..., "VariableNames", {"x","y"})` | Rename every column. The option name is a string literal |
+| `T.x` | Column as a vector, a string array, or (one-row logical) `true`/`false` |
+| `T.x = v` | Replace or append one column. Length must equal `height(T)` |
+| `T(rows, vars)` | Sub-table. Rows: `:`, indices, or a 0/1 mask. Vars: the same, or names |
+| `T{rows, var}` | Cells of exactly one variable (scalar, vector, string, or string array) |
+| `T.Properties.VariableNames` | String array of column names. `Properties` is read-only |
+| `height(T)` / `width(T)` | Row count / column count. Also `size(..., 1)` / `size(..., 2)` for a matrix or vector |
+| `size(T)` | `[height, width]`. `ndims` is 2, `numel` is `height*width` |
+| `head(T)` / `head(T, n)` / `tail(T, n)` | First or last rows (default 8), as a table |
+
+A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A vector stays one column. A string array is one text column. A 0/1 vector stays numeric. Not included: row names, `T(rows, vars) =`, multi-column `T{...}`, joins, `sortrows`, `readtable` / `writetable`.
 
 ---
 

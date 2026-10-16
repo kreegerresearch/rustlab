@@ -1,5 +1,6 @@
 pub mod builtins;
 pub mod output;
+pub mod table;
 pub mod parmap;
 pub mod profile;
 pub mod rng;
@@ -417,6 +418,10 @@ impl Evaluator {
                     }
                 }
                 match self.env.get_mut(object) {
+                    Some(Value::Table(t)) => {
+                        t.assign_column(&field, val)
+                            .map_err(ScriptError::runtime)?;
+                    }
                     Some(Value::Struct(fields)) => {
                         fields.insert(field.clone(), val);
                     }
@@ -774,6 +779,14 @@ impl Evaluator {
                 suppress,
             } => {
                 let val = self.eval_expr(expr)?;
+
+                if matches!(self.env.get(name.as_str()), Some(Value::Table(_))) {
+                    return Err(ScriptError::runtime(
+                        "table index assignment is not supported (T(rows, vars) = ...). \
+                         Assign a whole column with T.name = value"
+                            .to_string(),
+                    ));
+                }
 
                 // Octave/matlab `[]` deletion: when the right-hand side is an
                 // empty vector or matrix, the assignment removes the indexed
@@ -1780,6 +1793,11 @@ impl Evaluator {
                     };
                     return self.eval_fzero(func_val, x0, tol);
                 }
+                // `table(a, b)` needs the argument expressions, not just
+                // their values, so a bare variable becomes the column name.
+                if name == "table" {
+                    return self.eval_table(args);
+                }
                 if name == "feval" && !args.is_empty() {
                     let name_val = self.eval_expr(&args[0])?;
                     let fn_name = name_val.to_str().map_err(|_| {
@@ -1795,6 +1813,14 @@ impl Evaluator {
                 }
 
                 // If the name refers to a vector/matrix in the environment, this is indexing.
+                if matches!(self.env.get(name.as_str()), Some(Value::Table(_))) {
+                    let table = match self.env.get(name.as_str()) {
+                        Some(Value::Table(t)) => t.clone(),
+                        _ => unreachable!(),
+                    };
+                    let idx_vals = self.eval_table_subscripts(&table, args)?;
+                    return table.select(&idx_vals).map_err(ScriptError::runtime);
+                }
                 if matches!(
                     self.env.get(name.as_str()),
                     Some(Value::Vector(_))
@@ -2057,6 +2083,10 @@ impl Evaluator {
             Expr::All => Ok(Value::All),
             Expr::Index { expr, args } => {
                 let container = self.eval_expr(expr)?;
+                if let Value::Table(t) = &container {
+                    let idx_vals = self.eval_table_subscripts(t, args)?;
+                    return t.select(&idx_vals).map_err(ScriptError::runtime);
+                }
                 // `end` inside a chained index. One index is linear
                 // (`numel` for a matrix). Two indexes on a matrix bind
                 // `end` per dimension, same as `M(i, j)`.
@@ -2117,9 +2147,27 @@ impl Evaluator {
                     Ok(Value::FuncHandle(name.clone()))
                 }
             }
+            Expr::ContentIndex { expr, args } => {
+                let container = self.eval_expr(expr)?;
+                let Value::Table(t) = &container else {
+                    return Err(ScriptError::runtime(format!(
+                        "content indexing with {{}} is only supported for a table, got {}",
+                        container.type_name()
+                    )));
+                };
+                let idx_vals = self.eval_table_subscripts(t, args)?;
+                t.contents(&idx_vals).map_err(ScriptError::runtime)
+            }
             Expr::Field { object, field } => {
                 let obj = self.eval_expr(object)?;
                 match obj {
+                    Value::Table(t) => {
+                        if field == "Properties" {
+                            Ok(t.properties())
+                        } else {
+                            t.column(field).map_err(ScriptError::runtime)
+                        }
+                    }
                     Value::Struct(fields) => fields.get(field.as_str()).cloned().ok_or_else(|| {
                         ScriptError::runtime(format!("struct has no field '{}'", field))
                     }),
@@ -2388,6 +2436,79 @@ impl Evaluator {
             ));
         }
         Ok(())
+    }
+
+    /// `table(a, b, 'VariableNames', names)`. A bare variable lends its
+    /// name; any other expression is `VarN`. The option name is a string
+    /// literal so a computed string stays a one-row text column.
+    fn eval_table(&mut self, args: &[Expr]) -> Result<Value, ScriptError> {
+        let mut inputs = Vec::new();
+        let mut override_names = None;
+        let mut i = 0;
+        while i < args.len() {
+            if let Expr::Str(s) = &args[i] {
+                if table::is_varnames(s) {
+                    if override_names.is_some() {
+                        return Err(ScriptError::runtime(
+                            "table: VariableNames specified more than once".to_string(),
+                        ));
+                    }
+                    if i + 1 >= args.len() {
+                        return Err(ScriptError::runtime(
+                            "table: VariableNames needs a string array of names".to_string(),
+                        ));
+                    }
+                    let names_val = self.eval_expr(&args[i + 1])?;
+                    override_names = Some(
+                        table::names_from_value(names_val).map_err(ScriptError::type_err)?,
+                    );
+                    i += 2;
+                    continue;
+                }
+            }
+            let name = match &args[i] {
+                Expr::Var(n) => Some(n.clone()),
+                _ => None,
+            };
+            let value = self.eval_expr(&args[i])?;
+            inputs.push(table::TableInput { name, value });
+            i += 1;
+        }
+        table::build_table(inputs, override_names)
+            .map(Value::Table)
+            .map_err(ScriptError::type_err)
+    }
+
+    /// Bind `end` per axis while evaluating a table's two subscripts.
+    fn eval_table_subscripts(
+        &mut self,
+        table: &table::Table,
+        args: &[Expr],
+    ) -> Result<Vec<Value>, ScriptError> {
+        if args.len() == 2 {
+            self.env
+                .insert("end".to_string(), Value::Scalar(table.height() as f64));
+            let row_val = self.eval_expr(&args[0])?;
+            self.env
+                .insert("end".to_string(), Value::Scalar(table.width() as f64));
+            let col_val = self.eval_expr(&args[1])?;
+            self.env.remove("end");
+            Ok(vec![row_val, col_val])
+        } else {
+            let n = if args.len() == 1 {
+                table.height()
+            } else {
+                0
+            };
+            self.env
+                .insert("end".to_string(), Value::Scalar(n as f64));
+            let vals = args
+                .iter()
+                .map(|a| self.eval_expr(a))
+                .collect::<Result<Vec<_>, _>>()?;
+            self.env.remove("end");
+            Ok(vals)
+        }
     }
 
     /// `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)`.

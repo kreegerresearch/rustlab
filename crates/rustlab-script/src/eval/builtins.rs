@@ -194,6 +194,11 @@ impl BuiltinRegistry {
         r.register("numel", builtin_numel);
         r.register("size", builtin_size);
         r.register("ndims", builtin_ndims);
+        r.register("table", builtin_table);
+        r.register("height", builtin_height);
+        r.register("width", builtin_width);
+        r.register("head", builtin_head);
+        r.register("tail", builtin_tail);
         // I/O
         r.register("print", builtin_print);
         r.register("plot", builtin_plot);
@@ -3227,6 +3232,7 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Str(s) => Ok(Value::Scalar(s.len() as f64)),
         Value::Tuple(t) => Ok(Value::Scalar(t.len() as f64)),
         Value::StringArray(v) => Ok(Value::Scalar(v.len() as f64)),
+        Value::Table(t) => Ok(Value::Scalar(t.height().max(t.width()) as f64)),
         other => Err(ScriptError::type_err(format!(
             "len: unsupported type {}",
             other
@@ -3243,6 +3249,7 @@ fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
         Value::IntArray { data, .. } => data.len(),
         Value::StringArray(v) => v.len(),
+        Value::Table(t) => t.height() * t.width(),
         other => {
             return Err(ScriptError::type_err(format!(
                 "numel: unsupported type {}",
@@ -3285,6 +3292,7 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::SparseVector(sv) => (1, sv.len),
         Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         Value::StringArray(v) => (1, v.len()),
+        Value::Table(t) => (t.height(), t.width()),
         other => {
             return Err(ScriptError::type_err(format!(
                 "size: unsupported type {}",
@@ -3324,7 +3332,8 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
         | Value::SparseMatrix(_)
         | Value::StringArray(_)
         | Value::Bool(_)
-        | Value::Str(_) => 2,
+        | Value::Str(_)
+        | Value::Table(_) => 2,
         other => {
             return Err(ScriptError::type_err(format!(
                 "ndims: unsupported type {}",
@@ -3333,6 +3342,103 @@ fn builtin_ndims(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     Ok(Value::Scalar(n as f64))
+}
+
+fn builtin_table(mut args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Direct `table(a, b)` is intercepted in the evaluator so bare names
+    // become column names. This path is `feval("table", ...)`: every
+    // argument is already a value, so columns are named Var1, Var2, ...
+    let mut override_names = None;
+    let mut i = 0;
+    while i < args.len() {
+        let key = match &args[i] {
+            Value::Str(s) if super::table::is_varnames(s) => true,
+            _ => false,
+        };
+        if key {
+            if override_names.is_some() {
+                return Err(ScriptError::type_err(
+                    "table: VariableNames specified more than once".to_string(),
+                ));
+            }
+            if i + 1 >= args.len() {
+                return Err(ScriptError::type_err(
+                    "table: VariableNames needs a string array of names".to_string(),
+                ));
+            }
+            let names_val = args.remove(i + 1);
+            args.remove(i);
+            override_names =
+                Some(super::table::names_from_value(names_val).map_err(ScriptError::type_err)?);
+        } else {
+            i += 1;
+        }
+    }
+    let inputs = args
+        .into_iter()
+        .map(|value| super::table::TableInput { name: None, value })
+        .collect();
+    super::table::build_table(inputs, override_names)
+        .map(Value::Table)
+        .map_err(ScriptError::type_err)
+}
+
+fn shape_rows_cols(v: &Value) -> Result<(usize, usize), ScriptError> {
+    match v {
+        Value::Table(t) => Ok((t.height(), t.width())),
+        Value::Vector(vec) => Ok((1, vec.len())),
+        Value::Matrix(m) => Ok((m.nrows(), m.ncols())),
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } | Value::Bool(_) => Ok((1, 1)),
+        Value::IntArray { rows, cols, .. } => Ok((*rows, *cols)),
+        Value::SparseVector(sv) => Ok((1, sv.len)),
+        Value::SparseMatrix(sm) => Ok((sm.rows, sm.cols)),
+        Value::StringArray(items) => Ok((1, items.len())),
+        other => Err(ScriptError::type_err(format!(
+            "unsupported type {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn builtin_height(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("height", &args, 1)?;
+    let (rows, _) = shape_rows_cols(&args[0]).map_err(|e| {
+        ScriptError::type_err(format!("height: {e}"))
+    })?;
+    Ok(Value::Scalar(rows as f64))
+}
+
+fn builtin_width(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("width", &args, 1)?;
+    let (_, cols) = shape_rows_cols(&args[0]).map_err(|e| {
+        ScriptError::type_err(format!("width: {e}"))
+    })?;
+    Ok(Value::Scalar(cols as f64))
+}
+
+fn table_edge(name: &str, args: Vec<Value>, from_start: bool) -> Result<Value, ScriptError> {
+    check_args_range(name, &args, 1, 2)?;
+    let Value::Table(t) = &args[0] else {
+        return Err(ScriptError::type_err(format!(
+            "{name}: expected a table, got {}",
+            args[0].type_name()
+        )));
+    };
+    let n = if args.len() == 2 {
+        args[1].to_usize().map_err(|e| ScriptError::type_err(format!("{name}: {e}")))?
+    } else {
+        8
+    };
+    let out = if from_start { t.head(n) } else { t.tail(n) };
+    Ok(Value::Table(out))
+}
+
+fn builtin_head(args: Vec<Value>) -> Result<Value, ScriptError> {
+    table_edge("head", args, true)
+}
+
+fn builtin_tail(args: Vec<Value>) -> Result<Value, ScriptError> {
+    table_edge("tail", args, false)
 }
 
 // ─── FFT builtins ──────────────────────────────────────────────────────────
