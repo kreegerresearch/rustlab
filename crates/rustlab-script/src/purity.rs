@@ -75,6 +75,7 @@ pub const IMPURE_BUILTINS: &[&str] = &[
     "randn",
     "randperm",
     "readmatrix",
+    "rng",
     "save",
     "scatter",
     "stem",

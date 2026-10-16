@@ -88,6 +88,33 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **`svd` no longer panics on a wide matrix, and `pinv` is available.**
+  The real SVD built `U` with one column per row, then wrote a column for
+  every eigenvalue of `A'A` above `1e-12`. On a matrix with more columns
+  than rows that count can exceed the row count, and the write walked
+  off `U`. Complex SVD always formed the larger Gram and paired the
+  doubled eigenvalues by taking every other one. Both paths now factor
+  the smaller Gram (`A Aᴴ` when there are fewer rows), drop singular
+  values below `max(m, n) * eps * σ_max` when building the other side,
+  and fill the null space with Gram-Schmidt. `svd(A, "econ")` and
+  `svd(A, 0)` return the thin factors. `s` is still a vector.
+  `pinv(A)` / `pinv(A, tol)` is the Moore-Penrose inverse of those
+  factors. `norm(A, 2)` uses the same singular values, including for a
+  complex matrix (it used to take the real parts only).
+- **`g(idx) = c` works when `g` is the matrix from `zeros(size(v))`.**
+  A vector or logical index was applied only when the target was a
+  vector. `size` of a vector is `[1, n]`, so `zeros(size(v))` is a
+  matrix and the write failed. A single index that is `:`, a numeric
+  vector, or a 0/1 mask now writes in column-major order. A scalar
+  broadcasts. A vector or matrix on the right must have one value per
+  selected element. A `1×N` or `N×1` matrix grows; a general matrix
+  does not. `M(i) = row` is unchanged.
+- **`plot(x1, y1, x2, y2)` draws both pairs.** Extra numeric arguments
+  used to be ignored after a warning. Each `(x, y)` pair is a series,
+  and a line spec (`r`, `b--`, `ko`) may follow a pair. `:` and `-.`
+  draw dashed. `plot(y1, y2)` is still one pair. A dangling `x`, or a
+  non-spec string with more data after it, is an error. The terminal,
+  notebook HTML, and the viewer all read the same series list.
 - **Same-named notebooks in different folders stay separate in `notebook watch`.**
   The file browser lists every `intro.md`. Saving or annotating one
   does not write the other. Plot files and live reload follow the
@@ -149,6 +176,14 @@ should re-validate against those entries when upgrading.
   view axis. SVG/PNG surfaces are still the static isometric wireframe.
 
 ### Added
+- **`pinv`, `cumtrapz`, `fzero`, `fliplr`, `nextpow2`, `diff`, 1-D `gradient`, and `rng`.**
+  `gradient` of a vector (or a `1×N` / `N×1` matrix) is the 1-D MATLAB
+  gradient and keeps that orientation. A true matrix is still the 2-D
+  `[Fx, Fy]` tuple. `rng` is the same generator as `seed`; `rng(s)`
+  restarts at the seed and does not resume mid-stream. `fzero` takes a
+  lambda or a function handle. A `table` type is not included: there is
+  no row-aligned heterogeneous value, and a struct pretending to be one
+  would not support `T(rows, vars)` or `T{rows, vars}`.
 - **Notebook highlights and comments.** Prose `==highlight==` and
   `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
   as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.

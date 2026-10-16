@@ -543,8 +543,7 @@ impl Evaluator {
                             match connect_result {
                                 Ok(true) => {
                                     let fig_id =
-                                        rustlab_plot::viewer_live::get_viewer_fig_id()
-                                            .unwrap_or(1);
+                                        rustlab_plot::viewer_live::get_viewer_fig_id().unwrap_or(1);
                                     rustlab_plot::set_current_figure_output(
                                         rustlab_plot::FigureOutput::Viewer(fig_id),
                                     );
@@ -615,7 +614,9 @@ impl Evaluator {
                             }
                             eprintln!("  current figure → {}", routing);
                             if !connected {
-                                eprintln!("  use `viewer on` to connect an external rustlab-viewer");
+                                eprintln!(
+                                    "  use `viewer on` to connect an external rustlab-viewer"
+                                );
                             }
                         }
                     }
@@ -628,8 +629,7 @@ impl Evaluator {
                 }
             }
             StmtKind::Run { path } => {
-                let safe = crate::path_jail::check_path(path)
-                    .map_err(ScriptError::runtime)?;
+                let safe = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
                 let source = std::fs::read_to_string(&safe)
                     .map_err(|e| ScriptError::runtime(format!("run: {}: {}", path, e)))?;
                 let tokens = crate::lexer::tokenize(&source)?;
@@ -655,8 +655,7 @@ impl Evaluator {
                 //     destructured below)
                 let val = match expr {
                     Expr::Call { name, args }
-                        if !self.env.contains_key(name)
-                            && self.user_fns.contains_key(name) =>
+                        if !self.env.contains_key(name) && self.user_fns.contains_key(name) =>
                     {
                         let func = self.user_fns.get(name).cloned().unwrap();
                         let vals: Vec<Value> = args
@@ -666,8 +665,7 @@ impl Evaluator {
                         self.eval_user_fn_nargout(func, vals, names.len())?
                     }
                     Expr::Call { name, args }
-                        if !self.env.contains_key(name)
-                            && !self.user_fns.contains_key(name) =>
+                        if !self.env.contains_key(name) && !self.user_fns.contains_key(name) =>
                     {
                         let vals: Vec<Value> = args
                             .iter()
@@ -862,6 +860,19 @@ impl Evaluator {
                 };
 
                 if idx_vals.len() == 1 {
+                    // `g(idx) = c` where `g` is a matrix (including the row or
+                    // column that `zeros(size(v))` builds) and `idx` is `:`,
+                    // a numeric index vector, or a logical mask. A scalar
+                    // index still uses the paths below, so `M(i) = row`
+                    // is unchanged.
+                    if matches!(self.env.get(name.as_str()), Some(Value::Matrix(_)))
+                        && matches!(
+                            &idx_vals[0],
+                            Value::All | Value::Vector(_) | Value::Matrix(_)
+                        )
+                    {
+                        return self.assign_matrix_linear(name, &idx_vals[0], &val, *suppress);
+                    }
                     // Strided / range / vector LHS into a Vector:
                     // `v(idx_set) = rhs` where idx_set is `:`, a Vector,
                     // or any colon range that evaluates to a Vector.
@@ -1529,31 +1540,29 @@ impl Evaluator {
                     Value::Matrix(Array2::zeros((0, 0)))
                 } else if col_all {
                     // M(rows, :) = [] → drop the listed rows
-                    let mut to_remove = Value::resolve_index_dim(&idx0, nrows)
-                        .map_err(ScriptError::runtime)?;
+                    let mut to_remove =
+                        Value::resolve_index_dim(&idx0, nrows).map_err(ScriptError::runtime)?;
                     to_remove.sort_unstable();
                     to_remove.dedup();
                     let kept_rows: Vec<usize> = (0..nrows)
                         .filter(|r| to_remove.binary_search(r).is_err())
                         .collect();
                     let new_nrows = kept_rows.len();
-                    let new = Array2::from_shape_fn((new_nrows, ncols), |(i, j)| {
-                        m[[kept_rows[i], j]]
-                    });
+                    let new =
+                        Array2::from_shape_fn((new_nrows, ncols), |(i, j)| m[[kept_rows[i], j]]);
                     Value::Matrix(new)
                 } else if row_all {
                     // M(:, cols) = [] → drop the listed columns
-                    let mut to_remove = Value::resolve_index_dim(&idx1, ncols)
-                        .map_err(ScriptError::runtime)?;
+                    let mut to_remove =
+                        Value::resolve_index_dim(&idx1, ncols).map_err(ScriptError::runtime)?;
                     to_remove.sort_unstable();
                     to_remove.dedup();
                     let kept_cols: Vec<usize> = (0..ncols)
                         .filter(|c| to_remove.binary_search(c).is_err())
                         .collect();
                     let new_ncols = kept_cols.len();
-                    let new = Array2::from_shape_fn((nrows, new_ncols), |(i, j)| {
-                        m[[i, kept_cols[j]]]
-                    });
+                    let new =
+                        Array2::from_shape_fn((nrows, new_ncols), |(i, j)| m[[i, kept_cols[j]]]);
                     Value::Matrix(new)
                 } else {
                     return Err(ScriptError::runtime(
@@ -1648,9 +1657,7 @@ impl Evaluator {
                 // idiom, so fall through to the zero-arg builtin on an env
                 // miss — a user variable named tic/toc still shadows it.
                 // (Same spirit as the bare `clear` / `clf` statements.)
-                None if name == "tic" || name == "toc" => {
-                    self.call_builtin_tracked(name, vec![])
-                }
+                None if name == "tic" || name == "toc" => self.call_builtin_tracked(name, vec![]),
                 None => Err(ScriptError::undefined(name.clone())),
             },
             Expr::UnaryMinus(inner) => {
@@ -1687,8 +1694,11 @@ impl Evaluator {
                 // Consume the statement-position marker FIRST — before any
                 // special case or argument evaluation can recurse — so only
                 // this outermost call sees nargout 0; nested calls get 1.
-                let call_nargout =
-                    if std::mem::take(&mut self.stmt_call_nargout0) { 0 } else { 1 };
+                let call_nargout = if std::mem::take(&mut self.stmt_call_nargout0) {
+                    0
+                } else {
+                    1
+                };
 
                 // ── In-script profiling control ───────────────────────────
                 if name == "profile" {
@@ -1760,6 +1770,16 @@ impl Evaluator {
                     let t_val = self.eval_expr(&args[2])?;
                     return self.eval_rk4(func_val, x0, t_val);
                 }
+                if name == "fzero" && (args.len() == 2 || args.len() == 3) {
+                    let func_val = self.eval_expr(&args[0])?;
+                    let x0 = self.eval_expr(&args[1])?;
+                    let tol = if args.len() == 3 {
+                        Some(self.eval_expr(&args[2])?)
+                    } else {
+                        None
+                    };
+                    return self.eval_fzero(func_val, x0, tol);
+                }
                 if name == "feval" && !args.is_empty() {
                     let name_val = self.eval_expr(&args[0])?;
                     let fn_name = name_val.to_str().map_err(|_| {
@@ -1795,7 +1815,9 @@ impl Evaluator {
                     // it to a 1-element container so `s(1)` indexes like MATLAB
                     // instead of falling through and reporting `s` as undefined.
                     let container = match self.env[name.as_str()].clone() {
-                        Value::Scalar(x) => Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0))),
+                        Value::Scalar(x) => {
+                            Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0)))
+                        }
                         Value::Complex(c) => Value::Vector(Array1::from_elem(1, c)),
                         Value::Bool(b) => Value::Vector(Array1::from_elem(
                             1,
@@ -2293,12 +2315,7 @@ impl Evaluator {
             // Independent OS-entropy draw; does NOT touch the master RNG.
             rand::rngs::OsRng.next_u64()
         });
-        let raw = backend.run(
-            &move || template.clone(),
-            func,
-            elements,
-            master_seed,
-        )?;
+        let raw = backend.run(&move || template.clone(), func, elements, master_seed)?;
         let result = parmap::pack_results(raw);
 
         if let (Some(t0), Ok(ref v)) = (t0, &result) {
@@ -2308,6 +2325,183 @@ impl Evaluator {
         }
 
         result
+    }
+
+    /// Linear / logical assignment into a matrix: `M(idx) = rhs`.
+    ///
+    /// Positions are column-major, matching `M(k)` reads. A same-length 0/1
+    /// vector, or a same-shape 0/1 matrix, is a logical mask and does not
+    /// grow the target. A numeric index vector writes in the order given
+    /// (a repeated index keeps the last value). A 1×N or N×1 matrix grows
+    /// along its long axis when a numeric index runs past the end, the same
+    /// way a scalar `M(k) = v` does; a general 2-D matrix does not grow.
+    /// A scalar right-hand side broadcasts. A vector (or a 1-D matrix, or a
+    /// matrix with the same number of elements) must match the selection.
+    fn assign_matrix_linear(
+        &mut self,
+        name: &str,
+        idx: &Value,
+        val: &Value,
+        suppress: bool,
+    ) -> Result<(), ScriptError> {
+        let (nr0, nc0) = match self.env.get(name) {
+            Some(Value::Matrix(m)) => (m.nrows(), m.ncols()),
+            _ => {
+                return Err(ScriptError::runtime(
+                    "index assignment: expected a matrix".to_string(),
+                ))
+            }
+        };
+        let total = nr0 * nc0;
+        let shape_1d = nr0 <= 1 || nc0 <= 1;
+        let positions = matrix_linear_positions(idx, nr0, nc0)?;
+        let needs = positions.iter().copied().max().map(|p| p + 1).unwrap_or(0);
+        if needs > total {
+            if !shape_1d {
+                return Err(ScriptError::runtime(format!(
+                    "index assignment: linear index {} out of bounds for {}×{} matrix ({} elements)",
+                    needs, nr0, nc0, total
+                )));
+            }
+            match self.env.get_mut(name) {
+                Some(Value::Matrix(m)) => grow_oned_matrix(m, needs),
+                _ => unreachable!(),
+            }
+        }
+        let n_target = positions.len();
+        let src = rhs_for_linear_assign(val, n_target)?;
+        match self.env.get_mut(name) {
+            Some(Value::Matrix(m)) => {
+                let nr = m.nrows();
+                for (k, &p) in positions.iter().enumerate() {
+                    let col = p / nr.max(1);
+                    let row = if nr == 0 { 0 } else { p % nr };
+                    m[[row, col]] = src[k];
+                }
+            }
+            _ => unreachable!(),
+        }
+        if !suppress && self.echo_enabled() {
+            output::script_println(&format!(
+                "{}(...) = ({} element(s) updated)",
+                name, n_target
+            ));
+        }
+        Ok(())
+    }
+
+    /// `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)`.
+    ///
+    /// A bracket must change sign. A scalar start searches outward (step
+    /// grows by 1.6, positive side first) until `f` changes sign against
+    /// `f(x0)`, then Brent's method. `tol` is an absolute x tolerance;
+    /// the iteration also stops within `2*eps*|x|`.
+    fn eval_fzero(
+        &mut self,
+        func: Value,
+        x0: Value,
+        tol: Option<Value>,
+    ) -> Result<Value, ScriptError> {
+        let tol = match tol {
+            None => 1e-12,
+            Some(v) => {
+                let t = v.to_scalar().map_err(|e| ScriptError::type_err(e))?;
+                if !t.is_finite() || t < 0.0 {
+                    return Err(ScriptError::type_err(format!(
+                        "fzero: TolX must be a non-negative finite number, got {t}"
+                    )));
+                }
+                t
+            }
+        };
+        let eval_at = |this: &mut Self, x: f64| -> Result<f64, ScriptError> {
+            let y = this.call_callable(func.clone(), vec![Value::Scalar(x)])?;
+            match y {
+                Value::Scalar(v) if v.is_finite() => Ok(v),
+                Value::Complex(c) if c.re.is_finite() && c.im.abs() < 1e-8 => Ok(c.re),
+                other => Err(ScriptError::runtime(format!(
+                    "fzero: function must return a finite real scalar, got {}",
+                    other.type_name()
+                ))),
+            }
+        };
+        let (a, b, fa, fb) = match &x0 {
+            Value::Vector(v) if v.len() == 2 => {
+                let a = v[0].re;
+                let b = v[1].re;
+                let fa = eval_at(self, a)?;
+                let fb = eval_at(self, b)?;
+                (a, b, fa, fb)
+            }
+            Value::Matrix(m) if m.len() == 2 => {
+                let vals: Vec<f64> = m.iter().map(|c| c.re).collect();
+                let fa = eval_at(self, vals[0])?;
+                let fb = eval_at(self, vals[1])?;
+                (vals[0], vals[1], fa, fb)
+            }
+            Value::Scalar(x) => {
+                let x = *x;
+                let fx = eval_at(self, x)?;
+                if fx == 0.0 {
+                    return Ok(Value::Scalar(x));
+                }
+                let mut dx = if x == 0.0 { 0.02 } else { x.abs() / 50.0 };
+                if dx == 0.0 {
+                    dx = 0.02;
+                }
+                let mut bracket = None;
+                for _ in 0..60 {
+                    let right = x + dx;
+                    let fr = eval_at(self, right)?;
+                    if fr == 0.0 {
+                        return Ok(Value::Scalar(right));
+                    }
+                    if fx * fr < 0.0 {
+                        bracket = Some((x, right, fx, fr));
+                        break;
+                    }
+                    let left = x - dx;
+                    let fl = eval_at(self, left)?;
+                    if fl == 0.0 {
+                        return Ok(Value::Scalar(left));
+                    }
+                    if fx * fl < 0.0 {
+                        bracket = Some((left, x, fl, fx));
+                        break;
+                    }
+                    dx *= 1.6;
+                }
+                bracket.ok_or_else(|| {
+                    ScriptError::runtime(
+                        "fzero: failed to find a sign change around the start point".to_string(),
+                    )
+                })?
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "fzero: start must be a scalar or a 2-element bracket, got {}",
+                    other.type_name()
+                )))
+            }
+        };
+        if !fa.is_finite() || !fb.is_finite() {
+            return Err(ScriptError::runtime(
+                "fzero: function values at the bracket must be finite".to_string(),
+            ));
+        }
+        if fa * fb > 0.0 {
+            return Err(ScriptError::runtime(
+                "fzero: function values at the interval endpoints must differ in sign".to_string(),
+            ));
+        }
+        if fa == 0.0 {
+            return Ok(Value::Scalar(a));
+        }
+        if fb == 0.0 {
+            return Ok(Value::Scalar(b));
+        }
+        let root = brent_root(&mut |x| eval_at(self, x), a, b, fa, fb, tol)?;
+        Ok(Value::Scalar(root))
     }
 
     /// Fixed-step 4th-order Runge-Kutta integrator.
@@ -2500,7 +2694,7 @@ impl Evaluator {
                 result
             }
             other => Err(ScriptError::runtime(format!(
-                "arrayfun: first argument must be a lambda or function handle, got {}",
+                "expected a lambda or function handle, got {}",
                 other.type_name()
             ))),
         }
@@ -2806,9 +3000,7 @@ impl Evaluator {
         // `Store::put` swallows transient write errors (disk full,
         // RO FS) per Phase 1's design.
         if let Some((entry_id, input_hash)) = cache_keys {
-            if let Some(bytes) =
-                crate::cache_value::serialize_value(&Value::Tuple(canonical))
-            {
+            if let Some(bytes) = crate::cache_value::serialize_value(&Value::Tuple(canonical)) {
                 if let Some(store) = self.cache_registry.store() {
                     // Pass the function name through so `cache list`
                     // can show it. The metadata table is sibling to
@@ -3047,30 +3239,24 @@ impl Evaluator {
         // memo. The snapshot cost is amortised by the memo — the
         // first call to any function pays it, subsequent calls hit
         // the cache.
-        let snapshot: std::collections::BTreeMap<
-            String,
-            crate::ast_hash::CanonicalFnSnapshot,
-        > = self
-            .user_fns
-            .iter()
-            .map(|(k, f)| {
-                (
-                    k.clone(),
-                    crate::ast_hash::CanonicalFnSnapshot {
-                        params: f.params.clone(),
-                        return_vars: f.return_vars.clone(),
-                        body: f.body.clone(),
-                    },
-                )
-            })
-            .collect();
+        let snapshot: std::collections::BTreeMap<String, crate::ast_hash::CanonicalFnSnapshot> =
+            self.user_fns
+                .iter()
+                .map(|(k, f)| {
+                    (
+                        k.clone(),
+                        crate::ast_hash::CanonicalFnSnapshot {
+                            params: f.params.clone(),
+                            return_vars: f.return_vars.clone(),
+                            body: f.body.clone(),
+                        },
+                    )
+                })
+                .collect();
         // Snapshot the builtin set into a HashSet so the closure
         // doesn't borrow self.
-        let builtin_names: std::collections::HashSet<String> = self
-            .builtins
-            .all_names()
-            .into_iter()
-            .collect();
+        let builtin_names: std::collections::HashSet<String> =
+            self.builtins.all_names().into_iter().collect();
         let is_builtin = |n: &str| builtin_names.contains(n);
         let id = crate::ast_hash::canonical_entry_id(
             &func.name,
@@ -3137,9 +3323,8 @@ impl Evaluator {
             ));
         }
         let path_buf = PathBuf::from(path);
-        let canonical = std::fs::canonicalize(&path_buf).map_err(|e| {
-            ScriptError::runtime(format!("cache add file: {path}: {e}"))
-        })?;
+        let canonical = std::fs::canonicalize(&path_buf)
+            .map_err(|e| ScriptError::runtime(format!("cache add file: {path}: {e}")))?;
         let stmts = crate::parse_file(&canonical)?;
         let file_hash = crate::ast_hash::hash_stmts(&stmts);
 
@@ -3338,7 +3523,10 @@ impl Evaluator {
             "fn name", "entry_id", "input_hash", "bytes", "rl_ver", "status",
         ));
         for row in rows {
-            let displayed_name = row.fn_name.clone().unwrap_or_else(|| "<unknown>".to_string());
+            let displayed_name = row
+                .fn_name
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
             // Status logic:
             //   loaded            — entry_id matches a currently-defined fn
             //   loaded (variant)  — fn_name matches a defined fn, but the
@@ -3494,6 +3682,221 @@ impl Default for Evaluator {
     }
 }
 
+fn one_based_index(n: f64) -> Result<usize, ScriptError> {
+    if !n.is_finite() || n.fract() != 0.0 || n < 1.0 {
+        return Err(ScriptError::runtime(format!(
+            "index assignment: index {n} is invalid (must be a positive integer)"
+        )));
+    }
+    Ok((n as usize).saturating_sub(1))
+}
+
+fn logical_mask_positions(v: &[C64], dim_len: usize) -> Option<Vec<usize>> {
+    if v.len() != dim_len {
+        return None;
+    }
+    if v.iter()
+        .any(|c| c.im.abs() > 1e-12 || (c.re != 0.0 && c.re != 1.0))
+    {
+        return None;
+    }
+    Some(
+        v.iter()
+            .enumerate()
+            .filter(|(_, c)| c.re == 1.0)
+            .map(|(i, _)| i)
+            .collect(),
+    )
+}
+
+fn matrix_linear_positions(idx: &Value, nr: usize, nc: usize) -> Result<Vec<usize>, ScriptError> {
+    let total = nr * nc;
+    match idx {
+        Value::All => Ok((0..total).collect()),
+        Value::Vector(v) => {
+            if let Some(pos) = logical_mask_positions(v.as_slice().unwrap_or(&[]), total) {
+                // `as_slice` fails on a non-standard layout; fall through to
+                // an owned copy in that case. Vectors from the evaluator are
+                // contiguous, so this is the normal path.
+                if v.as_slice().is_some() {
+                    return Ok(pos);
+                }
+            }
+            if v.as_slice().is_none() {
+                let owned: Vec<C64> = v.iter().copied().collect();
+                if let Some(pos) = logical_mask_positions(&owned, total) {
+                    return Ok(pos);
+                }
+                return owned.iter().map(|c| one_based_index(c.re)).collect();
+            }
+            v.iter().map(|c| one_based_index(c.re)).collect()
+        }
+        Value::Matrix(m) => {
+            let same_shape_logical = m.nrows() == nr
+                && m.ncols() == nc
+                && m.iter()
+                    .all(|c| c.im.abs() <= 1e-12 && (c.re == 0.0 || c.re == 1.0));
+            if same_shape_logical {
+                let mut pos = Vec::new();
+                for col in 0..nc {
+                    for row in 0..nr {
+                        if m[[row, col]].re == 1.0 {
+                            pos.push(col * nr + row);
+                        }
+                    }
+                }
+                return Ok(pos);
+            }
+            if m.nrows() > 1 && m.ncols() > 1 {
+                return Err(ScriptError::runtime(
+                    "index assignment: a matrix index must be a logical mask of the same shape \
+                     or a row/column of numeric indices"
+                        .to_string(),
+                ));
+            }
+            let mut flat = Vec::with_capacity(m.len());
+            for col in 0..m.ncols() {
+                for row in 0..m.nrows() {
+                    flat.push(m[[row, col]]);
+                }
+            }
+            if let Some(pos) = logical_mask_positions(&flat, total) {
+                return Ok(pos);
+            }
+            flat.iter().map(|c| one_based_index(c.re)).collect()
+        }
+        other => Err(ScriptError::runtime(format!(
+            "index assignment: invalid index type {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn grow_oned_matrix(m: &mut Array2<C64>, new_len: usize) {
+    let (nr, nc) = m.dim();
+    if nr <= 1 {
+        let mut grown = Array2::zeros((1, new_len));
+        if nr == 1 {
+            for c in 0..nc.min(new_len) {
+                grown[[0, c]] = m[[0, c]];
+            }
+        }
+        *m = grown;
+    } else {
+        let mut grown = Array2::zeros((new_len, 1));
+        for r in 0..nr.min(new_len) {
+            grown[[r, 0]] = m[[r, 0]];
+        }
+        *m = grown;
+    }
+}
+
+fn rhs_for_linear_assign(val: &Value, n: usize) -> Result<Vec<C64>, ScriptError> {
+    let flat = match val {
+        Value::Scalar(s) => return Ok(vec![Complex::new(*s, 0.0); n]),
+        Value::Complex(c) => return Ok(vec![*c; n]),
+        Value::Vector(v) => v.iter().copied().collect::<Vec<_>>(),
+        Value::Matrix(m) => {
+            let mut data = Vec::with_capacity(m.len());
+            for col in 0..m.ncols() {
+                for row in 0..m.nrows() {
+                    data.push(m[[row, col]]);
+                }
+            }
+            data
+        }
+        other => return Err(ScriptError::runtime(format!(
+            "index assignment: right-hand side must be scalar, complex, vector, or matrix; got {}",
+            other.type_name()
+        ))),
+    };
+    if flat.len() != n {
+        return Err(ScriptError::runtime(format!(
+            "index assignment: RHS length {} does not match target index count {n}",
+            flat.len()
+        )));
+    }
+    Ok(flat)
+}
+
+/// Brent's method (Numerical Recipes). `fa` and `fb` have opposite signs.
+fn brent_root(
+    f: &mut dyn FnMut(f64) -> Result<f64, ScriptError>,
+    mut a: f64,
+    mut b: f64,
+    mut fa: f64,
+    mut fb: f64,
+    tol: f64,
+) -> Result<f64, ScriptError> {
+    if fa.abs() < fb.abs() {
+        std::mem::swap(&mut a, &mut b);
+        std::mem::swap(&mut fa, &mut fb);
+    }
+    let mut c = a;
+    let mut fc = fa;
+    let mut d = b - a;
+    let mut e = d;
+    for _ in 0..100 {
+        if (fb > 0.0 && fc > 0.0) || (fb < 0.0 && fc < 0.0) {
+            c = a;
+            fc = fa;
+            d = b - a;
+            e = d;
+        }
+        if fc.abs() < fb.abs() {
+            a = b;
+            b = c;
+            c = a;
+            fa = fb;
+            fb = fc;
+            fc = fa;
+        }
+        let tol_x = 2.0 * f64::EPSILON * b.abs() + tol;
+        let m = 0.5 * (c - b);
+        if m.abs() <= tol_x || fb == 0.0 {
+            return Ok(b);
+        }
+        if e.abs() < tol_x || fa.abs() <= fb.abs() {
+            d = m;
+            e = m;
+        } else {
+            let s = fb / fa;
+            let (mut p, mut q) = if a == c {
+                (2.0 * m * s, 1.0 - s)
+            } else {
+                let q = fa / fc;
+                let r = fb / fc;
+                (
+                    s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0)),
+                    (q - 1.0) * (r - 1.0) * (s - 1.0),
+                )
+            };
+            if p > 0.0 {
+                q = -q;
+            } else {
+                p = -p;
+            }
+            let cond = 2.0 * p < (3.0 * m * q - (tol_x * q).abs()).min((e * q).abs());
+            if cond {
+                e = d;
+                d = p / q;
+            } else {
+                d = m;
+                e = m;
+            }
+        }
+        a = b;
+        fa = fb;
+        if d.abs() > tol_x {
+            b += d;
+        } else {
+            b += tol_x.copysign(m);
+        }
+        fb = f(b)?;
+    }
+    Ok(b)
+}
+
 /// Builtins that mutate global / process-level state and therefore cannot
 /// run safely inside a `parmap` parallel lambda. The dispatch in
 /// [`Evaluator::call_builtin_tracked_nargout`] checks this list before
@@ -3518,13 +3921,31 @@ impl Default for Evaluator {
 /// `dev/plans/integer_types.md`). Every other builtin gets widened integers.
 const INT_AWARE_BUILTINS: &[&str] = &[
     // Casts + introspection (must see the raw integer / class).
-    "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "class", "cast",
-    "intmax", "intmin", "isinteger", "isa", "double",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "class",
+    "cast",
+    "intmax",
+    "intmin",
+    "isinteger",
+    "isa",
+    "double",
     // Class-preserving element ops.
-    "abs", "real", "imag", "conj", "transpose",
+    "abs",
+    "real",
+    "imag",
+    "conj",
+    "transpose",
     // Storage / passthrough — must keep the integer class, not a widened copy
     // (save writes the native NPY dtype; struct stores fields verbatim).
-    "save", "struct",
+    "save",
+    "struct",
 ];
 
 const IMPURE_BUILTINS: &[&str] = &[
@@ -3549,6 +3970,7 @@ const IMPURE_BUILTINS: &[&str] = &[
     "plotdb",
     "polar",
     "quiver",
+    "rng",
     "saveanim",
     "savefig",
     "seed",

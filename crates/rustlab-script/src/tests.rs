@@ -19515,3 +19515,343 @@ mod printf_and_row_matrix_tests {
         assert!(msg.contains("cannot iterate"), "{msg}");
     }
 }
+
+/// Michael's bug batch: wide SVD, matrix linear assignment, missing
+/// MATLAB builtins, and multi-pair `plot`.
+#[cfg(test)]
+mod michael_bug_batch {
+    use crate::eval::value::Value;
+    use crate::{lexer, parser, Evaluator};
+
+    fn eval(src: &str) -> Evaluator {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn eval_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error for:\n{src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(n) => *n,
+            other => panic!("{name} is {other:?}, not a scalar"),
+        }
+    }
+
+    fn shape(ev: &Evaluator, name: &str) -> (usize, usize) {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (m.nrows(), m.ncols()),
+            Value::Vector(v) => (1, v.len()),
+            other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    fn cell(ev: &Evaluator, name: &str, r: usize, c: usize) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => m[[r, c]].re,
+            Value::Vector(v) if r == 0 => v[c].re,
+            other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    fn vec_re(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|z| z.re).collect(),
+            Value::Matrix(m) => m.iter().map(|z| z.re).collect(),
+            other => panic!("{name} is {other:?}"),
+        }
+    }
+
+    fn close(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-8, "{a} != {b}");
+    }
+
+    #[test]
+    fn svd_wide_rank_deficient_and_economy_reconstruct() {
+        // The old real path indexed U past its row count on a wide matrix.
+        let ev = eval(
+            "A = [1, 2, 3, 4, 5; 0, 0, 0, 0, 0];
+             [U, S, V] = svd(A);
+             su = size(U);
+             sv = size(V);
+             ns = length(S);
+             [Ue, Se, Ve] = svd(A, \"econ\");
+             Ahat = Ue * diag(Se) * Ve';
+             err = norm(Ahat - A);
+             s1 = svd(A);",
+        );
+        assert_eq!(vec_re(&ev, "su"), vec![2.0, 2.0]);
+        assert_eq!(vec_re(&ev, "sv"), vec![5.0, 5.0]);
+        assert_eq!(scalar(&ev, "ns"), 2.0);
+        let s = vec_re(&ev, "S");
+        assert!(s[0] >= s[1]);
+        assert!(s[1].abs() < 1e-8, "rank-1 wide matrix, got {s:?}");
+        assert!(scalar(&ev, "err") < 1e-8);
+        assert_eq!(shape(&ev, "Ue"), (2, 2));
+        assert_eq!(shape(&ev, "Ve"), (5, 2));
+        assert_eq!(vec_re(&ev, "s1").len(), 2);
+
+        let ev = eval(
+            "A = zeros(1, 4);
+             A(1, 1) = 3;
+             s = svd(A);
+             [U, S, V] = svd(A, 0);
+             Ahat = U * diag(S) * V';
+             err = norm(Ahat - A);",
+        );
+        close(vec_re(&ev, "s")[0], 3.0);
+        assert!(scalar(&ev, "err") < 1e-8);
+        assert_eq!(shape(&ev, "U"), (1, 1));
+        assert_eq!(shape(&ev, "V"), (4, 1));
+    }
+
+    #[test]
+    fn svd_complex_wide_and_square_rank_deficient() {
+        let ev = eval(
+            "A = [1, 1+i, 2; 0, i, 3];
+             [U, S, V] = svd(A, \"econ\");
+             Ahat = U * diag(S) * V';
+             err = norm(Ahat - A);
+             B = [1, 2; 2, 4];
+             sB = svd(B);",
+        );
+        assert!(
+            scalar(&ev, "err") < 1e-6,
+            "complex residual {}",
+            scalar(&ev, "err")
+        );
+        let s = vec_re(&ev, "sB");
+        assert!(s[0] > 1.0);
+        assert!(s[1].abs() < 1e-8, "rank-1 square, got {s:?}");
+
+        let msg = eval_err("s = svd([1, NaN; 0, 1]);");
+        assert!(msg.contains("finite"), "{msg}");
+    }
+
+    #[test]
+    fn pinv_penrose_and_scalar_zero() {
+        let ev = eval(
+            "A = [1, 2, 3; 4, 5, 6];
+             B = pinv(A);
+             left = A * B * A;
+             err = norm(left - A);
+             z = pinv(0);
+             rowA = zeros(1, 3);
+             rowA(1, 3) = 4;
+             row = pinv(rowA);
+             back = rowA * row;",
+        );
+        assert_eq!(shape(&ev, "B"), (3, 2));
+        assert!(scalar(&ev, "err") < 1e-6);
+        close(scalar(&ev, "z"), 0.0);
+        assert_eq!(shape(&ev, "row"), (3, 1));
+        close(cell(&ev, "back", 0, 0), 1.0);
+    }
+
+    #[test]
+    fn matrix_linear_and_logical_assignment() {
+        let ev = eval(
+            "v = [1, 0, 3, 0, 5];
+             g = zeros(size(v));
+             g(v > 0) = 7;
+             gn = zeros(size(v));
+             gn([1, 3, 5]) = [9, 8, 6];
+             row = zeros(1, 4);
+             row([2, 4]) = 3;
+             col = zeros(4, 1);
+             col([1, 3]) = [5; 6];
+             cv = [1; 0; 4];
+             gc = zeros(size(cv));
+             gc(cv > 0) = 2;
+             M = zeros(2, 3);
+             M([1, 4]) = [9, 8];
+             L = [1, -1; -2, 3];
+             G = zeros(size(L));
+             G(L > 0) = [5, 6];",
+        );
+        assert_eq!(shape(&ev, "g"), (1, 5));
+        assert_eq!(vec_re(&ev, "g"), vec![7.0, 0.0, 7.0, 0.0, 7.0]);
+        assert_eq!(vec_re(&ev, "gn"), vec![9.0, 0.0, 8.0, 0.0, 6.0]);
+        assert_eq!(shape(&ev, "row"), (1, 4));
+        assert_eq!(cell(&ev, "row", 0, 1), 3.0);
+        assert_eq!(cell(&ev, "row", 0, 3), 3.0);
+        assert_eq!(shape(&ev, "col"), (4, 1));
+        assert_eq!(cell(&ev, "col", 0, 0), 5.0);
+        assert_eq!(cell(&ev, "col", 2, 0), 6.0);
+        assert_eq!(shape(&ev, "gc"), (3, 1));
+        assert_eq!(cell(&ev, "gc", 0, 0), 2.0);
+        assert_eq!(cell(&ev, "gc", 1, 0), 0.0);
+        assert_eq!(cell(&ev, "gc", 2, 0), 2.0);
+        // Column-major: linear 1 → (1,1), linear 4 → (2,2).
+        assert_eq!(cell(&ev, "M", 0, 0), 9.0);
+        assert_eq!(cell(&ev, "M", 1, 1), 8.0);
+        assert_eq!(cell(&ev, "G", 0, 0), 5.0);
+        assert_eq!(cell(&ev, "G", 1, 1), 6.0);
+
+        let msg = eval_err(
+            "M = zeros(2, 2);
+             M([1, 5]) = 1;",
+        );
+        assert!(msg.contains("out of bounds"), "{msg}");
+        let msg = eval_err(
+            "g = zeros(1, 4);
+             g([1, 2]) = [1, 2, 3];",
+        );
+        assert!(msg.contains("does not match"), "{msg}");
+    }
+
+    #[test]
+    fn cumtrapz_diff_fliplr_nextpow2_gradient_rng_fzero() {
+        let ev = eval(
+            "z = cumtrapz([0, 1, 2, 1]);
+             zx = cumtrapz([0, 1, 2], [0, 1, 4]);
+             M = [0, 1; 2, 3; 4, 5];
+             Z = cumtrapz(M);
+             d = diff([1, 3, 6, 10]);
+             d2 = diff([1, 3, 6, 10], 2);
+             D = diff([1, 2; 4, 7; 9, 11]);
+             f = fliplr([1, 2, 3]);
+             fc = fliplr([1; 2; 3]);
+             F = fliplr([1, 2, 3; 4, 5, 6]);
+             p0 = nextpow2(0);
+             p1 = nextpow2(1);
+             p2 = nextpow2(2);
+             p3 = nextpow2(3);
+             p5 = nextpow2(5);
+             ph = nextpow2(0.5);
+             pt = nextpow2(0.1);
+             x = 0:4;
+             g = gradient(x .^ 2);
+             F2 = [1, 2, 3; 4, 5, 6; 7, 8, 9];
+             [Fx, Fy] = gradient(F2);
+             rng(1);
+             a = rand();
+             rng(1);
+             b = rand();
+             seed(1);
+             c = rand();
+             rng(\"default\");
+             d0 = rand();
+             rng(0);
+             e0 = rand();
+             rng(3);
+             first = rand();
+             second = rand();
+             st = rng();
+             rng(st);
+             restarted = rand();
+             root = fzero(@(t) t^2 - 2, 1);
+             rootb = fzero(@(t) t^2 - 2, [0, 2]);
+             halfpi = fzero(@(t) cos(t), 1);",
+        );
+        let z = vec_re(&ev, "z");
+        close(z[0], 0.0);
+        close(z[1], 0.5);
+        close(z[2], 2.0);
+        close(z[3], 3.5);
+        let zx = vec_re(&ev, "zx");
+        close(zx[2], 3.0);
+        assert_eq!(cell(&ev, "Z", 0, 0), 0.0);
+        close(cell(&ev, "Z", 1, 0), 1.0);
+        close(cell(&ev, "Z", 2, 0), 4.0);
+        close(cell(&ev, "Z", 2, 1), 6.0);
+        assert_eq!(vec_re(&ev, "d"), vec![2.0, 3.0, 4.0]);
+        assert_eq!(vec_re(&ev, "d2"), vec![1.0, 1.0]);
+        close(cell(&ev, "D", 0, 0), 3.0);
+        close(cell(&ev, "D", 1, 1), 4.0);
+        assert_eq!(vec_re(&ev, "f"), vec![3.0, 2.0, 1.0]);
+        assert_eq!(shape(&ev, "fc"), (3, 1));
+        assert_eq!(cell(&ev, "fc", 0, 0), 1.0);
+        assert_eq!(cell(&ev, "fc", 2, 0), 3.0);
+        assert_eq!(cell(&ev, "F", 0, 0), 3.0);
+        assert_eq!(cell(&ev, "F", 1, 2), 4.0);
+        close(scalar(&ev, "p0"), 0.0);
+        close(scalar(&ev, "p1"), 0.0);
+        close(scalar(&ev, "p2"), 1.0);
+        close(scalar(&ev, "p3"), 2.0);
+        close(scalar(&ev, "p5"), 3.0);
+        close(scalar(&ev, "ph"), -1.0);
+        close(scalar(&ev, "pt"), -3.0);
+        let g = vec_re(&ev, "g");
+        for (got, exp) in g.iter().zip([1.0, 2.0, 4.0, 6.0, 7.0]) {
+            close(*got, exp);
+        }
+        assert_eq!(shape(&ev, "Fx"), (3, 3));
+        assert_eq!(shape(&ev, "Fy"), (3, 3));
+        close(scalar(&ev, "a"), scalar(&ev, "b"));
+        close(scalar(&ev, "a"), scalar(&ev, "c"));
+        close(scalar(&ev, "d0"), scalar(&ev, "e0"));
+        close(scalar(&ev, "restarted"), scalar(&ev, "first"));
+        assert!((scalar(&ev, "restarted") - scalar(&ev, "second")).abs() > 1e-12);
+        close(scalar(&ev, "root"), 2.0_f64.sqrt());
+        close(scalar(&ev, "rootb"), 2.0_f64.sqrt());
+        close(scalar(&ev, "halfpi"), std::f64::consts::FRAC_PI_2);
+
+        let msg = eval_err("r = fzero(@(t) t^2 + 1, [0, 1]);");
+        assert!(msg.contains("sign"), "{msg}");
+        let msg = eval_err("rng(\"mt19937\");");
+        assert!(msg.contains("shuffle") || msg.contains("default"), "{msg}");
+    }
+
+    #[test]
+    fn plot_multiple_pairs_keeps_both_series_and_rejects_a_dangling_x() {
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+        eval("plot([1, 2], [10, 20], [1, 2], [30, 40])");
+        rustlab_plot::FIGURE.with(|fig| {
+            let fig = fig.borrow();
+            assert_eq!(fig.current().series.len(), 2);
+            assert_eq!(fig.current().series[0].y_data, vec![10.0, 20.0]);
+            assert_eq!(fig.current().series[1].y_data, vec![30.0, 40.0]);
+            let div = rustlab_plot::render_figure_plotly_div(
+                &fig,
+                "plot",
+                rustlab_plot::Theme::default().colors(),
+            );
+            assert!(
+                div.contains("y: [10,20]") || div.contains("y: [10, 20]"),
+                "{div}"
+            );
+            assert!(
+                div.contains("y: [30,40]") || div.contains("y: [30, 40]"),
+                "{div}"
+            );
+        });
+
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+        eval("plot([1, 2], [10, 20], \"r\", [1, 2], [30, 40], \"b--\")");
+        rustlab_plot::FIGURE.with(|fig| {
+            let sp = fig.borrow();
+            let sp = sp.current();
+            assert_eq!(sp.series.len(), 2);
+            assert_eq!(sp.series[0].color, rustlab_plot::SeriesColor::Red);
+            assert_eq!(sp.series[1].color, rustlab_plot::SeriesColor::Blue);
+            assert_eq!(sp.series[1].style, rustlab_plot::LineStyle::Dashed);
+        });
+
+        // plot(y1, y2) is one (x, y) pair, not two y-series.
+        rustlab_plot::FIGURE.with(|f| f.borrow_mut().reset());
+        eval("plot([1, 2, 3], [4, 5, 6])");
+        rustlab_plot::FIGURE.with(|fig| {
+            let sp = fig.borrow();
+            assert_eq!(sp.current().series.len(), 1);
+            assert_eq!(sp.current().series[0].y_data, vec![4.0, 5.0, 6.0]);
+        });
+
+        let msg = eval_err("plot([1, 2], [10, 20], [3, 4])");
+        assert!(msg.contains("incomplete") || msg.contains("pair"), "{msg}");
+        let msg = eval_err("plot([1, 2], [3, 4], \"Gold\", [1, 2], [5, 6])");
+        assert!(msg.contains("line spec"), "{msg}");
+    }
+}

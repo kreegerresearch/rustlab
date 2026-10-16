@@ -223,17 +223,25 @@ T = polygon_mask(X, Y, [0,0; 1,0; 0.5,1])    # triangle
 ```
 Degenerate inputs return an all-zero mask: fewer than 3 vertices, or all vertices collinear (zero interior area). Behaviour at points exactly on a polygon edge is implementation-defined — callers needing exact-edge semantics should perturb the polygon slightly. Compose masks with element-wise math: `.* M2` (intersection), `1 - M` (complement), `max(M1, M2)` (union), `M1 .* (1 - M2)` (set difference).
 
-### `gradient(F)` / `gradient(F, dx, dy)`
-2-D gradient of a scalar field on a uniform grid. `F` is an `ny×nx` matrix where rows index `y` and columns index `x`. Returns a tuple `[Fx, Fy]` of the same shape.
+### `gradient(v)` / `gradient(v, h)` / `gradient(v, x)` / `gradient(F)` / `gradient(F, dx, dy)`
+1-D gradient of a vector (or a `1×N` / `N×1` matrix), and 2-D gradient of a matrix.
+
+A vector keeps its orientation and is not returned as a tuple. Endpoints use the first-order difference `(f[2]-f[1])/h`. Interior points use the central difference `(f[i+1]-f[i-1])/(2h)`. A length-1 input is `0`. `h` defaults to `1`. `gradient(v, x)` takes sample coordinates of the same length; the interior weights match MATLAB's nonuniform formula. A vector does not accept separate `dx` and `dy`.
+```
+g = gradient((0:4) .^ 2)     % [1, 2, 4, 6, 7]
+g = gradient([0, 1, 4, 9], 2)
+```
+
+A true 2-D matrix (`ny×nx`, rows index `y`, columns index `x`) still returns `[Fx, Fy]`.
 ```
 [X, Y] = meshgrid(linspace(-1, 1, 21), linspace(-1, 1, 21));
 F = X .^ 2 + Y .^ 2;
 [Fx, Fy] = gradient(F, 0.1, 0.1);    % Fx ≈ 2X, Fy ≈ 2Y
 ```
-- 2nd-order central differences in the interior; 2nd-order one-sided differences at boundaries (NumPy convention).
+- 2-D: 2nd-order central differences in the interior; 2nd-order one-sided differences at boundaries.
 - `dx`, `dy` default to 1.0 if omitted; both must be positive.
-- Each axis must have length ≥ 3.
-- Complex inputs are supported (frequency-domain EM fields, etc.).
+- Each 2-D axis must have length ≥ 3.
+- Complex inputs are supported.
 
 ### `divergence(Fx, Fy)` / `divergence(Fx, Fy, dx, dy)`
 2-D divergence `∂Fx/∂x + ∂Fy/∂y`. `Fx` and `Fy` must share shape; output has the same shape.
@@ -391,6 +399,20 @@ total   = trapz(ys, row_int);
 ```
 - Returns a scalar (real or complex) for vectors, a row matrix for matrices.
 - Returns `0.0` for strips with fewer than 2 samples.
+
+### `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` / `cumtrapz(X, Y, dim)`
+Cumulative trapezoidal integral. The first sample along the integration axis is `0`. A scalar second argument is a dimension (`1` or `2`), not an x-axis. A vector, or a `1×N` / `N×1` matrix, integrates along the vector and keeps that orientation. A true matrix defaults to dimension 1 (down each column); dimension 2 integrates along each row.
+```
+cumtrapz([0, 1, 2, 1])            % [0, 0.5, 2, 3.5]
+cumtrapz([0, 1, 2], [0, 1, 4])
+```
+
+### `diff(X)` / `diff(X, n)` / `diff(X, n, dim)`
+Difference of adjacent elements, repeated `n` times (default `1`). `n = 0` returns `X`. A vector, or a `1×N` / `N×1` matrix, differences along the vector and keeps that orientation. A true matrix defaults to dimension 1. The result is empty along an axis shorter than `n + 1`.
+```
+diff([1, 3, 6, 10])     % [2, 3, 4]
+diff([1, 2; 4, 7])      % [3, 5]
+```
 
 ### `prod(v)`
 Product of all elements. Accepts scalar, complex, vector, or matrix.
@@ -590,6 +612,18 @@ seed()                # back to non-deterministic
 ```
 
 The seed is process-global; calling it from one script affects every subsequent random call until the next `seed()`.
+
+### `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()`
+
+Same generator as `seed`. `rng(seed)` restarts that stream. `rng("shuffle")` draws a new seed from the operating system (same as `seed()`). `rng("default")` and `rng("twister")` use seed `0`. The only generator name accepted as a second argument is `"twister"`.
+
+`s = rng()` returns a struct with `Type = "twister"` and `Seed`. `rng(s)` starts again at that seed. It does not resume a stream that has already been drawn from: the generator has no saved position. After `rng("shuffle")`, `Seed` is `NaN`, and `rng(s)` shuffles again.
+```
+rng(1)
+a = rand()
+rng(1)
+b = rand()    % a == b
+```
 
 ---
 
@@ -1451,14 +1485,47 @@ roots([1, 0, -1])     # → [1, -1] (x² - 1 = 0)
 ```
 - Returns a complex vector. Uses companion matrix eigendecomposition.
 
-### `svd(A)`
-Singular value decomposition via Jacobi eigendecomposition of A'A. Returns a tuple `[U, sigma, V]`.
+### `svd(A)` / `svd(A, "econ")` / `svd(A, 0)`
+Singular value decomposition. `s = svd(A)` returns the singular values, length `min(m, n)`, descending and non-negative. `[U, s, V] = svd(A)` returns the full factors: `U` is `m×m`, `V` is `n×n`, and `s` is that same vector (not an `m×n` diagonal matrix — `diag(s)` builds the diagonal).
+
+`svd(A, "econ")`, `svd(A, "economy")`, and `svd(A, 0)` return the thin factors `U` `m×k` and `V` `n×k` with `k = min(m, n)`.
+
+Wide matrices (more columns than rows), rank-deficient matrices, complex matrices, and `1×N` rows are accepted. A non-finite entry is an error. The factors come from the Hermitian eigendecomposition of the smaller Gram matrix (`A Aᴴ` when `m ≤ n`, otherwise `Aᴴ A`).
 ```
-[U, S, V] = svd(A)
-# U: m×m unitary, S: min(m,n)-length singular value vector, V: n×n unitary
-# A ≈ U * diag(S) * V'
+[U, S, V] = svd(A, "econ")
+Ahat = U * diag(S) * V'          % every shape
+[Uf, Sf, Vf] = svd(A)            % full
+% non-square full form: Uf(:, 1:k) * diag(Sf) * Vf(:, 1:k)'
 ```
-- Currently operates on real parts only; a warning is printed if imaginary parts are discarded.
+
+### `pinv(A)` / `pinv(A, tol)`
+Moore-Penrose pseudoinverse from the SVD. For an `m×n` matrix, `B` is `n×m` and `A*B*A ≈ A`. Singular values at or below `tol` are treated as zero. The default tolerance is `max(m, n) * eps * σ_max`. A scalar stays a scalar (`pinv(0)` is `0`). A vector is a column, matching the other matrix builtins.
+```
+A = [1, 2, 3; 4, 5, 6]
+B = pinv(A)
+norm(A * B * A - A)    % ~ 0
+```
+
+### `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)`
+Real root of `f(x) = 0`. `f` is a lambda or a function handle and must return a finite real scalar. A two-element bracket must change sign; Brent's method runs on it. A scalar start searches outward (the step grows by `1.6`, positive side first) until `f` changes sign against `f(x0)`. `tol` is an absolute tolerance on `x` (default `1e-12`); the iteration also stops within `2*eps*|x|`.
+```
+fzero(@(x) x^2 - 2, 1)       % √2
+fzero(@(x) cos(x), [0, 2])   % π/2
+```
+
+### `fliplr(A)`
+Reverse the columns. A vector is a row (`size` is `[1, n]`), so it is reversed. An `N×1` matrix has one column and is unchanged. A scalar is unchanged.
+```
+fliplr([1, 2, 3])            % [3, 2, 1]
+fliplr([1, 2, 3; 4, 5, 6])   % [3, 2, 1; 6, 5, 4]
+```
+
+### `nextpow2(x)`
+Smallest integer `p` such that `2^p >= |x|`, elementwise. A complex value uses `|z|`. `nextpow2(0)` is `0`. `Inf` stays `Inf` and `NaN` stays `NaN`.
+```
+nextpow2(5)      % 3   (2^3 = 8)
+nextpow2(0.1)    % -3
+```
 
 ---
 
@@ -1472,6 +1539,18 @@ Single-element store into a Matrix (or 2-D SparseMatrix). 1-based indexing.
 M = zeros(3, 3)
 M(2, 3) = 7      % only element (2, 3) updated
 ```
+
+### Linear and logical write: `M(idx) = c`
+One index into a matrix selects elements in column-major order, the same order as `M(idx)` on a read. `idx` may be `:`, a numeric index vector, or a logical mask (a 0/1 vector of the same length, or a 0/1 matrix of the same shape — what `M > 0` returns). A scalar or complex right-hand side is written into every selected element. A vector or matrix must have the same number of selected elements and is flattened column-major. The matrix keeps its shape.
+
+`zeros(size(v))` is a matrix (a row when `v` is a vector). `g(idx) = c` writes that matrix.
+```
+v = [1, 0, 3]
+g = zeros(size(v))
+g(v > 0) = 7          % [7, 0, 7]
+g([1, 3]) = [9, 8]    % [9, 0, 8]
+```
+A `1×N` or `N×1` matrix grows when a numeric index runs past the end (a row grows along columns, a column grows along rows). A general 2-D matrix does not grow: an index past the last element is an error. A logical mask does not grow. A scalar index still uses the legacy row write `M(i) = row_vector`.
 
 ### Row write: `M(i, :) = vec` (preferred) or `M(i) = vec` (legacy)
 Assign a length-`ncols` Vector into row `i`. The two-argument form is symmetric with the row-read `M(i, :)`. The single-argument form is the legacy row-write that still works for back-compat.
@@ -2103,6 +2182,16 @@ t = linspace(0.0, 1.0, 1000)
 plot(t, signal, "label", "sine wave")
 ```
 
+### `plot(x1, y1, x2, y2, ...)`
+One line series per `(x, y)` pair. A line spec may follow a pair: a base colour (`r g b c m y k w` or the matching name), a style (`-`, `--`, `:`, `-.`), a marker (`o`, `.`), or a combination such as `r--` or `bo`. `:` and `-.` draw dashed, because the renderers have solid and dashed only. A marker with no line style draws points; `r--o` draws the dashed line.
+
+`plot(y1, y2)` is one pair (y against y), not two y-only series. A dangling numeric argument (`plot(x1, y1, x2)`) is an error. A string that is not a line spec, with more numeric data after it, is an error. Extra arguments are not dropped.
+
+Every series is stored on the current subplot. The terminal, SVG/PNG, the self-contained notebook HTML (vendored Plotly, no extra CDN), and the viewer all read that series list.
+```
+plot(t, y1, "r", t, y2, "b--")
+```
+
 ### `plot(v, "color", c, "label", lbl, "style", s)`
 Plot with options. Options are trailing key-value string pairs:
 - `"color"` — color name: `"red"`, `"green"`, `"blue"`, `"cyan"`, `"magenta"`, `"yellow"`, `"black"`, `"white"`, or single-letter shortcuts (`"r"`, `"g"`, `"b"`, ...)
@@ -2320,7 +2409,7 @@ Same `hold on` / backend behaviour as `quiver`.
 
 ### `loglog(x, y [, opts])` / `semilogx(x, y [, opts])` / `semilogy(x, y [, opts])`
 
-Log-axis line plots. Implemented as **pre-transform shims** over `plot()`: the data is mapped through `log10` and the resulting axes are labeled `log10(x)` / `log10(y)` to indicate the transform. Power-law data renders as a straight line on `loglog`, exponential decay as a straight line on `semilogy`, etc.
+Log-axis line plots. The values you pass are what get drawn. The axis scale is logarithmic (`loglog` on both axes, `semilogx` on x, `semilogy` on y), and the tick marks are decades (`1`, `10`, `100`, …), not `log10` of the data and not an axis titled `log10(x)`.
 
 ```
 % Power law y = x^2 looks like a straight line of slope 2.
@@ -2328,15 +2417,13 @@ x = logspace(0, 3, 50);
 y = x .^ 2;
 loglog(x, y);
 
-% Bode-style frequency response.
+% Bode-style frequency response. The dB conversion is yours;
+% semilogx only makes the frequency axis logarithmic.
 f = logspace(0, 4, 200);
-H = freqz_eval(f, ...);
 semilogx(f, 20 * log10(abs(H)))
 ```
 
-`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error.
-
-Tick labels are the log10 values themselves (0, 1, 2, 3 instead of 1, 10, 100, 1000). Proper LogCoord-style axes with decade labels are tracked as a future enhancement; the pre-transform shim correctly captures the curve shapes that the curriculum needs.
+`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`.
 
 ### `polar(theta, r [, opts])`
 
@@ -3038,7 +3125,7 @@ rfplot(s, "groupdelay",  2, 1)      % group delay τ_g = -dφ/dω, seconds
 
 Group delay uses a forward/backward difference at the endpoints and central differences in the interior. The unwrap rule is the standard ±2π jump removal applied to the running cumulative correction.
 
-For non-2-port networks the default form falls back to a single `|S11|` dB trace; the single-trace form works for any port pair within range. The frequency axis always goes through `semilogx` so the x-coordinate is `log10(f)` — the canonical RF convention. Each panel gets the appropriate Y-axis label (`|Sij| (dB)`, `arg(Sij) (deg)`, etc.) automatically.
+For non-2-port networks the default form falls back to a single `|S11|` dB trace; the single-trace form works for any port pair within range. The frequency axis goes through `semilogx`, so the plotted x values stay in Hz and the axis scale is logarithmic (decade ticks). Each panel gets the appropriate Y-axis label (`|Sij| (dB)`, `arg(Sij) (deg)`, etc.) automatically.
 
 ### Analysis: VSWR, return loss, stability, gain
 
