@@ -47,6 +47,9 @@ examples/**/*.html
 examples/notebooks/*.s2p
 **/toml_results.toml
 *.html
+# Design mockups are source, not generated notebook HTML.
+!dev/plans/mockups/**/*.html
+!dev/plans/mockups/**/*.svg
 
 # Notebook rendered output — sources live at examples/notebooks/*.md.
 # `make notebooks` writes everything into gallery/:

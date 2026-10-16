@@ -1,0 +1,869 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--rl-bg, #1e1e2e);
+    color: var(--rl-text, #cdd6f4);
+    display: flex;
+    min-height: 100vh;
+  }
+  /* Height of the fixed topbar; the sidebar and main both clear it.
+     `--rl-*` tokens come from the resolved ThemeColors so chrome can
+     restyle without rewriting the whole stylesheet. Rules below use
+     var(--rl-…, <literal>) so missing tokens keep today's colors. */
+  :root {
+    --topbar-h: 2.6rem;
+    --rl-bg: #1e1e2e;
+    --rl-bg-secondary: #181825;
+    --rl-text: #cdd6f4;
+    --rl-text-dim: #a6adc8;
+    --rl-border: #313244;
+    --rl-border-subtle: #45475a;
+    --rl-accent-primary: #cba6f7;
+    --rl-accent-secondary: #89b4fa;
+    --rl-accent-tertiary: #74c7ec;
+    --rl-code-bg: #11111b;
+    --rl-output-bg: #181825;
+    --rl-inline-code-bg: #313244;
+    --rl-error-bg: #1e0a0a;
+    --rl-error-text: #f38ba8;
+    --rl-plot-bg: #1e1e2e;
+    --rl-plot-grid: rgba(150,150,180,0.3);
+    --rl-syn-keyword: #cba6f7;
+    --rl-syn-function: #89b4fa;
+    --rl-syn-number: #fab387;
+    --rl-syn-string: #a6e3a1;
+    --rl-syn-comment: #787c92;
+    --rl-syn-operator: #89dceb;
+    --rl-footer-text: #81859c;
+    --rl-cm-mark-bg: #554f4e;
+    --rl-cm-note-bg: #181825;
+    --rl-cm-note-border: #89b4fa;
+    --rl-accent: var(--rl-accent-primary, #cba6f7);
+  }
+  /* ── Navigation sidebar (in-page TOC) ── */
+  nav.sidebar {
+    position: fixed;
+    top: var(--topbar-h);
+    left: var(--fb-w, 0px);
+    width: 220px;
+    height: calc(100vh - var(--topbar-h));
+    background: var(--rl-bg-secondary, #181825);
+    border-right: 1px solid var(--rl-border, #313244);
+    padding: 1.5rem 0;
+    overflow-y: auto;
+    /* Unbreakable content (a wide KaTeX formula) clips at the column edge
+       rather than painting over `main` or growing a stray h-scrollbar. */
+    overflow-x: hidden;
+    z-index: 100;
+    transition: transform 0.25s ease;
+  }
+  nav.sidebar .nav-title {
+    overflow-wrap: anywhere;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--rl-accent-primary, #cba6f7);
+    padding: 0 1rem 1rem;
+    border-bottom: 1px solid var(--rl-border, #313244);
+    margin-bottom: 0.5rem;
+  }
+  nav.sidebar a {
+    display: block;
+    padding: 0.4rem 1rem;
+    color: var(--rl-text-dim, #a6adc8);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background 0.15s, color 0.15s;
+    /* Headings can be long, and KaTeX typesets any inline math in them
+       (auto-render walks the whole body, sidebar included). Text wraps;
+       KaTeX output is internally nowrap, so an unbreakable formula wider
+       than the column is clipped by the sidebar's overflow-x instead —
+       it must never leak over the content. */
+    overflow-wrap: anywhere;
+  }
+  nav.sidebar .katex {
+    font-size: 0.95em;
+  }
+  nav.sidebar a:hover {
+    background: var(--rl-border, #313244);
+    color: var(--rl-text, #cdd6f4);
+  }
+  nav.sidebar a.h2 {
+    padding-left: 1.8rem;
+    font-size: 0.85rem;
+  }
+  nav.sidebar a.h3 {
+    padding-left: 2.6rem;
+    font-size: 0.8rem;
+  }
+  /* ── Hamburger toggle (hidden on desktop) ── */
+  .nav-toggle {
+    display: none;
+    position: fixed;
+    top: 0.7rem;
+    left: 0.7rem;
+    z-index: 200;
+    background: var(--rl-border, #313244);
+    border: 1px solid var(--rl-border-subtle, #45475a);
+    border-radius: 6px;
+    color: var(--rl-text, #cdd6f4);
+    font-size: 1.3rem;
+    width: 2.4rem;
+    height: 2.4rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  /* ── Main content ── */
+  main {
+    /* Centre the 960px column in the space right of the sidebar on wide
+       displays, never under it. An auto right margin does NOT do this:
+       with `flex: 1` the item fills the line before `max-width` clamps
+       it, and the freed space all lands on the single auto margin —
+       position unchanged, prose pinned against the sidebar. (Measured:
+       the auto-right-margin form left main at x=220 on a 1600px
+       viewport; this puts it at 320, like the old `margin: 0 auto`.) */
+    margin-left: max(220px, calc(50% - 480px));
+    flex: 1;
+    padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
+    max-width: 960px;
+    min-width: 0;
+  }
+  /* ── Topbar (between-notebook nav) ──
+     Fixed rather than sticky: it spans the full width above the sidebar, so
+     it cannot participate in the body's flex row. */
+  .topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--topbar-h);
+    z-index: 150;
+    background: var(--rl-bg-secondary, #181825);
+    border-bottom: 1px solid var(--rl-border, #313244);
+    padding: 0 1.2rem;
+    font-size: 0.85rem;
+    color: var(--rl-text-dim, #a6adc8);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .topbar a {
+    color: var(--rl-accent-secondary, #89b4fa);
+    text-decoration: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .topbar a:hover {
+    text-decoration: underline;
+  }
+  /* Prev/next flank the breadcrumb and yield space to it when cramped.
+     The Index link must NOT shrink: `overflow: hidden` gives every topbar
+     link a zero flex minimum, and on a narrow screen the crumb squeezed
+     "Index" — the one link back to the collection root — to a 5px sliver. */
+  .topbar a.index {
+    flex: 0 0 auto;
+  }
+  .topbar a.prev, .topbar a.next {
+    flex: 0 1 auto;
+    max-width: 22%;
+  }
+  .topbar a.next {
+    margin-left: auto;
+    text-align: right;
+  }
+  .topbar .crumb {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Claim the leftover width. Flex items default to min-width:auto and
+       refuse to shrink below their content, so without this the fixed-size
+       prev/next links won and the title — the one label saying where you
+       are — collapsed to nothing on a narrow screen. `.current` keeps
+       min-width:0 so it ellipsises instead. */
+    flex: 1 1 auto;
+  }
+  .topbar .sep {
+    color: var(--rl-text-dim, #a6adc8);
+  }
+  .topbar .current {
+    color: var(--rl-text, #cdd6f4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  /* Anchor targets must clear the fixed topbar. Without this a link scrolls
+     its target to y=0, which is behind the bar — the heading you clicked is
+     the one thing you cannot see. Applies to EVERY id, not just the
+     generated `heading-N` ones: explicit `{#anchor}` headings, footnote
+     back-references and block ids are all link targets too. */
+  [id] {
+    scroll-margin-top: calc(var(--topbar-h) + 0.75rem);
+  }
+  /* No headings, no sidebar: the column centres in the full viewport.
+     A collection file browser, when present, adds `--fb-w` on the left
+     of the TOC (or in place of it, when there is no TOC). */
+  body.no-toc main {
+    margin-left: max(0px, calc(50% - 480px));
+  }
+  body.has-files main {
+    margin-left: max(calc(220px + var(--fb-w)), calc(50% - 480px));
+  }
+  body.has-files.no-toc main {
+    margin-left: max(var(--fb-w), calc(50% - 480px));
+  }
+  .prose {
+    line-height: 1.7;
+    margin-bottom: 1.5rem;
+  }
+  .prose h1 {
+    font-size: 1.8rem;
+    color: var(--rl-accent-primary, #cba6f7);
+    margin: 2rem 0 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid var(--rl-border, #313244);
+  }
+  .prose h2 {
+    font-size: 1.4rem;
+    color: var(--rl-accent-secondary, #89b4fa);
+    margin: 1.8rem 0 0.8rem;
+  }
+  .prose h3 {
+    font-size: 1.15rem;
+    color: var(--rl-accent-tertiary, #74c7ec);
+    margin: 1.4rem 0 0.6rem;
+  }
+  .prose p {
+    margin-bottom: 1rem;
+  }
+  /* Prose/callout/exercise links. Without this, UA-default `#0000EE` /
+     visited `#551A8B` sit on the dark page background at ~2:1 contrast.
+     More-specific `.topbar a` / `.page-nav a` / `nav.sidebar a` keep
+     their own colors. */
+  .prose a, .callout a, .exercise a {
+    color: var(--rl-accent-secondary, #89b4fa);
+    text-decoration: underline;
+    text-underline-offset: 0.15em;
+  }
+  .prose a:visited, .callout a:visited, .exercise a:visited {
+    color: var(--rl-accent-primary, #cba6f7);
+  }
+  .prose a:hover, .callout a:hover, .exercise a:hover {
+    color: var(--rl-accent-tertiary, #74c7ec);
+  }
+  .prose code {
+    background: var(--rl-inline-code-bg, #313244);
+    padding: 0.15rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+  .prose table {
+    border-collapse: collapse;
+    margin: 1rem 0;
+  }
+  .prose th, .prose td {
+    border: 1px solid var(--rl-border-subtle, #45475a);
+    padding: 0.5rem 0.8rem;
+    text-align: left;
+  }
+  .prose th {
+    background: var(--rl-border, #313244);
+    color: var(--rl-accent-primary, #cba6f7);
+    font-weight: 600;
+  }
+  .prose img, .callout img {
+    max-width: 100%;
+    height: auto;
+  }
+  .missing-figure {
+    color: var(--rl-text-dim, #a6adc8);
+    font-style: italic;
+  }
+  .prose ul, .prose ol {
+    margin: 0.5rem 0 1rem 1.5rem;
+  }
+  .prose li {
+    margin-bottom: 0.3rem;
+  }
+  .prose blockquote {
+    border-left: 3px solid var(--rl-accent-primary, #cba6f7);
+    padding-left: 1rem;
+    color: var(--rl-text-dim, #a6adc8);
+    margin: 1rem 0;
+  }
+  .code-block {
+    margin-bottom: 1.5rem;
+  }
+  /* Source, printed output, and errors. The accent rule marks the cell.
+     Plots are siblings of this wrapper, so they stay full width. */
+  .rl-cell {
+    margin: 0.2rem 0 0.35rem 0.15rem;
+    padding: 0.05rem 0 0.05rem 0.85rem;
+    border-left: 3px solid var(--rl-accent-primary, #cba6f7);
+  }
+  /* Language chip shared by rustlab cells and bash/python/text fences. */
+  .rl-lang {
+    font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: var(--rl-text-dim);
+    padding: 0.1rem 0 0.35rem;
+    user-select: none;
+  }
+  /* Source only. Open by default; collapsing leaves the summary, and
+     the `.rl-cell` rule still marks output that follows. */
+  .rl-src > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  .rl-src > summary::-webkit-details-marker { display: none; }
+  .rl-src > summary::marker { content: ""; }
+  .rl-src > summary::before {
+    content: "▸";
+    display: inline-block;
+    width: 1.1em;
+    color: var(--rl-accent);
+  }
+  .rl-src[open] > summary::before {
+    content: "▾";
+  }
+  /* Prose fences (bash / python / text). Same panel colors as a rustlab
+     cell: `.source` for code, `.output` for uncolored text. The accent
+     rule matches the PDF tcolorbox. */
+  .rl-fence {
+    margin: 0.35rem 0 1.1rem 0.15rem;
+    padding-left: 0.85rem;
+    border-left: 3px solid var(--rl-accent-primary, #cba6f7);
+  }
+  .rl-fence .output {
+    margin-top: 0;
+  }
+  .rl-fence code {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+  }
+  .source {
+    background: var(--rl-code-bg, #11111b);
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 6px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--rl-text, #cdd6f4);
+  }
+  .output {
+    background: var(--rl-output-bg, #181825);
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    margin-top: 0.5rem;
+    color: var(--rl-text-dim, #a6adc8);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+  .error {
+    background: var(--rl-error-bg, #1e0a0a);
+    border: 1px solid var(--rl-error-text, #f38ba8);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    margin-top: 0.5rem;
+    color: var(--rl-error-text, #f38ba8);
+    font-family: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+  }
+  .plot-container {
+    background: var(--rl-bg, #1e1e2e);
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 8px;
+    margin-top: 0.5rem;
+    height: 450px;
+  }
+  .plot-container > div {
+    width: 100%;
+    height: 100%;
+  }
+  footer {
+    color: var(--rl-footer-text, #81859c);
+    font-size: 0.8rem;
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rl-border, #313244);
+  }
+  .page-nav {
+    display: flex;
+    align-items: stretch;
+    gap: 0.5rem;
+    margin-top: 2.5rem;
+    padding-top: 1.2rem;
+    border-top: 1px solid var(--rl-border, #313244);
+  }
+  .page-nav a {
+    flex: 1 1 0;
+    padding: 0.7rem 1rem;
+    background: var(--rl-bg-secondary, #181825);
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 8px;
+    color: var(--rl-accent-secondary, #89b4fa);
+    text-decoration: none;
+    font-size: 0.9rem;
+    transition: background 0.15s, border-color 0.15s;
+    min-width: 0;
+  }
+  .page-nav a:hover {
+    background: var(--rl-border, #313244);
+    border-color: var(--rl-accent-secondary, #89b4fa);
+  }
+  .page-nav .label {
+    display: block;
+    color: var(--rl-text-dim, #a6adc8);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+  }
+  .page-nav .title {
+    display: block;
+    color: var(--rl-text, #cdd6f4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .page-nav .prev { text-align: left; }
+  .page-nav .index { text-align: center; align-self: center; }
+  .page-nav .next { text-align: right; }
+  /* ── Syntax highlighting ── */
+  .syn-kw  { color: var(--rl-syn-keyword, #cba6f7); }
+  .syn-fn  { color: var(--rl-syn-function, #89b4fa); }
+  .syn-num { color: var(--rl-syn-number, #fab387); }
+  .syn-str { color: var(--rl-syn-string, #a6e3a1); }
+  .syn-com { color: var(--rl-syn-comment, #787c92); font-style: italic; }
+  .syn-op  { color: var(--rl-syn-operator, #89dceb); }
+  /* ── Callout blocks ── */
+  .callout {
+    border-left: 4px solid;
+    border-radius: 6px;
+    padding: 1rem 1.2rem;
+    margin: 1rem 0;
+  }
+  .callout-title {
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    font-size: 0.95rem;
+  }
+  .callout-note {
+    border-color: var(--rl-accent-secondary, #89b4fa);
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .callout-note .callout-title { color: var(--rl-accent-secondary, #89b4fa); }
+  .callout-tip {
+    border-color: var(--rl-accent-tertiary, #74c7ec);
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .callout-tip .callout-title { color: var(--rl-accent-tertiary, #74c7ec); }
+  .callout-important {
+    border-color: var(--rl-accent-primary, #cba6f7);
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .callout-important .callout-title { color: var(--rl-accent-primary, #cba6f7); }
+  .callout-warning {
+    border-color: var(--rl-error-text, #f38ba8);
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .callout-warning .callout-title { color: var(--rl-error-text, #f38ba8); }
+  .callout-caution {
+    border-color: var(--rl-error-text, #f38ba8);
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .callout-caution .callout-title { color: var(--rl-error-text, #f38ba8); }
+  /* ── Interactive widgets ── */
+  .rl-widget {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 6px;
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .rl-widget-label {
+    font-weight: 600;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }
+  .rl-widget-input {
+    flex: 1;
+    accent-color: var(--rl-accent-primary, #cba6f7);
+  }
+  .rl-widget-value {
+    font-variant-numeric: tabular-nums;
+    min-width: 4ch;
+    text-align: right;
+    color: var(--rl-accent-primary, #cba6f7);
+  }
+  .rl-widget-options {
+    flex-wrap: wrap;
+  }
+  .rl-widget-choice {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.9rem;
+    white-space: nowrap;
+  }
+  .rl-widget input[type="number"] {
+    flex: 0 0 auto;
+    width: 7rem;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 4px;
+    background: var(--rl-bg, #1e1e2e);
+    color: var(--rl-text, #cdd6f4);
+  }
+  /* ── Exercise / solution blocks ── */
+  .exercise {
+    border: 1px solid var(--rl-border, #313244);
+    border-radius: 8px;
+    padding: 1.2rem;
+    margin: 1.5rem 0;
+    background: var(--rl-bg-secondary, #181825);
+  }
+  .exercise-title {
+    font-weight: 700;
+    color: var(--rl-accent-primary, #cba6f7);
+    margin-bottom: 0.8rem;
+    font-size: 1.05rem;
+  }
+  .solution {
+    margin-top: 1rem;
+  }
+  .solution > summary {
+    cursor: pointer;
+    color: var(--rl-accent-secondary, #89b4fa);
+    font-weight: 600;
+    padding: 0.3rem 0;
+  }
+  /* ── Collapsible code output ── */
+  .code-details > summary {
+    cursor: pointer;
+    color: var(--rl-accent-secondary, #89b4fa);
+    font-weight: 600;
+    padding: 0.4rem 0;
+  }
+  /* ── Image grid ── */
+  .image-grid {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  /* ── Responsive: collapse sidebar on narrow screens ── */
+  @media (max-width: 768px) {
+    nav.sidebar {
+      transform: translateX(-100%);
+    }
+    nav.sidebar.open {
+      transform: translateX(0);
+    }
+    .nav-toggle {
+      display: block;
+    }
+    main {
+      margin-left: 0;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }
+    /* Leave room for the hamburger, which sits over the topbar's left
+       end. no-toc pages have no hamburger — don't reserve 3rem of the
+       narrowest layout for a button that doesn't exist. */
+    body:not(.no-toc) .topbar {
+      padding-left: 3rem;
+    }
+    /* The file browser overlays on a narrow screen (`--fb-w: 0` in its
+       own stylesheet) instead of reserving a second column beside the
+       off-canvas TOC. */
+    body.has-files main,
+    body.has-files.no-toc main {
+      margin-left: 0;
+      padding: calc(var(--topbar-h) + 1rem) 1rem 2rem;
+    }
+    .topbar a.prev, .topbar a.next {
+      max-width: 28%;
+    }
+  }
+
+.rl-cm-mark {
+  background: var(--rl-cm-mark-bg, #554f4e);
+  color: var(--rl-text, inherit);
+  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  padding: 0 0.05em;
+}
+.rl-cm-ref {
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--rl-accent-primary);
+  margin-left: 0.12em;
+  cursor: pointer;
+}
+.rl-cm-ref::before { content: "["; }
+.rl-cm-ref::after { content: "]"; }
+.rl-cm-ref-block { float: right; margin: 0 0 0.2rem 0.4rem; }
+.rl-cm-cellmark { display: flex; justify-content: flex-end; }
+p:has(> .rl-cm-ref-block:only-child) { margin: 0.2rem 0; }
+/* Right margin column inside each section. The prose shrinks so the
+   column stays, including a directory page (`body.has-files`) with the
+   file browser and the TOC. Cards are never in the paragraph. With
+   scripting off they stack in this column in document order. */
+body.has-cm-margin { --rl-cm-col: 18rem; }
+body.has-cm-margin section.rl-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--rl-cm-col, 18rem);
+  column-gap: 1rem;
+  align-items: start;
+}
+body.has-cm-margin section.rl-block > .rl-cm-margin {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  position: relative;
+  min-width: 0;
+  overflow: visible;
+}
+body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
+  grid-column: 1;
+  min-width: 0;
+}
+.rl-cm-margin-label {
+  display: block;
+  margin: 0 0 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rl-text-dim, var(--rl-text));
+}
+.rl-cm-card, .rl-cm-note, .rl-cm-blocknote {
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  display: block;
+  margin: 0 0 0.55rem;
+  padding: 0.4rem 0.55rem 0.45rem;
+}
+.rl-cm-head { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: baseline; margin-bottom: 0.2rem; }
+.rl-cm-num { font-weight: 700; color: var(--rl-cm-note-border, var(--rl-accent-secondary)); }
+.rl-cm-meta { opacity: 0.85; }
+.rl-cm-text { display: block; }
+.rl-cm-fold { display: block; }
+.rl-cm-card.rl-cm-clamped:not(.rl-cm-open) .rl-cm-fold {
+  max-height: calc(1.35em * 6);
+  overflow: hidden;
+}
+.rl-cm-more {
+  display: inline-block;
+  margin-top: 0.2rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rl-accent-primary);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.rl-cm-more[hidden] { display: none; }
+.rl-cm-link {
+  position: absolute;
+  left: -0.7rem;
+  width: 0.7rem;
+  border-left: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-bottom: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  opacity: 0.55;
+  pointer-events: none;
+}
+.rl-cm-link[hidden] { display: none; }
+.rl-cm-card.rl-cm-drift .rl-cm-num { font-size: 1rem; }
+.rl-cm-reply {
+  display: block;
+  margin: 0.35rem 0 0.15rem 0.75rem;
+  padding-left: 0.45rem;
+  border-left: 2px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+}
+.rl-cm-actions {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+.rl-cm-mark.rl-cm-hot, .rl-cm-ref.rl-cm-hot {
+  outline: 2px solid var(--rl-accent-primary);
+  outline-offset: 1px;
+}
+.rl-cm-card.rl-cm-hot {
+  border-color: var(--rl-accent-primary);
+  box-shadow: -3px 0 0 var(--rl-accent-primary);
+}
+.rl-cm-warn { cursor: help; }
+.rl-comments-toggle { margin-left: 0.8rem; font-size: 0.85rem; white-space: nowrap; }
+.rl-cm-confirm { margin-left: 0.6rem; font-size: 0.8rem; }
+body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }
+body:has(#rl-comments:not(:checked)) section.rl-block { column-gap: 0; }
+body:has(#rl-comments:not(:checked)) .rl-cm-margin,
+body:has(#rl-comments:not(:checked)) .rl-cm-ref,
+body:has(#rl-comments:not(:checked)) .rl-cm-cellmark { display: none; }
+body:has(#rl-comments:not(:checked)) .rl-cm-mark {
+  background: transparent;
+  border-bottom-color: transparent;
+  color: inherit;
+}
+@media (min-width: 800px) {
+  .rl-cm-margin-label { pointer-events: none; list-style: none; }
+  .rl-cm-margin-label::-webkit-details-marker { display: none; }
+  .rl-cm-margin-label::marker { content: ""; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: none; }
+}
+#rl-cm-menu, #rl-cm-pop {
+  position: fixed;
+  /* Above the TOC sidebar (100), the file browser (120, or 180 when the
+     narrow browser is open), and the top bar (150). The edit toolbar
+     stays higher. */
+  z-index: 400;
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+#rl-cm-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--rl-text);
+  border: 2px solid transparent;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font: inherit;
+  cursor: pointer;
+}
+/* Composer. Name on top, comment full width, actions in one row at
+   the right. Tokens are the theme roles, so mocha and latte both
+   keep 4.5:1 (accent fill with the page background as the label). */
+#rl-cm-pop {
+  width: min(20rem, calc(100vw - 16px));
+  padding: 0.65rem 0.7rem 0.6rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+#rl-cm-pop-ctx { margin: 0 0 0.45rem; font-size: 0.8rem; }
+#rl-cm-pop-ctx:empty { display: none; }
+#rl-cm-pop label {
+  display: block;
+  margin: 0 0 0.45rem;
+  font-size: 0.75rem;
+  color: var(--rl-text);
+}
+#rl-cm-pop input, #rl-cm-pop textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.45rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--rl-text);
+  background: var(--rl-bg, var(--rl-bg-secondary));
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+}
+#rl-cm-pop textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+  margin: 0 0 0.55rem;
+}
+.rl-cm-pop-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+#rl-cm-pop .rl-cm-pop-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  color: var(--rl-text);
+  background: transparent;
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  padding: 0.28rem 0.55rem;
+}
+#rl-cm-pop #rl-cm-go {
+  color: var(--rl-bg);
+  background: var(--rl-accent-primary);
+  border-color: var(--rl-accent-primary);
+  font-weight: 600;
+}
+/* `display` on the buttons above beats the user-agent `[hidden]` rule.
+   This selector is at least as specific and comes later. */
+#rl-cm-menu button[hidden], #rl-cm-pop button[hidden] { display: none; }
+.rl-cm-actions button {
+  display: inline-block;
+  width: auto;
+  text-align: center;
+  background: transparent;
+  color: var(--rl-text);
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  padding: 0.1rem 0.4rem;
+}
+#rl-cm-menu button:hover, #rl-cm-menu button:focus,
+#rl-cm-pop button:hover, #rl-cm-pop button:focus,
+.rl-cm-actions button:hover, .rl-cm-actions button:focus {
+  border-color: var(--rl-cm-note-border, var(--rl-accent-secondary));
+  outline: none;
+}
+@media (pointer: coarse) {
+  #rl-cm-menu button, #rl-cm-pop button { padding: 0.55rem 0.7rem; }
+  .rl-cm-actions button { padding: 0.3rem 0.5rem; }
+}
+/* A side column does not fit. Cards drop to a drawer at the bottom of
+   the section. They stay out of the paragraph. */
+@media (max-width: 799px) {
+  body.has-cm-margin { --rl-cm-col: 0px; }
+  body.has-cm-margin section.rl-block { column-gap: 0; }
+  body.has-cm-margin section.rl-block > .rl-cm-margin {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 0.75rem;
+  }
+  .rl-cm-margin-label { pointer-events: auto; cursor: pointer; }
+  section.rl-block:has(.rl-cm-margin) ~ section.rl-block .rl-cm-margin-label { display: block; }
+}
+.rl-cm-undo {
+  position: fixed; right: 16px; bottom: 16px; z-index: 450;
+  background: var(--rl-bg-secondary, #313244); color: var(--rl-text, #cdd6f4);
+  border: 1px solid var(--rl-border, #45475a); border-radius: 8px;
+  padding: 8px 12px; font: 13px/1.3 -apple-system, system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.rl-cm-undo button { margin-left: 8px; }
+.rl-cm-undo[hidden] { display: none; }
+@media print {
+  .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; width: auto !important; }
+  .rl-cm-card.rl-cm-clamped .rl-cm-fold { max-height: none; overflow: visible; }
+  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo, .rl-cm-more, .rl-cm-link { display: none !important; }
+}

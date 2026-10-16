@@ -230,3 +230,7 @@ Each phase is shippable on its own. Docs (`docs/notebooks.md`, REPL help only if
 2. **Figure vs animation.** N is one counter for `plot-N` and `anim-N`, and the link always says "Figure". Call an animation out only if that reads wrong in practice.
 3. **No-plot right column.** This doc uses a single full-width column when the cell has no figure. The alternative is a 16rem column beside the printed output. Prefer the single column unless a real notebook wants the split.
 4. **Duplicate names.** Still last-wins, still a duplicate DOM id. A `check` warning could land later. Not required to place widgets.
+
+## Mockup
+
+`dev/plans/mockups/widget_placement/` is a static page, not a renderer. It reuses the notebook stylesheet (including the comments column) and the markdown SVG of `examples/notebooks/widgets_demo.md`. The "today" screenshot is a batch render of that notebook, not a copy of this folder.
