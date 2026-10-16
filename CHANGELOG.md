@@ -9,6 +9,21 @@ should re-validate against those entries when upgrading.
 ## 0.3.9
 
 ### Breaking / behavior changes
+- **`README.md` is a notebook.** Directory `render`, `watch`, `check`,
+  `validate`, and `clean` include `README.md` in any ASCII case
+  (`readme.md`, `Readme.md`, a nested `ch/README.md`), the same way they
+  include any other `.md` file. It is listed in the index and the file
+  browser and served at `/n/README` (or `/n/<folder>/README`). Inside one
+  folder, a README with no frontmatter `order:` sorts ahead of its
+  unordered siblings; an explicit `order:` still wins. `index.md`,
+  dotfiles, and `_` partials are unchanged. Migration: a directory render
+  into a folder that already has a hand-written `README.md` overwrites
+  that file when the source tree contains `README.md` (`make notebooks`
+  will replace the hand-written `gallery/README.md` toolbox index with
+  the render of `examples/notebooks/README.md`). Rename a notes file, or
+  put the landing-page prose in the source README, if that overwrite is
+  not what you want. A hand-written output README is left alone when the
+  source tree has no `README.md`.
 - **Directory `notebook watch` identifies a notebook by its collection path.**
   `ch2/intro.md` is `/n/ch2/intro` for the page, `/raw/ch2/intro`,
   `/save/ch2/intro`, `/annotate/ch2/intro`, `/plots/ch2/intro/`, and the

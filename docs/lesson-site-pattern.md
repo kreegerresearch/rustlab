@@ -33,7 +33,7 @@ your-course/
 │   ├── 01-topic-slug.md
 │   ├── 02-topic-slug.md
 │   ├── ...
-│   └── README.md                # editor-facing notes (skipped by the renderer)
+│   └── README.md                # optional; rendered like any other notebook
 │
 ├── lessons/                     # standalone .rlab scripts (per-lesson, optional)
 │   ├── 01-topic-slug/
@@ -43,7 +43,7 @@ your-course/
 │   └── README.md                # explains the .rlab-script convention
 │
 ├── site/                        # rendered output for GitHub display (committed)
-│   ├── README.md                # hand-written index — GitHub landing
+│   ├── README.md                # GitHub landing (kept if notebooks/ has no README.md)
 │   ├── 01-topic-slug.md         # rendered notebook with inline ![](...) SVGs
 │   ├── 02-topic-slug.md
 │   ├── plots/
@@ -67,11 +67,13 @@ your-course/
   scripts. Created on demand as scripts are authored.
 - **`site/`** — what GitHub displays and what `make notebooks`
   rebuilds. Two landing pages coexist here, one per context: the
-  hand-written `README.md` is what GitHub shows when someone clicks the
-  dir; the auto-generated `index.html` (from `make html`, gitignored)
-  is what a local browser opens. They don't conflict — GitHub doesn't
-  render `.html`, and you point your browser at `index.html` directly.
-  Everything else under `site/` is generated.
+  `README.md` is what GitHub shows when someone clicks the dir; the
+  auto-generated `index.html` (from `make html`, gitignored) is what a
+  local browser opens. They don't conflict — GitHub doesn't render
+  `.html`, and you point your browser at `index.html` directly.
+  `site/README.md` stays hand-written only when `notebooks/` has no
+  `README.md`. A source README is rendered over it. Everything else
+  under `site/` is generated.
 
 ### Naming rules
 
@@ -147,9 +149,13 @@ clean: ## Delete the interactive HTML build and .rlab script artefacts
 renders the whole batch in one call, with two niceties that fall out of
 directory mode and let us avoid per-file pattern rules:
 
-1. **The hand-written `site/README.md` is preserved.** The renderer
-   skips files named `README.md` on input and never writes one on
-   output, so the markdown landing page survives every rebuild.
+1. **A hand-written `site/README.md` survives when `notebooks/` has no
+   `README.md`.** The renderer writes one output per source notebook
+   and does not invent a README. A source `notebooks/README.md` is a
+   normal notebook, so the render writes `site/README.md` from it and
+   replaces a hand-written landing page. Keep the landing page only in
+   `site/`, or put that prose in the source README so the render is
+   the page you want.
 2. **HTML output gets a free `index.html`** with prev/next navigation
    between notebooks. Single-file mode would emit one `.html` per
    source with no entry page.
@@ -165,8 +171,8 @@ Trade-off: every `make notebooks` rebuilds all lessons (no Make
 incrementality). Release-mode rendering is fast enough that this
 doesn't matter for course-sized projects (tens of lessons). If you have
 hundreds of notebooks, switch to per-file pattern rules — but you'll
-lose the hand-written-README behaviour and the auto-generated
-`index.html`, and pay for those with extra Makefile complexity.
+lose the auto-generated `index.html`, and pay for those with extra
+Makefile complexity. A source `README.md` is rendered either way.
 
 ## .gitignore
 
@@ -246,15 +252,10 @@ print("hello, rustlab")
 ```
 EOF
 
-# Editor-facing source notes (skipped by the renderer).
-cat > notebooks/README.md <<'EOF'
-# Source notebooks
-
-Edit `<slug>.md` files here. Run `make notebooks` from the repo root
-to regenerate the rendered site/ tree.
-EOF
-
 # Hand-written landing page that GitHub displays at site/.
+# Do not also add notebooks/README.md: a directory render writes
+# site/README.md from that source and replaces this file. Put landing
+# prose here, or in notebooks/README.md if the render should own it.
 cat > site/README.md <<'EOF'
 # your-course
 

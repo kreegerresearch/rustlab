@@ -369,7 +369,10 @@ fn collect_fixtures(input: &Path) -> Result<Vec<PathBuf>, String> {
             input.display()
         ));
     }
-    // Walk recursively, collect `.md` files, skip README.md.
+    // Walk recursively and collect `.md` files, including README.md.
+    // index.md, partials, and dotfiles stay in this walk — validate lints
+    // source that listings hide. (Hidden-entry skipping lives in
+    // `list_md_files_recursive`, which this discovery does not share.)
     let mut out = Vec::new();
     let mut stack = vec![input.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -381,9 +384,7 @@ fn collect_fixtures(input: &Path) -> Result<Vec<PathBuf>, String> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().and_then(|s| s.to_str()) == Some("md")
-                && path.file_name().and_then(|s| s.to_str()) != Some("README.md")
-            {
+            } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
                 out.push(path);
             }
         }
@@ -1129,18 +1130,33 @@ mod tests {
     }
 
     #[test]
-    fn collect_fixtures_directory_skips_readme() {
+    fn collect_fixtures_directory_includes_readme() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch")).unwrap();
         std::fs::write(dir.path().join("a.md"), "x").unwrap();
         std::fs::write(dir.path().join("b.md"), "y").unwrap();
-        std::fs::write(dir.path().join("README.md"), "skip me").unwrap();
+        std::fs::write(dir.path().join("README.md"), "include me").unwrap();
+        std::fs::write(dir.path().join("ch").join("readme.md"), "nested").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "skip me too").unwrap();
         let got = collect_fixtures(dir.path()).expect("valid dir");
         let names: Vec<String> = got
             .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                p.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
-        assert_eq!(names, vec!["a.md".to_string(), "b.md".to_string()]);
+        assert_eq!(
+            names,
+            vec![
+                "README.md".to_string(),
+                "a.md".to_string(),
+                "b.md".to_string(),
+                "ch/readme.md".to_string(),
+            ]
+        );
     }
 
     // ── Regression: Bug 2 — collect_fixtures must reject a missing path
