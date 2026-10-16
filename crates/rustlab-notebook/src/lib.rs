@@ -312,8 +312,9 @@ pub fn strip_render_artifacts(source: &str) -> String {
 /// are preserved.
 ///
 /// `input` may be a single file or a directory; directories are walked
-/// recursively for `.md` files (`README.md` and hidden entries skipped),
-/// the same walk `cmd_render_dir` uses.
+/// recursively for `.md` files (`README.md` included, hidden entries
+/// skipped), the same walk `cmd_render_dir` uses before the listable
+/// filter.
 ///
 /// When `output` is `None`, files are cleaned in place. When `output` is
 /// `Some(out)`:
@@ -494,8 +495,9 @@ pub fn cmd_clean(input: PathBuf, output: Option<PathBuf>, check: bool) -> usize 
     changed
 }
 
-/// Recursively walk `dir`, collecting every `.md` file. Skips `README.md`
-/// to match the renderer's "project metadata, not a notebook" rule.
+/// Recursively walk `dir`, collecting every `.md` file, including
+/// `README.md` in any case. `index.md` and `_` partials are collected
+/// here too; [`is_listable_notebook`] drops those from listings.
 ///
 /// Symlinks are not followed. A symlink file or directory is skipped
 /// with a warning. A regular file is canonicalised and kept only when
@@ -537,10 +539,7 @@ pub fn list_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
             }
             if ft.is_dir() {
                 stack.push(p);
-            } else if ft.is_file()
-                && p.extension().map_or(false, |e| e == "md")
-                && p.file_name().map_or(true, |n| n != "README.md")
-            {
+            } else if ft.is_file() && p.extension().map_or(false, |e| e == "md") {
                 match std::fs::canonicalize(&p) {
                     Ok(canon) if canon.starts_with(&root) => out.push(p),
                     Ok(canon) => {
@@ -954,7 +953,7 @@ pub fn cmd_render_dir(
 
     if md_files.is_empty() && index_md_path.is_none() {
         eprintln!(
-            "warning: no notebooks found in {} (README.md, index.md and _partials are not listable)",
+            "warning: no notebooks found in {} (index.md and _partials are not listable)",
             dir.display()
         );
         return Ok(());
@@ -2125,7 +2124,9 @@ fn escape_html(s: &str) -> String {
 /// `validate` still lint everything, because a partial is real source that
 /// gets transcluded and can be just as broken.
 ///
-/// - `README.md` is metadata for the directory itself.
+/// `README.md` (any ASCII case, at any depth) is an ordinary notebook and
+/// is listed. The exclusions are:
+///
 /// - `index.md` becomes the index page's own body, not an entry on it.
 /// - `_name.md`, or anything under a `_dir/`, is a partial meant to be
 ///   transcluded. The embed expander reads it straight off disk, so hiding it
@@ -2151,21 +2152,34 @@ pub fn is_listable_notebook(rel: &Path) -> bool {
         return false;
     }
     match rel.file_name().map(|n| n.to_string_lossy().into_owned()) {
-        Some(name) => name != "README.md" && name != "index.md",
+        Some(name) => name != "index.md",
         None => false,
     }
 }
 
-/// Listing order for a notebook collection: explicit frontmatter `order:`
-/// first (ascending, ties broken by filename), then unordered notebooks by
-/// filename.
-///
-/// Shared by the static directory render and the dev server. They used to
-/// sort independently — the server ignored `order:` entirely — so `watch`
-/// could present a different lesson sequence, and different prev/next links,
-/// than the built output. That is the worst place for the two to disagree,
-/// because the built output is what ships and the served one is what gets
-/// proof-read.
+/// `README.md` in any ASCII case (`readme.md`, `Readme.MD`, …).
+fn is_readme_md(name: &str) -> bool {
+    name.eq_ignore_ascii_case("readme.md")
+}
+
+/// Collection-relative path order. Inside one directory, `README.md`
+/// (any case) sorts before its siblings; other paths stay in byte order.
+/// Cross-directory order is the full relative path, so a nested README
+/// does not jump ahead of files in an earlier folder.
+fn rel_path_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (dir_a, file_a) = a.rsplit_once('/').unwrap_or(("", a));
+    let (dir_b, file_b) = b.rsplit_once('/').unwrap_or(("", b));
+    if dir_a == dir_b {
+        match (is_readme_md(file_a), is_readme_md(file_b)) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.cmp(b),
+        }
+    } else {
+        a.cmp(b)
+    }
+}
+
 /// The directory part of a `/`-joined collection-relative path
 /// (`"ch1/notes.md"` → `"ch1"`, `"notes.md"` → `""`).
 pub(crate) fn rel_dir_of(rel: &str) -> String {
@@ -2186,15 +2200,23 @@ pub(crate) fn href_between(from_rel_dir: &str, target_rel: &str) -> String {
     format!("{}{}", "../".repeat(ups), target_rel)
 }
 
+/// Listing order for a notebook collection: explicit frontmatter `order:`
+/// first (ascending), then unordered notebooks. Ties and the unordered
+/// group use [`rel_path_cmp`]: byte order of the collection-relative
+/// path, with `README.md` (any case) first among files in the same folder.
+///
+/// Shared by the static directory render and the dev server so `watch`
+/// cannot present a different lesson sequence, or different prev/next
+/// links, than the built output.
 pub fn compare_notebook_order(
     a: (Option<i64>, &str),
     b: (Option<i64>, &str),
 ) -> std::cmp::Ordering {
     match (a.0, b.0) {
-        (Some(x), Some(y)) => x.cmp(&y).then_with(|| a.1.cmp(b.1)),
+        (Some(x), Some(y)) => x.cmp(&y).then_with(|| rel_path_cmp(a.1, b.1)),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.1.cmp(b.1),
+        (None, None) => rel_path_cmp(a.1, b.1),
     }
 }
 
@@ -2229,8 +2251,12 @@ mod tests {
         let page = std::fs::read_to_string(out.path().join("ch2/filters.html")).unwrap();
         assert_eq!(
             file_browser::path_texts(&index),
-            vec!["filters.md".to_string(), "intro.md".to_string()],
-            "unordered notebooks sort by path, then group into folders"
+            vec![
+                "README.md".to_string(),
+                "filters.md".to_string(),
+                "intro.md".to_string()
+            ],
+            "README sorts first in its folder; other unordered notebooks follow path order"
         );
         assert_eq!(
             file_browser::path_texts(&page),
@@ -2243,7 +2269,8 @@ mod tests {
         );
         assert!(page.contains("<details class=\"fb-folder\" open data-path=\"ch2\">"));
         assert!(page.contains("aria-current=\"page\""));
-        assert!(!index.contains("fb-name\">README.md"));
+        assert!(index.contains("fb-name\">README.md"));
+        assert!(out.path().join("README.html").is_file());
         assert!(!index.contains("_setup.md"));
         assert!(!index.contains("fb-name\">.hidden.md"));
         assert!(!index.contains("fb-name\">index.md"));
@@ -2301,6 +2328,26 @@ mod tests {
             Less
         );
         assert_eq!(compare_notebook_order((None, "a.md"), (None, "b.md")), Less);
+        // Same folder: README (any case) before other unordered siblings.
+        assert_eq!(
+            compare_notebook_order((None, "ch1/readme.md"), (None, "ch1/aaa.md")),
+            Less
+        );
+        assert_eq!(
+            compare_notebook_order((None, "ch1/zzz.md"), (None, "ch1/README.MD")),
+            Greater
+        );
+        // Different folders stay in path order. A nested README does not
+        // leap ahead of a root file whose path sorts first.
+        assert_eq!(
+            compare_notebook_order((None, "aaa.md"), (None, "ch1/README.md")),
+            Less
+        );
+        // Explicit order still beats an unordered README.
+        assert_eq!(
+            compare_notebook_order((Some(1), "zzz.md"), (None, "README.md")),
+            Less
+        );
     }
 
     #[test]
@@ -2308,8 +2355,12 @@ mod tests {
         use std::path::Path;
         assert!(is_listable_notebook(Path::new("lesson.md")));
         assert!(is_listable_notebook(Path::new("ch1/lesson.md")));
-        // Special names, at any depth of the *filename* position.
-        assert!(!is_listable_notebook(Path::new("README.md")));
+        // README is a notebook in any ASCII case, including nested.
+        assert!(is_listable_notebook(Path::new("README.md")));
+        assert!(is_listable_notebook(Path::new("readme.md")));
+        assert!(is_listable_notebook(Path::new("Readme.MD")));
+        assert!(is_listable_notebook(Path::new("ch1/README.md")));
+        // index.md is the index page, at any depth of the filename.
         assert!(!is_listable_notebook(Path::new("index.md")));
         assert!(!is_listable_notebook(Path::new("ch1/index.md")));
         // Partials: the underscore rule checks EVERY component — the
@@ -2358,6 +2409,75 @@ mod tests {
         let found = list_md_files_recursive(dir.path());
         assert_eq!(found.len(), 1, "hidden entries leaked: {found:?}");
         assert!(found[0].ends_with("real.md"));
+    }
+
+    #[test]
+    fn recursive_walk_includes_readme_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ch")).unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "# R\n").unwrap();
+        // Different directory so this stays a second file on a
+        // case-insensitive filesystem.
+        std::fs::write(dir.path().join("notes").join("readme.md"), "# r\n").unwrap();
+        std::fs::write(dir.path().join("ch").join("Readme.md"), "# C\n").unwrap();
+        std::fs::write(dir.path().join("index.md"), "# I\n").unwrap();
+        std::fs::write(dir.path().join("_setup.md"), "# S\n").unwrap();
+        let found = list_md_files_recursive(dir.path());
+        let mut names: Vec<String> = found
+            .iter()
+            .map(|p| {
+                p.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "README.md".to_string(),
+                "_setup.md".to_string(),
+                "ch/Readme.md".to_string(),
+                "index.md".to_string(),
+                "notes/readme.md".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn examples_notebooks_readme_renders_in_a_directory() {
+        // The repo's source README is prose (no ```rustlab fences). A
+        // directory render must still emit it as a page, next to real
+        // notebooks, without failing the batch.
+        let dir = tempfile::tempdir().unwrap();
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/notebooks/README.md"
+        ));
+        std::fs::write(dir.path().join("README.md"), src).unwrap();
+        std::fs::write(dir.path().join("other.md"), "# Other\n").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            dir.path().to_path_buf(),
+            Some(out.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .expect("examples/notebooks/README.md renders");
+        let html = std::fs::read_to_string(out.path().join("README.html")).unwrap();
+        assert!(
+            html.contains("Notebook sources"),
+            "rendered README missing its heading"
+        );
+        assert!(out.path().join("other.html").is_file());
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert_eq!(
+            file_browser::path_texts(&index),
+            vec!["README.md".to_string(), "other.md".to_string()]
+        );
     }
 
     #[test]
@@ -3655,11 +3775,10 @@ More.\n";
         let header_then_demo = format!("{}\n\n# X\n", GENERATED_HEADER);
         std::fs::write(&a, &header_then_demo).unwrap();
         std::fs::write(&b, &header_then_demo).unwrap();
-        // README.md must be excluded (matches list_notebooks behaviour).
         std::fs::write(dir.path().join("README.md"), &header_then_demo).unwrap();
 
         let changed = cmd_clean(dir.path().to_path_buf(), None, false);
-        assert_eq!(changed, 2, "two .md under the tree, README excluded");
+        assert_eq!(changed, 3, "every .md under the tree, including README");
 
         assert!(!std::fs::read_to_string(&a)
             .unwrap()
@@ -3667,8 +3786,7 @@ More.\n";
         assert!(!std::fs::read_to_string(&b)
             .unwrap()
             .contains(GENERATED_HEADER));
-        // README untouched.
-        assert!(std::fs::read_to_string(dir.path().join("README.md"))
+        assert!(!std::fs::read_to_string(dir.path().join("README.md"))
             .unwrap()
             .contains(GENERATED_HEADER));
     }

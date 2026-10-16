@@ -16,9 +16,9 @@ rustlab/
 │   ├── laplacian.md
 │   ├── vector_fields.md
 │   ├── ...
-│   └── README.md            # this file (skipped by the renderer)
+│   └── README.md            # this file (a notebook; directory renders include it)
 └── gallery/                 # all rendered output (top-level for discoverability)
-    ├── README.md            # gallery index page (committed)
+    ├── README.md            # markdown render of this file
     ├── contour_plots.md     # rendered Markdown — committed
     ├── contour_plots.html   # rendered HTML       — gitignored
     ├── ...
@@ -97,9 +97,9 @@ sidecar files. See `docs/notebooks.md` for the full design rationale.
    ```
 3. Run `make notebooks` to render and verify.
 4. Commit the source `.md` plus the regenerated `gallery/<name>.md`
-   and any new files under `gallery/plots/<name>/`. Add a row for the
-   notebook to `gallery/README.md`. (`gallery/<name>.html` stays
-   gitignored.)
+   and any new files under `gallery/plots/<name>/`.
+   (`gallery/<name>.html` stays gitignored. `gallery/README.md` is the
+   markdown render of this file, not a separate hand-written index.)
 
 ## Why this split
 

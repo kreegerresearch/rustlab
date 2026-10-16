@@ -206,7 +206,7 @@ rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O ja
 Behaviour:
 
 - **A single `.md` serves one notebook; a directory serves every
-  `.md` under it** (recursive, `README.md` skipped) behind a
+  `.md` under it** (recursive, including `README.md`) behind a
   generated index page at `/`. In a directory, each notebook lives at
   `/n/<relative-path>` with the `.md` stripped (`ch2/filters.md` →
   `/n/ch2/filters`). The same path is the notebook's identity for
@@ -520,7 +520,7 @@ spot. The exit code reflects the *post-fix* state.
 
 ```
 rustlab-notebook clean note.md           # in-place: strip generated header + output sentinels
-rustlab-notebook clean notebooks/        # recursive over every .md (README.md skipped)
+rustlab-notebook clean notebooks/        # recursive over every .md (README.md included; hidden entries skipped)
 rustlab-notebook clean note.md --check   # exit 1 if anything would change; no write
 rustlab-notebook clean note.md -o out.md # write cleaned copy elsewhere; source untouched
 ```
@@ -1802,8 +1802,9 @@ rustlab-notebook render notebooks/ --title "Lab"  # custom index page title
 This produces one output file per `.md` file plus an `index.html` linking
 to all notebooks (HTML format only). The walk is **recursive**, with the
 same listing rule as `watch`: nested notebooks (`ch1/deep.md`) render to
-mirrored output subdirectories (`ch1/deep.html`) and appear on the index;
-`README.md`, `index.md`, and partials (`_name.md`, or anything under a
+mirrored output subdirectories (`ch1/deep.html`) and appear on the index.
+`README.md` (any case, at any depth) is an ordinary notebook and is
+rendered. `index.md` and partials (`_name.md`, or anything under a
 `_dir/`) are read where needed but never rendered as pages. Each notebook
 gets its own independent evaluator — variables do not leak between
 notebooks.
@@ -1828,7 +1829,10 @@ wins):
 
 Entries are sorted by frontmatter `order:` ascending (see Frontmatter
 above), with the collection-relative path as a tiebreaker; entries
-without `order:` sort after those that have one. `watch` uses the same
+without `order:` sort after those that have one. Inside one folder, a
+`README.md` (any ASCII case) with no `order:` sorts ahead of its
+unordered siblings. An explicit `order:` still wins, and a README in
+another folder does not jump the path order. `watch` uses the same
 rule, so the served listing and the built one cannot disagree.
 
 ### Cross-notebook links
@@ -1907,9 +1911,10 @@ disclosure starts open; closing it shrinks the column. Every folder
 starts closed, except the folders that contain the notebook on this
 page, so that file stays visible. The index has no current notebook, so
 every folder starts closed there. Clicking a folder summary opens or
-closes only that folder. The open notebook is marked. Listing rules match the index (no `README.md`,
-`index.md`, `_` partials, or dotfiles), and the row order matches
-frontmatter `order` then path. Single-file `render` / `watch` has no
+closes only that folder. The open notebook is marked. Listing rules match the index (`README.md` included;
+no `index.md`, `_` partials, or dotfiles), and the row order matches
+frontmatter `order` then path, with `README.md` first among unordered
+files in its folder. Single-file `render` / `watch` has no
 file browser. LaTeX and PDF do not.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same

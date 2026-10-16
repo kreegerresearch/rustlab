@@ -448,13 +448,12 @@ fn collect_embed_targets(source: &str, src: &Path, root_dir: &Path) -> HashSet<P
 /// watcher renders as a page of its own.
 ///
 /// Same listing rule as `cmd_render_dir` and the watch server
-/// ([`crate::is_listable_notebook`]) — this used to filter only
-/// `README.md`, so `--obsidian` mode kept rendering partials and
-/// `index.md` as peers of real notebooks after the other two surfaces
-/// stopped. One exception: the root `index.md` stays renderable here,
-/// because in `--obsidian` mode it produces the vault home page and a
-/// save of it must re-render like any notebook. Partial saves still
-/// re-render their dependents via the embed graph.
+/// ([`crate::is_listable_notebook`]), so `README.md` renders and
+/// partials / nested `index.md` do not. One exception: the root
+/// `index.md` stays renderable here, because in `--obsidian` mode it
+/// produces the vault home page and a save of it must re-render like
+/// any notebook. Partial saves still re-render their dependents via
+/// the embed graph.
 fn is_renderable_watch_source(p: &Path, root: &Path, out_exclude: Option<&Path>) -> bool {
     // Never treat our own output as a source: an output dir nested inside
     // the watched tree plus a format that writes .md would list run 1's
@@ -966,7 +965,9 @@ mod tests {
         assert!(ok("/w/ch1/lesson.md"));
         // Nested index files are not hoisted anywhere — not renderable.
         assert!(!ok("/w/ch1/index.md"));
-        assert!(!ok("/w/README.md"));
+        assert!(ok("/w/README.md"));
+        assert!(ok("/w/readme.md"));
+        assert!(ok("/w/ch1/README.md"));
         assert!(!ok("/w/_setup.md"));
         assert!(!ok("/w/_shared/x.md"));
         assert!(!ok("/w/.#lesson.md"));
@@ -990,15 +991,19 @@ mod tests {
     }
 
     #[test]
-    fn compute_render_set_skips_readme_md_to_match_startup() {
+    fn compute_render_set_includes_readme_md_to_match_startup() {
         let g = DependencyGraph::default();
         let root = PathBuf::from("/n");
         let readme = root.join("README.md");
 
         let mut changed = HashSet::new();
-        changed.insert(readme);
+        changed.insert(readme.clone());
         let render = compute_render_set(&changed, &root, &g, None);
-        assert!(render.is_empty(), "README.md must not be rendered (mirrors list_notebooks)");
+        assert_eq!(
+            render,
+            vec![readme],
+            "README.md is a notebook and must render (mirrors list_notebooks)"
+        );
     }
 
     #[test]

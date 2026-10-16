@@ -9,8 +9,10 @@
 #   gallery/index.html            # gitignored — generated HTML index
 #
 # Sources stay at examples/notebooks/. Generated files never mix with
-# sources. gallery/README.md is a hand-written index that GitHub displays
-# when someone clicks the gallery dir; the renderer leaves it alone.
+# sources. examples/notebooks/README.md is a notebook, so the markdown
+# render writes gallery/README.md from it. The copy committed today is
+# still the hand-written toolbox index; the next `make notebooks` replaces
+# that index with the rendered source README.
 #
 # Run from the repo root via `make notebooks`.
 

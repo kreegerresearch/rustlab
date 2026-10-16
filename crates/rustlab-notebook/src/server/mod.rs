@@ -208,7 +208,7 @@ fn build_state(
             .collect();
         if files.is_empty() {
             anyhow::bail!(
-                "no listable notebooks in {} (README.md, index.md, dotfiles and _partials are hidden from listings)",
+                "no listable notebooks in {} (index.md, dotfiles and _partials are hidden from listings)",
                 canonical_input.display()
             );
         }
@@ -1331,8 +1331,8 @@ mod tests {
                 "{name} row shows the full path"
             );
             assert!(
-                !html.contains("fb-name\">README.md"),
-                "{name} listed README"
+                html.contains("fb-name\">README.md"),
+                "{name} omitted README"
             );
             assert!(
                 !html.contains("fb-name\">index.md"),
@@ -1354,7 +1354,11 @@ mod tests {
         );
         assert_eq!(
             crate::file_browser::path_texts(&index),
-            vec!["intro.md".to_string(), "filters.md".to_string()]
+            vec![
+                "intro.md".to_string(),
+                "README.md".to_string(),
+                "filters.md".to_string()
+            ]
         );
         assert!(
             !index.contains("<details class=\"fb-folder\" open"),
@@ -1544,8 +1548,8 @@ mod tests {
         // The PR's stated invariant: `watch` may not present a different
         // collection — different entries or a different sequence — than
         // the built output. One fixture, both listings, must be equal.
-        // Exercises order: frontmatter, nesting, and partial/index/README
-        // filtering in one pass.
+        // Exercises order: frontmatter, nesting, README inclusion, and
+        // partial/index filtering in one pass.
         let theme: &'static _ = Theme::Dark.colors();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("ch1")).unwrap();
@@ -1606,8 +1610,8 @@ mod tests {
         );
         assert_eq!(
             served,
-            vec!["Z First", "A Unordered", "Deep"],
-            "order: frontmatter first, then rel path; partials/index/README hidden"
+            vec!["Z First", "Repo readme", "A Unordered", "Deep"],
+            "order: frontmatter first, then README within its folder, then rel path; partials/index hidden"
         );
         // The nested notebook was actually emitted by the static build.
         assert!(
