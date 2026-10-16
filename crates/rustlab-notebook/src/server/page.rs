@@ -94,7 +94,8 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button[hidden] {{ display: none; }}
   body {{ --rl-pane-w: min(760px, max(360px, 42vw)); }}
   /* A comment column needs the pane narrower, or the fixed pane paints
-     over the margin. The column stays 18rem; the pane gives up width. */
+     over the margin. The column starts at 14rem and can be dragged;
+     the pane gives up width. */
   body.has-cm-margin {{ --rl-pane-w: min(560px, max(280px, 32vw)); }}
   #rl-source-pane {{
     position: fixed; top: 0; right: 0; height: 100vh;

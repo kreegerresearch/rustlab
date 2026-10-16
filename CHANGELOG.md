@@ -222,6 +222,14 @@ should re-validate against those entries when upgrading.
   `sortrows`, `summary`, `addvars` / `removevars` / `renamevars`,
   nested tables, categoricals, datetimes, `readtable` / `writetable`
   / `table2array`, and `T(rows)` with one subscript (`T(rows, :)`).
+- **The notebook comment column is narrower, and the reader can resize it.**
+  HTML and `notebook watch` reserve 14rem (`--rl-cm-col`) beside the
+  prose. A handle on the column's left edge drags the width with the
+  pointer or the arrow keys, from 10rem to 40% of the viewport.
+  Double-click restores 14rem. The width is kept in `localStorage`
+  for that browser. Collapse leaves a strip of the numbered markers.
+  Under 800px the cards are still the drawer at the bottom of the
+  section, and turning Comments off still drops the column.
 - **Notebook highlights and comments.** Prose `==highlight==` and
   `%%comment%%` (optional `#cN`, `re #cN`, `@name`, and a date) render
   as `<mark>` and margin notes in HTML, JSON, and `notebook watch`.

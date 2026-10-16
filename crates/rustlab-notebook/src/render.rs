@@ -1616,9 +1616,12 @@ document.addEventListener('click', (e) => {{
         }
     }
     if comment_mode.show || comment_mode.toggle.is_some() {
+        // The sizer is outside <main> and before its script, so the
+        // script sees it and a live reload of <main> does not drop it.
+        let sizer = crate::comments::column_sizer_html();
         let script = crate::comments::margin_script(nonce);
         if let Some(i) = page.rfind("</body>") {
-            page.insert_str(i, &script);
+            page.insert_str(i, &format!("{sizer}\n{script}"));
         }
     }
     if comment_mode.annotate {
