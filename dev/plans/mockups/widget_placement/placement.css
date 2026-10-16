@@ -1,0 +1,113 @@
+/* Proposed placement only. notebook.css is the extracted notebook stylesheet. */
+html.light {
+    color-scheme: light;
+    --topbar-h: 2.6rem;
+    --rl-bg: #eff1f5;
+    --rl-bg-secondary: #e6e9ef;
+    --rl-text: #4c4f69;
+    --rl-text-dim: #56586a;
+    --rl-border: #ccd0da;
+    --rl-border-subtle: #bcc0cc;
+    --rl-accent-primary: #7113ec;
+    --rl-accent-secondary: #094dd3;
+    --rl-accent-tertiary: #12747a;
+    --rl-code-bg: #dce0e8;
+    --rl-output-bg: #e6e9ef;
+    --rl-inline-code-bg: #ccd0da;
+    --rl-error-bg: #fce4e4;
+    --rl-error-text: #c60e36;
+    --rl-plot-bg: #eff1f5;
+    --rl-plot-grid: rgba(100,100,120,0.2);
+    --rl-syn-keyword: #802cee;
+    --rl-syn-function: #0a55ea;
+    --rl-syn-number: #ad4001;
+    --rl-syn-string: #2d711e;
+    --rl-syn-comment: #5e6376;
+    --rl-syn-operator: #116e74;
+    --rl-footer-text: #686d82;
+    --rl-cm-mark-bg: #ebd8bf;
+    --rl-cm-note-bg: #e6e9ef;
+    --rl-cm-note-border: #094dd3;
+    --rl-accent: var(--rl-accent-primary, #7113ec);
+  }
+
+.rl-drive {
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr);
+  gap: 0.75rem 1rem;
+  align-items: start;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--rl-border, #313244);
+  border-radius: 8px;
+  background: var(--rl-bg-secondary, #181825);
+}
+.rl-drive-controls .rl-widget {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  margin: 0 0 0.7rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.rl-drive-controls .rl-widget:last-of-type {
+  margin-bottom: 0;
+}
+.rl-drive-controls .rl-widget-label {
+  white-space: normal;
+}
+.rl-drive-controls .rl-widget-input[type="range"] {
+  width: 100%;
+}
+.rl-drive-controls .rl-widget-options {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.rl-drive-plot .plot-container {
+  height: auto;
+  margin-top: 0;
+  overflow: hidden;
+  background: var(--rl-plot-bg, var(--rl-bg));
+}
+.rl-drive-plot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.rl-drive-note {
+  margin: 0.75rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: var(--rl-text-dim, #a6adc8);
+}
+.rl-drive.is-batch .rl-widget {
+  opacity: 0.72;
+}
+.rl-widget-bar .rl-widget {
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.rl-widget-drives {
+  margin: 0 0 0.75rem;
+  padding: 0 0.9rem 0.55rem;
+  border: 1px solid var(--rl-border, #313244);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: var(--rl-bg-secondary, #181825);
+  font-size: 0.82rem;
+}
+.rl-widget-drives a {
+  color: var(--rl-accent-secondary, #89b4fa);
+  text-decoration: none;
+}
+.rl-widget-drives a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 799px) {
+  .rl-drive {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
