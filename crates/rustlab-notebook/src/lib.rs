@@ -3776,13 +3776,14 @@ More.\n";
 
         cmd_strip(dir.path().to_path_buf(), None, true).unwrap();
 
-        let cleaned = std::fs::read_to_string(&chapter).unwrap();
-        assert_eq!(cleaned, "See keep.\n\n```rustlab\na == b\n```\n");
-        assert_eq!(std::fs::read_to_string(&outside_md).unwrap(), src);
+        let cleaned = "See keep.\n\n```rustlab\na == b\n```\n";
+        assert_eq!(std::fs::read_to_string(&chapter).unwrap(), cleaned);
+        // README.md is a notebook, so a directory strip cleans it too.
         assert_eq!(
             std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
-            src
+            cleaned
         );
+        assert_eq!(std::fs::read_to_string(&outside_md).unwrap(), src);
         assert!(dir
             .path()
             .join("link.md")

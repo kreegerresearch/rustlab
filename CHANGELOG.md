@@ -10,7 +10,7 @@ should re-validate against those entries when upgrading.
 
 ### Breaking / behavior changes
 - **`README.md` is a notebook.** Directory `render`, `watch`, `check`,
-  `validate`, and `clean` include `README.md` in any ASCII case
+  `validate`, `clean`, and `strip` include `README.md` in any ASCII case
   (`readme.md`, `Readme.md`, a nested `ch/README.md`), the same way they
   include any other `.md` file. It is listed in the index and the file
   browser and served at `/n/README` (or `/n/<folder>/README`). Inside one
