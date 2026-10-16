@@ -2734,11 +2734,12 @@ p:has(> .rl-cm-ref-block:only-child) { margin: 0.2rem 0; }
 /* Right margin column inside each section. The prose shrinks so the
    column stays, including a directory page (`body.has-files`) with the
    file browser and the TOC. Cards are never in the paragraph. With
-   scripting off they stack in this column in document order. */
-body.has-cm-margin { --rl-cm-col: 18rem; }
+   scripting off they stack in this column in document order. 14rem is
+   the default; a reader drag writes an inline width on `body`. */
+body.has-cm-margin { --rl-cm-col: 14rem; }
 body.has-cm-margin section.rl-block {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--rl-cm-col, 18rem);
+  grid-template-columns: minmax(0, 1fr) var(--rl-cm-col, 14rem);
   column-gap: 1rem;
   align-items: start;
 }
@@ -2830,7 +2831,25 @@ body.has-cm-margin section.rl-block > :not(.rl-cm-margin) {
 .rl-cm-warn { cursor: help; }
 .rl-comments-toggle { margin-left: 0.8rem; font-size: 0.85rem; white-space: nowrap; }
 .rl-cm-confirm { margin-left: 0.6rem; font-size: 0.8rem; }
-body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }
+/* `!important` beats a dragged inline width on body. The collapsed
+   strip is only the wide layout, and it is declared first so this
+   rule still wins when Comments is unchecked. */
+@media (min-width: 800px) {
+  body.has-cm-margin.rl-cm-collapsed { --rl-cm-col: 2.5rem !important; }
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-fold,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-meta,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-actions,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-more,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-link,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-margin-label,
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-reply { display: none; }
+  body.has-cm-margin.rl-cm-collapsed .rl-cm-card {
+    padding: 0.2rem 0.15rem;
+    text-align: center;
+  }
+}
+body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px !important; }
+body:has(#rl-comments:not(:checked)) #rl-cm-sizer { display: none !important; }
 body:has(#rl-comments:not(:checked)) section.rl-block { column-gap: 0; }
 body:has(#rl-comments:not(:checked)) .rl-cm-margin,
 body:has(#rl-comments:not(:checked)) .rl-cm-ref,
@@ -2955,10 +2974,68 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
   #rl-cm-menu button, #rl-cm-pop button { padding: 0.55rem 0.7rem; }
   .rl-cm-actions button { padding: 0.3rem 0.5rem; }
 }
+/* Drag handle on the column's left edge, in the 1rem gap, so it does
+   not cover the prose or a widget in column 1. The box is fixed; the
+   script parks it on the aside. */
+#rl-cm-sizer {
+  position: fixed;
+  top: var(--topbar-h, 2.6rem);
+  bottom: 0;
+  width: 12px;
+  z-index: 160;
+  pointer-events: none;
+}
+#rl-cm-sizer[hidden] { display: none; }
+#rl-cm-collapse, #rl-cm-resize { pointer-events: auto; }
+#rl-cm-collapse {
+  position: absolute;
+  top: 0.35rem;
+  left: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rl-cm-note-border, var(--rl-accent-secondary));
+  border-radius: 4px;
+  background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
+  color: var(--rl-text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+#rl-cm-collapse:focus-visible {
+  outline: 2px solid var(--rl-accent-primary);
+  outline-offset: 1px;
+}
+#rl-cm-resize {
+  position: absolute;
+  top: 1.9rem;
+  bottom: 0;
+  left: 0;
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+#rl-cm-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  width: 2px;
+  background: var(--rl-cm-note-border, var(--rl-accent-secondary));
+}
+#rl-cm-resize:hover::after, #rl-cm-resize:focus-visible::after {
+  background: var(--rl-accent-primary);
+}
+#rl-cm-resize:focus-visible { outline: none; }
 /* A side column does not fit. Cards drop to a drawer at the bottom of
-   the section. They stay out of the paragraph. */
+   the section. They stay out of the paragraph. `!important` drops a
+   dragged width. The collapsed strip does not apply here. */
 @media (max-width: 799px) {
-  body.has-cm-margin { --rl-cm-col: 0px; }
+  body.has-cm-margin { --rl-cm-col: 0px !important; }
+  #rl-cm-sizer { display: none !important; }
   body.has-cm-margin section.rl-block { column-gap: 0; }
   body.has-cm-margin section.rl-block > .rl-cm-margin {
     grid-column: 1;
@@ -2980,7 +3057,7 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 @media print {
   .rl-cm-card { position: static !important; top: auto !important; left: auto !important; right: auto !important; width: auto !important; }
   .rl-cm-card.rl-cm-clamped .rl-cm-fold { max-height: none; overflow: visible; }
-  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo, .rl-cm-more, .rl-cm-link { display: none !important; }
+  .rl-comments-toggle, #rl-cm-menu, #rl-cm-pop, .rl-cm-confirm, .rl-cm-actions, .rl-cm-undo, .rl-cm-more, .rl-cm-link, #rl-cm-sizer { display: none !important; }
 }
 "#
 }
@@ -3036,6 +3113,16 @@ pub(crate) fn toggle_script(nonce: Option<&str>) -> String {
 }})();
 </script>"#
     )
+}
+
+/// Handle and collapse control for the margin column. Lives outside
+/// `<main>` so a live reload keeps it. Hidden until the placement
+/// script finds a margin aside on a wide viewport.
+pub(crate) fn column_sizer_html() -> &'static str {
+    r#"<div id="rl-cm-sizer" hidden>
+<button type="button" id="rl-cm-collapse" aria-pressed="false" aria-label="Collapse comments">‹</button>
+<div id="rl-cm-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Comments column width" aria-valuemin="160" aria-valuemax="640" aria-valuenow="224"></div>
+</div>"#
 }
 
 /// Align each card with its marker in one full-width column. Cards
@@ -3114,6 +3201,7 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
     var box = document.getElementById('rl-comments');
     if (!cards.length || mq.matches || (box && !box.checked)) {
       clearPos(cards);
+      placeSizer();
       return;
     }
     var gap = 8;
@@ -3156,6 +3244,161 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       }
       var mh = bottom ? (bottom + 'px') : '';
       if (asideEl.style.minHeight !== mh) asideEl.style.minHeight = mh;
+    }
+    placeSizer();
+  }
+  function rootPx() {
+    var fs = parseFloat(window.getComputedStyle(document.documentElement).fontSize);
+    return fs > 0 ? fs : 16;
+  }
+  function bounds() {
+    var rem = rootPx();
+    var min = 10 * rem;
+    var max = window.innerWidth * 0.4;
+    if (!(max > min)) max = min;
+    return { min: min, max: max, def: 14 * rem };
+  }
+  function collapsed() {
+    return document.body.classList.contains('rl-cm-collapsed');
+  }
+  function currentWidth() {
+    var col = parseFloat(document.body.style.getPropertyValue('--rl-cm-col'));
+    if (col > 0) return col;
+    var aside = document.querySelector('.rl-cm-margin');
+    var w = aside ? aside.getBoundingClientRect().width : 0;
+    if (w > 0) return w;
+    return bounds().def;
+  }
+  function applyWidth(px, persist) {
+    var b = bounds();
+    if (px < b.min) px = b.min;
+    if (px > b.max) px = b.max;
+    px = Math.round(px);
+    document.body.style.setProperty('--rl-cm-col', px + 'px');
+    var sep = document.getElementById('rl-cm-resize');
+    if (sep) {
+      sep.setAttribute('aria-valuemin', String(Math.round(b.min)));
+      sep.setAttribute('aria-valuemax', String(Math.round(b.max)));
+      sep.setAttribute('aria-valuenow', String(px));
+    }
+    if (persist) {
+      try { localStorage.setItem('rl-cm-col-px', String(px)); } catch (e) {}
+    }
+    return px;
+  }
+  function clearWidth() {
+    document.body.style.removeProperty('--rl-cm-col');
+    try { localStorage.removeItem('rl-cm-col-px'); } catch (e) {}
+    var sep = document.getElementById('rl-cm-resize');
+    if (sep) {
+      var b = bounds();
+      sep.setAttribute('aria-valuemin', String(Math.round(b.min)));
+      sep.setAttribute('aria-valuemax', String(Math.round(b.max)));
+      sep.setAttribute('aria-valuenow', String(Math.round(b.def)));
+    }
+  }
+  function setCollapsed(on, persist) {
+    document.body.classList.toggle('rl-cm-collapsed', !!on);
+    var btn = document.getElementById('rl-cm-collapse');
+    if (btn) {
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.setAttribute('aria-label', on ? 'Expand comments' : 'Collapse comments');
+      btn.textContent = on ? '\u203a' : '\u2039';
+    }
+    if (persist) {
+      try {
+        if (on) localStorage.setItem('rl-cm-collapsed', '1');
+        else localStorage.removeItem('rl-cm-collapsed');
+      } catch (e) {}
+    }
+  }
+  function placeSizer() {
+    var sizer = document.getElementById('rl-cm-sizer');
+    if (!sizer) return;
+    var box = document.getElementById('rl-comments');
+    var aside = document.querySelector('.rl-cm-margin');
+    if (mq.matches || !aside || (box && !box.checked)) {
+      sizer.hidden = true;
+      return;
+    }
+    sizer.hidden = false;
+    sizer.style.left = (aside.getBoundingClientRect().left - 6) + 'px';
+  }
+  function restoreColumn() {
+    var saved = null;
+    var fold = false;
+    try {
+      saved = localStorage.getItem('rl-cm-col-px');
+      fold = localStorage.getItem('rl-cm-collapsed') === '1';
+    } catch (e) {}
+    if (saved != null) {
+      var n = parseFloat(saved);
+      if (n > 0) applyWidth(n, false);
+    }
+    setCollapsed(fold, false);
+  }
+  function bindSizer() {
+    var sep = document.getElementById('rl-cm-resize');
+    var btn = document.getElementById('rl-cm-collapse');
+    if (sep && !sep.getAttribute('data-cm-bound')) {
+      sep.setAttribute('data-cm-bound', '1');
+      var drag = null;
+      sep.addEventListener('pointerdown', function (ev) {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        var aside = document.querySelector('.rl-cm-margin');
+        var startWidth = collapsed()
+          ? (aside ? aside.getBoundingClientRect().width : bounds().def)
+          : currentWidth();
+        drag = { x: ev.clientX, w: startWidth, fromCollapsed: collapsed() };
+        try { sep.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+      sep.addEventListener('pointermove', function (ev) {
+        if (!drag) return;
+        if (drag.fromCollapsed) {
+          setCollapsed(false, true);
+          drag.fromCollapsed = false;
+        }
+        applyWidth(drag.w + (drag.x - ev.clientX), false);
+        schedule();
+      });
+      function endDrag(ev) {
+        if (!drag) return;
+        drag = null;
+        var n = parseFloat(document.body.style.getPropertyValue('--rl-cm-col'));
+        if (n > 0) applyWidth(n, true);
+        try { sep.releasePointerCapture(ev.pointerId); } catch (e) {}
+        schedule();
+      }
+      sep.addEventListener('pointerup', endDrag);
+      sep.addEventListener('pointercancel', endDrag);
+      sep.addEventListener('keydown', function (ev) {
+        var step = null;
+        if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') step = 16;
+        else if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') step = -16;
+        else if (ev.key === 'Home') step = 'min';
+        else if (ev.key === 'End') step = 'max';
+        if (step == null) return;
+        ev.preventDefault();
+        if (collapsed()) setCollapsed(false, true);
+        var b = bounds();
+        var cur = currentWidth();
+        var next = step === 'min' ? b.min : step === 'max' ? b.max : cur + step;
+        applyWidth(next, true);
+        schedule();
+      });
+      sep.addEventListener('dblclick', function () {
+        setCollapsed(false, true);
+        clearWidth();
+        schedule();
+      });
+    }
+    if (btn && !btn.getAttribute('data-cm-bound')) {
+      btn.setAttribute('data-cm-bound', '1');
+      btn.addEventListener('click', function () {
+        setCollapsed(!collapsed(), true);
+        schedule();
+      });
     }
   }
   function hot(id, on) {
@@ -3213,6 +3456,8 @@ pub(crate) fn margin_script(nonce: Option<&str>) -> String {
       placeNotes();
     });
   }
+  restoreColumn();
+  bindSizer();
   schedule();
   window.addEventListener('resize', schedule);
   window.addEventListener('load', schedule);
@@ -4654,6 +4899,46 @@ mod tests {
         assert_eq!(strip_source("%%#c9: only%%\nNext\n"), "Next\n");
     }
 
+    /// The bytes `POST /annotate` writes: a bound highlight with an id,
+    /// author, and date; a bare comment; a multi-line block note; and a
+    /// cell note above the directive stack. Fences stay byte-for-byte,
+    /// including `==` and `%%` inside them.
+    #[test]
+    fn strip_removes_annotate_syntax_and_leaves_fences() {
+        let fence = "```rustlab\na == b\ndisp(\"x %% y\")\n```\n";
+        let tilde = "~~~text\n==keep==\nx %% y\n~~~\n";
+        let src = format!(
+            "The quick ==brown== %%#c1 @ada 2026-10-16: first note%% fox.\n\
+             \n\
+             %%#c2: a bare comment%%\n\
+             \n\
+             ==cutoff==\n\
+             %%\n\
+             #c3 @ada 2026-10-16: multi\n\
+             line note\n\
+             %%\n\
+             \n\
+             %%#c4 @ada 2026-10-16: on the cell%%\n\
+             <!-- hide -->\n\
+             {fence}\n\
+             {tilde}"
+        );
+        let got = strip_source(&src);
+        assert!(got.contains("The quick brown fox."), "{got}");
+        assert!(got.contains("cutoff"), "{got}");
+        assert!(!got.contains("#c1"), "{got}");
+        assert!(!got.contains("first note"), "{got}");
+        assert!(!got.contains("bare comment"), "{got}");
+        assert!(!got.contains("line note"), "{got}");
+        assert!(!got.contains("on the cell"), "{got}");
+        assert!(got.contains("<!-- hide -->"), "{got}");
+        let fence_at = src.find(fence).unwrap();
+        assert_eq!(&src[fence_at..fence_at + fence.len()], fence);
+        assert!(got.contains(fence), "{got}");
+        assert!(got.contains(tilde), "{got}");
+        assert_eq!(got.matches(fence).count(), 1);
+    }
+
     #[test]
     fn strip_and_rewrite_leave_code_math_and_strings() {
         let src = concat!(
@@ -5304,7 +5589,8 @@ mod tests {
             "directory layout still has the file browser"
         );
         let css = comment_css();
-        assert!(css.contains("body.has-cm-margin { --rl-cm-col: 18rem; }"));
+        assert!(css.contains("body.has-cm-margin { --rl-cm-col: 14rem; }"));
+        assert!(css.contains("var(--rl-cm-col, 14rem)"));
         assert!(
             css.contains("body.has-cm-margin section.rl-block"),
             "every section, including body.has-files, keeps the column"
@@ -5313,7 +5599,9 @@ mod tests {
             !css.contains("body:not(.has-files)"),
             "the file browser must not drop the margin column"
         );
-        assert!(css.contains("body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px; }"));
+        assert!(css.contains(
+            "body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px !important; }"
+        ));
         assert!(css.contains(
             "body:has(#rl-comments:not(:checked)) .rl-cm-margin,\nbody:has(#rl-comments:not(:checked)) .rl-cm-ref,"
         ));
@@ -5324,6 +5612,14 @@ mod tests {
         let narrow = &css[narrow_at..print_at];
         assert!(narrow.contains("grid-column: 1;"), "{narrow}");
         assert!(narrow.contains("grid-row: auto;"), "{narrow}");
+        assert!(
+            narrow.contains("--rl-cm-col: 0px !important;"),
+            "a dragged width must not keep the column on a narrow screen: {narrow}"
+        );
+        assert!(
+            !narrow.contains("rl-cm-collapsed"),
+            "the number strip is the wide layout only: {narrow}"
+        );
         assert!(
             !narrow.contains("display: inline-block") && !css.contains(".rl-cm-note {\n    float:"),
             "narrow layout must not put the card back in the paragraph: {narrow}"
@@ -5361,6 +5657,66 @@ mod tests {
             "placement must not start below the Comments label"
         );
         assert!(page(&blocks).contains("max-width: 799px"));
+    }
+
+    /// The column starts at 14rem. A separator outside `<main>` drags it,
+    /// arrow keys move it, a double-click clears it, and the width is
+    /// kept in localStorage. Collapse is a wide-layout strip. Batch HTML
+    /// and the watch page share this markup.
+    #[test]
+    fn comment_column_width_is_adjustable() {
+        let html = column_sizer_html();
+        assert!(html.contains("id=\"rl-cm-resize\""));
+        assert!(html.contains("role=\"separator\""));
+        assert!(html.contains("tabindex=\"0\""));
+        assert!(html.contains("aria-orientation=\"vertical\""));
+        assert!(html.contains("aria-valuemin=\"160\""));
+        assert!(html.contains("id=\"rl-cm-collapse\""));
+        assert!(
+            !html.contains(" on"),
+            "the handle has no inline handler: {html}"
+        );
+        let page = page(&[md_block(
+            "See ==x== %%#c1 @ada 2026-10-09: readable in the margin%%.",
+        )]);
+        let main_end = page.find("</main>").expect("main");
+        let sizer_at = page.find("id=\"rl-cm-sizer\"").expect("sizer");
+        assert!(sizer_at > main_end, "the handle survives a main swap");
+        let script_at = page.find("rl-cm-col-px").expect("width key");
+        assert!(script_at > sizer_at, "the script runs after the handle");
+        let js = margin_script(None);
+        assert!(js.contains("localStorage"));
+        assert!(js.contains("rl-cm-col-px"));
+        assert!(js.contains("rl-cm-collapsed"));
+        assert!(js.contains("dblclick"));
+        assert!(js.contains("ArrowLeft"));
+        assert!(js.contains("ArrowRight"));
+        assert!(js.contains("Home"));
+        assert!(js.contains("End"));
+        assert!(js.contains("10 * rem"));
+        assert!(js.contains("innerWidth * 0.4"));
+        assert!(js.contains("document.body.style.setProperty('--rl-cm-col'"));
+        assert!(js.contains("removeProperty('--rl-cm-col')"));
+        assert!(
+            !js.contains("documentElement.style.setProperty('--rl-cm-col'"),
+            "the width is set on body, where the column custom property lives"
+        );
+        let css = comment_css();
+        assert!(css.contains(
+            "body.has-cm-margin.rl-cm-collapsed { --rl-cm-col: 2.5rem !important; }"
+        ));
+        assert!(css.contains("#rl-cm-resize"));
+        assert!(css.contains("cursor: col-resize"));
+        assert!(css.contains("touch-action: none"));
+        assert!(css.contains("z-index: 160"));
+        let wide = css.find("body.has-cm-margin.rl-cm-collapsed").expect("strip");
+        let narrow_at = css.find("@media (max-width: 799px)").expect("narrow");
+        assert!(wide < narrow_at, "the strip rule is not the narrow drawer");
+        let print = css.find("@media print").expect("print");
+        assert!(css[print..].contains("#rl-cm-sizer"));
+        assert!(css.contains(
+            "body:has(#rl-comments:not(:checked)) #rl-cm-sizer { display: none !important; }"
+        ));
     }
 
     #[test]

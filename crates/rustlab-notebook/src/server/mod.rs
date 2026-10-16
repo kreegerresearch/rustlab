@@ -728,9 +728,15 @@ pub(super) fn render_for_server_cancellable(
     // be relative to the original cwd.
     let _cwd_guard = crate::CwdGuard::new();
 
-    let source =
+    let raw =
         std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
-    let source = crate::strip_render_artifacts(&source);
+    // Parse and execute the authored notebook. A rendered copy still
+    // carries the generated header and output sentinels; those are not
+    // part of the script. Annotate hashes and splices the bytes on disk,
+    // so the page hash and `data-src-*` offsets stay on `raw`. Hashing
+    // the stripped text made every comment on a rendered file answer
+    // 409 ("This notebook changed") and shifted deletes off the real spans.
+    let source = crate::strip_render_artifacts(&raw);
 
     // Canonicalize the host directory before the chdir so the embed expander
     // resolves siblings against the correct absolute location.
@@ -799,7 +805,7 @@ pub(super) fn render_for_server_cancellable(
     // the page. Only annotate sessions need those offsets.
     let _file = page
         .annotate
-        .then(|| crate::comments::install_file_source(&source));
+        .then(|| crate::comments::install_file_source(&raw));
     let html = render::render_html_nonced(
         &title, &rendered, &plot_dir, &plot_href, theme, nav, link, page.nonce,
     );
@@ -809,7 +815,7 @@ pub(super) fn render_for_server_cancellable(
     // internal slug from `location.pathname`.
     let html = stamp_rl_slug(&html, slug);
     let html = if page.annotate {
-        stamp_source_hash(&html, &source)
+        stamp_source_hash(&html, &raw)
     } else {
         html
     };
@@ -2533,5 +2539,165 @@ mod tests {
         let (st, loc) = get_redirect(&app, "/n/missing").await;
         assert_eq!(st, axum::http::StatusCode::NOT_FOUND);
         assert!(loc.is_none());
+    }
+
+    /// A rendered `.md` still has the generated header. The page hash and
+    /// comment offsets have to be those file bytes: annotate compares
+    /// `If-Match` and `expect` to the raw file, not to the text left after
+    /// `strip_render_artifacts`.
+    #[tokio::test]
+    async fn annotate_on_rendered_markdown_uses_the_file_on_disk() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let fence = "```rustlab\na == b\n```\n";
+        let body = format!(
+            "{header}\n\n# Rendered\n\nThe quick brown fox jumps over the lazy dog.\n\n%%#c1 @ada 2026-10-16: already here%%\n\n{fence}",
+            header = crate::GENERATED_HEADER,
+        );
+        std::fs::write(dir.path().join("rendered.md"), &body).unwrap();
+        let canon = std::fs::canonicalize(dir.path()).unwrap();
+        let state = build_state(
+            &canon,
+            true,
+            theme,
+            false,
+            true,
+            true,
+            "testnonce".into(),
+            None,
+        )
+        .unwrap();
+        let app = serve_test(state);
+        let page = get_body(&app, "/n/rendered").await;
+
+        let raw_hash = crate::comments::sha256_hex(body.as_bytes());
+        let stripped = crate::strip_render_artifacts(&body);
+        let stripped_hash = crate::comments::sha256_hex(stripped.as_bytes());
+        assert_ne!(raw_hash, stripped_hash, "fixture did not contain a header");
+        let meta_key = "name=\"rl-source-sha256\" content=\"";
+        let meta_at = page.find(meta_key).expect("source hash meta");
+        let meta_rest = &page[meta_at + meta_key.len()..];
+        let meta = &meta_rest[..meta_rest.find('"').unwrap()];
+        assert_eq!(meta, raw_hash, "page hash is not the file annotate writes");
+
+        let card_at = page.find("data-cm-id=\"c1\"").expect("comment card");
+        let card = &page[card_at..];
+        let attr = |name: &str| {
+            let key = format!("{name}=\"");
+            let i = card
+                .find(&key)
+                .unwrap_or_else(|| panic!("missing {name} in {card}"));
+            let rest = &card[i + key.len()..];
+            rest[..rest.find('"').unwrap()].to_string()
+        };
+        let start: usize = attr("data-src-start").parse().unwrap();
+        let end: usize = attr("data-src-end").parse().unwrap();
+        let expect = attr("data-cm-expect");
+        assert_eq!(
+            &body[start..end],
+            expect,
+            "comment offsets are not raw-file offsets"
+        );
+        assert!(expect.contains("already here"), "{expect}");
+        let para = body.find("The quick").unwrap();
+        assert!(
+            page.contains(&format!("data-src-start=\"{para}\"")),
+            "prose offsets ignore the generated header"
+        );
+
+        let (st, msg) = post_full(
+            &app,
+            "/annotate/rendered",
+            "application/json",
+            &[("If-Match", stripped_hash.as_str())],
+            r#"{"op":"insert","target":"prose","start":0,"end":3,"text":"The","comment":"no"}"#,
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::CONFLICT, "{msg}");
+        assert!(msg.contains("source changed"), "{msg}");
+        assert_eq!(
+            std::fs::read_to_string(canon.join("rendered.md")).unwrap(),
+            body
+        );
+
+        let delete = serde_json::json!({
+            "op": "delete",
+            "target": "prose",
+            "start": start,
+            "end": end,
+            "expect": expect,
+            "id": "c1",
+        })
+        .to_string();
+        let (st, msg) = post_full(
+            &app,
+            "/annotate/rendered",
+            "application/json",
+            &[("If-Match", raw_hash.as_str())],
+            &delete,
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::OK, "{msg}");
+        let after_delete = std::fs::read_to_string(canon.join("rendered.md")).unwrap();
+        assert!(!after_delete.contains("already here"), "{after_delete}");
+        assert!(after_delete.contains(fence), "{after_delete}");
+        assert!(after_delete.contains(crate::GENERATED_HEADER));
+        let hash = serde_json::from_str::<serde_json::Value>(&msg).unwrap()["sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(hash, crate::comments::sha256_hex(after_delete.as_bytes()));
+
+        let lazy = after_delete.find("lazy").unwrap();
+        let insert = serde_json::json!({
+            "op": "insert",
+            "target": "prose",
+            "start": lazy,
+            "end": lazy + "lazy".len(),
+            "text": "lazy",
+            "comment": "second note",
+        })
+        .to_string();
+        let (st, msg) = post_full(
+            &app,
+            "/annotate/rendered",
+            "application/json",
+            &[("If-Match", hash.as_str())],
+            &insert,
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::OK, "{msg}");
+        let noted = std::fs::read_to_string(canon.join("rendered.md")).unwrap();
+        assert!(noted.contains("second note"), "{noted}");
+        assert!(noted.contains("==lazy=="), "{noted}");
+        assert!(noted.contains(fence), "{noted}");
+        let hash = serde_json::from_str::<serde_json::Value>(&msg).unwrap()["sha256"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let dog = noted.find("dog").unwrap();
+        let again = serde_json::json!({
+            "op": "insert",
+            "target": "prose",
+            "start": dog,
+            "end": dog + "dog".len(),
+            "text": "dog",
+            "comment": "after the delete",
+        })
+        .to_string();
+        let (st, msg) = post_full(
+            &app,
+            "/annotate/rendered",
+            "application/json",
+            &[("If-Match", hash.as_str())],
+            &again,
+        )
+        .await;
+        assert_eq!(st, axum::http::StatusCode::OK, "{msg}");
+        let final_src = std::fs::read_to_string(canon.join("rendered.md")).unwrap();
+        assert!(final_src.contains("after the delete"), "{final_src}");
+        assert!(final_src.contains(fence), "{final_src}");
+        assert_eq!(final_src.matches("a == b").count(), 1);
     }
 }

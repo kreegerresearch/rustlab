@@ -682,7 +682,8 @@ rustlab-notebook render analysis.md -f markdown      # → analysis.md + plots/a
 rustlab-notebook render analysis.md -f latex         # → analysis.tex + plots/analysis/*.svg
 rustlab-notebook render notebooks/ -o build/         # render all → *.html + index.html
 rustlab-notebook watch ~/obsidian-vault --obsidian   # live render in Obsidian (see docs/notebooks.md)
-rustlab-notebook clean note.md                       # strip rendered artifacts back to source
+rustlab-notebook clean note.md                       # strip rendered artifacts back to source (in place)
+rustlab-notebook strip note.md --in-place            # unwrap highlights and delete %% comments
 ```
 
 **Obsidian users:** see [`docs/notebooks.md` § Quick Start — Obsidian

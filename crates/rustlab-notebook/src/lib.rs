@@ -1405,10 +1405,21 @@ pub fn set_markdown_comment_style(name: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// What a terminal sees when `strip` writes stdout and leaves the file.
+/// `clean` is the other command; it removes rendered artifacts, not comments.
+fn strip_stdout_notice(path: &Path) -> String {
+    format!(
+        "rustlab-notebook strip: wrote cleaned Markdown to stdout; {} was not modified. \
+         Pass --in-place to rewrite the file, or -o <PATH> to write a copy.",
+        path.display()
+    )
+}
+
 /// Drop every well-formed `%%` and unwrap `==` to its text. Code fences,
 /// inline code, and math are left byte-for-byte. Does not execute the
 /// notebook. A directory needs `-o` or `--in-place`. A single file with
-/// neither flag is written to stdout.
+/// neither flag is written to stdout. On a terminal, that path also
+/// prints [`strip_stdout_notice`] so the unchanged file is not a surprise.
 pub fn cmd_strip(input: PathBuf, output: Option<PathBuf>, in_place: bool) -> Result<(), String> {
     if output.is_some() && in_place {
         return Err("--output and --in-place cannot be combined".into());
@@ -1431,6 +1442,13 @@ pub fn cmd_strip(input: PathBuf, output: Option<PathBuf>, in_place: bool) -> Res
             .map_err(|e| format!("cannot read {}: {e}", src.display()))?;
         let stripped = comments::strip_source(&original);
         if !input.is_dir() && output.is_none() && !in_place {
+            // A pipe (`strip note.md > clean.md`) is the documented stdout
+            // path and stays quiet. A terminal gets the same bytes plus a
+            // note that the input file itself did not change — `clean` is
+            // in-place, and this command is not.
+            if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+                eprintln!("{}", strip_stdout_notice(src));
+            }
             print!("{stripped}");
             continue;
         }
@@ -3610,6 +3628,67 @@ More.\n";
             cleaned,
             "See keep.\n\n```rustlab\na == b\ns = \"x %% y\"\n```\n"
         );
+    }
+
+    #[test]
+    fn strip_stdout_notice_says_the_file_was_not_modified() {
+        let msg = strip_stdout_notice(Path::new("note.md"));
+        assert!(msg.contains("note.md"), "{msg}");
+        assert!(msg.contains("was not modified"), "{msg}");
+        assert!(msg.contains("--in-place"), "{msg}");
+        assert!(msg.contains("-o"), "{msg}");
+    }
+
+    #[test]
+    fn cmd_strip_in_place_rewrites_nested_files_and_skips_symlinks() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let nested = dir.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let chapter = nested.join("chapter.md");
+        let src = "See ==keep== %%#c1 @ada 2026-10-16: gone%%.\n\n```rustlab\na == b\n```\n";
+        std::fs::write(&chapter, src).unwrap();
+        std::fs::write(dir.path().join("README.md"), src).unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let outside_md = outside.path().join("outside.md");
+        std::fs::write(&outside_md, src).unwrap();
+        std::os::unix::fs::symlink(&outside_md, dir.path().join("link.md")).unwrap();
+        std::os::unix::fs::symlink(&chapter, nested.join("linked.md")).unwrap();
+
+        cmd_strip(dir.path().to_path_buf(), None, true).unwrap();
+
+        let cleaned = std::fs::read_to_string(&chapter).unwrap();
+        assert_eq!(cleaned, "See keep.\n\n```rustlab\na == b\n```\n");
+        assert_eq!(std::fs::read_to_string(&outside_md).unwrap(), src);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("README.md")).unwrap(),
+            src
+        );
+        assert!(dir
+            .path()
+            .join("link.md")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(nested
+            .join("linked.md")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn cmd_strip_refuses_a_symlink_argument() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let real = dir.path().join("real.md");
+        let src = "==keep== %%gone%%\n";
+        std::fs::write(&real, src).unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = cmd_strip(link, None, true).unwrap_err();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), src);
     }
 
     #[test]

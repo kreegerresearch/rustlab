@@ -49,7 +49,8 @@ stay byte-identical to what you'd commit to a repo.
 | Prose-only edits skip code execution | Per-block cache: prose change → zero execution, mid-notebook code edit → only that block + downstream re-execute (state restored from snapshot). In-memory, per watcher session. |
 | Stop the runaway-loop family of bugs | Self-write suppression, in-place auto-cleanup of generated header/iframe, hashed plot filenames so Obsidian doesn't show stale images. |
 | Add `.md` notebooks while the watcher is running | They get picked up on first save, no restart needed. |
-| Strip everything rustlab added and recover the source | `rustlab-notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Strip rendered artifacts and recover the source | `rustlab-notebook clean <path>` (in place). Removes the generated header and output sentinels. It leaves `==` highlights and `%%` comments. See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Remove highlights and comments | `rustlab-notebook strip <path> --in-place`. Without `--in-place` or `-o`, cleaned Markdown goes to stdout and the file is not modified. |
 | Render to standalone HTML / PDF / LaTeX too | `rustlab-notebook render` with `-f html`/`-f pdf`/`-f latex`. |
 
 ### When to use which layout
@@ -65,7 +66,9 @@ stay byte-identical to what you'd commit to a repo.
 
 If anything seems wrong — stale plot, weird duplication, runaway
 re-rendering — try `rustlab-notebook clean <path>` on the affected
-file to scrub it back to source, then restart the watcher.
+file to scrub rendered artifacts back to source, then restart the
+watcher. `clean` does not remove `%%` comments. To drop those, and to
+unwrap `==` highlights, run `rustlab-notebook strip <path> --in-place`.
 
 ---
 
@@ -1284,10 +1287,15 @@ gutter of that paragraph or cell. The card header is the number,
 tooltip, not printed text. Replies are indented inside the parent
 card. Edit and Delete are one compact row.
 
-When comments are shown, each section reserves an 18rem column
-(`--rl-cm-col`, 288px) beside the prose. A directory page with the
-file browser and the contents sidebar keeps that column and shrinks
-the prose to make room. Cards are one full-width column. A small
+When comments are shown, each section reserves a 14rem column
+(`--rl-cm-col`, 224px at the default font size) beside the prose. A
+handle on the column's left edge drags that width, from 10rem up to
+40% of the viewport. Arrow keys move it by 16px, Home and End jump to
+the ends, and a double-click restores 14rem. The width is kept in
+`localStorage` for that browser (`rl-cm-col-px`). Collapse leaves a
+2.5rem strip of the numbered markers (`rl-cm-collapsed`). A directory
+page with the file browser and the contents sidebar keeps that column
+and shrinks the prose to make room. Cards are one full-width column. A small
 script stacks them: the first card whose marker is on a line sits
 level with that line, and the others on that line stack under it. A
 later card starts at its own marker, or below the previous card when
@@ -1301,12 +1309,14 @@ source pane narrows that pane and shifts the page, so the pane does
 not cover the comment column. Hovering or focusing either the marker
 or the card emphasizes both. With scripting off, the cards stay in
 that column in document order, at full height. Unchecking **Comments** sets the column width to zero
-and hides the cards and the markers, so the prose takes the width
-back. The choice is stored in `sessionStorage` for that tab
-(`rl-comments-visible`). `--no-comments` on static HTML omits the
-marks, so there is no column. A viewport under 800px cannot fit the
-column: the cards move to a Comments drawer at the bottom of the
-section. They stay out of the paragraph. The note colors come from
+and hides the cards, the markers, and the resize handle, so the prose
+takes the width back. The choice is stored in `sessionStorage` for
+that tab (`rl-comments-visible`). `--no-comments` on static HTML omits
+the marks, so there is no column. A viewport under 800px cannot fit
+the column: the cards move to a Comments drawer at the bottom of the
+section, and a dragged or collapsed width is ignored. They stay out
+of the paragraph. The handle sits in the gap, so it does not cover the prose or a
+widget in that column. The note colors come from
 the active Catppuccin theme (`--rl-cm-mark-bg`, `--rl-cm-note-bg`,
 `--rl-cm-note-border`) and stay readable on all four palettes.
 
@@ -1329,10 +1339,15 @@ sentence's punctuation. The right margin is widened to 2.15in so the
 `--no-comments` on markdown unwraps `==` and deletes `%%`, including
 a reply and a cell comment, and tidies the space or blank line the
 note left behind. `rustlab-notebook strip` does that same cleanup and
-writes GitHub-ready Markdown (stdout, `-o`, or `--in-place`; a
-directory needs `-o` or `--in-place`). It does not rewrite a code
-fence, and it does not follow a symlink: a symlinked input is refused,
-and a symlink inside a directory is skipped.
+writes GitHub-ready Markdown. A single file with neither `-o` nor
+`--in-place` is printed to stdout and left unchanged on disk (a
+terminal also says so). Pass `--in-place` to rewrite the file, or
+`-o <PATH>` to write a copy. A directory needs one of those two; there
+is no dry-run flag. It does not rewrite a code fence, and it does not
+follow a symlink: a symlinked input is refused, and a symlink inside a
+directory is skipped. `clean` is a different command: it strips the
+generated header and output sentinels, in place by default, and it
+leaves comments in the file.
 
 `--comments-style` is markdown-only. `keep` (the default) leaves `==`
 and `%%`. `footnotes` turns each note into a GitHub footnote (`[^c1]`)

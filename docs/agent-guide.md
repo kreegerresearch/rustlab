@@ -194,7 +194,8 @@ rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + 
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042
 rustlab-notebook check note.md                  # lint (exit 2 errors / 1 warnings / 0 clean)
-rustlab-notebook clean note.md                  # strip generated output sentinels from source
+rustlab-notebook clean note.md                  # strip generated header and output sentinels (in place)
+rustlab-notebook strip note.md --in-place       # unwrap ==highlights== and delete %%comments%%
 ```
 
 Authoring features an agent should use (full reference: [`docs/notebooks.md`](notebooks.md)):

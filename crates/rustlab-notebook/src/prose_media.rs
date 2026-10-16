@@ -320,6 +320,11 @@ fn latex_escape(s: &str) -> String {
 }
 
 fn is_img_open(html: &str, i: usize) -> bool {
+    // Callers walk bytes. A multibyte character (the em dash in the
+    // generated-header comment) is not a slice boundary.
+    if !html.is_char_boundary(i) {
+        return false;
+    }
     let rest = &html[i..];
     let bytes = rest.as_bytes();
     if bytes.first() != Some(&b'<') {
@@ -670,6 +675,13 @@ mod tests {
         assert!(fenced.is_empty(), "{fenced:?}");
         let code = svg_prose_image_dests("see `![x](eval.svg)` please\n");
         assert!(code.is_empty(), "{code:?}");
+    }
+
+    #[test]
+    fn svg_scan_of_the_generated_header_does_not_panic() {
+        let md = format!("{}\n\n# Notes\n\nSee this.\n", crate::GENERATED_HEADER);
+        assert!(svg_prose_image_dests(&md).is_empty());
+        assert!(!introduces_svg_prose_image(&md, &md));
     }
 
     #[test]
