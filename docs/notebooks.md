@@ -49,7 +49,8 @@ stay byte-identical to what you'd commit to a repo.
 | Prose-only edits skip code execution | Per-block cache: prose change → zero execution, mid-notebook code edit → only that block + downstream re-execute (state restored from snapshot). In-memory, per watcher session. |
 | Stop the runaway-loop family of bugs | Self-write suppression, in-place auto-cleanup of generated header/iframe, hashed plot filenames so Obsidian doesn't show stale images. |
 | Add `.md` notebooks while the watcher is running | They get picked up on first save, no restart needed. |
-| Strip everything rustlab added and recover the source | `rustlab-notebook clean <path>` (in place). See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Strip rendered artifacts and recover the source | `rustlab-notebook clean <path>` (in place). Removes the generated header and output sentinels. It leaves `==` highlights and `%%` comments. See [`notebook clean`](#notebook-clean--strip-rendered-artifacts) below. |
+| Remove highlights and comments | `rustlab-notebook strip <path> --in-place`. Without `--in-place` or `-o`, cleaned Markdown goes to stdout and the file is not modified. |
 | Render to standalone HTML / PDF / LaTeX too | `rustlab-notebook render` with `-f html`/`-f pdf`/`-f latex`. |
 
 ### When to use which layout
@@ -65,7 +66,9 @@ stay byte-identical to what you'd commit to a repo.
 
 If anything seems wrong — stale plot, weird duplication, runaway
 re-rendering — try `rustlab-notebook clean <path>` on the affected
-file to scrub it back to source, then restart the watcher.
+file to scrub rendered artifacts back to source, then restart the
+watcher. `clean` does not remove `%%` comments. To drop those, and to
+unwrap `==` highlights, run `rustlab-notebook strip <path> --in-place`.
 
 ---
 
@@ -1329,10 +1332,15 @@ sentence's punctuation. The right margin is widened to 2.15in so the
 `--no-comments` on markdown unwraps `==` and deletes `%%`, including
 a reply and a cell comment, and tidies the space or blank line the
 note left behind. `rustlab-notebook strip` does that same cleanup and
-writes GitHub-ready Markdown (stdout, `-o`, or `--in-place`; a
-directory needs `-o` or `--in-place`). It does not rewrite a code
-fence, and it does not follow a symlink: a symlinked input is refused,
-and a symlink inside a directory is skipped.
+writes GitHub-ready Markdown. A single file with neither `-o` nor
+`--in-place` is printed to stdout and left unchanged on disk (a
+terminal also says so). Pass `--in-place` to rewrite the file, or
+`-o <PATH>` to write a copy. A directory needs one of those two; there
+is no dry-run flag. It does not rewrite a code fence, and it does not
+follow a symlink: a symlinked input is refused, and a symlink inside a
+directory is skipped. `clean` is a different command: it strips the
+generated header and output sentinels, in place by default, and it
+leaves comments in the file.
 
 `--comments-style` is markdown-only. `keep` (the default) leaves `==`
 and `%%`. `footnotes` turns each note into a GitHub footnote (`[^c1]`)

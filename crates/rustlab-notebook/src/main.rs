@@ -220,10 +220,14 @@ enum Command {
         long_about = "Unwrap ==highlights== and delete %%comments%% from notebook Markdown.\n\n\
             The notebook is not executed. Fenced code, inline code, and math are copied\n\
             unchanged, so `a == b` and a string containing %% stay literal.\n\n\
+            A file is not modified unless you pass --in-place or -o. With neither flag,\n\
+            cleaned Markdown is written to stdout (and a terminal is told the file was\n\
+            left unchanged). This is not `clean`: `clean` removes the generated header\n\
+            and output sentinels, and it leaves %% comments in the file.\n\n\
             Examples:\n  \
             rustlab-notebook strip note.md                 # cleaned Markdown on stdout\n  \
             rustlab-notebook strip note.md -o clean.md\n  \
-            rustlab-notebook strip note.md --in-place\n  \
+            rustlab-notebook strip note.md --in-place      # rewrite note.md\n  \
             rustlab-notebook strip notebooks/ -o out/      # directory needs -o or --in-place"
     )]
     Strip {

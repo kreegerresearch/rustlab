@@ -4654,6 +4654,46 @@ mod tests {
         assert_eq!(strip_source("%%#c9: only%%\nNext\n"), "Next\n");
     }
 
+    /// The bytes `POST /annotate` writes: a bound highlight with an id,
+    /// author, and date; a bare comment; a multi-line block note; and a
+    /// cell note above the directive stack. Fences stay byte-for-byte,
+    /// including `==` and `%%` inside them.
+    #[test]
+    fn strip_removes_annotate_syntax_and_leaves_fences() {
+        let fence = "```rustlab\na == b\ndisp(\"x %% y\")\n```\n";
+        let tilde = "~~~text\n==keep==\nx %% y\n~~~\n";
+        let src = format!(
+            "The quick ==brown== %%#c1 @ada 2026-10-16: first note%% fox.\n\
+             \n\
+             %%#c2: a bare comment%%\n\
+             \n\
+             ==cutoff==\n\
+             %%\n\
+             #c3 @ada 2026-10-16: multi\n\
+             line note\n\
+             %%\n\
+             \n\
+             %%#c4 @ada 2026-10-16: on the cell%%\n\
+             <!-- hide -->\n\
+             {fence}\n\
+             {tilde}"
+        );
+        let got = strip_source(&src);
+        assert!(got.contains("The quick brown fox."), "{got}");
+        assert!(got.contains("cutoff"), "{got}");
+        assert!(!got.contains("#c1"), "{got}");
+        assert!(!got.contains("first note"), "{got}");
+        assert!(!got.contains("bare comment"), "{got}");
+        assert!(!got.contains("line note"), "{got}");
+        assert!(!got.contains("on the cell"), "{got}");
+        assert!(got.contains("<!-- hide -->"), "{got}");
+        let fence_at = src.find(fence).unwrap();
+        assert_eq!(&src[fence_at..fence_at + fence.len()], fence);
+        assert!(got.contains(fence), "{got}");
+        assert!(got.contains(tilde), "{got}");
+        assert_eq!(got.matches(fence).count(), 1);
+    }
+
     #[test]
     fn strip_and_rewrite_leave_code_math_and_strings() {
         let src = concat!(
