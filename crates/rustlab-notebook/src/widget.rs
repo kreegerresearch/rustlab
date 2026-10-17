@@ -1,15 +1,18 @@
 //! Interactive notebook widgets — declaration parsing and value coercion.
 //!
 //! A `rustlab-widget` fenced code block carries a small TOML body declaring
-//! one control (Phase 1: `slider` only). The declaration is parsed here into
-//! a [`WidgetDecl`]; the notebook executor seeds a value table from each
-//! widget's declared default, and the `widget(name)` rlab builtin reads the
-//! current value back. The interactive server overlays live values (slider
-//! drags) and validates them through [`WidgetDecl::coerce`].
+//! one control (`slider`, `number`, or `option`). The declaration is parsed
+//! here into a [`WidgetDecl`]; the notebook executor seeds a value table
+//! from each widget's declared default, and the `widget(name)` rlab builtin
+//! reads the current value back. The interactive server overlays live values
+//! and validates them through [`WidgetDecl::coerce`].
 //!
-//! See `dev/plans/notebook_interactive_widgets.md`. Phase 1 ships `slider`;
-//! `option` and `number` are reserved for Phase 2 and currently parse-error
-//! with a clear "not supported yet" message.
+//! A slider may set `run = "release"` so the watch page sends the value when
+//! the thumb is released. Omitted or `"live"` keeps the drag path. `run` on
+//! a number or option is an error. Unknown keys are rejected.
+//!
+//! See `dev/plans/notebook_interactive_widgets.md` and
+//! `dev/plans/notebook_widget_placement.md`.
 
 use rustlab_script::WidgetValue;
 use serde::Deserialize;
@@ -22,6 +25,18 @@ pub struct WidgetDecl {
     /// Human label shown next to the control. Falls back to `name` when absent.
     pub label: Option<String>,
     pub kind: WidgetKind,
+    /// When the watch page sends a slider change. Number and option are
+    /// always [`WidgetRun::Live`]; `run` on those types is a parse error.
+    pub run: WidgetRun,
+}
+
+/// When a slider reports its value to the watch server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WidgetRun {
+    /// Send while dragging (`input`, 50 ms debounce). The default.
+    Live,
+    /// Update the readout while dragging; send on thumb release (`change`).
+    Release,
 }
 
 /// The control type and its type-specific parameters.
@@ -106,6 +121,7 @@ impl WidgetDecl {
 /// Raw TOML shape; the union of every widget type's keys. Validated into a
 /// typed [`WidgetDecl`] by [`parse_widget`].
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawWidget {
     name: Option<String>,
     #[serde(rename = "type")]
@@ -120,6 +136,8 @@ struct RawWidget {
     default: Option<toml::Value>,
     choices: Option<Vec<String>>,
     label: Option<String>,
+    /// Slider only. `"live"` (default) or `"release"`.
+    run: Option<String>,
 }
 
 /// Coerce a TOML scalar (integer or float) to f64. Returns `None` for
@@ -151,6 +169,21 @@ pub fn parse_widget(toml_src: &str) -> Result<WidgetDecl, String> {
         .kind
         .as_deref()
         .ok_or_else(|| format!("widget '{name}' requires a `type` (e.g. type = \"slider\")"))?;
+
+    let run = match (kind, raw.run.as_deref()) {
+        (_, None) | ("slider", Some("live")) => WidgetRun::Live,
+        ("slider", Some("release")) => WidgetRun::Release,
+        ("slider", Some(other)) => {
+            return Err(format!(
+                "slider '{name}': `run` must be \"live\" or \"release\", not {other:?}"
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(format!(
+                "{kind} '{name}': `run` is only valid on a slider"
+            ));
+        }
+    };
 
     match kind {
         "slider" => {
@@ -189,6 +222,7 @@ pub fn parse_widget(toml_src: &str) -> Result<WidgetDecl, String> {
                     step: raw.step,
                     default,
                 },
+                run,
             })
         }
         "number" => {
@@ -227,6 +261,7 @@ pub fn parse_widget(toml_src: &str) -> Result<WidgetDecl, String> {
                     step: raw.step,
                     default,
                 },
+                run,
             })
         }
         "option" => {
@@ -248,6 +283,7 @@ pub fn parse_widget(toml_src: &str) -> Result<WidgetDecl, String> {
                 name,
                 label: raw.label,
                 kind: WidgetKind::Option { choices, default },
+                run,
             })
         }
         other => Err(format!(
@@ -438,6 +474,53 @@ mod tests {
         assert_eq!(decl.coerce(&WidgetValue::Text("z".into())), None);
         // A numeric value for an option is incompatible.
         assert_eq!(decl.coerce(&WidgetValue::Number(1.0)), None);
+    }
+
+    #[test]
+    fn slider_run_release_and_live() {
+        let release = parse_widget(
+            "name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 0\nrun = \"release\"",
+        )
+        .unwrap();
+        assert_eq!(release.run, WidgetRun::Release);
+        let live = parse_widget(
+            "name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 0\nrun = \"live\"",
+        )
+        .unwrap();
+        assert_eq!(live.run, WidgetRun::Live);
+        let omitted =
+            parse_widget("name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 0").unwrap();
+        assert_eq!(omitted.run, WidgetRun::Live);
+    }
+
+    #[test]
+    fn slider_run_rejects_unknown_value() {
+        let err = parse_widget(
+            "name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 0\nrun = \"later\"",
+        )
+        .unwrap_err();
+        assert!(err.contains("`run`"), "got: {err}");
+    }
+
+    #[test]
+    fn run_on_option_is_an_error() {
+        let err = parse_widget(
+            "name = \"w\"\ntype = \"option\"\nchoices = [\"a\", \"b\"]\ndefault = \"a\"\nrun = \"release\"",
+        )
+        .unwrap_err();
+        assert!(err.contains("only valid on a slider"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_key_is_rejected() {
+        let err = parse_widget(
+            "name = \"a\"\ntype = \"slider\"\nmin = 0\nmax = 1\ndefault = 0\nbogus = 1",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("invalid widget TOML") && err.contains("bogus"),
+            "got: {err}"
+        );
     }
 
     #[test]

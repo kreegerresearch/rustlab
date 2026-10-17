@@ -210,6 +210,20 @@ should re-validate against those entries when upgrading.
   view axis. SVG/PNG surfaces are still the static isometric wireframe.
 
 ### Added
+- **Notebook widgets can sit beside the plot they drive.** A
+  `rustlab-widget` fence immediately above a rustlab cell (blank lines
+  and cell directives only) becomes that cell's control panel: one card,
+  controls in a 16rem column, the plot on the right, stacked above the
+  plot under 800px. A heading, paragraph, or callout between them keeps
+  the full-width bar, which gains a `drives: Figure N` link to each plot
+  the cell that read the widget produced. Re-run scope is unchanged.
+  Batch HTML shows the same panel or bar with the controls disabled and
+  the note `default values — open with notebook watch to interact`.
+  Markdown, LaTeX, PDF, and JSON still show label = value. A slider may
+  set `run = "release"` to send its value when the thumb is released;
+  `run` on a number or option, and any unknown key, is a widget error.
+  Example: `examples/notebooks/widget_panel.md`. `widgets_demo.md` stays
+  bars.
 - **`pinv`, `cumtrapz`, `fzero`, `fliplr`, `nextpow2`, `diff`, 1-D `gradient`, and `rng`.**
   `gradient` of a vector (or a `1×N` / `N×1` matrix) is the 1-D MATLAB
   gradient and keeps that orientation. A true matrix is still the 2-D

@@ -554,6 +554,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
     rerunKaTeX(document.body);
+    consumeWidgetFlash(tgt || document.body);
     afterUpdate();
   }
 
@@ -609,7 +610,10 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       if (!fresh) continue;
       rerunScripts(fresh);
       rerunKaTeX(fresh);
+      // A dirty cell editor vetoed this section, so its plots did not re-run.
+      if (!fresh.classList.contains('rl-cell-stale')) flashWidgetPlots(fresh);
     }
+    if (widgetFlash) widgetFlash = false;
     afterUpdate();
   }
 
@@ -628,6 +632,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     const keep = new Set();
     const tmp = document.createElement('div');
     let anchor = null; // last positioned section; fresh nodes go after it
+    const replaced = [];
 
     for (const b of blocks) {
       keep.add(b.id);
@@ -652,12 +657,16 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       }
       // Only fresh (created or changed) blocks carry html and need
       // their scripts/KaTeX (re-)run; reused nodes keep their state.
-      if (b.html) { rerunScripts(node); rerunKaTeX(node); }
+      if (b.html) { rerunScripts(node); rerunKaTeX(node); replaced.push(node); }
       anchor = node;
     }
 
     // Remove sections no longer present.
     byId.forEach((node, id) => { if (!keep.has(id)) node.remove(); });
+    if (widgetFlash) {
+      replaced.forEach(flashWidgetPlots);
+      widgetFlash = false;
+    }
     afterUpdate();
   }
 
@@ -724,10 +733,25 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   // round-trip re-renders the dependent plots. See
   // dev/plans/notebook_interactive_widgets.md.
   const widgetTimers = {};
+  // Set when this page sends widget_update. The next partial, reconcile,
+  // or full consumes it and outlines the plots that update replaced.
+  // A file-save render does not set the flag, so typing does not flash.
+  let widgetFlash = false;
   function sendWidget(name, value) {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      widgetFlash = true;
       ws.send(JSON.stringify({ kind: 'widget_update', name, value }));
     }
+  }
+  function flashWidgetPlots(root) {
+    if (!widgetFlash || !root || !root.querySelectorAll) return;
+    root.querySelectorAll('[id^="plot-"], [id^="anim-"]').forEach(function (el) {
+      el.classList.add('rl-plot-flash');
+    });
+  }
+  function consumeWidgetFlash(root) {
+    flashWidgetPlots(root);
+    if (widgetFlash) widgetFlash = false;
   }
   // Shared outbound path for the cell script (run_block /
   // save_run_block). Silently drops when the socket isn't open — the
@@ -753,6 +777,9 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // Immediate local readout (sliders carry an <output>).
     const out = form.querySelector('.rl-widget-value');
     if (out) out.textContent = input.value;
+    // run = "release": the number tracks the thumb, and the value is
+    // sent only when the control commits (change), not on every input.
+    if (form.getAttribute('data-widget-run') === 'release' && ev.type === 'input') return;
     clearTimeout(widgetTimers[name]);
     widgetTimers[name] = setTimeout(() => sendWidget(name, value), 50);
   }
@@ -1112,5 +1139,32 @@ mod tests {
             ),
             Err(_) => eprintln!("node not available — skipping JS syntax check"),
         }
+    }
+
+    #[test]
+    fn widget_release_does_not_send_on_input_and_names_the_flash_class() {
+        let js = WS_CLIENT_SCRIPT;
+        assert!(
+            js.contains("rl-plot-flash"),
+            "widget-update re-renders must flash rl-plot-flash"
+        );
+        let handler = js
+            .split("function onWidgetEvent")
+            .nth(1)
+            .expect("onWidgetEvent");
+        assert!(
+            handler.contains("data-widget-run") && handler.contains("=== 'release'"),
+            "release sliders are marked data-widget-run=\"release\""
+        );
+        assert!(
+            handler.contains("ev.type === 'input'") && handler.contains("return"),
+            "input must not send when data-widget-run is release"
+        );
+        let send_at = handler.find("sendWidget").expect("sendWidget call");
+        let guard_at = handler.find("ev.type === 'input'").expect("input guard");
+        assert!(
+            guard_at < send_at,
+            "the release guard must run before sendWidget"
+        );
     }
 }

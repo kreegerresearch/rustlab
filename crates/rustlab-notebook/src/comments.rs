@@ -4656,6 +4656,7 @@ mod tests {
                 details: None,
                 grid_cols: None,
                 source_open: None,
+                widget_reads: Vec::new(),
             },
         ]);
         let code_at = html.find("class=\"code-block\"").expect("code block");
@@ -4671,6 +4672,49 @@ mod tests {
             !html[..prose_end].contains("why the gain"),
             "peeled comment must leave the prose"
         );
+    }
+
+    #[test]
+    fn grouped_widget_comment_moves_onto_the_code_section() {
+        let src = "%%#c1: beside the panel%%\n```rustlab-widget\nname = \"amp\"\ntype = \"slider\"\nmin = 0\nmax = 2\ndefault = 1\nlabel = \"Amplitude\"\n```\n\n```rustlab\nx = widget(\"amp\")\nprint(x)\n```\n";
+        let untouched = src.to_string();
+        let _file = install_file_source(src);
+        let blocks = crate::parse::parse_notebook(src);
+        let rendered = crate::execute::execute_notebook(&blocks);
+        let html = page(&rendered);
+        assert_eq!(src, untouched, "rendering must not rewrite fence bytes");
+        assert!(
+            html.contains("class=\"rl-drive\"") || html.contains("class=\"rl-drive "),
+            "{html}"
+        );
+        let section = html
+            .split("<section class=\"rl-block\"")
+            .nth(1)
+            .expect("code section");
+        assert!(section.contains("rl-cm-margin"), "{section}");
+        assert!(section.contains("beside the panel"), "{section}");
+        assert!(
+            section.contains("class=\"rl-widget\""),
+            "the widget form lives in the code section"
+        );
+        assert!(
+            section.contains("data-src-start="),
+            "the form keeps the widget fence range"
+        );
+    }
+
+    #[test]
+    fn comment_between_widget_and_cell_is_not_a_panel() {
+        let src = "```rustlab-widget\nname = \"amp\"\ntype = \"slider\"\nmin = 0\nmax = 2\ndefault = 1\n```\n%%#c2: breaks adjacency%%\n```rustlab\nprint(widget(\"amp\"))\n```\n";
+        let blocks = crate::parse::parse_notebook(src);
+        let rendered = crate::execute::execute_notebook(&blocks);
+        let html = page(&rendered);
+        assert!(
+            !html.contains("class=\"rl-drive\"") && !html.contains("class=\"rl-drive "),
+            "{html}"
+        );
+        assert!(html.contains("breaks adjacency"), "{html}");
+        assert!(html.contains("class=\"rl-widget\""), "{html}");
     }
 
     #[test]

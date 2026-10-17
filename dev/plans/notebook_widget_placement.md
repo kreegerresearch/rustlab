@@ -1,6 +1,6 @@
 # Notebook widget placement — controls beside the plot they drive
 
-**Status:** design only. Not started. Do not implement from this file without an explicit yes.
+**Status:** implemented (2026-10-17) on `cursor/notebook-widget-panel-8b5b`. The comments column shipped in #72 at 14rem and is resizable, so the panel nests in the cell's content column rather than assuming the 18rem track in the ASCII below.
 **Created:** 2026-10-16
 **Decisions:** Michael, 2026-10-16 (recorded below; not renegotiated here).
 

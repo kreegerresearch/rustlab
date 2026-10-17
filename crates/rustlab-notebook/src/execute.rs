@@ -130,6 +130,12 @@ pub enum Rendered {
         /// default installed for the HTML render (frontmatter, else rc,
         /// else open). LaTeX/PDF ignore this field.
         source_open: Option<bool>,
+        /// Widget names this block read, in sorted order. Empty when the
+        /// block called no `widget()`. The HTML renderer uses this for
+        /// the "drives: Figure N" link. Mermaid reads nothing, so it has
+        /// no equivalent field. Not part of the cache key — the cache
+        /// still stores the value snapshot on `CacheEntry.widget_reads`.
+        widget_reads: Vec<String>,
     },
     /// A Mermaid diagram block. Renderers turn `source` into SVG.
     Mermaid {
@@ -340,13 +346,14 @@ fn execute_core(
                     // widgets it reads so the entry can be invalidated when
                     // those values change.
                     let _ = ev.take_widget_reads(); // clear stray reads
-                    let output = run_code_block_capturing(&mut ev, source, directives);
+                    let mut output = run_code_block_capturing(&mut ev, source, directives);
                     // A block that hit the cancel flag mid-execution
                     // surfaces here — abandon the (now-partial) render.
                     if cancelled() {
                         return None;
                     }
                     let reads = ev.take_widget_reads();
+                    stamp_widget_reads(&mut output, &reads);
                     rendered.push(output.clone());
                     if let Some(c) = cache.as_deref_mut() {
                         c.push(CacheEntry {
@@ -422,6 +429,15 @@ fn execute_core(
         cached_blocks,
         total_blocks,
     })
+}
+
+/// Copy read names onto a code block so a later HTML render can link a
+/// bar to the figures that block produced. Cache replay clones this
+/// output, so the names survive a hit. Values stay on the cache entry.
+fn stamp_widget_reads(output: &mut Rendered, reads: &std::collections::BTreeSet<String>) {
+    if let Rendered::Code { widget_reads, .. } = output {
+        *widget_reads = reads.iter().cloned().collect();
+    }
 }
 
 /// Pair each read widget name with the value it resolved to this render —
@@ -505,6 +521,7 @@ fn run_code_block_capturing(
         details: directives.details.clone(),
         grid_cols: directives.grid_cols,
         source_open: directives.source_open,
+        widget_reads: Vec::new(),
     }
 }
 
@@ -558,7 +575,11 @@ fn execute_notebook_internal(blocks: &[Block]) -> (Vec<Rendered>, Evaluator) {
                 rendered.push(Rendered::Markdown(interpolated));
             }
             Block::Code { source, directives } => {
-                rendered.push(run_code_block_capturing(&mut ev, source, directives));
+                let _ = ev.take_widget_reads();
+                let mut output = run_code_block_capturing(&mut ev, source, directives);
+                let reads = ev.take_widget_reads();
+                stamp_widget_reads(&mut output, &reads);
+                rendered.push(output);
             }
             Block::Mermaid { source, directives } => {
                 let MermaidDirectives { hidden, details, caption } = directives.clone();

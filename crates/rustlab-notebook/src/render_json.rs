@@ -117,6 +117,7 @@ pub fn render_json(title: &str, blocks: &[Rendered], theme: &ThemeColors) -> Doc
                 details,
                 grid_cols: _,
                 source_open: _,
+                widget_reads: _,
             } => {
                 let mut plots = Vec::with_capacity(figures.len());
                 for (fig_idx, fig) in figures.iter().enumerate() {
@@ -351,6 +352,7 @@ mod tests {
                 details: None,
                 grid_cols: None,
                 source_open: None,
+            widget_reads: Vec::new(),
             },
         ];
         let doc = render_json("My Notebook", &blocks, theme());
@@ -387,6 +389,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let doc = render_json("t", &blocks, theme());
         let v = serde_json::to_value(&doc).unwrap();
@@ -415,6 +418,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let doc = render_json("t", &blocks, theme());
         let v = serde_json::to_value(&doc).unwrap();
@@ -461,6 +465,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let doc = render_json("t", &blocks, theme());
         let v = serde_json::to_value(&doc).unwrap();
