@@ -1345,7 +1345,8 @@ terminal also says so). Pass `--in-place` to rewrite the file, or
 `-o <PATH>` to write a copy. A directory needs one of those two; there
 is no dry-run flag. It does not rewrite a code fence, and it does not
 follow a symlink: a symlinked input is refused, and a symlink inside a
-directory is skipped. `clean` is a different command: it strips the
+directory is skipped. `README.md` is included, the same as any other
+`.md` file. `clean` is a different command: it strips the
 generated header and output sentinels, in place by default, and it
 leaves comments in the file.
 
