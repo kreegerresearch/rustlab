@@ -24,10 +24,12 @@ into the vendor dir to keep the binary embed tight.
 
 ## Why vendored
 
-The interactive `notebook watch` server embeds these files via
-`include_bytes!` and serves them at `/assets/katex/…` so the
-rendered page works fully offline (e.g. on a tablet over an SSH
-tunnel with no WiFi). See
+The interactive `notebook watch` server serves these files at
+`/assets/katex/…`, and batch HTML copies the CSS, JS, and woff2
+fonts into a sibling `assets/katex/` so a rendered page works fully
+offline (e.g. on a tablet over an SSH tunnel with no WiFi, or an
+HTML file opened from `file://`). The CSS `url(fonts/*.woff2)` paths
+stay relative to the stylesheet. See
 `dev/plans/notebook_interactive_server.md` § locked-in #15 and
 the trade-off doc for the full rationale.
 

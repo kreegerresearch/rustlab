@@ -2468,6 +2468,8 @@ savefig("heatmap.svg")
 savefig("report.html")    % interactive Plotly HTML with zoom/pan/hover
 ```
 
+HTML export writes a sibling `assets/plotly.min.js` (vendored Plotly 2.35.0, about 4.4 MB, once per output directory) and references it with a relative URL. The page opens from `file://` with no network. Copy the HTML and the `assets/` directory together. The script is not inlined into the page.
+
 ### `frame()`
 
 Snapshot the current figure into the animation frame buffer, then clear the trace data on the active figure so the next loop iteration starts with a clean canvas. Subplot layout, axis labels, titles, limits, hold state, and grid setting are preserved across the call — only `series`, `heatmap`, `surface`, `contours`, `quivers`, and `streamlines` are wiped.
@@ -2491,7 +2493,7 @@ Flush the animation frame buffer to disk. The path extension picks the output fo
 
 | Extension | Output | When to use |
 |---|---|---|
-| `.html` / `.htm` | Self-contained Plotly animation with play/pause buttons and a per-frame slider (`1000/fps` ms per frame). | Interactive viewing in a browser; embeds inside the rendered HTML notebook. |
+| `.html` / `.htm` | Plotly animation with play/pause buttons and a per-frame slider (`1000/fps` ms per frame). Plotly is a sibling `assets/plotly.min.js` (same file `savefig` HTML writes), not a CDN script. | Interactive viewing in a browser; the notebook HTML renderer embeds the animation inline and does not use this wrapper. |
 | `.gif` | Animated GIF, per-frame NeuQuant palette quantization. GIF stores delays in centiseconds — fps above ~100 rounds to the same 1 cs floor. | Portable, GitHub-renders inline in Markdown, embeds in PDFs (via the LaTeX `animate` package), shareable. |
 
 - **Path extension**: `.html`, `.htm`, or `.gif` only. Other extensions (`.svg`, `.png`, `.mp4`) return a clear error.

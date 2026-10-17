@@ -615,7 +615,7 @@ Any interactive plot can be saved to a file by calling `savefig(path)` immediate
 | `histogram(v); savefig("file.svg")` | Histogram → file |
 | `imagesc(M); savefig("file.svg")` | Heatmap → file |
 | `surf(X, Y, Z); savefig("file.html")` | 3D surface → interactive Plotly (or SVG/PNG wireframe) |
-| `savefig("file.html")` | Export current figure to interactive HTML (Plotly) |
+| `savefig("file.html")` | Export current figure to interactive HTML (Plotly, sibling `assets/plotly.min.js`) |
 
 Supported extensions: `.svg`, `.png`, `.html`.
 
@@ -623,7 +623,7 @@ Supported extensions: `.svg`, `.png`, `.html`.
 
 ## Animation (multi-frame Plotly HTML)
 
-Capture a sequence of figure snapshots inside a loop, then flush them as a single self-contained HTML file with a Plotly play/pause control and per-frame slider.
+Capture a sequence of figure snapshots inside a loop, then flush them as an HTML file with a Plotly play/pause control and per-frame slider. Plotly loads from a sibling `assets/plotly.min.js`.
 
 | Function | Description |
 |---|---|

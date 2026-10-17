@@ -10,6 +10,7 @@ pub mod quiver;
 pub mod smith;
 pub mod streamline;
 pub mod theme;
+pub mod vendor;
 #[cfg(feature = "viewer")]
 pub mod viewer_client;
 #[cfg(feature = "viewer")]
@@ -23,20 +24,19 @@ pub use animation::{
 };
 pub use ascii::{
     imagesc_terminal, plot_complex, plot_db, plot_histogram, plot_real, push_xy_bar, push_xy_line,
-    push_xy_lines,
-    push_xy_scatter, push_xy_stem, render_figure_terminal, render_heatmap_tui, render_image_tui,
-    stem_real, surf_terminal,
+    push_xy_lines, push_xy_scatter, push_xy_stem, render_figure_terminal, render_heatmap_tui,
+    render_image_tui, stem_real, surf_terminal,
 };
 pub use error::PlotError;
 pub use figure::{
     capture_thread_state, clear_notebook_figures, clear_terminal_skips, close_all_figures,
-    close_figure, colormap_rgb, current_figure_id, current_figure_output,
-    default_axis_y_direction, emit_pending_terminal_skips, figure_new, figure_new_html,
-    figure_switch, note_terminal_skip, plot_context, push_notebook_figure_snapshot,
-    restore_thread_state, set_current_figure_output, set_default_axis_y_direction,
-    set_plot_context, take_notebook_figures, AxisScale, AxisYDirection, ContourData, FigureOutput,
-    FigureState, HeatmapData, HeatmapKind, HeatmapOrigin, LineStyle, PlotContext, PlotKind, PlotSnapshot,
-    QuiverData, Series, SeriesColor, StreamlineData, SubplotState, SurfaceData, FIGURE,
+    close_figure, colormap_rgb, current_figure_id, current_figure_output, default_axis_y_direction,
+    emit_pending_terminal_skips, figure_new, figure_new_html, figure_switch, note_terminal_skip,
+    plot_context, push_notebook_figure_snapshot, restore_thread_state, set_current_figure_output,
+    set_default_axis_y_direction, set_plot_context, take_notebook_figures, AxisScale,
+    AxisYDirection, ContourData, FigureOutput, FigureState, HeatmapData, HeatmapKind,
+    HeatmapOrigin, LineStyle, PlotContext, PlotKind, PlotSnapshot, QuiverData, Series, SeriesColor,
+    StreamlineData, SubplotState, SurfaceData, FIGURE,
 };
 pub use file::{
     render_figure_file, render_figure_state_to_file, render_figure_state_to_file_themed,
@@ -47,10 +47,17 @@ pub use html::{
     sync_html_file,
 };
 pub use live::LiveFigure;
+/// Socket-path helpers, re-exported so callers can *name* the socket in
+/// diagnostics without depending on rustlab-proto directly. The path is what
+/// you need to see when a connection fails — especially over an SSH forward,
+/// where `RUSTLAB_VIEWER_SOCK` points somewhere non-default.
+#[cfg(feature = "viewer")]
+pub use rustlab_proto::{default_socket_path, socket_path_for_name};
 pub use theme::{
     builtin_theme_names, contrast_ratio, default_theme, parse_theme, relative_luminance,
     set_default_theme, theme_colors, Theme, ThemeColors,
 };
+pub use vendor::{html_loads_remote_script_or_style, PLOTLY_JS};
 #[cfg(feature = "viewer")]
 pub use viewer_live::ViewerFigure;
 #[cfg(feature = "viewer")]
@@ -58,12 +65,6 @@ pub use viewer_live::{
     connect_viewer, connect_viewer_named, disconnect_viewer, sync_viewer, viewer_active,
     viewer_close, viewer_new_figure, viewer_reset,
 };
-/// Socket-path helpers, re-exported so callers can *name* the socket in
-/// diagnostics without depending on rustlab-proto directly. The path is what
-/// you need to see when a connection fails — especially over an SSH forward,
-/// where `RUSTLAB_VIEWER_SOCK` points somewhere non-default.
-#[cfg(feature = "viewer")]
-pub use rustlab_proto::{default_socket_path, socket_path_for_name};
 
 use rustlab_core::{CMatrix, RMatrix, RVector};
 

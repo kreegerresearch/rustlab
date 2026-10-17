@@ -2,7 +2,7 @@ CARGO       := cargo
 INSTALL_DIR := $(HOME)/.local/bin
 UNAME       := $(shell uname)
 
-.PHONY: all build release test install install-validate-deps perf octave-compare notebooks validate-notebooks validate-notebooks-self-test clean-notebooks clean help
+.PHONY: all build release test install install-validate-deps perf octave-compare notebooks examples validate-notebooks validate-notebooks-self-test clean-notebooks clean help
 
 all: help
 
@@ -46,6 +46,13 @@ octave-compare:
 # limitation pending a seedable RNG.
 notebooks:
 	@bash dev/build-notebooks.sh
+
+# Run every examples/**/*.rlab with --plot none. The three live audio
+# monitors are skipped: figure_live is refused under --plot none, and
+# those scripts would otherwise sit in `while true`.
+examples:
+	$(CARGO) build --locked --release -q --bin rustlab
+	@RUSTLAB=$(CURDIR)/target/release/rustlab bash dev/run-examples.sh
 
 # Render every notebook under examples/notebooks/ through each output
 # format and pipe each artefact through a trusted external linter
@@ -103,7 +110,8 @@ validate-notebooks-self-test:
 # them, but we don't blow away tracked files from a `clean` target.
 clean-notebooks:
 	@rm -f gallery/*.html
-	@echo "Removed gallery/*.html"
+	@rm -rf gallery/assets
+	@echo "Removed gallery/*.html and gallery/assets"
 
 clean: clean-notebooks
 	$(CARGO) clean
@@ -119,6 +127,7 @@ help:
 	@echo "  perf      Release build, run benchmarks, write perf/report.md"
 	@echo "  octave-compare  Regenerate CSVs and compare rustlab vs Octave (requires octave)"
 	@echo "  notebooks       Render examples/notebooks/*.md → gallery/ (md committed, html ignored)"
+	@echo "  examples        Run examples/**/*.rlab under --plot none (skips live audio monitors)"
 	@echo "  validate-notebooks  Render quick_look.md to every format and lint each output (CI)"
 	@echo "  validate-notebooks-self-test  Verify each linter wrapper rejects its broken fixture"
 	@echo "  install-validate-deps  Install external linters (tidy-html5, chktex, markdownlint-cli2)"

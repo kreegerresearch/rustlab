@@ -1,5 +1,8 @@
-//! Export the current `FIGURE` state to a self-contained HTML file using
-//! Plotly.js (loaded from CDN).
+//! Export the current `FIGURE` state to an HTML file using Plotly.js.
+//!
+//! The page references a sibling `assets/plotly.min.js` (the vendored
+//! bundle, written once per output directory) so it opens from `file://`
+//! with no network. The script is not inlined: the bundle is about 4.4 MB.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -64,6 +67,7 @@ pub fn render_figure_state_html_themed(
     path: &str,
     theme: &ThemeColors,
 ) -> Result<(), PlotError> {
+    crate::vendor::ensure_plotly_asset(path)?;
     let div_content = render_figure_plotly_div(fig, "plot", theme);
 
     let mut html = String::with_capacity(4096 + div_content.len());
@@ -73,7 +77,7 @@ pub fn render_figure_state_html_themed(
 <head>
 <meta charset="utf-8">
 <title>RustLab Plot</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="{plotly}"></script>
 <style>
   body {{ margin: 0; background: {bg}; }}
   #plot {{ width: 100vw; height: 100vh; }}
@@ -81,7 +85,8 @@ pub fn render_figure_state_html_themed(
 </head>
 <body>
 "##,
-        bg = theme.bg
+        bg = theme.bg,
+        plotly = crate::vendor::PLOTLY_REL_SRC,
     ));
     html.push_str(&div_content);
     html.push_str(
@@ -142,9 +147,9 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             .as_ref()
             .map(|labels| (labels.len(), json_label_items(labels)));
         let xtick_extra = match &x_label_items {
-            Some((_, items)) => format!(
-                r#", type: "category", categoryorder: "array", categoryarray: [{items}]"#
-            ),
+            Some((_, items)) => {
+                format!(r#", type: "category", categoryorder: "array", categoryarray: [{items}]"#)
+            }
             None => String::new(),
         };
         // Categorical x for a series: when the panel has x_labels that match
@@ -172,8 +177,7 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             // `Xy` keeps Plotly's standard ascending y-axis so the
             // physics convention shines through for users who opted in.
             let _ = hm;
-            let reversed =
-                panel.y_axis_direction == crate::figure::AxisYDirection::Ij;
+            let reversed = panel.y_axis_direction == crate::figure::AxisYDirection::Ij;
             if reversed {
                 format!(r#", scaleanchor: "{anchor}", autorange: "reversed""#)
             } else {
@@ -220,9 +224,8 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
             // explicit range must be given in log10 units for a log axis.
             let x_log = panel.x_scale == AxisScale::Log;
             let y_log = panel.y_scale == AxisScale::Log;
-            let log10_lim = |lim: (Option<f64>, Option<f64>)| {
-                (lim.0.map(f64::log10), lim.1.map(f64::log10))
-            };
+            let log10_lim =
+                |lim: (Option<f64>, Option<f64>)| (lim.0.map(f64::log10), lim.1.map(f64::log10));
             let xtype = if x_log { r#", type: "log""# } else { "" };
             let ytype = if y_log { r#", type: "log""# } else { "" };
             let xrange = if x_log {
@@ -457,7 +460,9 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
         // independent polyline (shaft + arrowhead).
         for qd in &panel.quivers {
             let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
-            if arrows.is_empty() { continue; }
+            if arrows.is_empty() {
+                continue;
+            }
             let color = color_to_css(qd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
             let (xs, ys) = arrows_to_polyline(&arrows);
             traces.push_str(&format!(
@@ -478,7 +483,9 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
                 Some(s) => s.clone(),
                 None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
             };
-            if seeds.is_empty() { continue; }
+            if seeds.is_empty() {
+                continue;
+            }
             let step = crate::streamline::default_step(&sd.x, &sd.y);
             let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
             let mut paths: Vec<Vec<(f64, f64)>> = Vec::new();
@@ -487,13 +494,17 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
                 let pts = crate::streamline::integrate(
                     &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
                 );
-                if pts.len() < 2 { continue; }
+                if pts.len() < 2 {
+                    continue;
+                }
                 if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
                     arrowheads.push(a);
                 }
                 paths.push(pts);
             }
-            if paths.is_empty() { continue; }
+            if paths.is_empty() {
+                continue;
+            }
             let color = color_to_css(sd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
             let (xs, ys) = paths_to_polyline(&paths);
             traces.push_str(&format!(
@@ -692,9 +703,7 @@ fn arrows_to_polyline(arrows: &[crate::quiver::Arrow]) -> (String, String) {
     let mut out_y = String::from("[");
     let mut first = true;
     for a in arrows {
-        let pts: [(f64, f64); 5] = [
-            a.shaft.0, a.shaft.1, a.head[0], a.head[1], a.head[2],
-        ];
+        let pts: [(f64, f64); 5] = [a.shaft.0, a.shaft.1, a.head[0], a.head[1], a.head[2]];
         if !first {
             out_x.push_str(",null");
             out_y.push_str(",null");
@@ -721,7 +730,9 @@ fn paths_to_polyline(paths: &[Vec<(f64, f64)>]) -> (String, String) {
     let mut out_y = String::from("[");
     let mut first = true;
     for path in paths {
-        if path.is_empty() { continue; }
+        if path.is_empty() {
+            continue;
+        }
         if !first {
             out_x.push_str(",null");
             out_y.push_str(",null");
@@ -818,9 +829,9 @@ mod tests {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
-        value_min: None,
-        value_max: None,
-        origin: crate::figure::HeatmapOrigin::Lower,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
@@ -849,9 +860,9 @@ mod tests {
             rgba: None,
             rgba_width: 0,
             rgba_height: 0,
-        value_min: None,
-        value_max: None,
-        origin: crate::figure::HeatmapOrigin::Lower,
+            value_min: None,
+            value_max: None,
+            origin: crate::figure::HeatmapOrigin::Lower,
         });
 
         let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
@@ -1137,7 +1148,10 @@ mod tests {
     #[test]
     fn arrows_to_polyline_emits_tail_tip_barbs_with_null_separators() {
         use crate::quiver::Arrow;
-        assert_eq!(arrows_to_polyline(&[]), ("[]".to_string(), "[]".to_string()));
+        assert_eq!(
+            arrows_to_polyline(&[]),
+            ("[]".to_string(), "[]".to_string())
+        );
 
         let arrows = [
             Arrow {
@@ -1161,13 +1175,32 @@ mod tests {
         assert_eq!(paths_to_polyline(&[]), ("[]".to_string(), "[]".to_string()));
 
         let paths = vec![
-            vec![],                            // empty: skipped, no leading null
+            vec![], // empty: skipped, no leading null
             vec![(0.0, 0.0), (1.0, 2.0)],
-            vec![],                            // empty in the middle: skipped
+            vec![], // empty in the middle: skipped
             vec![(3.0, 4.5)],
         ];
         let (xs, ys) = paths_to_polyline(&paths);
         assert_eq!(xs, "[0,1,null,3]");
         assert_eq!(ys, "[0,2,null,4.5]");
+    }
+
+    #[test]
+    fn savefig_html_uses_sibling_plotly_not_a_cdn() {
+        let dir = std::env::temp_dir().join(format!("rustlab-savefig-html-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("figure.html");
+        let path_str = path.to_str().unwrap();
+        render_figure_state_html(&FigureState::new(), path_str).unwrap();
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !crate::vendor::html_loads_remote_script_or_style(&html),
+            "savefig HTML loaded a remote script or stylesheet:\n{html}"
+        );
+        assert!(html.contains("src=\"assets/plotly.min.js\""));
+        let js = dir.join("assets/plotly.min.js");
+        let len = std::fs::metadata(&js).unwrap().len();
+        assert!(len > 1_000_000, "sibling plotly bundle too small: {len}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

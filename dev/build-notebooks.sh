@@ -39,9 +39,11 @@ mkdir -p "$gallery_dir"
     --format markdown \
     --output "$gallery_dir"
 
-# Interactive HTML build (one self-contained .html per notebook plus a
-# generated index.html with prev/next navigation). Lands alongside the
-# .md files in gallery/; gitignore handles the visibility split.
+# Interactive HTML build (one .html per notebook, a shared gallery/assets/
+# tree for Plotly + KaTeX, and a generated index.html with prev/next
+# navigation). Lands alongside the .md files in gallery/; gitignore
+# handles the visibility split. The HTML is not a single self-contained
+# file: open it next to gallery/assets/.
 "$notebook_bin" render "$src_dir" \
     --format html \
     --output "$gallery_dir" \
