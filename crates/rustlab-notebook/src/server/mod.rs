@@ -800,6 +800,8 @@ pub(super) fn render_for_server_cancellable(
     let notebook_open =
         render::resolve_source_open(None, frontmatter, Some(render::rc_source_open()));
     let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
+    // Batch HTML disables controls. Watch is the only live path.
+    let _widgets_live = render::WidgetsLiveGuard::enable();
     // File offsets live on the sections. An edit above a block moves
     // every later offset, so the partial-diff would repaint the rest of
     // the page. Only annotate sessions need those offsets.
@@ -2471,7 +2473,7 @@ mod tests {
             before_ab
         );
 
-        render_loop::schedule_render(theme, state, nb_a, None);
+        render_loop::schedule_render(theme, state, nb_a, None, None);
         let msg = tokio::time::timeout(std::time::Duration::from_secs(20), live_a.recv()).await;
         assert!(
             matches!(msg, Ok(Ok(_))),

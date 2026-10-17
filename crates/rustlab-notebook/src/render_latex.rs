@@ -99,6 +99,7 @@ pub fn render_latex(
                 grid_cols,
                 // HTML-only. PDF always shows the source; `code:` is ignored.
                 source_open: _,
+                widget_reads: _,
             } => {
                 // Source, printed text, and errors are separate breakable
                 // panels. Plots stay full width after the panels. `code:`
@@ -1767,6 +1768,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -1801,6 +1803,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -1829,6 +1832,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -1869,6 +1873,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -1895,6 +1900,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -1933,6 +1939,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Blank",
@@ -1988,6 +1995,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Color",
@@ -2046,6 +2054,7 @@ mod tests {
             grid_cols: None,
             // Collapsed is an HTML-only initial state. PDF still shows the source.
             source_open: Some(false),
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -2120,6 +2129,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Long",
@@ -2179,6 +2189,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Test",
@@ -2429,6 +2440,7 @@ mod tests {
                 details: Some("costs $5 & more".to_string()),
                 grid_cols: None,
                 source_open: Some(false),
+            widget_reads: Vec::new(),
             },
             Rendered::ExerciseStart { number: 2 },
             Rendered::Markdown("What is `1 + 2`?".to_string()),
@@ -2484,6 +2496,7 @@ mod tests {
             details: None,
             grid_cols: Some(2),
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Grid",
@@ -2510,6 +2523,7 @@ mod tests {
             details: None,
             grid_cols: Some(6),
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let capped_tex = render_latex(
             "Cap",
@@ -2545,6 +2559,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let tex = render_latex(
             "Long output",
@@ -2601,6 +2616,7 @@ mod tests {
                 details: Some("Filter coefficients".to_string()),
                 grid_cols: None,
                 source_open: Some(false),
+            widget_reads: Vec::new(),
             },
             Rendered::ExerciseStart { number: 1 },
             Rendered::Markdown("What is `1 + 2`?".to_string()),
@@ -2615,6 +2631,7 @@ mod tests {
                 details: None,
                 grid_cols: None,
                 source_open: None,
+            widget_reads: Vec::new(),
             },
         ];
         let tex = render_latex(

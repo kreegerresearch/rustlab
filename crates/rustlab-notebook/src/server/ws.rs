@@ -81,7 +81,7 @@ async fn handle_socket(
                     None => return, // socket closed
                     Some(Ok(Message::Close(_))) => return,
                     Some(Ok(Message::Text(payload))) => {
-                        if let Some((name, value)) = parse_widget_update(&payload) {
+                        if let Some((name, value, flash)) = parse_widget_update(&payload) {
                             // Validate against the widget's declaration:
                             // unknown name or out-of-range / unknown-choice
                             // value is logged and ignored (never crashes the
@@ -97,9 +97,15 @@ async fn handle_socket(
                             match coerced {
                                 Some(Some(v)) => {
                                     nb.widget_values.lock().unwrap().insert(name, v);
-                                    // Ask the coordinator to re-render.
+                                    // Ask the coordinator to re-render. `flash`
+                                    // is echoed only on the envelope this
+                                    // request publishes.
                                     if let Some(tx) = &render_tx {
-                                        let _ = tx.send(RenderRequest::rerender(slug.clone()));
+                                        let _ = tx.send(RenderRequest {
+                                            slug: slug.clone(),
+                                            force_from: None,
+                                            flash,
+                                        });
                                     }
                                 }
                                 Some(None) => eprintln!(
@@ -123,6 +129,7 @@ async fn handle_socket(
                                 let _ = tx.send(RenderRequest {
                                     slug: slug.clone(),
                                     force_from: Some(idx),
+                                    flash: None,
                                 });
                             }
                         } else if let Some(req) = parse_save_run_block(&payload) {
@@ -145,6 +152,7 @@ async fn handle_socket(
                                         let _ = tx.send(RenderRequest {
                                             slug: slug.clone(),
                                             force_from: Some(idx),
+                                            flash: None,
                                         });
                                     }
                                 }
@@ -213,14 +221,33 @@ pub fn full_envelope(html: &str) -> String {
     serde_json::json!({ "kind": "full", "html": html }).to_string()
 }
 
+/// Copy `flash` onto a render envelope when this render was requested by
+/// a widget update. `None` (file save, ▶ Run, resync) leaves the JSON
+/// unchanged, so the page does not outline plots for that update.
+pub fn stamp_flash(envelope: &str, flash: Option<u64>) -> String {
+    let Some(id) = flash else {
+        return envelope.to_string();
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(envelope) {
+        Ok(v) => v,
+        Err(_) => return envelope.to_string(),
+    };
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("flash".to_string(), serde_json::Value::from(id));
+    }
+    v.to_string()
+}
+
 /// Parse an inbound `{"kind":"widget_update","name":"…","value":…}` frame
-/// into `(name, value)`. The value is a JSON number (slider / number) or
-/// string (option) → [`WidgetValue`]. Returns `None` for any other message
-/// kind, a missing/blank name, a non-finite number, or a value that is
-/// neither a number nor a string — so garbage never reaches the render
-/// loop. Range / choice validation against the declaration happens in the
-/// handler (see [`Notebook::widget_decls`]).
-fn parse_widget_update(payload: &str) -> Option<(String, WidgetValue)> {
+/// into `(name, value, flash)`. The value is a JSON number (slider /
+/// number) or string (option) → [`WidgetValue`]. `flash` is the page's
+/// request id when it is a positive integer; a missing or malformed id
+/// is `None` and the value update still applies. Returns `None` for any
+/// other message kind, a missing/blank name, a non-finite number, or a
+/// value that is neither a number nor a string — so garbage never reaches
+/// the render loop. Range / choice validation against the declaration
+/// happens in the handler (see [`Notebook::widget_decls`]).
+fn parse_widget_update(payload: &str) -> Option<(String, WidgetValue, Option<u64>)> {
     let v: serde_json::Value = serde_json::from_str(payload).ok()?;
     if v.get("kind")?.as_str()? != "widget_update" {
         return None;
@@ -240,7 +267,12 @@ fn parse_widget_update(payload: &str) -> Option<(String, WidgetValue)> {
         serde_json::Value::String(s) => WidgetValue::Text(s.clone()),
         _ => return None,
     };
-    Some((name, value))
+    // 0 is the page's "nothing outstanding" sentinel, so it is not an id.
+    let flash = match v.get("flash") {
+        Some(serde_json::Value::Number(n)) => n.as_u64().filter(|id| *id > 0),
+        _ => None,
+    };
+    Some((name, value, flash))
 }
 
 /// Parse an inbound `{"kind":"run_block","idx":N}` frame into the
@@ -513,7 +545,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     return !!(window.__rlCellVetoStructural && window.__rlCellVetoStructural());
   }
 
-  function applyFull(html) {
+  function applyFull(html, flash) {
     if (cellVetoStructural()) return;
     const parsed = new DOMParser().parseFromString(html, 'text/html');
     const newMain = parsed.querySelector('main');
@@ -554,6 +586,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     if (parsed.title) document.title = parsed.title;
     rerunScripts(tgt || document.body);
     rerunKaTeX(document.body);
+    consumeWidgetFlash(tgt || document.body, flash);
     afterUpdate();
   }
 
@@ -575,7 +608,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     }
   }
 
-  function applyPartial(blocks) {
+  function applyPartial(blocks, flash) {
     // Address blocks by source-order position (the server computed
     // the diff pairwise by index, not by content-hash id, so a
     // content edit stays at its current DOM position even though
@@ -604,11 +637,16 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // Re-querying after outerHTML swap because the original `el`
     // references are stale.
     const refreshed = document.querySelectorAll('section.rl-block');
+    // One decision for the whole envelope. A dirty cell still skips its
+    // own plots, but the id is consumed either way so it cannot fire later.
+    const doFlash = takeWidgetFlash(flash);
     for (const b of blocks) {
       const fresh = refreshed[b.position];
       if (!fresh) continue;
       rerunScripts(fresh);
       rerunKaTeX(fresh);
+      // A dirty cell editor vetoed this section, so its plots did not re-run.
+      if (doFlash && !fresh.classList.contains('rl-cell-stale')) flashWidgetPlots(fresh);
     }
     afterUpdate();
   }
@@ -619,8 +657,11 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   // id sequence: reuse existing nodes (moving if needed), create fresh
   // ones from their html, and drop leftovers. Untouched nodes keep their
   // DOM identity → Plotly/KaTeX state and scroll position are preserved.
-  function applyReconcile(blocks) {
-    if (cellVetoStructural()) return;
+  function applyReconcile(blocks, flash) {
+    if (cellVetoStructural()) {
+      takeWidgetFlash(flash);
+      return;
+    }
     const main = mainEl();
     if (!main) return;
     const byId = new Map();
@@ -628,6 +669,7 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     const keep = new Set();
     const tmp = document.createElement('div');
     let anchor = null; // last positioned section; fresh nodes go after it
+    const replaced = [];
 
     for (const b of blocks) {
       keep.add(b.id);
@@ -652,12 +694,13 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       }
       // Only fresh (created or changed) blocks carry html and need
       // their scripts/KaTeX (re-)run; reused nodes keep their state.
-      if (b.html) { rerunScripts(node); rerunKaTeX(node); }
+      if (b.html) { rerunScripts(node); rerunKaTeX(node); replaced.push(node); }
       anchor = node;
     }
 
     // Remove sections no longer present.
     byId.forEach((node, id) => { if (!keep.has(id)) node.remove(); });
+    if (takeWidgetFlash(flash)) replaced.forEach(flashWidgetPlots);
     afterUpdate();
   }
 
@@ -688,11 +731,11 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
       try {
         const msg = JSON.parse(ev.data);
         if (msg.kind === 'full' && typeof msg.html === 'string') {
-          applyFull(msg.html);
+          applyFull(msg.html, msg.flash);
         } else if (msg.kind === 'partial' && Array.isArray(msg.blocks)) {
-          applyPartial(msg.blocks);
+          applyPartial(msg.blocks, msg.flash);
         } else if (msg.kind === 'reconcile' && Array.isArray(msg.blocks)) {
-          applyReconcile(msg.blocks);
+          applyReconcile(msg.blocks, msg.flash);
         } else if (window.__rlCellMessage) {
           // Cell-level kinds (cell_status, cell_saved) are handled by
           // the cell script when it's injected. Best-effort.
@@ -724,10 +767,36 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   // round-trip re-renders the dependent plots. See
   // dev/plans/notebook_interactive_widgets.md.
   const widgetTimers = {};
+  // Id of the widget_update this page is waiting to see echoed. 0 means
+  // nothing is outstanding. The server copies the id onto the partial,
+  // reconcile, or full envelope that render publishes. A preempted render
+  // publishes nothing, so the id is not echoed; the next envelope (a file
+  // save, a ▶ Run, a resync, or a different id) clears it without flashing.
+  let widgetFlashId = 0;
   function sendWidget(name, value) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ kind: 'widget_update', name, value }));
+      widgetFlashId += 1;
+      const flash = widgetFlashId;
+      ws.send(JSON.stringify({ kind: 'widget_update', name, value, flash }));
     }
+  }
+  function flashWidgetPlots(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('[id^="plot-"], [id^="anim-"]').forEach(function (el) {
+      el.classList.add('rl-plot-flash');
+    });
+  }
+  // True only when this envelope is the render for the update still
+  // outstanding. Any other content envelope drops the id: a missing id
+  // is a file save or a preempted update's successor, and a different id
+  // is not this page's request. Either way the outline does not run.
+  function takeWidgetFlash(flash) {
+    const match = widgetFlashId !== 0 && flash === widgetFlashId;
+    widgetFlashId = 0;
+    return match;
+  }
+  function consumeWidgetFlash(root, flash) {
+    if (takeWidgetFlash(flash)) flashWidgetPlots(root);
   }
   // Shared outbound path for the cell script (run_block /
   // save_run_block). Silently drops when the socket isn't open — the
@@ -753,6 +822,9 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // Immediate local readout (sliders carry an <output>).
     const out = form.querySelector('.rl-widget-value');
     if (out) out.textContent = input.value;
+    // run = "release": the number tracks the thumb, and the value is
+    // sent only when the control commits (change), not on every input.
+    if (form.getAttribute('data-widget-run') === 'release' && ev.type === 'input') return;
     clearTimeout(widgetTimers[name]);
     widgetTimers[name] = setTimeout(() => sendWidget(name, value), 50);
   }
@@ -814,12 +886,54 @@ mod tests {
     fn parse_widget_update_accepts_number_and_string() {
         assert_eq!(
             parse_widget_update(r#"{"kind":"widget_update","name":"gain","value":2.5}"#),
-            Some(("gain".to_string(), WidgetValue::Number(2.5))),
+            Some(("gain".to_string(), WidgetValue::Number(2.5), None)),
         );
         assert_eq!(
             parse_widget_update(r#"{"kind":"widget_update","name":"win","value":"hann"}"#),
-            Some(("win".to_string(), WidgetValue::Text("hann".into()))),
+            Some(("win".to_string(), WidgetValue::Text("hann".into()), None)),
         );
+        assert_eq!(
+            parse_widget_update(
+                r#"{"kind":"widget_update","name":"gain","value":2.5,"flash":7}"#
+            ),
+            Some(("gain".to_string(), WidgetValue::Number(2.5), Some(7))),
+        );
+    }
+
+    #[test]
+    fn parse_widget_update_ignores_a_malformed_flash_id() {
+        // The value still applies. A missing, zero, negative, fractional,
+        // or non-numeric id is not echoed, so the page will not flash.
+        for payload in [
+            r#"{"kind":"widget_update","name":"gain","value":1,"flash":0}"#,
+            r#"{"kind":"widget_update","name":"gain","value":1,"flash":-3}"#,
+            r#"{"kind":"widget_update","name":"gain","value":1,"flash":1.5}"#,
+            r#"{"kind":"widget_update","name":"gain","value":1,"flash":"7"}"#,
+        ] {
+            assert_eq!(
+                parse_widget_update(payload),
+                Some(("gain".to_string(), WidgetValue::Number(1.0), None)),
+                "{payload}",
+            );
+        }
+    }
+
+    #[test]
+    fn stamp_flash_adds_the_id_and_leaves_other_envelopes_alone() {
+        let plain = full_envelope("<p>x</p>");
+        let parsed: serde_json::Value = serde_json::from_str(&plain).unwrap();
+        assert!(parsed.get("flash").is_none());
+
+        let stamped = stamp_flash(&plain, Some(9));
+        let parsed: serde_json::Value = serde_json::from_str(&stamped).unwrap();
+        assert_eq!(parsed["kind"], "full");
+        assert_eq!(parsed["html"], "<p>x</p>");
+        assert_eq!(parsed["flash"], 9);
+
+        let again = stamp_flash(&plain, None);
+        let parsed: serde_json::Value = serde_json::from_str(&again).unwrap();
+        assert!(parsed.get("flash").is_none());
+        assert_eq!(again, plain);
     }
 
     #[test]
@@ -1112,5 +1226,67 @@ mod tests {
             ),
             Err(_) => eprintln!("node not available — skipping JS syntax check"),
         }
+    }
+
+    #[test]
+    fn widget_release_does_not_send_on_input_and_names_the_flash_class() {
+        let js = WS_CLIENT_SCRIPT;
+        assert!(
+            js.contains("rl-plot-flash"),
+            "widget-update re-renders must flash rl-plot-flash"
+        );
+        let handler = js
+            .split("function onWidgetEvent")
+            .nth(1)
+            .expect("onWidgetEvent");
+        assert!(
+            handler.contains("data-widget-run") && handler.contains("=== 'release'"),
+            "release sliders are marked data-widget-run=\"release\""
+        );
+        assert!(
+            handler.contains("ev.type === 'input'") && handler.contains("return"),
+            "input must not send when data-widget-run is release"
+        );
+        let send_at = handler.find("sendWidget").expect("sendWidget call");
+        let guard_at = handler.find("ev.type === 'input'").expect("input guard");
+        assert!(
+            guard_at < send_at,
+            "the release guard must run before sendWidget"
+        );
+    }
+
+    /// The outline runs only when the envelope echoes the id this page
+    /// sent. A sticky boolean would still be set after a preempted render
+    /// (which publishes nothing) and would flash the next file save.
+    #[test]
+    fn widget_flash_matches_the_echoed_request_id() {
+        let js = WS_CLIENT_SCRIPT;
+        assert!(
+            !js.contains("widgetFlash ="),
+            "a sticky flash flag leaks onto the next unrelated render"
+        );
+        assert!(js.contains("let widgetFlashId = 0"));
+        assert!(js.contains("kind: 'widget_update', name, value, flash"));
+        assert!(js.contains("const match = widgetFlashId !== 0 && flash === widgetFlashId"));
+        assert!(
+            js.contains("widgetFlashId = 0"),
+            "mismatch and a missing id must clear the outstanding request"
+        );
+        assert!(js.contains("applyFull(msg.html, msg.flash)"));
+        assert!(js.contains("applyPartial(msg.blocks, msg.flash)"));
+        assert!(js.contains("applyReconcile(msg.blocks, msg.flash)"));
+        // The clear is unconditional, so a different id cannot be left
+        // outstanding for a later envelope to pick up.
+        let take = js
+            .split("function takeWidgetFlash")
+            .nth(1)
+            .expect("takeWidgetFlash");
+        let body = take.split("function ").next().unwrap();
+        let match_at = body.find("flash === widgetFlashId").unwrap();
+        let clear_at = body.find("widgetFlashId = 0").unwrap();
+        assert!(
+            match_at < clear_at,
+            "the id is compared before it is cleared"
+        );
     }
 }

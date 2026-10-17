@@ -67,6 +67,11 @@ pub struct RenderRequest {
     /// re-execute even if unchanged (browser "run from this block").
     /// `None`: normal hash-scoped render.
     pub force_from: Option<usize>,
+    /// Widget-update flash token. The page that sent `widget_update`
+    /// outlines plots only when the published envelope echoes this id.
+    /// `None` for a file save, ▶ Run, and the index refresh. A preempted
+    /// render never publishes, so its id is not echoed on a later request.
+    pub flash: Option<u64>,
 }
 
 impl RenderRequest {
@@ -75,6 +80,7 @@ impl RenderRequest {
         Self {
             slug,
             force_from: None,
+            flash: None,
         }
     }
 
@@ -84,6 +90,7 @@ impl RenderRequest {
         Self {
             slug: String::new(),
             force_from: None,
+            flash: None,
         }
     }
 }
@@ -96,6 +103,24 @@ fn merge_force(a: Option<usize>, b: Option<usize>) -> Option<usize> {
     match (a, b) {
         (Some(x), Some(y)) => Some(x.min(y)),
         (f, None) | (None, f) => f,
+    }
+}
+
+/// One notebook's requests collapsed across a debounce window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingRender {
+    force_from: Option<usize>,
+    /// Last widget-update id in the window. A file save that arrives in
+    /// the same window keeps an id already stored, because that one
+    /// render includes the widget change. A later widget update replaces
+    /// an earlier id. `None` stays `None` when neither request had one.
+    flash: Option<u64>,
+}
+
+fn merge_pending(prev: PendingRender, next: PendingRender) -> PendingRender {
+    PendingRender {
+        force_from: merge_force(prev.force_from, next.force_from),
+        flash: next.flash.or(prev.flash),
     }
 }
 
@@ -222,7 +247,8 @@ fn is_relevant_event(event: &notify::Event) -> bool {
 
 /// Coordinator task: receives debounced render requests and produces one
 /// re-render per changed notebook per debounce cycle (force-run scopes
-/// arriving in the same window merge via [`merge_force`]). Loops until
+/// and widget flash ids arriving in the same window merge via
+/// [`merge_pending`]). Loops until
 /// the channel closes (server shutdown).
 async fn coordinator(
     theme: &'static ThemeColors,
@@ -235,8 +261,14 @@ async fn coordinator(
             Some(r) => r,
             None => return,
         };
-        let mut pending: HashMap<String, Option<usize>> = HashMap::new();
-        pending.insert(first.slug, first.force_from);
+        let mut pending: HashMap<String, PendingRender> = HashMap::new();
+        pending.insert(
+            first.slug,
+            PendingRender {
+                force_from: first.force_from,
+                flash: first.flash,
+            },
+        );
 
         // Debounce: keep draining requests until quiet for `DEBOUNCE`.
         loop {
@@ -244,11 +276,20 @@ async fn coordinator(
                 evt = rx.recv() => {
                     match evt {
                         Some(r) => {
-                            let merged = merge_force(
-                                pending.get(&r.slug).copied().flatten(),
-                                r.force_from,
+                            let prev = pending.get(&r.slug).copied().unwrap_or(PendingRender {
+                                force_from: None,
+                                flash: None,
+                            });
+                            pending.insert(
+                                r.slug,
+                                merge_pending(
+                                    prev,
+                                    PendingRender {
+                                        force_from: r.force_from,
+                                        flash: r.flash,
+                                    },
+                                ),
                             );
-                            pending.insert(r.slug, merged);
                         }
                         None => return,
                     }
@@ -257,7 +298,7 @@ async fn coordinator(
             }
         }
 
-        for (slug, force_from) in pending {
+        for (slug, req) in pending {
             if slug.is_empty() {
                 refresh_index(theme, state.clone());
                 continue;
@@ -265,7 +306,7 @@ async fn coordinator(
             let Some(nb) = state.notebook(&slug).cloned() else {
                 continue;
             };
-            schedule_render(theme, state.clone(), nb, force_from);
+            schedule_render(theme, state.clone(), nb, req.force_from, req.flash);
         }
     }
 }
@@ -306,11 +347,15 @@ fn refresh_index(theme: &'static ThemeColors, state: Arc<ServerState>) {
 /// for this notebook is cancelled first. `force_from` is one-shot: it
 /// applies to this render only, and if this render is preempted the
 /// force is dropped with it (the user just clicks ▶ Run again).
+/// `flash` is echoed on the envelope this render publishes. A preempted
+/// or stale render returns without broadcasting, so the id dies with it
+/// and a later file save (its own `flash: None`) cannot outline plots.
 pub(super) fn schedule_render(
     theme: &'static ThemeColors,
     state: Arc<ServerState>,
     nb: Arc<Notebook>,
     force_from: Option<usize>,
+    flash: Option<u64>,
 ) {
     // Bump generation and preempt any in-flight render for this notebook.
     let my_gen = nb.render_gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -477,7 +522,8 @@ pub(super) fn schedule_render(
                 eprintln!("[watch] re-rendered {} (no change)", nb.slug);
             }
             Broadcast::Partial(changed) => {
-                let env: Arc<str> = Arc::from(diff::partial_envelope(&changed));
+                let env: Arc<str> =
+                    Arc::from(ws::stamp_flash(&diff::partial_envelope(&changed), flash));
                 let _ = nb.broadcast.send(env);
                 eprintln!(
                     "[watch] re-rendered {} (partial: {} block{})",
@@ -488,7 +534,8 @@ pub(super) fn schedule_render(
             }
             Broadcast::Reconcile(items) => {
                 let reused = items.iter().filter(|i| i.html.is_none()).count();
-                let env: Arc<str> = Arc::from(diff::reconcile_envelope(&items));
+                let env: Arc<str> =
+                    Arc::from(ws::stamp_flash(&diff::reconcile_envelope(&items), flash));
                 let _ = nb.broadcast.send(env);
                 eprintln!(
                     "[watch] re-rendered {} (reconcile: {} blocks, {} reused)",
@@ -498,7 +545,7 @@ pub(super) fn schedule_render(
                 );
             }
             Broadcast::Full => {
-                let env: Arc<str> = Arc::from(ws::full_envelope(&new_html));
+                let env: Arc<str> = Arc::from(ws::stamp_flash(&ws::full_envelope(&new_html), flash));
                 let _ = nb.broadcast.send(env);
                 eprintln!("[watch] re-rendered {} (full)", nb.slug);
             }
@@ -688,13 +735,13 @@ mod tests {
         // Now make the source a runaway and kick off a render; it spins on
         // a blocking thread until preempted.
         std::fs::write(&nb_path, "```rustlab\nwhile true; end;\n```\n").unwrap();
-        schedule_render(theme, state.clone(), nb.clone(), None);
+        schedule_render(theme, state.clone(), nb.clone(), None, None);
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Now edit to fast content and subscribe before re-scheduling.
         std::fs::write(&nb_path, "# Fast\n\nPREEMPT_MARKER body.\n").unwrap();
         let mut sub = nb.broadcast.subscribe();
-        schedule_render(theme, state.clone(), nb.clone(), None);
+        schedule_render(theme, state.clone(), nb.clone(), None, None);
 
         // The second render preempts the first and broadcasts.
         let msg = tokio::time::timeout(Duration::from_secs(8), sub.recv())
@@ -712,5 +759,144 @@ mod tests {
             .read()
             .await
             .contains("PREEMPT_MARKER"));
+    }
+
+    #[test]
+    fn merge_pending_keeps_a_widget_flash_across_a_coalesced_save() {
+        let widget = PendingRender {
+            force_from: None,
+            flash: Some(4),
+        };
+        let save = PendingRender {
+            force_from: None,
+            flash: None,
+        };
+        let run = PendingRender {
+            force_from: Some(2),
+            flash: None,
+        };
+        // A save landing in the same window does not erase the id.
+        assert_eq!(merge_pending(widget, save).flash, Some(4));
+        // A widget update after a save still carries the id, and a force
+        // survives beside it.
+        let merged = merge_pending(run, widget);
+        assert_eq!(merged.flash, Some(4));
+        assert_eq!(merged.force_from, Some(2));
+        // A later drag replaces an earlier id. The earlier force stays.
+        let later = PendingRender {
+            force_from: None,
+            flash: Some(9),
+        };
+        let merged = merge_pending(
+            PendingRender {
+                force_from: Some(1),
+                flash: Some(4),
+            },
+            later,
+        );
+        assert_eq!(merged.flash, Some(9));
+        assert_eq!(merged.force_from, Some(1));
+        // Two plain requests stay plain.
+        assert_eq!(merge_pending(save, save).flash, None);
+    }
+
+    /// Next content envelope, skipping the ▶ Run `cell_status` frame that
+    /// follows every completed render.
+    async fn next_content(rx: &mut tokio::sync::broadcast::Receiver<Arc<str>>) -> serde_json::Value {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let msg = tokio::time::timeout(left, rx.recv())
+                .await
+                .expect("content envelope did not arrive")
+                .expect("broadcast closed");
+            let parsed: serde_json::Value = serde_json::from_str(&msg).unwrap();
+            if parsed["kind"] == "cell_status" {
+                continue;
+            }
+            return parsed;
+        }
+    }
+
+    #[tokio::test]
+    async fn widget_flash_id_is_echoed_only_on_that_render() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let nb_path = dir.path().join("nb.md");
+        std::fs::write(&nb_path, "# Initial\n\nbody A.\n").unwrap();
+        let html0 = super::super::render_for_server(
+            &nb_path,
+            theme,
+            dir.path(),
+            "nb",
+            false,
+            None,
+            &crate::render::LinkMode::single_file(),
+            super::super::PageCtx::default(),
+        )
+        .unwrap()
+        .html;
+        let (state, nb) = single_state(&nb_path, html0);
+        let mut sub = nb.broadcast.subscribe();
+
+        std::fs::write(&nb_path, "# Initial\n\nbody WIDGET_FLASH.\n").unwrap();
+        schedule_render(theme, state.clone(), nb.clone(), None, Some(42));
+        let parsed = next_content(&mut sub).await;
+        assert_eq!(parsed["flash"], 42, "widget render must echo its request id");
+        assert!(
+            parsed.to_string().contains("WIDGET_FLASH"),
+            "widget render missing the new body"
+        );
+
+        std::fs::write(&nb_path, "# Initial\n\nbody FILE_SAVE.\n").unwrap();
+        schedule_render(theme, state.clone(), nb.clone(), None, None);
+        let parsed = next_content(&mut sub).await;
+        assert!(
+            parsed.get("flash").is_none(),
+            "a file save must not echo a previous widget id: {parsed}"
+        );
+        assert!(
+            parsed.to_string().contains("FILE_SAVE"),
+            "file-save render missing the new body"
+        );
+    }
+
+    #[tokio::test]
+    async fn preempted_widget_render_does_not_stamp_flash_on_the_successor() {
+        let theme: &'static _ = Theme::Dark.colors();
+        let dir = TempDir::new().unwrap();
+        let nb_path = dir.path().join("nb.md");
+        std::fs::write(&nb_path, "# Start\n\nhello.\n").unwrap();
+        let html0 = super::super::render_for_server(
+            &nb_path,
+            theme,
+            dir.path(),
+            "nb",
+            false,
+            None,
+            &crate::render::LinkMode::single_file(),
+            super::super::PageCtx::default(),
+        )
+        .unwrap()
+        .html;
+        let (state, nb) = single_state(&nb_path, html0);
+
+        std::fs::write(&nb_path, "```rustlab\nwhile true; end;\n```\n").unwrap();
+        schedule_render(theme, state.clone(), nb.clone(), None, Some(7));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::fs::write(&nb_path, "# Fast\n\nPREEMPT_MARKER body.\n").unwrap();
+        let mut sub = nb.broadcast.subscribe();
+        schedule_render(theme, state.clone(), nb.clone(), None, None);
+
+        let parsed = next_content(&mut sub).await;
+        assert!(
+            parsed.get("flash").is_none(),
+            "the save that preempted the widget render must not flash: {parsed}"
+        );
+        assert!(
+            parsed.to_string().contains("PREEMPT_MARKER"),
+            "winning render missing the new marker"
+        );
     }
 }

@@ -1,6 +1,6 @@
 # Notebook widget placement — controls beside the plot they drive
 
-**Status:** design only. Not started. Do not implement from this file without an explicit yes.
+**Status:** implemented (2026-10-17) on `cursor/notebook-widget-panel-8b5b`. The comments column shipped in #72 at 14rem and is resizable, so the panel nests in the cell's content column rather than assuming the 18rem track in the ASCII below.
 **Created:** 2026-10-16
 **Decisions:** Michael, 2026-10-16 (recorded below; not renegotiated here).
 
@@ -170,7 +170,7 @@ Inside the code section:
 All of this stays in the existing watch script in `server/ws.rs`. No new file, no CDN.
 
 - **Release.** Slider forms with `run = "release"` get `data-widget-run="release"`. On `input`, still update `<output>` so the number tracks the thumb, and do not send. On `change` (thumb released), send `widget_update` through the same 50 ms timer. Omitted or `"live"` keeps both listeners.
-- **Flash.** When the page sends `widget_update`, set a flag. On the next `partial`, `reconcile`, or `full` that this flag caused, add `rl-plot-flash` to `#plot-N` / `#anim-N` elements inside sections the update replaced, then clear the flag. A file-save render does not set the flag, so typing does not flash. CSS: a short outline animation on `var(--rl-accent-primary)`, on the order of 700 ms, no layout shift.
+- **Flash.** The page tags `widget_update` with a request id. The server echoes that id on the `partial`, `reconcile`, or `full` envelope that render publishes, and the page adds `rl-plot-flash` to `#plot-N` / `#anim-N` inside sections the update replaced only when the echoed id matches. A missing or different id clears the outstanding id and does not flash. A preempted render publishes nothing, so a later file save (no id) cannot flash. CSS: a short outline animation on `var(--rl-accent-primary)`, on the order of 700 ms, no layout shift. The first cut used a sticky client flag; a preempted render left it set, and the next save flashed. The id replaced that flag.
 - **Drives link.** Ordinary `<a href="#plot-N">` (or `#anim-N`). No script. The browser scrolls to the div that already has that id.
 
 ## Drives link

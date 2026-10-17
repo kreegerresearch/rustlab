@@ -1,6 +1,6 @@
 use crate::execute::Rendered;
 use crate::parse::CalloutKind;
-use crate::widget::{WidgetDecl, WidgetKind};
+use crate::widget::{WidgetDecl, WidgetKind, WidgetRun};
 use crate::NotebookNav;
 use pulldown_cmark::{html::push_html, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use rustlab_plot::render_animation_inline;
@@ -22,6 +22,11 @@ thread_local! {
     /// Notebook default for this render: frontmatter `code:`, else the rc
     /// value, else open. Cell `<!-- code: -->` overrides it per block.
     static NOTEBOOK_SOURCE_OPEN: Cell<bool> = const { Cell::new(true) };
+    /// `true` only while `notebook watch` renders a page. Batch HTML leaves
+    /// this false, so widget controls are `disabled` and carry the
+    /// "open with notebook watch" note. A nonce is not a signal: tests
+    /// pass one, and batch HTML does not.
+    static WIDGETS_LIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Record `[notebook] code` from a loaded rc. `true` is open.
@@ -57,6 +62,33 @@ impl Drop for NotebookSourceOpenGuard {
         NOTEBOOK_SOURCE_OPEN.with(|c| c.set(self.prev));
     }
 }
+
+/// Restores the previous live-widget flag on drop.
+pub struct WidgetsLiveGuard {
+    prev: bool,
+}
+
+impl WidgetsLiveGuard {
+    /// Watch-server renders call this so controls stay enabled and the
+    /// batch note is omitted. Batch `notebook render` does not.
+    pub fn enable() -> Self {
+        let prev = WIDGETS_LIVE.with(|c| c.replace(true));
+        Self { prev }
+    }
+}
+
+impl Drop for WidgetsLiveGuard {
+    fn drop(&mut self) {
+        WIDGETS_LIVE.with(|c| c.set(self.prev));
+    }
+}
+
+fn widgets_live() -> bool {
+    WIDGETS_LIVE.with(|c| c.get())
+}
+
+/// Sentence under a disabled control in batch HTML.
+const WIDGET_BATCH_NOTE: &str = "default values — open with notebook watch to interact";
 
 /// Most-specific fold wins: cell directive, else frontmatter, else rc, else open.
 ///
@@ -485,6 +517,9 @@ pub fn render_html_nonced(
     crate::comments::locate_installed(blocks);
     let mut pending_cells: Vec<crate::comments::CellNote> = Vec::new();
     let mut cell_origin = 0usize;
+    // Plot ids are assigned in source order. A bar can sit before the
+    // cell that emits `plot-2`, so the drives link needs the ids first.
+    let figure_ids = figure_ids_by_block(blocks);
 
     for (bi, block) in blocks.iter().enumerate() {
         // Auto-close solution/exercise when we hit a new exercise or solution marker
@@ -556,6 +591,7 @@ pub fn render_html_nonced(
                 details,
                 grid_cols,
                 source_open,
+                widget_reads: _,
             } => {
                 let mark = body.len();
                 body.push_str("<div class=\"code-block\">\n");
@@ -662,10 +698,18 @@ pub fn render_html_nonced(
                     }
                 }
 
+                let panel = preceding_panel_widgets(blocks, bi);
+                let shown = if panel.is_empty() {
+                    plots_html
+                } else {
+                    render_drive_panel(blocks, &panel, &plots_html)
+                };
+
                 if let Some(title) = details {
                     // Source stays visible above the disclosure. Printed
                     // output inside the disclosure uses the same indent.
                     // Plots stay in the disclosure and outside `.rl-cell`.
+                    // A control panel travels with those plots.
                     if show_source {
                         body.push_str("<div class=\"rl-cell\">\n");
                         body.push_str(&source_html);
@@ -678,7 +722,7 @@ pub fn render_html_nonced(
                         body.push_str(&text_html);
                         body.push_str("</div>\n");
                     }
-                    body.push_str(&plots_html);
+                    body.push_str(&shown);
                     body.push_str("</details>\n");
                 } else {
                     if show_source || !text_html.is_empty() {
@@ -687,7 +731,7 @@ pub fn render_html_nonced(
                         body.push_str(&text_html);
                         body.push_str("</div>\n");
                     }
-                    body.push_str(&plots_html);
+                    body.push_str(&shown);
                 }
 
                 body.push_str("</div>\n");
@@ -747,9 +791,21 @@ pub fn render_html_nonced(
                 );
             }
             Rendered::Widget { decl, value } => {
+                // A widget run that ends at a rustlab cell is that cell's
+                // panel. Skip the section here and do not consume pending
+                // cell comments — they move to the shared code section.
+                if is_panel_widget(blocks, bi) {
+                    continue;
+                }
                 let mark = body.len();
                 let cell_margin = take_cell_margin(&mut body, &mut pending_cells, cell_origin);
-                body.push_str(&render_widget_html(decl, value));
+                body.push_str(&render_widget_html(
+                    decl,
+                    value,
+                    &crate::comments::src_attr(bi),
+                ));
+                body.push_str(&drives_html(&drives_links(&decl.name, blocks, &figure_ids)));
+                body.push_str(&widget_batch_note("rl-widget-note"));
                 body.push_str(&cell_margin);
                 finalize_block(
                     &mut body,
@@ -1455,6 +1511,7 @@ document.addEventListener('click', (e) => {{
     font-weight: 600;
     font-size: 0.9rem;
     white-space: nowrap;
+    color: {text};
   }}
   .rl-widget-input {{
     flex: 1;
@@ -1484,6 +1541,81 @@ document.addEventListener('click', (e) => {{
     border-radius: 4px;
     background: {bg};
     color: {text};
+  }}
+  .rl-widget input:disabled {{
+    opacity: 0.65;
+    cursor: default;
+  }}
+  .rl-widget-drives, .rl-widget-note, .rl-drive-note {{
+    margin: 0 0 0.75rem;
+    padding: 0 0.9rem;
+    font-size: 0.8rem;
+    color: {text_dim};
+  }}
+  .rl-widget-drives {{
+    margin-top: -0.35rem;
+  }}
+  .rl-widget-drives a {{
+    color: {accent_primary};
+  }}
+  /* Control panel folded into the code section, left of the plot.
+     Nested in column 1 so it does not fight the comments track. */
+  .rl-drive {{
+    display: grid;
+    grid-template-columns: 16rem minmax(0, 1fr);
+    gap: 0.75rem;
+    margin: 0.75rem 0;
+    padding: 0.75rem;
+    border: 1px solid {border};
+    border-radius: 8px;
+    background: {bg_secondary};
+    align-items: start;
+  }}
+  .rl-drive-solo {{
+    grid-template-columns: minmax(0, 1fr);
+  }}
+  .rl-drive-controls {{
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    min-width: 0;
+  }}
+  .rl-drive .rl-widget {{
+    flex-direction: column;
+    align-items: stretch;
+    margin: 0;
+    padding: 0.15rem 0;
+    border: none;
+    background: transparent;
+    gap: 0.35rem;
+  }}
+  .rl-drive .rl-widget-label {{
+    white-space: normal;
+  }}
+  .rl-drive .rl-widget-input[type="range"] {{
+    width: 100%;
+  }}
+  .rl-drive-plot {{
+    min-width: 0;
+  }}
+  .rl-drive-plot .plot-container {{
+    margin-top: 0;
+  }}
+  .rl-drive-note {{
+    margin: 0.35rem 0 0;
+    padding: 0;
+  }}
+  @keyframes rl-plot-flash {{
+    0% {{ outline: 2px solid {accent_primary}; outline-offset: 2px; }}
+    100% {{ outline-color: transparent; }}
+  }}
+  .rl-plot-flash {{
+    animation: rl-plot-flash 700ms ease-out 1;
+  }}
+  @media (max-width: 799px) {{
+    .rl-drive {{
+      grid-template-columns: minmax(0, 1fr);
+    }}
   }}
   /* ── Exercise / solution blocks ── */
   .exercise {{
@@ -3220,10 +3352,16 @@ fn find_inline_close(s: &[u8], start: usize, stop_at_pipe: bool) -> Option<usize
 /// `.rl-widget` controls to a `{"kind":"widget_update",…}` message; the
 /// server re-renders and pushes the result back. The `value`/`<output>`
 /// reflect the control's current value so a full re-render is consistent.
-fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
+fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue, src_attr: &str) -> String {
     let name_attr = escape_html(&decl.name);
     let id = format!("rlw-{}", escape_html(&decl.name));
     let label = escape_html(decl.label.as_deref().unwrap_or(&decl.name));
+    let dis = if widgets_live() { "" } else { " disabled" };
+    let run_attr = if decl.run == WidgetRun::Release {
+        " data-widget-run=\"release\""
+    } else {
+        ""
+    };
     match &decl.kind {
         WidgetKind::Slider {
             min,
@@ -3234,9 +3372,9 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
             let cur = value.as_number().unwrap_or(*default);
             let step_attr = step.map(|s| format!(" step=\"{s}\"")).unwrap_or_default();
             format!(
-                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"slider\">\n\
+                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"slider\"{run_attr}{src_attr}>\n\
                  <label class=\"rl-widget-label\" for=\"{id}\">{label}</label>\n\
-                 <input class=\"rl-widget-input\" type=\"range\" id=\"{id}\" name=\"{name_attr}\" min=\"{min}\" max=\"{max}\"{step_attr} value=\"{cur}\">\n\
+                 <input class=\"rl-widget-input\" type=\"range\" id=\"{id}\" name=\"{name_attr}\" min=\"{min}\" max=\"{max}\"{step_attr} value=\"{cur}\"{dis}>\n\
                  <output class=\"rl-widget-value\" for=\"{id}\">{cur}</output>\n\
                  </form>\n"
             )
@@ -3252,9 +3390,9 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
             let max_attr = max.map(|m| format!(" max=\"{m}\"")).unwrap_or_default();
             let step_attr = step.map(|s| format!(" step=\"{s}\"")).unwrap_or_default();
             format!(
-                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"number\">\n\
+                "<form class=\"rl-widget\" data-widget-name=\"{name_attr}\" data-widget-type=\"number\"{src_attr}>\n\
                  <label class=\"rl-widget-label\" for=\"{id}\">{label}</label>\n\
-                 <input class=\"rl-widget-input\" type=\"number\" id=\"{id}\" name=\"{name_attr}\"{min_attr}{max_attr}{step_attr} value=\"{cur}\">\n\
+                 <input class=\"rl-widget-input\" type=\"number\" id=\"{id}\" name=\"{name_attr}\"{min_attr}{max_attr}{step_attr} value=\"{cur}\"{dis}>\n\
                  </form>\n"
             )
         }
@@ -3266,15 +3404,127 @@ fn render_widget_html(decl: &WidgetDecl, value: &WidgetValue) -> String {
                 let rid = format!("{id}-{i}");
                 let checked = if choice == &cur { " checked" } else { "" };
                 radios.push_str(&format!(
-                    "<label class=\"rl-widget-choice\"><input class=\"rl-widget-input\" type=\"radio\" id=\"{rid}\" name=\"{name_attr}\" value=\"{choice_attr}\"{checked}> {choice_attr}</label>\n"
+                    "<label class=\"rl-widget-choice\"><input class=\"rl-widget-input\" type=\"radio\" id=\"{rid}\" name=\"{name_attr}\" value=\"{choice_attr}\"{checked}{dis}> {choice_attr}</label>\n"
                 ));
             }
             format!(
-                "<form class=\"rl-widget rl-widget-options\" data-widget-name=\"{name_attr}\" data-widget-type=\"option\">\n\
+                "<form class=\"rl-widget rl-widget-options\" data-widget-name=\"{name_attr}\" data-widget-type=\"option\"{src_attr}>\n\
                  <span class=\"rl-widget-label\">{label}</span>\n\
                  {radios}</form>\n"
             )
         }
+    }
+}
+
+/// Widgets immediately before this code block, when they form a panel.
+fn preceding_panel_widgets(blocks: &[Rendered], code_idx: usize) -> Vec<usize> {
+    let mut start = code_idx;
+    while start > 0 && matches!(blocks.get(start - 1), Some(Rendered::Widget { .. })) {
+        start -= 1;
+    }
+    if start == code_idx {
+        Vec::new()
+    } else {
+        (start..code_idx).collect()
+    }
+}
+
+/// A widget belongs to a panel when the following widgets end at a code block.
+fn is_panel_widget(blocks: &[Rendered], idx: usize) -> bool {
+    if !matches!(blocks.get(idx), Some(Rendered::Widget { .. })) {
+        return false;
+    }
+    let mut i = idx;
+    while matches!(blocks.get(i), Some(Rendered::Widget { .. })) {
+        i += 1;
+    }
+    matches!(blocks.get(i), Some(Rendered::Code { .. }))
+}
+
+fn figure_ids_by_block(blocks: &[Rendered]) -> Vec<Vec<String>> {
+    let mut out = vec![Vec::new(); blocks.len()];
+    let mut plot_idx = 0usize;
+    for (i, block) in blocks.iter().enumerate() {
+        if let Rendered::Code {
+            figures,
+            animations,
+            ..
+        } = block
+        {
+            for _ in figures {
+                plot_idx += 1;
+                out[i].push(format!("plot-{plot_idx}"));
+            }
+            for _ in animations {
+                plot_idx += 1;
+                out[i].push(format!("anim-{plot_idx}"));
+            }
+        }
+    }
+    out
+}
+
+fn drives_links(name: &str, blocks: &[Rendered], figs: &[Vec<String>]) -> Vec<(String, String)> {
+    let mut links = Vec::new();
+    for (i, block) in blocks.iter().enumerate() {
+        if let Rendered::Code { widget_reads, .. } = block {
+            if widget_reads.iter().any(|n| n == name) {
+                for id in &figs[i] {
+                    let n = id.rsplit('-').next().unwrap_or("");
+                    links.push((format!("#{id}"), format!("Figure {n}")));
+                }
+            }
+        }
+    }
+    links
+}
+
+fn drives_html(links: &[(String, String)]) -> String {
+    if links.is_empty() {
+        return String::new();
+    }
+    let mut body = String::from("<p class=\"rl-widget-drives\">drives: ");
+    for (i, (href, label)) in links.iter().enumerate() {
+        if i > 0 {
+            body.push_str(", ");
+        }
+        body.push_str(&format!(
+            "<a href=\"{}\">{}</a>",
+            escape_html(href),
+            escape_html(label)
+        ));
+    }
+    body.push_str("</p>\n");
+    body
+}
+
+fn widget_batch_note(class: &str) -> String {
+    if widgets_live() {
+        String::new()
+    } else {
+        format!("<p class=\"{class}\">{WIDGET_BATCH_NOTE}</p>\n")
+    }
+}
+
+fn render_drive_panel(blocks: &[Rendered], widgets: &[usize], plots_html: &str) -> String {
+    let mut controls = String::from("<div class=\"rl-drive-controls\">\n");
+    for &idx in widgets {
+        if let Some(Rendered::Widget { decl, value }) = blocks.get(idx) {
+            controls.push_str(&render_widget_html(
+                decl,
+                value,
+                &crate::comments::src_attr(idx),
+            ));
+        }
+    }
+    controls.push_str(&widget_batch_note("rl-drive-note"));
+    controls.push_str("</div>\n");
+    if plots_html.is_empty() {
+        format!("<div class=\"rl-drive rl-drive-solo\">\n{controls}</div>\n")
+    } else {
+        format!(
+            "<div class=\"rl-drive\">\n{controls}<div class=\"rl-drive-plot\">\n{plots_html}</div>\n</div>\n"
+        )
     }
 }
 
@@ -4402,6 +4652,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }
     }
 
@@ -4546,6 +4797,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4579,6 +4831,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4607,6 +4860,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4646,6 +4900,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         for (theme, accent) in [
             (Theme::Dark.colors(), "#cba6f7"),
@@ -4710,6 +4965,7 @@ mod tests {
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4763,6 +5019,7 @@ mod tests {
             details: Some("Show sweep".to_string()),
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4894,6 +5151,7 @@ w = 4
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4920,6 +5178,7 @@ w = 4
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -4950,6 +5209,7 @@ w = 4
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -5045,6 +5305,7 @@ w = 4
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",
@@ -5072,6 +5333,7 @@ w = 4
             details: None,
             grid_cols: None,
             source_open: None,
+            widget_reads: Vec::new(),
         }];
         let html = render_html(
             "Test",

@@ -1101,13 +1101,24 @@ plot(t, sin(2 * pi * fc * t));
 ```
 ````
 
+That fence sits immediately above the cell, so HTML (watch and batch)
+draws the slider in a panel to the left of the plot. `examples/notebooks/widget_panel.md`
+is the same layout. `examples/notebooks/widgets_demo.md` keeps full-width
+bars because a heading and a paragraph sit between its controls and the plot.
+
 **Widget types (v1):**
 
 | `type` | Required keys | Optional keys | `widget()` returns |
 |---|---|---|---|
-| `slider` | `name`, `min`, `max`, `default` | `step`, `label` | number |
+| `slider` | `name`, `min`, `max`, `default` | `step`, `label`, `run` | number |
 | `number` | `name`, `default` | `min`, `max`, `step`, `label` | number |
 | `option` | `name`, `choices`, `default` | `label` | string |
+
+`run` is slider-only. Omit it, or set `run = "live"`, and the watch page
+sends the value while the thumb moves (`input`, debounced). `run = "release"`
+updates the readout during the drag and sends the value when the thumb is
+released (`change`). `run` on a `number` or `option`, and any key the table
+does not list, is a widget error (a `[!CAUTION]` callout).
 
 An `option` widget renders as a set of radio buttons:
 
@@ -1135,11 +1146,31 @@ label = "Window"
   resets to the declared default.
 - **Validation.** Out-of-range numbers clamp to the declared bounds and
   an `option` accepts only a declared choice; invalid updates are ignored.
-- **Outside the watch server** — i.e. batch `notebook render` to HTML,
-  Markdown, LaTeX, PDF, or JSON — `widget("name")` returns the declared
-  **default**, so the rendered artifact is a snapshot at default values.
-  Static formats show the control's label and value rather than an
-  interactive element.
+- **Placement.** One or more `rustlab-widget` fences immediately before
+  a rustlab cell — only blank lines and cell directives (`<!-- grid: -->`,
+  `<!-- hide -->`, `<!-- details: -->`, `<!-- caption: -->`,
+  `<!-- code: -->`) between them — become that cell's control panel: one
+  card, controls in a 16rem column, the plot on the right. Under 800px
+  the controls stack above the plot. The panel lives inside the cell's
+  section, so it does not collide with the comments column. A heading,
+  paragraph, list, callout, or other fence in between leaves each widget
+  as a full-width bar. A bar that a later cell reads shows
+  `drives: Figure N`, linking to that cell's plot (`#plot-N` or `#anim-N`;
+  the label is always "Figure"). A panel does not repeat the link. A
+  widget change outlines the plots that re-rendered for that change.
+  The page sends a request id with the value; the server echoes it on
+  that render's update. A file save does not carry the id, and a
+  preempted widget render publishes nothing, so neither one flashes.
+  What re-runs
+  is unchanged: the first block that reads the widget, and everything
+  downstream.
+- **Outside the watch server** — batch `notebook render` — `widget("name")`
+  returns the declared **default**, so the artifact is a snapshot at
+  default values. Batch HTML uses the same panel or bar, with every
+  control disabled and the note
+  `default values — open with notebook watch to interact`. Markdown,
+  LaTeX, PDF, and JSON still show the label and the value
+  (Markdown `**Label:**` plus the value in backticks; LaTeX `\textbf{Label:}` and `\texttt{value}`), not a control.
 - A malformed `rustlab-widget` block renders as a `[!CAUTION]` callout and
   is skipped; `widget("name")` for an undeclared name is a hard error in
   that code block (a renamed widget surfaces immediately rather than

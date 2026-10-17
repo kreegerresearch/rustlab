@@ -103,6 +103,14 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A notebook widget change no longer flashes plots on the next save.**
+  The watch page used to set a flag when it sent `widget_update` and
+  outline plots on whichever reload arrived next. A widget render that
+  was preempted never published, so the flag stayed set and a later
+  file save flashed. The page now sends a request id. The server echoes
+  it only on the envelope that render publishes. The page outlines plots
+  when the id matches, and drops the id when the envelope has none or a
+  different one.
 - **`svd` no longer panics on a wide matrix, and `pinv` is available.**
   The real SVD built `U` with one column per row, then wrote a column for
   every eigenvalue of `A'A` above `1e-12`. On a matrix with more columns
@@ -210,6 +218,20 @@ should re-validate against those entries when upgrading.
   view axis. SVG/PNG surfaces are still the static isometric wireframe.
 
 ### Added
+- **Notebook widgets can sit beside the plot they drive.** A
+  `rustlab-widget` fence immediately above a rustlab cell (blank lines
+  and cell directives only) becomes that cell's control panel: one card,
+  controls in a 16rem column, the plot on the right, stacked above the
+  plot under 800px. A heading, paragraph, or callout between them keeps
+  the full-width bar, which gains a `drives: Figure N` link to each plot
+  the cell that read the widget produced. Re-run scope is unchanged.
+  Batch HTML shows the same panel or bar with the controls disabled and
+  the note `default values — open with notebook watch to interact`.
+  Markdown, LaTeX, PDF, and JSON still show label = value. A slider may
+  set `run = "release"` to send its value when the thumb is released;
+  `run` on a number or option, and any unknown key, is a widget error.
+  Example: `examples/notebooks/widget_panel.md`. `widgets_demo.md` stays
+  bars.
 - **`pinv`, `cumtrapz`, `fzero`, `fliplr`, `nextpow2`, `diff`, 1-D `gradient`, and `rng`.**
   `gradient` of a vector (or a `1×N` / `N×1` matrix) is the 1-D MATLAB
   gradient and keeps that orientation. A true matrix is still the 2-D
