@@ -1157,7 +1157,11 @@ label = "Window"
   as a full-width bar. A bar that a later cell reads shows
   `drives: Figure N`, linking to that cell's plot (`#plot-N` or `#anim-N`;
   the label is always "Figure"). A panel does not repeat the link. A
-  widget change outlines the plots that just re-rendered. What re-runs
+  widget change outlines the plots that re-rendered for that change.
+  The page sends a request id with the value; the server echoes it on
+  that render's update. A file save does not carry the id, and a
+  preempted widget render publishes nothing, so neither one flashes.
+  What re-runs
   is unchanged: the first block that reads the widget, and everything
   downstream.
 - **Outside the watch server** — batch `notebook render` — `widget("name")`

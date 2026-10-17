@@ -2473,7 +2473,7 @@ mod tests {
             before_ab
         );
 
-        render_loop::schedule_render(theme, state, nb_a, None);
+        render_loop::schedule_render(theme, state, nb_a, None, None);
         let msg = tokio::time::timeout(std::time::Duration::from_secs(20), live_a.recv()).await;
         assert!(
             matches!(msg, Ok(Ok(_))),

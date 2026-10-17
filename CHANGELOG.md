@@ -103,6 +103,14 @@ should re-validate against those entries when upgrading.
   is accepted. PNG, JPEG, GIF, and WebP prose images are unchanged.
 
 ### Fixed
+- **A notebook widget change no longer flashes plots on the next save.**
+  The watch page used to set a flag when it sent `widget_update` and
+  outline plots on whichever reload arrived next. A widget render that
+  was preempted never published, so the flag stayed set and a later
+  file save flashed. The page now sends a request id. The server echoes
+  it only on the envelope that render publishes. The page outlines plots
+  when the id matches, and drops the id when the envelope has none or a
+  different one.
 - **`svd` no longer panics on a wide matrix, and `pinv` is available.**
   The real SVD built `U` with one column per row, then wrote a column for
   every eigenvalue of `A'A` above `1e-12`. On a matrix with more columns
