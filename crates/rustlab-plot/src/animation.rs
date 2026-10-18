@@ -6,8 +6,9 @@
 //!   with a clean canvas while keeping subplot layout, axes, titles, and
 //!   limits intact.
 //! - `render_animation_html(path, fps)` — drains the buffer and writes a
-//!   single self-contained Plotly HTML document with play/pause buttons and
-//!   a per-frame slider.
+//!   Plotly HTML document with play/pause buttons and a per-frame slider.
+//!   Plotly itself is a sibling `assets/plotly.min.js`, not a CDN script
+//!   and not inlined into the page.
 //!
 //! The buffer is cleared whenever `figure()` / `figure(N)` is called, so the
 //! "start a new animation" pattern is `figure(); for ... frame() ... end;
@@ -114,15 +115,16 @@ pub fn render_animation_html(path: &str, fps: f64) -> Result<(), PlotError> {
         ));
     }
     let theme = crate::theme::default_theme();
+    crate::vendor::ensure_plotly_asset(path)?;
     let html = render_animation_doc(&frames, fps, theme.colors());
     std::fs::write(path, html).map_err(|e| PlotError::FileOutput(e.to_string()))
 }
 
-/// Build a self-contained Plotly HTML document for the given frames. The
-/// document includes a CDN script tag, a body wrapper, and the animation
-/// `<div>` from `render_animation_inline`. Used both by `render_animation_html`
-/// (writes to disk) and by the notebook markdown emitter (writes per-anim
-/// HTML files into the plot directory).
+/// Build a Plotly HTML document for the given frames. The document
+/// references a sibling `assets/plotly.min.js` (see
+/// [`crate::vendor::ensure_plotly_asset`], which `render_animation_html`
+/// calls before writing), plus a body wrapper and the animation `<div>`
+/// from `render_animation_inline`.
 pub fn render_animation_doc(frames: &[FigureState], fps: f64, theme: &ThemeColors) -> String {
     let inner = render_animation_inline(frames, "plot", fps, theme);
     let mut html = String::with_capacity(4096 + inner.len());
@@ -132,7 +134,7 @@ pub fn render_animation_doc(frames: &[FigureState], fps: f64, theme: &ThemeColor
 <head>
 <meta charset="utf-8">
 <title>RustLab Animation</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="{plotly}"></script>
 <style>
   body {{ margin: 0; background: {bg}; color: {text}; font-family: sans-serif; }}
   #plot {{ width: 100vw; height: 100vh; }}
@@ -142,6 +144,7 @@ pub fn render_animation_doc(frames: &[FigureState], fps: f64, theme: &ThemeColor
 "##,
         bg = theme.bg,
         text = theme.text,
+        plotly = crate::vendor::PLOTLY_REL_SRC,
     ));
     html.push_str(&inner);
     html.push_str(
@@ -178,9 +181,7 @@ pub fn render_animation_inline(
         let private_id = format!("__{div_id}_frame_{idx}");
         let frame_div = render_figure_plotly_div(fr, &private_id, theme);
         if let Some(data_arr) = extract_data_array(&frame_div, &private_id) {
-            frame_blocks.push_str(&format!(
-                "  {{ name: \"{idx}\", data: {data_arr} }},\n"
-            ));
+            frame_blocks.push_str(&format!("  {{ name: \"{idx}\", data: {data_arr} }},\n"));
         }
     }
 
@@ -304,11 +305,7 @@ pub fn render_animation_gif(path: &str, fps: f64) -> Result<(), PlotError> {
 /// Write the given frames out as an animated GIF without touching the
 /// thread-local buffer. Used by the notebook renderer to flush captured
 /// animations.
-pub fn write_animation_gif(
-    path: &str,
-    frames: &[FigureState],
-    fps: f64,
-) -> Result<(), PlotError> {
+pub fn write_animation_gif(path: &str, frames: &[FigureState], fps: f64) -> Result<(), PlotError> {
     if frames.is_empty() {
         return Err(PlotError::FileOutput(
             "write_animation_gif: no frames".to_string(),
@@ -320,13 +317,18 @@ pub fn write_animation_gif(
     // Render the first frame to capture canvas dimensions; subsequent frames
     // share the same width/height (subplot grid is canonical across an
     // animation per the plan).
-    let (first_buf, w, h) = crate::file::render_figure_state_to_rgb_buffer(&frames[0], theme_colors)?;
-    let w_u16: u16 = w
-        .try_into()
-        .map_err(|_| PlotError::FileOutput(format!("render_animation_gif: width {w} exceeds GIF u16 limit (65535)")))?;
-    let h_u16: u16 = h
-        .try_into()
-        .map_err(|_| PlotError::FileOutput(format!("render_animation_gif: height {h} exceeds GIF u16 limit (65535)")))?;
+    let (first_buf, w, h) =
+        crate::file::render_figure_state_to_rgb_buffer(&frames[0], theme_colors)?;
+    let w_u16: u16 = w.try_into().map_err(|_| {
+        PlotError::FileOutput(format!(
+            "render_animation_gif: width {w} exceeds GIF u16 limit (65535)"
+        ))
+    })?;
+    let h_u16: u16 = h.try_into().map_err(|_| {
+        PlotError::FileOutput(format!(
+            "render_animation_gif: height {h} exceeds GIF u16 limit (65535)"
+        ))
+    })?;
 
     let file = std::fs::File::create(path).map_err(|e| PlotError::FileOutput(e.to_string()))?;
     let mut encoder = gif::Encoder::new(file, w_u16, h_u16, &[])
@@ -354,8 +356,7 @@ pub fn write_animation_gif(
         .map_err(|e| PlotError::FileOutput(format!("gif write_frame: {e}")))?;
 
     for fr in frames.iter().skip(1) {
-        let (buf, fw, fh) =
-            crate::file::render_figure_state_to_rgb_buffer(fr, theme_colors)?;
+        let (buf, fw, fh) = crate::file::render_figure_state_to_rgb_buffer(fr, theme_colors)?;
         if fw != w || fh != h {
             return Err(PlotError::FileOutput(format!(
                 "render_animation_gif: frame size {fw}x{fh} differs from base {w}x{h}",
@@ -527,11 +528,28 @@ mod tests {
             push_frame();
             clear_figure_traces();
         }
-        let tmp = std::env::temp_dir().join("rustlab_anim_three.html");
+        let dir = std::env::temp_dir().join(format!("rustlab-anim-html-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("three.html");
         render_animation_html(tmp.to_str().unwrap(), 10.0).expect("render");
         let body = std::fs::read_to_string(&tmp).expect("read back");
+        assert!(
+            !crate::vendor::html_loads_remote_script_or_style(&body),
+            "animation HTML loaded a remote script or stylesheet"
+        );
+        assert!(body.contains("src=\"assets/plotly.min.js\""));
+        let js_len = std::fs::metadata(dir.join("assets/plotly.min.js"))
+            .unwrap()
+            .len();
+        assert!(
+            js_len > 1_000_000,
+            "sibling plotly bundle too small: {js_len}"
+        );
         assert!(body.contains("Plotly.newPlot("), "must contain Plotly init");
-        assert!(body.contains("var frames_plot = ["), "must declare frames array");
+        assert!(
+            body.contains("var frames_plot = ["),
+            "must declare frames array"
+        );
         assert!(body.contains(r#"name: "1""#), "frame name 1");
         assert!(body.contains(r#"name: "2""#), "frame name 2");
         // Frame 0 is the base; only frames 1..N appear in the addFrames block.
@@ -539,7 +557,7 @@ mod tests {
         assert!(body.contains("Play"), "play button");
         assert!(body.contains("Pause"), "pause button");
         assert!(body.contains("sliders:"), "slider config");
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -548,10 +566,12 @@ mod tests {
         set_heatmap_2x2(1.0);
         push_frame();
         push_frame();
-        let tmp = std::env::temp_dir().join("rustlab_anim_clear.html");
+        let dir = std::env::temp_dir().join(format!("rustlab-anim-clear-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("clear.html");
         render_animation_html(tmp.to_str().unwrap(), 10.0).expect("render");
         assert_eq!(frames_len(), 0, "render should drain buffer");
-        let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

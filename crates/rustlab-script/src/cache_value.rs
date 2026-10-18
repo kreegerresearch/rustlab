@@ -472,7 +472,9 @@ mod tests {
                 x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| val_eq(a, b))
             }
             (Value::Struct(x), Value::Struct(y)) => {
-                x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| val_eq(v, w)))
+                x.len() == y.len()
+                    && x.iter()
+                        .all(|(k, v)| y.get(k).is_some_and(|w| val_eq(v, w)))
             }
             (Value::StringArray(x), Value::StringArray(y)) => x == y,
             (Value::SparseVector(x), Value::SparseVector(y)) => x == y,
@@ -539,7 +541,7 @@ mod tests {
         assert!(val_eq(&v, &rt(&v).unwrap()));
 
         let mut m = std::collections::HashMap::new();
-        m.insert("x".to_string(), Value::Scalar(3.14));
+        m.insert("x".to_string(), Value::Scalar(3.25));
         m.insert("name".to_string(), Value::Str("circle".into()));
         let v = Value::Struct(m);
         assert!(val_eq(&v, &rt(&v).unwrap()));

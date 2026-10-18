@@ -63,6 +63,8 @@ examples/notebooks/*.s2p
 # them here keeps the policy explicit.
 gallery/*.html
 gallery/*.gif
+# Vendored Plotly + KaTeX copied beside gallery HTML (~5 MB, once).
+gallery/assets/
 !gallery/
 !gallery/**/*.svg
 

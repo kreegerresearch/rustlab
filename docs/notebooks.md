@@ -240,7 +240,10 @@ Behaviour:
   and fails loud on collision.
 - **Embedded KaTeX + Plotly.** The page references local `/assets/`
   paths, not jsdelivr/cdn.plot.ly. Works fully offline (e.g. tablet
-  over an SSH tunnel on a plane).
+  over an SSH tunnel on a plane). Batch `render -f html` copies those
+  same bytes into an `assets/` directory next to the output (one shared
+  copy for a directory render) and rewrites the URLs to be relative, so
+  the files open from `file://` the same way.
 - **Source `.md` is never modified** (unless you opt into
   `--editable`, the in-browser editor — see below). No
   `_attachments/` directory, no `<!-- Generated -->` header, no
@@ -1533,7 +1536,15 @@ and `--rl-plot-grid` are declared for future chrome.
 
 ### HTML (default)
 
-Self-contained HTML with:
+HTML with Plotly and KaTeX loaded from a sibling `assets/` directory
+(vendored in the binary, written once per output directory — not a CDN,
+and not inlined into each page). A single notebook writes `assets/`
+next to the `.html`. A directory render writes one `{out}/assets/` and
+nested pages reference it with `../`. Open the HTML from that folder;
+`file://` needs no network. `notebook watch` serves the same bytes at
+`/assets/` instead of copying them.
+
+The page also has:
 - Catppuccin themes via `-t` / `--theme`: `mocha` (default; alias `dark`),
   `macchiato`, `frappe`, `latte` (alias `light`). The default is
   overridable via `~/.rustlabrc` `[notebook] theme` (or `[plot] theme`

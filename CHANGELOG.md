@@ -9,6 +9,18 @@ should re-validate against those entries when upgrading.
 ## 0.3.9
 
 ### Breaking / behavior changes
+- **HTML output no longer loads Plotly or KaTeX from a CDN.** Notebook
+  HTML (`rustlab-notebook render -f html`), `savefig("….html")`, and
+  `saveanim("….html")` reference a sibling `assets/` directory written
+  next to the file. A directory render writes that tree once, at the
+  output root, and nested pages use `../assets/…`. `notebook watch` is
+  unchanged: it still serves the same vendored bytes at `/assets/`.
+  Inlining was rejected — Plotly is about 4.4 MB and KaTeX (CSS, JS,
+  woff2 fonts) about 0.6 MB, so a directory of notebooks would repeat
+  ~5 MB on every page. Copy the HTML and its `assets/` directory
+  together; opening the HTML from `file://` needs no network. A page
+  that previously depended on `cdn.plot.ly` or `cdn.jsdelivr.net` being
+  reachable now depends on that sibling directory instead.
 - **`README.md` is a notebook.** Directory `render`, `watch`, `check`,
   `validate`, `clean`, and `strip` include `README.md` in any ASCII case
   (`readme.md`, `Readme.md`, a nested `ch/README.md`), the same way they

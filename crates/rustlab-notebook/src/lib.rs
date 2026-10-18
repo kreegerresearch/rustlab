@@ -1499,6 +1499,25 @@ fn render_output(
             let _source_open = render::NotebookSourceOpenGuard::set(notebook_open);
             let html =
                 render::render_html(title, rendered, &plot_dir, &href_prefix, theme, nav, link);
+            // Template emits `/assets/…` (what `notebook watch` serves).
+            // Rewrite any leftover CDN URL, then make the four library
+            // URLs relative so the page works from `file://`.
+            let html = server::assets::rewrite_cdn_urls(&html);
+            // A directory page's link mode records how deep it sits
+            // (`ch2`, `ch1/sec`). Climbing that many directories from
+            // the HTML file lands on the output root, so every page
+            // shares one `assets/` tree. A single-file render has an
+            // empty relative dir and writes `assets/` beside itself.
+            let asset_root = html_asset_root_for(out_path, link);
+            let prefix = asset_href_prefix(out_path, &asset_root);
+            let html = server::assets::relativize_batch_assets(&html, &prefix);
+            let assets_dir = asset_root.join("assets");
+            server::assets::write_batch_assets(&assets_dir).map_err(|e| {
+                format!(
+                    "cannot write notebook HTML assets to {}: {e}",
+                    assets_dir.display()
+                )
+            })?;
             write_output(out_path, html.as_bytes());
         }
         Format::Markdown { obsidian } => {
@@ -2218,6 +2237,70 @@ pub(crate) fn href_between(from_rel_dir: &str, target_rel: &str) -> String {
     format!("{}{}", "../".repeat(ups), target_rel)
 }
 
+/// Output directory that should hold the shared `assets/` tree for this
+/// HTML file. Nested directory pages record their depth on `link`
+/// (`"ch2"`, `"ch1/sec"`); climbing that many parents from the file
+/// reaches the collection output root. An empty relative dir (a
+/// single-file render, or a page at the output root) keeps the assets
+/// beside the file.
+fn html_asset_root_for(html_path: &Path, link: &render::LinkMode) -> PathBuf {
+    let page_dir = html_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let rel_dir = match link {
+        render::LinkMode::Static {
+            current_rel_dir, ..
+        }
+        | render::LinkMode::Server {
+            current_rel_dir, ..
+        } => current_rel_dir.as_str(),
+    };
+    let ups = if rel_dir.is_empty() {
+        0
+    } else {
+        rel_dir.split('/').count()
+    };
+    let mut root = page_dir.to_path_buf();
+    for _ in 0..ups {
+        match root.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => root = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    root
+}
+
+/// Relative URL prefix from the directory of `html_path` to
+/// `{asset_root}/assets/`, ending in `/`. A page written in `asset_root`
+/// gets `assets/`; one directory down gets `../assets/`.
+fn asset_href_prefix(html_path: &Path, asset_root: &Path) -> String {
+    use std::path::Component;
+    let html_dir = html_path.parent().unwrap_or_else(|| Path::new(""));
+    let from: Vec<Component> = html_dir
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    let to: Vec<Component> = asset_root
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    let mut shared = 0;
+    while shared < from.len() && shared < to.len() && from[shared] == to[shared] {
+        shared += 1;
+    }
+    let mut prefix = String::new();
+    for _ in shared..from.len() {
+        prefix.push_str("../");
+    }
+    for c in to.iter().skip(shared) {
+        prefix.push_str(&c.as_os_str().to_string_lossy());
+        prefix.push('/');
+    }
+    prefix.push_str("assets/");
+    prefix
+}
+
 /// Listing order for a notebook collection: explicit frontmatter `order:`
 /// first (ascending), then unordered notebooks. Ties and the unordered
 /// group use [`rel_path_cmp`]: byte order of the collection-relative
@@ -2366,6 +2449,97 @@ mod tests {
             compare_notebook_order((Some(1), "zzz.md"), (None, "README.md")),
             Less
         );
+    }
+
+    #[test]
+    fn html_asset_root_climbs_to_the_directory_output() {
+        let link = render::LinkMode::Static {
+            known: None,
+            current_rel_dir: "ch1/sec".into(),
+        };
+        assert_eq!(
+            html_asset_root_for(Path::new("/tmp/out/ch1/sec/a.html"), &link),
+            Path::new("/tmp/out")
+        );
+        let root_page = render::LinkMode::single_file();
+        assert_eq!(
+            html_asset_root_for(Path::new("/tmp/out/a.html"), &root_page),
+            Path::new("/tmp/out")
+        );
+    }
+
+    #[test]
+    fn asset_prefix_sits_beside_a_file_and_climbs_out_of_nested_pages() {
+        assert_eq!(
+            asset_href_prefix(Path::new("/tmp/out/a.html"), Path::new("/tmp/out")),
+            "assets/"
+        );
+        assert_eq!(
+            asset_href_prefix(Path::new("/tmp/out/ch1/a.html"), Path::new("/tmp/out")),
+            "../assets/"
+        );
+        assert_eq!(
+            asset_href_prefix(Path::new("/tmp/out/ch1/sec/a.html"), Path::new("/tmp/out")),
+            "../../assets/"
+        );
+        assert_eq!(
+            asset_href_prefix(Path::new("note.html"), Path::new("")),
+            "assets/"
+        );
+    }
+
+    #[test]
+    fn batch_html_ships_plotly_and_katex_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("note.md");
+        std::fs::write(&src, "# Note\n\n$E = mc^2$\n").unwrap();
+        let out = dir.path().join("note.html");
+        cmd_render(src, Some(out.clone()), Format::Html, Theme::Dark.colors()).unwrap();
+        let html = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            !rustlab_plot::html_loads_remote_script_or_style(&html),
+            "single-file HTML loaded a remote script or stylesheet"
+        );
+        assert!(html.contains("src=\"assets/plotly.min.js\""));
+        assert!(html.contains("href=\"assets/katex/katex.min.css\""));
+        assert!(!html.contains("cdn.plot.ly"));
+        assert!(!html.contains("cdn.jsdelivr.net"));
+        let plotly = std::fs::metadata(dir.path().join("assets/plotly.min.js")).unwrap();
+        assert!(plotly.len() > 1_000_000, "plotly copy too small");
+        assert!(dir.path().join("assets/katex/katex.min.css").is_file());
+        assert!(dir
+            .path()
+            .join("assets/katex/fonts/KaTeX_Main-Regular.woff2")
+            .is_file());
+
+        let col = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(col.path().join("ch2")).unwrap();
+        std::fs::write(col.path().join("intro.md"), "# Intro\n").unwrap();
+        std::fs::write(col.path().join("ch2/deep.md"), "# Deep\n\n$x$\n").unwrap();
+        let outd = tempfile::tempdir().unwrap();
+        cmd_render_dir(
+            col.path().to_path_buf(),
+            Some(outd.path().to_path_buf()),
+            Format::Html,
+            Theme::Dark.colors(),
+            None,
+        )
+        .unwrap();
+        let nested = std::fs::read_to_string(outd.path().join("ch2/deep.html")).unwrap();
+        let root_page = std::fs::read_to_string(outd.path().join("intro.html")).unwrap();
+        assert!(!rustlab_plot::html_loads_remote_script_or_style(&nested));
+        assert!(!rustlab_plot::html_loads_remote_script_or_style(&root_page));
+        assert!(nested.contains("../assets/plotly.min.js"));
+        assert!(nested.contains("../assets/katex/katex.min.js"));
+        assert!(root_page.contains("src=\"assets/plotly.min.js\""));
+        assert!(!root_page.contains("../assets/"));
+        assert!(!outd.path().join("ch2/assets").exists());
+        let shared = std::fs::metadata(outd.path().join("assets/plotly.min.js")).unwrap();
+        assert!(shared.len() > 1_000_000);
+        assert!(outd
+            .path()
+            .join("assets/katex/fonts/KaTeX_Main-Regular.woff2")
+            .is_file());
     }
 
     #[test]

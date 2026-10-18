@@ -973,10 +973,10 @@ pub fn render_html_nonced(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
-<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"{nonce_attr}></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"{nonce_attr}></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"{nonce_attr}></script>
+<script src="/assets/plotly.min.js"{nonce_attr}></script>
+<link rel="stylesheet" href="/assets/katex/katex.min.css">
+<script defer src="/assets/katex/katex.min.js"{nonce_attr}></script>
+<script defer src="/assets/katex/contrib/auto-render.min.js"{nonce_attr}></script>
 <script{nonce_attr}>
 // Page init. Lives in a real script element (not on* attributes) so it also
 // runs under the watch server's CSP, which forbids inline event handlers.
@@ -4846,7 +4846,10 @@ mod tests {
         assert!(html.contains("var(--rl-"), "{html}");
         let table_at = html.find("<table class=\"rl-table\">").expect("table");
         let pre_at = html.find("<pre class=\"output\">").expect("pre");
-        assert!(pre_at < table_at, "the text form stays in <pre>, the table follows");
+        assert!(
+            pre_at < table_at,
+            "the text form stays in <pre>, the table follows"
+        );
         assert!(html.contains("</pre>\n<table class=\"rl-table\">"));
 
         let forged = format!("{TABLE_HTML_BEGIN}<script>alert(1)</script>{TABLE_HTML_END}");
@@ -5236,8 +5239,10 @@ w = 4
             None,
             &LinkMode::single_file(),
         );
-        assert!(html.contains("katex"));
-        assert!(html.contains("auto-render"));
+        assert!(html.contains("/assets/katex/katex.min.css"));
+        assert!(html.contains("/assets/katex/contrib/auto-render.min.js"));
+        assert!(!html.contains("cdn.jsdelivr.net"));
+        assert!(!html.contains("cdn.plot.ly"));
         // Watch CSP (nonce + strict-dynamic) blocks inline event handlers,
         // so auto-render must start from a script body, not onload=.
         assert!(html.contains("DOMContentLoaded"));
@@ -5260,7 +5265,8 @@ w = 4
             None,
             &LinkMode::single_file(),
         );
-        assert!(html.contains("plotly"));
+        assert!(html.contains("/assets/plotly.min.js"));
+        assert!(!rustlab_plot::html_loads_remote_script_or_style(&html));
     }
 
     #[test]
