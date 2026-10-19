@@ -1,13 +1,13 @@
 # Perf flywheel iteration 02
 
-**Status:** complete (PR #79, awaiting merge)
+**Status:** complete (merged in 0.3.11, PR #79, `78b6c49`)
 **Current phase:** done — response note below
 **Branch:** `feature/perf-iter02` (one PR, a commit per item, version 0.3.11)
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md`
 (measured on rustlab 0.3.10, `1ebb762`, Apple M4 Max, 2026-10-18; training
 step 9,542–9,967 tok/s; success at 14,000 tok/s with the gate passing).
 Protocol: `../rustlab_llm/docs/perf-flywheel.md`. Previous iteration:
-[`closed/perf_flywheel_iter01.md`](closed/perf_flywheel_iter01.md).
+[`perf_flywheel_iter01.md`](perf_flywheel_iter01.md).
 
 Self-check (records nothing):
 
@@ -220,7 +220,7 @@ builtins, which a `parmap` worker cannot use (the cores are already busy).
 
 ## 5. R4: real-valued storage (design only)
 
-Done: [`real_storage.md`](real_storage.md). The storage choice goes inside
+Done: [`real_storage.md`](../real_storage.md). The storage choice goes inside
 the copy-on-write handle (`Store<D>`: an authoritative real buffer, or complex,
 with a widened-complex cache behind `Deref`), so the ~1,150 unconverted match
 sites stay correct and only get slower; `[widen]` / `[promote]` profile rows
@@ -243,8 +243,7 @@ Findings while writing it:
 ## Response note (filled in at the end)
 
 ## Perf loop iteration 02: response
-Revision: `73d24a0` on `feature/perf-iter02` (rustlab 0.3.11, PR #79); the
-squash-merge revision on `main` replaces it once merged. Measured 2026-10-19,
+Revision: `78b6c49` on `main` (rustlab 0.3.11, PR #79), merged 2026-10-19. Measured 2026-10-19,
 Apple M4 Max, two `perf-check` runs.
 
 | # | Status | What changed | Self-check numbers (two runs) |
