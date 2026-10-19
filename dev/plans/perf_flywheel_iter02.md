@@ -1,7 +1,7 @@
 # Perf flywheel iteration 02
 
-**Status:** in progress
-**Current phase:** response note (all five items done)
+**Status:** complete (PR #79, awaiting merge)
+**Current phase:** done — response note below
 **Branch:** `feature/perf-iter02` (one PR, a commit per item, version 0.3.11)
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md`
 (measured on rustlab 0.3.10, `1ebb762`, Apple M4 Max, 2026-10-18; training
@@ -241,3 +241,42 @@ Findings while writing it:
   Fixed: NPY / CSV are exact, TOML stores complex values as a table of parts.
 
 ## Response note (filled in at the end)
+
+## Perf loop iteration 02: response
+Revision: `73d24a0` on `feature/perf-iter02` (rustlab 0.3.11, PR #79); the
+squash-merge revision on `main` replaces it once merged. Measured 2026-10-19,
+Apple M4 Max, two `perf-check` runs.
+
+| # | Status | What changed | Self-check numbers (two runs) |
+|---|---|---|---|
+| R1 | partial | Copy-on-write arrays (`Shared<T>`): reading a variable, passing an argument, a lambda capture or a `parmap` task shares the buffer. `reshape` is one tiled transpose each way (nothing when the order is unchanged); one-row `[…]` fills one preallocated buffer. | `flat.reshape_811k` 0.124–0.130 ms (≤ 0.5, was 4.0); `flat.flatten_811k` 0.41–0.45 ms (≤ 1.5, was 4.0); `flat.unflatten_811k` 1.35–1.46 ms (≤ 2, was 4.7); `par.grad_flat_B8` 43.0–44.4 ms = 1.69–1.83 × `model.grad_flat` 24.3–25.5 ms (target 1.3×, not met) |
+| R2 | landed | Region writes by row segment, an Fx-hashed variable table rebound in place, parallel scalar-function builtins from 16,384 elements, plus the copies C11 removed. | `model.forward` 9.18–9.53 ms (≤ 10, was 14.8); `model.backward` 14.34–14.61 ms (≤ 15, was 22.1); `prim.scalar_loop_1e5` 7.36–7.46 ms (≤ 10, was 13.5) |
+| R3 | landed | `A' * B`, `A * B'`, `A' * B'` (and `.'`) pass transposed views and a conjugate flag to `matmul_conj`; the result is row-major. | `prim.matmul_A_Bt_129x128x128` 47.2–47.3 GFLOP/s (≥ 45, was 37.6); `prim.matmul_At_B_512x129x512` 56.8–57.6 GFLOP/s (≥ 53); no `[transpose]` rows in `--profile=ops perf/profile_step.rlab` |
+| R4 | design | `dev/plans/real_storage.md`: an authoritative real buffer with a lazily widened complex view, `[widen]` / `[promote]` profile rows, builtin migration order. First slice planned for iteration 03, acceptance trajectory bit-identical to 0.3.11. | `parmap` out still 101,376 KB |
+
+Training step (`e2e.train_step_B8`): **9,542–9,967 → 18,770–19,010 tok/s
+(≈ 1.9–2.0×)**, above the 14,000 tok/s success line. Gate PASS on both runs:
+gradient check 7.93e-08, trajectory worst relative difference 2.03e-16 (was
+exact; see the division change below).
+
+Notes for `rustlab_llm`:
+- **Behavior changes in 0.3.11** (CHANGELOG *Breaking / behavior changes*):
+  array division by a real number now divides each part, so `x ./ y` equals
+  scalar `x / y` bit for bit (about 35 % of random pairs moved one ulp, and
+  `[1e200] ./ [1e200]` is 1 instead of `NaN`). This is the 2.0e-16 trajectory
+  move; refresh the reference if you want an exact match again. Negating a
+  real value leaves no `-0` imaginary part (`angle(-[1, 2])` is `[π, π]`).
+  `save` keeps every nonzero imaginary part: NPY/CSV write real data only
+  when it is exactly zero; TOML stores complex values as a
+  `__complex_re` / `__complex_im` table.
+- **Checkpoints are already 8 bytes per number.** `ckpt_001000.npz` is
+  6,488,804 bytes for 811k parameters; 19.5 MB is θ, m and v together. The
+  request's 9.7 MB would need `f32`, which R4 does not propose.
+- **The parallel ratio is the open item.** Worker rows from the profile:
+  `parmap:zeros` allocates 299,885 KB, `parmap:outer` returns 256,194 KB over
+  896 calls, `parmap:reshape` still moves 103 MB (a matrix reshape is a
+  transpose of row-major storage). Real storage halves all three; on your
+  side, the `outer` calls in the backward pass are the largest allocation a
+  library change could remove.
+- `angle` now accepts matrices and rank-3 tensors (it errored before).
+
