@@ -393,6 +393,90 @@ pub(crate) fn par_block_copy(
     Some(ndarray::Array2::from_shape_vec((nr, nc), out).expect("nr × nc elements"))
 }
 
+/// A new length-`n` buffer filled by `k(offset, chunk)`, which must write
+/// every element of each chunk it is given; in parallel chunks when long.
+pub(crate) fn par_fill(n: usize, k: &(dyn Fn(usize, &mut [MaybeUninit<C64>]) + Sync)) -> Vec<C64> {
+    drive_new(n, &|o, c: &mut [MaybeUninit<C64>]| {
+        k(o, c);
+        NO_FLAGS
+    })
+    .0
+}
+
+/// The transpose of the row-major `rows × cols` slice `src` (conjugated
+/// when `conj`), as a row-major `cols × rows` buffer: element `j·rows + i`
+/// is `src[i·cols + j]`. Written in 32 × 32 tiles so reads and writes stay
+/// in cache, in parallel chunks when large.
+pub(crate) fn par_transpose(src: &[C64], rows: usize, cols: usize, conj: bool) -> Vec<C64> {
+    let n = rows * cols;
+    assert_eq!(src.len(), n);
+    if n == 0 {
+        return Vec::new();
+    }
+    let k = |o: usize, dst: &mut [MaybeUninit<C64>]| {
+        if conj {
+            transpose_chunk::<true>(src, rows, cols, o, dst)
+        } else {
+            transpose_chunk::<false>(src, rows, cols, o, dst)
+        }
+    };
+    par_fill(n, &k)
+}
+
+/// Output positions `o..o + dst.len()` of `par_transpose`: the whole
+/// output rows in tiles, a partial first or last row element by element.
+fn transpose_chunk<const CONJ: bool>(src: &[C64], rows: usize, cols: usize, o: usize, dst: &mut [MaybeUninit<C64>]) {
+    const TILE: usize = 32;
+    let f = |x: C64| if CONJ { x.conj() } else { x };
+    let end = o + dst.len();
+    // One output row's positions lo..hi (0-based within row j).
+    let mut part = |j: usize, lo: usize, hi: usize| {
+        for i in lo..hi {
+            dst[j * rows + i - o].write(f(src[i * cols + j]));
+        }
+    };
+    let (j_first, j_last) = (o / rows, (end - 1) / rows);
+    if j_first == j_last {
+        return part(j_first, o - j_first * rows, end - j_first * rows);
+    }
+    // Whole rows j_lo..j_hi.
+    let mut j_lo = j_first;
+    if o % rows != 0 {
+        part(j_first, o % rows, rows);
+        j_lo += 1;
+    }
+    let j_hi = end / rows;
+    if end % rows != 0 {
+        part(j_last, 0, end % rows);
+    }
+    // One side of each tile is strided. A stride with many factors of two
+    // maps the tile's rows to a few cache sets and thrashes (129 × 512 read
+    // across its 512 columns ran 1.5× slower than written across its 129
+    // rows), so stride the side with fewer; on a tie, write contiguously.
+    let write_runs = cols.trailing_zeros() <= rows.trailing_zeros();
+    for j0 in (j_lo..j_hi).step_by(TILE) {
+        let j1 = (j0 + TILE).min(j_hi);
+        for i0 in (0..rows).step_by(TILE) {
+            let i1 = (i0 + TILE).min(rows);
+            if write_runs {
+                for j in j0..j1 {
+                    let out = &mut dst[j * rows + i0 - o..j * rows + i1 - o];
+                    for (d, i) in out.iter_mut().zip(i0..i1) {
+                        d.write(f(src[i * cols + j]));
+                    }
+                }
+            } else {
+                for i in i0..i1 {
+                    let row = &src[i * cols + j0..i * cols + j1];
+                    for (j, &x) in (j0..j1).zip(row) {
+                        dst[j * rows + i - o].write(f(x));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `v[start..start+n]` copied in parallel, or `None` when short.
 pub(crate) fn par_vector_copy(v: &rustlab_core::CVector, start: usize, n: usize) -> Option<rustlab_core::CVector> {
     if n < PAR_MIN_LEN {
@@ -639,5 +723,24 @@ mod tests {
         let out = binop(BinOp::Mul, Operand::Owned(v.clone()), Operand::Owned(Value::Scalar(3.0))).unwrap();
         assert_eq!(bits(&v), bits(&vec_of(&[(1.0, 0.0), (2.0, 0.0)])));
         assert_eq!(bits(&out), bits(&vec_of(&[(3.0, 0.0), (6.0, 0.0)])));
+    }
+
+    #[test]
+    fn par_transpose_matches_the_definition() {
+        // Serial, and parallel with output rows split across chunks.
+        for (rows, cols) in [(1, 1), (3, 5), (33, 65), (7, PAR_MIN_LEN / 7 + 3), (PAR_MIN_LEN / 5 + 1, 5)] {
+            let src: Vec<C64> = (0..rows * cols).map(|k| C64::new(k as f64, 0.5 - k as f64)).collect();
+            for conj in [false, true] {
+                let got = par_transpose(&src, rows, cols, conj);
+                assert_eq!(got.len(), rows * cols);
+                for i in 0..rows {
+                    for j in 0..cols {
+                        let x = src[i * cols + j];
+                        let want = if conj { x.conj() } else { x };
+                        assert_eq!(got[j * rows + i], want, "{rows}×{cols} ({i}, {j}) conj={conj}");
+                    }
+                }
+            }
+        }
     }
 }

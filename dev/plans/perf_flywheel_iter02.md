@@ -1,7 +1,7 @@
 # Perf flywheel iteration 02
 
 **Status:** in progress
-**Current phase:** item 3 (R1 reshape, concatenation, zeros)
+**Current phase:** item 4 (R2 interpreter overhead)
 **Branch:** `feature/perf-iter02` (one PR, a commit per item, version 0.3.11)
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md`
 (measured on rustlab 0.3.10, `1ebb762`, Apple M4 Max, 2026-10-18; training
@@ -34,7 +34,7 @@ storage (roadmap C11, `eval_perf_value_borrow.md`).
 |---|---|---|---|
 | 1 | Transposed operands to dgemm as views | R3 | done |
 | 2 | Copy-on-write `Vector` / `Matrix` / `Tensor3` storage | R1, R2 (C11) | done |
-| 3 | Single-pass `reshape`, preallocated `[…]`, zeroed allocation for `zeros` | R1 | not started |
+| 3 | Single-pass `reshape`, preallocated `[…]`, zeroed allocation for `zeros` | R1 | done (parallel ratio missed) |
 | 4 | Per-statement interpreter overhead, from a sampling profile | R2 | not started |
 | 5 | Real-valued storage: design document only (`real_storage.md`) | R4 | not started |
 
@@ -121,13 +121,57 @@ Self-check, R3 binary vs item 2 on the same machine and day (2026-10-19):
 `par.grad_flat_B8` / `model.grad_flat` is 1.54× (target ≤ 1.3×, item 3).
 Gate PASS both runs, trajectory exact.
 
-## 3. R1: reshape, concatenation, zeros
+## 3. R1: reshape, concatenation, zeros (done; parallel ratio missed)
 
-`reshape` as one tiled (parallel when large) pass into row-major order, free
-for vector ↔ 1×N / N×1; `[…]` sized once with parallel block copies; `zeros`
-from zeroed allocation if it measures faster. Targets: `flat.reshape_811k`
-≤ 0.5 ms, `flat.flatten_811k` ≤ 1.5 ms, `flat.unflatten_811k` ≤ 2 ms,
-`par.grad_flat_B8` ≤ 1.3 × `model.grad_flat`.
+- `reshape` of a vector or matrix (`builtins::reshape_2d`): storage is
+  row-major and `reshape` walks column-major, so a matrix's column-major
+  order is its transpose. One `elementwise::par_transpose` pass each way,
+  none when the order does not change (vector to vector or 1×N / N×1, same
+  shape: the value is shared). Tensor3 sources and outputs keep the old
+  walk.
+- `par_transpose`: 32 × 32 tiles, parallel chunks from `PAR_MIN_LEN` (a
+  chunk's partial first and last output rows go element by element). One
+  side of a tile is strided; a stride with many factors of two maps the
+  tile to a few L1 sets, so the kernel strides the side with fewer
+  (contiguous writes on a tie). Measured: always-strided reads made
+  `prim.transpose_129x512` 1.5× slower (stride 512), always-strided writes
+  made `reshape(theta, 1584, 512)` 2× slower (stride 512); a buffered tile
+  was slower than both. `Value::transpose_matrix` uses it, so large `A'`
+  is parallel.
+- One-row `[…]` of scalars, vectors and 1×N matrices
+  (`Value::concat_one_row`): total length first, then `par_fill`; `[v]`
+  shares `v`. Taller blocks keep the general path.
+- `zeros`: unchanged. `zeros(811008)` already takes 0.045 ms (the
+  allocation is lazily zeroed), so a zeroed allocation would not measure
+  faster.
+
+Tests: `elementwise::tests::par_transpose_matches_the_definition` (serial
+and parallel, partial rows, conjugate), `tests::reshape_and_concat`
+(every vector/matrix reshape against the column-major walk, serial and
+parallel sizes, the error text, sharing until written, one-row concat
+against appending with pieces across chunk boundaries, `[v]` shared,
+taller blocks). Workspace: 3,430 passed, 0 failed.
+
+Self-check, two runs (item 2 → now): `flat.reshape_811k` 3.66 →
+0.14–0.16 ms (target ≤ 0.5); `flat.flatten_811k` 2.4 → 0.41–0.48 ms
+(≤ 1.5); `flat.unflatten_811k` 4.0 → 1.53–2.00 ms (≤ 2; the slices
+`v(i:i+n-1)` are a copy before the reshape); `e2e.train_step_B8`
+13,230–13,610 → 17,030–17,500 tok/s; `prim.transpose_129x512` 0.024 ms
+(unchanged). Gate PASS, trajectory exact.
+
+**Missed:** `par.grad_flat_B8` / `model.grad_flat` is 46.7–49.6 / 30.9–31.3
+= 1.5–1.6× (target ≤ 1.3×). What it is not:
+- the allocator: a local build with `mimalloc` as the global allocator
+  (not committed) left `par.grad_flat_B8` at 45.7–46.3 ms. It did make the
+  training step 18 % faster (49.4–49.8 ms, 20,570–20,740 tok/s), from the
+  serial part of the step; a dependency decision for later, with a
+  trade-off study under Rule 10.
+- efficiency cores: this M4 Max has 10 performance and 4 efficiency
+  cores; B1 equals serial (31.5 ms), B8 is 1.58×, B14 is 2.1×. Eight
+  windows fit on the performance cores.
+Likely shared cache and memory bandwidth (eight windows each touch the
+13 MB of parameters and their activations). Moving fewer bytes is the
+lever: real-valued storage (R4) halves them.
 
 ## 4. R2: interpreter overhead
 

@@ -8006,6 +8006,11 @@ fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
     } else {
         None
     };
+    if p.is_none() {
+        if let Some(v) = reshape_2d(&args[0], m, n)? {
+            return Ok(v);
+        }
+    }
     // Flatten source in column-major order (Octave convention).
     let flat: Vec<C64> = match &args[0] {
         Value::Vector(v) => v.iter().copied().collect(),
@@ -8072,6 +8077,50 @@ fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
         Ok(Value::Matrix(mat.into()))
     }
+}
+
+/// `reshape(src, m, n)` for a vector or matrix source, or `None` for the
+/// other sources. Storage is row-major and `reshape` walks column-major, so
+/// a matrix's column-major order is its transpose: one tiled pass
+/// (`par_transpose`) each way, and none when the order does not change (a
+/// vector or a 1×N / N×1 matrix in and out, or the same shape).
+fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptError> {
+    use super::elementwise::par_transpose;
+    let (len, data, nr, nc) = match src {
+        Value::Vector(v) => (v.len(), v.as_slice(), v.len(), 1),
+        Value::Matrix(a) => (a.len(), a.as_slice(), a.nrows(), a.ncols()),
+        _ => return Ok(None),
+    };
+    // Not row-major: the general walk handles it.
+    let Some(data) = data else { return Ok(None) };
+    if len != m * n {
+        return Err(ScriptError::type_err(format!(
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
+            m * n
+        )));
+    }
+    // Source in column-major order: shared (a vector), as stored (one row
+    // or column), or transposed.
+    let in_order = nr == 1 || nc == 1;
+    if m == 1 || n == 1 {
+        return Ok(Some(match src {
+            Value::Vector(_) => src.clone(),
+            _ if in_order => Value::Vector(CVector::from(data.to_vec()).into()),
+            _ => Value::Vector(CVector::from(par_transpose(data, nr, nc, false)).into()),
+        }));
+    }
+    if (m, n) == (nr, nc) {
+        return Ok(Some(src.clone()));
+    }
+    // flat[r + c·m] → out[r, c]: `flat` read as n × m, transposed.
+    let out = if in_order {
+        par_transpose(data, n, m, false)
+    } else {
+        par_transpose(&par_transpose(data, nr, nc, false), n, m, false)
+    };
+    Ok(Some(Value::Matrix(
+        Array2::from_shape_vec((m, n), out).expect("m × n elements").into(),
+    )))
 }
 
 /// repmat(A, m, n) — tile matrix A m times vertically, n times horizontally

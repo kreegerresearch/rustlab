@@ -30,6 +30,14 @@ Perf flywheel iteration 02 (requests from `rustlab_llm`,
   behave exactly as before. Passing a 13 MB struct to a user function went
   from 0.21 ms to 2 µs; the `rustlab_llm` training step is about 45 %
   faster.
+- **`reshape` and one-row `[…]` are single passes.** `reshape` of a vector
+  or matrix is one tiled transpose (parallel when large), and none when the
+  order does not change: a vector to a vector or to the same shape is
+  shared. `[a, b, …]` with one row of scalars, vectors and 1×N matrices is
+  sized once and filled in parallel; `[v]` shares `v`. Results are
+  unchanged. On 811 k elements, `reshape` went from 3.7 to 0.14 ms, a
+  14-piece flatten from 2.4 to 0.4 ms, and the unflatten from 4.0 to
+  1.5 ms. Large transposes (`A'`) are parallel too.
 - **Real matrix products have less overhead around the multiply.** The
   realness check and the conversion to real values are one pass, which is
   noticeable at the 100–500 element sizes typical of scripts.

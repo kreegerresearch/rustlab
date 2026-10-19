@@ -716,29 +716,15 @@ impl Value {
     /// layout. `m.t().mapv(..)` keeps the view's column-major memory order,
     /// so the result was not a contiguous row-major slice and later
     /// elementwise fast paths skipped it; this writes row-major directly,
-    /// in 32 × 32 tiles so both the reads and the writes stay in cache.
+    /// in tiles so both the reads and the writes stay in cache
+    /// (`elementwise::par_transpose`, parallel when large).
     fn transpose_matrix<const CONJ: bool>(m: &CMatrix) -> CMatrix {
-        let f = |c: C64| if CONJ { c.conj() } else { c };
         let (r, c) = m.dim();
         let Some(src) = m.as_slice() else {
+            let f = |c: C64| if CONJ { c.conj() } else { c };
             return Array2::from_shape_fn((c, r), |(i, j)| f(m[[j, i]]));
         };
-        const TILE: usize = 32;
-        let mut out: Vec<C64> = Vec::with_capacity(r * c);
-        let dst = &mut out.spare_capacity_mut()[..r * c];
-        for i0 in (0..r).step_by(TILE) {
-            for j0 in (0..c).step_by(TILE) {
-                for i in i0..(i0 + TILE).min(r) {
-                    let row = &src[i * c..(i + 1) * c];
-                    for j in j0..(j0 + TILE).min(c) {
-                        dst[j * r + i].write(f(row[j]));
-                    }
-                }
-            }
-        }
-        // SAFETY: the tiles cover every (i, j) in r × c once, writing
-        // element j·r + i of the c × r output, so all r·c are initialised.
-        unsafe { out.set_len(r * c) };
+        let out = super::elementwise::par_transpose(src, r, c, CONJ);
         Array2::from_shape_vec((c, r), out).expect("c × r elements")
     }
 
@@ -2443,6 +2429,13 @@ impl Value {
             .map(|row| row.into_iter().map(Self::widen_int).collect())
             .collect();
 
+        let mut nonempty = rows.iter().filter(|r| !r.is_empty());
+        if let (Some(row), None) = (nonempty.next(), nonempty.next()) {
+            if let Some(v) = Self::concat_one_row(row) {
+                return Ok(v);
+            }
+        }
+
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
 
         for row in &rows {
@@ -2529,6 +2522,65 @@ impl Value {
             let mat = Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
             Ok(Value::Matrix(mat.into()))
         }
+    }
+
+    /// `[a, b, …]` with one row of scalars, vectors and 1×N matrices: the
+    /// output is sized once and the pieces copied in (in parallel when
+    /// long), instead of growing it piece by piece. A lone vector is
+    /// shared, not copied. `None` for anything else (a taller block, a
+    /// non-numeric element, a non-contiguous array), which the general
+    /// path handles or reports.
+    fn concat_one_row(row: &[Value]) -> Option<Value> {
+        if let [Value::Vector(_)] = row {
+            return Some(row[0].clone());
+        }
+        enum Piece<'a> {
+            One(C64),
+            Run(&'a [C64]),
+        }
+        let mut pieces = Vec::with_capacity(row.len());
+        let mut starts = Vec::with_capacity(row.len());
+        let mut total = 0usize;
+        for val in row {
+            let p = match val {
+                Value::Scalar(x) => Piece::One(Complex::new(*x, 0.0)),
+                Value::Complex(c) => Piece::One(*c),
+                Value::Vector(v) => Piece::Run(v.as_slice()?),
+                Value::Matrix(m) if m.nrows() == 1 => Piece::Run(m.as_slice()?),
+                _ => return None,
+            };
+            starts.push(total);
+            total += match p {
+                Piece::One(_) => 1,
+                Piece::Run(s) => s.len(),
+            };
+            pieces.push(p);
+        }
+        let out = super::elementwise::par_fill(total, &|o, dst: &mut [std::mem::MaybeUninit<C64>]| {
+            // The piece holding output position o, then onward.
+            let mut k = starts.partition_point(|&s| s <= o) - 1;
+            let mut at = o;
+            let end = o + dst.len();
+            while at < end {
+                let (s, next) = (starts[k], starts.get(k + 1).copied().unwrap_or(total));
+                let stop = next.min(end);
+                match pieces[k] {
+                    Piece::One(c) => {
+                        if stop > at {
+                            dst[at - o].write(c);
+                        }
+                    }
+                    Piece::Run(src) => {
+                        for (d, &x) in dst[at - o..stop - o].iter_mut().zip(&src[at - s..]) {
+                            d.write(x);
+                        }
+                    }
+                }
+                at = stop;
+                k += 1;
+            }
+        });
+        Some(Value::Vector(Array1::from_vec(out).into()))
     }
 
     /// Convert to CVector (for passing to DSP functions).

@@ -14358,6 +14358,177 @@ mod copy_on_write {
     }
 }
 
+// ─── reshape and one-row concatenation fast paths ──────────────────────────
+
+#[cfg(test)]
+mod reshape_and_concat {
+    use crate::eval::elementwise::PAR_MIN_LEN;
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::{Array1, Array2};
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+    }
+
+    /// A distinct complex value per position, so a misplaced element shows.
+    fn matrix(r: usize, c: usize) -> Value {
+        let m = Array2::from_shape_fn((r, c), |(i, j)| C::new((i * c + j) as f64, -(i as f64) - 0.5));
+        Value::Matrix(m.into())
+    }
+
+    fn vector(n: usize) -> Value {
+        Value::Vector(Array1::from_shape_fn(n, |k| C::new(k as f64, 0.25 * k as f64)).into())
+    }
+
+    /// Column-major walk of a vector or matrix (the reference reshape order).
+    fn col_major(v: &Value) -> Vec<C> {
+        match v {
+            Value::Vector(v) => v.to_vec(),
+            Value::Matrix(m) => (0..m.ncols())
+                .flat_map(|c| (0..m.nrows()).map(move |r| m[[r, c]]))
+                .collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `reshape(src, m, n)` against filling an `m × n` result column-major.
+    fn check_reshape(src: Value, m: usize, n: usize) {
+        let flat = col_major(&src);
+        let mut ev = Evaluator::new();
+        ev.set("A", src);
+        run(&mut ev, &format!("B = reshape(A, {m}, {n});"));
+        let got = ev.get("B").unwrap();
+        if m == 1 || n == 1 {
+            let Value::Vector(v) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(v.to_vec(), flat, "{m}×{n}");
+        } else {
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(b.dim(), (m, n));
+            assert!(b.is_standard_layout(), "{m}×{n} result is row-major");
+            for c in 0..n {
+                for r in 0..m {
+                    assert_eq!(b[[r, c]], flat[r + c * m], "{m}×{n} at ({r}, {c})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reshape_matches_the_column_major_walk() {
+        // Small (serial) and above PAR_MIN_LEN with ragged chunks (parallel).
+        let big = 3 * 37 * 1181; // just above PAR_MIN_LEN
+        assert!(big > PAR_MIN_LEN);
+        for (src, shapes) in [
+            (vector(12), vec![(3, 4), (4, 3), (1, 12), (12, 1), (2, 6)]),
+            (matrix(3, 4), vec![(4, 3), (2, 6), (12, 1), (1, 12), (3, 4), (6, 2)]),
+            (matrix(1, 12), vec![(3, 4), (12, 1), (1, 12)]),
+            (matrix(12, 1), vec![(4, 3), (1, 12)]),
+            (vector(big), vec![(3, big / 3), (big / 3, 3), (1, big)]),
+            (matrix(3, big / 3), vec![(big / 3, 3), (1, big), (37, big / 37)]),
+            (matrix(big / 3, 3), vec![(3, big / 3)]),
+        ] {
+            for (m, n) in shapes {
+                check_reshape(src.clone(), m, n);
+            }
+        }
+    }
+
+    #[test]
+    fn reshape_errors_on_the_element_count() {
+        let mut ev = Evaluator::new();
+        ev.set("A", matrix(3, 4));
+        let stmts = crate::parser::parse(crate::lexer::tokenize("B = reshape(A, 5, 3);").unwrap()).unwrap();
+        let err = ev.run(&stmts).unwrap_err().to_string();
+        assert!(err.contains("cannot reshape 12 elements into 5×3 (= 15 elements)"), "{err}");
+    }
+
+    #[test]
+    fn reshape_that_keeps_the_order_shares_until_written() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "v = 1:6; w = reshape(v, 1, 6); w(2) = 9; M = [1, 2; 3, 4]; N = reshape(M, 2, 2); N(1, 1) = 7;");
+        let re = |name: &str| -> Vec<f64> {
+            match ev.get(name).unwrap() {
+                Value::Vector(v) => v.iter().map(|z| z.re).collect(),
+                Value::Matrix(m) => m.iter().map(|z| z.re).collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(re("v"), [1., 2., 3., 4., 5., 6.]);
+        assert_eq!(re("w"), [1., 9., 3., 4., 5., 6.]);
+        assert_eq!(re("M"), [1., 2., 3., 4.]);
+        assert_eq!(re("N"), [7., 2., 3., 4.]);
+    }
+
+    /// `[pieces]` on one row against appending them in order.
+    fn check_concat(pieces: Vec<Value>) {
+        let mut want = Vec::new();
+        let mut names = Vec::new();
+        let mut ev = Evaluator::new();
+        for (k, p) in pieces.into_iter().enumerate() {
+            match &p {
+                Value::Scalar(x) => want.push(C::new(*x, 0.0)),
+                Value::Complex(z) => want.push(*z),
+                other => want.extend(col_major(other)),
+            }
+            let name = format!("p{k}");
+            ev.set(&name, p);
+            names.push(name);
+        }
+        run(&mut ev, &format!("out = [{}];", names.join(", ")));
+        let Value::Vector(v) = ev.get("out").unwrap() else { panic!() };
+        assert_eq!(v.to_vec(), want, "{} pieces", names.len());
+    }
+
+    #[test]
+    fn one_row_concat_matches_appending() {
+        let n = PAR_MIN_LEN / 3 + 7;
+        let z = C::new(1.5, -2.0);
+        check_concat(vec![Value::Scalar(1.0), vector(5), Value::Complex(z), matrix(1, 4)]);
+        check_concat(vec![vector(0), vector(3), vector(0)]);
+        // Long enough for parallel chunks; pieces end mid-chunk, scalars and
+        // empty vectors sit on chunk boundaries.
+        check_concat(vec![
+            vector(n),
+            Value::Scalar(-1.0),
+            vector(0),
+            matrix(1, n),
+            vector(n + 1),
+            Value::Complex(z),
+            vector(n),
+        ]);
+        check_concat(vec![vector(4 * n), Value::Scalar(2.0)]);
+    }
+
+    #[test]
+    fn lone_vector_in_brackets_is_shared() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "v = 1:4; w = [v];");
+        let (Value::Vector(v), Value::Vector(w)) = (ev.get("v").unwrap(), ev.get("w").unwrap()) else {
+            panic!()
+        };
+        assert!(crate::eval::shared::Shared::ptr_eq(v, w));
+        run(&mut ev, "w(1) = 9;");
+        let Value::Vector(v) = ev.get("v").unwrap() else { panic!() };
+        assert_eq!(v[0].re, 1.0);
+    }
+
+    #[test]
+    fn taller_blocks_still_take_the_general_path() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "A = [1, 2; 3, 4]; B = [A, [5; 6]]; C = [1, 2; 3, 4];");
+        let Value::Matrix(b) = ev.get("B").unwrap() else { panic!() };
+        assert_eq!(b.dim(), (2, 3));
+        assert_eq!(b[[1, 2]].re, 6.0);
+        let Value::Matrix(c) = ev.get("C").unwrap() else { panic!() };
+        assert_eq!(c.dim(), (2, 2));
+    }
+}
+
 // ─── Products with a transposed operand use a view ─────────────────────────
 
 #[cfg(test)]
