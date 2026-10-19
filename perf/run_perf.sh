@@ -33,14 +33,20 @@ cd "$ROOT"
 cargo build --release -q
 echo "  done."
 
+# Launch the binary once before timing anything. The first launch of a newly
+# written binary pays the OS's first-run checks (about 300 ms on macOS),
+# which would otherwise land on whichever benchmark runs first.
+"$BINARY" --version >/dev/null 2>&1 || true
+
 # ── binary size ───────────────────────────────────────────────────────────────
 
 BINARY_SIZE_H=$(ls -lh "$BINARY" | awk '{print $5}')
 
-cp "$BINARY" /tmp/rustlab_perf_stripped
-strip /tmp/rustlab_perf_stripped
-STRIPPED_SIZE_H=$(ls -lh /tmp/rustlab_perf_stripped | awk '{print $5}')
-rm /tmp/rustlab_perf_stripped
+STRIPPED_TMP=$(mktemp "${TMPDIR:-/tmp}/rustlab_perf_stripped.XXXXXX")
+cp "$BINARY" "$STRIPPED_TMP"
+strip "$STRIPPED_TMP"
+STRIPPED_SIZE_H=$(ls -lh "$STRIPPED_TMP" | awk '{print $5}')
+rm "$STRIPPED_TMP"
 
 # ── discover and run all bench_*.rlab scripts ────────────────────────────────
 
@@ -156,14 +162,15 @@ $DEP_TREE
 ## Known Optimisation Opportunities
 
 These were identified during the initial audit in \`perf/performance.md\`.
-An AI agent reviewing this report should check whether each item is still
-open, estimate its impact given the numbers above, and prioritise them.
+All three are applied in the workspace \`Cargo.toml\`. An AI agent reviewing
+this report should confirm they are still in place and report any new
+opportunity it finds.
 
 | ID | Change | Expected saving | Status |
 |----|--------|----------------|--------|
-| OPT-1 | \`zip\`: \`default-features = false, features = ["deflate"]\` | ~300–500 KB | **open** |
-| OPT-2 | \`ndarray\`: remove \`features = ["rayon"]\` (unused) | ~150–250 KB | **open** |
-| OPT-3 | \`[profile.release]\` — \`lto = "thin"\`, \`codegen-units = 1\`, \`strip = "symbols"\` | ~400–800 KB + runtime | **open** |
+| OPT-1 | \`zip\`: \`default-features = false, features = ["deflate"]\` | ~300–500 KB | done (\`[workspace.dependencies]\`) |
+| OPT-2 | \`ndarray\`: remove \`features = ["rayon"]\` (unused) | ~150–250 KB | done (\`[workspace.dependencies]\`) |
+| OPT-3 | \`[profile.release]\` — \`lto = "thin"\`, \`codegen-units = 1\`, \`strip = "symbols"\` | ~400–800 KB + runtime | done (\`[profile.release]\`; the release binary is already stripped, so the stripped size equals the unstripped size) |
 
 ---
 
@@ -176,8 +183,11 @@ Work through these tasks in order:
 
 1. BINARY SIZE
    - Current unstripped size: $BINARY_SIZE_H  stripped: $STRIPPED_SIZE_H
-   - Are OPT-1, OPT-2, OPT-3 still open?  Apply whichever are still pending
-     and re-measure, or estimate the new size if you cannot rebuild.
+   - OPT-1, OPT-2, OPT-3 are applied. Confirm they are still in Cargo.toml;
+     if one was reverted, re-apply it and re-measure.
+   - Compare the size with the previous release (build it in a worktree if
+     needed) and attribute any growth (cargo bloat on an unstripped build:
+     CARGO_PROFILE_RELEASE_STRIP=none cargo bloat --release --crates).
    - Flag any new dependencies added since the last report that have not
      been audited for unnecessary default features.
 
