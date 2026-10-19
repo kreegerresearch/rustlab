@@ -453,6 +453,7 @@ yields a `double`**. Integers flow through other builtins by widening to double
 | `softmax(M)` / `softmax(M, dim)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 | `relu(v)` | Rectified linear unit: max(0, x), element-wise |
 | `gelu(v)` | Gaussian error linear unit, element-wise |
+| `gelu_grad(v)` | Derivative of `gelu`, element-wise (backpropagation) |
 | `layernorm(v)` / `layernorm(v, eps)` | Layer normalization on a vector: (v − mean) / std |
 | `layernorm(M)` / `layernorm(M, dim)` / `layernorm(M, dim, eps)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 

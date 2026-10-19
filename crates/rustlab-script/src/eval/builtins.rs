@@ -372,6 +372,7 @@ impl BuiltinRegistry {
         r.register("softmax", builtin_softmax);
         r.register("relu", builtin_relu);
         r.register("gelu", builtin_gelu);
+        r.register("gelu_grad", builtin_gelu_grad);
         r.register("layernorm", builtin_layernorm);
         // New plot types
         r.register("bar", builtin_bar);
@@ -2360,19 +2361,31 @@ fn matrix_axis_collect_then(
     let ncols = m.ncols();
     match dim {
         1 => {
-            let data: Vec<C64> = (0..ncols)
-                .map(|j| {
-                    let col: Vec<C64> = (0..nrows).map(|i| m[[i, j]]).collect();
+            // One reusable buffer for the gathered column, not one per column.
+            let mut col: Vec<C64> = Vec::with_capacity(nrows);
+            let data: Vec<C64> = m
+                .columns()
+                .into_iter()
+                .map(|c| {
+                    col.clear();
+                    col.extend(c.iter().copied());
                     f(&col)
                 })
                 .collect();
             Array2::from_shape_vec((1, ncols), data).expect("dim=1 shape is 1×ncols")
         }
         2 => {
-            let data: Vec<C64> = (0..nrows)
-                .map(|i| {
-                    let row: Vec<C64> = (0..ncols).map(|j| m[[i, j]]).collect();
-                    f(&row)
+            let mut buf: Vec<C64> = Vec::with_capacity(ncols);
+            let data: Vec<C64> = m
+                .rows()
+                .into_iter()
+                .map(|r| match r.as_slice() {
+                    Some(sl) => f(sl),
+                    None => {
+                        buf.clear();
+                        buf.extend(r.iter().copied());
+                        f(&buf)
+                    }
                 })
                 .collect();
             Array2::from_shape_vec((nrows, 1), data).expect("dim=2 shape is nrows×1")
@@ -2477,8 +2490,28 @@ fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
         "sum",
         &args,
         |elems| Ok(complex_to_value(elems.iter().copied().sum())),
-        |m, dim| matrix_axis_collect_then(m, dim, |slice| slice.iter().copied().sum()),
+        |m, dim| {
+            if dim == 1 {
+                sum_rows(m)
+            } else {
+                matrix_axis_collect_then(m, dim, |slice| slice.iter().copied().sum())
+            }
+        },
     )
+}
+
+/// `sum(M, 1)`: add whole rows into a 1×ncols accumulator. Each column is
+/// summed top to bottom, the order a per-column sum uses, but the matrix is
+/// read row by row (contiguous) instead of gathering strided columns.
+fn sum_rows(m: &CMatrix) -> CMatrix {
+    if let Some(acc) = crate::eval::elementwise::par_column_sums(m) {
+        return acc.insert_axis(ndarray::Axis(0));
+    }
+    let mut acc = Array1::<C64>::zeros(m.ncols());
+    for row in m.rows() {
+        ndarray::Zip::from(&mut acc).and(&row).for_each(|a, &x| *a += x);
+    }
+    acc.insert_axis(ndarray::Axis(0))
 }
 
 /// prod(v) — product of all elements of a vector / 1-D-shaped matrix → scalar.
@@ -12082,6 +12115,26 @@ fn gelu_scalar(x: f64) -> f64 {
 fn builtin_gelu(args: Vec<Value>) -> Result<Value, ScriptError> {
     apply_scalar_fn_to_value("gelu", args, gelu_scalar, |c: Complex<f64>| {
         Complex::new(gelu_scalar(c.re), 0.0)
+    })
+}
+
+/// d/dx of [`gelu_scalar`], the tanh approximation:
+///   u = √(2/π)·(x + 0.044715·x³),  du/dx = √(2/π)·(1 + 3·0.044715·x²)
+///   GELU'(x) = 0.5·(1 + tanh u) + 0.5·x·(1 − tanh² u)·du/dx
+fn gelu_grad_scalar(x: f64) -> f64 {
+    // `x * (x * x)` and `t * t` are what `powi(3)` / `powi(2)` compute,
+    // bit for bit, but stay inline (`powi` can lower to a library call).
+    let c = (2.0_f64 / std::f64::consts::PI).sqrt();
+    let x2 = x * x;
+    let th = (c * (x + 0.044715 * (x * x2))).tanh();
+    let du = c * (1.0 + 0.044715 * 3.0 * x2);
+    0.5 * (1.0 + th) + 0.5 * x * (1.0 - th * th) * du
+}
+
+/// gelu_grad(x) — derivative of `gelu`, element-wise (backpropagation).
+fn builtin_gelu_grad(args: Vec<Value>) -> Result<Value, ScriptError> {
+    apply_scalar_fn_to_value("gelu_grad", args, gelu_grad_scalar, |c: Complex<f64>| {
+        Complex::new(gelu_grad_scalar(c.re), 0.0)
     })
 }
 

@@ -462,7 +462,7 @@ impl Value {
     /// `meshgrid`). A negative base with a non-integer exponent has no real
     /// value, so it falls through to the complex branch, matching MATLAB/Octave
     /// (`(-8).^(1/3)` is complex).
-    fn pow_c64(base: C64, exp: C64) -> C64 {
+    pub(crate) fn pow_c64(base: C64, exp: C64) -> C64 {
         if base.im == 0.0 && exp.im == 0.0 {
             let (b, e) = (base.re, exp.re);
             if e.fract() == 0.0 && e.abs() <= i32::MAX as f64 {
@@ -727,6 +727,30 @@ impl Value {
         Ok(i - 1)
     }
 
+    /// `Some((start, len))` when the 0-based positions are `start, start+1, …`.
+    fn run_of(positions: &[usize]) -> Option<(usize, usize)> {
+        let first = *positions.first()?;
+        positions
+            .iter()
+            .enumerate()
+            .all(|(k, &p)| p == first + k)
+            .then_some((first, positions.len()))
+    }
+
+    /// `Some((start, len))` (0-based start) when a 1-based subscript vector
+    /// is a run of consecutive positive integers, e.g. the range `a:b`.
+    fn consecutive_positions(idx: &CVector) -> Option<(usize, usize)> {
+        let first = idx.first()?;
+        if first.im != 0.0 || first.re < 1.0 || first.re.fract() != 0.0 || !first.re.is_finite() {
+            return None;
+        }
+        let base = first.re;
+        idx.iter()
+            .enumerate()
+            .all(|(k, c)| c.im == 0.0 && c.re == base + k as f64)
+            .then_some((base as usize - 1, idx.len()))
+    }
+
     /// If `v` is a logical mask for a dimension of length `dim_len` — exactly
     /// `dim_len` real entries, each 0 or 1 — return the 0-based positions where
     /// it is 1. Otherwise `None` (the caller treats `v` as a list of explicit
@@ -775,6 +799,14 @@ impl Value {
                 Ok(vec![i])
             }
             Value::Vector(v) => {
+                // A range `a:b` inside the dimension: no per-element checks.
+                // (Only `[1]` on a length-1 dimension is also a logical mask,
+                // and it resolves to the same position.)
+                if let Some((start, n)) = Self::consecutive_positions(v) {
+                    if start + n <= dim_len {
+                        return Ok((start..start + n).collect());
+                    }
+                }
                 if let Some(positions) = Self::as_logical_mask(v, dim_len) {
                     return Ok(positions);
                 }
@@ -800,6 +832,12 @@ impl Value {
     /// Single index: 1D selection. Two indices: 2D selection. Three indices: 3D selection.
     /// `:` (All) is supported in any dimension.
     pub fn index(self, indices: Vec<Value>) -> Result<Value, String> {
+        self.index_ref(indices)
+    }
+
+    /// [`index`](Self::index) on a borrowed value: copies only the
+    /// selection, so indexing a variable in place does not clone it first.
+    pub fn index_ref(&self, indices: Vec<Value>) -> Result<Value, String> {
         // Integer-typed indices widen to scalar subscripts so every
         // dimension path (1-D/2-D/3-D) treats them like a plain number.
         let indices: Vec<Value> = indices
@@ -820,8 +858,8 @@ impl Value {
             class, overflow, ..
         } = self
         {
-            let selected = Self::widen_int(self).index(indices)?;
-            return Ok(Self::retag_as_int(selected, class, overflow));
+            let selected = Self::widen_int(self.clone()).index(indices)?;
+            return Ok(Self::retag_as_int(selected, *class, *overflow));
         }
         match indices.len() {
             1 => self.index_1d(indices.into_iter().next().unwrap()),
@@ -842,10 +880,10 @@ impl Value {
         }
     }
 
-    fn index_1d(self, idx: Value) -> Result<Value, String> {
+    fn index_1d(&self, idx: Value) -> Result<Value, String> {
         match self {
             Value::Vector(v) => match &idx {
-                Value::All => Ok(Value::Vector(v)),
+                Value::All => Ok(Value::Vector(v.clone())),
                 Value::Scalar(n) => {
                     let i = Self::one_based_to_zero(*n)?;
                     if i >= v.len() {
@@ -859,6 +897,16 @@ impl Value {
                     }
                 }
                 Value::Vector(idx_v) => {
+                    // `v(a:b)`: a run of consecutive in-range positions is
+                    // one block copy. (A run can only also be a logical mask
+                    // when it is `[1]` on a length-1 vector; same result.)
+                    if let Some((start, n)) = Self::consecutive_positions(idx_v) {
+                        if start + n <= v.len() {
+                            let out = super::elementwise::par_vector_copy(v, start, n)
+                                .unwrap_or_else(|| v.slice(ndarray::s![start..start + n]).to_owned());
+                            return Ok(Value::Vector(out));
+                        }
+                    }
                     // Logical-mask indexing: a same-length 0/1 vector selects
                     // the positions where it is 1 (e.g. v(v > 2)).
                     if let Some(positions) = Self::as_logical_mask(idx_v, v.len()) {
@@ -1076,7 +1124,7 @@ impl Value {
                             items.len()
                         ));
                     }
-                    Ok(items.into_iter().nth(i).unwrap())
+                    Ok(items[i].clone())
                 }
                 other => Err(format!(
                     "tuple indexing requires a scalar index, got {}",
@@ -1087,7 +1135,7 @@ impl Value {
                 let chars: Vec<char> = s.chars().collect();
                 let len = chars.len();
                 match &idx {
-                    Value::All => Ok(Value::Str(s)),
+                    Value::All => Ok(Value::Str(s.clone())),
                     Value::Scalar(n) => {
                         let i = Self::one_based_to_zero(*n)?;
                         if i >= len {
@@ -1116,7 +1164,7 @@ impl Value {
                 }
             }
             Value::StringArray(arr) => match &idx {
-                Value::All => Ok(Value::StringArray(arr)),
+                Value::All => Ok(Value::StringArray(arr.clone())),
                 Value::Scalar(n) => {
                     let i = Self::one_based_to_zero(*n)?;
                     if i >= arr.len() {
@@ -1155,7 +1203,7 @@ impl Value {
         }
     }
 
-    fn index_2d(self, row_idx: Value, col_idx: Value) -> Result<Value, String> {
+    fn index_2d(&self, row_idx: Value, col_idx: Value) -> Result<Value, String> {
         match self {
             Value::Matrix(m) => {
                 let rows = Self::resolve_index_dim(&row_idx, m.nrows())?;
@@ -1172,6 +1220,9 @@ impl Value {
                 } else if rows.len() == 1 {
                     // Single row → Vector
                     let r = rows[0];
+                    if let Some((c0, n)) = Self::run_of(&cols) {
+                        return Ok(Value::Vector(m.slice(ndarray::s![r, c0..c0 + n]).to_owned()));
+                    }
                     Ok(Value::Vector(Array1::from_iter(
                         cols.iter().map(|&c| m[[r, c]]),
                     )))
@@ -1181,6 +1232,12 @@ impl Value {
                     Ok(Value::Vector(Array1::from_iter(
                         rows.iter().map(|&r| m[[r, c]]),
                     )))
+                } else if let (Some((r0, nr)), Some((c0, nc))) = (Self::run_of(&rows), Self::run_of(&cols)) {
+                    // Block of consecutive rows and columns (`M(:, a:b)`):
+                    // copy it as a slice, row by row, instead of per element.
+                    let out = super::elementwise::par_block_copy(m, (r0, nr), (c0, nc))
+                        .unwrap_or_else(|| m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned());
+                    Ok(Value::Matrix(out))
                 } else {
                     // Submatrix
                     let nr = rows.len();
@@ -1196,14 +1253,14 @@ impl Value {
                     ))
                 }
             }
-            Value::Vector(v) => {
+            Value::Vector(_) => {
                 // Allow v(i, 1) or v(1, j) for column/row vector indexing
                 match (&row_idx, &col_idx) {
                     (_, Value::Scalar(c)) if (*c as usize) == 1 => {
-                        Value::Vector(v).index_1d(row_idx)
+                        self.index_1d(row_idx)
                     }
                     (Value::Scalar(r), _) if (*r as usize) == 1 => {
-                        Value::Vector(v).index_1d(col_idx)
+                        self.index_1d(col_idx)
                     }
                     _ => Err("2D indexing on a vector requires one dimension to be 1".to_string()),
                 }
@@ -1242,7 +1299,7 @@ impl Value {
     /// 1-based indexing into a Tensor3: `A(i, j, k)`.
     /// Trailing singleton dimensions are dropped so e.g. `A(:, :, k)` returns a `Matrix`.
     /// A single-element extract returns `Scalar`/`Complex`.
-    fn index_3d(self, i_idx: Value, j_idx: Value, k_idx: Value) -> Result<Value, String> {
+    fn index_3d(&self, i_idx: Value, j_idx: Value, k_idx: Value) -> Result<Value, String> {
         let t = match self {
             Value::Tensor3(t) => t,
             other => {
@@ -1271,7 +1328,7 @@ impl Value {
 
         // All-range extract: clone the whole tensor (or the sub-tensor)
         if is_all(&i_idx) && is_all(&j_idx) && is_all(&k_idx) {
-            return Ok(Value::Tensor3(t));
+            return Ok(Value::Tensor3(t.clone()));
         }
 
         // Determine result shape by dropping *trailing* singleton dimensions

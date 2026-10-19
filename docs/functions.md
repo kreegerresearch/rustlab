@@ -483,6 +483,19 @@ gelu([-2.0, 0.0, 2.0])                # → [~-0.045, 0.0, ~1.955]
 - Allows small negative outputs near `x ≈ -0.17` — unlike ReLU.
 - Approaches identity for large positive `x`; approaches zero for large negative `x`.
 
+### `gelu_grad(x)`
+Derivative of `gelu`, element-wise, for the same tanh approximation. Use it to backpropagate through a `gelu` layer.
+
+With `u = √(2/π) · (x + 0.044715 · x³)`:
+`GELU'(x) = 0.5 · (1 + tanh u) + 0.5 · x · (1 − tanh² u) · √(2/π) · (1 + 3 · 0.044715 · x²)`
+```
+gelu_grad(0.0)                         # → 0.5
+gelu_grad([-3.0, 0.0, 3.0])            # → [~-0.012, 0.5, ~1.012]
+dpre = dhid .* gelu_grad(pre);         # backprop through hid = gelu(pre)
+```
+- Accepts scalar, vector, or matrix.
+- Matches the derivative of `gelu` to rounding, so a finite-difference check of `gelu` agrees with it.
+
 ### `layernorm(v)` / `layernorm(v, eps)` / `layernorm(M[, dim[, eps]])`
 Layer normalisation: subtracts the mean and divides by the population standard deviation.
 `y = (x − mean(x)) / sqrt(var(x) + eps)`

@@ -5798,6 +5798,32 @@ mod ml_tests {
     // ── gelu ─────────────────────────────────────────────────────────────────
 
     #[test]
+    fn gelu_grad_matches_finite_difference_of_gelu() {
+        let ev = eval_str(
+            "x = linspace(-6, 6, 241);\nh = 1e-5;\n\
+             fd = (gelu(x + h) - gelu(x - h)) / (2 * h);\n\
+             err = max(abs(gelu_grad(x) - fd));",
+        );
+        let err = get_scalar(&ev, "err");
+        assert!(err < 1e-8, "gelu_grad vs central difference: {err}");
+    }
+
+    #[test]
+    fn gelu_grad_matches_the_written_out_formula() {
+        // The expression a library would otherwise write in .rlab.
+        let ev = eval_str(
+            "z = [-2.5, -0.17, 0, 0.3, 4; 1, -1, 2, -2, 0.5];\n\
+             c = sqrt(2.0 / pi);\nth = tanh(c * (z + 0.044715 * z .^ 3));\n\
+             du = c * (1.0 + 0.044715 * 3.0 * z .^ 2);\n\
+             y = 0.5 * (1.0 + th) + 0.5 * z .* (1.0 - th .^ 2) .* du;\n\
+             err = max(max(abs(gelu_grad(z) - y)));\n\
+             g0 = gelu_grad(0);",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-14, "err {}", get_scalar(&ev, "err"));
+        assert!(close(get_scalar(&ev, "g0"), 0.5));
+    }
+
+    #[test]
     fn gelu_zero_is_zero() {
         let ev = eval_str("y = gelu(0.0)");
         assert!(close(get_scalar(&ev, "y"), 0.0), "gelu(0) should be 0");
@@ -14137,6 +14163,69 @@ mod struct_field_borrow {
     fn non_struct_objects_take_the_old_path() {
         let ev = run_src("T = table([1; 2], [3; 4]); c = T.Var2; k = c(2);").unwrap();
         assert_eq!(scalar(&ev, "k"), 4.0);
+    }
+}
+
+// ─── Integer ranges fill directly (perf iteration 01, R4) ──────────────────
+
+#[cfg(test)]
+mod integer_range_fill {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn range(src: &str) -> Vec<f64> {
+        let src = format!("r = {src};\n");
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        match ev.get("r").unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{src}: {other:?}"),
+        }
+    }
+
+    /// The accumulation loop the evaluator used before the fast path.
+    fn accumulate(s: f64, inc: f64, e: f64) -> Vec<f64> {
+        let eps = inc.abs() * 1e-10;
+        let mut out = Vec::new();
+        let mut cur = s;
+        if inc > 0.0 {
+            while cur <= e + eps {
+                out.push(cur);
+                cur += inc;
+            }
+        } else {
+            while cur >= e - eps {
+                out.push(cur);
+                cur += inc;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn integer_ranges_match_accumulation() {
+        let cases: &[(f64, f64, f64)] = &[
+            (1.0, 1.0, 10.0),
+            (1.0, 1.0, 1.0),
+            (5.0, 1.0, 1.0),
+            (10.0, -1.0, 1.0),
+            (10.0, -3.0, 0.0),
+            (0.0, 2.0, 7.0),
+            (-4.0, 3.0, 9.5),
+            (1.0, 1.0, 3.999999999),
+            (3.0, -2.0, -0.5),
+            (1.0, 1.0, 200_000.0),
+            (-1e15, 1e14, 1e15),
+        ];
+        for &(s, inc, e) in cases {
+            let src = format!("({s}):({inc}):({e})");
+            assert_eq!(range(&src), accumulate(s, inc, e), "{src}");
+        }
+        // Non-integer steps keep the accumulation loop.
+        assert_eq!(range("0:0.1:1"), accumulate(0.0, 0.1, 1.0));
+        assert_eq!(range("0.5:1:3"), accumulate(0.5, 1.0, 3.0));
     }
 }
 

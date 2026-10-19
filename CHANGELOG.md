@@ -36,6 +36,9 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   `[transpose]`, `[index]` and `[index-assign]`. Calls inside `parmap` merge
   as `parmap:<name>` rows (CPU time across workers, not in `TOTAL`).
 
+- **`gelu_grad(x)`** — derivative of `gelu` (same tanh approximation),
+  element-wise, for backpropagating through a `gelu` layer.
+
 ### Fixed
 - **In-script `profile()` now prints its report when `rustlab run` ends**, as
   its help always said. Before, only an explicit `profile_report()` printed.
@@ -52,6 +55,22 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   8.4 to 50.8 GFLOP/s; the model shapes in `rustlab_llm` from ~8.6 to
   25–33 GFLOP/s. Complex operands keep the complex kernel. Shared helper:
   `rustlab_core::matmul`.
+- **Elementwise operators no longer copy their operands.** A variable used
+  in `+ - .* ./ .^` (or with a scalar in `* / ^`) is read in place, a
+  temporary operand is overwritten with the result, and arrays of 131,072
+  elements or more are processed on all cores. On 811k-element vectors,
+  `theta - 0.001 * g` went from 1.9 ms to 0.27 ms and a full AdamW update
+  from 19.5 ms to 4.7 ms. Results are bit-identical, including the rule
+  that real inputs give real outputs.
+- **Indexing reads the variable in place.** `v(a:b)` and `M(:, a:b)` no
+  longer copy the whole array before selecting, a run of consecutive
+  subscripts is copied as one block (in parallel when large), and integer
+  ranges such as `1:n` are filled directly. `sum(Gm(:, 1:n), 1) / 8` on an
+  8 × 811k matrix went from 29 ms to 2.7 ms.
+- **`sum(M, 1)`** adds whole rows (in parallel when large) instead of
+  gathering each column into a new buffer; every column is still summed top
+  to bottom, so results are unchanged.
+- **User functions move their outputs to the caller** instead of copying them.
 - **`S.field` reads copy only the field.** Reading a field of a struct
   variable (or a chain `S.a.b`) used to copy the whole struct first. For a
   model's 13 MB parameter struct read ~30 times per forward and backward

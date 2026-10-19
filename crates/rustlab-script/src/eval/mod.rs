@@ -1,4 +1,5 @@
 pub mod builtins;
+pub(crate) mod elementwise;
 pub mod output;
 pub mod table;
 pub mod parmap;
@@ -1735,16 +1736,7 @@ impl Evaluator {
                     let rt = r.is_truthy_for_logical().map_err(ScriptError::type_err)?;
                     return Ok(Value::Bool(rt));
                 }
-                let l = self.eval_expr(lhs)?;
-                let r = self.eval_expr(rhs)?;
-                let frame = if self.profiler.is_enabled() {
-                    self.profiler.enter_op(profile_op_name(*op, &l, &r))
-                } else {
-                    None
-                };
-                let result = Value::binop(*op, l, r).map_err(|e| ScriptError::type_err(e));
-                self.profiler.exit_op(frame);
-                result
+                self.eval_arith_binop(*op, lhs, rhs)
             }
             Expr::Call { name, args } => {
                 // Consume the statement-position marker FIRST — before any
@@ -1880,118 +1872,7 @@ impl Evaluator {
                         | Some(Value::Int { .. })
                         | Some(Value::IntArray { .. })
                 ) {
-                    // A scalar / complex / bool / integer is a 1×1 value; promote
-                    // it to a 1-element container so `s(1)` indexes like MATLAB
-                    // instead of falling through and reporting `s` as undefined.
-                    let container = match self.env[name.as_str()].clone() {
-                        Value::Scalar(x) => {
-                            Value::Vector(Array1::from_elem(1, Complex::new(x, 0.0)))
-                        }
-                        Value::Complex(c) => Value::Vector(Array1::from_elem(1, c)),
-                        Value::Bool(b) => Value::Vector(Array1::from_elem(
-                            1,
-                            Complex::new(if b { 1.0 } else { 0.0 }, 0.0),
-                        )),
-                        // A scalar integer becomes a 1×1 integer array so the
-                        // indexing path (which handles IntArray) accepts it.
-                        Value::Int {
-                            data,
-                            class,
-                            overflow,
-                        } => Value::IntArray {
-                            data: vec![data],
-                            rows: 1,
-                            cols: 1,
-                            class,
-                            overflow,
-                        },
-                        other => other,
-                    };
-
-                    // For 3-argument tensor3 indexing, bind `end` per-dimension.
-                    let idx_vals: Vec<Value> = if args.len() == 3 {
-                        if let Value::Tensor3(t) = &container {
-                            let s = t.shape();
-                            let (m, n, p) = (s[0], s[1], s[2]);
-                            self.env.insert("end".to_string(), Value::Scalar(m as f64));
-                            let iv = self.eval_expr(&args[0])?;
-                            self.env.insert("end".to_string(), Value::Scalar(n as f64));
-                            let jv = self.eval_expr(&args[1])?;
-                            self.env.insert("end".to_string(), Value::Scalar(p as f64));
-                            let kv = self.eval_expr(&args[2])?;
-                            self.env.remove("end");
-                            vec![iv, jv, kv]
-                        } else {
-                            let vals: Vec<Value> = args
-                                .iter()
-                                .map(|a| self.eval_expr(a))
-                                .collect::<Result<_, _>>()?;
-                            vals
-                        }
-                    }
-                    // For 2-argument matrix indexing, bind `end` context-sensitively per dimension.
-                    else if args.len() == 2 {
-                        let (nrows, ncols) = match &container {
-                            Value::Matrix(m) => (m.nrows(), m.ncols()),
-                            Value::SparseMatrix(sm) => (sm.rows, sm.cols),
-                            Value::Vector(v) => (1, v.len()),
-                            Value::SparseVector(sv) => (1, sv.len),
-                            Value::IntArray { rows, cols, .. } => (*rows, *cols),
-                            _ => unreachable!(),
-                        };
-                        if nrows > 1
-                            || matches!(&container, Value::SparseMatrix(_) | Value::Matrix(_))
-                        {
-                            self.env
-                                .insert("end".to_string(), Value::Scalar(nrows as f64));
-                            let row_val = self.eval_expr(&args[0])?;
-                            self.env
-                                .insert("end".to_string(), Value::Scalar(ncols as f64));
-                            let col_val = self.eval_expr(&args[1])?;
-                            self.env.remove("end");
-                            vec![row_val, col_val]
-                        } else {
-                            self.env
-                                .insert("end".to_string(), Value::Scalar(ncols as f64));
-                            let vals: Vec<Value> = args
-                                .iter()
-                                .map(|a| self.eval_expr(a))
-                                .collect::<Result<_, _>>()?;
-                            self.env.remove("end");
-                            vals
-                        }
-                    } else {
-                        let len = match &container {
-                            Value::Vector(v) => v.len(),
-                            // Linear index: `end` is the element count, matching
-                            // the write path (`IndexAssign`) and MATLAB.
-                            Value::Matrix(m) => m.nrows() * m.ncols(),
-                            Value::SparseVector(sv) => sv.len,
-                            Value::SparseMatrix(sm) => sm.rows * sm.cols,
-                            // Single-index tensor access is linear over the
-                            // column-major flat view, so `end` is the total
-                            // element count (matches T(:) / T(k) semantics).
-                            Value::Tensor3(t) => t.len(),
-                            Value::Tuple(t) => t.len(),
-                            Value::Str(s) => s.chars().count(),
-                            Value::StringArray(v) => v.len(),
-                            Value::IntArray { data, .. } => data.len(),
-                            _ => unreachable!(),
-                        };
-                        self.env
-                            .insert("end".to_string(), Value::Scalar(len as f64));
-                        let vals: Vec<Value> = args
-                            .iter()
-                            .map(|a| self.eval_expr(a))
-                            .collect::<Result<_, _>>()?;
-                        self.env.remove("end");
-                        vals
-                    };
-
-                    let frame = self.profiler.enter_op("[index]");
-                    let result = container.index(idx_vals).map_err(|e| ScriptError::runtime(e));
-                    self.profiler.exit_op(frame);
-                    result
+                    self.eval_var_index(name, args)
                 } else if let Some(func) = self.user_fns.get(name.as_str()).cloned() {
                     let vals: Vec<Value> = args
                         .iter()
@@ -2103,6 +1984,27 @@ impl Evaluator {
                 let mut cur = s;
                 // Use a small epsilon to avoid float boundary issues
                 let eps = inc.abs() * 1e-10;
+                // Integer start and step (`1:n`, `i:i + n - 1`, `10:-2:0`):
+                // every value is an exact integer, so `s + k·inc` equals the
+                // accumulated `cur` below; fill without the serial dependence.
+                const EXACT: f64 = (1u64 << 52) as f64;
+                if s.fract() == 0.0
+                    && inc.fract() == 0.0
+                    && s.abs() < EXACT
+                    && e.is_finite()
+                    && e.abs() < EXACT
+                {
+                    let in_range = |v: f64| if inc > 0.0 { v <= e + eps } else { v >= e - eps };
+                    let mut n = capacity;
+                    while n > 0 && !in_range(s + (n - 1) as f64 * inc) {
+                        n -= 1;
+                    }
+                    while in_range(s + n as f64 * inc) {
+                        n += 1;
+                    }
+                    vals.extend((0..n).map(|k| Complex::new(s + k as f64 * inc, 0.0)));
+                    return Ok(Value::Vector(Array1::from_vec(vals)));
+                }
                 if inc > 0.0 {
                     while cur <= e + eps {
                         vals.push(Complex::new(cur, 0.0));
@@ -3098,11 +3000,17 @@ impl Evaluator {
         // any slot the body didn't assign. This is the unit the
         // cache stores; the caller's `nargout` only shapes the
         // user-facing return below.
-        let canonical: Vec<Value> = func
-            .return_vars
-            .iter()
-            .map(|ret| self.env.get(ret.as_str()).cloned().unwrap_or(Value::None))
-            .collect();
+        // The body's scope is discarded just below, so outputs are moved out
+        // of it rather than cloned (a repeated output name clones the copy
+        // already taken).
+        let mut canonical: Vec<Value> = Vec::with_capacity(func.return_vars.len());
+        for (k, ret) in func.return_vars.iter().enumerate() {
+            let v = match func.return_vars[..k].iter().position(|r| r == ret) {
+                Some(first) => canonical[first].clone(),
+                None => self.env.remove(ret.as_str()).unwrap_or(Value::None),
+            };
+            canonical.push(v);
+        }
 
         // Restore outer env and function flag
         self.env = saved_env;
@@ -3207,6 +3115,168 @@ impl Evaluator {
         let out = result.as_ref().map_or(0, Self::value_bytes);
         self.profiler.exit(name, in_bytes, out);
         result
+    }
+
+    /// `name(args)` where `name` holds an indexable value (the indexing
+    /// branch of `Expr::Call`). Kept out of `eval_expr` so its locals do not
+    /// enlarge every recursive `eval_expr` frame.
+    #[inline(never)]
+    fn eval_var_index(&mut self, name: &str, args: &[Expr]) -> Result<Value, ScriptError> {
+        // A scalar / complex / bool / integer is a 1×1 value; promote
+        // it to a 1-element container so `s(1)` indexes like MATLAB
+        // instead of falling through and reporting `s` as undefined.
+        // Arrays are not copied: their shape is read here, the
+        // subscripts are evaluated, and the variable is borrowed
+        // for the selection itself.
+        let promoted: Option<Value> = match &self.env[name] {
+            Value::Scalar(x) => {
+                Some(Value::Vector(Array1::from_elem(1, Complex::new(*x, 0.0))))
+            }
+            Value::Complex(c) => Some(Value::Vector(Array1::from_elem(1, *c))),
+            Value::Bool(b) => Some(Value::Vector(Array1::from_elem(
+                1,
+                Complex::new(if *b { 1.0 } else { 0.0 }, 0.0),
+            ))),
+            // A scalar integer becomes a 1×1 integer array so the
+            // indexing path (which handles IntArray) accepts it.
+            Value::Int {
+                data,
+                class,
+                overflow,
+            } => Some(Value::IntArray {
+                data: vec![*data],
+                rows: 1,
+                cols: 1,
+                class: *class,
+                overflow: *overflow,
+            }),
+            _ => None,
+        };
+        let shape = IndexShape::of(promoted.as_ref().unwrap_or(&self.env[name]));
+
+        // For 3-argument tensor3 indexing, bind `end` per-dimension.
+        let idx_vals: Vec<Value> = if args.len() == 3 {
+            if let Some((m, n, p)) = shape.tensor {
+                self.env.insert("end".to_string(), Value::Scalar(m as f64));
+                let iv = self.eval_expr(&args[0])?;
+                self.env.insert("end".to_string(), Value::Scalar(n as f64));
+                let jv = self.eval_expr(&args[1])?;
+                self.env.insert("end".to_string(), Value::Scalar(p as f64));
+                let kv = self.eval_expr(&args[2])?;
+                self.env.remove("end");
+                vec![iv, jv, kv]
+            } else {
+                let vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval_expr(a))
+                    .collect::<Result<_, _>>()?;
+                vals
+            }
+        }
+        // For 2-argument matrix indexing, bind `end` context-sensitively per dimension.
+        else if args.len() == 2 {
+            let (nrows, ncols) = shape.rows_cols.unwrap_or_else(|| unreachable!());
+            if nrows > 1 || shape.matrix_like {
+                self.env
+                    .insert("end".to_string(), Value::Scalar(nrows as f64));
+                let row_val = self.eval_expr(&args[0])?;
+                self.env
+                    .insert("end".to_string(), Value::Scalar(ncols as f64));
+                let col_val = self.eval_expr(&args[1])?;
+                self.env.remove("end");
+                vec![row_val, col_val]
+            } else {
+                self.env
+                    .insert("end".to_string(), Value::Scalar(ncols as f64));
+                let vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval_expr(a))
+                    .collect::<Result<_, _>>()?;
+                self.env.remove("end");
+                vals
+            }
+        } else {
+            let len = shape.len.unwrap_or_else(|| unreachable!());
+            self.env
+                .insert("end".to_string(), Value::Scalar(len as f64));
+            let vals: Vec<Value> = args
+                .iter()
+                .map(|a| self.eval_expr(a))
+                .collect::<Result<_, _>>()?;
+            self.env.remove("end");
+            vals
+        };
+
+        let frame = self.profiler.enter_op("[index]");
+        let container = match &promoted {
+            Some(v) => v,
+            None => &self.env[name],
+        };
+        let result = container.index_ref(idx_vals).map_err(|e| ScriptError::runtime(e));
+        self.profiler.exit_op(frame);
+        result
+    }
+
+    /// `lhs op rhs` for the arithmetic and comparison operators. An operand
+    /// that is a variable holding an array is borrowed from the workspace
+    /// rather than copied (`elementwise::binop` reuses owned temporaries for
+    /// the result). Variables cannot change while the other operand is
+    /// evaluated (expressions do not assign), so the order is unobservable:
+    /// non-variable operands are evaluated first, then variables borrowed.
+    #[inline(never)]
+    fn eval_arith_binop(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
+        use elementwise::Operand;
+        // Left to right, as before; a borrowed variable is only looked up.
+        let l = self.binop_operand(lhs)?;
+        let r = self.binop_operand(rhs)?;
+        let frame_names = self.profiler.is_enabled();
+        let result = match (l, r) {
+            // Neither side is an array variable: the plain path (scalar
+            // arithmetic in loops must not pay for the borrowing machinery).
+            (PreOperand::Owned(l), PreOperand::Owned(r)) if !is_dense(&l) && !is_dense(&r) => {
+                let frame = if frame_names {
+                    self.profiler.enter_op(profile_op_name(op, &l, &r))
+                } else {
+                    None
+                };
+                let result = Value::binop(op, l, r).map_err(ScriptError::type_err);
+                self.profiler.exit_op(frame);
+                return result;
+            }
+            (l, r) => {
+                let l = match l {
+                    PreOperand::Owned(v) => Operand::Owned(v),
+                    PreOperand::Var(name) => Operand::Borrowed(&self.env[name]),
+                };
+                let r = match r {
+                    PreOperand::Owned(v) => Operand::Owned(v),
+                    PreOperand::Var(name) => Operand::Borrowed(&self.env[name]),
+                };
+                let frame = if frame_names {
+                    self.profiler.enter_op(profile_op_name(op, l.get(), r.get()))
+                } else {
+                    None
+                };
+                let result = elementwise::binop(op, l, r).map_err(ScriptError::type_err);
+                self.profiler.exit_op(frame);
+                result
+            }
+        };
+        result
+    }
+
+    /// Evaluate a binary-operator operand. A variable holding a dense array
+    /// is not copied: it is returned by name and borrowed once both operands
+    /// are ready. Other variables are cloned with a single lookup.
+    fn binop_operand<'e>(&mut self, e: &'e Expr) -> Result<PreOperand<'e>, ScriptError> {
+        if let Expr::Var(name) = e {
+            match self.env.get(name) {
+                Some(Value::Vector(_) | Value::Matrix(_)) => return Ok(PreOperand::Var(name)),
+                Some(v) => return Ok(PreOperand::Owned(v.clone())),
+                None => {}
+            }
+        }
+        Ok(PreOperand::Owned(self.eval_expr(e)?))
     }
 
     /// Borrow the value named by a variable or a chain of struct field
@@ -4201,4 +4271,71 @@ fn profile_op_name(op: BinOp, l: &Value, r: &Value) -> &'static str {
         And => "[&&]",
         Or => "[||]",
     }
+}
+
+/// Shape facts an index expression needs to bind `end`, read from a borrow
+/// of the container before its subscripts are evaluated.
+struct IndexShape {
+    /// `(m, n, p)` for a Tensor3.
+    tensor: Option<(usize, usize, usize)>,
+    /// `(rows, cols)` for the two-subscript form; `None` where that form
+    /// does not apply.
+    rows_cols: Option<(usize, usize)>,
+    /// Matrix or sparse matrix: `end` per axis even with one row.
+    matrix_like: bool,
+    /// Element count for the one-subscript form.
+    len: Option<usize>,
+}
+
+impl IndexShape {
+    fn of(v: &Value) -> Self {
+        let tensor = match v {
+            Value::Tensor3(t) => {
+                let s = t.shape();
+                Some((s[0], s[1], s[2]))
+            }
+            _ => None,
+        };
+        let rows_cols = match v {
+            Value::Matrix(m) => Some((m.nrows(), m.ncols())),
+            Value::SparseMatrix(sm) => Some((sm.rows, sm.cols)),
+            Value::Vector(v) => Some((1, v.len())),
+            Value::SparseVector(sv) => Some((1, sv.len)),
+            Value::IntArray { rows, cols, .. } => Some((*rows, *cols)),
+            _ => None,
+        };
+        let len = match v {
+            Value::Vector(v) => Some(v.len()),
+            // Linear index: `end` is the element count, matching the write
+            // path (`IndexAssign`) and MATLAB.
+            Value::Matrix(m) => Some(m.nrows() * m.ncols()),
+            Value::SparseVector(sv) => Some(sv.len),
+            Value::SparseMatrix(sm) => Some(sm.rows * sm.cols),
+            // Single-index tensor access is linear over the column-major flat
+            // view, so `end` is the total element count (T(:) / T(k)).
+            Value::Tensor3(t) => Some(t.len()),
+            Value::Tuple(t) => Some(t.len()),
+            Value::Str(s) => Some(s.chars().count()),
+            Value::StringArray(v) => Some(v.len()),
+            Value::IntArray { data, .. } => Some(data.len()),
+            _ => None,
+        };
+        IndexShape {
+            tensor,
+            rows_cols,
+            matrix_like: matches!(v, Value::SparseMatrix(_) | Value::Matrix(_)),
+            len,
+        }
+    }
+}
+
+/// A binary-operator operand before borrowing: an evaluated value, or the
+/// name of a workspace array to borrow.
+enum PreOperand<'e> {
+    Owned(Value),
+    Var(&'e str),
+}
+
+fn is_dense(v: &Value) -> bool {
+    matches!(v, Value::Vector(_) | Value::Matrix(_))
 }
