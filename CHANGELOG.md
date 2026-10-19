@@ -9,7 +9,7 @@ should re-validate against those entries when upgrading.
 ## 0.3.10
 
 Perf flywheel iteration 01 (requests from `rustlab_llm`,
-`perf/iterations/01-requests.md`). Plan: `dev/plans/perf_flywheel_iter01.md`.
+`perf/iterations/01-requests.md`). Plan: `dev/plans/closed/perf_flywheel_iter01.md`.
 
 ### Breaking / behavior changes
 - **The profile report has a new `Self (ms)` column and new rows.** The table
