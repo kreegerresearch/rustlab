@@ -61,7 +61,7 @@ Declined: the ≥ 100 GFLOP/s Accelerate/BLAS target. Rule 10 forbids FFI for co
    - interpreter self time in `gpt_forward` / `gpt_backward`, and the copies of builtin and user-function arguments (both C11);
    - parmap efficiency (~57 % at B8);
    - real-valued storage, which the request file deferred.
-   - The scalar-loop regression is fixed (now ~18 % faster than 0.3.9). Still open: `prim.transpose_129x512` reads 0.89× (54 vs ~48 µs), and the binary is 596 KB larger (see `perf/report.md`).
+   - The scalar-loop regression is fixed (now ~18 % faster than 0.3.9). Still open: `prim.transpose_129x512` reads 0.89× (54 vs ~48 µs). Binary growth was cut from +596 KB to +149 KB (+1.3 %) by routing all elementwise kernels through two non-generic `&dyn` drivers (see `perf/report.md`, second addendum). Keep new parallel loops on `elementwise::drive` / `drive_new`: every distinct closure handed to rayon costs ~10–20 KB of rayon machinery.
 
 ## How to measure
 

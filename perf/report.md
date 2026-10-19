@@ -375,3 +375,19 @@ The first two summary rows are done in `perf/run_perf.sh`:
 - **Strip copy:** the temp file is now made with `mktemp` under `$TMPDIR`. The hardcoded `/tmp` path failed under a sandboxed shell.
 
 **Check:** I replaced `target/release/rustlab` with a fresh copy, which reproduces what a rebuild does, then ran `make perf`. `bench_builtins` read **31 ms**, against 335–342 ms in the two runs above; the other six were in the same range as before. The tables above are from the script before the fix and are kept as the record this analysis describes. The next `make perf` will regenerate this file.
+
+### Addendum: binary size growth reduced (same day)
+
+The third summary row (shrink the elementwise monomorphization) is done. `cargo bloat`, comparing `main` with this branch function by function, put **309 KB of the growth in rayon itself**: `rayon_core` +235 KB, `rayon` +74 KB. Every parallel loop with its own closure type got its own copy of rayon's job, join and bridge code, and the kernels had one closure per operator × operand ownership × {Vector, Matrix}. Another ~110 KB was the sequential `Zip` copies of the same kernels (`zip_arrays` 71 KB, `binop` 41 KB).
+
+`eval/elementwise.rs` now passes every kernel as a `&dyn Fn` over one chunk to one of two non-generic drivers. The drivers run the whole slice when the array is small and use rayon chunks when it is large. There is one kernel body per operator, with no sequential duplicate, and arrays not in row-major layout fall back to `Value::binop`.
+
+| Binary | Size | vs `main` |
+|---|---:|---:|
+| `main` (0.3.9) | 11,905,008 B | — |
+| Branch before | 12,500,960 B | +595,952 B (+5.0 %) |
+| Branch after | 12,054,256 B | **+149,248 B (+1.3 %)** |
+
+After the change, rayon accounts for +12 KB of the growth (was +309 KB) and the elementwise kernels for about 36 KB. The remaining ~117 KB of `.text` is new functionality: the call-stack profiler, the borrowed-index path, `gelu_grad` and the real matmul, plus ~13 KB of extra inlining from moving the index-assign arm into its own function.
+
+Speed is unchanged, with the gate passing: training step 8,395–8,679 tok/s, `flat.adamw_811k` 4.5 ms, `flat.axpy_811k` 2,928–3,019 Melem/s. The bit-exact operator tests pass, plus a new one for the non-contiguous fallback.

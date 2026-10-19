@@ -7,18 +7,27 @@
 //! array cases (array ∘ scalar, and two arrays of the same shape) are
 //! computed in one pass, written into an owned temporary of the right shape
 //! when there is one, and otherwise into a single new array. Everything
-//! else falls back to [`Value::binop`] unchanged.
+//! else, including arrays that are not in standard (row-major contiguous)
+//! layout, falls back to [`Value::binop`] unchanged.
 //!
 //! Results are bit-identical to [`Value::binop`]: the same complex
 //! operation is applied per element, and the "real inputs give real
 //! outputs" rule (zero the imaginary part when both inputs are real) is
 //! applied under exactly the conditions `binop` applies it.
+//!
+//! Code size: every kernel is a closure over one chunk of a slice, passed as
+//! `&dyn Fn` to one of two non-generic drivers ([`drive`], [`drive_new`]).
+//! The drivers run the closure on the whole slice for small arrays and on
+//! rayon chunks for large ones, so rayon's job machinery is instantiated
+//! once per driver rather than once per operator and operand kind, and
+//! there is no separate sequential copy of each kernel. The dynamic call
+//! happens once per chunk, never per element.
 
 use super::value::Value;
 use crate::ast::BinOp;
-use ndarray::{Array, ArrayBase, Data, DataMut, Dimension, Zip};
 use rayon::prelude::*;
 use rustlab_core::C64;
+use std::mem::MaybeUninit;
 
 /// Arrays at least this long are processed in parallel chunks. Each element
 /// is computed independently, so the split never changes a result. Below
@@ -57,13 +66,13 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
     match (l.get(), r.get()) {
         // Array ∘ scalar and scalar ∘ array.
         (Value::Vector(_) | Value::Matrix(_), Value::Scalar(_) | Value::Complex(_))
-            if is_scalar_op(op) =>
+            if is_scalar_op(op) && is_contiguous(l.get()) =>
         {
             let s = scalar_of(r.get());
             Ok(with_op!(op, scalar, f => map_array(l, move |a| f(a, s))))
         }
         (Value::Scalar(_) | Value::Complex(_), Value::Vector(_) | Value::Matrix(_))
-            if is_scalar_op(op) =>
+            if is_scalar_op(op) && is_contiguous(r.get()) =>
         {
             let s = scalar_of(l.get());
             Ok(with_op!(op, scalar, f => map_array(r, move |a| f(s, a))))
@@ -71,7 +80,10 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // Two vectors of the same length. `binop` zeroes the imaginary part
         // of real inputs for `.*`, `./`, `.^` only.
         (Value::Vector(a), Value::Vector(b))
-            if a.len() == b.len() && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow) =>
+            if a.len() == b.len()
+                && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow)
+                && is_contiguous(l.get())
+                && is_contiguous(r.get()) =>
         {
             let real_rule = matches!(op, ElemMul | ElemDiv | ElemPow);
             Ok(zip_arrays(op, l, r, real_rule))
@@ -80,7 +92,10 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // through `elementwise_with_broadcast`, which zeroes the imaginary
         // part of real inputs for every elementwise op.
         (Value::Matrix(a), Value::Matrix(b))
-            if a.dim() == b.dim() && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow) =>
+            if a.dim() == b.dim()
+                && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow)
+                && is_contiguous(l.get())
+                && is_contiguous(r.get()) =>
         {
             Ok(zip_arrays(op, l, r, true))
         }
@@ -108,6 +123,45 @@ fn scalar_of(v: &Value) -> C64 {
 fn is_scalar_op(op: BinOp) -> bool {
     use BinOp::*;
     matches!(op, Add | Sub | Mul | ElemMul | Div | ElemDiv | Pow | ElemPow)
+}
+
+/// A dense array whose elements are one row-major contiguous slice, so a
+/// kernel can work on `&[C64]` and the result keeps the same shape.
+fn is_contiguous(v: &Value) -> bool {
+    match v {
+        Value::Vector(a) => a.as_slice().is_some(),
+        Value::Matrix(m) => m.as_slice().is_some(),
+        _ => false,
+    }
+}
+
+fn data(v: &Value) -> &[C64] {
+    match v {
+        Value::Vector(a) => a.as_slice(),
+        Value::Matrix(m) => m.as_slice(),
+        _ => None,
+    }
+    .expect("checked contiguous by the caller")
+}
+
+fn data_mut(v: &mut Value) -> &mut [C64] {
+    match v {
+        Value::Vector(a) => a.as_slice_mut(),
+        Value::Matrix(m) => m.as_slice_mut(),
+        _ => None,
+    }
+    .expect("checked contiguous by the caller")
+}
+
+/// A value of `like`'s kind and shape holding `data` (row-major).
+fn shaped_like(like: &Value, data: Vec<C64>) -> Value {
+    match like {
+        Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data)),
+        Value::Matrix(m) => Value::Matrix(
+            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count"),
+        ),
+        _ => unreachable!("checked by the caller"),
+    }
 }
 
 /// Run `$body` with a local `f: impl Fn(C64, C64) -> C64` bound to the
@@ -141,63 +195,159 @@ macro_rules! with_op {
 }
 use with_op;
 
+// ── Drivers ─────────────────────────────────────────────────────────────────
+
+/// Flags gathered while combining two arrays, to apply the real-output rule
+/// after the fact without a separate scan of the inputs.
+#[derive(Clone, Copy)]
+struct RealFlags {
+    /// Every input element on both sides had `|im| < ε` (the rule's test).
+    inputs_real: bool,
+    /// Some output element has an imaginary part that zeroing would change
+    /// (any bit pattern other than `+0.0`).
+    output_needs_zeroing: bool,
+}
+
+const NO_FLAGS: RealFlags = RealFlags { inputs_real: true, output_needs_zeroing: false };
+
+fn combine(f: RealFlags, g: RealFlags) -> RealFlags {
+    RealFlags {
+        inputs_real: f.inputs_real && g.inputs_real,
+        output_needs_zeroing: f.output_needs_zeroing || g.output_needs_zeroing,
+    }
+}
+
+#[inline(always)]
+fn track(flags: &mut RealFlags, x: C64, y: C64, z: C64) {
+    flags.inputs_real &= x.im.abs() < f64::EPSILON && y.im.abs() < f64::EPSILON;
+    flags.output_needs_zeroing |= z.im.to_bits() != 0;
+}
+
+/// A kernel over one chunk: `(offset of the chunk in the whole slice,
+/// chunk)`, returning the flags it gathered.
+type ChunkFn<'a, T> = dyn Fn(usize, &mut [T]) -> RealFlags + Sync + 'a;
+
+/// Run `k` over `xs`: whole, or in parallel chunks when long.
+fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
+    if xs.len() < PAR_MIN_LEN {
+        return k(0, xs);
+    }
+    xs.par_chunks_mut(PAR_CHUNK)
+        .enumerate()
+        .map(|(i, c)| k(i * PAR_CHUNK, c))
+        .reduce(|| NO_FLAGS, combine)
+}
+
+/// A new length-`n` buffer filled by `k`, which must initialise every
+/// element of each chunk it is given.
+fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
+    let mut out: Vec<C64> = Vec::with_capacity(n);
+    let dst = &mut out.spare_capacity_mut()[..n];
+    let flags = if n < PAR_MIN_LEN {
+        k(0, dst)
+    } else {
+        dst.par_chunks_mut(PAR_CHUNK)
+            .enumerate()
+            .map(|(i, c)| k(i * PAR_CHUNK, c))
+            .reduce(|| NO_FLAGS, combine)
+    };
+    // SAFETY: the chunks cover `0..n` exactly once and `k` initialises every
+    // element of each chunk it is given.
+    unsafe { out.set_len(n) };
+    (out, flags)
+}
+
+// ── Kernels ─────────────────────────────────────────────────────────────────
+
 /// Apply `f` to every element of an array operand, in place when it is an
 /// owned temporary.
 fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
     match a {
-        Operand::Owned(Value::Vector(mut v)) => {
-            map_inplace(&mut v, f);
-            Value::Vector(v)
+        Operand::Owned(mut v) => {
+            drive(data_mut(&mut v), &|_, c: &mut [C64]| {
+                for x in c {
+                    *x = f(*x);
+                }
+                NO_FLAGS
+            });
+            v
         }
-        Operand::Owned(Value::Matrix(mut m)) => {
-            map_inplace(&mut m, f);
-            Value::Matrix(m)
-        }
-        Operand::Borrowed(Value::Vector(v)) => Value::Vector(map_new(v, f)),
-        Operand::Borrowed(Value::Matrix(m)) => Value::Matrix(map_new(m, f)),
-        _ => unreachable!("checked by the caller"),
-    }
-}
-
-fn map_inplace<D: Dimension>(a: &mut Array<C64, D>, f: impl Fn(C64) -> C64 + Sync) {
-    match a.as_slice_mut() {
-        Some(xs) if xs.len() >= PAR_MIN_LEN => {
-            xs.par_chunks_mut(PAR_CHUNK).for_each(|c| c.iter_mut().for_each(|x| *x = f(*x)))
-        }
-        _ => a.mapv_inplace(f),
-    }
-}
-
-fn map_new<D: Dimension>(a: &Array<C64, D>, f: impl Fn(C64) -> C64 + Sync) -> Array<C64, D> {
-    match a.as_slice() {
-        Some(xs) if xs.len() >= PAR_MIN_LEN => {
-            let out = fill_par(xs.len(), |range, dst| {
-                for (d, &x) in dst.iter_mut().zip(&xs[range]) {
+        Operand::Borrowed(v) => {
+            let src = data(v);
+            let (out, _) = drive_new(src.len(), &|o, c: &mut [MaybeUninit<C64>]| {
+                for (d, &x) in c.iter_mut().zip(&src[o..]) {
                     d.write(f(x));
                 }
+                NO_FLAGS
             });
-            Array::from_shape_vec(a.raw_dim(), out).expect("same length and C order as the input")
+            shaped_like(v, out)
         }
-        _ => a.mapv(f),
     }
 }
 
-/// Build a length-`n` vector in parallel: `write(range, dst)` must
-/// initialise every element of `dst`, which is the output for `range`.
-fn fill_par(n: usize, write: impl Fn(std::ops::Range<usize>, &mut [std::mem::MaybeUninit<C64>]) + Sync) -> Vec<C64> {
-    let mut out: Vec<C64> = Vec::with_capacity(n);
-    out.spare_capacity_mut()[..n]
-        .par_chunks_mut(PAR_CHUNK)
-        .enumerate()
-        .for_each(|(k, dst)| {
-            let start = k * PAR_CHUNK;
-            write(start..start + dst.len(), dst)
+/// Combine two same-shape arrays elementwise. Writes into whichever operand
+/// is an owned temporary, else allocates once. With `real_rule`, zeroes the
+/// imaginary parts of the result when both inputs were real.
+fn zip_arrays(op: BinOp, l: Operand, r: Operand, real_rule: bool) -> Value {
+    with_op!(op, elem, f => zip_arrays_with(f, l, r, real_rule))
+}
+
+fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, real_rule: bool) -> Value {
+    let (mut out, flags) = match (l, r) {
+        (Operand::Owned(mut a), r) => {
+            let b = data(r.get());
+            let flags = drive(data_mut(&mut a), &|o, c: &mut [C64]| {
+                let mut fl = NO_FLAGS;
+                for (x, &y) in c.iter_mut().zip(&b[o..]) {
+                    let z = f(*x, y);
+                    track(&mut fl, *x, y, z);
+                    *x = z;
+                }
+                fl
+            });
+            (a, flags)
+        }
+        (l, Operand::Owned(mut b)) => {
+            let a = data(l.get());
+            let flags = drive(data_mut(&mut b), &|o, c: &mut [C64]| {
+                let mut fl = NO_FLAGS;
+                for (y, &x) in c.iter_mut().zip(&a[o..]) {
+                    let z = f(x, *y);
+                    track(&mut fl, x, *y, z);
+                    *y = z;
+                }
+                fl
+            });
+            (b, flags)
+        }
+        (l, r) => {
+            let (a, b) = (data(l.get()), data(r.get()));
+            let (out, flags) = drive_new(a.len(), &|o, c: &mut [MaybeUninit<C64>]| {
+                let mut fl = NO_FLAGS;
+                for ((d, &x), &y) in c.iter_mut().zip(&a[o..]).zip(&b[o..]) {
+                    let z = f(x, y);
+                    track(&mut fl, x, y, z);
+                    d.write(z);
+                }
+                fl
+            });
+            (shaped_like(l.get(), out), flags)
+        }
+    };
+    // The real-output rule: `binop` zeroes the imaginary parts whenever both
+    // inputs were real. Skipped when every imaginary part is already `+0.0`.
+    if real_rule && flags.inputs_real && flags.output_needs_zeroing {
+        drive(data_mut(&mut out), &|_, c: &mut [C64]| {
+            for z in c {
+                z.im = 0.0;
+            }
+            NO_FLAGS
         });
-    // SAFETY: the chunks cover `0..n` exactly once and `write` initialises
-    // every element of each chunk it is given.
-    unsafe { out.set_len(n) };
+    }
     out
 }
+
+// ── Copies and reductions used by indexing and `sum` ───────────────────────
 
 /// `m[r0..r0+nr, c0..c0+nc]` copied in parallel, or `None` when the block
 /// is small or `m` is not in standard (row-major) layout.
@@ -212,18 +362,20 @@ pub(crate) fn par_block_copy(
     }
     let src = m.as_slice()?;
     let stride = m.ncols();
-    let out = fill_par(n, |range, dst| {
+    let (out, _) = drive_new(n, &|o, dst: &mut [MaybeUninit<C64>]| {
         // Copy the chunk row segment by row segment.
-        let mut k = range.start;
-        while k < range.end {
+        let end = o + dst.len();
+        let mut k = o;
+        while k < end {
             let (i, j) = (k / nc, k % nc);
-            let len = (nc - j).min(range.end - k);
+            let len = (nc - j).min(end - k);
             let from = (r0 + i) * stride + c0 + j;
-            for (d, &x) in dst[k - range.start..k - range.start + len].iter_mut().zip(&src[from..from + len]) {
+            for (d, &x) in dst[k - o..k - o + len].iter_mut().zip(&src[from..from + len]) {
                 d.write(x);
             }
             k += len;
         }
+        NO_FLAGS
     });
     Some(ndarray::Array2::from_shape_vec((nr, nc), out).expect("nr × nc elements"))
 }
@@ -234,10 +386,11 @@ pub(crate) fn par_vector_copy(v: &rustlab_core::CVector, start: usize, n: usize)
         return None;
     }
     let src = &v.as_slice()?[start..start + n];
-    let out = fill_par(n, |range, dst| {
-        for (d, &x) in dst.iter_mut().zip(&src[range]) {
+    let (out, _) = drive_new(n, &|o, dst: &mut [MaybeUninit<C64>]| {
+        for (d, &x) in dst.iter_mut().zip(&src[o..]) {
             d.write(x);
         }
+        NO_FLAGS
     });
     Some(ndarray::Array1::from_vec(out))
 }
@@ -252,198 +405,16 @@ pub(crate) fn par_column_sums(m: &rustlab_core::CMatrix) -> Option<rustlab_core:
     let src = m.as_slice()?;
     let (nrows, ncols) = m.dim();
     let mut acc = vec![C64::new(0.0, 0.0); ncols];
-    acc.par_chunks_mut(PAR_CHUNK).enumerate().for_each(|(k, a)| {
-        let c0 = k * PAR_CHUNK;
+    drive(&mut acc, &|c0, a: &mut [C64]| {
         for i in 0..nrows {
             let row = &src[i * ncols + c0..i * ncols + c0 + a.len()];
             for (x, &y) in a.iter_mut().zip(row) {
                 *x += y;
             }
         }
+        NO_FLAGS
     });
     Some(ndarray::Array1::from_vec(acc))
-}
-
-/// Flags gathered while combining two arrays, to apply the real-output rule
-/// after the fact without a separate scan of the inputs.
-#[derive(Clone, Copy)]
-struct RealFlags {
-    /// Every input element on both sides had `|im| < ε` (the rule's test).
-    inputs_real: bool,
-    /// Some output element has an imaginary part that zeroing would change
-    /// (any bit pattern other than `+0.0`).
-    output_needs_zeroing: bool,
-}
-
-/// Combine two same-shape arrays elementwise. Writes into whichever operand
-/// is an owned temporary, else allocates once. With `real_rule`, zeroes the
-/// imaginary parts of the result when both inputs were real.
-fn zip_arrays(op: BinOp, l: Operand, r: Operand, real_rule: bool) -> Value {
-    with_op!(op, elem, f => zip_arrays_with(f, l, r, real_rule))
-}
-
-fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Copy + Sync, l: Operand, r: Operand, real_rule: bool) -> Value {
-    match (l, r) {
-        (Operand::Owned(Value::Vector(mut a)), r) => {
-            let b = vector_ref(r.get());
-            let flags = zip_into_left(&mut a, b, f);
-            Value::Vector(finish(a, flags, real_rule))
-        }
-        (l, Operand::Owned(Value::Vector(mut b))) => {
-            let a = vector_ref(l.get());
-            let flags = zip_into_right(a, &mut b, f);
-            Value::Vector(finish(b, flags, real_rule))
-        }
-        (Operand::Owned(Value::Matrix(mut a)), r) => {
-            let b = matrix_ref(r.get());
-            let flags = zip_into_left(&mut a, b, f);
-            Value::Matrix(finish(a, flags, real_rule))
-        }
-        (l, Operand::Owned(Value::Matrix(mut b))) => {
-            let a = matrix_ref(l.get());
-            let flags = zip_into_right(a, &mut b, f);
-            Value::Matrix(finish(b, flags, real_rule))
-        }
-        (l, r) => match (l.get(), r.get()) {
-            (Value::Vector(a), Value::Vector(b)) => {
-                let (out, flags) = zip_new(a, b, f);
-                Value::Vector(finish(out, flags, real_rule))
-            }
-            (Value::Matrix(a), Value::Matrix(b)) => {
-                let (out, flags) = zip_new(a, b, f);
-                Value::Matrix(finish(out, flags, real_rule))
-            }
-            _ => unreachable!("checked by the caller"),
-        },
-    }
-}
-
-fn vector_ref(v: &Value) -> &rustlab_core::CVector {
-    match v {
-        Value::Vector(v) => v,
-        _ => unreachable!("checked by the caller"),
-    }
-}
-
-fn matrix_ref(v: &Value) -> &rustlab_core::CMatrix {
-    match v {
-        Value::Matrix(m) => m,
-        _ => unreachable!("checked by the caller"),
-    }
-}
-
-const fn new_flags() -> RealFlags {
-    RealFlags { inputs_real: true, output_needs_zeroing: false }
-}
-
-#[inline(always)]
-fn track(flags: &mut RealFlags, x: C64, y: C64, z: C64) {
-    flags.inputs_real &= x.im.abs() < f64::EPSILON && y.im.abs() < f64::EPSILON;
-    flags.output_needs_zeroing |= z.im.to_bits() != 0;
-}
-
-fn combine(f: &RealFlags, g: RealFlags) -> RealFlags {
-    RealFlags {
-        inputs_real: f.inputs_real && g.inputs_real,
-        output_needs_zeroing: f.output_needs_zeroing || g.output_needs_zeroing,
-    }
-}
-
-/// `a ← f(a, b)`, returning the real-output flags.
-fn zip_into_left<S, T, D>(a: &mut ArrayBase<S, D>, b: &ArrayBase<T, D>, f: impl Fn(C64, C64) -> C64 + Sync) -> RealFlags
-where
-    S: DataMut<Elem = C64>,
-    T: Data<Elem = C64>,
-    D: Dimension,
-{
-    if a.len() >= PAR_MIN_LEN {
-        if let (Some(xs), Some(ys)) = (a.as_slice_mut(), b.as_slice()) {
-            return xs
-                .par_chunks_mut(PAR_CHUNK)
-                .zip(ys.par_chunks(PAR_CHUNK))
-                .map(|(xc, yc)| {
-                    let mut flags = new_flags();
-                    for (x, &y) in xc.iter_mut().zip(yc) {
-                        let z = f(*x, y);
-                        track(&mut flags, *x, y, z);
-                        *x = z;
-                    }
-                    flags
-                })
-                .reduce(new_flags, |p, q| combine(&p, q));
-        }
-    }
-    let mut flags = new_flags();
-    Zip::from(a).and(b).for_each(|x, &y| {
-        let z = f(*x, y);
-        track(&mut flags, *x, y, z);
-        *x = z;
-    });
-    flags
-}
-
-/// `b ← f(a, b)`, returning the real-output flags.
-fn zip_into_right<S, T, D>(a: &ArrayBase<S, D>, b: &mut ArrayBase<T, D>, f: impl Fn(C64, C64) -> C64 + Sync) -> RealFlags
-where
-    S: Data<Elem = C64>,
-    T: DataMut<Elem = C64>,
-    D: Dimension,
-{
-    zip_into_left(b, a, move |y, x| f(x, y))
-}
-
-fn zip_new<D: Dimension>(
-    a: &Array<C64, D>,
-    b: &Array<C64, D>,
-    f: impl Fn(C64, C64) -> C64 + Sync,
-) -> (Array<C64, D>, RealFlags) {
-    if a.len() >= PAR_MIN_LEN {
-        if let (Some(xs), Some(ys)) = (a.as_slice(), b.as_slice()) {
-            let n = xs.len();
-            let mut out: Vec<C64> = Vec::with_capacity(n);
-            let flags = out.spare_capacity_mut()[..n]
-                .par_chunks_mut(PAR_CHUNK)
-                .enumerate()
-                .map(|(k, dst)| {
-                    let start = k * PAR_CHUNK;
-                    let mut flags = new_flags();
-                    for ((d, &x), &y) in dst.iter_mut().zip(&xs[start..]).zip(&ys[start..]) {
-                        let z = f(x, y);
-                        track(&mut flags, x, y, z);
-                        d.write(z);
-                    }
-                    flags
-                })
-                .reduce(new_flags, |p, q| combine(&p, q));
-            // SAFETY: the chunks cover `0..n` once and each loop writes every
-            // element of its chunk (`dst` is no longer than the inputs' tail).
-            unsafe { out.set_len(n) };
-            let out = Array::from_shape_vec(a.raw_dim(), out).expect("same length and C order as the input");
-            return (out, flags);
-        }
-    }
-    let mut flags = new_flags();
-    let out = Zip::from(a).and(b).map_collect(|&x, &y| {
-        let z = f(x, y);
-        track(&mut flags, x, y, z);
-        z
-    });
-    (out, flags)
-}
-
-/// Apply the real-output rule: zero the imaginary parts when both inputs
-/// were real, which `binop` does unconditionally in that case. Skipped when
-/// every imaginary part is already `+0.0`, since zeroing would not change it.
-fn finish<D: Dimension>(mut out: ndarray::Array<C64, D>, flags: RealFlags, real_rule: bool) -> ndarray::Array<C64, D> {
-    if real_rule && flags.inputs_real && flags.output_needs_zeroing {
-        match out.as_slice_mut() {
-            Some(xs) if xs.len() >= PAR_MIN_LEN => {
-                xs.par_chunks_mut(PAR_CHUNK).for_each(|c| c.iter_mut().for_each(|z| z.im = 0.0))
-            }
-            _ => out.iter_mut().for_each(|c| c.im = 0.0),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -600,6 +571,22 @@ mod tests {
             let want: C64 = m.column(j).iter().copied().sum();
             assert_eq!(sums[j].re.to_bits(), want.re.to_bits());
             assert_eq!(sums[j].im.to_bits(), want.im.to_bits());
+        }
+    }
+
+    /// A matrix not in row-major contiguous layout takes `binop` unchanged.
+    #[test]
+    fn non_contiguous_operands_fall_back_to_binop() {
+        use ndarray::ShapeBuilder;
+        let data: Vec<C64> = (0..6).map(|k| C64::new(k as f64 - 2.5, 0.0)).collect();
+        let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap());
+        assert!(!is_contiguous(&fortran));
+        let row = mat_of(2, 3, &[(1.0, 0.0), (-2.0, 0.0), (3.0, 0.0), (0.5, 0.0), (-1.0, 0.0), (2.0, 0.0)]);
+        for op in OPS {
+            check(op, &fortran, &row);
+            check(op, &row, &fortran);
+            check(op, &fortran, &Value::Scalar(-1.5));
+            check(op, &Value::Scalar(2.0), &fortran);
         }
     }
 
