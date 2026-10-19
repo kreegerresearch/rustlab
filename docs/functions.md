@@ -3960,7 +3960,7 @@ Rows in brackets are not functions:
 
 - `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
 - `[matmul]` — matrix products `A * B`, always recorded.
-- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands.
+- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
 

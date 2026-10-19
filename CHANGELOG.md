@@ -6,6 +6,27 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.11
+
+Perf flywheel iteration 02 (requests from `rustlab_llm`,
+`perf/iterations/02-requests.md`). Plan: `dev/plans/perf_flywheel_iter02.md`.
+
+### Breaking / behavior changes
+- **`--profile=ops` no longer shows `[transpose]` rows for `A' * B`,
+  `A * B'` or `A' * B'` on matrices.** The product reads the transposed
+  operand directly, so no transpose is formed; the time is in `[matmul]`.
+  A transpose of a vector (`v' * M`) or a standalone `A'` still has its
+  row. Results are unchanged, bit for bit.
+
+### Performance
+- **Products with a transposed matrix operand skip the transpose.**
+  `X * W'` and `H' * H` hand the matrix multiply a transposed view
+  (conjugating inside the product for `'` on complex data), so no copy of
+  the operand is made.
+- **Real matrix products have less overhead around the multiply.** The
+  realness check and the conversion to real values are one pass, which is
+  noticeable at the 100–500 element sizes typical of scripts.
+
 ## 0.3.10
 
 Perf flywheel iteration 01 (requests from `rustlab_llm`,

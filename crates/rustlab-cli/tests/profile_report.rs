@@ -46,7 +46,9 @@ fn bare_profile_flag_still_takes_the_script_path() {
 
 #[test]
 fn profile_ops_adds_operator_rows() {
-    let err = stderr_of(&["--profile=ops"], "A = randn(16, 16);\nz = outer(A);\n");
+    // `x * x'` multiplies by a transposed view, so the transpose row comes
+    // from the standalone `A'`.
+    let err = stderr_of(&["--profile=ops"], "A = randn(16, 16);\nz = outer(A);\nT = A';\n");
     for row in ["[+]", "[transpose]", "[matmul]", "inner"] {
         assert!(has_row(&err, row), "missing {row}:\n{err}");
     }

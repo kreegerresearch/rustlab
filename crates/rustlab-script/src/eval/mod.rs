@@ -3213,7 +3213,9 @@ impl Evaluator {
     /// non-variable operands are evaluated first, then variables borrowed.
     #[inline(never)]
     fn eval_arith_binop(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
-        use elementwise::Operand;
+        if op == BinOp::Mul && (is_transpose_expr(lhs) || is_transpose_expr(rhs)) {
+            return self.eval_transposed_matmul(lhs, rhs);
+        }
         // Left to right, as before; a borrowed variable is only looked up.
         let l = self.binop_operand(lhs)?;
         let r = self.binop_operand(rhs)?;
@@ -3238,6 +3240,14 @@ impl Evaluator {
                 }
             }
         }
+        self.finish_binop(op, l, r)
+    }
+
+    /// The general part of [`eval_arith_binop`](Self::eval_arith_binop),
+    /// once both operands are evaluated.
+    fn finish_binop(&mut self, op: BinOp, l: PreOperand, r: PreOperand) -> Result<Value, ScriptError> {
+        use elementwise::Operand;
+        let frame_names = self.profiler.is_enabled();
         let result = match (l, r) {
             // Neither side is an array variable: the plain path (scalar
             // arithmetic in loops must not pay for the borrowing machinery).
@@ -3271,6 +3281,56 @@ impl Evaluator {
             }
         };
         result
+    }
+
+    /// `A' * B`, `A * B'` and `A' * B'` (and `.'`). When both operands are
+    /// matrices, the product is formed from a transposed view, so the
+    /// transpose is never written out: `matmul_conj` reads the view's
+    /// strides directly and applies `'`'s conjugation itself (a no-op for a
+    /// real operand). Anything else (vectors, or a dimension mismatch, which
+    /// then reports `binop`'s error) writes the transposes out and takes the
+    /// ordinary path.
+    #[inline(never)]
+    fn eval_transposed_matmul(&mut self, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
+        let l = self.matmul_side(lhs)?;
+        let r = self.matmul_side(rhs)?;
+        if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
+            if a.ncols() == b.nrows() {
+                let frame = self.profiler.enter_op("[matmul]");
+                let m = rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b);
+                self.profiler.exit_op(frame);
+                return Ok(Value::Matrix(m));
+            }
+        }
+        let l = self.materialize_side(l)?;
+        let r = self.materialize_side(r)?;
+        self.finish_binop(BinOp::Mul, l, r)
+    }
+
+    /// An operand of a product: plain, or a transpose whose inner operand
+    /// is evaluated (or named, to borrow) but not yet transposed.
+    fn matmul_side<'e>(&mut self, e: &'e Expr) -> Result<MatmulSide<'e>, ScriptError> {
+        Ok(match e {
+            Expr::Transpose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: true },
+            Expr::NonConjTranspose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: false },
+            _ => MatmulSide::Plain(self.binop_operand(e)?),
+        })
+    }
+
+    /// Write out a pending transpose, as `eval_transpose` would.
+    fn materialize_side<'e>(&mut self, side: MatmulSide<'e>) -> Result<PreOperand<'e>, ScriptError> {
+        let (inner, conj) = match side {
+            MatmulSide::Plain(p) => return Ok(p),
+            MatmulSide::T { inner, conj } => (inner, conj),
+        };
+        let frame = self.profiler.enter_op("[transpose]");
+        let v = match &inner {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &self.env[*name],
+        };
+        let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
+        self.profiler.exit_op(frame);
+        Ok(PreOperand::Owned(result.map_err(ScriptError::runtime)?))
     }
 
     /// Evaluate a binary-operator operand. A variable holding a dense array
@@ -4361,6 +4421,38 @@ impl IndexShape {
 enum PreOperand<'e> {
     Owned(Value),
     Var(&'e str),
+}
+
+/// One operand of a product, for [`Evaluator::eval_transposed_matmul`].
+enum MatmulSide<'e> {
+    Plain(PreOperand<'e>),
+    /// `inner'` (`conj`) or `inner.'`, not yet transposed.
+    T { inner: PreOperand<'e>, conj: bool },
+}
+
+impl MatmulSide<'_> {
+    /// The matrix this operand stands for, as a view plus whether its
+    /// elements are to be conjugated, when it is a matrix.
+    fn view<'a>(&'a self, env: &'a HashMap<String, Value>) -> Option<(ndarray::ArrayView2<'a, C64>, bool)> {
+        let get = |p: &'a PreOperand| match p {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &env[*name],
+        };
+        match self {
+            MatmulSide::Plain(p) => match get(p) {
+                Value::Matrix(m) => Some((m.view(), false)),
+                _ => None,
+            },
+            MatmulSide::T { inner, conj } => match get(inner) {
+                Value::Matrix(m) => Some((m.t(), *conj)),
+                _ => None,
+            },
+        }
+    }
+}
+
+fn is_transpose_expr(e: &Expr) -> bool {
+    matches!(e, Expr::Transpose(_) | Expr::NonConjTranspose(_))
 }
 
 fn is_dense(v: &Value) -> bool {

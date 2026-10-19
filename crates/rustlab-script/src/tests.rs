@@ -14224,6 +14224,93 @@ mod transpose_layout {
     }
 }
 
+// ─── Products with a transposed operand use a view ─────────────────────────
+
+#[cfg(test)]
+mod transposed_matmul {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval(src: &str) -> Evaluator {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn assert_same(ev: &Evaluator, got: &str, want: &str) {
+        match (ev.get(got).unwrap(), ev.get(want).unwrap()) {
+            (Value::Matrix(g), Value::Matrix(w)) => {
+                assert!(g.as_slice().is_some(), "{got} must be row-major");
+                assert_eq!(g.dim(), w.dim(), "{got}");
+                for (p, q) in g.iter().zip(w.iter()) {
+                    assert!(
+                        p.re.to_bits() == q.re.to_bits() && p.im.to_bits() == q.im.to_bits(),
+                        "{got}: {p} vs {q}"
+                    );
+                }
+            }
+            (g, w) => assert_eq!(format!("{g:?}"), format!("{w:?}"), "{got}"),
+        }
+    }
+
+    /// Every transposed-product form gives exactly what writing the
+    /// transpose out first gives: real and complex, `'` and `.'`, a
+    /// variable or an expression inside the transpose.
+    #[test]
+    fn matches_the_written_out_transpose_bit_for_bit() {
+        for setup in [
+            "seed(1); A = randn(37, 70); B = randn(37, 41); C = randn(41, 70);",
+            "seed(2); A = randn(37, 70) + 1j * randn(37, 70); B = randn(37, 41) - 2j * randn(37, 41); C = randn(41, 70) + 1j * randn(41, 70);",
+            "seed(3); A = randn(37, 70) + 1j * randn(37, 70); B = randn(37, 41); C = randn(41, 70);",
+        ] {
+            let src = format!(
+                "{setup}
+                 D = 3 * randn(41, 37) - C(:, 1:37);
+                 At = A'; Ct = C'; Ant = A.'; Dt = D'; Dnt = D.';
+                 p1 = A' * B;   q1 = At * B;
+                 p2 = B' * A;   q2 = B' * A;
+                 p3 = C * A';   q3 = C * At;
+                 p4 = A' * D';  q4 = At * Dt;
+                 p5 = A.' * B;  q5 = Ant * B;
+                 p6 = C * A.';  q6 = C * Ant;
+                 p7 = A.' * D.'; q7 = Ant * Dnt;
+                 p8 = (2 * A)' * B; T = (2 * A)'; q8 = T * B;
+                 p9 = A(1:20, :)' * B(1:20, 1:5); T = A(1:20, :)'; q9 = T * B(1:20, 1:5);
+                 v = randn(37); p10 = v' * v; vt = v'; q10 = vt * v;
+                 p11 = B' * v'; q11 = B' * vt;"
+            );
+            let ev = eval(&src);
+            for k in 1..=11 {
+                assert_same(&ev, &format!("p{k}"), &format!("q{k}"));
+            }
+        }
+    }
+
+    #[test]
+    fn dimension_mismatch_reports_the_same_error() {
+        let run = |src: &str| {
+            let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+            Evaluator::new().run(&stmts).err().unwrap().to_string()
+        };
+        assert_eq!(run("A = ones(3, 4); B = ones(5, 2); C = A' * B;"), run("A = ones(3, 4); B = ones(5, 2); At = A'; C = At * B;"));
+    }
+
+    #[test]
+    fn profile_has_no_transpose_row_for_matrix_products() {
+        let src = "A = ones(30, 20); B = ones(30, 10); C = A' * B; D = B * B'; E = (1j * A)' * B; v = linspace(0, 1, 30); F = v' * v;";
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let rows: std::collections::HashMap<_, _> = ev.take_profile().into_iter().collect();
+        assert_eq!(rows["[matmul]"].call_count, 4);
+        // Only the vector operand is written out (`v'` is a column matrix).
+        assert_eq!(rows["[transpose]"].call_count, 1);
+    }
+}
+
 // ─── Scalar arithmetic fast path matches Value::binop ──────────────────────
 
 #[cfg(test)]
