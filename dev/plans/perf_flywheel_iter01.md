@@ -1,7 +1,7 @@
 # Perf flywheel iteration 01
 
 **Status:** in progress
-**Current phase:** R1 (real matrix multiply)
+**Current phase:** R2 (profiler)
 **Branch:** `feature/perf-iter01` (one PR, version 0.3.10)
 **Source request:** `../rustlab_llm/perf/iterations/01-requests.md`
 (measured on rustlab 0.3.9, `65d6507`, Apple M4 Max, 2026-10-18).
@@ -66,12 +66,31 @@ close more of it.
 
 ## R1: real-valued matrix multiply fast path
 
-**Status:** not started
+**Status:** done (all targets met)
 
-When both operands of `Matrix * Matrix` (and matrix × column vector) have
-all-zero imaginary parts, multiply the real parts with `f64` `dot` (dgemm)
-and widen. Single-threaded. Targets: `prim.matmul_512x512x512` ≥ 40 GFLOP/s,
-`prim.matmul_129x128x512` ≥ 25 GFLOP/s, `model.grad_flat` ≤ 80 ms.
+- `rustlab_core::matmul::{matmul, is_real}`: if both operands have
+  all-zero imaginary parts, multiply the real parts with ndarray's `f64`
+  `dot` (`matrixmultiply::dgemm`, single-threaded, no new dependency) and
+  widen; otherwise the complex `dot`. — done
+- `Matrix * Matrix` and row vector × matrix (previously a hand loop over
+  strided columns) both call it. — done
+- Tests in `rustlab-core` (`matmul::tests`): real path vs naive triple loop
+  on square, 1×N, N×1 and model shapes; complex and mixed operands;
+  transposed views; NaN propagation; `Inf` stays real; `-0.0` imaginary
+  counts as real. `make octave-compare`: 148/148.
+
+| Key | 0.3.9 | After R1 | Target |
+|---|---:|---:|---|
+| `prim.matmul_512x512x512` | 8.6 GFLOP/s | 50.8 GFLOP/s | ≥ 40 — **met** |
+| `prim.matmul_129x128x512` | 8.6 GFLOP/s | 31.3 GFLOP/s | ≥ 25 — **met** |
+| `model.grad_flat` | 152 ms | 75.9 ms | ≤ 80 ms — **met** |
+| `par.grad_flat_B8` | 322 ms | 145 ms (1.91× serial) | (R3) ≤ 1.3× serial |
+| `e2e.train_step_B8` | 2,246 tok/s | 4,194 tok/s | — |
+
+Gate PASS; the 25-step trajectory still matches the reference exactly.
+With the window twice as fast, parmap efficiency fell to 52 %: the
+remaining per-window cost is copies and allocation, which contend across
+threads. That is R4's territory.
 
 ## R2: profiler that sees inside user functions
 

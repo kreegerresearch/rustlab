@@ -1917,7 +1917,7 @@ impl Value {
                                 a.nrows(), a.ncols(), b.nrows(), b.ncols()
                             ));
                     }
-                    Ok(Value::Matrix(a.dot(b)))
+                    Ok(Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view())))
                 }
                 Add | Sub | ElemMul | ElemDiv => {
                     Self::elementwise_with_broadcast(a, b, op).map(Value::Matrix)
@@ -1980,9 +1980,9 @@ impl Value {
                         }
                         // Row vector (1×n) * matrix (n×k) → row vector (1×k)
                         let k = m.ncols();
-                        let result: CVector = Array1::from_iter((0..k).map(|j| {
-                            v.iter().zip(m.column(j).iter()).map(|(&vi, &mij)| vi * mij).sum::<C64>()
-                        }));
+                        let row = v.view().insert_axis(ndarray::Axis(0));
+                        let result: CVector = rustlab_core::matmul::matmul(&row, &m.view())
+                            .index_axis_move(ndarray::Axis(0), 0);
                         // Collapse 1×1 result to scalar (e.g. v * v' gives scalar)
                         if k == 1 {
                             let c = result[0];

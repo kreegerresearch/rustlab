@@ -11,6 +11,16 @@ should re-validate against those entries when upgrading.
 Perf flywheel iteration 01 (requests from `rustlab_llm`,
 `perf/iterations/01-requests.md`). Plan: `dev/plans/perf_flywheel_iter01.md`.
 
+### Breaking / behavior changes
+- **Real matrix products use a real multiply, so last digits can change.**
+  When both operands of `A * B` (or a row vector times a matrix) have no
+  imaginary parts, the product is formed from the real parts with a real
+  GEMM. Sums run in a different order from the complex kernel, so results
+  can differ by rounding. A real operand holding `Inf` no longer produces
+  `NaN` imaginary parts (the complex kernel computed `Inf·0`), so such a
+  product now stays real. Migration: none expected; a test comparing
+  products bit-for-bit should compare with a tolerance.
+
 ### Performance
 - **`parmap` no longer copies the caller's variables into every task.**
   Workers start from the built-in constants and the user-defined functions;
@@ -20,6 +30,10 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   output matrix in parallel. A trivial 8-task `parmap` beside a 104 MB
   variable drops from 6.0 ms to 0.13 ms. `parmap(@feval, …)` still sees the
   caller's variables, because `feval` resolves names there.
+- **Real matrix multiply is ~4–6× faster.** A 512×512×512 product went from
+  8.4 to 50.8 GFLOP/s; the model shapes in `rustlab_llm` from ~8.6 to
+  25–33 GFLOP/s. Complex operands keep the complex kernel. Shared helper:
+  `rustlab_core::matmul`.
 - **`S.field` reads copy only the field.** Reading a field of a struct
   variable (or a chain `S.a.b`) used to copy the whole struct first. For a
   model's 13 MB parameter struct read ~30 times per forward and backward
