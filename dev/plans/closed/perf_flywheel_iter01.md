@@ -1,8 +1,8 @@
 # Perf flywheel iteration 01
 
-**Status:** complete (pending PR review)
+**Status:** complete — merged 2026-10-19 (PR #77, `1ebb762`), installed as 0.3.10
 **Current phase:** done — response note below
-**Branch:** `feature/perf-iter01` (one PR, version 0.3.10)
+**Branch:** `feature/perf-iter01` (one PR, version 0.3.10), squash-merged to `main` as `1ebb762`
 **Source request:** `../rustlab_llm/perf/iterations/01-requests.md`
 (measured on rustlab 0.3.9, `65d6507`, Apple M4 Max, 2026-10-18).
 Protocol: `../rustlab_llm/docs/perf-flywheel.md`.
@@ -203,7 +203,7 @@ Side by side with `main`: 16.4–16.5 → 13.3–13.6 ms (~18 % faster);
 ## Response note (filled in at the end)
 
 ## Perf loop iteration 01: response
-Revision: `feature/perf-iter01` (rustlab 0.3.10), not yet merged or installed — 2026-10-18.
+Revision: `1ebb762` on `main` (rustlab 0.3.10, PR #77), merged and installed 2026-10-19.
 
 | # | Status | What changed | Self-check numbers (two runs) |
 |---|---|---|---|

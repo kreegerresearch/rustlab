@@ -1,5 +1,7 @@
 # Handoff: perf flywheel iteration 01 (2026-10-18)
 
+> **Closed (2026-10-19).** PR #77 merged as `1ebb762` and 0.3.10 is installed. Kept for history; the "What is left to do" list below reflects the state before the merge.
+
 State of the work, for an agent picking it up. The detailed plan, per-item
 results, and the response note for `rustlab_llm` are in
 [`perf_flywheel_iter01.md`](perf_flywheel_iter01.md). Read that first; this
