@@ -63,7 +63,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `parmap(f, xs)` | Parallel map across the rayon thread pool. `f` is a lambda or function handle; `xs` is a 1-D iterable. Output shape follows `f`'s return: scalar → Vector, length-`d` Vector → `(N, d)` Matrix, `m×n` Matrix → `(m, n, N)` Tensor3 (use `result(:, :, k)` to extract the k-th per-call matrix). All trials must return the same shape. Per-task RNG is deterministic given `seed(N)`. Pure-lambda contract: no plotting / file I/O / audio / seed inside the lambda body. See `dev/plans/parmap_parreduce.md` (v1) and `dev/plans/parmap_nonscalar_outputs.md` (vector/matrix outputs). |
 | `nproc()` | Number of logical CPUs (= rayon pool size = `parmap` thread count). Respects cgroup limits on Linux. |
 | `feval("name", args...)` | Call function by string name |
-| `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all |
+| `profile(fn1, fn2)` | Enable call profiling for named functions; `profile()` tracks all. Rows are nested calls with inclusive and self time, plus `[top-level]` and `[matmul]`; `rustlab run --profile=ops` adds operator and indexing rows |
 | `profile_report()` | Print profiling table to stderr immediately |
 | `cache enable [path]` | Persistent function-result cache (~1 ms hit path; survives `notebook render`, REPL restart, CI). Defaults to `.rustlab/cache.db`. Full grammar: `cache enable "p.rcache"`, `cache off`, `cache add file <p>`, `cache add function f1, f2`, `cache remove function f`, `cache status`, `cache list [limit=N]`, `cache clear`, `cache prune older="30d" max_size=N`. Use this for slow pure functions whose results outlive a session. See `docs/functions.md` § "Persistent Function Cache". `cache` is a soft keyword: it starts a cache statement only when followed by a subcommand or path, so `cache = 5` and `function [y, cache] = f(x)` still work. |
 | `logspace(a, b, n)` | n log-spaced points from 10^a to 10^b |
@@ -453,6 +453,7 @@ yields a `double`**. Integers flow through other builtins by widening to double
 | `softmax(M)` / `softmax(M, dim)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 | `relu(v)` | Rectified linear unit: max(0, x), element-wise |
 | `gelu(v)` | Gaussian error linear unit, element-wise |
+| `gelu_grad(v)` | Derivative of `gelu`, element-wise (backpropagation) |
 | `layernorm(v)` / `layernorm(v, eps)` | Layer normalization on a vector: (v − mean) / std |
 | `layernorm(M)` / `layernorm(M, dim)` / `layernorm(M, dim, eps)` | Per-row by default (`dim=2`, ML convention); `dim=1` for per-column. |
 

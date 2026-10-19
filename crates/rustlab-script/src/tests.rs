@@ -5798,6 +5798,32 @@ mod ml_tests {
     // ── gelu ─────────────────────────────────────────────────────────────────
 
     #[test]
+    fn gelu_grad_matches_finite_difference_of_gelu() {
+        let ev = eval_str(
+            "x = linspace(-6, 6, 241);\nh = 1e-5;\n\
+             fd = (gelu(x + h) - gelu(x - h)) / (2 * h);\n\
+             err = max(abs(gelu_grad(x) - fd));",
+        );
+        let err = get_scalar(&ev, "err");
+        assert!(err < 1e-8, "gelu_grad vs central difference: {err}");
+    }
+
+    #[test]
+    fn gelu_grad_matches_the_written_out_formula() {
+        // The expression a library would otherwise write in .rlab.
+        let ev = eval_str(
+            "z = [-2.5, -0.17, 0, 0.3, 4; 1, -1, 2, -2, 0.5];\n\
+             c = sqrt(2.0 / pi);\nth = tanh(c * (z + 0.044715 * z .^ 3));\n\
+             du = c * (1.0 + 0.044715 * 3.0 * z .^ 2);\n\
+             y = 0.5 * (1.0 + th) + 0.5 * z .* (1.0 - th .^ 2) .* du;\n\
+             err = max(max(abs(gelu_grad(z) - y)));\n\
+             g0 = gelu_grad(0);",
+        );
+        assert!(get_scalar(&ev, "err") < 1e-14, "err {}", get_scalar(&ev, "err"));
+        assert!(close(get_scalar(&ev, "g0"), 0.5));
+    }
+
+    #[test]
     fn gelu_zero_is_zero() {
         let ev = eval_str("y = gelu(0.0)");
         assert!(close(get_scalar(&ev, "y"), 0.0), "gelu(0) should be 0");
@@ -6691,24 +6717,125 @@ mod profiling_tests {
     }
 
     #[test]
-    fn arrayfun_inner_calls_not_tracked_separately() {
-        // arrayfun(@sin, v) — sin is called N times as a callback.
-        // With profile(arrayfun, sin): arrayfun tracked; sin NOT (higher_order_depth suppresses it).
+    fn arrayfun_callbacks_get_their_own_rows() {
+        // arrayfun(@sin, v): sin runs once per element, nested under arrayfun.
         let (_, report) = run_profiled("arrayfun(@sin, 1:5);", Some(vec!["arrayfun", "sin"]));
         let af = find(&report, "arrayfun").expect("arrayfun tracked");
         assert_eq!(af.call_count, 1, "arrayfun called once");
-        // sin should not appear — suppressed by higher_order_depth
-        assert!(find(&report, "sin").is_none(), "sin inner calls suppressed");
+        let sin = find(&report, "sin").expect("callback sin recorded");
+        assert_eq!(sin.call_count, 5);
+        assert!(af.total_ns >= sin.total_ns, "parent inclusive covers child");
+        assert!(af.self_ns <= af.total_ns - sin.total_ns + 1);
     }
 
     #[test]
-    fn user_fn_tracked_inner_builtins_suppressed() {
+    fn user_fn_records_nested_builtins() {
         let src = "function y = myabs(x)\n  y = abs(x);\nend\nmyabs(3);";
         let (_, report) = run_profiled(src, Some(vec!["myabs", "abs"]));
         let mf = find(&report, "myabs").expect("myabs tracked");
         assert_eq!(mf.call_count, 1);
-        // abs is called inside myabs — higher_order_depth suppresses it
-        assert!(find(&report, "abs").is_none(), "inner abs suppressed");
+        let abs = find(&report, "abs").expect("inner abs recorded");
+        assert_eq!(abs.call_count, 1);
+        assert!(mf.total_ns >= abs.total_ns);
+    }
+
+    #[test]
+    fn inclusive_and_self_time_split_across_nested_functions() {
+        // a sleeps 40 ms itself and calls b, which sleeps 60 ms.
+        let src = "function r = b()\n  sleep(0.06); r = 1;\nend\n\
+                   function r = a()\n  sleep(0.04); r = b();\nend\n\
+                   x = a();";
+        let (_, report) = run_profiled(src, None);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let a = find(&report, "a").expect("a");
+        let b = find(&report, "b").expect("b");
+        let sleep = find(&report, "sleep").expect("sleep");
+        assert_eq!(sleep.call_count, 2);
+        assert!(ms(a.total_ns) >= 100.0 && ms(a.total_ns) < 160.0, "a total {}", ms(a.total_ns));
+        assert!(ms(b.total_ns) >= 60.0 && ms(b.total_ns) < 110.0, "b total {}", ms(b.total_ns));
+        // Sleeping is in the `sleep` rows, so a and b keep almost no self time.
+        assert!(ms(a.self_ns) < 20.0, "a self {}", ms(a.self_ns));
+        assert!(ms(b.self_ns) < 20.0, "b self {}", ms(b.self_ns));
+        assert!(ms(sleep.self_ns) >= 100.0);
+    }
+
+    #[test]
+    fn self_times_sum_to_top_level_total() {
+        let src = "function y = f(x)\n  y = x * x';\nend\n\
+                   A = randn(40, 40);\nfor k = 1:30\n  z = f(A) + 1;\nend";
+        let (_, report) = run_profiled(src, None);
+        let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level row");
+        let self_sum: u64 = report.iter().filter(|(_, s)| !s.parallel).map(|(_, s)| s.self_ns).sum();
+        let diff = (self_sum as f64 - top.total_ns as f64).abs();
+        assert!(diff <= 0.01 * top.total_ns as f64 + 1e5, "sum {self_sum} vs wall {}", top.total_ns);
+    }
+
+    #[test]
+    fn recursion_counts_inclusive_time_once() {
+        let src = "function r = fact(n)\n  if n <= 1\n    r = 1;\n  else\n    r = n * fact(n - 1);\n  end\nend\nx = fact(8);";
+        let (_, report) = run_profiled(src, None);
+        let f = find(&report, "fact").expect("fact");
+        let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level");
+        assert_eq!(f.call_count, 8);
+        assert!(f.total_ns <= top.total_ns, "recursive inclusive time must not exceed wall time");
+    }
+
+    #[test]
+    fn matmul_row_always_ops_rows_only_on_request() {
+        let src = "A = ones(8, 8); B = A * A; C = A + A; D = A';";
+        let (_, report) = run_profiled(src, None);
+        assert_eq!(find(&report, "[matmul]").expect("[matmul] row").call_count, 1);
+        assert!(find(&report, "[+]").is_none());
+        assert!(find(&report, "[transpose]").is_none());
+
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        assert_eq!(find(&report, "[matmul]").unwrap().call_count, 1);
+        assert_eq!(find(&report, "[+]").expect("[+] with ops").call_count, 1);
+        assert_eq!(find(&report, "[transpose]").expect("[transpose]").call_count, 1);
+        // Scalar multiply is an operator row, not a matrix product.
+        let (_, r2) = run_profiled("x = 2 * 3;", None);
+        assert!(find(&r2, "[matmul]").is_none());
+    }
+
+    #[test]
+    fn index_rows_with_ops() {
+        let src = "v = 1:10; w = v(3); v(4) = 7;";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        assert_eq!(find(&report, "[index]").expect("[index]").call_count, 1);
+        assert_eq!(find(&report, "[index-assign]").expect("[index-assign]").call_count, 1);
+    }
+
+    #[test]
+    fn parmap_worker_rows_merge_as_parallel() {
+        let src = "function y = sq(x)\n  y = abs(x)^2;\nend\ny = parmap(@sq, 1:6);";
+        let (_, report) = run_profiled(src, None);
+        let pm = find(&report, "parmap").expect("parmap row");
+        assert!(!pm.parallel);
+        let w = find(&report, "parmap:sq").expect("worker rows merged");
+        assert_eq!(w.call_count, 6);
+        assert!(w.parallel);
+        assert_eq!(find(&report, "parmap:abs").expect("nested worker row").call_count, 6);
+        assert!(find(&report, "sq").is_none(), "worker calls are not main-thread rows");
+    }
+
+    #[test]
+    fn whitelist_filters_rows_and_drops_top_level() {
+        let src = "function y = f(x)\n  y = abs(x);\nend\nfor k = 1:3\n  f(k);\nend";
+        let (_, report) = run_profiled(src, Some(vec!["f"]));
+        assert_eq!(report.len(), 1, "only f: {:?}", report.iter().map(|r| &r.0).collect::<Vec<_>>());
+        assert_eq!(find(&report, "f").unwrap().call_count, 3);
     }
 
     #[test]
@@ -13985,6 +14112,310 @@ mod parmap_phase3_correctness {
         let y = get_vec(&ev, "y");
         // Each outer i: sum over j=1..3 of i*j = i * (1+2+3) = 6*i.
         assert_eq!(y, vec![6.0, 12.0, 18.0, 24.0]);
+    }
+}
+
+// ─── Struct field reads borrow the struct (perf iteration 01) ──────────────
+
+#[cfg(test)]
+mod struct_field_borrow {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn run_src(src: &str) -> Result<Evaluator, String> {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).map_err(|e| e.to_string())?;
+        Ok(ev)
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected Scalar for {name}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_chain_reads_field() {
+        let ev = run_src("in.b = 7; in.c = [1, 2, 3]; S.a = in; x = S.a.b; v = S.a.c; y = v(3);").unwrap();
+        assert_eq!(scalar(&ev, "x"), 7.0);
+        assert_eq!(scalar(&ev, "y"), 3.0);
+    }
+
+    #[test]
+    fn read_is_a_copy_not_an_alias() {
+        let ev = run_src("S.w = [1, 2]; w = S.w; w(1) = 9; z = S.w; a = z(1);").unwrap();
+        assert_eq!(scalar(&ev, "a"), 1.0);
+    }
+
+    #[test]
+    fn missing_field_still_errors() {
+        let err = run_src("S.a = 1; x = S.nope;").err().unwrap();
+        assert!(err.contains("no field 'nope'"), "got: {err}");
+        let err = run_src("S.a = 1; x = S.a.b;").err().unwrap();
+        assert!(err.contains("field 'b'"), "got: {err}");
+    }
+
+    #[test]
+    fn non_struct_objects_take_the_old_path() {
+        let ev = run_src("T = table([1; 2], [3; 4]); c = T.Var2; k = c(2);").unwrap();
+        assert_eq!(scalar(&ev, "k"), 4.0);
+    }
+}
+
+// ─── Transpose writes row-major output from a borrow ───────────────────────
+
+#[cfg(test)]
+mod transpose_layout {
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::{Array2, ShapeBuilder};
+    use num_complex::Complex;
+
+    fn filled(r: usize, c: usize) -> Array2<Complex<f64>> {
+        Array2::from_shape_fn((r, c), |(i, j)| Complex::new(i as f64 * 7.0 - j as f64, (i * j % 5) as f64 - 2.0))
+    }
+
+    fn assert_transpose(m: &Array2<Complex<f64>>, got: &Value, conj: bool) {
+        let Value::Matrix(t) = got else { panic!("expected Matrix, got {got:?}") };
+        assert_eq!(t.dim(), (m.ncols(), m.nrows()));
+        assert!(t.as_slice().is_some(), "transpose must be row-major contiguous");
+        for i in 0..m.nrows() {
+            for j in 0..m.ncols() {
+                let want = if conj { m[[i, j]].conj() } else { m[[i, j]] };
+                assert_eq!(t[[j, i]], want, "({i}, {j}) of {:?}", m.dim());
+            }
+        }
+    }
+
+    #[test]
+    fn blocked_transpose_matches_definition() {
+        // Shapes straddling the 32-element tiles, plus degenerate ones.
+        for &(r, c) in &[(1, 1), (1, 70), (70, 1), (31, 33), (33, 31), (129, 512), (64, 64), (0, 3), (3, 0)] {
+            let m = filled(r, c);
+            assert_transpose(&m, &Value::Matrix(m.clone()).transpose().unwrap(), true);
+            assert_transpose(&m, &Value::Matrix(m.clone()).non_conj_transpose().unwrap(), false);
+        }
+        // A column-major input takes the generic path, still row-major out.
+        let data: Vec<_> = filled(5, 7).iter().copied().collect();
+        let f = Array2::from_shape_vec((5, 7).f(), data).unwrap();
+        assert_transpose(&f, &Value::Matrix(f.clone()).transpose_ref().unwrap(), true);
+    }
+
+    #[test]
+    fn evaluator_transpose_of_a_variable_matches_value_transpose() {
+        let src = "A = [1 + 2j, 3; -1j, 4; 5, 6 - 1j];\nB = A';\nC = A.';\nv = [1j, 2, 3];\nw = v';\n";
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        let a = ev.get("A").unwrap().clone();
+        let want_b = a.clone().transpose().unwrap();
+        let want_c = a.non_conj_transpose().unwrap();
+        let want_w = ev.get("v").unwrap().clone().transpose().unwrap();
+        for (name, want) in [("B", want_b), ("C", want_c), ("w", want_w)] {
+            match (ev.get(name).unwrap(), &want) {
+                (Value::Matrix(g), Value::Matrix(w)) => assert_eq!(g, w, "{name}"),
+                (g, w) => panic!("{name}: {g:?} vs {w:?}"),
+            }
+        }
+    }
+}
+
+// ─── Scalar arithmetic fast path matches Value::binop ──────────────────────
+
+#[cfg(test)]
+mod scalar_fast_path {
+    use crate::ast::BinOp;
+    use crate::Evaluator;
+    use crate::Value;
+
+    #[test]
+    fn matches_binop_bit_for_bit() {
+        let vals = [0.0, -0.0, 1.5, -2.0, 3.0, 1e308, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+        let ops = [("+", BinOp::Add), ("-", BinOp::Sub), ("*", BinOp::Mul), (".*", BinOp::ElemMul), ("/", BinOp::Div), ("./", BinOp::ElemDiv)];
+        for &a in &vals {
+            for &b in &vals {
+                for (sym, op) in ops {
+                    let mut ev = Evaluator::new();
+                    ev.set("a", Value::Scalar(a));
+                    ev.set("b", Value::Scalar(b));
+                    let stmts = crate::parser::parse(crate::lexer::tokenize(&format!("x = a {sym} b;\n")).unwrap()).unwrap();
+                    ev.run(&stmts).unwrap();
+                    let want = Value::binop(op, Value::Scalar(a), Value::Scalar(b)).unwrap();
+                    match (ev.get("x").unwrap(), &want) {
+                        (Value::Scalar(g), Value::Scalar(w)) => {
+                            assert_eq!(g.to_bits(), w.to_bits(), "{a:?} {sym} {b:?}: {g:?} vs {w:?}")
+                        }
+                        (g, w) => panic!("{a:?} {sym} {b:?}: {g:?} vs {w:?}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ─── Integer ranges fill directly (perf iteration 01, R4) ──────────────────
+
+#[cfg(test)]
+mod integer_range_fill {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn range(src: &str) -> Vec<f64> {
+        let src = format!("r = {src};\n");
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        match ev.get("r").unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("{src}: {other:?}"),
+        }
+    }
+
+    /// The accumulation loop the evaluator used before the fast path.
+    fn accumulate(s: f64, inc: f64, e: f64) -> Vec<f64> {
+        let eps = inc.abs() * 1e-10;
+        let mut out = Vec::new();
+        let mut cur = s;
+        if inc > 0.0 {
+            while cur <= e + eps {
+                out.push(cur);
+                cur += inc;
+            }
+        } else {
+            while cur >= e - eps {
+                out.push(cur);
+                cur += inc;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn integer_ranges_match_accumulation() {
+        let cases: &[(f64, f64, f64)] = &[
+            (1.0, 1.0, 10.0),
+            (1.0, 1.0, 1.0),
+            (5.0, 1.0, 1.0),
+            (10.0, -1.0, 1.0),
+            (10.0, -3.0, 0.0),
+            (0.0, 2.0, 7.0),
+            (-4.0, 3.0, 9.5),
+            (1.0, 1.0, 3.999999999),
+            (3.0, -2.0, -0.5),
+            (1.0, 1.0, 200_000.0),
+            (-1e15, 1e14, 1e15),
+        ];
+        for &(s, inc, e) in cases {
+            let src = format!("({s}):({inc}):({e})");
+            assert_eq!(range(&src), accumulate(s, inc, e), "{src}");
+        }
+        // Non-integer steps keep the accumulation loop.
+        assert_eq!(range("0:0.1:1"), accumulate(0.0, 0.1, 1.0));
+        assert_eq!(range("0.5:1:3"), accumulate(0.5, 1.0, 3.0));
+    }
+}
+
+// ─── parmap workers carry no caller variables (perf iteration 01, R3) ──────
+
+#[cfg(test)]
+mod parmap_worker_env {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn run_src(src: &str) -> Result<Evaluator, String> {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).map_err(|e| e.to_string())?;
+        Ok(ev)
+    }
+
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected Vector for {name}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_template_drops_caller_variables() {
+        let ev = run_src("big = ones(300, 300); f = @(k) k + 1;").unwrap();
+        let lambda = ev.get("f").unwrap().clone();
+        let t = ev.clone_for_parallel_lambda(&lambda);
+        assert!(t.get("big").is_none(), "caller variable copied into worker");
+        assert!(t.get("f").is_none());
+        assert!(t.get("pi").is_some() && t.get("j").is_some());
+        // `@feval` resolves names in the current environment, so it keeps it.
+        let t = ev.clone_for_parallel_lambda(&Value::FuncHandle("feval".to_string()));
+        assert!(t.get("big").is_some());
+    }
+
+    #[test]
+    fn captured_values_are_visible() {
+        let ev = run_src("a = 10; big = ones(200, 200); y = parmap(@(k) k + a, 1:4);").unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![11.0, 12.0, 13.0, 14.0]);
+    }
+
+    #[test]
+    fn user_fn_handle_calls_other_user_fns_and_constants() {
+        let ev = run_src(
+            "function r = g(x)\n r = x + pi;\nend\n\
+             function r = f(x)\n r = g(x) * 2;\nend\n\
+             y = parmap(@f, 1:3); z = arrayfun(@f, 1:3);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
+    }
+
+    #[test]
+    fn user_fn_cannot_see_caller_variable() {
+        // Same rule as a sequential call: a user function has its own scope.
+        let src = "big = 5;\nfunction r = h(x)\n r = x + big;\nend\n";
+        let seq = run_src(&format!("{src}y = h(1);")).err().unwrap();
+        let par = run_src(&format!("{src}y = parmap(@h, 1:3);")).err().unwrap();
+        assert!(seq.contains("big"), "sequential: {seq}");
+        assert!(par.contains("parmap") && par.contains("big"), "parmap: {par}");
+    }
+
+    #[test]
+    fn shadowed_constant_matches_sequential() {
+        // A user function seeds its scope with the caller's built-in
+        // constants, shadowed or not; the worker template keeps them.
+        let ev = run_src(
+            "pi = 3;\nfunction r = f(x)\n r = x * pi;\nend\n\
+             y = parmap(@f, 1:3); z = arrayfun(@f, 1:3);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![3.0, 6.0, 9.0]);
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
+    }
+
+    #[test]
+    fn feval_inside_lambda_reaches_user_fn() {
+        let ev = run_src(
+            "function r = sq(x)\n r = x^2;\nend\n\
+             y = parmap(@(k) feval(\"sq\", k), 1:4);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![1.0, 4.0, 9.0, 16.0]);
+    }
+
+    #[test]
+    fn many_tasks_reuse_workers_correctly() {
+        // More tasks than threads, so each worker runs several of them.
+        // A nested user call and lambda per task must leave no state behind.
+        let ev = run_src(
+            "c = 0.5;\nfunction r = twice(x)\n r = 2 * x;\nend\n\
+             y = parmap(@(k) twice(k) + c, 1:500); z = arrayfun(@(k) twice(k) + c, 1:500);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
     }
 }
 

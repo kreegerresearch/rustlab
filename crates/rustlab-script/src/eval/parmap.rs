@@ -19,10 +19,20 @@
 //! Phase 3 makes it safe.
 
 use crate::error::ScriptError;
+use crate::eval::profile::FnStats;
 use crate::eval::value::Value;
 use crate::Evaluator;
 use rayon::prelude::*;
 use std::cell::Cell;
+use std::collections::HashMap;
+
+/// What a [`ParmapBackend`] returns: the per-element results in input
+/// order, plus the profiler rows each task recorded (empty unless
+/// profiling is on), for the caller to merge.
+pub struct ParmapOutput {
+    pub values: Vec<Value>,
+    pub profiles: Vec<HashMap<String, FnStats>>,
+}
 
 // ─── Pure-lambda contract ───────────────────────────────────────────────────
 //
@@ -108,7 +118,8 @@ pub trait ParmapBackend: Send + Sync {
     /// (cancel-and-propagate semantics, matching `for`-loop convention).
     ///
     /// The `worker_factory` produces an `Evaluator` for each worker the
-    /// backend uses (one per rayon task for the local backend's v1; the
+    /// backend uses (one per rayon split for the local backend, reused
+    /// across the tasks in that split; the
     /// future cluster backend ignores it — workers are remote processes
     /// already configured with the user's function library).
     ///
@@ -120,7 +131,7 @@ pub trait ParmapBackend: Send + Sync {
         callable: Value,
         xs: Vec<Value>,
         master_seed: u64,
-    ) -> Result<Vec<Value>, ScriptError>;
+    ) -> Result<ParmapOutput, ScriptError>;
 }
 
 /// Shared-memory rayon backend. The only implementation shipped in Phase 2.
@@ -145,15 +156,18 @@ impl ParmapBackend for LocalRayonBackend {
         callable: Value,
         xs: Vec<Value>,
         master_seed: u64,
-    ) -> Result<Vec<Value>, ScriptError> {
+    ) -> Result<ParmapOutput, ScriptError> {
         use crate::eval::rng;
 
-        // par_iter clones the Evaluator AND the callable per element in
-        // this v1 — simple and correct. Per-thread caching (one clone
-        // per worker thread, shared across the tasks that land on it) is
-        // a follow-on optimization; rayon's `map_with` provides the
-        // natural API surface. For the gallery-sized parmap calls (up
-        // to ~1000 elements) the clone overhead is well under 1 ms total.
+        // `map_init` builds one worker Evaluator per rayon split and reuses
+        // it for every task in that split. Reuse is safe: a lambda call
+        // swaps its captured env in and restores the worker's env after,
+        // and a user-function call does the same with a fresh scope, so no
+        // task sees state left by an earlier one. The template carries no
+        // caller variables (`clone_for_parallel_lambda`), so a worker is
+        // cheap to build whatever the caller's environment holds. The
+        // callable is still cloned per task, because a lambda call takes
+        // ownership of its captured env.
         //
         // Per-task RNG: each task seeds the worker thread's thread-local
         // RNG with a deterministic mix of (master_seed, task_index) before
@@ -164,10 +178,10 @@ impl ParmapBackend for LocalRayonBackend {
         // exactly what it was before; worker threads' RNGs are left in
         // whatever state the last task left them, which is fine because
         // each task re-seeds at entry.
-        let results: Vec<Result<Value, ScriptError>> = xs
+        let results: Vec<(Result<Value, ScriptError>, HashMap<String, FnStats>)> = xs
             .into_par_iter()
             .enumerate()
-            .map(|(idx, x)| {
+            .map_init(worker_factory, |worker, (idx, x)| {
                 // Install per-task RNG seed.
                 rng::seed_rng(rng::derive_task_seed(master_seed, idx));
                 // Mark this thread as inside a parmap worker — impure
@@ -175,8 +189,8 @@ impl ParmapBackend for LocalRayonBackend {
                 // if invoked during the lambda body. The guard restores
                 // the flag when it drops at end-of-task scope.
                 let _guard = ParallelContextGuard::enter();
-                let mut worker = worker_factory();
-                worker.call_callable(callable.clone(), vec![x])
+                let r = worker.call_callable(callable.clone(), vec![x]);
+                (r, worker.take_profile_stats())
             })
             .collect();
 
@@ -184,7 +198,11 @@ impl ParmapBackend for LocalRayonBackend {
         // the input. Matches `for`-loop semantics; matches what users
         // intuit from MATLAB / Octave precedents.
         let mut out = Vec::with_capacity(results.len());
-        for (idx, r) in results.into_iter().enumerate() {
+        let mut profiles = Vec::new();
+        for (idx, (r, stats)) in results.into_iter().enumerate() {
+            if !stats.is_empty() {
+                profiles.push(stats);
+            }
             match r {
                 Ok(v) => out.push(v),
                 Err(e) => {
@@ -197,7 +215,7 @@ impl ParmapBackend for LocalRayonBackend {
                 }
             }
         }
-        Ok(out)
+        Ok(ParmapOutput { values: out, profiles })
     }
 }
 
@@ -258,21 +276,18 @@ fn pack_scalar_like(results: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, ScriptError> {
-    let nrows = results.len();
-    let mut flat: Vec<num_complex::Complex<f64>> = Vec::with_capacity(nrows * row_len);
-    for (idx, v) in results.into_iter().enumerate() {
+    // Validate every row first, so the parallel copy below cannot fail.
+    for (idx, v) in results.iter().enumerate() {
         match v {
+            Value::Vector(vec) if vec.len() == row_len => {}
             Value::Vector(vec) => {
-                if vec.len() != row_len {
-                    return Err(ScriptError::type_err(format!(
-                        "parmap: trial {} returned vector of length {} but trial 1 \
-                         returned vector of length {}; all trials must return the same shape",
-                        idx + 1,
-                        vec.len(),
-                        row_len
-                    )));
-                }
-                flat.extend(vec.iter().copied());
+                return Err(ScriptError::type_err(format!(
+                    "parmap: trial {} returned vector of length {} but trial 1 \
+                     returned vector of length {}; all trials must return the same shape",
+                    idx + 1,
+                    vec.len(),
+                    row_len
+                )));
             }
             other => {
                 return Err(ScriptError::type_err(format!(
@@ -285,8 +300,30 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
             }
         }
     }
-    let m = ndarray::Array2::from_shape_vec((nrows, row_len), flat)
-        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    // Rows are written straight into the uninitialised output, one rayon
+    // task per row: a batch of gradient rows is ~100 MB, and a serial copy
+    // into a zero-filled buffer was a visible share of a parmap call.
+    let nrows = results.len();
+    let mut out = ndarray::Array2::<num_complex::Complex<f64>>::uninit((nrows, row_len));
+    if row_len > 0 {
+        let flat = out
+            .as_slice_mut()
+            .expect("freshly allocated array is contiguous");
+        flat.par_chunks_mut(row_len)
+            .zip(results.par_iter())
+            .for_each(|(dst, v)| {
+                if let Value::Vector(vec) = v {
+                    for (d, s) in dst.iter_mut().zip(vec.iter()) {
+                        d.write(*s);
+                    }
+                }
+            });
+    }
+    // SAFETY: every element was written above. Each of the `nrows` chunks
+    // has length `row_len` and was paired with a result that was checked
+    // to be a vector of exactly `row_len` elements; with `row_len == 0`
+    // there is nothing to initialise.
+    let m = unsafe { out.assume_init() };
     Ok(Value::Matrix(m))
 }
 

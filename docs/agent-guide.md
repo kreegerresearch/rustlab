@@ -35,7 +35,8 @@ Toolboxes: elementary math, linear algebra (dense + sparse), statistics, FFT/spe
 ```sh
 rustlab run script.rlab                # execute a .rlab file
 rustlab run script.rlab --plot none    # suppress TUI plots (recommended for agents/CI)
-rustlab run script.rlab --profile      # print per-function timing report to stderr
+rustlab run script.rlab --profile      # print per-function timing report (inclusive + self) to stderr
+rustlab run --profile=ops script.rlab  # also time operators and indexing ([+], [.*], [index], ...)
 ```
 
 Facts an agent must know (all verified against the current binary):

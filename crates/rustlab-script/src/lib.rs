@@ -99,9 +99,18 @@ pub fn run(source: &str) -> Result<(), ScriptError> {
 /// Equivalent to calling `profile()` at the top of the script.
 /// The profiling report is printed to stderr at the end.
 pub fn run_profiled(source: &str) -> Result<(), ScriptError> {
+    run_profiled_with(source, false)
+}
+
+/// Like [`run_profiled`]; `ops = true` also records operator and indexing
+/// rows (`rustlab run --profile=ops`).
+pub fn run_profiled_with(source: &str, ops: bool) -> Result<(), ScriptError> {
     let tokens = lexer::tokenize(source)?;
     let stmts = parser::parse(tokens)?;
     let mut ev = Evaluator::new();
     ev.enable_profiling(None);
+    if ops {
+        ev.enable_op_profiling();
+    }
     ev.run_script(&stmts)
 }

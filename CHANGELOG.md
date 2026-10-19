@@ -6,6 +6,84 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.10
+
+Perf flywheel iteration 01 (requests from `rustlab_llm`,
+`perf/iterations/01-requests.md`). Plan: `dev/plans/perf_flywheel_iter01.md`.
+
+### Breaking / behavior changes
+- **The profile report has a new `Self (ms)` column and new rows.** The table
+  is now Function, Calls, Total, Self, Avg, In, Out, Mbit/s (eight columns,
+  was seven), nested calls that used to be hidden now have rows, and
+  `profile(f)` reports calls `f` makes to other listed names. Migration: a
+  parser of the stderr table must expect the extra column after `Total`;
+  `TOTAL` is now the sum of main-thread self times.
+- **Real matrix products use a real multiply, so last digits can change.**
+  When both operands of `A * B` (or a row vector times a matrix) have no
+  imaginary parts, the product is formed from the real parts with a real
+  GEMM. Sums run in a different order from the complex kernel, so results
+  can differ by rounding. A real operand holding `Inf` no longer produces
+  `NaN` imaginary parts (the complex kernel computed `Inf·0`), so such a
+  product now stays real. Migration: none expected; a test comparing
+  products bit-for-bit should compare with a tolerance.
+
+### Added
+- **The profiler sees inside user functions.** Every call is recorded where
+  it happens, nested calls and `arrayfun` callbacks included, with inclusive
+  (`Total`) and `Self` time. A `[top-level]` row holds time outside any
+  call, so the Self column sums to wall time (`TOTAL`). `[matmul]` rows time
+  matrix products. `rustlab run --profile=ops` adds one row per operator plus
+  `[transpose]`, `[index]` and `[index-assign]`. Calls inside `parmap` merge
+  as `parmap:<name>` rows (CPU time across workers, not in `TOTAL`).
+
+- **`gelu_grad(x)`** — derivative of `gelu` (same tanh approximation),
+  element-wise, for backpropagating through a `gelu` layer.
+
+### Fixed
+- **In-script `profile()` now prints its report when `rustlab run` ends**, as
+  its help always said. Before, only an explicit `profile_report()` printed.
+
+- **`parmap` no longer copies the caller's variables into every task.**
+  Workers start from the built-in constants and the user-defined functions;
+  a lambda brings its captured values, and a user function already runs in
+  its own scope, so results are unchanged. One worker is built per rayon
+  split and reused across its tasks, and vector results are copied into the
+  output matrix in parallel. A trivial 8-task `parmap` beside a 104 MB
+  variable drops from 6.0 ms to 0.13 ms. `parmap(@feval, …)` still sees the
+  caller's variables, because `feval` resolves names there.
+- **Real matrix multiply is ~4–6× faster.** A 512×512×512 product went from
+  8.4 to 50.8 GFLOP/s; the model shapes in `rustlab_llm` from ~8.6 to
+  25–33 GFLOP/s. Complex operands keep the complex kernel. Shared helper:
+  `rustlab_core::matmul`.
+- **Elementwise operators no longer copy their operands.** A variable used
+  in `+ - .* ./ .^` (or with a scalar in `* / ^`) is read in place, a
+  temporary operand is overwritten with the result, and arrays of 131,072
+  elements or more are processed on all cores. On 811k-element vectors,
+  `theta - 0.001 * g` went from 1.9 ms to 0.27 ms and a full AdamW update
+  from 19.5 ms to 4.7 ms. Results are bit-identical, including the rule
+  that real inputs give real outputs.
+- **Indexing reads the variable in place.** `v(a:b)` and `M(:, a:b)` no
+  longer copy the whole array before selecting, a run of consecutive
+  subscripts is copied as one block (in parallel when large), and integer
+  ranges such as `1:n` are filled directly. `sum(Gm(:, 1:n), 1) / 8` on an
+  8 × 811k matrix went from 29 ms to 2.7 ms.
+- **`sum(M, 1)`** adds whole rows (in parallel when large) instead of
+  gathering each column into a new buffer; every column is still summed top
+  to bottom, so results are unchanged.
+- **User functions move their outputs to the caller** instead of copying them.
+- **Transpose is about 2× faster and returns a row-major matrix.** `A'` and
+  `A.'` on a variable no longer copy `A` first, and the result is written in
+  standard row-major layout with a tiled loop (129 × 512: 53 → 26 µs).
+  Before, the result kept a column-major layout, so elementwise operations on
+  a transposed matrix missed the fast paths above. Values are unchanged.
+- **Real scalar arithmetic is faster.** `+ - * .* / ./` on two real scalars
+  skip the general operator dispatch: a 100,000-iteration `acc = acc + k`
+  loop went from 16.5 ms to 13.4 ms. Results are unchanged.
+- **`S.field` reads copy only the field.** Reading a field of a struct
+  variable (or a chain `S.a.b`) used to copy the whole struct first. For a
+  model's 13 MB parameter struct read ~30 times per forward and backward
+  pass, that was a measurable share of each pass.
+
 ## 0.3.9
 
 ### Breaking / behavior changes

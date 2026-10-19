@@ -239,7 +239,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "relu",      brief: "Rectified linear unit  max(0, x)",
         detail: "relu(x)  — element-wise max(0, x)\n  Accepts scalar, vector, or matrix.\n  relu([-3, 0, 2, 5])  → [0, 0, 2, 5]" },
     HelpEntry { name: "gelu",      brief: "Gaussian error linear unit",
-        detail: "gelu(x)  — 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))\n  Accepts scalar, vector, or matrix.\n  Allows small negative outputs near x ≈ -0.17." },
+        detail: "gelu(x)  — 0.5·x·(1 + tanh(√(2/π)·(x + 0.044715·x³)))\n  Accepts scalar, vector, or matrix.\n  Allows small negative outputs near x ≈ -0.17.\n  Derivative: gelu_grad(x)." },
+    HelpEntry { name: "gelu_grad", brief: "Derivative of gelu (for backpropagation)",
+        detail: "gelu_grad(x)  — d/dx gelu(x), element-wise, for the same tanh approximation:\n  u = √(2/π)·(x + 0.044715·x³)\n  0.5·(1 + tanh u) + 0.5·x·(1 − tanh² u)·√(2/π)·(1 + 3·0.044715·x²)\n  Accepts scalar, vector, or matrix.\n  gelu_grad(0)  → 0.5\n  Backprop through gelu:  dX = dY .* gelu_grad(X)" },
     HelpEntry { name: "layernorm", brief: "Layer normalisation  (x − mean) / std",
         detail: "layernorm(v)               — vector: zero mean, unit variance\nlayernorm(v, eps)          — vector with custom epsilon (default 1e-5)\nlayernorm(M)               — matrix: per-row by default (ML convention,\n                              rows = samples, cols = features)\nlayernorm(M, dim)          — dim=2 per-row (default), dim=1 per-column\nlayernorm(M, dim, eps)     — full form\n\n  Uses population variance (divides by N, not N-1).\n  1-D-shaped matrices (1×N or N×1) are treated as vectors regardless\n  of dim, matching how sum/mean handle the same shapes.\n\n  Note: layernorm's per-row default diverges from sum/mean/std (which\n  default to dim=1). The ML convention dominates here." },
     HelpEntry { name: "print", brief: "Print values to stdout",
@@ -629,9 +631,9 @@ pub const HELP: &[HelpEntry] = &[
         detail: "feval(\"name\", arg1, arg2, ...)  — invoke any builtin or user function by name\n  Useful for dynamic/generic dispatch.\n\nExample:\n  feval(\"sin\", pi/2)   →  1.0\n  feval(\"my_fn\", x)" },
     // Profiling
     HelpEntry { name: "profile", brief: "Enable in-script call profiling",
-        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.rlab" },
+        detail: "profile(fn1, fn2, ...)  — report only the named functions\nprofile()              — report every call\n\nNested calls (inside user functions, arrayfun callbacks) get their own rows.\nColumns: Calls, Total (inclusive ms), Self (ms excluding profiled children),\nAvg, In/Out KB, Mbit/s.\nPseudo-rows: [top-level] (time outside any call; Self sums to wall time),\n[matmul] (A * B), and with --profile=ops: [+] [.*] ... [transpose] [index] [index-assign].\nparmap:<name> rows are CPU time summed across workers (not in TOTAL).\n\nA final report is printed to stderr on script exit.\nFrom the shell: rustlab run --profile script.rlab   (or --profile=ops)" },
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
-        detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
+        detail: "profile_report()  — prints the profiling table at this point in the script\n  and starts a fresh one. Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active.\n  See `help profile` for the columns and the bracketed rows." },
     // Persistent function-result cache
     HelpEntry { name: "cache", brief: "Skip recomputes — persistent function-result cache that survives restarts",
         detail: "cache enable [path]               — open or create a cache store\n\
@@ -1273,7 +1275,7 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "math", subcategory: "Special functions",
         names: &["ellipke", "laguerre", "legendre", "factor"] },
     CategoryRow { toolbox: "math", subcategory: "Activations",
-        names: &["softmax", "relu", "gelu", "layernorm"] },
+        names: &["softmax", "relu", "gelu", "gelu_grad", "layernorm"] },
 
     // ── linalg ───────────────────────────────────────────────────────────
     CategoryRow { toolbox: "linalg", subcategory: "Construction",

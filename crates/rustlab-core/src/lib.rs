@@ -1,5 +1,6 @@
 pub mod error;
 pub mod fingerprint;
+pub mod matmul;
 pub mod sparse_eig;
 pub mod sparse_solve;
 pub mod traits;
