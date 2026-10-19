@@ -14166,6 +14166,39 @@ mod struct_field_borrow {
     }
 }
 
+// ─── Scalar arithmetic fast path matches Value::binop ──────────────────────
+
+#[cfg(test)]
+mod scalar_fast_path {
+    use crate::ast::BinOp;
+    use crate::Evaluator;
+    use crate::Value;
+
+    #[test]
+    fn matches_binop_bit_for_bit() {
+        let vals = [0.0, -0.0, 1.5, -2.0, 3.0, 1e308, f64::INFINITY, f64::NEG_INFINITY, f64::NAN];
+        let ops = [("+", BinOp::Add), ("-", BinOp::Sub), ("*", BinOp::Mul), (".*", BinOp::ElemMul), ("/", BinOp::Div), ("./", BinOp::ElemDiv)];
+        for &a in &vals {
+            for &b in &vals {
+                for (sym, op) in ops {
+                    let mut ev = Evaluator::new();
+                    ev.set("a", Value::Scalar(a));
+                    ev.set("b", Value::Scalar(b));
+                    let stmts = crate::parser::parse(crate::lexer::tokenize(&format!("x = a {sym} b;\n")).unwrap()).unwrap();
+                    ev.run(&stmts).unwrap();
+                    let want = Value::binop(op, Value::Scalar(a), Value::Scalar(b)).unwrap();
+                    match (ev.get("x").unwrap(), &want) {
+                        (Value::Scalar(g), Value::Scalar(w)) => {
+                            assert_eq!(g.to_bits(), w.to_bits(), "{a:?} {sym} {b:?}: {g:?} vs {w:?}")
+                        }
+                        (g, w) => panic!("{a:?} {sym} {b:?}: {g:?} vs {w:?}"),
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─── Integer ranges fill directly (perf iteration 01, R4) ──────────────────
 
 #[cfg(test)]

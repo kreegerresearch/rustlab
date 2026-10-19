@@ -3230,6 +3230,26 @@ impl Evaluator {
         let l = self.binop_operand(lhs)?;
         let r = self.binop_operand(rhs)?;
         let frame_names = self.profiler.is_enabled();
+        // Real scalar arithmetic (`acc = acc + k` in a loop) skips the
+        // general dispatch: `Value::binop`'s Scalar∘Scalar arm is exactly
+        // this `f64` operation for these operators, and nothing before that
+        // arm applies to two real scalars. With profiling on, the general
+        // path runs so the operator rows are recorded.
+        if !frame_names {
+            if let (PreOperand::Owned(Value::Scalar(a)), PreOperand::Owned(Value::Scalar(b))) = (&l, &r) {
+                let (a, b) = (*a, *b);
+                let fast = match op {
+                    BinOp::Add => Some(a + b),
+                    BinOp::Sub => Some(a - b),
+                    BinOp::Mul | BinOp::ElemMul => Some(a * b),
+                    BinOp::Div | BinOp::ElemDiv => Some(a / b),
+                    _ => None,
+                };
+                if let Some(x) = fast {
+                    return Ok(Value::Scalar(x));
+                }
+            }
+        }
         let result = match (l, r) {
             // Neither side is an array variable: the plain path (scalar
             // arithmetic in loops must not pay for the borrowing machinery).

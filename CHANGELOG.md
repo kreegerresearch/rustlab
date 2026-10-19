@@ -71,6 +71,9 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   gathering each column into a new buffer; every column is still summed top
   to bottom, so results are unchanged.
 - **User functions move their outputs to the caller** instead of copying them.
+- **Real scalar arithmetic is faster.** `+ - * .* / ./` on two real scalars
+  skip the general operator dispatch: a 100,000-iteration `acc = acc + k`
+  loop went from 16.5 ms to 13.4 ms. Results are unchanged.
 - **`S.field` reads copy only the field.** Reading a field of a struct
   variable (or a chain `S.a.b`) used to copy the whole struct first. For a
   model's 13 MB parameter struct read ~30 times per forward and backward

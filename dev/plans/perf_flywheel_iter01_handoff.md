@@ -61,7 +61,7 @@ Declined: the ≥ 100 GFLOP/s Accelerate/BLAS target. Rule 10 forbids FFI for co
    - interpreter self time in `gpt_forward` / `gpt_backward`, and the copies of builtin and user-function arguments (both C11);
    - parmap efficiency (~57 % at B8);
    - real-valued storage, which the request file deferred.
-   - The `prim.scalar_loop_1e5` regression (~5 % vs 0.3.9, 17.4 vs 16.6 ms) is also worth recovering.
+   - The scalar-loop regression is fixed (now ~18 % faster than 0.3.9). Still open: `prim.transpose_129x512` reads 0.89× (54 vs ~48 µs), and the binary is 596 KB larger (see `perf/report.md`).
 
 ## How to measure
 

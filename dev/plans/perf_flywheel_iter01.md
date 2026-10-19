@@ -191,10 +191,14 @@ although the table is a constant. Without it the rest takes about 4 ms.
 That is a library change (compute PE once, or vectorise it); it is in the
 response note.
 
-Cost with profiling off on the scalar interpreter: `prim.scalar_loop_1e5`
-is 17.4 ms against 16.6 ms for the 0.3.9 binary on the same machine (~5 %,
-partly R2's layout cost, partly the operand pre-check). Below the 10 %
-noise rule; the deferred value-borrow work (C11) is where it gets fixed.
+Scalar interpreter: after R4, `prim.scalar_loop_1e5` was 17.4 ms against
+16.6 ms for the 0.3.9 binary (~5 % slower: R2's larger `eval_expr` plus the
+operand pre-check). Fixed with a direct path in `eval_arith_binop` for two
+real scalars and `+ - * .* / ./` when profiling is off, the same `f64`
+operation `Value::binop`'s Scalar∘Scalar arm performs (test
+`scalar_fast_path::matches_binop_bit_for_bit`, NaN / ±Inf / −0 included).
+Side by side with `main`: 16.4–16.5 → 13.3–13.6 ms (~18 % faster);
+`bench_interpreter` 5.64 → 5.10 ms; harness `prim.scalar_loop_1e5` 1.13×.
 
 ## Response note (filled in at the end)
 
@@ -233,5 +237,6 @@ Notes for `rustlab_llm`:
   last digits (BLAS-style reordering); a real `Inf` operand in `A * B` no
   longer yields `NaN` imaginary parts. Elementwise, indexing, range and
   reduction changes are bit-identical.
-- Measure `prim.scalar_loop_1e5` against the new baseline: ~5 % slower
-  than 0.3.9 (below the noise rule).
+- `prim.scalar_loop_1e5` is ~18 % faster than 0.3.9 (direct path for real
+  scalar `+ - * /`); `prim.transpose_129x512` reads 0.89× (54 vs ~48 µs),
+  close to the noise floor at that size.
