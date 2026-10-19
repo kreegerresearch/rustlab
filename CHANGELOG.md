@@ -71,6 +71,11 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   gathering each column into a new buffer; every column is still summed top
   to bottom, so results are unchanged.
 - **User functions move their outputs to the caller** instead of copying them.
+- **Transpose is about 2× faster and returns a row-major matrix.** `A'` and
+  `A.'` on a variable no longer copy `A` first, and the result is written in
+  standard row-major layout with a tiled loop (129 × 512: 53 → 26 µs).
+  Before, the result kept a column-major layout, so elementwise operations on
+  a transposed matrix missed the fast paths above. Values are unchanged.
 - **Real scalar arithmetic is faster.** `+ - * .* / ./` on two real scalars
   skip the general operator dispatch: a 100,000-iteration `acc = acc + k`
   loop went from 16.5 ms to 13.4 ms. Results are unchanged.

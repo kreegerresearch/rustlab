@@ -654,57 +654,82 @@ impl Value {
     /// A Matrix is conjugate-transposed normally.
     pub fn transpose(self) -> Result<Value, String> {
         match self {
-            Value::Vector(v) => {
-                // Row vector (1×n) → column vector (n×1), conjugated
-                let n = v.len();
-                let data: Vec<C64> = v.iter().map(|c| c.conj()).collect();
-                let col = Array2::from_shape_vec((n, 1), data).map_err(|e| e.to_string())?;
-                Ok(Value::Matrix(col))
-            }
-            Value::Matrix(m) => {
-                let t = m.t().mapv(|c| c.conj());
-                Ok(Value::Matrix(t.to_owned()))
-            }
-            Value::Scalar(n) => Ok(Value::Scalar(n)),
             // Integers are real: conjugate transpose == transpose, class-preserving.
             v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v)),
-            Value::Complex(c) => Ok(Value::Complex(c.conj())),
-            Value::SparseMatrix(sm) => {
-                let entries = sm
-                    .entries
-                    .iter()
-                    .map(|&(r, c, v)| (c, r, v.conj()))
-                    .collect();
-                Ok(Value::SparseMatrix(SparseMat::new(
-                    sm.cols, sm.rows, entries,
-                )))
-            }
-            other => Err(format!("cannot transpose {}", other.type_name())),
+            other => other.transpose_ref(),
         }
+    }
+
+    /// [`transpose`](Self::transpose) of a borrowed value, so `A'` on a
+    /// workspace variable does not copy `A` first.
+    pub fn transpose_ref(&self) -> Result<Value, String> {
+        self.transpose_impl::<true>()
     }
 
     /// Non-conjugate transpose: `A.'`
     /// A row vector (1×n) becomes a column vector stored as Matrix(n×1), without conjugation.
     pub fn non_conj_transpose(self) -> Result<Value, String> {
         match self {
+            v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v)),
+            other => other.non_conj_transpose_ref(),
+        }
+    }
+
+    /// [`non_conj_transpose`](Self::non_conj_transpose) of a borrowed value.
+    pub fn non_conj_transpose_ref(&self) -> Result<Value, String> {
+        self.transpose_impl::<false>()
+    }
+
+    fn transpose_impl<const CONJ: bool>(&self) -> Result<Value, String> {
+        let f = |c: C64| if CONJ { c.conj() } else { c };
+        match self {
             Value::Vector(v) => {
+                // Row vector (1×n) → column vector (n×1)
                 let n = v.len();
-                let data: Vec<C64> = v.iter().copied().collect();
+                let data: Vec<C64> = v.iter().map(|&c| f(c)).collect();
                 let col = Array2::from_shape_vec((n, 1), data).map_err(|e| e.to_string())?;
                 Ok(Value::Matrix(col))
             }
-            Value::Matrix(m) => Ok(Value::Matrix(m.t().to_owned())),
-            Value::Scalar(n) => Ok(Value::Scalar(n)),
-            v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v)),
-            Value::Complex(c) => Ok(Value::Complex(c)),
+            Value::Matrix(m) => Ok(Value::Matrix(Self::transpose_matrix::<CONJ>(m))),
+            Value::Scalar(n) => Ok(Value::Scalar(*n)),
+            v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v.clone())),
+            Value::Complex(c) => Ok(Value::Complex(f(*c))),
             Value::SparseMatrix(sm) => {
-                let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, v)).collect();
-                Ok(Value::SparseMatrix(SparseMat::new(
-                    sm.cols, sm.rows, entries,
-                )))
+                let entries = sm.entries.iter().map(|&(r, c, v)| (c, r, f(v))).collect();
+                Ok(Value::SparseMatrix(SparseMat::new(sm.cols, sm.rows, entries)))
             }
             other => Err(format!("cannot transpose {}", other.type_name())),
         }
+    }
+
+    /// The transpose of `m` (conjugated when `CONJ`), in standard row-major
+    /// layout. `m.t().mapv(..)` keeps the view's column-major memory order,
+    /// so the result was not a contiguous row-major slice and later
+    /// elementwise fast paths skipped it; this writes row-major directly,
+    /// in 32 × 32 tiles so both the reads and the writes stay in cache.
+    fn transpose_matrix<const CONJ: bool>(m: &CMatrix) -> CMatrix {
+        let f = |c: C64| if CONJ { c.conj() } else { c };
+        let (r, c) = m.dim();
+        let Some(src) = m.as_slice() else {
+            return Array2::from_shape_fn((c, r), |(i, j)| f(m[[j, i]]));
+        };
+        const TILE: usize = 32;
+        let mut out: Vec<C64> = Vec::with_capacity(r * c);
+        let dst = &mut out.spare_capacity_mut()[..r * c];
+        for i0 in (0..r).step_by(TILE) {
+            for j0 in (0..c).step_by(TILE) {
+                for i in i0..(i0 + TILE).min(r) {
+                    let row = &src[i * c..(i + 1) * c];
+                    for j in j0..(j0 + TILE).min(c) {
+                        dst[j * r + i].write(f(row[j]));
+                    }
+                }
+            }
+        }
+        // SAFETY: the tiles cover every (i, j) in r × c once, writing
+        // element j·r + i of the c × r output, so all r·c are initialised.
+        unsafe { out.set_len(r * c) };
+        Array2::from_shape_vec((c, r), out).expect("c × r elements")
     }
 
     /// Convert a 1-based index to 0-based, returning an error if the index is

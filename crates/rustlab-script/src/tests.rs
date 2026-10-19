@@ -14166,6 +14166,64 @@ mod struct_field_borrow {
     }
 }
 
+// ─── Transpose writes row-major output from a borrow ───────────────────────
+
+#[cfg(test)]
+mod transpose_layout {
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::{Array2, ShapeBuilder};
+    use num_complex::Complex;
+
+    fn filled(r: usize, c: usize) -> Array2<Complex<f64>> {
+        Array2::from_shape_fn((r, c), |(i, j)| Complex::new(i as f64 * 7.0 - j as f64, (i * j % 5) as f64 - 2.0))
+    }
+
+    fn assert_transpose(m: &Array2<Complex<f64>>, got: &Value, conj: bool) {
+        let Value::Matrix(t) = got else { panic!("expected Matrix, got {got:?}") };
+        assert_eq!(t.dim(), (m.ncols(), m.nrows()));
+        assert!(t.as_slice().is_some(), "transpose must be row-major contiguous");
+        for i in 0..m.nrows() {
+            for j in 0..m.ncols() {
+                let want = if conj { m[[i, j]].conj() } else { m[[i, j]] };
+                assert_eq!(t[[j, i]], want, "({i}, {j}) of {:?}", m.dim());
+            }
+        }
+    }
+
+    #[test]
+    fn blocked_transpose_matches_definition() {
+        // Shapes straddling the 32-element tiles, plus degenerate ones.
+        for &(r, c) in &[(1, 1), (1, 70), (70, 1), (31, 33), (33, 31), (129, 512), (64, 64), (0, 3), (3, 0)] {
+            let m = filled(r, c);
+            assert_transpose(&m, &Value::Matrix(m.clone()).transpose().unwrap(), true);
+            assert_transpose(&m, &Value::Matrix(m.clone()).non_conj_transpose().unwrap(), false);
+        }
+        // A column-major input takes the generic path, still row-major out.
+        let data: Vec<_> = filled(5, 7).iter().copied().collect();
+        let f = Array2::from_shape_vec((5, 7).f(), data).unwrap();
+        assert_transpose(&f, &Value::Matrix(f.clone()).transpose_ref().unwrap(), true);
+    }
+
+    #[test]
+    fn evaluator_transpose_of_a_variable_matches_value_transpose() {
+        let src = "A = [1 + 2j, 3; -1j, 4; 5, 6 - 1j];\nB = A';\nC = A.';\nv = [1j, 2, 3];\nw = v';\n";
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        let a = ev.get("A").unwrap().clone();
+        let want_b = a.clone().transpose().unwrap();
+        let want_c = a.non_conj_transpose().unwrap();
+        let want_w = ev.get("v").unwrap().clone().transpose().unwrap();
+        for (name, want) in [("B", want_b), ("C", want_c), ("w", want_w)] {
+            match (ev.get(name).unwrap(), &want) {
+                (Value::Matrix(g), Value::Matrix(w)) => assert_eq!(g, w, "{name}"),
+                (g, w) => panic!("{name}: {g:?} vs {w:?}"),
+            }
+        }
+    }
+}
+
 // ─── Scalar arithmetic fast path matches Value::binop ──────────────────────
 
 #[cfg(test)]

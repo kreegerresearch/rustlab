@@ -2018,20 +2018,8 @@ impl Evaluator {
                 }
                 Ok(Value::Vector(Array1::from_vec(vals)))
             }
-            Expr::Transpose(inner) => {
-                let v = self.eval_expr(inner)?;
-                let frame = self.profiler.enter_op("[transpose]");
-                let result = v.transpose().map_err(|e| ScriptError::runtime(e));
-                self.profiler.exit_op(frame);
-                result
-            }
-            Expr::NonConjTranspose(inner) => {
-                let v = self.eval_expr(inner)?;
-                let frame = self.profiler.enter_op("[transpose]");
-                let result = v.non_conj_transpose().map_err(|e| ScriptError::runtime(e));
-                self.profiler.exit_op(frame);
-                result
-            }
+            Expr::Transpose(inner) => self.eval_transpose(inner, true),
+            Expr::NonConjTranspose(inner) => self.eval_transpose(inner, false),
             Expr::All => Ok(Value::All),
             Expr::Index { expr, args } => {
                 let container = self.eval_expr(expr)?;
@@ -3297,6 +3285,25 @@ impl Evaluator {
             }
         }
         Ok(PreOperand::Owned(self.eval_expr(e)?))
+    }
+
+    /// `inner'` (conjugate) or `inner.'`. A variable is transposed from a
+    /// borrow instead of being copied out of the workspace first.
+    #[inline(never)]
+    fn eval_transpose(&mut self, inner: &Expr, conj: bool) -> Result<Value, ScriptError> {
+        let owned = match inner {
+            Expr::Var(name) if self.env.contains_key(name) => None,
+            _ => Some(self.eval_expr(inner)?),
+        };
+        let frame = self.profiler.enter_op("[transpose]");
+        let v = match (&owned, inner) {
+            (Some(v), _) => v,
+            (None, Expr::Var(name)) => &self.env[name],
+            (None, _) => unreachable!("only a variable is borrowed"),
+        };
+        let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
+        self.profiler.exit_op(frame);
+        result.map_err(ScriptError::runtime)
     }
 
     /// Borrow the value named by a variable or a chain of struct field

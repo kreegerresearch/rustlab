@@ -238,5 +238,6 @@ Notes for `rustlab_llm`:
   longer yields `NaN` imaginary parts. Elementwise, indexing, range and
   reduction changes are bit-identical.
 - `prim.scalar_loop_1e5` is ~18 % faster than 0.3.9 (direct path for real
-  scalar `+ - * /`); `prim.transpose_129x512` reads 0.89× (54 vs ~48 µs),
-  close to the noise floor at that size.
+  scalar `+ - * /`). `prim.transpose_129x512` is 1.82×: transpose of a
+  variable borrows it and writes a row-major result (it used to keep a
+  column-major layout, which the elementwise fast paths skip).
