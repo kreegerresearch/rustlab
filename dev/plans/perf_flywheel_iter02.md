@@ -1,7 +1,7 @@
 # Perf flywheel iteration 02
 
 **Status:** in progress
-**Current phase:** item 4 (R2 interpreter overhead)
+**Current phase:** item 5 (R4 real-storage design)
 **Branch:** `feature/perf-iter02` (one PR, a commit per item, version 0.3.11)
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md`
 (measured on rustlab 0.3.10, `1ebb762`, Apple M4 Max, 2026-10-18; training
@@ -35,7 +35,7 @@ storage (roadmap C11, `eval_perf_value_borrow.md`).
 | 1 | Transposed operands to dgemm as views | R3 | done |
 | 2 | Copy-on-write `Vector` / `Matrix` / `Tensor3` storage | R1, R2 (C11) | done |
 | 3 | Single-pass `reshape`, preallocated `[…]`, zeroed allocation for `zeros` | R1 | done (parallel ratio missed) |
-| 4 | Per-statement interpreter overhead, from a sampling profile | R2 | not started |
+| 4 | Per-statement interpreter overhead, from a sampling profile | R2 | done |
 | 5 | Real-valued storage: design document only (`real_storage.md`) | R4 | not started |
 
 ## 1. R3: transposed operands (done)
@@ -173,13 +173,50 @@ Likely shared cache and memory bandwidth (eight windows each touch the
 13 MB of parameters and their activations). Moving fewer bytes is the
 lever: real-valued storage (R4) halves them.
 
-## 4. R2: interpreter overhead
+## 4. R2: interpreter overhead (done)
 
-Sampling profile of serial forward / backward after item 2, then fix what it
-shows (candidates: a hand-rolled fast hasher for the variable map, no `String`
-allocation for `end` and call environments, shared `UserFn` / lambda bodies).
-Targets: `model.forward` ≤ 10 ms, `model.backward` ≤ 15 ms,
-`prim.scalar_loop_1e5` ≤ 10 ms.
+Sampling profile (`sample`, symbols kept via `CARGO_PROFILE_RELEASE_STRIP=none`)
+of 400 serial forward + backward passes after item 3: matrix multiply ~45 %,
+`exec_index_assign` self time ~12 %, `tanh` (inside `gelu` / `gelu_grad`)
+~11 %, elementwise kernels and `real_parts` most of the rest. Hashing,
+`eval_expr` and `Value` clones were under 2 %: the "interpreter work" in the
+request was mostly what the statements do, not dispatching them. The
+`--profile=ops` breakdown per pass: `[matmul]` 14.7 ms, `[index-assign]`
+3.8 ms (≈ 293 writes at 12.4 µs), `gelu` + `gelu_grad` 3.8 ms.
+
+- Region writes `M(rows, cols) = val` (`Evaluator::region_write_runs`):
+  when `cols` is one consecutive run, `M` row-major and `val` already
+  region-shaped, each target row is one `copy_from_slice` / `fill`; else
+  the general path (and its errors). They had built a temporary and then
+  scattered it, both element by element with bounds-checked 2-D indexing,
+  at ~10 GB/s; now 77–88 GB/s.
+- Scalar-function builtins (`apply_scalar_fn_promoting`: `tanh`, `exp`,
+  `gelu`, `gelu_grad`, trig, …) map contiguous arrays with
+  `elementwise::par_map`, parallel from `PAR_MAP_MIN_LEN` = 16,384 elements
+  in 4,096-element chunks (`drive_new_sized`, the same rayon instantiation
+  as `drive_new`). Per-element results are unchanged. Inside `parmap`
+  workers this adds nested tasks, which did not slow `par.grad_flat_B8`.
+- Scalar loop (`acc = acc + k`): its profile was SipHash, `malloc` / `free`
+  and `memmove` of a new `String` key per assignment.
+  `eval/fast_hash.rs` (hand-rolled Fx hash; the variable names are the
+  script's own, so flooding resistance is not needed) for `env` and lambda
+  `captured_env`, and `Evaluator::set_env`, which overwrites an existing
+  entry in place (assignments, the loop variable, the `end` binding).
+
+Tests: `fast_hash::tests`, `tests::interpreter_fast_paths` (region writes
+through both paths against element-by-element writes, the shared copy
+unchanged, shape errors unchanged; `gelu`, `gelu_grad`, complex `tanh`,
+`exp` above and below the parallel threshold bit-identical to the scalar
+call; rebinding in a loop). Workspace: 3,436 passed, 0 failed.
+
+Self-check, two runs (item 3 → now): `model.forward` 12.5 → 9.48–9.49 ms
+(target ≤ 10); `model.backward` 17.4–17.6 → 14.6–14.9 ms (≤ 15, close);
+`prim.scalar_loop_1e5` 13.1 → 7.9–8.1 ms (≤ 10);
+`prim.region_write_128x384` 0.076 → 0.009 ms; `model.grad_flat` 31 →
+24.7–24.8 ms; `e2e.train_step_B8` 17.0–17.5k → 18.05–18.52k tok/s. Gate
+PASS, trajectory exact. `par.grad_flat_B8` 43.8–44.2 ms, now 1.78× the
+serial `model.grad_flat`: the serial side gained the parallel math
+builtins, which a `parmap` worker cannot use (the cores are already busy).
 
 ## 5. R4: real-valued storage (design only)
 

@@ -38,6 +38,16 @@ Perf flywheel iteration 02 (requests from `rustlab_llm`,
   unchanged. On 811 k elements, `reshape` went from 3.7 to 0.14 ms, a
   14-piece flatten from 2.4 to 0.4 ms, and the unflatten from 4.0 to
   1.5 ms. Large transposes (`A'`) are parallel too.
+- **Less interpreter work per statement.** Region writes such as
+  `M(r1:r2, :) = A` copy one row segment at a time when the columns are a
+  consecutive run (`prim.region_write_128x384` 0.076 → 0.009 ms). The
+  variable table uses a small built-in hash in place of SipHash, and a
+  reassignment, the loop variable and the `end` binding overwrite their
+  entry instead of allocating a new name (`acc = acc + k` loop of 100 k
+  iterations 12.7 → 7.9 ms). Element-wise math builtins (`tanh`, `exp`,
+  `gelu`, `gelu_grad`, `sin`, …) run in parallel from 16,384 elements.
+  Results are unchanged, bit for bit. The `rustlab_llm` forward pass went
+  from 12.5 to 9.5 ms and the backward pass from 17.5 to 14.7 ms.
 - **Real matrix products have less overhead around the multiply.** The
   realness check and the conversion to real values are one pass, which is
   noticeable at the 100–500 element sizes typical of scripts.

@@ -253,14 +253,20 @@ fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
 /// A new length-`n` buffer filled by `k`, which must initialise every
 /// element of each chunk it is given.
 fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
+    drive_new_sized(n, PAR_MIN_LEN, PAR_CHUNK, k)
+}
+
+/// [`drive_new`] with its own parallel threshold and chunk length, for
+/// kernels much costlier per element than arithmetic.
+fn drive_new_sized(n: usize, min_len: usize, chunk: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
     let mut out: Vec<C64> = Vec::with_capacity(n);
     let dst = &mut out.spare_capacity_mut()[..n];
-    let flags = if n < PAR_MIN_LEN {
+    let flags = if n < min_len {
         k(0, dst)
     } else {
-        dst.par_chunks_mut(PAR_CHUNK)
+        dst.par_chunks_mut(chunk)
             .enumerate()
-            .map(|(i, c)| k(i * PAR_CHUNK, c))
+            .map(|(i, c)| k(i * chunk, c))
             .reduce(|| NO_FLAGS, combine)
     };
     // SAFETY: the chunks cover `0..n` exactly once and `k` initialises every
@@ -391,6 +397,23 @@ pub(crate) fn par_block_copy(
         NO_FLAGS
     });
     Some(ndarray::Array2::from_shape_vec((nr, nc), out).expect("nr × nc elements"))
+}
+
+/// Elements from which a transcendental map (`tanh`, `exp`, `gelu`, …)
+/// runs in parallel, and its chunk length: at several ns per element these
+/// pay for the threads far sooner than `+` does.
+pub(crate) const PAR_MAP_MIN_LEN: usize = 1 << 14;
+const PAR_MAP_CHUNK: usize = 1 << 12;
+
+/// `f` of every element of `src`, in parallel from [`PAR_MAP_MIN_LEN`].
+pub(crate) fn par_map(src: &[C64], f: &(dyn Fn(C64) -> C64 + Sync)) -> Vec<C64> {
+    drive_new_sized(src.len(), PAR_MAP_MIN_LEN, PAR_MAP_CHUNK, &|o, c: &mut [MaybeUninit<C64>]| {
+        for (d, &x) in c.iter_mut().zip(&src[o..]) {
+            d.write(f(x));
+        }
+        NO_FLAGS
+    })
+    .0
 }
 
 /// A new length-`n` buffer filled by `k(offset, chunk)`, which must write

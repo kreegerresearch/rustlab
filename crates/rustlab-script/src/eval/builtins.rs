@@ -747,8 +747,8 @@ fn builtin_conj(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn apply_scalar_fn_to_value(
     name: &str,
     args: Vec<Value>,
-    f: impl Fn(f64) -> f64,
-    fc: impl Fn(Complex<f64>) -> Complex<f64>,
+    f: impl Fn(f64) -> f64 + Sync,
+    fc: impl Fn(Complex<f64>) -> Complex<f64> + Sync,
 ) -> Result<Value, ScriptError> {
     // No real value needs promotion: real input → real output everywhere.
     apply_scalar_fn_promoting(name, args, f, fc, |_| false)
@@ -763,9 +763,9 @@ fn apply_scalar_fn_to_value(
 fn apply_scalar_fn_promoting(
     name: &str,
     args: Vec<Value>,
-    f: impl Fn(f64) -> f64,
-    fc: impl Fn(Complex<f64>) -> Complex<f64>,
-    needs_complex: impl Fn(f64) -> bool,
+    f: impl Fn(f64) -> f64 + Sync,
+    fc: impl Fn(Complex<f64>) -> Complex<f64> + Sync,
+    needs_complex: impl Fn(f64) -> bool + Sync,
 ) -> Result<Value, ScriptError> {
     check_args(name, &args, 1)?;
     // Promote one real element via the complex branch, else stay real.
@@ -795,20 +795,23 @@ fn apply_scalar_fn_promoting(
             }
         }
         Value::Complex(c) => Ok(Value::Complex(fc(*c))),
+        // Real input avoids the complex formula. Contiguous arrays map in
+        // parallel when long (`par_map`); the values are the same either way.
         Value::Vector(v) => {
-            // Fast path: avoid complex-number formula overhead for purely real vectors.
-            if is_real_vector(v) {
-                Ok(Value::Vector(v.mapv(|c| elem(c.re)).into()))
-            } else {
-                Ok(Value::Vector(v.mapv(|c| fc(c)).into()))
-            }
+            let real = is_real_vector(v);
+            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(c) };
+            Ok(Value::Vector(match v.as_slice() {
+                Some(s) => CVector::from(super::elementwise::par_map(s, &map)),
+                None => v.mapv(map),
+            }.into()))
         }
         Value::Matrix(m) => {
-            if m.iter().all(|c| c.im == 0.0) {
-                Ok(Value::Matrix(m.mapv(|c| elem(c.re)).into()))
-            } else {
-                Ok(Value::Matrix(m.mapv(|c| fc(c)).into()))
-            }
+            let real = m.iter().all(|c| c.im == 0.0);
+            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(c) };
+            Ok(Value::Matrix(match m.as_slice() {
+                Some(s) => Array2::from_shape_vec(m.dim(), super::elementwise::par_map(s, &map)).expect("same shape"),
+                None => m.mapv(map),
+            }.into()))
         }
         other => Err(ScriptError::type_err(format!(
             "{}: unsupported type {}",

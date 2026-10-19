@@ -14529,6 +14529,143 @@ mod reshape_and_concat {
     }
 }
 
+// ─── Region writes by row runs, parallel scalar maps, in-place rebinding ───
+
+#[cfg(test)]
+mod interpreter_fast_paths {
+    use crate::eval::elementwise::PAR_MAP_MIN_LEN;
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::Array2;
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) -> Result<(), String> {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).map_err(|e| e.to_string())
+    }
+
+    fn mat(ev: &Evaluator, name: &str) -> Array2<C> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (**m).clone(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    /// `M(rows, cols) = rhs` against writing the region element by element.
+    fn check_region(rows: &str, cols: &str, rhs: &str) {
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "M = reshape(1:60, 6, 10) + 1j; M0 = M; R = {rows}; Cc = {cols}; V = {rhs}; M(R, Cc) = V;"
+        ))
+        .unwrap();
+        // Reference: one element at a time from the same RHS.
+        let mut want = mat(&ev, "M0");
+        let idx = |name: &str, n: usize| -> Vec<usize> {
+            match ev.get(name).unwrap() {
+                Value::Scalar(x) => vec![*x as usize - 1],
+                Value::Vector(v) => v.iter().map(|z| z.re as usize - 1).collect(),
+                Value::All => (0..n).collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (r, c) = (idx("R", 6), idx("Cc", 10));
+        let v = ev.get("V").unwrap();
+        for (i, &ri) in r.iter().enumerate() {
+            for (j, &cj) in c.iter().enumerate() {
+                want[[ri, cj]] = match v {
+                    Value::Scalar(x) => C::new(*x, 0.0),
+                    Value::Complex(z) => *z,
+                    Value::Vector(v) => v[i * c.len() + j],
+                    Value::Matrix(m) => m[[i, j]],
+                    other => panic!("{other:?}"),
+                };
+            }
+        }
+        assert_eq!(mat(&ev, "M"), want, "M({rows}, {cols}) = {rhs}");
+        assert_eq!(mat(&ev, "M0"), {
+            let mut ev0 = Evaluator::new();
+            run(&mut ev0, "M0 = reshape(1:60, 6, 10) + 1j;").unwrap();
+            mat(&ev0, "M0")
+        }, "the shared copy is unchanged");
+    }
+
+    #[test]
+    fn region_writes_match_element_by_element() {
+        // Column runs (fast path), and scattered columns (general path).
+        check_region("2:4", "3:7", "-reshape(1:15, 3, 5)");
+        check_region("[5, 1, 3]", "1:10", "zeros(3, 10) + 2j");
+        check_region("2", "4:9", "[7, 8, 9, 10, 11, 12]");
+        check_region("1:6", "6", "(1:6)'");
+        check_region("[1, 6]", "2:3", "4.5");
+        check_region("3:5", "5:6", "1 - 2j");
+        check_region("2:3", "[1, 4, 9]", "ones(2, 3)");
+        check_region("[6, 2]", "[10, 1]", "[1, 2; 3, 4]");
+    }
+
+    #[test]
+    fn region_write_shape_errors_are_unchanged() {
+        let mut ev = Evaluator::new();
+        let err = run(&mut ev, "M = zeros(4, 4); M(1:2, 2:4) = ones(3, 2);").unwrap_err();
+        assert!(err.contains("RHS shape 3×2 does not match target region 2×3"), "{err}");
+        let err = run(&mut ev, "M(1:2, 2:4) = [1, 2, 3, 4];").unwrap_err();
+        assert!(err.contains("vector of length 4 does not match"), "{err}");
+    }
+
+    #[test]
+    fn scalar_function_maps_are_bit_identical_in_parallel() {
+        // Above PAR_MAP_MIN_LEN (parallel chunks) and below it, real and
+        // complex input, against applying the function to each element.
+        for n in [PAR_MAP_MIN_LEN / 4 + 3, PAR_MAP_MIN_LEN * 2 + 11] {
+            let mut ev = Evaluator::new();
+            run(&mut ev, &format!(
+                "seed(3); x = randn({n}, 1)'; X = reshape(x, 1, {n}); Z = x + 0.5j * x; \
+                 a = gelu(x); b = gelu_grad(x); c = tanh(Z); d = exp(x);"
+            ))
+            .unwrap();
+            let get = |s: &str| -> Vec<C> {
+                match ev.get(s).unwrap() {
+                    Value::Vector(v) => v.to_vec(),
+                    Value::Matrix(m) => m.iter().copied().collect(),
+                    other => panic!("{other:?}"),
+                }
+            };
+            let x = get("x");
+            let z = get("Z");
+            let bits = |v: &[C]| v.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect::<Vec<_>>();
+            let one = |name: &str, k: usize, v: C| -> C {
+                let mut e = Evaluator::new();
+                e.set("t", if v.im == 0.0 { Value::Scalar(v.re) } else { Value::Complex(v) });
+                run(&mut e, &format!("r = {name}(t);")).unwrap();
+                match e.get("r").unwrap() {
+                    Value::Scalar(r) => C::new(*r, 0.0),
+                    Value::Complex(r) => *r,
+                    other => panic!("{name} at {k}: {other:?}"),
+                }
+            };
+            // Spot-check a spread of positions, including chunk edges.
+            let picks: Vec<usize> = (0..x.len()).step_by(4093).chain([x.len() - 1]).collect();
+            for (name, input, out) in [("gelu", &x, "a"), ("gelu_grad", &x, "b"), ("tanh", &z, "c"), ("exp", &x, "d")] {
+                let got = get(out);
+                assert_eq!(got.len(), input.len());
+                let want: Vec<C> = picks.iter().map(|&k| one(name, k, input[k])).collect();
+                let got_p: Vec<C> = picks.iter().map(|&k| got[k]).collect();
+                assert_eq!(bits(&got_p), bits(&want), "{name}, n = {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn rebinding_in_a_loop_keeps_one_binding() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "acc = 0; for k = 1:1000\n acc = acc + k;\nend\nv = [1, 2, 3]; w = v(end);").unwrap();
+        assert!(matches!(ev.get("acc"), Some(Value::Scalar(x)) if *x == 500500.0));
+        assert!(matches!(ev.get("k"), Some(Value::Scalar(x)) if *x == 1000.0));
+        assert!(matches!(ev.get("w"), Some(Value::Scalar(x)) if *x == 3.0));
+    }
+}
+
 // ─── Products with a transposed operand use a view ─────────────────────────
 
 #[cfg(test)]

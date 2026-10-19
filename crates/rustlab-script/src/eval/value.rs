@@ -224,7 +224,7 @@ pub enum Value {
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,
-        captured_env: HashMap<String, Value>,
+        captured_env: super::fast_hash::FxHashMap<String, Value>,
     },
     /// Handle to a named function: `@name`. Dispatch happens at call time.
     FuncHandle(String),
@@ -749,7 +749,7 @@ impl Value {
     }
 
     /// `Some((start, len))` when the 0-based positions are `start, start+1, …`.
-    fn run_of(positions: &[usize]) -> Option<(usize, usize)> {
+    pub(crate) fn run_of(positions: &[usize]) -> Option<(usize, usize)> {
         let first = *positions.first()?;
         positions
             .iter()

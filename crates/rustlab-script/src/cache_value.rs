@@ -593,7 +593,7 @@ mod tests {
         let v = Value::Lambda {
             params: vec!["x".into()],
             body: Box::new(crate::ast::Expr::Var("x".into())),
-            captured_env: std::collections::HashMap::new(),
+            captured_env: Default::default(),
         };
         assert!(serialize_value(&v).is_none());
     }
@@ -647,7 +647,7 @@ mod tests {
         let a = [Value::Lambda {
             params: vec!["x".into()],
             body: Box::new(crate::ast::Expr::Var("x".into())),
-            captured_env: std::collections::HashMap::new(),
+            captured_env: Default::default(),
         }];
         assert!(fingerprint_args(&a).is_none());
     }
