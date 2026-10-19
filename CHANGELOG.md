@@ -9,7 +9,7 @@ should re-validate against those entries when upgrading.
 ## 0.3.11
 
 Perf flywheel iteration 02 (requests from `rustlab_llm`,
-`perf/iterations/02-requests.md`). Plan: `dev/plans/perf_flywheel_iter02.md`.
+`perf/iterations/02-requests.md`). Plan: `dev/plans/closed/perf_flywheel_iter02.md`.
 
 ### Breaking / behavior changes
 - **`--profile=ops` no longer shows `[transpose]` rows for `A' * B`,
