@@ -6,6 +6,25 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.10
+
+Perf flywheel iteration 01 (requests from `rustlab_llm`,
+`perf/iterations/01-requests.md`). Plan: `dev/plans/perf_flywheel_iter01.md`.
+
+### Performance
+- **`parmap` no longer copies the caller's variables into every task.**
+  Workers start from the built-in constants and the user-defined functions;
+  a lambda brings its captured values, and a user function already runs in
+  its own scope, so results are unchanged. One worker is built per rayon
+  split and reused across its tasks, and vector results are copied into the
+  output matrix in parallel. A trivial 8-task `parmap` beside a 104 MB
+  variable drops from 6.0 ms to 0.13 ms. `parmap(@feval, …)` still sees the
+  caller's variables, because `feval` resolves names there.
+- **`S.field` reads copy only the field.** Reading a field of a struct
+  variable (or a chain `S.a.b`) used to copy the whole struct first. For a
+  model's 13 MB parameter struct read ~30 times per forward and backward
+  pass, that was a measurable share of each pass.
+
 ## 0.3.9
 
 ### Breaking / behavior changes

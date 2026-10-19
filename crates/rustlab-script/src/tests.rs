@@ -13988,6 +13988,156 @@ mod parmap_phase3_correctness {
     }
 }
 
+// ─── Struct field reads borrow the struct (perf iteration 01) ──────────────
+
+#[cfg(test)]
+mod struct_field_borrow {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn run_src(src: &str) -> Result<Evaluator, String> {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).map_err(|e| e.to_string())?;
+        Ok(ev)
+    }
+
+    fn scalar(ev: &Evaluator, name: &str) -> f64 {
+        match ev.get(name).unwrap() {
+            Value::Scalar(x) => *x,
+            other => panic!("expected Scalar for {name}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nested_chain_reads_field() {
+        let ev = run_src("in.b = 7; in.c = [1, 2, 3]; S.a = in; x = S.a.b; v = S.a.c; y = v(3);").unwrap();
+        assert_eq!(scalar(&ev, "x"), 7.0);
+        assert_eq!(scalar(&ev, "y"), 3.0);
+    }
+
+    #[test]
+    fn read_is_a_copy_not_an_alias() {
+        let ev = run_src("S.w = [1, 2]; w = S.w; w(1) = 9; z = S.w; a = z(1);").unwrap();
+        assert_eq!(scalar(&ev, "a"), 1.0);
+    }
+
+    #[test]
+    fn missing_field_still_errors() {
+        let err = run_src("S.a = 1; x = S.nope;").err().unwrap();
+        assert!(err.contains("no field 'nope'"), "got: {err}");
+        let err = run_src("S.a = 1; x = S.a.b;").err().unwrap();
+        assert!(err.contains("field 'b'"), "got: {err}");
+    }
+
+    #[test]
+    fn non_struct_objects_take_the_old_path() {
+        let ev = run_src("T = table([1; 2], [3; 4]); c = T.Var2; k = c(2);").unwrap();
+        assert_eq!(scalar(&ev, "k"), 4.0);
+    }
+}
+
+// ─── parmap workers carry no caller variables (perf iteration 01, R3) ──────
+
+#[cfg(test)]
+mod parmap_worker_env {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn run_src(src: &str) -> Result<Evaluator, String> {
+        let src = format!("{}\n", src);
+        let tokens = crate::lexer::tokenize(&src).unwrap();
+        let stmts = crate::parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).map_err(|e| e.to_string())?;
+        Ok(ev)
+    }
+
+    fn get_vec(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected Vector for {name}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_template_drops_caller_variables() {
+        let ev = run_src("big = ones(300, 300); f = @(k) k + 1;").unwrap();
+        let lambda = ev.get("f").unwrap().clone();
+        let t = ev.clone_for_parallel_lambda(&lambda);
+        assert!(t.get("big").is_none(), "caller variable copied into worker");
+        assert!(t.get("f").is_none());
+        assert!(t.get("pi").is_some() && t.get("j").is_some());
+        // `@feval` resolves names in the current environment, so it keeps it.
+        let t = ev.clone_for_parallel_lambda(&Value::FuncHandle("feval".to_string()));
+        assert!(t.get("big").is_some());
+    }
+
+    #[test]
+    fn captured_values_are_visible() {
+        let ev = run_src("a = 10; big = ones(200, 200); y = parmap(@(k) k + a, 1:4);").unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![11.0, 12.0, 13.0, 14.0]);
+    }
+
+    #[test]
+    fn user_fn_handle_calls_other_user_fns_and_constants() {
+        let ev = run_src(
+            "function r = g(x)\n r = x + pi;\nend\n\
+             function r = f(x)\n r = g(x) * 2;\nend\n\
+             y = parmap(@f, 1:3); z = arrayfun(@f, 1:3);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
+    }
+
+    #[test]
+    fn user_fn_cannot_see_caller_variable() {
+        // Same rule as a sequential call: a user function has its own scope.
+        let src = "big = 5;\nfunction r = h(x)\n r = x + big;\nend\n";
+        let seq = run_src(&format!("{src}y = h(1);")).err().unwrap();
+        let par = run_src(&format!("{src}y = parmap(@h, 1:3);")).err().unwrap();
+        assert!(seq.contains("big"), "sequential: {seq}");
+        assert!(par.contains("parmap") && par.contains("big"), "parmap: {par}");
+    }
+
+    #[test]
+    fn shadowed_constant_matches_sequential() {
+        // A user function seeds its scope with the caller's built-in
+        // constants, shadowed or not; the worker template keeps them.
+        let ev = run_src(
+            "pi = 3;\nfunction r = f(x)\n r = x * pi;\nend\n\
+             y = parmap(@f, 1:3); z = arrayfun(@f, 1:3);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![3.0, 6.0, 9.0]);
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
+    }
+
+    #[test]
+    fn feval_inside_lambda_reaches_user_fn() {
+        let ev = run_src(
+            "function r = sq(x)\n r = x^2;\nend\n\
+             y = parmap(@(k) feval(\"sq\", k), 1:4);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), vec![1.0, 4.0, 9.0, 16.0]);
+    }
+
+    #[test]
+    fn many_tasks_reuse_workers_correctly() {
+        // More tasks than threads, so each worker runs several of them.
+        // A nested user call and lambda per task must leave no state behind.
+        let ev = run_src(
+            "c = 0.5;\nfunction r = twice(x)\n r = 2 * x;\nend\n\
+             y = parmap(@(k) twice(k) + c, 1:500); z = arrayfun(@(k) twice(k) + c, 1:500);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
+    }
+}
+
 // ─── Phase 1 (parmap_parreduce): Evaluator Clone+Send + AST serde ───────────
 
 #[cfg(test)]

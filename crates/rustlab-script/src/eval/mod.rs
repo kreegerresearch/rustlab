@@ -2159,6 +2159,15 @@ impl Evaluator {
                 t.contents(&idx_vals).map_err(ScriptError::runtime)
             }
             Expr::Field { object, field } => {
+                // `S.f` on a struct variable (or a chain `S.a.b`): borrow the
+                // struct and clone only the field. Evaluating `object` would
+                // deep-copy the whole struct first, which for a model's
+                // parameter struct is megabytes per read.
+                if let Some(Value::Struct(fields)) = self.borrow_field_chain(object) {
+                    if let Some(v) = fields.get(field.as_str()) {
+                        return Ok(v.clone());
+                    }
+                }
                 let obj = self.eval_expr(object)?;
                 match obj {
                     Value::Table(t) => {
@@ -2346,10 +2355,9 @@ impl Evaluator {
             None
         };
 
-        // Clone the Evaluator once as a template; each rayon task clones
-        // again from the template (one Evaluator per task in v1; per-
-        // thread caching is a follow-on).
-        let template = self.clone_for_parallel_lambda();
+        // Template without the caller's variables; each rayon split clones
+        // it once and reuses that worker for the tasks it runs.
+        let template = self.clone_for_parallel_lambda(&func);
         let backend = LocalRayonBackend::new();
         // Master seed: read this thread's current `seed(N)` value. If
         // the user has never called `seed()`, we pull a single u64 from
@@ -3203,18 +3211,63 @@ impl Evaluator {
         result
     }
 
-    /// Clone the Evaluator for use as a per-worker copy under `parmap`.
-    /// Phase 2 of `dev/plans/parmap_parreduce.md` — each rayon task gets a
-    /// fresh Evaluator carrying the user-defined functions and the global
-    /// env, so user-fn calls + captured-env reads inside a parallel lambda
-    /// work identically to the sequential case.
+    /// Borrow the value named by a variable or a chain of struct field
+    /// reads on one (`S`, `S.a`, `S.a.b`) without copying it. `None` for any
+    /// other expression, or when a link is missing or not a struct; callers
+    /// then fall back to evaluating, which also produces the right error.
+    fn borrow_field_chain(&self, e: &Expr) -> Option<&Value> {
+        match e {
+            Expr::Var(name) => self.env.get(name),
+            Expr::Field { object, field } => match self.borrow_field_chain(object)? {
+                Value::Struct(fields) => fields.get(field.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Build the template Evaluator that `parmap` workers are cloned from.
     ///
-    /// Currently a thin wrapper around `Clone::clone`. Future refinements
-    /// could trim per-worker state (e.g. drop the profiler, clear `env`
-    /// since lambdas install their own captured env at call time) but the
-    /// trivial clone is correct and fast enough for v1.
-    pub(crate) fn clone_for_parallel_lambda(&self) -> Evaluator {
-        self.clone()
+    /// A worker needs the user-defined functions, the builtins and the
+    /// session settings, but not the caller's variables: a lambda brings
+    /// its own captured values and swaps them in at call time, and a user
+    /// function runs in a fresh scope seeded only with the built-in
+    /// constants. So the template's `env` keeps just those constants.
+    /// Copying the whole caller environment per task was the dominant
+    /// parmap overhead when it held large matrices (perf flywheel
+    /// iteration 01, R3).
+    ///
+    /// `@feval` is the one callable that reads the current environment
+    /// (it can name a lambda held in a variable), so for it the full
+    /// environment is kept.
+    pub(crate) fn clone_for_parallel_lambda(&self, func: &Value) -> Evaluator {
+        const BUILTIN_CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
+        let keep_env = matches!(func, Value::FuncHandle(name) if name == "feval");
+        let env = if keep_env {
+            self.env.clone()
+        } else {
+            self.env
+                .iter()
+                .filter(|(k, _)| BUILTIN_CONSTS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
+        Evaluator {
+            env,
+            builtins: self.builtins.clone(),
+            user_fns: self.user_fns.clone(),
+            in_function: self.in_function,
+            stmt_call_nargout0: false,
+            profiler: self.profiler.clone(),
+            color_output: self.color_output,
+            number_format: self.number_format,
+            current_line: self.current_line,
+            cache_registry: self.cache_registry.clone(),
+            cached_entry_ids: self.cached_entry_ids.clone(),
+            cancel: self.cancel.clone(),
+            widget_values: self.widget_values.clone(),
+            widget_reads: BTreeSet::new(),
+        }
     }
 
     /// Approximate byte size of a Value for IO throughput accounting.

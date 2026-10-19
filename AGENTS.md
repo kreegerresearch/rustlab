@@ -167,6 +167,7 @@ together whenever a phase finishes.
 | Plan | File | Status |
 |------|------|--------|
 | Living backlog / roadmap | `dev/plans/roadmap.md` | Living planning doc (organized 2026-09-24, refreshed 2026-09-26 against main). Folds in open `dev/requests/` and `dev/plans/` items; ranks pending clarifications. Not an implementation phase — do not start items from this row without an explicit ask. |
+| Perf flywheel iteration 01 (`rustlab_llm` requests R1–R4) | `dev/plans/perf_flywheel_iter01.md` | In progress on `feature/perf-iter01` (0.3.10). R3 done: `parmap` workers start from constants + user functions (no caller env copy), `map_init` worker reuse, parallel row packing; `S.field` borrows the struct (`borrow_field_chain`). Next R1 (real dgemm path), then R2 (profiler), R4 (elementwise). Self-check: `RUSTLAB=$PWD/target/release/rustlab make -C ../rustlab_llm perf-check`. |
 | Control Systems Toolbox | `dev/plans/closed/controls.md` | Complete — all 6 phases |
 | Controls Bootcamp Functions | `dev/plans/closed/controls_bootcamp.md` | Complete — logspace, rk4, lyap, gram, care, dare, place, freqresp, svd |
 | Lambda / Anonymous Functions | `dev/plans/closed/lambda.md` | Complete — both phases (lambdas, arrayfun, feval) |
