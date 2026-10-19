@@ -23,6 +23,13 @@ Perf flywheel iteration 02 (requests from `rustlab_llm`,
   `X * W'` and `H' * H` hand the matrix multiply a transposed view
   (conjugating inside the product for `'` on complex data), so no copy of
   the operand is made.
+- **Arrays are copy-on-write.** A vector, matrix or rank-3 tensor is shared,
+  not copied, when it is assigned to another name, passed to a function or
+  builtin, read from a struct field, captured by a lambda, or handed to a
+  `parmap` task. The first write to one of the names copies it, so values
+  behave exactly as before. Passing a 13 MB struct to a user function went
+  from 0.21 ms to 2 µs; the `rustlab_llm` training step is about 45 %
+  faster.
 - **Real matrix products have less overhead around the multiply.** The
   realness check and the conversion to real values are one pass, which is
   noticeable at the 100–500 element sizes typical of scripts.

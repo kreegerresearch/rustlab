@@ -23,6 +23,7 @@
 //! there is no separate sequential copy of each kernel. The dynamic call
 //! happens once per chunk, never per element.
 
+use super::shared::Shared;
 use super::value::Value;
 use crate::ast::BinOp;
 use rayon::prelude::*;
@@ -103,7 +104,7 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
         (Value::Matrix(a), Value::Matrix(b)) if op == Mul && a.ncols() == b.nrows() => Ok(
-            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view())),
+            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()),
         ),
         _ => Value::binop(op, l.into_owned(), r.into_owned()),
     }
@@ -144,10 +145,21 @@ fn data(v: &Value) -> &[C64] {
     .expect("checked contiguous by the caller")
 }
 
+/// An owned temporary whose buffer nothing else refers to, so the result
+/// can be written into it. A shared one (a copy-on-write clone of a variable)
+/// is read like a borrowed operand: writing would copy it first.
+fn unique(v: &Value) -> bool {
+    match v {
+        Value::Vector(a) => Shared::is_unique(a),
+        Value::Matrix(m) => Shared::is_unique(m),
+        _ => false,
+    }
+}
+
 fn data_mut(v: &mut Value) -> &mut [C64] {
     match v {
-        Value::Vector(a) => a.as_slice_mut(),
-        Value::Matrix(m) => m.as_slice_mut(),
+        Value::Vector(a) => Shared::make_mut(a).as_slice_mut(),
+        Value::Matrix(m) => Shared::make_mut(m).as_slice_mut(),
         _ => None,
     }
     .expect("checked contiguous by the caller")
@@ -156,9 +168,9 @@ fn data_mut(v: &mut Value) -> &mut [C64] {
 /// A value of `like`'s kind and shape holding `data` (row-major).
 fn shaped_like(like: &Value, data: Vec<C64>) -> Value {
     match like {
-        Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data)),
+        Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data).into()),
         Value::Matrix(m) => Value::Matrix(
-            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count"),
+            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count").into(),
         ),
         _ => unreachable!("checked by the caller"),
     }
@@ -263,7 +275,7 @@ fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
 /// owned temporary.
 fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
     match a {
-        Operand::Owned(mut v) => {
+        Operand::Owned(mut v) if unique(&v) => {
             drive(data_mut(&mut v), &|_, c: &mut [C64]| {
                 for x in c {
                     *x = f(*x);
@@ -272,7 +284,8 @@ fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
             });
             v
         }
-        Operand::Borrowed(v) => {
+        a => {
+            let v = a.get();
             let src = data(v);
             let (out, _) = drive_new(src.len(), &|o, c: &mut [MaybeUninit<C64>]| {
                 for (d, &x) in c.iter_mut().zip(&src[o..]) {
@@ -294,7 +307,7 @@ fn zip_arrays(op: BinOp, l: Operand, r: Operand, real_rule: bool) -> Value {
 
 fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, real_rule: bool) -> Value {
     let (mut out, flags) = match (l, r) {
-        (Operand::Owned(mut a), r) => {
+        (Operand::Owned(mut a), r) if unique(&a) => {
             let b = data(r.get());
             let flags = drive(data_mut(&mut a), &|o, c: &mut [C64]| {
                 let mut fl = NO_FLAGS;
@@ -307,7 +320,7 @@ fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, r
             });
             (a, flags)
         }
-        (l, Operand::Owned(mut b)) => {
+        (l, Operand::Owned(mut b)) if unique(&b) => {
             let a = data(l.get());
             let flags = drive(data_mut(&mut b), &|o, c: &mut [C64]| {
                 let mut fl = NO_FLAGS;
@@ -423,13 +436,13 @@ mod tests {
     use ndarray::{Array1, Array2};
 
     fn vec_of(xs: &[(f64, f64)]) -> Value {
-        Value::Vector(Array1::from_iter(xs.iter().map(|&(r, i)| C64::new(r, i))))
+        Value::Vector(Array1::from_iter(xs.iter().map(|&(r, i)| C64::new(r, i))).into())
     }
 
     fn mat_of(rows: usize, cols: usize, xs: &[(f64, f64)]) -> Value {
         Value::Matrix(
             Array2::from_shape_vec((rows, cols), xs.iter().map(|&(r, i)| C64::new(r, i)).collect())
-                .unwrap(),
+                .unwrap().into(),
         )
     }
 
@@ -450,18 +463,34 @@ mod tests {
         std::mem::discriminant(a) == std::mem::discriminant(b)
     }
 
-    /// Every operand mix (borrowed / owned on each side) must give exactly
-    /// what `Value::binop` gives.
+    /// A copy of `v` with its own buffer, so an owned operand made from it
+    /// is unique and gets written in place. (`v.clone()` shares the buffer.)
+    fn fresh(v: &Value) -> Value {
+        match v {
+            Value::Vector(a) => Value::Vector(Shared::new((**a).clone())),
+            Value::Matrix(m) => Value::Matrix(Shared::new((**m).clone())),
+            other => other.clone(),
+        }
+    }
+
+    /// Every operand mix (borrowed, owned and unique, owned but sharing the
+    /// buffer of `l` / `r`, on each side) must give exactly what
+    /// `Value::binop` gives, and must leave `l` and `r` unchanged.
+    fn side(v: &Value, k: usize) -> Operand<'_> {
+        match k {
+            0 => Operand::Borrowed(v),
+            1 => Operand::Owned(fresh(v)),
+            _ => Operand::Owned(v.clone()),
+        }
+    }
+
     fn check(op: BinOp, l: &Value, r: &Value) {
-        let want = Value::binop(op, l.clone(), r.clone());
-        let combos: [(Operand, Operand); 4] = [
-            (Operand::Borrowed(l), Operand::Borrowed(r)),
-            (Operand::Owned(l.clone()), Operand::Borrowed(r)),
-            (Operand::Borrowed(l), Operand::Owned(r.clone())),
-            (Operand::Owned(l.clone()), Operand::Owned(r.clone())),
-        ];
-        for (a, b) in combos {
-            let got = binop(op, a, b);
+        let want = Value::binop(op, fresh(l), fresh(r));
+        let (l_bits, r_bits) = (bits(l), bits(r));
+        for (i, j) in (0..3).flat_map(|i| (0..3).map(move |j| (i, j))) {
+            let got = binop(op, side(l, i), side(r, j));
+            assert_eq!(bits(l), l_bits, "{op:?} wrote into a shared left operand");
+            assert_eq!(bits(r), r_bits, "{op:?} wrote into a shared right operand");
             match (&want, &got) {
                 (Ok(w), Ok(g)) => {
                     assert!(same_kind(w, g), "{op:?}: kind {w:?} vs {g:?}");
@@ -579,7 +608,7 @@ mod tests {
     fn non_contiguous_operands_fall_back_to_binop() {
         use ndarray::ShapeBuilder;
         let data: Vec<C64> = (0..6).map(|k| C64::new(k as f64 - 2.5, 0.0)).collect();
-        let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap());
+        let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap().into());
         assert!(!is_contiguous(&fortran));
         let row = mat_of(2, 3, &[(1.0, 0.0), (-2.0, 0.0), (3.0, 0.0), (0.5, 0.0), (-1.0, 0.0), (2.0, 0.0)]);
         for op in OPS {
@@ -602,5 +631,13 @@ mod tests {
             Value::Vector(a) => assert_eq!(a.as_ptr(), ptr, "result should reuse the temporary"),
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn shared_owned_operand_is_not_written() {
+        let v = vec_of(&[(1.0, 0.0), (2.0, 0.0)]);
+        let out = binop(BinOp::Mul, Operand::Owned(v.clone()), Operand::Owned(Value::Scalar(3.0))).unwrap();
+        assert_eq!(bits(&v), bits(&vec_of(&[(1.0, 0.0), (2.0, 0.0)])));
+        assert_eq!(bits(&out), bits(&vec_of(&[(3.0, 0.0), (6.0, 0.0)])));
     }
 }

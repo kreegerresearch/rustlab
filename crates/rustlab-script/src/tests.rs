@@ -155,7 +155,7 @@ mod bool_tests {
         let m = Value::Matrix(ndarray::Array2::from_shape_vec(
             (1, 2),
             vec![num_complex::Complex::new(1.0, 0.0); 2],
-        ).unwrap());
+        ).unwrap().into());
         assert!(Value::binop(BinOp::And, m, Value::Scalar(1.0)).is_err());
     }
 
@@ -536,7 +536,7 @@ mod value_tests {
         Value::Complex(Complex::new(re, im))
     }
     fn vec_val(v: &[f64]) -> Value {
-        Value::Vector(Array1::from_iter(v.iter().map(|&x| Complex::new(x, 0.0))))
+        Value::Vector(Array1::from_iter(v.iter().map(|&x| Complex::new(x, 0.0))).into())
     }
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -604,7 +604,7 @@ mod value_tests {
         let v = Value::Vector(Array1::from_vec(vec![
             Complex::new(1.0, 2.0),
             Complex::new(3.0, -1.0),
-        ]));
+        ]).into());
         match v.transpose().unwrap() {
             Value::Matrix(m) => {
                 assert!(close(m[[0, 0]].im, -2.0));
@@ -685,7 +685,7 @@ mod value_tests {
 
     fn mat_val(rows: usize, cols: usize, data: &[f64]) -> Value {
         let v: Vec<C64> = data.iter().map(|&x| C64::new(x, 0.0)).collect();
-        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap())
+        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap().into())
     }
 
     #[test]
@@ -1370,7 +1370,7 @@ mod matrix_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("Expected Matrix for '{name}', got {other:?}"),
         }
     }
@@ -1981,7 +1981,7 @@ mod eig_tests {
         name: &str,
     ) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected Matrix for '{name}', got {other:?}"),
         }
     }
@@ -3643,7 +3643,7 @@ mod phase3_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> CMatrix {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -5219,7 +5219,7 @@ mod new_builtins_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -5614,7 +5614,7 @@ mod ml_tests {
 
     fn get_mat(ev: &Evaluator, name: &str) -> CMatrix {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix, got {other:?}"),
         }
     }
@@ -9174,14 +9174,14 @@ mod sparse_tests {
 
     fn get_vec(ev: &Evaluator, name: &str) -> ndarray::Array1<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Vector(v) => v.clone(),
+            Value::Vector(v) => (**v).clone(),
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -12082,13 +12082,13 @@ mod tensor3_tests {
 
     #[test]
     fn type_name_is_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((2, 3, 4)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((2, 3, 4)).into());
         assert_eq!(v.type_name(), "tensor3");
     }
 
     #[test]
     fn negate_flips_every_element() {
-        let v = Value::Tensor3(build(2, 2, 2));
+        let v = Value::Tensor3(build(2, 2, 2).into());
         let neg = v.negate().unwrap();
         if let Value::Tensor3(t) = neg {
             assert_eq!(t.shape(), &[2, 2, 2]);
@@ -12101,7 +12101,7 @@ mod tensor3_tests {
 
     #[test]
     fn display_shows_shape_and_first_page() {
-        let v = Value::Tensor3(build(2, 3, 4));
+        let v = Value::Tensor3(build(2, 3, 4).into());
         let s = format!("{}", v);
         assert!(s.starts_with("tensor3 [2×3×4]"), "got: {}", s);
         assert!(s.contains("(:, :, 1) ="), "got: {}", s);
@@ -12111,7 +12111,7 @@ mod tensor3_tests {
 
     #[test]
     fn display_small_shows_all_pages() {
-        let v = Value::Tensor3(build(2, 2, 2));
+        let v = Value::Tensor3(build(2, 2, 2).into());
         let s = format!("{}", v);
         assert!(s.contains("(:, :, 1) ="), "got: {}", s);
         assert!(s.contains("(:, :, 2) ="), "got: {}", s);
@@ -12120,20 +12120,20 @@ mod tensor3_tests {
 
     #[test]
     fn display_empty_tensor_shows_header_only() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((0, 0, 0)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((0, 0, 0)).into());
         let s = format!("{}", v);
         assert_eq!(s, "tensor3 [0×0×0]");
     }
 
     #[test]
     fn transpose_rejects_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((2, 2, 2)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((2, 2, 2)).into());
         assert!(v.transpose().is_err());
     }
 
     #[test]
     fn to_scalar_rejects_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((1, 1, 1)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((1, 1, 1)).into());
         assert!(v.to_scalar().is_err());
     }
 }
@@ -13132,7 +13132,7 @@ mod tensor3_arith_tests {
 
     fn tensor3(ev: &Evaluator, name: &str) -> ndarray::Array3<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Tensor3(t) => t.clone(),
+            Value::Tensor3(t) => (**t).clone(),
             other => panic!("Expected Tensor3 for '{name}', got {other:?}"),
         }
     }
@@ -13588,7 +13588,7 @@ mod tensor3_io_tests {
                 }
             }
         }
-        let v = Value::Tensor3(t);
+        let v = Value::Tensor3(t.into());
         let s = format!("{}", v);
         // Header plus first page plus last page plus "pages omitted" footer.
         // A full dump (10*10*100 floats, each ~10 chars) would be > 100KB;
@@ -14196,13 +14196,13 @@ mod transpose_layout {
         // Shapes straddling the 32-element tiles, plus degenerate ones.
         for &(r, c) in &[(1, 1), (1, 70), (70, 1), (31, 33), (33, 31), (129, 512), (64, 64), (0, 3), (3, 0)] {
             let m = filled(r, c);
-            assert_transpose(&m, &Value::Matrix(m.clone()).transpose().unwrap(), true);
-            assert_transpose(&m, &Value::Matrix(m.clone()).non_conj_transpose().unwrap(), false);
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).transpose().unwrap(), true);
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).non_conj_transpose().unwrap(), false);
         }
         // A column-major input takes the generic path, still row-major out.
         let data: Vec<_> = filled(5, 7).iter().copied().collect();
         let f = Array2::from_shape_vec((5, 7).f(), data).unwrap();
-        assert_transpose(&f, &Value::Matrix(f.clone()).transpose_ref().unwrap(), true);
+        assert_transpose(&f, &Value::Matrix(f.clone().into()).transpose_ref().unwrap(), true);
     }
 
     #[test]
@@ -14221,6 +14221,140 @@ mod transpose_layout {
                 (g, w) => panic!("{name}: {g:?} vs {w:?}"),
             }
         }
+    }
+}
+
+// ─── Copy-on-write arrays ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod copy_on_write {
+    use crate::eval::shared::Shared;
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval(src: &str) -> Evaluator {
+        let mut ev = Evaluator::new();
+        more(&mut ev, src);
+        ev
+    }
+
+    fn more(ev: &mut Evaluator, src: &str) {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+    }
+
+    fn re(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap_or_else(|| panic!("{name} unset")) {
+            Value::Scalar(x) => vec![*x],
+            Value::Vector(v) => v.iter().map(|z| z.re).collect(),
+            Value::Matrix(m) => m.iter().map(|z| z.re).collect(),
+            Value::Tensor3(t) => t.iter().map(|z| z.re).collect(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    fn data_ptr(ev: &Evaluator, name: &str) -> *const num_complex::Complex<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.as_ptr(),
+            Value::Matrix(m) => m.as_ptr(),
+            Value::Tensor3(t) => t.as_ptr(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assignment_shares_until_one_side_is_written() {
+        let mut ev = eval("a = [1, 2, 3]; b = a;");
+        match (ev.get("a").unwrap(), ev.get("b").unwrap()) {
+            (Value::Vector(a), Value::Vector(b)) => assert!(Shared::ptr_eq(a, b), "b = a should not copy"),
+            _ => unreachable!(),
+        }
+        more(&mut ev, "b(1) = 5;");
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "b"), [5.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn every_kind_of_write_leaves_the_copy_alone() {
+        let ev = eval(
+            "a = [1, 2, 3];\n\
+             b = a; b += 1;\n\
+             c = a; c(end + 1) = 4;\n\
+             d = a; d([1, 3]) = 0;\n\
+             A = [1, 2; 3, 4];\n\
+             B = A; B(2, :) = [7, 7];\n\
+             C = A; C(1, 1) = 9;\n\
+             D = A; D = -D;\n\
+             T = zeros3(2, 2, 2);\n\
+             U = T; U(1, 1, 1) = 3;\n",
+        );
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "b"), [2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "c"), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "d"), [0.0, 2.0, 0.0]);
+        assert_eq!(re(&ev, "A"), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "B"), [1.0, 2.0, 7.0, 7.0]);
+        assert_eq!(re(&ev, "C"), [9.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "D"), [-1.0, -2.0, -3.0, -4.0]);
+        assert_eq!(re(&ev, "T"), [0.0; 8]);
+        assert_eq!(re(&ev, "U")[0], 3.0);
+    }
+
+    #[test]
+    fn a_function_writing_its_argument_leaves_the_caller_alone() {
+        let ev = eval(
+            "function y = f(x)\n  x(1) = 99;\n  y = x;\nend\n\
+             a = [1, 2, 3];\nc = f(a);\n",
+        );
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "c"), [99.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn lambdas_and_parmap_keep_their_snapshot() {
+        let ev = eval(
+            "w = [1, 2, 3];\n\
+             g = @() w(1);\n\
+             h = @(k) w(k) * 2;\n\
+             w(1) = 10;\n\
+             r = g();\n\
+             p = parmap(h, 1:3);\n",
+        );
+        assert_eq!(re(&ev, "r"), [1.0]);
+        assert_eq!(re(&ev, "p"), [2.0, 4.0, 6.0]);
+        assert_eq!(re(&ev, "w"), [10.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn struct_fields_and_loops_see_values_not_aliases() {
+        let ev = eval(
+            "S.E = [1, 2];\n\
+             T = S;\n\
+             x = S.E; x(1) = 5;\n\
+             T.E = T.E .* [1, 4];\n\
+             s = 0;\n\
+             v = [1, 2, 3];\n\
+             for e = v\n  v(1) = 100;\n  s = s + e;\nend\n\
+             e1 = S.E;\n\
+             e2 = T.E;\n",
+        );
+        assert_eq!(re(&ev, "e1"), [1.0, 2.0]);
+        assert_eq!(re(&ev, "e2"), [1.0, 8.0]);
+        assert_eq!(re(&ev, "x"), [5.0, 2.0]);
+        assert_eq!(re(&ev, "s"), [6.0]);
+    }
+
+    /// A buffer nothing else refers to is written where it is.
+    #[test]
+    fn unique_buffer_is_written_in_place() {
+        let mut ev = eval("a = zeros(1, 1000);");
+        let p = data_ptr(&ev, "a");
+        more(&mut ev, "a(5) = 1; a(7) = 2;");
+        assert_eq!(data_ptr(&ev, "a"), p);
+        let mut ev = eval("M = zeros(40, 40);");
+        let p = data_ptr(&ev, "M");
+        more(&mut ev, "M(3, :) = ones(1, 40);");
+        assert_eq!(data_ptr(&ev, "M"), p);
     }
 }
 
@@ -16509,7 +16643,7 @@ mod builtin_coverage_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -17307,7 +17441,7 @@ mod eval_edge_semantics_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -19876,7 +20010,7 @@ mod printf_and_row_matrix_tests {
         assert!(apply_format("%ld", &vals(&[Arg::N(1.0)]))
             .unwrap_err()
             .contains("unknown"));
-        let vec = Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]));
+        let vec = Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]).into());
         assert!(apply_format("%d", &[vec]).is_err());
         let z = Value::Complex(Complex::new(1.0, 2.0));
         assert!(apply_format("%f", &[z]).is_err());

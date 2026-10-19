@@ -245,7 +245,7 @@ fn tensor3_from_table(map: &toml::map::Map<String, Toml>) -> Option<Value> {
             }
         }
     }
-    Some(Value::Tensor3(t))
+    Some(Value::Tensor3(t.into()))
 }
 
 fn toml_num_as_usize(v: &Toml) -> Option<usize> {
@@ -258,7 +258,7 @@ fn toml_num_as_usize(v: &Toml) -> Option<usize> {
 
 fn array_to_value(arr: Vec<Toml>) -> Value {
     if arr.is_empty() {
-        return Value::Vector(Array1::zeros(0));
+        return Value::Vector(Array1::zeros(0).into());
     }
 
     // Check if all elements are numeric (Integer or Float)
@@ -278,7 +278,7 @@ fn array_to_value(arr: Vec<Toml>) -> Value {
                 })
                 .collect(),
         );
-        return Value::Vector(cvec);
+        return Value::Vector(cvec.into());
     }
 
     // Array of equal-length, all-numeric sub-arrays → Matrix (one per row).
@@ -315,7 +315,7 @@ fn array_to_value(arr: Vec<Toml>) -> Value {
                 }
             }
             if let Ok(mat) = ndarray::Array2::from_shape_vec((nrows, ncols), data) {
-                return Value::Matrix(mat);
+                return Value::Matrix(mat.into());
             }
         }
     }

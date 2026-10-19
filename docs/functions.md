@@ -3701,8 +3701,9 @@ one of the stored names. `feval("sq", x)` stores `sq` when that
 variable exists. `feval` of a name computed at the call
 (`feval(name, x)`), and a handle whose target is `feval`, stores the
 whole workspace, because that name is not written in the lambda.
-There is no copy-on-write: a name the body mentions is copied in full,
-once per lambda, including a large matrix.
+A stored array is not copied: the lambda shares it with the workspace,
+and a later write to either one copies it first (copy-on-write), so the
+lambda keeps the value it captured.
 
 `@sin` is the builtin `sin`, even when a variable named `sin` exists.
 `sin = [1, 2, 3]; h = @sin; h(0)` is `0`, not an index into that

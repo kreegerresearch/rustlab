@@ -322,7 +322,7 @@ fn decode_value(cur: &mut Cursor) -> Option<Value> {
                 let im = cur.take_f64()?;
                 buf.push(Complex::new(re, im));
             }
-            Some(Value::Vector(Array1::from(buf) as CVector))
+            Some(Value::Vector((Array1::from(buf) as CVector).into()))
         }
         tag::MATRIX => {
             let nrows = cur.take_u64()? as usize;
@@ -335,7 +335,7 @@ fn decode_value(cur: &mut Cursor) -> Option<Value> {
                 buf.push(Complex::new(re, im));
             }
             let arr = Array2::from_shape_vec((nrows, ncols), buf).ok()?;
-            Some(Value::Matrix(arr as CMatrix))
+            Some(Value::Matrix((arr as CMatrix).into()))
         }
         tag::TUPLE => {
             let n = cur.take_u64()? as usize;
@@ -515,7 +515,7 @@ mod tests {
             Complex::new(0.0, 1.0),
             Complex::new(-1.0, 2.0),
         ]);
-        let v = Value::Vector(arr);
+        let v = Value::Vector(arr.into());
         assert!(val_eq(&v, &rt(&v).unwrap()));
     }
 
@@ -525,7 +525,7 @@ mod tests {
             [Complex::new(1.0, 0.0), Complex::new(2.0, 1.0)],
             [Complex::new(3.0, -1.0), Complex::new(4.0, 0.5)],
         ];
-        let v = Value::Matrix(m);
+        let v = Value::Matrix(m.into());
         let back = rt(&v).unwrap();
         if let Value::Matrix(b) = &back {
             assert_eq!(b.shape(), &[2, 2]);
@@ -587,7 +587,7 @@ mod tests {
         let v = Value::Tensor3(ndarray::Array3::from_elem(
             (2, 2, 2),
             Complex::new(0.0, 0.0),
-        ));
+        ).into());
         assert!(serialize_value(&v).is_none());
 
         let v = Value::Lambda {
