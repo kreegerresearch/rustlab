@@ -23,6 +23,7 @@
 //! there is no separate sequential copy of each kernel. The dynamic call
 //! happens once per chunk, never per element.
 
+use super::shared::Shared;
 use super::value::Value;
 use crate::ast::BinOp;
 use rayon::prelude::*;
@@ -103,7 +104,7 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
         (Value::Matrix(a), Value::Matrix(b)) if op == Mul && a.ncols() == b.nrows() => Ok(
-            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view())),
+            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()),
         ),
         _ => Value::binop(op, l.into_owned(), r.into_owned()),
     }
@@ -144,10 +145,21 @@ fn data(v: &Value) -> &[C64] {
     .expect("checked contiguous by the caller")
 }
 
+/// An owned temporary whose buffer nothing else refers to, so the result
+/// can be written into it. A shared one (a copy-on-write clone of a variable)
+/// is read like a borrowed operand: writing would copy it first.
+fn unique(v: &Value) -> bool {
+    match v {
+        Value::Vector(a) => Shared::is_unique(a),
+        Value::Matrix(m) => Shared::is_unique(m),
+        _ => false,
+    }
+}
+
 fn data_mut(v: &mut Value) -> &mut [C64] {
     match v {
-        Value::Vector(a) => a.as_slice_mut(),
-        Value::Matrix(m) => m.as_slice_mut(),
+        Value::Vector(a) => Shared::make_mut(a).as_slice_mut(),
+        Value::Matrix(m) => Shared::make_mut(m).as_slice_mut(),
         _ => None,
     }
     .expect("checked contiguous by the caller")
@@ -156,9 +168,9 @@ fn data_mut(v: &mut Value) -> &mut [C64] {
 /// A value of `like`'s kind and shape holding `data` (row-major).
 fn shaped_like(like: &Value, data: Vec<C64>) -> Value {
     match like {
-        Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data)),
+        Value::Vector(_) => Value::Vector(ndarray::Array1::from_vec(data).into()),
         Value::Matrix(m) => Value::Matrix(
-            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count"),
+            ndarray::Array2::from_shape_vec(m.dim(), data).expect("same element count").into(),
         ),
         _ => unreachable!("checked by the caller"),
     }
@@ -176,7 +188,7 @@ macro_rules! with_op {
             Add => { let $f = |x: C64, y: C64| x + y; $body }
             Sub => { let $f = |x: C64, y: C64| x - y; $body }
             Mul | ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            Div | ElemDiv => { let $f = |x: C64, y: C64| x / y; $body }
+            Div | ElemDiv => { let $f = Value::div_c64; $body }
             Pow | ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
             _ => unreachable!("checked by the caller"),
         }
@@ -187,7 +199,7 @@ macro_rules! with_op {
             Add => { let $f = |x: C64, y: C64| x + y; $body }
             Sub => { let $f = |x: C64, y: C64| x - y; $body }
             ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            ElemDiv => { let $f = |x: C64, y: C64| x / y; $body }
+            ElemDiv => { let $f = Value::div_c64; $body }
             ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
             _ => unreachable!("checked by the caller"),
         }
@@ -241,14 +253,20 @@ fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
 /// A new length-`n` buffer filled by `k`, which must initialise every
 /// element of each chunk it is given.
 fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
+    drive_new_sized(n, PAR_MIN_LEN, PAR_CHUNK, k)
+}
+
+/// [`drive_new`] with its own parallel threshold and chunk length, for
+/// kernels much costlier per element than arithmetic.
+fn drive_new_sized(n: usize, min_len: usize, chunk: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
     let mut out: Vec<C64> = Vec::with_capacity(n);
     let dst = &mut out.spare_capacity_mut()[..n];
-    let flags = if n < PAR_MIN_LEN {
+    let flags = if n < min_len {
         k(0, dst)
     } else {
-        dst.par_chunks_mut(PAR_CHUNK)
+        dst.par_chunks_mut(chunk)
             .enumerate()
-            .map(|(i, c)| k(i * PAR_CHUNK, c))
+            .map(|(i, c)| k(i * chunk, c))
             .reduce(|| NO_FLAGS, combine)
     };
     // SAFETY: the chunks cover `0..n` exactly once and `k` initialises every
@@ -263,7 +281,7 @@ fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
 /// owned temporary.
 fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
     match a {
-        Operand::Owned(mut v) => {
+        Operand::Owned(mut v) if unique(&v) => {
             drive(data_mut(&mut v), &|_, c: &mut [C64]| {
                 for x in c {
                     *x = f(*x);
@@ -272,7 +290,8 @@ fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
             });
             v
         }
-        Operand::Borrowed(v) => {
+        a => {
+            let v = a.get();
             let src = data(v);
             let (out, _) = drive_new(src.len(), &|o, c: &mut [MaybeUninit<C64>]| {
                 for (d, &x) in c.iter_mut().zip(&src[o..]) {
@@ -294,7 +313,7 @@ fn zip_arrays(op: BinOp, l: Operand, r: Operand, real_rule: bool) -> Value {
 
 fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, real_rule: bool) -> Value {
     let (mut out, flags) = match (l, r) {
-        (Operand::Owned(mut a), r) => {
+        (Operand::Owned(mut a), r) if unique(&a) => {
             let b = data(r.get());
             let flags = drive(data_mut(&mut a), &|o, c: &mut [C64]| {
                 let mut fl = NO_FLAGS;
@@ -307,7 +326,7 @@ fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, r
             });
             (a, flags)
         }
-        (l, Operand::Owned(mut b)) => {
+        (l, Operand::Owned(mut b)) if unique(&b) => {
             let a = data(l.get());
             let flags = drive(data_mut(&mut b), &|o, c: &mut [C64]| {
                 let mut fl = NO_FLAGS;
@@ -380,6 +399,107 @@ pub(crate) fn par_block_copy(
     Some(ndarray::Array2::from_shape_vec((nr, nc), out).expect("nr × nc elements"))
 }
 
+/// Elements from which a transcendental map (`tanh`, `exp`, `gelu`, …)
+/// runs in parallel, and its chunk length: at several ns per element these
+/// pay for the threads far sooner than `+` does.
+pub(crate) const PAR_MAP_MIN_LEN: usize = 1 << 14;
+const PAR_MAP_CHUNK: usize = 1 << 12;
+
+/// `f` of every element of `src`, in parallel from [`PAR_MAP_MIN_LEN`].
+pub(crate) fn par_map(src: &[C64], f: &(dyn Fn(C64) -> C64 + Sync)) -> Vec<C64> {
+    drive_new_sized(src.len(), PAR_MAP_MIN_LEN, PAR_MAP_CHUNK, &|o, c: &mut [MaybeUninit<C64>]| {
+        for (d, &x) in c.iter_mut().zip(&src[o..]) {
+            d.write(f(x));
+        }
+        NO_FLAGS
+    })
+    .0
+}
+
+/// A new length-`n` buffer filled by `k(offset, chunk)`, which must write
+/// every element of each chunk it is given; in parallel chunks when long.
+pub(crate) fn par_fill(n: usize, k: &(dyn Fn(usize, &mut [MaybeUninit<C64>]) + Sync)) -> Vec<C64> {
+    drive_new(n, &|o, c: &mut [MaybeUninit<C64>]| {
+        k(o, c);
+        NO_FLAGS
+    })
+    .0
+}
+
+/// The transpose of the row-major `rows × cols` slice `src` (conjugated
+/// when `conj`), as a row-major `cols × rows` buffer: element `j·rows + i`
+/// is `src[i·cols + j]`. Written in 32 × 32 tiles so reads and writes stay
+/// in cache, in parallel chunks when large.
+pub(crate) fn par_transpose(src: &[C64], rows: usize, cols: usize, conj: bool) -> Vec<C64> {
+    let n = rows * cols;
+    assert_eq!(src.len(), n);
+    if n == 0 {
+        return Vec::new();
+    }
+    let k = |o: usize, dst: &mut [MaybeUninit<C64>]| {
+        if conj {
+            transpose_chunk::<true>(src, rows, cols, o, dst)
+        } else {
+            transpose_chunk::<false>(src, rows, cols, o, dst)
+        }
+    };
+    par_fill(n, &k)
+}
+
+/// Output positions `o..o + dst.len()` of `par_transpose`: the whole
+/// output rows in tiles, a partial first or last row element by element.
+fn transpose_chunk<const CONJ: bool>(src: &[C64], rows: usize, cols: usize, o: usize, dst: &mut [MaybeUninit<C64>]) {
+    const TILE: usize = 32;
+    let f = |x: C64| if CONJ { x.conj() } else { x };
+    let end = o + dst.len();
+    // One output row's positions lo..hi (0-based within row j).
+    let mut part = |j: usize, lo: usize, hi: usize| {
+        for i in lo..hi {
+            dst[j * rows + i - o].write(f(src[i * cols + j]));
+        }
+    };
+    let (j_first, j_last) = (o / rows, (end - 1) / rows);
+    if j_first == j_last {
+        return part(j_first, o - j_first * rows, end - j_first * rows);
+    }
+    // Whole rows j_lo..j_hi.
+    let mut j_lo = j_first;
+    if o % rows != 0 {
+        part(j_first, o % rows, rows);
+        j_lo += 1;
+    }
+    let j_hi = end / rows;
+    if end % rows != 0 {
+        part(j_last, 0, end % rows);
+    }
+    // One side of each tile is strided. A stride with many factors of two
+    // maps the tile's rows to a few cache sets and thrashes (129 × 512 read
+    // across its 512 columns ran 1.5× slower than written across its 129
+    // rows), so stride the side with fewer; on a tie, write contiguously.
+    let write_runs = cols.trailing_zeros() <= rows.trailing_zeros();
+    for j0 in (j_lo..j_hi).step_by(TILE) {
+        let j1 = (j0 + TILE).min(j_hi);
+        for i0 in (0..rows).step_by(TILE) {
+            let i1 = (i0 + TILE).min(rows);
+            if write_runs {
+                for j in j0..j1 {
+                    let out = &mut dst[j * rows + i0 - o..j * rows + i1 - o];
+                    for (d, i) in out.iter_mut().zip(i0..i1) {
+                        d.write(f(src[i * cols + j]));
+                    }
+                }
+            } else {
+                for i in i0..i1 {
+                    let row = &src[i * cols + j0..i * cols + j1];
+                    for (j, &x) in (j0..j1).zip(row) {
+                        dst[j * rows + i - o].write(f(x));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// `v[start..start+n]` copied in parallel, or `None` when short.
 pub(crate) fn par_vector_copy(v: &rustlab_core::CVector, start: usize, n: usize) -> Option<rustlab_core::CVector> {
     if n < PAR_MIN_LEN {
@@ -423,13 +543,13 @@ mod tests {
     use ndarray::{Array1, Array2};
 
     fn vec_of(xs: &[(f64, f64)]) -> Value {
-        Value::Vector(Array1::from_iter(xs.iter().map(|&(r, i)| C64::new(r, i))))
+        Value::Vector(Array1::from_iter(xs.iter().map(|&(r, i)| C64::new(r, i))).into())
     }
 
     fn mat_of(rows: usize, cols: usize, xs: &[(f64, f64)]) -> Value {
         Value::Matrix(
             Array2::from_shape_vec((rows, cols), xs.iter().map(|&(r, i)| C64::new(r, i)).collect())
-                .unwrap(),
+                .unwrap().into(),
         )
     }
 
@@ -450,18 +570,34 @@ mod tests {
         std::mem::discriminant(a) == std::mem::discriminant(b)
     }
 
-    /// Every operand mix (borrowed / owned on each side) must give exactly
-    /// what `Value::binop` gives.
+    /// A copy of `v` with its own buffer, so an owned operand made from it
+    /// is unique and gets written in place. (`v.clone()` shares the buffer.)
+    fn fresh(v: &Value) -> Value {
+        match v {
+            Value::Vector(a) => Value::Vector(Shared::new((**a).clone())),
+            Value::Matrix(m) => Value::Matrix(Shared::new((**m).clone())),
+            other => other.clone(),
+        }
+    }
+
+    /// Every operand mix (borrowed, owned and unique, owned but sharing the
+    /// buffer of `l` / `r`, on each side) must give exactly what
+    /// `Value::binop` gives, and must leave `l` and `r` unchanged.
+    fn side(v: &Value, k: usize) -> Operand<'_> {
+        match k {
+            0 => Operand::Borrowed(v),
+            1 => Operand::Owned(fresh(v)),
+            _ => Operand::Owned(v.clone()),
+        }
+    }
+
     fn check(op: BinOp, l: &Value, r: &Value) {
-        let want = Value::binop(op, l.clone(), r.clone());
-        let combos: [(Operand, Operand); 4] = [
-            (Operand::Borrowed(l), Operand::Borrowed(r)),
-            (Operand::Owned(l.clone()), Operand::Borrowed(r)),
-            (Operand::Borrowed(l), Operand::Owned(r.clone())),
-            (Operand::Owned(l.clone()), Operand::Owned(r.clone())),
-        ];
-        for (a, b) in combos {
-            let got = binop(op, a, b);
+        let want = Value::binop(op, fresh(l), fresh(r));
+        let (l_bits, r_bits) = (bits(l), bits(r));
+        for (i, j) in (0..3).flat_map(|i| (0..3).map(move |j| (i, j))) {
+            let got = binop(op, side(l, i), side(r, j));
+            assert_eq!(bits(l), l_bits, "{op:?} wrote into a shared left operand");
+            assert_eq!(bits(r), r_bits, "{op:?} wrote into a shared right operand");
             match (&want, &got) {
                 (Ok(w), Ok(g)) => {
                     assert!(same_kind(w, g), "{op:?}: kind {w:?} vs {g:?}");
@@ -579,7 +715,7 @@ mod tests {
     fn non_contiguous_operands_fall_back_to_binop() {
         use ndarray::ShapeBuilder;
         let data: Vec<C64> = (0..6).map(|k| C64::new(k as f64 - 2.5, 0.0)).collect();
-        let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap());
+        let fortran = Value::Matrix(Array2::from_shape_vec((2, 3).f(), data).unwrap().into());
         assert!(!is_contiguous(&fortran));
         let row = mat_of(2, 3, &[(1.0, 0.0), (-2.0, 0.0), (3.0, 0.0), (0.5, 0.0), (-1.0, 0.0), (2.0, 0.0)]);
         for op in OPS {
@@ -601,6 +737,33 @@ mod tests {
         match out {
             Value::Vector(a) => assert_eq!(a.as_ptr(), ptr, "result should reuse the temporary"),
             _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn shared_owned_operand_is_not_written() {
+        let v = vec_of(&[(1.0, 0.0), (2.0, 0.0)]);
+        let out = binop(BinOp::Mul, Operand::Owned(v.clone()), Operand::Owned(Value::Scalar(3.0))).unwrap();
+        assert_eq!(bits(&v), bits(&vec_of(&[(1.0, 0.0), (2.0, 0.0)])));
+        assert_eq!(bits(&out), bits(&vec_of(&[(3.0, 0.0), (6.0, 0.0)])));
+    }
+
+    #[test]
+    fn par_transpose_matches_the_definition() {
+        // Serial, and parallel with output rows split across chunks.
+        for (rows, cols) in [(1, 1), (3, 5), (33, 65), (7, PAR_MIN_LEN / 7 + 3), (PAR_MIN_LEN / 5 + 1, 5)] {
+            let src: Vec<C64> = (0..rows * cols).map(|k| C64::new(k as f64, 0.5 - k as f64)).collect();
+            for conj in [false, true] {
+                let got = par_transpose(&src, rows, cols, conj);
+                assert_eq!(got.len(), rows * cols);
+                for i in 0..rows {
+                    for j in 0..cols {
+                        let x = src[i * cols + j];
+                        let want = if conj { x.conj() } else { x };
+                        assert_eq!(got[j * rows + i], want, "{rows}×{cols} ({i}, {j}) conj={conj}");
+                    }
+                }
+            }
         }
     }
 }

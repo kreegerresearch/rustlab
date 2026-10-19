@@ -9,6 +9,16 @@ use toml::Value as Toml;
 const TENSOR3_SHAPE_KEY: &str = "__tensor3_shape";
 const TENSOR3_DATA_KEY: &str = "__tensor3_data";
 
+/// Reserved field names for a complex value. TOML has no complex numbers, so
+/// a value with any nonzero imaginary part is written as a table of its real
+/// and imaginary parts, each encoded as a real value of the same shape.
+const COMPLEX_RE_KEY: &str = "__complex_re";
+const COMPLEX_IM_KEY: &str = "__complex_im";
+
+fn is_reserved_key(key: &str) -> bool {
+    [TENSOR3_SHAPE_KEY, TENSOR3_DATA_KEY, COMPLEX_RE_KEY, COMPLEX_IM_KEY].contains(&key)
+}
+
 // ─── Save ────────────────────────────────────────────────────────────────────
 
 pub fn save_toml(path: &str, value: &Value) -> Result<(), String> {
@@ -39,6 +49,12 @@ pub fn load_toml(path: &str) -> Result<Value, String> {
 // ─── Value → toml::Value ─────────────────────────────────────────────────────
 
 fn value_to_toml(v: &Value) -> Result<Toml, String> {
+    if let Some((re, im)) = split_complex(v) {
+        let mut table = toml::map::Map::new();
+        table.insert(COMPLEX_RE_KEY.to_string(), value_to_toml(&re)?);
+        table.insert(COMPLEX_IM_KEY.to_string(), value_to_toml(&im)?);
+        return Ok(Toml::Table(table));
+    }
     match v {
         Value::Scalar(f) => {
             // Write as integer if it's a whole number in i64 range
@@ -48,6 +64,8 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
                 Ok(Toml::Float(*f))
             }
         }
+        // `split_complex` took any nonzero imaginary part, so this one is real.
+        Value::Complex(c) => Ok(scalar_to_toml(c.re)),
         Value::Bool(b) => Ok(Toml::Boolean(*b)),
         // Integers serialize as TOML integers (i64 range) — the class is not
         // preserved (TOML has one integer type), so they load back as doubles.
@@ -72,9 +90,6 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
         Value::Vector(cv) => {
             let mut arr = Vec::with_capacity(cv.len());
             for &c in cv.iter() {
-                if c.im.abs() > 1e-15 {
-                    return Err("save: cannot serialize complex values to TOML".into());
-                }
                 arr.push(scalar_to_toml(c.re));
             }
             Ok(Toml::Array(arr))
@@ -85,11 +100,7 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             for r in 0..rows {
                 let mut row = Vec::with_capacity(cols);
                 for c in 0..cols {
-                    let v = cm[[r, c]];
-                    if v.im.abs() > 1e-15 {
-                        return Err("save: cannot serialize complex values to TOML".into());
-                    }
-                    row.push(scalar_to_toml(v.re));
+                    row.push(scalar_to_toml(cm[[r, c]].re));
                 }
                 arr.push(Toml::Array(row));
             }
@@ -105,13 +116,7 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             for k in 0..p {
                 for j in 0..n {
                     for i in 0..m {
-                        let v = t[[i, j, k]];
-                        if v.im.abs() > 1e-15 {
-                            return Err(
-                                "save: cannot serialize complex tensor3 values to TOML".into(),
-                            );
-                        }
-                        flat.push(scalar_to_toml(v.re));
+                        flat.push(scalar_to_toml(t[[i, j, k]].re));
                     }
                 }
             }
@@ -134,10 +139,11 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             keys.sort();
             for key in keys {
                 // A struct carrying a reserved key would be rebuilt as a
-                // Tensor3 (or shadow one) on load — refuse the lossy save.
-                if key == TENSOR3_SHAPE_KEY || key == TENSOR3_DATA_KEY {
+                // Tensor3 or complex value (or shadow one) on load — refuse
+                // the lossy save.
+                if is_reserved_key(key) {
                     return Err(format!(
-                        "save: struct field name '{key}' is reserved for the TOML Tensor3 encoding"
+                        "save: struct field name '{key}' is reserved for the TOML Tensor3 / complex encoding"
                     ));
                 }
                 let val = &fields[key];
@@ -156,6 +162,46 @@ fn value_to_toml(v: &Value) -> Result<Toml, String> {
             "save: cannot serialize {} to TOML",
             other.type_name()
         )),
+    }
+}
+
+/// The real and imaginary parts of a complex value or array, each as a real
+/// value of the same shape. `None` when every imaginary part is exactly zero:
+/// that value is real and is written as plain numbers.
+fn split_complex(v: &Value) -> Option<(Value, Value)> {
+    let re = |c: &Complex<f64>| Complex::new(c.re, 0.0);
+    let im = |c: &Complex<f64>| Complex::new(c.im, 0.0);
+    match v {
+        Value::Complex(c) if c.im != 0.0 => Some((Value::Scalar(c.re), Value::Scalar(c.im))),
+        Value::Vector(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Vector(a.map(re).into()), Value::Vector(a.map(im).into())))
+        }
+        Value::Matrix(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Matrix(a.map(re).into()), Value::Matrix(a.map(im).into())))
+        }
+        Value::Tensor3(a) if a.iter().any(|c| c.im != 0.0) => {
+            Some((Value::Tensor3(a.map(re).into()), Value::Tensor3(a.map(im).into())))
+        }
+        _ => None,
+    }
+}
+
+/// Rebuild a complex value from its saved real and imaginary parts. `None`
+/// when the parts are not numbers of the same shape.
+fn join_complex(re: Value, im: Value) -> Option<Value> {
+    let join = |r: &Complex<f64>, i: &Complex<f64>| Complex::new(r.re, i.re);
+    match (re, im) {
+        (Value::Scalar(r), Value::Scalar(i)) => Some(Value::Complex(Complex::new(r, i))),
+        (Value::Vector(r), Value::Vector(i)) if r.len() == i.len() => {
+            Some(Value::Vector(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
+        (Value::Matrix(r), Value::Matrix(i)) if r.dim() == i.dim() => {
+            Some(Value::Matrix(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
+        (Value::Tensor3(r), Value::Tensor3(i)) if r.dim() == i.dim() => {
+            Some(Value::Tensor3(ndarray::Zip::from(&*r).and(&*i).map_collect(join).into()))
+        }
+        _ => None,
     }
 }
 
@@ -186,6 +232,14 @@ fn toml_to_value(tv: Toml) -> Value {
             // exactly the two reserved keys. A table with extra keys is a
             // user struct that happens to contain the reserved names — it
             // must load as a struct, not silently drop fields into a tensor.
+            if map.len() == 2 && map.contains_key(COMPLEX_RE_KEY) && map.contains_key(COMPLEX_IM_KEY)
+            {
+                let re = toml_to_value(map[COMPLEX_RE_KEY].clone());
+                let im = toml_to_value(map[COMPLEX_IM_KEY].clone());
+                if let Some(c) = join_complex(re, im) {
+                    return c;
+                }
+            }
             if map.len() == 2
                 && map.contains_key(TENSOR3_SHAPE_KEY)
                 && map.contains_key(TENSOR3_DATA_KEY)
@@ -245,7 +299,7 @@ fn tensor3_from_table(map: &toml::map::Map<String, Toml>) -> Option<Value> {
             }
         }
     }
-    Some(Value::Tensor3(t))
+    Some(Value::Tensor3(t.into()))
 }
 
 fn toml_num_as_usize(v: &Toml) -> Option<usize> {
@@ -258,7 +312,7 @@ fn toml_num_as_usize(v: &Toml) -> Option<usize> {
 
 fn array_to_value(arr: Vec<Toml>) -> Value {
     if arr.is_empty() {
-        return Value::Vector(Array1::zeros(0));
+        return Value::Vector(Array1::zeros(0).into());
     }
 
     // Check if all elements are numeric (Integer or Float)
@@ -278,7 +332,7 @@ fn array_to_value(arr: Vec<Toml>) -> Value {
                 })
                 .collect(),
         );
-        return Value::Vector(cvec);
+        return Value::Vector(cvec.into());
     }
 
     // Array of equal-length, all-numeric sub-arrays → Matrix (one per row).
@@ -315,7 +369,7 @@ fn array_to_value(arr: Vec<Toml>) -> Value {
                 }
             }
             if let Ok(mat) = ndarray::Array2::from_shape_vec((nrows, ncols), data) {
-                return Value::Matrix(mat);
+                return Value::Matrix(mat.into());
             }
         }
     }

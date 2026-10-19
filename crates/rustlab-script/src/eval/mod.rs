@@ -5,6 +5,8 @@ pub mod table;
 pub mod parmap;
 pub mod profile;
 pub mod rng;
+pub mod fast_hash;
+pub mod shared;
 pub mod sparam_analysis;
 pub mod sparam_conv;
 pub mod toml_io;
@@ -14,6 +16,7 @@ pub mod value;
 use crate::ast::{BinOp, CacheStmt, Expr, Stmt, StmtKind};
 use crate::cache_registry::CacheRegistry;
 use crate::error::ScriptError;
+use shared::Shared;
 pub use builtins::BuiltinRegistry;
 use ndarray::{Array1, Array2};
 use num_complex::Complex;
@@ -39,7 +42,7 @@ struct UserFn {
 
 #[derive(Clone)]
 pub struct Evaluator {
-    env: HashMap<String, Value>,
+    env: fast_hash::FxHashMap<String, Value>,
     builtins: BuiltinRegistry,
     user_fns: HashMap<String, UserFn>,
     /// True while executing a user-defined function body — suppresses auto-print of assignments.
@@ -135,7 +138,7 @@ impl Evaluator {
     }
 
     pub fn new() -> Self {
-        let mut env = HashMap::new();
+        let mut env = fast_hash::FxHashMap::default();
         // Predefined constants: i and j both equal Complex(0, 1)
         env.insert(
             "j".to_string(),
@@ -256,7 +259,7 @@ impl Evaluator {
 
     /// Set a variable in the environment.
     pub fn set(&mut self, name: &str, value: Value) {
-        self.env.insert(name.to_string(), value);
+        self.set_env(name, value);
     }
 
     /// Remove a variable from the environment.
@@ -412,11 +415,11 @@ impl Evaluator {
                 }
                 _ => unreachable!(),
             };
-            self.env.insert("end".to_string(), Value::Scalar(m as f64));
+            self.set_env("end", Value::Scalar(m as f64));
             let iv = self.eval_expr(&indices[0])?;
-            self.env.insert("end".to_string(), Value::Scalar(n as f64));
+            self.set_env("end", Value::Scalar(n as f64));
             let jv = self.eval_expr(&indices[1])?;
-            self.env.insert("end".to_string(), Value::Scalar(p as f64));
+            self.set_env("end", Value::Scalar(p as f64));
             let kv = self.eval_expr(&indices[2])?;
             self.env.remove("end");
             vec![iv, jv, kv]
@@ -522,6 +525,7 @@ impl Evaluator {
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::Vector(v)) => {
+                        let v = Shared::make_mut(v);
                         for (k, &p) in positions.iter().enumerate() {
                             v[p] = src[k];
                         }
@@ -588,6 +592,7 @@ impl Evaluator {
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::Matrix(m)) => {
+                        let m = Shared::make_mut(m);
                         if idx > m.nrows() {
                             return Err(ScriptError::runtime(format!(
                                 "index assignment: row {} out of bounds for {}×{} matrix",
@@ -639,6 +644,7 @@ impl Evaluator {
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::Matrix(m)) => {
+                        let m = Shared::make_mut(m);
                         let nr = m.nrows();
                         let nc = m.ncols();
                         if nr == 1 {
@@ -647,7 +653,7 @@ impl Evaluator {
                                 for c in 0..nc {
                                     new_m[[0, c]] = m[[0, c]];
                                 }
-                                *m = new_m;
+                                *m = new_m.into();
                             }
                             m[[0, idx - 1]] = assign_val;
                         } else if nc == 1 {
@@ -656,7 +662,7 @@ impl Evaluator {
                                 for r in 0..nr {
                                     new_m[[r, 0]] = m[[r, 0]];
                                 }
-                                *m = new_m;
+                                *m = new_m.into();
                             }
                             m[[idx - 1, 0]] = assign_val;
                         } else {
@@ -703,7 +709,7 @@ impl Evaluator {
                             for (i, c) in v.iter().enumerate() {
                                 new_vec[i] = *c;
                             }
-                            *v = Array1::from_vec(new_vec);
+                            *v = Array1::from_vec(new_vec).into();
                         }
                         v
                     }
@@ -711,14 +717,14 @@ impl Evaluator {
                         // Create new vector of length idx, filled with zeros
                         let new_vec = vec![Complex::new(0.0, 0.0); idx];
                         self.env
-                            .insert(name.clone(), Value::Vector(Array1::from_vec(new_vec)));
+                            .insert(name.clone(), Value::Vector(Array1::from_vec(new_vec).into()));
                         match self.env.get_mut(name.as_str()) {
                             Some(Value::Vector(v)) => v,
                             _ => unreachable!(),
                         }
                     }
                 };
-                vec[idx - 1] = assign_val;
+                Shared::make_mut(vec)[idx - 1] = assign_val;
                 if !suppress && self.echo_enabled() {
                     output::script_println(&format!(
                         "{}({}) = {}",
@@ -762,6 +768,7 @@ impl Evaluator {
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::Matrix(m)) => {
+                        let m = Shared::make_mut(m);
                         if row > m.nrows() || col > m.ncols() {
                             return Err(ScriptError::runtime(format!(
                                 "index assignment: ({},{}) out of bounds for {}×{} matrix",
@@ -824,6 +831,17 @@ impl Evaluator {
                 let cols = Value::resolve_index_dim_public(&idx_vals[1], nc)
                     .map_err(ScriptError::runtime)?;
                 let n_target = rows.len() * cols.len();
+                if self.region_write_runs(name, &rows, &cols, &val) {
+                    if !suppress && self.echo_enabled() {
+                        output::script_println(&format!(
+                            "{}(...) = (region {}×{} updated)",
+                            name,
+                            rows.len(),
+                            cols.len()
+                        ));
+                    }
+                    return Ok(());
+                }
                 // Build the (rows.len(), cols.len()) source data.
                 let src: Vec<Complex<f64>> = match &val {
                     Value::Scalar(n) => vec![Complex::new(*n, 0.0); n_target],
@@ -875,6 +893,7 @@ impl Evaluator {
                 };
                 match self.env.get_mut(name.as_str()) {
                     Some(Value::Matrix(m)) => {
+                        let m = Shared::make_mut(m);
                         let mut k = 0usize;
                         for &r in &rows {
                             for &c in &cols {
@@ -905,6 +924,52 @@ impl Evaluator {
         Ok(())
     }
 
+    /// Bind `name` to `v`, overwriting an existing binding in place so a
+    /// reassignment (a loop variable, `acc = acc + k`, the `end` binding)
+    /// does not allocate a new key.
+    #[inline]
+    fn set_env(&mut self, name: &str, v: Value) {
+        match self.env.get_mut(name) {
+            Some(slot) => *slot = v,
+            None => {
+                self.env.insert(name.to_owned(), v);
+            }
+        }
+    }
+
+    /// `M(rows, cols) = val` when `cols` is one consecutive run, `M` is
+    /// row-major and `val` already has the region's shape (a scalar, or a
+    /// vector / row-major matrix of `rows.len() × cols.len()` elements in
+    /// row order): each target row is one slice copy or fill. Returns false
+    /// without writing otherwise, for the general path (which also reports
+    /// shape errors).
+    fn region_write_runs(&mut self, name: &str, rows: &[usize], cols: &[usize], val: &Value) -> bool {
+        let Some((c0, nc)) = Value::run_of(cols) else { return false };
+        let n = rows.len() * nc;
+        let (fill, src) = match val {
+            Value::Scalar(x) => (Some(Complex::new(*x, 0.0)), None),
+            Value::Complex(c) => (Some(*c), None),
+            Value::Vector(v) if v.len() == n => (None, v.as_slice()),
+            Value::Matrix(m) if m.dim() == (rows.len(), nc) => (None, m.as_slice()),
+            _ => return false,
+        };
+        if fill.is_none() && src.is_none() {
+            return false;
+        }
+        let Some(Value::Matrix(m)) = self.env.get_mut(name) else { return false };
+        let stride = m.ncols();
+        let Some(dst) = Shared::make_mut(m).as_slice_mut() else { return false };
+        for (i, &r) in rows.iter().enumerate() {
+            let row = &mut dst[r * stride + c0..r * stride + c0 + nc];
+            match (fill, src) {
+                (Some(x), _) => row.fill(x),
+                (None, Some(s)) => row.copy_from_slice(&s[i * nc..(i + 1) * nc]),
+                (None, None) => unreachable!(),
+            }
+        }
+        true
+    }
+
     fn exec_stmt_kind(&mut self, stmt: &StmtKind) -> Result<(), ScriptError> {
         match stmt {
             StmtKind::Assign {
@@ -921,7 +986,7 @@ impl Evaluator {
                         output::script_println(&format!("{} = {}", name, display));
                     }
                 }
-                self.env.insert(name.clone(), val);
+                self.set_env(name, val);
             }
             StmtKind::FunctionDef {
                 name,
@@ -996,7 +1061,7 @@ impl Evaluator {
                         // Auto-create a new struct when assigning to unknown.field
                         let mut fields = HashMap::new();
                         fields.insert(field.clone(), val);
-                        self.env.insert(object.clone(), Value::Struct(fields));
+                        self.set_env(object, Value::Struct(fields));
                     }
                 }
             }
@@ -1264,7 +1329,7 @@ impl Evaluator {
                                     output::script_println(&format!("{} = {}", name, display));
                                 }
                             }
-                            self.env.insert(name.clone(), v);
+                            self.set_env(name, v);
                         }
                     }
                     single => {
@@ -1285,7 +1350,7 @@ impl Evaluator {
                                     output::script_println(&format!("{} = {}", names[0], single));
                                 }
                             }
-                            self.env.insert(names[0].clone(), single);
+                            self.set_env(&names[0], single);
                         }
                     }
                 }
@@ -1326,7 +1391,7 @@ impl Evaluator {
                     } else {
                         Value::Complex(elem)
                     };
-                    self.env.insert(var.clone(), val);
+                    self.set_env(var, val);
                     for s in body {
                         self.exec_stmt(s)?;
                     }
@@ -1516,6 +1581,7 @@ impl Evaluator {
 
         // Write back into the stored Tensor3.
         if let Some(Value::Tensor3(t)) = self.env.get_mut(name) {
+            let t = Shared::make_mut(t);
             let mut idx = 0usize;
             for &r in &rows {
                 for &c in &cols {
@@ -1567,7 +1633,7 @@ impl Evaluator {
                     .filter(|i| to_remove.binary_search(i).is_err())
                     .map(|i| v[i])
                     .collect();
-                Value::Vector(Array1::from_vec(kept))
+                Value::Vector(Array1::from_vec(kept).into())
             }
 
             // ── Matrix row/column deletion (one axis Value::All, other a list) ──
@@ -1587,7 +1653,7 @@ impl Evaluator {
 
                 if row_all && col_all {
                     // M(:, :) = [] → empty matrix
-                    Value::Matrix(Array2::zeros((0, 0)))
+                    Value::Matrix(Array2::zeros((0, 0)).into())
                 } else if col_all {
                     // M(rows, :) = [] → drop the listed rows
                     let mut to_remove =
@@ -1600,7 +1666,7 @@ impl Evaluator {
                     let new_nrows = kept_rows.len();
                     let new =
                         Array2::from_shape_fn((new_nrows, ncols), |(i, j)| m[[kept_rows[i], j]]);
-                    Value::Matrix(new)
+                    Value::Matrix(new.into())
                 } else if row_all {
                     // M(:, cols) = [] → drop the listed columns
                     let mut to_remove =
@@ -1613,7 +1679,7 @@ impl Evaluator {
                     let new_ncols = kept_cols.len();
                     let new =
                         Array2::from_shape_fn((nrows, new_ncols), |(i, j)| m[[i, kept_cols[j]]]);
-                    Value::Matrix(new)
+                    Value::Matrix(new.into())
                 } else {
                     return Err(ScriptError::runtime(
                         "[]-deletion on a matrix: one of the two indices must be `:` \
@@ -1655,7 +1721,7 @@ impl Evaluator {
                 output::script_println(&format!("{} = {}", name, display));
             }
         }
-        self.env.insert(name.to_string(), new_val);
+        self.set_env(name, new_val);
         Ok(())
     }
 
@@ -2003,7 +2069,7 @@ impl Evaluator {
                         n += 1;
                     }
                     vals.extend((0..n).map(|k| Complex::new(s + k as f64 * inc, 0.0)));
-                    return Ok(Value::Vector(Array1::from_vec(vals)));
+                    return Ok(Value::Vector(Array1::from_vec(vals).into()));
                 }
                 if inc > 0.0 {
                     while cur <= e + eps {
@@ -2016,7 +2082,7 @@ impl Evaluator {
                         cur += inc;
                     }
                 }
-                Ok(Value::Vector(Array1::from_vec(vals)))
+                Ok(Value::Vector(Array1::from_vec(vals).into()))
             }
             Expr::Transpose(inner) => self.eval_transpose(inner, true),
             Expr::NonConjTranspose(inner) => self.eval_transpose(inner, false),
@@ -2122,10 +2188,10 @@ impl Evaluator {
                         ScriptError::runtime(format!("struct has no field '{}'", field))
                     }),
                     Value::StateSpace { a, b, c, d } => match field.as_str() {
-                        "A" => Ok(Value::Matrix(a)),
-                        "B" => Ok(Value::Matrix(b)),
-                        "C" => Ok(Value::Matrix(c)),
-                        "D" => Ok(Value::Matrix(d)),
+                        "A" => Ok(Value::Matrix(a.into())),
+                        "B" => Ok(Value::Matrix(b.into())),
+                        "C" => Ok(Value::Matrix(c.into())),
+                        "D" => Ok(Value::Matrix(d.into())),
                         other => Err(ScriptError::runtime(format!(
                             "ss has no field '{}'; valid fields are A, B, C, D",
                             other
@@ -2193,7 +2259,7 @@ impl Evaluator {
 
         // Determine output shape from first result
         match results.first() {
-            None => Ok(Value::Vector(Array1::from_vec(vec![]))),
+            None => Ok(Value::Vector(Array1::from_vec(vec![]).into())),
             Some(Value::Scalar(_)) | Some(Value::Complex(_)) => {
                 // All must be scalar/complex → assemble into a vector
                 let mut out = Vec::with_capacity(results.len());
@@ -2210,7 +2276,7 @@ impl Evaluator {
                         }
                     }
                 }
-                Ok(Value::Vector(Array1::from_vec(out)))
+                Ok(Value::Vector(Array1::from_vec(out).into()))
             }
             Some(Value::Vector(first_v)) => {
                 // All must be vectors of the same length → assemble into a matrix (rows)
@@ -2239,7 +2305,7 @@ impl Evaluator {
                 }
                 let m = ndarray::Array2::from_shape_vec((nrows, row_len), flat)
                     .map_err(|e| ScriptError::runtime(e.to_string()))?;
-                Ok(Value::Matrix(m))
+                Ok(Value::Matrix(m.into()))
             }
             Some(other) => Err(ScriptError::runtime(format!(
                 "arrayfun: function returned unsupported type {}",
@@ -2341,7 +2407,7 @@ impl Evaluator {
                 )));
             }
             match self.env.get_mut(name) {
-                Some(Value::Matrix(m)) => grow_oned_matrix(m, needs),
+                Some(Value::Matrix(m)) => grow_oned_matrix(Shared::make_mut(m), needs),
                 _ => unreachable!(),
             }
         }
@@ -2349,6 +2415,7 @@ impl Evaluator {
         let src = rhs_for_linear_assign(val, n_target)?;
         match self.env.get_mut(name) {
             Some(Value::Matrix(m)) => {
+                let m = Shared::make_mut(m);
                 let nr = m.nrows();
                 for (k, &p) in positions.iter().enumerate() {
                     let col = p / nr.max(1);
@@ -2603,7 +2670,7 @@ impl Evaluator {
                 // column vector as Matrix nx×1
                 let col: ndarray::Array2<num_complex::Complex<f64>> =
                     Array2::from_shape_fn((nx, 1), |(i, _)| Complex::new(x_state[i], 0.0));
-                Value::Matrix(col)
+                Value::Matrix(col.into())
             };
             let t_arg = Value::Scalar(t_scalar);
             let out = ev.call_callable(func.clone(), vec![x_arg, t_arg])?;
@@ -2657,9 +2724,9 @@ impl Evaluator {
         }
         if nx == 1 {
             // 1-state system: return as a plain vector for convenience
-            Ok(Value::Vector(out_mat.row(0).to_owned()))
+            Ok(Value::Vector(out_mat.row(0).to_owned().into()))
         } else {
-            Ok(Value::Matrix(out_mat))
+            Ok(Value::Matrix(out_mat.into()))
         }
     }
 
@@ -2766,7 +2833,7 @@ impl Evaluator {
     /// Values that are referenced are cloned in full. There is no
     /// copy-on-write, so a lambda that mentions a large matrix copies
     /// that matrix once.
-    fn capture_lambda_env(&self, params: &[String], body: &Expr) -> HashMap<String, Value> {
+    fn capture_lambda_env(&self, params: &[String], body: &Expr) -> fast_hash::FxHashMap<String, Value> {
         let analysis = crate::free_vars::analyze_lambda(params, body);
         if analysis.dynamic_feval || self.captured_handle_is_feval(&analysis.names) {
             return self.env.clone();
@@ -2778,7 +2845,7 @@ impl Evaluator {
         // from the lambda. `true` / `false` ride along; they are the
         // same kind of constant and cost nothing next to a matrix.
         const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
-        let mut captured = HashMap::with_capacity(names.len() + CONSTS.len());
+        let mut captured = fast_hash::FxHashMap::with_capacity_and_hasher(names.len() + CONSTS.len(), Default::default());
         for name in names {
             if let Some(v) = self.env.get(&name) {
                 captured.insert(name, v.clone());
@@ -2818,7 +2885,7 @@ impl Evaluator {
         call_name: &str,
         params: &[String],
         body: &Expr,
-        captured_env: HashMap<String, Value>,
+        captured_env: fast_hash::FxHashMap<String, Value>,
         args: Vec<Value>,
     ) -> Result<Value, ScriptError> {
         if args.len() != params.len() {
@@ -2840,7 +2907,7 @@ impl Evaluator {
         let saved_in_fn = self.in_function;
         self.in_function = true;
         for (pname, val) in params.iter().zip(args) {
-            self.env.insert(pname.clone(), val);
+            self.set_env(pname, val);
         }
         let result = self.eval_expr(body);
         // Restore outer env
@@ -2971,7 +3038,7 @@ impl Evaluator {
         }
         // Bind parameters
         for (param, val) in func.params.iter().zip(args) {
-            self.env.insert(param.clone(), val);
+            self.set_env(param, val);
         }
         // Run body — EarlyReturn is not an error, just early exit
         let mut body_err: Option<ScriptError> = None;
@@ -3118,13 +3185,13 @@ impl Evaluator {
         // for the selection itself.
         let promoted: Option<Value> = match &self.env[name] {
             Value::Scalar(x) => {
-                Some(Value::Vector(Array1::from_elem(1, Complex::new(*x, 0.0))))
+                Some(Value::Vector(Array1::from_elem(1, Complex::new(*x, 0.0)).into()))
             }
-            Value::Complex(c) => Some(Value::Vector(Array1::from_elem(1, *c))),
+            Value::Complex(c) => Some(Value::Vector(Array1::from_elem(1, *c).into())),
             Value::Bool(b) => Some(Value::Vector(Array1::from_elem(
                 1,
                 Complex::new(if *b { 1.0 } else { 0.0 }, 0.0),
-            ))),
+            ).into())),
             // A scalar integer becomes a 1×1 integer array so the
             // indexing path (which handles IntArray) accepts it.
             Value::Int {
@@ -3145,11 +3212,11 @@ impl Evaluator {
         // For 3-argument tensor3 indexing, bind `end` per-dimension.
         let idx_vals: Vec<Value> = if args.len() == 3 {
             if let Some((m, n, p)) = shape.tensor {
-                self.env.insert("end".to_string(), Value::Scalar(m as f64));
+                self.set_env("end", Value::Scalar(m as f64));
                 let iv = self.eval_expr(&args[0])?;
-                self.env.insert("end".to_string(), Value::Scalar(n as f64));
+                self.set_env("end", Value::Scalar(n as f64));
                 let jv = self.eval_expr(&args[1])?;
-                self.env.insert("end".to_string(), Value::Scalar(p as f64));
+                self.set_env("end", Value::Scalar(p as f64));
                 let kv = self.eval_expr(&args[2])?;
                 self.env.remove("end");
                 vec![iv, jv, kv]
@@ -3213,7 +3280,9 @@ impl Evaluator {
     /// non-variable operands are evaluated first, then variables borrowed.
     #[inline(never)]
     fn eval_arith_binop(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
-        use elementwise::Operand;
+        if op == BinOp::Mul && (is_transpose_expr(lhs) || is_transpose_expr(rhs)) {
+            return self.eval_transposed_matmul(lhs, rhs);
+        }
         // Left to right, as before; a borrowed variable is only looked up.
         let l = self.binop_operand(lhs)?;
         let r = self.binop_operand(rhs)?;
@@ -3238,6 +3307,14 @@ impl Evaluator {
                 }
             }
         }
+        self.finish_binop(op, l, r)
+    }
+
+    /// The general part of [`eval_arith_binop`](Self::eval_arith_binop),
+    /// once both operands are evaluated.
+    fn finish_binop(&mut self, op: BinOp, l: PreOperand, r: PreOperand) -> Result<Value, ScriptError> {
+        use elementwise::Operand;
+        let frame_names = self.profiler.is_enabled();
         let result = match (l, r) {
             // Neither side is an array variable: the plain path (scalar
             // arithmetic in loops must not pay for the borrowing machinery).
@@ -3271,6 +3348,56 @@ impl Evaluator {
             }
         };
         result
+    }
+
+    /// `A' * B`, `A * B'` and `A' * B'` (and `.'`). When both operands are
+    /// matrices, the product is formed from a transposed view, so the
+    /// transpose is never written out: `matmul_conj` reads the view's
+    /// strides directly and applies `'`'s conjugation itself (a no-op for a
+    /// real operand). Anything else (vectors, or a dimension mismatch, which
+    /// then reports `binop`'s error) writes the transposes out and takes the
+    /// ordinary path.
+    #[inline(never)]
+    fn eval_transposed_matmul(&mut self, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
+        let l = self.matmul_side(lhs)?;
+        let r = self.matmul_side(rhs)?;
+        if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
+            if a.ncols() == b.nrows() {
+                let frame = self.profiler.enter_op("[matmul]");
+                let m = rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b);
+                self.profiler.exit_op(frame);
+                return Ok(Value::Matrix(m.into()));
+            }
+        }
+        let l = self.materialize_side(l)?;
+        let r = self.materialize_side(r)?;
+        self.finish_binop(BinOp::Mul, l, r)
+    }
+
+    /// An operand of a product: plain, or a transpose whose inner operand
+    /// is evaluated (or named, to borrow) but not yet transposed.
+    fn matmul_side<'e>(&mut self, e: &'e Expr) -> Result<MatmulSide<'e>, ScriptError> {
+        Ok(match e {
+            Expr::Transpose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: true },
+            Expr::NonConjTranspose(inner) => MatmulSide::T { inner: self.binop_operand(inner)?, conj: false },
+            _ => MatmulSide::Plain(self.binop_operand(e)?),
+        })
+    }
+
+    /// Write out a pending transpose, as `eval_transpose` would.
+    fn materialize_side<'e>(&mut self, side: MatmulSide<'e>) -> Result<PreOperand<'e>, ScriptError> {
+        let (inner, conj) = match side {
+            MatmulSide::Plain(p) => return Ok(p),
+            MatmulSide::T { inner, conj } => (inner, conj),
+        };
+        let frame = self.profiler.enter_op("[transpose]");
+        let v = match &inner {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &self.env[*name],
+        };
+        let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
+        self.profiler.exit_op(frame);
+        Ok(PreOperand::Owned(result.map_err(ScriptError::runtime)?))
     }
 
     /// Evaluate a binary-operator operand. A variable holding a dense array
@@ -4361,6 +4488,38 @@ impl IndexShape {
 enum PreOperand<'e> {
     Owned(Value),
     Var(&'e str),
+}
+
+/// One operand of a product, for [`Evaluator::eval_transposed_matmul`].
+enum MatmulSide<'e> {
+    Plain(PreOperand<'e>),
+    /// `inner'` (`conj`) or `inner.'`, not yet transposed.
+    T { inner: PreOperand<'e>, conj: bool },
+}
+
+impl MatmulSide<'_> {
+    /// The matrix this operand stands for, as a view plus whether its
+    /// elements are to be conjugated, when it is a matrix.
+    fn view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<(ndarray::ArrayView2<'a, C64>, bool)> {
+        let get = |p: &'a PreOperand| match p {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &env[*name],
+        };
+        match self {
+            MatmulSide::Plain(p) => match get(p) {
+                Value::Matrix(m) => Some((m.view(), false)),
+                _ => None,
+            },
+            MatmulSide::T { inner, conj } => match get(inner) {
+                Value::Matrix(m) => Some((m.t(), *conj)),
+                _ => None,
+            },
+        }
+    }
+}
+
+fn is_transpose_expr(e: &Expr) -> bool {
+    matches!(e, Expr::Transpose(_) | Expr::NonConjTranspose(_))
 }
 
 fn is_dense(v: &Value) -> bool {

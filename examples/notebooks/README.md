@@ -89,12 +89,14 @@ sidecar files. See `docs/notebooks.md` for the full design rationale.
    blocks for code; everything else is regular markdown.
 2. Optional YAML frontmatter sets the title and sort order on the
    generated index page:
+
    ```yaml
    ---
    title: My Analysis
    order: 5
    ---
    ```
+
 3. Run `make notebooks` to render and verify.
 4. Commit the source `.md` plus the regenerated `gallery/<name>.md`
    and any new files under `gallery/plots/<name>/`.

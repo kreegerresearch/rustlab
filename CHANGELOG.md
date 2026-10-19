@@ -6,6 +6,80 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.11
+
+Perf flywheel iteration 02 (requests from `rustlab_llm`,
+`perf/iterations/02-requests.md`). Plan: `dev/plans/perf_flywheel_iter02.md`.
+
+### Breaking / behavior changes
+- **`--profile=ops` no longer shows `[transpose]` rows for `A' * B`,
+  `A * B'` or `A' * B'` on matrices.** The product reads the transposed
+  operand directly, so no transpose is formed; the time is in `[matmul]`.
+  A transpose of a vector (`v' * M`) or a standalone `A'` still has its
+  row. Results are unchanged, bit for bit.
+- **Array division by a real number matches scalar division.** `./` (and
+  `/` by a scalar) on arrays ran complex division, `x·conj(y) / |y|²`,
+  even when `y` was real: about a third of `x ./ y` results differed from
+  `x / y` in the last digit, and `[1e200] ./ [1e200]` was `NaN` because
+  `|y|²` overflowed. A real divisor now divides each part directly, so
+  `x ./ y` equals `x / y` bit for bit, and `(a + bj) ./ y` is
+  `a/y + (b/y)j`. A complex divisor is unchanged. Results that depended
+  on the old last digit move by one rounding step.
+- **Negating a real value keeps it real.** `-v` left `-0.0` in every
+  imaginary part, so `angle(-[1, 2])` was `[-π, -π]` and the complex
+  branch of `sqrt`, `log` and `.^` put the result on the wrong side of the
+  cut (`sqrt(-[4, 1j])` started with `-2j`). Negation no longer makes a
+  negative zero, and `angle`, `.^` and the elementwise math builtins read a
+  zero imaginary part as real whatever its sign: `angle(-1)` is `π`.
+- **`save` keeps small imaginary parts.** NPY wrote real `<f8` data, and
+  CSV a real cell, whenever the imaginary part was below `1e-12`, dropping
+  it silently. Both now write real data only when the imaginary part is
+  exactly zero; real arrays still save as `<f8`. TOML has no complex
+  numbers and used to drop parts below `1e-15`, or refuse larger ones. A
+  complex scalar, vector, matrix or rank-3 tensor now saves as a table of
+  its parts (`__complex_re`, `__complex_im`, each the same shape as the
+  value) and loads back exactly. Real values are written as plain numbers,
+  as before. Those two field names are reserved, like the `Tensor3` ones.
+
+### Fixed
+- **`angle` accepts matrices and rank-3 tensors.** It returned an
+  "unsupported type" error for anything but a scalar or vector. It now works
+  element-wise and returns a real array of the same shape.
+
+### Performance
+- **Products with a transposed matrix operand skip the transpose.**
+  `X * W'` and `H' * H` hand the matrix multiply a transposed view
+  (conjugating inside the product for `'` on complex data), so no copy of
+  the operand is made.
+- **Arrays are copy-on-write.** A vector, matrix or rank-3 tensor is shared,
+  not copied, when it is assigned to another name, passed to a function or
+  builtin, read from a struct field, captured by a lambda, or handed to a
+  `parmap` task. The first write to one of the names copies it, so values
+  behave exactly as before. Passing a 13 MB struct to a user function went
+  from 0.21 ms to 2 µs; the `rustlab_llm` training step is about 45 %
+  faster.
+- **`reshape` and one-row `[…]` are single passes.** `reshape` of a vector
+  or matrix is one tiled transpose (parallel when large), and none when the
+  order does not change: a vector to a vector or to the same shape is
+  shared. `[a, b, …]` with one row of scalars, vectors and 1×N matrices is
+  sized once and filled in parallel; `[v]` shares `v`. Results are
+  unchanged. On 811 k elements, `reshape` went from 3.7 to 0.14 ms, a
+  14-piece flatten from 2.4 to 0.4 ms, and the unflatten from 4.0 to
+  1.5 ms. Large transposes (`A'`) are parallel too.
+- **Less interpreter work per statement.** Region writes such as
+  `M(r1:r2, :) = A` copy one row segment at a time when the columns are a
+  consecutive run (`prim.region_write_128x384` 0.076 → 0.009 ms). The
+  variable table uses a small built-in hash in place of SipHash, and a
+  reassignment, the loop variable and the `end` binding overwrite their
+  entry instead of allocating a new name (`acc = acc + k` loop of 100 k
+  iterations 12.7 → 7.9 ms). Element-wise math builtins (`tanh`, `exp`,
+  `gelu`, `gelu_grad`, `sin`, …) run in parallel from 16,384 elements.
+  Results are unchanged, bit for bit. The `rustlab_llm` forward pass went
+  from 12.5 to 9.5 ms and the backward pass from 17.5 to 14.7 ms.
+- **Real matrix products have less overhead around the multiply.** The
+  realness check and the conversion to real values are one pass, which is
+  noticeable at the 100–500 element sizes typical of scripts.
+
 ## 0.3.10
 
 Perf flywheel iteration 01 (requests from `rustlab_llm`,

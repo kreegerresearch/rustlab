@@ -14,7 +14,8 @@
 //! imaginary part.
 
 use crate::types::{CMatrix, C64};
-use ndarray::{Array2, ArrayView2};
+use ndarray::linalg::general_mat_mul;
+use ndarray::{Array2, ArrayView2, ShapeBuilder};
 
 /// True when every element has an imaginary part of exactly zero
 /// (`-0.0` counts as zero; NaN does not).
@@ -26,14 +27,62 @@ pub fn is_real(a: &ArrayView2<C64>) -> bool {
 /// are real, otherwise the complex one. The caller checks that the inner
 /// dimensions agree.
 pub fn matmul(a: &ArrayView2<C64>, b: &ArrayView2<C64>) -> CMatrix {
+    matmul_conj(a, false, b, false)
+}
+
+/// `op(a) · op(b)`, where `op` conjugates the elements when its flag is set.
+///
+/// The operands may have any strides: the evaluator passes `A'` as a
+/// transposed view with `conj_a`, so the transpose is never written out.
+/// Conjugation does nothing to a real operand. The result is always
+/// row-major (`dot` would follow the operands' memory order, and the
+/// elementwise fast paths reject a column-major result).
+pub fn matmul_conj(a: &ArrayView2<C64>, conj_a: bool, b: &ArrayView2<C64>, conj_b: bool) -> CMatrix {
     debug_assert_eq!(a.ncols(), b.nrows());
-    if is_real(a) && is_real(b) {
-        let ar: Array2<f64> = a.mapv(|z| z.re);
-        let br: Array2<f64> = b.mapv(|z| z.re);
-        ar.dot(&br).mapv(|x| C64::new(x, 0.0))
-    } else {
-        a.dot(b)
+    let dim = (a.nrows(), b.ncols());
+    if let Some(ar) = real_parts(a) {
+        if let Some(br) = real_parts(b) {
+            let mut c = Array2::<f64>::zeros(dim);
+            general_mat_mul(1.0, &ar, &br, 0.0, &mut c);
+            return c.mapv(|x| C64::new(x, 0.0));
+        }
     }
+    let conj = |m: &ArrayView2<C64>, on: bool| on.then(|| m.mapv(|z| z.conj()));
+    let (ac, bc) = (conj(a, conj_a), conj(b, conj_b));
+    let a = ac.as_ref().map_or(a.view(), |m| m.view());
+    let b = bc.as_ref().map_or(b.view(), |m| m.view());
+    let mut c = Array2::<C64>::zeros(dim);
+    general_mat_mul(C64::new(1.0, 0.0), &a, &b, C64::new(0.0, 0.0), &mut c);
+    c
+}
+
+/// The real parts of `a` when every imaginary part is zero (the same test
+/// as [`is_real`]), `None` otherwise. One pass over the elements in memory
+/// order, so a transposed view costs the same as the matrix itself; the
+/// result keeps that memory order.
+fn real_parts(a: &ArrayView2<C64>) -> Option<Array2<f64>> {
+    let dim = a.dim();
+    let layout_c = a.is_standard_layout();
+    let layout_f = !layout_c && a.t().is_standard_layout();
+    let slice = if layout_c || layout_f { a.as_slice_memory_order() } else { None };
+    let Some(src) = slice else {
+        return is_real(a).then(|| a.mapv(|z| z.re));
+    };
+    // No early exit, so the loop vectorizes; a complex operand is found
+    // after one pass either way.
+    let mut nonzero_im = false;
+    let re: Vec<f64> = src
+        .iter()
+        .map(|z| {
+            nonzero_im |= z.im != 0.0;
+            z.re
+        })
+        .collect();
+    if nonzero_im {
+        return None;
+    }
+    let shape = if layout_c { dim.into_shape_with_order() } else { dim.f() };
+    Some(Array2::from_shape_vec(shape, re).expect("length matches the shape"))
 }
 
 #[cfg(test)]
@@ -93,6 +142,39 @@ mod tests {
         let b = filled(9, 3, 7, false);
         let c = matmul(&a.t(), &b.view());
         assert_close(&c, &naive(&a.t().to_owned(), &b), 1e-12);
+    }
+
+    /// A transposed view must give exactly the product of the transpose
+    /// written out (the evaluator passes `A'` as a view), in row-major
+    /// layout so later elementwise fast paths still apply.
+    #[test]
+    fn transposed_views_are_bit_identical_and_row_major() {
+        for &(m, k, n) in &[(1, 1, 1), (3, 5, 2), (129, 128, 128), (65, 129, 33), (512, 129, 77)] {
+            for complex in [false, true] {
+                let at = filled(k, m, 10 + m as u64, complex); // A = at'
+                let b = filled(k, n, 20 + n as u64, complex);
+                let bt = filled(n, k, 30 + k as u64, complex); // B = bt'
+                let a = filled(m, k, 40 + k as u64, complex);
+                let cases = [
+                    (matmul(&at.t(), &b.view()), matmul(&at.t().as_standard_layout().view(), &b.view())),
+                    (matmul(&a.view(), &bt.t()), matmul(&a.view(), &bt.t().as_standard_layout().view())),
+                    (
+                        matmul(&at.t(), &bt.t()),
+                        matmul(&at.t().as_standard_layout().view(), &bt.t().as_standard_layout().view()),
+                    ),
+                ];
+                for (view, copied) in cases {
+                    assert!(view.is_standard_layout(), "{m}x{k}x{n} complex={complex}: not row-major");
+                    assert_eq!(view.shape(), copied.shape());
+                    for (p, q) in view.iter().zip(copied.iter()) {
+                        assert!(
+                            p.re.to_bits() == q.re.to_bits() && p.im.to_bits() == q.im.to_bits(),
+                            "{m}x{k}x{n} complex={complex}: {p} vs {q}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

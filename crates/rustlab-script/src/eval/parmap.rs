@@ -20,6 +20,7 @@
 
 use crate::error::ScriptError;
 use crate::eval::profile::FnStats;
+use crate::eval::shared::Shared;
 use crate::eval::value::Value;
 use crate::Evaluator;
 use rayon::prelude::*;
@@ -229,7 +230,7 @@ impl ParmapBackend for LocalRayonBackend {
 /// named.
 pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
     if results.is_empty() {
-        return Ok(Value::Vector(ndarray::Array1::zeros(0)));
+        return Ok(Value::Vector(ndarray::Array1::zeros(0).into()));
     }
     enum Shape {
         ScalarLike,
@@ -272,7 +273,7 @@ fn pack_scalar_like(results: Vec<Value>) -> Result<Value, ScriptError> {
             }
         }
     }
-    Ok(Value::Vector(ndarray::Array1::from_vec(out)))
+    Ok(Value::Vector(ndarray::Array1::from_vec(out).into()))
 }
 
 fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, ScriptError> {
@@ -324,7 +325,7 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
     // to be a vector of exactly `row_len` elements; with `row_len == 0`
     // there is nothing to initialise.
     let m = unsafe { out.assume_init() };
-    Ok(Value::Matrix(m))
+    Ok(Value::Matrix(m.into()))
 }
 
 fn pack_matrices_as_tensor3(
@@ -349,7 +350,7 @@ fn pack_matrices_as_tensor3(
                         cols
                     )));
                 }
-                matrices.push(m);
+                matrices.push(Shared::into_inner(m));
             }
             other => {
                 return Err(ScriptError::type_err(format!(
@@ -380,7 +381,7 @@ fn pack_matrices_as_tensor3(
     }
     let t = ndarray::Array3::from_shape_vec((rows, cols, n_pages), flat)
         .map_err(|e| ScriptError::runtime(e.to_string()))?;
-    Ok(Value::Tensor3(t))
+    Ok(Value::Tensor3(t.into()))
 }
 
 #[cfg(test)]
@@ -412,7 +413,7 @@ mod tests {
 
     #[test]
     fn pack_mixed_scalar_then_matrix_errors() {
-        let bad = vec![Value::Scalar(1.0), Value::Matrix(ndarray::Array2::zeros((2, 2)))];
+        let bad = vec![Value::Scalar(1.0), Value::Matrix(ndarray::Array2::zeros((2, 2)).into())];
         let err = pack_results(bad).unwrap_err().to_string();
         assert!(err.contains("trial 2"), "msg: {err}");
         assert!(err.contains("same shape"), "msg: {err}");
@@ -421,14 +422,14 @@ mod tests {
     fn cvec(xs: &[f64]) -> Value {
         Value::Vector(ndarray::Array1::from_iter(
             xs.iter().map(|&x| num_complex::Complex::new(x, 0.0)),
-        ))
+        ).into())
     }
 
     fn cmat(rows: usize, cols: usize, fill: f64) -> Value {
         Value::Matrix(ndarray::Array2::from_elem(
             (rows, cols),
             num_complex::Complex::new(fill, 0.0),
-        ))
+        ).into())
     }
 
     #[test]

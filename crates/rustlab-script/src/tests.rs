@@ -155,7 +155,7 @@ mod bool_tests {
         let m = Value::Matrix(ndarray::Array2::from_shape_vec(
             (1, 2),
             vec![num_complex::Complex::new(1.0, 0.0); 2],
-        ).unwrap());
+        ).unwrap().into());
         assert!(Value::binop(BinOp::And, m, Value::Scalar(1.0)).is_err());
     }
 
@@ -536,7 +536,7 @@ mod value_tests {
         Value::Complex(Complex::new(re, im))
     }
     fn vec_val(v: &[f64]) -> Value {
-        Value::Vector(Array1::from_iter(v.iter().map(|&x| Complex::new(x, 0.0))))
+        Value::Vector(Array1::from_iter(v.iter().map(|&x| Complex::new(x, 0.0))).into())
     }
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
@@ -604,7 +604,7 @@ mod value_tests {
         let v = Value::Vector(Array1::from_vec(vec![
             Complex::new(1.0, 2.0),
             Complex::new(3.0, -1.0),
-        ]));
+        ]).into());
         match v.transpose().unwrap() {
             Value::Matrix(m) => {
                 assert!(close(m[[0, 0]].im, -2.0));
@@ -685,7 +685,7 @@ mod value_tests {
 
     fn mat_val(rows: usize, cols: usize, data: &[f64]) -> Value {
         let v: Vec<C64> = data.iter().map(|&x| C64::new(x, 0.0)).collect();
-        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap())
+        Value::Matrix(ndarray::Array2::from_shape_vec((rows, cols), v).unwrap().into())
     }
 
     #[test]
@@ -1370,7 +1370,7 @@ mod matrix_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("Expected Matrix for '{name}', got {other:?}"),
         }
     }
@@ -1981,7 +1981,7 @@ mod eig_tests {
         name: &str,
     ) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected Matrix for '{name}', got {other:?}"),
         }
     }
@@ -3643,7 +3643,7 @@ mod phase3_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> CMatrix {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -5219,7 +5219,7 @@ mod new_builtins_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -5614,7 +5614,7 @@ mod ml_tests {
 
     fn get_mat(ev: &Evaluator, name: &str) -> CMatrix {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix, got {other:?}"),
         }
     }
@@ -9174,14 +9174,14 @@ mod sparse_tests {
 
     fn get_vec(ev: &Evaluator, name: &str) -> ndarray::Array1<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Vector(v) => v.clone(),
+            Value::Vector(v) => (**v).clone(),
             other => panic!("expected vector for '{name}', got {other:?}"),
         }
     }
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -11459,16 +11459,17 @@ mod toml_tests {
     }
 
     #[test]
-    fn error_on_complex_in_struct() {
+    fn complex_in_struct_round_trips() {
         let path = tmp_path("complex");
         let result = try_run(&format!(
             "s = struct(\"z\", 1 + j*2);\n\
-             save(\"{path}\", s);"
+             save(\"{path}\", s);\n\
+             t = load(\"{path}\");\n\
+             if abs(t.z - (1 + 2j)) > 0, error(\"lost the imaginary part\"); end"
         ));
-        assert!(
-            result.is_err(),
-            "saving complex values to TOML should error"
-        );
+        if let Err(e) = result {
+            panic!("{e}");
+        }
     }
 
     #[test]
@@ -12082,13 +12083,13 @@ mod tensor3_tests {
 
     #[test]
     fn type_name_is_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((2, 3, 4)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((2, 3, 4)).into());
         assert_eq!(v.type_name(), "tensor3");
     }
 
     #[test]
     fn negate_flips_every_element() {
-        let v = Value::Tensor3(build(2, 2, 2));
+        let v = Value::Tensor3(build(2, 2, 2).into());
         let neg = v.negate().unwrap();
         if let Value::Tensor3(t) = neg {
             assert_eq!(t.shape(), &[2, 2, 2]);
@@ -12101,7 +12102,7 @@ mod tensor3_tests {
 
     #[test]
     fn display_shows_shape_and_first_page() {
-        let v = Value::Tensor3(build(2, 3, 4));
+        let v = Value::Tensor3(build(2, 3, 4).into());
         let s = format!("{}", v);
         assert!(s.starts_with("tensor3 [2×3×4]"), "got: {}", s);
         assert!(s.contains("(:, :, 1) ="), "got: {}", s);
@@ -12111,7 +12112,7 @@ mod tensor3_tests {
 
     #[test]
     fn display_small_shows_all_pages() {
-        let v = Value::Tensor3(build(2, 2, 2));
+        let v = Value::Tensor3(build(2, 2, 2).into());
         let s = format!("{}", v);
         assert!(s.contains("(:, :, 1) ="), "got: {}", s);
         assert!(s.contains("(:, :, 2) ="), "got: {}", s);
@@ -12120,20 +12121,20 @@ mod tensor3_tests {
 
     #[test]
     fn display_empty_tensor_shows_header_only() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((0, 0, 0)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((0, 0, 0)).into());
         let s = format!("{}", v);
         assert_eq!(s, "tensor3 [0×0×0]");
     }
 
     #[test]
     fn transpose_rejects_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((2, 2, 2)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((2, 2, 2)).into());
         assert!(v.transpose().is_err());
     }
 
     #[test]
     fn to_scalar_rejects_tensor3() {
-        let v = Value::Tensor3(Array3::<C64>::zeros((1, 1, 1)));
+        let v = Value::Tensor3(Array3::<C64>::zeros((1, 1, 1)).into());
         assert!(v.to_scalar().is_err());
     }
 }
@@ -13132,7 +13133,7 @@ mod tensor3_arith_tests {
 
     fn tensor3(ev: &Evaluator, name: &str) -> ndarray::Array3<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Tensor3(t) => t.clone(),
+            Value::Tensor3(t) => (**t).clone(),
             other => panic!("Expected Tensor3 for '{name}', got {other:?}"),
         }
     }
@@ -13588,7 +13589,7 @@ mod tensor3_io_tests {
                 }
             }
         }
-        let v = Value::Tensor3(t);
+        let v = Value::Tensor3(t.into());
         let s = format!("{}", v);
         // Header plus first page plus last page plus "pages omitted" footer.
         // A full dump (10*10*100 floats, each ~10 chars) would be > 100KB;
@@ -14196,13 +14197,13 @@ mod transpose_layout {
         // Shapes straddling the 32-element tiles, plus degenerate ones.
         for &(r, c) in &[(1, 1), (1, 70), (70, 1), (31, 33), (33, 31), (129, 512), (64, 64), (0, 3), (3, 0)] {
             let m = filled(r, c);
-            assert_transpose(&m, &Value::Matrix(m.clone()).transpose().unwrap(), true);
-            assert_transpose(&m, &Value::Matrix(m.clone()).non_conj_transpose().unwrap(), false);
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).transpose().unwrap(), true);
+            assert_transpose(&m, &Value::Matrix(m.clone().into()).non_conj_transpose().unwrap(), false);
         }
         // A column-major input takes the generic path, still row-major out.
         let data: Vec<_> = filled(5, 7).iter().copied().collect();
         let f = Array2::from_shape_vec((5, 7).f(), data).unwrap();
-        assert_transpose(&f, &Value::Matrix(f.clone()).transpose_ref().unwrap(), true);
+        assert_transpose(&f, &Value::Matrix(f.clone().into()).transpose_ref().unwrap(), true);
     }
 
     #[test]
@@ -14221,6 +14222,535 @@ mod transpose_layout {
                 (g, w) => panic!("{name}: {g:?} vs {w:?}"),
             }
         }
+    }
+}
+
+// ─── Copy-on-write arrays ──────────────────────────────────────────────────
+
+#[cfg(test)]
+mod copy_on_write {
+    use crate::eval::shared::Shared;
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval(src: &str) -> Evaluator {
+        let mut ev = Evaluator::new();
+        more(&mut ev, src);
+        ev
+    }
+
+    fn more(ev: &mut Evaluator, src: &str) {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+    }
+
+    fn re(ev: &Evaluator, name: &str) -> Vec<f64> {
+        match ev.get(name).unwrap_or_else(|| panic!("{name} unset")) {
+            Value::Scalar(x) => vec![*x],
+            Value::Vector(v) => v.iter().map(|z| z.re).collect(),
+            Value::Matrix(m) => m.iter().map(|z| z.re).collect(),
+            Value::Tensor3(t) => t.iter().map(|z| z.re).collect(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    fn data_ptr(ev: &Evaluator, name: &str) -> *const num_complex::Complex<f64> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.as_ptr(),
+            Value::Matrix(m) => m.as_ptr(),
+            Value::Tensor3(t) => t.as_ptr(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assignment_shares_until_one_side_is_written() {
+        let mut ev = eval("a = [1, 2, 3]; b = a;");
+        match (ev.get("a").unwrap(), ev.get("b").unwrap()) {
+            (Value::Vector(a), Value::Vector(b)) => assert!(Shared::ptr_eq(a, b), "b = a should not copy"),
+            _ => unreachable!(),
+        }
+        more(&mut ev, "b(1) = 5;");
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "b"), [5.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn every_kind_of_write_leaves_the_copy_alone() {
+        let ev = eval(
+            "a = [1, 2, 3];\n\
+             b = a; b += 1;\n\
+             c = a; c(end + 1) = 4;\n\
+             d = a; d([1, 3]) = 0;\n\
+             A = [1, 2; 3, 4];\n\
+             B = A; B(2, :) = [7, 7];\n\
+             C = A; C(1, 1) = 9;\n\
+             D = A; D = -D;\n\
+             T = zeros3(2, 2, 2);\n\
+             U = T; U(1, 1, 1) = 3;\n",
+        );
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "b"), [2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "c"), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "d"), [0.0, 2.0, 0.0]);
+        assert_eq!(re(&ev, "A"), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "B"), [1.0, 2.0, 7.0, 7.0]);
+        assert_eq!(re(&ev, "C"), [9.0, 2.0, 3.0, 4.0]);
+        assert_eq!(re(&ev, "D"), [-1.0, -2.0, -3.0, -4.0]);
+        assert_eq!(re(&ev, "T"), [0.0; 8]);
+        assert_eq!(re(&ev, "U")[0], 3.0);
+    }
+
+    #[test]
+    fn a_function_writing_its_argument_leaves_the_caller_alone() {
+        let ev = eval(
+            "function y = f(x)\n  x(1) = 99;\n  y = x;\nend\n\
+             a = [1, 2, 3];\nc = f(a);\n",
+        );
+        assert_eq!(re(&ev, "a"), [1.0, 2.0, 3.0]);
+        assert_eq!(re(&ev, "c"), [99.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn lambdas_and_parmap_keep_their_snapshot() {
+        let ev = eval(
+            "w = [1, 2, 3];\n\
+             g = @() w(1);\n\
+             h = @(k) w(k) * 2;\n\
+             w(1) = 10;\n\
+             r = g();\n\
+             p = parmap(h, 1:3);\n",
+        );
+        assert_eq!(re(&ev, "r"), [1.0]);
+        assert_eq!(re(&ev, "p"), [2.0, 4.0, 6.0]);
+        assert_eq!(re(&ev, "w"), [10.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn struct_fields_and_loops_see_values_not_aliases() {
+        let ev = eval(
+            "S.E = [1, 2];\n\
+             T = S;\n\
+             x = S.E; x(1) = 5;\n\
+             T.E = T.E .* [1, 4];\n\
+             s = 0;\n\
+             v = [1, 2, 3];\n\
+             for e = v\n  v(1) = 100;\n  s = s + e;\nend\n\
+             e1 = S.E;\n\
+             e2 = T.E;\n",
+        );
+        assert_eq!(re(&ev, "e1"), [1.0, 2.0]);
+        assert_eq!(re(&ev, "e2"), [1.0, 8.0]);
+        assert_eq!(re(&ev, "x"), [5.0, 2.0]);
+        assert_eq!(re(&ev, "s"), [6.0]);
+    }
+
+    /// A buffer nothing else refers to is written where it is.
+    #[test]
+    fn unique_buffer_is_written_in_place() {
+        let mut ev = eval("a = zeros(1, 1000);");
+        let p = data_ptr(&ev, "a");
+        more(&mut ev, "a(5) = 1; a(7) = 2;");
+        assert_eq!(data_ptr(&ev, "a"), p);
+        let mut ev = eval("M = zeros(40, 40);");
+        let p = data_ptr(&ev, "M");
+        more(&mut ev, "M(3, :) = ones(1, 40);");
+        assert_eq!(data_ptr(&ev, "M"), p);
+    }
+}
+
+// ─── reshape and one-row concatenation fast paths ──────────────────────────
+
+#[cfg(test)]
+mod reshape_and_concat {
+    use crate::eval::elementwise::PAR_MIN_LEN;
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::{Array1, Array2};
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+    }
+
+    /// A distinct complex value per position, so a misplaced element shows.
+    fn matrix(r: usize, c: usize) -> Value {
+        let m = Array2::from_shape_fn((r, c), |(i, j)| C::new((i * c + j) as f64, -(i as f64) - 0.5));
+        Value::Matrix(m.into())
+    }
+
+    fn vector(n: usize) -> Value {
+        Value::Vector(Array1::from_shape_fn(n, |k| C::new(k as f64, 0.25 * k as f64)).into())
+    }
+
+    /// Column-major walk of a vector or matrix (the reference reshape order).
+    fn col_major(v: &Value) -> Vec<C> {
+        match v {
+            Value::Vector(v) => v.to_vec(),
+            Value::Matrix(m) => (0..m.ncols())
+                .flat_map(|c| (0..m.nrows()).map(move |r| m[[r, c]]))
+                .collect(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `reshape(src, m, n)` against filling an `m × n` result column-major.
+    fn check_reshape(src: Value, m: usize, n: usize) {
+        let flat = col_major(&src);
+        let mut ev = Evaluator::new();
+        ev.set("A", src);
+        run(&mut ev, &format!("B = reshape(A, {m}, {n});"));
+        let got = ev.get("B").unwrap();
+        if m == 1 || n == 1 {
+            let Value::Vector(v) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(v.to_vec(), flat, "{m}×{n}");
+        } else {
+            let Value::Matrix(b) = got else { panic!("{m}×{n}: {got:?}") };
+            assert_eq!(b.dim(), (m, n));
+            assert!(b.is_standard_layout(), "{m}×{n} result is row-major");
+            for c in 0..n {
+                for r in 0..m {
+                    assert_eq!(b[[r, c]], flat[r + c * m], "{m}×{n} at ({r}, {c})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reshape_matches_the_column_major_walk() {
+        // Small (serial) and above PAR_MIN_LEN with ragged chunks (parallel).
+        let big = 3 * 37 * 1181; // just above PAR_MIN_LEN
+        assert!(big > PAR_MIN_LEN);
+        for (src, shapes) in [
+            (vector(12), vec![(3, 4), (4, 3), (1, 12), (12, 1), (2, 6)]),
+            (matrix(3, 4), vec![(4, 3), (2, 6), (12, 1), (1, 12), (3, 4), (6, 2)]),
+            (matrix(1, 12), vec![(3, 4), (12, 1), (1, 12)]),
+            (matrix(12, 1), vec![(4, 3), (1, 12)]),
+            (vector(big), vec![(3, big / 3), (big / 3, 3), (1, big)]),
+            (matrix(3, big / 3), vec![(big / 3, 3), (1, big), (37, big / 37)]),
+            (matrix(big / 3, 3), vec![(3, big / 3)]),
+        ] {
+            for (m, n) in shapes {
+                check_reshape(src.clone(), m, n);
+            }
+        }
+    }
+
+    #[test]
+    fn reshape_errors_on_the_element_count() {
+        let mut ev = Evaluator::new();
+        ev.set("A", matrix(3, 4));
+        let stmts = crate::parser::parse(crate::lexer::tokenize("B = reshape(A, 5, 3);").unwrap()).unwrap();
+        let err = ev.run(&stmts).unwrap_err().to_string();
+        assert!(err.contains("cannot reshape 12 elements into 5×3 (= 15 elements)"), "{err}");
+    }
+
+    #[test]
+    fn reshape_that_keeps_the_order_shares_until_written() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "v = 1:6; w = reshape(v, 1, 6); w(2) = 9; M = [1, 2; 3, 4]; N = reshape(M, 2, 2); N(1, 1) = 7;");
+        let re = |name: &str| -> Vec<f64> {
+            match ev.get(name).unwrap() {
+                Value::Vector(v) => v.iter().map(|z| z.re).collect(),
+                Value::Matrix(m) => m.iter().map(|z| z.re).collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(re("v"), [1., 2., 3., 4., 5., 6.]);
+        assert_eq!(re("w"), [1., 9., 3., 4., 5., 6.]);
+        assert_eq!(re("M"), [1., 2., 3., 4.]);
+        assert_eq!(re("N"), [7., 2., 3., 4.]);
+    }
+
+    /// `[pieces]` on one row against appending them in order.
+    fn check_concat(pieces: Vec<Value>) {
+        let mut want = Vec::new();
+        let mut names = Vec::new();
+        let mut ev = Evaluator::new();
+        for (k, p) in pieces.into_iter().enumerate() {
+            match &p {
+                Value::Scalar(x) => want.push(C::new(*x, 0.0)),
+                Value::Complex(z) => want.push(*z),
+                other => want.extend(col_major(other)),
+            }
+            let name = format!("p{k}");
+            ev.set(&name, p);
+            names.push(name);
+        }
+        run(&mut ev, &format!("out = [{}];", names.join(", ")));
+        let Value::Vector(v) = ev.get("out").unwrap() else { panic!() };
+        assert_eq!(v.to_vec(), want, "{} pieces", names.len());
+    }
+
+    #[test]
+    fn one_row_concat_matches_appending() {
+        let n = PAR_MIN_LEN / 3 + 7;
+        let z = C::new(1.5, -2.0);
+        check_concat(vec![Value::Scalar(1.0), vector(5), Value::Complex(z), matrix(1, 4)]);
+        check_concat(vec![vector(0), vector(3), vector(0)]);
+        // Long enough for parallel chunks; pieces end mid-chunk, scalars and
+        // empty vectors sit on chunk boundaries.
+        check_concat(vec![
+            vector(n),
+            Value::Scalar(-1.0),
+            vector(0),
+            matrix(1, n),
+            vector(n + 1),
+            Value::Complex(z),
+            vector(n),
+        ]);
+        check_concat(vec![vector(4 * n), Value::Scalar(2.0)]);
+    }
+
+    #[test]
+    fn lone_vector_in_brackets_is_shared() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "v = 1:4; w = [v];");
+        let (Value::Vector(v), Value::Vector(w)) = (ev.get("v").unwrap(), ev.get("w").unwrap()) else {
+            panic!()
+        };
+        assert!(crate::eval::shared::Shared::ptr_eq(v, w));
+        run(&mut ev, "w(1) = 9;");
+        let Value::Vector(v) = ev.get("v").unwrap() else { panic!() };
+        assert_eq!(v[0].re, 1.0);
+    }
+
+    #[test]
+    fn taller_blocks_still_take_the_general_path() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "A = [1, 2; 3, 4]; B = [A, [5; 6]]; C = [1, 2; 3, 4];");
+        let Value::Matrix(b) = ev.get("B").unwrap() else { panic!() };
+        assert_eq!(b.dim(), (2, 3));
+        assert_eq!(b[[1, 2]].re, 6.0);
+        let Value::Matrix(c) = ev.get("C").unwrap() else { panic!() };
+        assert_eq!(c.dim(), (2, 2));
+    }
+}
+
+// ─── Region writes by row runs, parallel scalar maps, in-place rebinding ───
+
+#[cfg(test)]
+mod interpreter_fast_paths {
+    use crate::eval::elementwise::PAR_MAP_MIN_LEN;
+    use crate::Evaluator;
+    use crate::Value;
+    use ndarray::Array2;
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) -> Result<(), String> {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).map_err(|e| e.to_string())
+    }
+
+    fn mat(ev: &Evaluator, name: &str) -> Array2<C> {
+        match ev.get(name).unwrap() {
+            Value::Matrix(m) => (**m).clone(),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    /// `M(rows, cols) = rhs` against writing the region element by element.
+    fn check_region(rows: &str, cols: &str, rhs: &str) {
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "M = reshape(1:60, 6, 10) + 1j; M0 = M; R = {rows}; Cc = {cols}; V = {rhs}; M(R, Cc) = V;"
+        ))
+        .unwrap();
+        // Reference: one element at a time from the same RHS.
+        let mut want = mat(&ev, "M0");
+        let idx = |name: &str, n: usize| -> Vec<usize> {
+            match ev.get(name).unwrap() {
+                Value::Scalar(x) => vec![*x as usize - 1],
+                Value::Vector(v) => v.iter().map(|z| z.re as usize - 1).collect(),
+                Value::All => (0..n).collect(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let (r, c) = (idx("R", 6), idx("Cc", 10));
+        let v = ev.get("V").unwrap();
+        for (i, &ri) in r.iter().enumerate() {
+            for (j, &cj) in c.iter().enumerate() {
+                want[[ri, cj]] = match v {
+                    Value::Scalar(x) => C::new(*x, 0.0),
+                    Value::Complex(z) => *z,
+                    Value::Vector(v) => v[i * c.len() + j],
+                    Value::Matrix(m) => m[[i, j]],
+                    other => panic!("{other:?}"),
+                };
+            }
+        }
+        assert_eq!(mat(&ev, "M"), want, "M({rows}, {cols}) = {rhs}");
+        assert_eq!(mat(&ev, "M0"), {
+            let mut ev0 = Evaluator::new();
+            run(&mut ev0, "M0 = reshape(1:60, 6, 10) + 1j;").unwrap();
+            mat(&ev0, "M0")
+        }, "the shared copy is unchanged");
+    }
+
+    #[test]
+    fn region_writes_match_element_by_element() {
+        // Column runs (fast path), and scattered columns (general path).
+        check_region("2:4", "3:7", "-reshape(1:15, 3, 5)");
+        check_region("[5, 1, 3]", "1:10", "zeros(3, 10) + 2j");
+        check_region("2", "4:9", "[7, 8, 9, 10, 11, 12]");
+        check_region("1:6", "6", "(1:6)'");
+        check_region("[1, 6]", "2:3", "4.5");
+        check_region("3:5", "5:6", "1 - 2j");
+        check_region("2:3", "[1, 4, 9]", "ones(2, 3)");
+        check_region("[6, 2]", "[10, 1]", "[1, 2; 3, 4]");
+    }
+
+    #[test]
+    fn region_write_shape_errors_are_unchanged() {
+        let mut ev = Evaluator::new();
+        let err = run(&mut ev, "M = zeros(4, 4); M(1:2, 2:4) = ones(3, 2);").unwrap_err();
+        assert!(err.contains("RHS shape 3×2 does not match target region 2×3"), "{err}");
+        let err = run(&mut ev, "M(1:2, 2:4) = [1, 2, 3, 4];").unwrap_err();
+        assert!(err.contains("vector of length 4 does not match"), "{err}");
+    }
+
+    #[test]
+    fn scalar_function_maps_are_bit_identical_in_parallel() {
+        // Above PAR_MAP_MIN_LEN (parallel chunks) and below it, real and
+        // complex input, against applying the function to each element.
+        for n in [PAR_MAP_MIN_LEN / 4 + 3, PAR_MAP_MIN_LEN * 2 + 11] {
+            let mut ev = Evaluator::new();
+            run(&mut ev, &format!(
+                "seed(3); x = randn({n}, 1)'; X = reshape(x, 1, {n}); Z = x + 0.5j * x; \
+                 a = gelu(x); b = gelu_grad(x); c = tanh(Z); d = exp(x);"
+            ))
+            .unwrap();
+            let get = |s: &str| -> Vec<C> {
+                match ev.get(s).unwrap() {
+                    Value::Vector(v) => v.to_vec(),
+                    Value::Matrix(m) => m.iter().copied().collect(),
+                    other => panic!("{other:?}"),
+                }
+            };
+            let x = get("x");
+            let z = get("Z");
+            let bits = |v: &[C]| v.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect::<Vec<_>>();
+            let one = |name: &str, k: usize, v: C| -> C {
+                let mut e = Evaluator::new();
+                e.set("t", if v.im == 0.0 { Value::Scalar(v.re) } else { Value::Complex(v) });
+                run(&mut e, &format!("r = {name}(t);")).unwrap();
+                match e.get("r").unwrap() {
+                    Value::Scalar(r) => C::new(*r, 0.0),
+                    Value::Complex(r) => *r,
+                    other => panic!("{name} at {k}: {other:?}"),
+                }
+            };
+            // Spot-check a spread of positions, including chunk edges.
+            let picks: Vec<usize> = (0..x.len()).step_by(4093).chain([x.len() - 1]).collect();
+            for (name, input, out) in [("gelu", &x, "a"), ("gelu_grad", &x, "b"), ("tanh", &z, "c"), ("exp", &x, "d")] {
+                let got = get(out);
+                assert_eq!(got.len(), input.len());
+                let want: Vec<C> = picks.iter().map(|&k| one(name, k, input[k])).collect();
+                let got_p: Vec<C> = picks.iter().map(|&k| got[k]).collect();
+                assert_eq!(bits(&got_p), bits(&want), "{name}, n = {n}");
+            }
+        }
+    }
+
+    #[test]
+    fn rebinding_in_a_loop_keeps_one_binding() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "acc = 0; for k = 1:1000\n acc = acc + k;\nend\nv = [1, 2, 3]; w = v(end);").unwrap();
+        assert!(matches!(ev.get("acc"), Some(Value::Scalar(x)) if *x == 500500.0));
+        assert!(matches!(ev.get("k"), Some(Value::Scalar(x)) if *x == 1000.0));
+        assert!(matches!(ev.get("w"), Some(Value::Scalar(x)) if *x == 3.0));
+    }
+}
+
+// ─── Products with a transposed operand use a view ─────────────────────────
+
+#[cfg(test)]
+mod transposed_matmul {
+    use crate::Evaluator;
+    use crate::Value;
+
+    fn eval(src: &str) -> Evaluator {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap();
+        ev
+    }
+
+    fn assert_same(ev: &Evaluator, got: &str, want: &str) {
+        match (ev.get(got).unwrap(), ev.get(want).unwrap()) {
+            (Value::Matrix(g), Value::Matrix(w)) => {
+                assert!(g.as_slice().is_some(), "{got} must be row-major");
+                assert_eq!(g.dim(), w.dim(), "{got}");
+                for (p, q) in g.iter().zip(w.iter()) {
+                    assert!(
+                        p.re.to_bits() == q.re.to_bits() && p.im.to_bits() == q.im.to_bits(),
+                        "{got}: {p} vs {q}"
+                    );
+                }
+            }
+            (g, w) => assert_eq!(format!("{g:?}"), format!("{w:?}"), "{got}"),
+        }
+    }
+
+    /// Every transposed-product form gives exactly what writing the
+    /// transpose out first gives: real and complex, `'` and `.'`, a
+    /// variable or an expression inside the transpose.
+    #[test]
+    fn matches_the_written_out_transpose_bit_for_bit() {
+        for setup in [
+            "seed(1); A = randn(37, 70); B = randn(37, 41); C = randn(41, 70);",
+            "seed(2); A = randn(37, 70) + 1j * randn(37, 70); B = randn(37, 41) - 2j * randn(37, 41); C = randn(41, 70) + 1j * randn(41, 70);",
+            "seed(3); A = randn(37, 70) + 1j * randn(37, 70); B = randn(37, 41); C = randn(41, 70);",
+        ] {
+            let src = format!(
+                "{setup}
+                 D = 3 * randn(41, 37) - C(:, 1:37);
+                 At = A'; Ct = C'; Ant = A.'; Dt = D'; Dnt = D.';
+                 p1 = A' * B;   q1 = At * B;
+                 p2 = B' * A;   q2 = B' * A;
+                 p3 = C * A';   q3 = C * At;
+                 p4 = A' * D';  q4 = At * Dt;
+                 p5 = A.' * B;  q5 = Ant * B;
+                 p6 = C * A.';  q6 = C * Ant;
+                 p7 = A.' * D.'; q7 = Ant * Dnt;
+                 p8 = (2 * A)' * B; T = (2 * A)'; q8 = T * B;
+                 p9 = A(1:20, :)' * B(1:20, 1:5); T = A(1:20, :)'; q9 = T * B(1:20, 1:5);
+                 v = randn(37); p10 = v' * v; vt = v'; q10 = vt * v;
+                 p11 = B' * v'; q11 = B' * vt;"
+            );
+            let ev = eval(&src);
+            for k in 1..=11 {
+                assert_same(&ev, &format!("p{k}"), &format!("q{k}"));
+            }
+        }
+    }
+
+    #[test]
+    fn dimension_mismatch_reports_the_same_error() {
+        let run = |src: &str| {
+            let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+            Evaluator::new().run(&stmts).err().unwrap().to_string()
+        };
+        assert_eq!(run("A = ones(3, 4); B = ones(5, 2); C = A' * B;"), run("A = ones(3, 4); B = ones(5, 2); At = A'; C = At * B;"));
+    }
+
+    #[test]
+    fn profile_has_no_transpose_row_for_matrix_products() {
+        let src = "A = ones(30, 20); B = ones(30, 10); C = A' * B; D = B * B'; E = (1j * A)' * B; v = linspace(0, 1, 30); F = v' * v;";
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let rows: std::collections::HashMap<_, _> = ev.take_profile().into_iter().collect();
+        assert_eq!(rows["[matmul]"].call_count, 4);
+        // Only the vector operand is written out (`v'` is a column matrix).
+        assert_eq!(rows["[transpose]"].call_count, 1);
     }
 }
 
@@ -16422,7 +16952,7 @@ mod builtin_coverage_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -17220,7 +17750,7 @@ mod eval_edge_semantics_tests {
 
     fn get_matrix(ev: &Evaluator, name: &str) -> ndarray::Array2<num_complex::Complex<f64>> {
         match ev.get(name).unwrap() {
-            Value::Matrix(m) => m.clone(),
+            Value::Matrix(m) => (**m).clone(),
             other => panic!("expected matrix for '{name}', got {other:?}"),
         }
     }
@@ -19789,7 +20319,7 @@ mod printf_and_row_matrix_tests {
         assert!(apply_format("%ld", &vals(&[Arg::N(1.0)]))
             .unwrap_err()
             .contains("unknown"));
-        let vec = Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]));
+        let vec = Value::Vector(Array1::from_vec(vec![Complex::new(1.0, 0.0)]).into());
         assert!(apply_format("%d", &[vec]).is_err());
         let z = Value::Complex(Complex::new(1.0, 2.0));
         assert!(apply_format("%f", &[z]).is_err());
@@ -20601,5 +21131,224 @@ mod table_tests {
                 "src `{src}`\nmsg `{msg}`\nmissing `{needle}`"
             );
         }
+    }
+}
+
+// ── Real values stay real: division, negation, exact save ─────────────────
+
+#[cfg(test)]
+mod real_value_semantics {
+    use crate::Evaluator;
+    use crate::Value;
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) -> Result<(), String> {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).map_err(|e| e.to_string())
+    }
+
+    fn elems(ev: &Evaluator, name: &str) -> Vec<C> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.to_vec(),
+            Value::Matrix(m) => m.iter().copied().collect(),
+            Value::Tensor3(t) => t.iter().copied().collect(),
+            Value::Complex(c) => vec![*c],
+            Value::Scalar(s) => vec![C::new(*s, 0.0)],
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_division_matches_scalar_division_bit_for_bit() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "seed(7); x = rand(1, 5000) * 10 - 5; y = rand(1, 5000) * 10 + 0.1; \
+                      dv = x ./ y; dm = reshape(x, 50, 100) ./ reshape(y, 50, 100); \
+                      dt = reshape(x, 10, 25, 20) ./ reshape(y, 10, 25, 20); \
+                      ds = x ./ 3; dl = 3 ./ y; d2 = x / 3;").unwrap();
+        let (x, y) = (elems(&ev, "x"), elems(&ev, "y"));
+        let col_major = |name: &str, rows: usize, cols: usize| -> Vec<C> {
+            // dm is row-major in storage; reshape walked x column-major.
+            let m = elems(&ev, name);
+            let mut out = vec![C::new(0.0, 0.0); m.len()];
+            for r in 0..rows {
+                for c in 0..cols {
+                    out[c * rows + r] = m[r * cols + c];
+                }
+            }
+            out
+        };
+        for (name, got) in [("dv", elems(&ev, "dv")), ("dm", col_major("dm", 50, 100))] {
+            for k in 0..x.len() {
+                let want = x[k].re / y[k].re;
+                assert_eq!(got[k].re.to_bits(), want.to_bits(), "{name}[{k}]");
+                assert_eq!(got[k].im.to_bits(), 0.0f64.to_bits(), "{name}[{k}] imaginary");
+            }
+        }
+        let dt = elems(&ev, "dt");
+        let mut sorted_t: Vec<u64> = dt.iter().map(|c| c.re.to_bits()).collect();
+        let mut sorted_w: Vec<u64> = x.iter().zip(&y).map(|(a, b)| (a.re / b.re).to_bits()).collect();
+        sorted_t.sort();
+        sorted_w.sort();
+        assert_eq!(sorted_t, sorted_w, "tensor3 ./");
+        for (name, f) in [
+            ("ds", Box::new(|k: usize| x[k].re / 3.0) as Box<dyn Fn(usize) -> f64>),
+            ("d2", Box::new(|k: usize| x[k].re / 3.0)),
+            ("dl", Box::new(|k: usize| 3.0 / y[k].re)),
+        ] {
+            let got = elems(&ev, name);
+            for k in 0..got.len() {
+                assert_eq!(got[k].re.to_bits(), f(k).to_bits(), "{name}[{k}]");
+            }
+        }
+    }
+
+    #[test]
+    fn division_by_a_real_number_does_not_overflow() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "a = [1e200, 4] ./ [1e200, 0]; b = [3 + 4j] ./ [1e200]; c = (6 + 8j) / 2; \
+                      d = [6 + 8j, 1] ./ [2, 2];").unwrap();
+        let a = elems(&ev, "a");
+        assert_eq!(a[0], C::new(1.0, 0.0));
+        assert_eq!(a[1], C::new(f64::INFINITY, 0.0));
+        let b = elems(&ev, "b")[0];
+        assert_eq!(b, C::new(3.0 / 1e200, 4.0 / 1e200));
+        assert_eq!(elems(&ev, "c")[0], C::new(3.0, 4.0));
+        assert_eq!(elems(&ev, "d"), vec![C::new(3.0, 4.0), C::new(0.5, 0.0)]);
+    }
+
+    #[test]
+    fn complex_divisor_still_divides_as_complex() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "q = [1 + 1j, 2] ./ [1j, 1 - 1j];").unwrap();
+        let q = elems(&ev, "q");
+        assert_eq!(q[0], C::new(1.0, 1.0) / C::new(0.0, 1.0));
+        assert_eq!(q[1], C::new(2.0, 0.0) / C::new(1.0, -1.0));
+    }
+
+    #[test]
+    fn negating_a_real_value_leaves_no_negative_zero() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "a = angle(-[1, 2]); b = angle(-[2, 1j]); c = angle(-(1 + 0j)); \
+                      r = sqrt(-[4, 1j]); p = (-[8, 1j]) .^ (1/3); n = -[3, 4];").unwrap();
+        let pi = std::f64::consts::PI;
+        assert_eq!(elems(&ev, "a"), vec![C::new(pi, 0.0), C::new(pi, 0.0)]);
+        assert_eq!(elems(&ev, "b")[0], C::new(pi, 0.0));
+        assert_eq!(elems(&ev, "c")[0].re, pi);
+        let r = elems(&ev, "r")[0];
+        assert!(r.re.abs() < 1e-15 && (r.im - 2.0).abs() < 1e-15, "sqrt(-4) = {r}");
+        let p = elems(&ev, "p")[0];
+        assert!(p.im > 0.0, "principal cube root of -8 has a positive imaginary part, got {p}");
+        for z in elems(&ev, "n") {
+            assert!(z.im.is_sign_positive(), "-[3, 4] left {z:?}");
+        }
+    }
+
+    #[test]
+    fn negating_a_complex_value_is_unchanged() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "z = -[1 + 2j, -3 - 4j];").unwrap();
+        assert_eq!(elems(&ev, "z"), vec![C::new(-1.0, -2.0), C::new(3.0, 4.0)]);
+    }
+
+    #[test]
+    fn save_keeps_small_imaginary_parts() {
+        let dir = std::env::temp_dir().join(format!("rustlab_exact_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let npy = dir.join("v.npy");
+        let csv = dir.join("v.csv");
+        let toml = dir.join("v.toml");
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "v = [1 + 1e-14j, 2]; save(\"{n}\", v); a = load(\"{n}\"); \
+             save(\"{c}\", v); b = load(\"{c}\"); r = [1, 2]; save(\"{n}\", r); s = load(\"{n}\");",
+            n = npy.display(), c = csv.display()
+        )).unwrap();
+        assert_eq!(elems(&ev, "a")[0], C::new(1.0, 1e-14));
+        assert_eq!(elems(&ev, "b")[0], C::new(1.0, 1e-14));
+        assert_eq!(elems(&ev, "s"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0)]);
+        // Real data is still written as 8-byte floats.
+        let bytes = std::fs::read(&npy).unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..128]).contains("<f8"));
+        run(&mut ev, &format!(
+            "t.v = [1 + 1e-20j, 2]; save(\"{f}\", t); u = load(\"{f}\"); w = u.v;", f = toml.display()
+        )).unwrap();
+        assert_eq!(elems(&ev, "w"), vec![C::new(1.0, 1e-20), C::new(2.0, 0.0)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn toml_round_trips_complex_values_of_every_shape() {
+        let dir = std::env::temp_dir().join(format!("rustlab_toml_complex_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c.toml");
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "t.z = 3 - 0.25j; t.m = [1 + 2j, 3; -4j, 5.5]; t.k = reshape((1:8) + 1j * (8:-1:1), 2, 2, 2); \
+             t.r = [1, 2, 3]; t.zr = 1 + 0j; save(\"{f}\", t); u = load(\"{f}\"); \
+             z0 = t.z; m0 = t.m; k0 = t.k; z1 = u.z; m1 = u.m; k1 = u.k; r1 = u.r; zr1 = u.zr;",
+            f = f.display()
+        )).unwrap();
+        assert!(matches!(ev.get("z1"), Some(Value::Complex(_))));
+        assert!(matches!(ev.get("m1"), Some(Value::Matrix(m)) if m.dim() == (2, 2)));
+        assert!(matches!(ev.get("k1"), Some(Value::Tensor3(k)) if k.dim() == (2, 2, 2)));
+        for (a, b) in [("z0", "z1"), ("m0", "m1"), ("k0", "k1")] {
+            assert_eq!(elems(&ev, a), elems(&ev, b), "{a} vs {b}");
+        }
+        assert_eq!(elems(&ev, "r1"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0), C::new(3.0, 0.0)]);
+        assert!(matches!(ev.get("zr1"), Some(Value::Scalar(x)) if *x == 1.0));
+        // Real arrays stay plain TOML numbers; only complex ones use the table.
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!text.contains("[r.") && !text.contains("zr."), "{text}");
+        assert!(text.contains("__complex_re") && text.contains("__complex_im"), "{text}");
+        let err = run(&mut ev, &format!(
+            "s.__complex_re = 1; save(\"{}\", s);", f.display()
+        )).unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod angle_arrays {
+    use crate::Evaluator;
+    use crate::Value;
+    use std::f64::consts::PI;
+
+    fn eval(src: &str, name: &str) -> Value {
+        let mut ev = Evaluator::new();
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+        ev.get(name).unwrap().clone()
+    }
+
+    #[test]
+    fn angle_of_a_matrix_is_elementwise_and_keeps_shape() {
+        let v = eval("A = angle([1j, -1; 1, -1j]);", "A");
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
+        assert_eq!(m.shape(), &[2, 2]);
+        let want = [[PI / 2.0, PI], [0.0, -PI / 2.0]];
+        for r in 0..2 {
+            for c in 0..2 {
+                assert_eq!(m[[r, c]].re, want[r][c], "({r},{c})");
+                assert_eq!(m[[r, c]].im, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn angle_of_a_negated_real_matrix_is_pi() {
+        let v = eval("A = angle(-[1, 2; 3, 4]);", "A");
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
+        assert!(m.iter().all(|c| c.re == PI && c.im == 0.0), "{:?}", *m);
+    }
+
+    #[test]
+    fn angle_of_a_tensor3_keeps_shape() {
+        let v = eval("T = angle(-ones3(2, 3, 4));", "T");
+        let Value::Tensor3(t) = v else { panic!("expected Tensor3, got {v}") };
+        assert_eq!(t.shape(), &[2, 3, 4]);
+        assert!(t.iter().all(|c| c.re == PI && c.im == 0.0));
     }
 }

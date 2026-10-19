@@ -1,3 +1,4 @@
+use super::shared::Shared;
 use super::table::Table;
 use crate::ast::{BinOp, Expr};
 use ndarray::{Array1, Array2};
@@ -187,11 +188,11 @@ pub enum Value {
         overflow: OverflowMode,
     },
     Complex(C64),
-    Vector(CVector),
-    Matrix(CMatrix),
+    Vector(Shared<CVector>),
+    Matrix(Shared<CMatrix>),
     /// Rank-3 complex tensor, shape `(m, n, p)` — rows × cols × pages.
     /// 1-based indexing via `A(i, j, k)`; `A(:, :, k)` returns a `Matrix` (drops trailing singleton).
-    Tensor3(CTensor3),
+    Tensor3(Shared<CTensor3>),
     Bool(bool),
     Str(String),
     QFmt(QFmtSpec),
@@ -223,7 +224,7 @@ pub enum Value {
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,
-        captured_env: HashMap<String, Value>,
+        captured_env: super::fast_hash::FxHashMap<String, Value>,
     },
     /// Handle to a named function: `@name`. Dispatch happens at call time.
     FuncHandle(String),
@@ -330,10 +331,19 @@ impl Value {
                 class,
                 overflow,
             )),
-            Value::Complex(c) => Ok(Value::Complex(-c)),
-            Value::Vector(v) => Ok(Value::Vector(-v)),
-            Value::Matrix(m) => Ok(Value::Matrix(-m)),
-            Value::Tensor3(t) => Ok(Value::Tensor3(-t)),
+            Value::Complex(c) => Ok(Value::Complex(Self::neg_c64(c))),
+            Value::Vector(mut v) => {
+                Shared::make_mut(&mut v).mapv_inplace(Self::neg_c64);
+                Ok(Value::Vector(v))
+            }
+            Value::Matrix(mut m) => {
+                Shared::make_mut(&mut m).mapv_inplace(Self::neg_c64);
+                Ok(Value::Matrix(m))
+            }
+            Value::Tensor3(mut t) => {
+                Shared::make_mut(&mut t).mapv_inplace(Self::neg_c64);
+                Ok(Value::Tensor3(t))
+            }
             Value::TransferFn { num, den } => Ok(Value::TransferFn {
                 num: num.iter().map(|&x| -x).collect(),
                 den,
@@ -450,6 +460,41 @@ impl Value {
         m
     }
 
+    /// Division with a real divisor done per component: `x / y` for real
+    /// `x`, and `(a / y, b / y)` for complex `x`. `num_complex` divides as
+    /// `x·conj(y) / |y|²` even when `y` is real, which rounds differently
+    /// from scalar `/` and overflows once `|y|²` does (`1e200 / 1e200` was
+    /// `NaN`). A complex divisor keeps that formula.
+    #[inline]
+    pub(crate) fn div_c64(x: C64, y: C64) -> C64 {
+        if y.im == 0.0 {
+            if x.im == 0.0 {
+                C64::new(x.re / y.re, 0.0)
+            } else {
+                C64::new(x.re / y.re, x.im / y.re)
+            }
+        } else {
+            x / y
+        }
+    }
+
+    /// `-x` without leaving `-0.0` in a zero imaginary part (`0.0 - 0.0` is
+    /// `+0.0`), so the negation of a real value is still real for `angle`
+    /// and the branch cuts of `sqrt`, `log` and `.^`.
+    #[inline]
+    pub(crate) fn neg_c64(x: C64) -> C64 {
+        C64::new(-x.re, 0.0 - x.im)
+    }
+
+    /// `x` with a `-0.0` imaginary part replaced by `+0.0` (`-0.0 + 0.0` is
+    /// `+0.0`; every other value is unchanged). A zero imaginary part means
+    /// a real value, whatever its sign, so functions that read the sign
+    /// through `atan2` (`arg`, complex `ln`, `sqrt`) see it through this.
+    #[inline]
+    pub(crate) fn unsigned_zero_im(x: C64) -> C64 {
+        C64::new(x.re, x.im + 0.0)
+    }
+
     /// Power `base ^ exp` for two complex operands, preserving realness.
     ///
     /// When both operands are real (zero imaginary part) the result is computed
@@ -475,6 +520,7 @@ impl Value {
             }
             // Negative base, non-integer exponent → genuinely complex below.
         }
+        let base = Self::unsigned_zero_im(base);
         let ln_base = Complex::new(base.norm().ln(), base.arg());
         (exp * ln_base).exp()
     }
@@ -537,7 +583,11 @@ impl Value {
             Add => &a_exp + &b_exp,
             Sub => &a_exp - &b_exp,
             ElemMul => &a_exp * &b_exp,
-            ElemDiv => &a_exp / &b_exp,
+            ElemDiv => Array2::from_shape_vec(
+                a_exp.dim(),
+                a_exp.iter().zip(b_exp.iter()).map(|(&x, &y)| Self::div_c64(x, y)).collect(),
+            )
+            .map_err(|e| e.to_string())?,
             ElemPow | Pow => {
                 let rows = a_exp.nrows();
                 let cols = a_exp.ncols();
@@ -599,11 +649,11 @@ impl Value {
             }
             (Value::Scalar(_) | Value::Complex(_), Value::Vector(v)) => {
                 let a = Self::promote_to_complex(lhs.clone())?;
-                Ok(Value::Vector(v.mapv(|x| f(a, x))))
+                Ok(Value::Vector(v.mapv(|x| f(a, x)).into()))
             }
             (Value::Vector(v), Value::Scalar(_) | Value::Complex(_)) => {
                 let b = Self::promote_to_complex(rhs.clone())?;
-                Ok(Value::Vector(v.mapv(|x| f(x, b))))
+                Ok(Value::Vector(v.mapv(|x| f(x, b)).into()))
             }
             (Value::Vector(a), Value::Vector(b)) => {
                 if a.len() != b.len() {
@@ -615,24 +665,24 @@ impl Value {
                 }
                 Ok(Value::Vector(Array1::from_iter(
                     a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)),
-                )))
+                ).into()))
             }
-            (Value::Matrix(a), Value::Matrix(b)) => Ok(Value::Matrix(zip_mm(a, b, &f)?)),
+            (Value::Matrix(a), Value::Matrix(b)) => Ok(Value::Matrix(zip_mm(a, b, &f)?.into())),
             (Value::Matrix(m), Value::Scalar(_) | Value::Complex(_)) => {
                 let b = Self::promote_to_complex(rhs.clone())?;
-                Ok(Value::Matrix(m.mapv(|x| f(x, b))))
+                Ok(Value::Matrix(m.mapv(|x| f(x, b)).into()))
             }
             (Value::Scalar(_) | Value::Complex(_), Value::Matrix(m)) => {
                 let a = Self::promote_to_complex(lhs.clone())?;
-                Ok(Value::Matrix(m.mapv(|x| f(a, x))))
+                Ok(Value::Matrix(m.mapv(|x| f(a, x)).into()))
             }
             (Value::Matrix(m), Value::Vector(v)) => {
                 let v_row = Self::vector_to_row_matrix(v);
-                Ok(Value::Matrix(zip_mm(m, &v_row, &f)?))
+                Ok(Value::Matrix(zip_mm(m, &v_row, &f)?.into()))
             }
             (Value::Vector(v), Value::Matrix(m)) => {
                 let v_row = Self::vector_to_row_matrix(v);
-                Ok(Value::Matrix(zip_mm(&v_row, m, &f)?))
+                Ok(Value::Matrix(zip_mm(&v_row, m, &f)?.into()))
             }
             _ => Err(format!(
                 "expected numeric (scalar/vector/matrix) operands, got {} and {}",
@@ -688,9 +738,9 @@ impl Value {
                 let n = v.len();
                 let data: Vec<C64> = v.iter().map(|&c| f(c)).collect();
                 let col = Array2::from_shape_vec((n, 1), data).map_err(|e| e.to_string())?;
-                Ok(Value::Matrix(col))
+                Ok(Value::Matrix(col.into()))
             }
-            Value::Matrix(m) => Ok(Value::Matrix(Self::transpose_matrix::<CONJ>(m))),
+            Value::Matrix(m) => Ok(Value::Matrix(Self::transpose_matrix::<CONJ>(m).into())),
             Value::Scalar(n) => Ok(Value::Scalar(*n)),
             v @ (Value::Int { .. } | Value::IntArray { .. }) => Ok(Self::transpose_int(v.clone())),
             Value::Complex(c) => Ok(Value::Complex(f(*c))),
@@ -706,29 +756,15 @@ impl Value {
     /// layout. `m.t().mapv(..)` keeps the view's column-major memory order,
     /// so the result was not a contiguous row-major slice and later
     /// elementwise fast paths skipped it; this writes row-major directly,
-    /// in 32 × 32 tiles so both the reads and the writes stay in cache.
+    /// in tiles so both the reads and the writes stay in cache
+    /// (`elementwise::par_transpose`, parallel when large).
     fn transpose_matrix<const CONJ: bool>(m: &CMatrix) -> CMatrix {
-        let f = |c: C64| if CONJ { c.conj() } else { c };
         let (r, c) = m.dim();
         let Some(src) = m.as_slice() else {
+            let f = |c: C64| if CONJ { c.conj() } else { c };
             return Array2::from_shape_fn((c, r), |(i, j)| f(m[[j, i]]));
         };
-        const TILE: usize = 32;
-        let mut out: Vec<C64> = Vec::with_capacity(r * c);
-        let dst = &mut out.spare_capacity_mut()[..r * c];
-        for i0 in (0..r).step_by(TILE) {
-            for j0 in (0..c).step_by(TILE) {
-                for i in i0..(i0 + TILE).min(r) {
-                    let row = &src[i * c..(i + 1) * c];
-                    for j in j0..(j0 + TILE).min(c) {
-                        dst[j * r + i].write(f(row[j]));
-                    }
-                }
-            }
-        }
-        // SAFETY: the tiles cover every (i, j) in r × c once, writing
-        // element j·r + i of the c × r output, so all r·c are initialised.
-        unsafe { out.set_len(r * c) };
+        let out = super::elementwise::par_transpose(src, r, c, CONJ);
         Array2::from_shape_vec((c, r), out).expect("c × r elements")
     }
 
@@ -753,7 +789,7 @@ impl Value {
     }
 
     /// `Some((start, len))` when the 0-based positions are `start, start+1, …`.
-    fn run_of(positions: &[usize]) -> Option<(usize, usize)> {
+    pub(crate) fn run_of(positions: &[usize]) -> Option<(usize, usize)> {
         let first = *positions.first()?;
         positions
             .iter()
@@ -929,14 +965,14 @@ impl Value {
                         if start + n <= v.len() {
                             let out = super::elementwise::par_vector_copy(v, start, n)
                                 .unwrap_or_else(|| v.slice(ndarray::s![start..start + n]).to_owned());
-                            return Ok(Value::Vector(out));
+                            return Ok(Value::Vector(out.into()));
                         }
                     }
                     // Logical-mask indexing: a same-length 0/1 vector selects
                     // the positions where it is 1 (e.g. v(v > 2)).
                     if let Some(positions) = Self::as_logical_mask(idx_v, v.len()) {
                         let data: Vec<C64> = positions.iter().map(|&i| v[i]).collect();
-                        return Ok(Value::Vector(Array1::from_vec(data)));
+                        return Ok(Value::Vector(Array1::from_vec(data).into()));
                     }
                     let result: Result<Vec<_>, _> = idx_v
                         .iter()
@@ -953,7 +989,7 @@ impl Value {
                             }
                         })
                         .collect();
-                    Ok(Value::Vector(Array1::from_vec(result?)))
+                    Ok(Value::Vector(Array1::from_vec(result?).into()))
                 }
                 other => Err(format!("invalid index type: {}", other.type_name())),
             },
@@ -996,11 +1032,11 @@ impl Value {
                                 .iter()
                                 .map(|&k0| m[[k0 % m.nrows(), k0 / m.nrows()]])
                                 .collect();
-                            return Ok(Value::Vector(Array1::from_vec(data)));
+                            return Ok(Value::Vector(Array1::from_vec(data).into()));
                         }
                         let picks: Result<Vec<C64>, _> =
                             idx_v.iter().map(|c| pick(c.re)).collect();
-                        Ok(Value::Vector(Array1::from_vec(picks?)))
+                        Ok(Value::Vector(Array1::from_vec(picks?).into()))
                     }
                     // Same-shape 0/1 matrix → logical mask: M(M > 2) selects the
                     // matching elements in column-major order as a vector.
@@ -1018,14 +1054,14 @@ impl Value {
                                 }
                             }
                         }
-                        Ok(Value::Vector(Array1::from_vec(data)))
+                        Ok(Value::Vector(Array1::from_vec(data).into()))
                     }
                     // 1-D-shaped matrix (1×N or N×1) used as an index list —
                     // treat its entries as the linear indices.
                     Value::Matrix(idx_m) if idx_m.nrows() == 1 || idx_m.ncols() == 1 => {
                         let picks: Result<Vec<C64>, _> =
                             idx_m.iter().map(|c| pick(c.re)).collect();
-                        Ok(Value::Vector(Array1::from_vec(picks?)))
+                        Ok(Value::Vector(Array1::from_vec(picks?).into()))
                     }
                     Value::All => {
                         let mut flat_data: Vec<C64> = Vec::with_capacity(m.nrows() * m.ncols());
@@ -1034,7 +1070,7 @@ impl Value {
                                 flat_data.push(m[[r, c]]);
                             }
                         }
-                        Ok(Value::Vector(Array1::from_vec(flat_data)))
+                        Ok(Value::Vector(Array1::from_vec(flat_data).into()))
                     }
                     other => Err(format!(
                         "matrix single-index with {} not supported; use M(i,j) or M(linear) or M(I) where I is a numeric vector",
@@ -1075,7 +1111,7 @@ impl Value {
                                 }
                             }
                         }
-                        Ok(Value::Vector(Array1::from_vec(flat)))
+                        Ok(Value::Vector(Array1::from_vec(flat).into()))
                     }
                     Value::Scalar(k) => {
                         let c = pick(*k)?;
@@ -1088,7 +1124,7 @@ impl Value {
                     Value::Vector(idx_v) => {
                         let picks: Result<Vec<C64>, _> =
                             idx_v.iter().map(|c| pick(c.re)).collect();
-                        Ok(Value::Vector(Array1::from_vec(picks?)))
+                        Ok(Value::Vector(Array1::from_vec(picks?).into()))
                     }
                     other => Err(format!(
                         "tensor single-index with {} not supported; use T(i,j,k), T(linear), T(I), or T(:)",
@@ -1131,7 +1167,7 @@ impl Value {
                                 row[c] = v;
                             }
                         }
-                        Ok(Value::Vector(row))
+                        Ok(Value::Vector(row.into()))
                     }
                     _ => Err(format!(
                         "sparse matrix single-index: unsupported index type {}",
@@ -1246,23 +1282,23 @@ impl Value {
                     // Single row → Vector
                     let r = rows[0];
                     if let Some((c0, n)) = Self::run_of(&cols) {
-                        return Ok(Value::Vector(m.slice(ndarray::s![r, c0..c0 + n]).to_owned()));
+                        return Ok(Value::Vector(m.slice(ndarray::s![r, c0..c0 + n]).to_owned().into()));
                     }
                     Ok(Value::Vector(Array1::from_iter(
                         cols.iter().map(|&c| m[[r, c]]),
-                    )))
+                    ).into()))
                 } else if cols.len() == 1 {
                     // Single column → Vector
                     let c = cols[0];
                     Ok(Value::Vector(Array1::from_iter(
                         rows.iter().map(|&r| m[[r, c]]),
-                    )))
+                    ).into()))
                 } else if let (Some((r0, nr)), Some((c0, nc))) = (Self::run_of(&rows), Self::run_of(&cols)) {
                     // Block of consecutive rows and columns (`M(:, a:b)`):
                     // copy it as a slice, row by row, instead of per element.
                     let out = super::elementwise::par_block_copy(m, (r0, nr), (c0, nc))
                         .unwrap_or_else(|| m.slice(ndarray::s![r0..r0 + nr, c0..c0 + nc]).to_owned());
-                    Ok(Value::Matrix(out))
+                    Ok(Value::Matrix(out.into()))
                 } else {
                     // Submatrix
                     let nr = rows.len();
@@ -1274,7 +1310,7 @@ impl Value {
                         }
                     }
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?,
+                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?.into(),
                     ))
                 }
             }
@@ -1310,7 +1346,7 @@ impl Value {
                     }
                     _ => {
                         // Fall back to dense for complex indexing
-                        Value::Matrix(sm.to_dense()).index_2d(row_idx, col_idx)
+                        Value::Matrix(sm.to_dense().into()).index_2d(row_idx, col_idx)
                     }
                 }
             }
@@ -1379,26 +1415,26 @@ impl Value {
         match singleton_count {
             2 => {
                 // Single non-singleton axis → Vector
-                Ok(Value::Vector(Array1::from_vec(data)))
+                Ok(Value::Vector(Array1::from_vec(data).into()))
             }
             1 => {
                 // Two non-singleton axes → Matrix in their natural (earlier-first) order
                 if singletons[0] {
                     // Drop i: Matrix (nc × np)
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nc, np), data).map_err(|e| e.to_string())?,
+                        Array2::from_shape_vec((nc, np), data).map_err(|e| e.to_string())?.into(),
                     ))
                 } else if singletons[1] {
                     // Drop j: Matrix (nr × np)
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, np), data).map_err(|e| e.to_string())?,
+                        Array2::from_shape_vec((nr, np), data).map_err(|e| e.to_string())?.into(),
                     ))
                 } else {
                     // Drop k: Matrix (nr × nc), but the walk order above is
                     // (r major, c middle, k inner) — so for np=1 we already
                     // collected in row-major (nr, nc) order.
                     Ok(Value::Matrix(
-                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?,
+                        Array2::from_shape_vec((nr, nc), data).map_err(|e| e.to_string())?.into(),
                     ))
                 }
             }
@@ -1408,7 +1444,7 @@ impl Value {
                 // for shape (nr, nc, np) — what Array3::from_shape_vec expects by default.
                 Ok(Value::Tensor3(
                     ndarray::Array3::from_shape_vec((nr, nc, np), data)
-                        .map_err(|e| e.to_string())?,
+                        .map_err(|e| e.to_string())?.into(),
                 ))
             }
         }
@@ -1508,9 +1544,9 @@ impl Value {
             } => {
                 let m = Self::int_array_to_cmatrix(&data, rows, cols);
                 if rows == 1 || cols == 1 {
-                    Value::Vector(m.iter().copied().collect())
+                    Value::Vector(m.iter().copied().collect::<CVector>().into())
                 } else {
-                    Value::Matrix(m)
+                    Value::Matrix(m.into())
                 }
             }
             other => other,
@@ -1752,7 +1788,7 @@ impl Value {
                             Complex::new(if flag { 1.0 } else { 0.0 }, 0.0)
                         })
                         .collect();
-                    Ok(Value::Vector(Array1::from_vec(data)))
+                    Ok(Value::Vector(Array1::from_vec(data).into()))
                 }
                 (Value::Scalar(a), Value::Vector(v)) => {
                     let a = *a;
@@ -1772,7 +1808,7 @@ impl Value {
                             Complex::new(if flag { 1.0 } else { 0.0 }, 0.0)
                         })
                         .collect();
-                    Ok(Value::Vector(Array1::from_vec(data)))
+                    Ok(Value::Vector(Array1::from_vec(data).into()))
                 }
                 // Element-wise Vector op Vector (equal length) → 0/1 vector.
                 (Value::Vector(x), Value::Vector(y)) => {
@@ -1788,16 +1824,16 @@ impl Value {
                         .zip(y.iter())
                         .map(|(a, b)| Complex::new(cmp(a.re, b.re), 0.0))
                         .collect();
-                    Ok(Value::Vector(Array1::from_vec(data)))
+                    Ok(Value::Vector(Array1::from_vec(data).into()))
                 }
                 // Matrix op Scalar / Scalar op Matrix → 0/1 matrix.
                 (Value::Matrix(m), Value::Scalar(b)) => {
                     let b = *b;
-                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(c.re, b), 0.0))))
+                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(c.re, b), 0.0)).into()))
                 }
                 (Value::Scalar(a), Value::Matrix(m)) => {
                     let a = *a;
-                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(a, c.re), 0.0))))
+                    Ok(Value::Matrix(m.mapv(|c| Complex::new(cmp(a, c.re), 0.0)).into()))
                 }
                 // Element-wise Matrix op Matrix (equal shape) → 0/1 matrix.
                 (Value::Matrix(x), Value::Matrix(y)) => {
@@ -1811,7 +1847,7 @@ impl Value {
                     let data = Array2::from_shape_fn(x.dim(), |(i, j)| {
                         Complex::new(cmp(x[[i, j]].re, y[[i, j]].re), 0.0)
                     });
-                    Ok(Value::Matrix(data))
+                    Ok(Value::Matrix(data.into()))
                 }
                 // A vector is a row. Compare it with a 1×N matrix of the
                 // same length elementwise; the result is a 0/1 matrix.
@@ -1821,13 +1857,13 @@ impl Value {
                     let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
                         Complex::new(cmp(v[j].re, m[[0, j]].re), 0.0)
                     });
-                    Ok(Value::Matrix(data))
+                    Ok(Value::Matrix(data.into()))
                 }
                 (Value::Matrix(m), Value::Vector(v)) if m.nrows() == 1 && m.ncols() == v.len() => {
                     let data = Array2::from_shape_fn((1, v.len()), |(_, j)| {
                         Complex::new(cmp(m[[0, j]].re, v[j].re), 0.0)
                     });
-                    Ok(Value::Matrix(data))
+                    Ok(Value::Matrix(data.into()))
                 }
                 _ => Err(format!(
                     "comparison requires compatible operands, got {} and {}",
@@ -1890,7 +1926,7 @@ impl Value {
                     Add => a + b,
                     Sub => a - b,
                     Mul | ElemMul => a * b,
-                    Div | ElemDiv => a / b,
+                    Div | ElemDiv => Self::div_c64(a, b),
                     Pow | ElemPow => Self::pow_c64(a, b),
                     _ => unreachable!(),
                 };
@@ -1918,10 +1954,12 @@ impl Value {
                             ));
                         }
                         let result: CVector = match op {
-                            Add => a + b,
-                            Sub => a - b,
-                            ElemMul => a * b,
-                            ElemDiv => a / b,
+                            Add => &**a + &**b,
+                            Sub => &**a - &**b,
+                            ElemMul => &**a * &**b,
+                            ElemDiv => Array1::from_iter(
+                                a.iter().zip(b.iter()).map(|(&x, &y)| Self::div_c64(x, y)),
+                            ),
                             ElemPow => Array1::from_iter(
                                 a.iter().zip(b.iter()).map(|(&x, &y)| Self::pow_c64(x, y)),
                             ),
@@ -1936,7 +1974,7 @@ impl Value {
                         } else {
                             result
                         };
-                        Ok(Value::Vector(result))
+                        Ok(Value::Vector(result.into()))
                     }
                     Div => Err(
                         "cannot divide two vectors with /; use ./ for element-wise division"
@@ -1961,13 +1999,13 @@ impl Value {
                     Add => Array1::from_iter(vec.iter().map(|&x| scalar + x)),
                     Sub => Array1::from_iter(vec.iter().map(|&x| scalar - x)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| scalar * x)),
-                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| scalar / x)),
+                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| Self::div_c64(scalar, x))),
                     Pow | ElemPow => {
                         Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(scalar, x)))
                     }
                     _ => unreachable!(),
                 };
-                Ok(Value::Vector(result))
+                Ok(Value::Vector(result.into()))
             }
 
             // ── Vector broadcast with Scalar/Complex ──────────────────────────
@@ -1981,13 +2019,13 @@ impl Value {
                     Add => Array1::from_iter(vec.iter().map(|&x| x + scalar)),
                     Sub => Array1::from_iter(vec.iter().map(|&x| x - scalar)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| x * scalar)),
-                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| x / scalar)),
+                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| Self::div_c64(x, scalar))),
                     Pow | ElemPow => {
                         Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(x, scalar)))
                     }
                     _ => unreachable!(),
                 };
-                Ok(Value::Vector(result))
+                Ok(Value::Vector(result.into()))
             }
 
             // ── Matrix * Matrix (matrix multiply for `*`, element-wise for `.*`) ──
@@ -1999,17 +2037,17 @@ impl Value {
                                 a.nrows(), a.ncols(), b.nrows(), b.ncols()
                             ));
                     }
-                    Ok(Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view())))
+                    Ok(Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()))
                 }
                 Add | Sub | ElemMul | ElemDiv => {
-                    Self::elementwise_with_broadcast(a, b, op).map(Value::Matrix)
+                    Self::elementwise_with_broadcast(a, b, op).map(|m| Value::Matrix(m.into()))
                 }
                 Div => Err(
                     "use ./ for element-wise matrix division; or inv(A)*B for left-divide"
                         .to_string(),
                 ),
                 ElemPow | Pow => {
-                    Self::elementwise_with_broadcast(a, b, op).map(Value::Matrix)
+                    Self::elementwise_with_broadcast(a, b, op).map(|m| Value::Matrix(m.into()))
                 }
                 _ => unreachable!(),
             },
@@ -2035,13 +2073,13 @@ impl Value {
                             }
                         }
                         Ok(Value::Matrix(Array2::from_shape_vec((nrows, ncols), data)
-                            .map_err(|e| e.to_string())?))
+                            .map_err(|e| e.to_string())?.into()))
                     }
                     Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
                         // Implicit expansion: treat the row Vector as a 1×N row
                         // matrix and broadcast against the M×K matrix.
                         let v_row = Self::vector_to_row_matrix(v);
-                        Self::elementwise_with_broadcast(m, &v_row, op).map(Value::Matrix)
+                        Self::elementwise_with_broadcast(m, &v_row, op).map(|m| Value::Matrix(m.into()))
                     }
                     _ => Err(format!(
                         "operator {:?} not defined for matrix and vector; use .* ./ .^ for element-wise ops",
@@ -2070,14 +2108,14 @@ impl Value {
                             let c = result[0];
                             if c.im.abs() < 1e-12 { Ok(Value::Scalar(c.re)) } else { Ok(Value::Complex(c)) }
                         } else {
-                            Ok(Value::Vector(result))
+                            Ok(Value::Vector(result.into()))
                         }
                     }
                     Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
                         // Implicit expansion: row Vector promoted to 1×N matrix
                         // on the lhs, then broadcast against M×K rhs.
                         let v_row = Self::vector_to_row_matrix(v);
-                        Self::elementwise_with_broadcast(&v_row, m, op).map(Value::Matrix)
+                        Self::elementwise_with_broadcast(&v_row, m, op).map(|m| Value::Matrix(m.into()))
                     }
                     _ => Err(format!(
                         "operator {:?} not defined for vector and matrix; use .* ./ .^ for element-wise ops",
@@ -2101,13 +2139,13 @@ impl Value {
                         Add => scalar + x,
                         Sub => scalar - x,
                         Mul | ElemMul => scalar * x,
-                        Div | ElemDiv => scalar / x,
+                        Div | ElemDiv => Self::div_c64(scalar, x),
                         Pow | ElemPow => Self::pow_c64(scalar, x),
                         _ => unreachable!(),
                     })
                     .collect();
                 Ok(Value::Matrix(
-                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?,
+                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?.into(),
                 ))
             }
 
@@ -2126,13 +2164,13 @@ impl Value {
                         Add => x + scalar,
                         Sub => x - scalar,
                         Mul | ElemMul => x * scalar,
-                        Div | ElemDiv => x / scalar,
+                        Div | ElemDiv => Self::div_c64(x, scalar),
                         Pow | ElemPow => Self::pow_c64(x, scalar),
                         _ => unreachable!(),
                     })
                     .collect();
                 Ok(Value::Matrix(
-                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?,
+                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?.into(),
                 ))
             }
 
@@ -2165,12 +2203,12 @@ impl Value {
                                 Add => a + b,
                                 Sub => a - b,
                                 Mul | ElemMul => a * b,
-                                Div | ElemDiv => a / b,
+                                Div | ElemDiv => Self::div_c64(a, b),
                                 Pow | ElemPow => Self::pow_c64(a, b),
                                 _ => unreachable!(),
                             }
                         });
-                        Ok(Value::Tensor3(mapped))
+                        Ok(Value::Tensor3(mapped.into()))
                     }
                     _ => Err(if scalar_on_left {
                         format!("operator {:?} not defined between scalar and tensor3", op)
@@ -2190,10 +2228,12 @@ impl Value {
                     ));
                 }
                 match op {
-                    Add => Ok(Value::Tensor3(a + b)),
-                    Sub => Ok(Value::Tensor3(a - b)),
-                    ElemMul => Ok(Value::Tensor3(a * b)),
-                    ElemDiv => Ok(Value::Tensor3(a / b)),
+                    Add => Ok(Value::Tensor3((&**a + &**b).into())),
+                    Sub => Ok(Value::Tensor3((&**a - &**b).into())),
+                    ElemMul => Ok(Value::Tensor3((&**a * &**b).into())),
+                    ElemDiv => Ok(Value::Tensor3(
+                        ndarray::Zip::from(&**a).and(&**b).map_collect(|&x, &y| Self::div_c64(x, y)).into(),
+                    )),
                     ElemPow => {
                         let data = a
                             .iter()
@@ -2205,7 +2245,7 @@ impl Value {
                                 (a.shape()[0], a.shape()[1], a.shape()[2]),
                                 data,
                             )
-                            .map_err(|e| e.to_string())?,
+                            .map_err(|e| e.to_string())?.into(),
                         ))
                     }
                     Mul => Err(
@@ -2345,7 +2385,7 @@ impl Value {
                     Sub => Ok(Value::SparseMatrix(a.sub(&b).map_err(|e| e)?)),
                     _ => {
                         // Fall back to dense for other ops between two sparse matrices
-                        Self::binop(op, Value::Matrix(a.to_dense()), Value::Matrix(b.to_dense()))
+                        Self::binop(op, Value::Matrix(a.to_dense().into()), Value::Matrix(b.to_dense().into()))
                     }
                 }
             }
@@ -2353,59 +2393,59 @@ impl Value {
             // SparseMatrix * Scalar / Scalar * SparseMatrix
             (Value::SparseMatrix(sm), Value::Scalar(s)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(Complex::new(*s, 0.0)))),
-                Add => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
-                Sub => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
+                Add => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+                Sub => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
                 Div | ElemDiv => Ok(Value::SparseMatrix(sm.scale(Complex::new(1.0 / s, 0.0)))),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
+                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
             },
             (Value::Scalar(s), Value::SparseMatrix(sm)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(Complex::new(*s, 0.0)))),
-                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense())),
+                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
             },
             (Value::SparseMatrix(sm), Value::Complex(c)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(*c))),
                 Div | ElemDiv => Ok(Value::SparseMatrix(sm.scale(Complex::new(1.0, 0.0) / c))),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
+                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
             },
             (Value::Complex(c), Value::SparseMatrix(sm)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(*c))),
-                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense())),
+                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
             },
 
             // SparseMatrix * Matrix (SpMM)
             (Value::SparseMatrix(sm), Value::Matrix(ref b)) => match op {
-                Mul => Ok(Value::Matrix(sm.spmm(b).map_err(|e| e)?)),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
+                Mul => Ok(Value::Matrix(sm.spmm(b).map_err(|e| e)?.into())),
+                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
             },
 
             // Matrix * SparseMatrix → dense fallback
             (Value::Matrix(_), Value::SparseMatrix(sm)) => {
-                Self::binop(op, lhs, Value::Matrix(sm.to_dense()))
+                Self::binop(op, lhs, Value::Matrix(sm.to_dense().into()))
             }
 
             // SparseVector + SparseVector, SparseVector - SparseVector
             (Value::SparseVector(a), Value::SparseVector(b)) => match op {
                 Add => Ok(Value::SparseVector(a.add(&b).map_err(|e| e)?)),
                 Sub => Ok(Value::SparseVector(a.sub(&b).map_err(|e| e)?)),
-                _ => Self::binop(op, Value::Vector(a.to_dense()), Value::Vector(b.to_dense())),
+                _ => Self::binop(op, Value::Vector(a.to_dense().into()), Value::Vector(b.to_dense().into())),
             },
 
             // SparseVector * Scalar / Scalar * SparseVector
             (Value::SparseVector(sv), Value::Scalar(s)) => match op {
                 Mul | ElemMul => Ok(Value::SparseVector(sv.scale(Complex::new(*s, 0.0)))),
                 Div | ElemDiv => Ok(Value::SparseVector(sv.scale(Complex::new(1.0 / s, 0.0)))),
-                _ => Self::binop(op, Value::Vector(sv.to_dense()), rhs),
+                _ => Self::binop(op, Value::Vector(sv.to_dense().into()), rhs),
             },
             (Value::Scalar(s), Value::SparseVector(sv)) => match op {
                 Mul | ElemMul => Ok(Value::SparseVector(sv.scale(Complex::new(*s, 0.0)))),
-                _ => Self::binop(op, lhs, Value::Vector(sv.to_dense())),
+                _ => Self::binop(op, lhs, Value::Vector(sv.to_dense().into())),
             },
 
             // Remaining sparse fallback: promote to dense
-            (Value::SparseVector(sv), _) => Self::binop(op, Value::Vector(sv.to_dense()), rhs),
-            (_, Value::SparseVector(sv)) => Self::binop(op, lhs, Value::Vector(sv.to_dense())),
-            (Value::SparseMatrix(sm), _) => Self::binop(op, Value::Matrix(sm.to_dense()), rhs),
-            (_, Value::SparseMatrix(sm)) => Self::binop(op, lhs, Value::Matrix(sm.to_dense())),
+            (Value::SparseVector(sv), _) => Self::binop(op, Value::Vector(sv.to_dense().into()), rhs),
+            (_, Value::SparseVector(sv)) => Self::binop(op, lhs, Value::Vector(sv.to_dense().into())),
+            (Value::SparseMatrix(sm), _) => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+            (_, Value::SparseMatrix(sm)) => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
 
             (a, b) => Err(format!(
                 "unsupported operand types for {:?}: {} and {}",
@@ -2423,7 +2463,7 @@ impl Value {
     /// are concatenated vertically. Rows separated by `;`, elements by space or `,`.
     pub fn from_matrix_rows(rows: Vec<Vec<Value>>) -> Result<Value, String> {
         if rows.is_empty() {
-            return Ok(Value::Vector(Array1::zeros(0)));
+            return Ok(Value::Vector(Array1::zeros(0).into()));
         }
         // Integer elements widen to double: a matrix/vector literal built from
         // integers is a double array (consistent with the widening rule; use an
@@ -2432,6 +2472,13 @@ impl Value {
             .into_iter()
             .map(|row| row.into_iter().map(Self::widen_int).collect())
             .collect();
+
+        let mut nonempty = rows.iter().filter(|r| !r.is_empty());
+        if let (Some(row), None) = (nonempty.next(), nonempty.next()) {
+            if let Some(v) = Self::concat_one_row(row) {
+                return Ok(v);
+            }
+        }
 
         let mut all_rows: Vec<Vec<C64>> = Vec::new();
 
@@ -2495,13 +2542,13 @@ impl Value {
         }
 
         if all_rows.is_empty() {
-            return Ok(Value::Vector(Array1::zeros(0)));
+            return Ok(Value::Vector(Array1::zeros(0).into()));
         }
 
         if all_rows.len() == 1 {
             Ok(Value::Vector(Array1::from_vec(
                 all_rows.into_iter().next().unwrap(),
-            )))
+            ).into()))
         } else {
             let ncols = all_rows[0].len();
             for (i, row) in all_rows.iter().enumerate() {
@@ -2517,15 +2564,74 @@ impl Value {
             let nrows = all_rows.len();
             let flat: Vec<C64> = all_rows.into_iter().flatten().collect();
             let mat = Array2::from_shape_vec((nrows, ncols), flat).map_err(|e| e.to_string())?;
-            Ok(Value::Matrix(mat))
+            Ok(Value::Matrix(mat.into()))
         }
+    }
+
+    /// `[a, b, …]` with one row of scalars, vectors and 1×N matrices: the
+    /// output is sized once and the pieces copied in (in parallel when
+    /// long), instead of growing it piece by piece. A lone vector is
+    /// shared, not copied. `None` for anything else (a taller block, a
+    /// non-numeric element, a non-contiguous array), which the general
+    /// path handles or reports.
+    fn concat_one_row(row: &[Value]) -> Option<Value> {
+        if let [Value::Vector(_)] = row {
+            return Some(row[0].clone());
+        }
+        enum Piece<'a> {
+            One(C64),
+            Run(&'a [C64]),
+        }
+        let mut pieces = Vec::with_capacity(row.len());
+        let mut starts = Vec::with_capacity(row.len());
+        let mut total = 0usize;
+        for val in row {
+            let p = match val {
+                Value::Scalar(x) => Piece::One(Complex::new(*x, 0.0)),
+                Value::Complex(c) => Piece::One(*c),
+                Value::Vector(v) => Piece::Run(v.as_slice()?),
+                Value::Matrix(m) if m.nrows() == 1 => Piece::Run(m.as_slice()?),
+                _ => return None,
+            };
+            starts.push(total);
+            total += match p {
+                Piece::One(_) => 1,
+                Piece::Run(s) => s.len(),
+            };
+            pieces.push(p);
+        }
+        let out = super::elementwise::par_fill(total, &|o, dst: &mut [std::mem::MaybeUninit<C64>]| {
+            // The piece holding output position o, then onward.
+            let mut k = starts.partition_point(|&s| s <= o) - 1;
+            let mut at = o;
+            let end = o + dst.len();
+            while at < end {
+                let (s, next) = (starts[k], starts.get(k + 1).copied().unwrap_or(total));
+                let stop = next.min(end);
+                match pieces[k] {
+                    Piece::One(c) => {
+                        if stop > at {
+                            dst[at - o].write(c);
+                        }
+                    }
+                    Piece::Run(src) => {
+                        for (d, &x) in dst[at - o..stop - o].iter_mut().zip(&src[at - s..]) {
+                            d.write(x);
+                        }
+                    }
+                }
+                at = stop;
+                k += 1;
+            }
+        });
+        Some(Value::Vector(Array1::from_vec(out).into()))
     }
 
     /// Convert to CVector (for passing to DSP functions).
     /// Accepts 1D vectors, scalars, and n×1 or 1×n matrices (column/row vectors).
     pub fn to_cvector(&self) -> Result<CVector, String> {
         match self {
-            Value::Vector(v) => Ok(v.clone()),
+            Value::Vector(v) => Ok((**v).clone()),
             Value::Scalar(n) => Ok(Array1::from_vec(vec![Complex::new(*n, 0.0)])),
             Value::Int { data, .. } => Ok(Array1::from_vec(vec![Complex::new(*data as f64, 0.0)])),
             Value::IntArray {

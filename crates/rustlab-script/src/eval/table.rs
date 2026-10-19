@@ -141,12 +141,12 @@ impl TableColumn {
     /// logical array to put it in.
     pub fn to_value(&self) -> Value {
         match self {
-            TableColumn::Number(v) => Value::Vector(ndarray::Array1::from_vec(v.clone())),
+            TableColumn::Number(v) => Value::Vector(ndarray::Array1::from_vec(v.clone()).into()),
             TableColumn::Text(v) => Value::StringArray(v.clone()),
             TableColumn::Logical(v) if v.len() == 1 => Value::Bool(v[0]),
             TableColumn::Logical(v) => Value::Vector(ndarray::Array1::from_iter(
                 v.iter().map(|&b| Complex::new(if b { 1.0 } else { 0.0 }, 0.0)),
-            )),
+            ).into()),
         }
     }
 
@@ -162,7 +162,7 @@ impl TableColumn {
                         Value::Complex(c)
                     }
                 } else {
-                    Value::Vector(ndarray::Array1::from_iter(rows.iter().map(|&r| v[r])))
+                    Value::Vector(ndarray::Array1::from_iter(rows.iter().map(|&r| v[r])).into())
                 }
             }
             TableColumn::Text(v) => {
@@ -178,7 +178,7 @@ impl TableColumn {
                 } else {
                     Value::Vector(ndarray::Array1::from_iter(rows.iter().map(|&r| {
                         Complex::new(if v[r] { 1.0 } else { 0.0 }, 0.0)
-                    })))
+                    })).into())
                 }
             }
         }

@@ -24,7 +24,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "abs",    brief: "Absolute value / magnitude",
         detail: "abs(x)  — scalar, complex, vector, or matrix\n  Returns element-wise magnitude; complex inputs give their L2 norm per element.\n  abs([-1, 2; -3, 4])  →  [1, 2; 3, 4]" },
     HelpEntry { name: "angle",  brief: "Phase angle in radians",
-        detail: "angle(x)  — scalar, complex, or vector\n  Returns the argument of a complex number." },
+        detail: "angle(x)  — scalar, complex, vector, matrix, or rank-3 tensor\n  Returns the argument of a complex number, element-wise, as a real array of the same shape." },
     HelpEntry { name: "real",   brief: "Real part",
         detail: "real(x)  — scalar, complex, vector, or matrix\n  1×1 matrix returns a scalar." },
     HelpEntry { name: "imag",   brief: "Imaginary part",
