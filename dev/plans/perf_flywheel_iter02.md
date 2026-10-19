@@ -1,7 +1,7 @@
 # Perf flywheel iteration 02
 
 **Status:** in progress
-**Current phase:** item 5 (R4 real-storage design)
+**Current phase:** response note (all five items done)
 **Branch:** `feature/perf-iter02` (one PR, a commit per item, version 0.3.11)
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md`
 (measured on rustlab 0.3.10, `1ebb762`, Apple M4 Max, 2026-10-18; training
@@ -36,7 +36,7 @@ storage (roadmap C11, `eval_perf_value_borrow.md`).
 | 2 | Copy-on-write `Vector` / `Matrix` / `Tensor3` storage | R1, R2 (C11) | done |
 | 3 | Single-pass `reshape`, preallocated `[…]`, zeroed allocation for `zeros` | R1 | done (parallel ratio missed) |
 | 4 | Per-statement interpreter overhead, from a sampling profile | R2 | done |
-| 5 | Real-valued storage: design document only (`real_storage.md`) | R4 | not started |
+| 5 | Real-valued storage: design document only (`real_storage.md`) | R4 | done (design) |
 
 ## 1. R3: transposed operands (done)
 
@@ -220,8 +220,24 @@ builtins, which a `parmap` worker cannot use (the cores are already busy).
 
 ## 5. R4: real-valued storage (design only)
 
-`dev/plans/real_storage.md`: representation (inside `Shared<T>`), when values
-become complex, builtin migration, `parmap` transfer, `save`/`load`. First
-slice deferred to iteration 03.
+Done: [`real_storage.md`](real_storage.md). The storage choice goes inside
+the copy-on-write handle (`Store<D>`: an authoritative real buffer, or complex,
+with a widened-complex cache behind `Deref`), so the ~1,150 unconverted match
+sites stay correct and only get slower; `[widen]` / `[promote]` profile rows
+rank what to convert. First slice (iteration 03): constructors, elementwise,
+`matmul_conj`, indexing, `reshape` / transpose / one-row `[…]`, scalar-function
+builtins, `parmap` packing, `save` / `load`.
+
+Findings while writing it:
+- Checkpoints are already 8 bytes per number: `save` writes `<f8` when the
+  imaginary parts are (near) zero (`ckpt_001000.npz` is 6,488,804 bytes for
+  811k numbers). The request's 9.7 MB would need `f32`.
+- Array `./` on real data runs complex division: 34,998 of 100,000 random
+  pairs differ from scalar `/` in the last digit, and `[1e200] ./ [1e200]` is
+  `NaN`. `-v` leaves `-0.0` imaginary parts, so `angle(-[1, 2])` is `-π`.
+  Fixed here (`Value::div_c64`, `neg_c64`, `unsigned_zero_im`), so the
+  slice can be compared exactly; trajectory moved 2.0e-16 relative, gate PASS.
+- `save` dropped imaginary parts below `1e-12` (NPY, CSV) and `1e-15` (TOML).
+  Fixed: NPY / CSV are exact, TOML stores complex values as a table of parts.
 
 ## Response note (filled in at the end)
