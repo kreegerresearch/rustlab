@@ -11459,16 +11459,17 @@ mod toml_tests {
     }
 
     #[test]
-    fn error_on_complex_in_struct() {
+    fn complex_in_struct_round_trips() {
         let path = tmp_path("complex");
         let result = try_run(&format!(
             "s = struct(\"z\", 1 + j*2);\n\
-             save(\"{path}\", s);"
+             save(\"{path}\", s);\n\
+             t = load(\"{path}\");\n\
+             if abs(t.z - (1 + 2j)) > 0, error(\"lost the imaginary part\"); end"
         ));
-        assert!(
-            result.is_err(),
-            "saving complex values to TOML should error"
-        );
+        if let Err(e) = result {
+            panic!("{e}");
+        }
     }
 
     #[test]
@@ -21130,5 +21131,224 @@ mod table_tests {
                 "src `{src}`\nmsg `{msg}`\nmissing `{needle}`"
             );
         }
+    }
+}
+
+// ── Real values stay real: division, negation, exact save ─────────────────
+
+#[cfg(test)]
+mod real_value_semantics {
+    use crate::Evaluator;
+    use crate::Value;
+    use num_complex::Complex;
+
+    type C = Complex<f64>;
+
+    fn run(ev: &mut Evaluator, src: &str) -> Result<(), String> {
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).map_err(|e| e.to_string())
+    }
+
+    fn elems(ev: &Evaluator, name: &str) -> Vec<C> {
+        match ev.get(name).unwrap() {
+            Value::Vector(v) => v.to_vec(),
+            Value::Matrix(m) => m.iter().copied().collect(),
+            Value::Tensor3(t) => t.iter().copied().collect(),
+            Value::Complex(c) => vec![*c],
+            Value::Scalar(s) => vec![C::new(*s, 0.0)],
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_division_matches_scalar_division_bit_for_bit() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "seed(7); x = rand(1, 5000) * 10 - 5; y = rand(1, 5000) * 10 + 0.1; \
+                      dv = x ./ y; dm = reshape(x, 50, 100) ./ reshape(y, 50, 100); \
+                      dt = reshape(x, 10, 25, 20) ./ reshape(y, 10, 25, 20); \
+                      ds = x ./ 3; dl = 3 ./ y; d2 = x / 3;").unwrap();
+        let (x, y) = (elems(&ev, "x"), elems(&ev, "y"));
+        let col_major = |name: &str, rows: usize, cols: usize| -> Vec<C> {
+            // dm is row-major in storage; reshape walked x column-major.
+            let m = elems(&ev, name);
+            let mut out = vec![C::new(0.0, 0.0); m.len()];
+            for r in 0..rows {
+                for c in 0..cols {
+                    out[c * rows + r] = m[r * cols + c];
+                }
+            }
+            out
+        };
+        for (name, got) in [("dv", elems(&ev, "dv")), ("dm", col_major("dm", 50, 100))] {
+            for k in 0..x.len() {
+                let want = x[k].re / y[k].re;
+                assert_eq!(got[k].re.to_bits(), want.to_bits(), "{name}[{k}]");
+                assert_eq!(got[k].im.to_bits(), 0.0f64.to_bits(), "{name}[{k}] imaginary");
+            }
+        }
+        let dt = elems(&ev, "dt");
+        let mut sorted_t: Vec<u64> = dt.iter().map(|c| c.re.to_bits()).collect();
+        let mut sorted_w: Vec<u64> = x.iter().zip(&y).map(|(a, b)| (a.re / b.re).to_bits()).collect();
+        sorted_t.sort();
+        sorted_w.sort();
+        assert_eq!(sorted_t, sorted_w, "tensor3 ./");
+        for (name, f) in [
+            ("ds", Box::new(|k: usize| x[k].re / 3.0) as Box<dyn Fn(usize) -> f64>),
+            ("d2", Box::new(|k: usize| x[k].re / 3.0)),
+            ("dl", Box::new(|k: usize| 3.0 / y[k].re)),
+        ] {
+            let got = elems(&ev, name);
+            for k in 0..got.len() {
+                assert_eq!(got[k].re.to_bits(), f(k).to_bits(), "{name}[{k}]");
+            }
+        }
+    }
+
+    #[test]
+    fn division_by_a_real_number_does_not_overflow() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "a = [1e200, 4] ./ [1e200, 0]; b = [3 + 4j] ./ [1e200]; c = (6 + 8j) / 2; \
+                      d = [6 + 8j, 1] ./ [2, 2];").unwrap();
+        let a = elems(&ev, "a");
+        assert_eq!(a[0], C::new(1.0, 0.0));
+        assert_eq!(a[1], C::new(f64::INFINITY, 0.0));
+        let b = elems(&ev, "b")[0];
+        assert_eq!(b, C::new(3.0 / 1e200, 4.0 / 1e200));
+        assert_eq!(elems(&ev, "c")[0], C::new(3.0, 4.0));
+        assert_eq!(elems(&ev, "d"), vec![C::new(3.0, 4.0), C::new(0.5, 0.0)]);
+    }
+
+    #[test]
+    fn complex_divisor_still_divides_as_complex() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "q = [1 + 1j, 2] ./ [1j, 1 - 1j];").unwrap();
+        let q = elems(&ev, "q");
+        assert_eq!(q[0], C::new(1.0, 1.0) / C::new(0.0, 1.0));
+        assert_eq!(q[1], C::new(2.0, 0.0) / C::new(1.0, -1.0));
+    }
+
+    #[test]
+    fn negating_a_real_value_leaves_no_negative_zero() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "a = angle(-[1, 2]); b = angle(-[2, 1j]); c = angle(-(1 + 0j)); \
+                      r = sqrt(-[4, 1j]); p = (-[8, 1j]) .^ (1/3); n = -[3, 4];").unwrap();
+        let pi = std::f64::consts::PI;
+        assert_eq!(elems(&ev, "a"), vec![C::new(pi, 0.0), C::new(pi, 0.0)]);
+        assert_eq!(elems(&ev, "b")[0], C::new(pi, 0.0));
+        assert_eq!(elems(&ev, "c")[0].re, pi);
+        let r = elems(&ev, "r")[0];
+        assert!(r.re.abs() < 1e-15 && (r.im - 2.0).abs() < 1e-15, "sqrt(-4) = {r}");
+        let p = elems(&ev, "p")[0];
+        assert!(p.im > 0.0, "principal cube root of -8 has a positive imaginary part, got {p}");
+        for z in elems(&ev, "n") {
+            assert!(z.im.is_sign_positive(), "-[3, 4] left {z:?}");
+        }
+    }
+
+    #[test]
+    fn negating_a_complex_value_is_unchanged() {
+        let mut ev = Evaluator::new();
+        run(&mut ev, "z = -[1 + 2j, -3 - 4j];").unwrap();
+        assert_eq!(elems(&ev, "z"), vec![C::new(-1.0, -2.0), C::new(3.0, 4.0)]);
+    }
+
+    #[test]
+    fn save_keeps_small_imaginary_parts() {
+        let dir = std::env::temp_dir().join(format!("rustlab_exact_save_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let npy = dir.join("v.npy");
+        let csv = dir.join("v.csv");
+        let toml = dir.join("v.toml");
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "v = [1 + 1e-14j, 2]; save(\"{n}\", v); a = load(\"{n}\"); \
+             save(\"{c}\", v); b = load(\"{c}\"); r = [1, 2]; save(\"{n}\", r); s = load(\"{n}\");",
+            n = npy.display(), c = csv.display()
+        )).unwrap();
+        assert_eq!(elems(&ev, "a")[0], C::new(1.0, 1e-14));
+        assert_eq!(elems(&ev, "b")[0], C::new(1.0, 1e-14));
+        assert_eq!(elems(&ev, "s"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0)]);
+        // Real data is still written as 8-byte floats.
+        let bytes = std::fs::read(&npy).unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..128]).contains("<f8"));
+        run(&mut ev, &format!(
+            "t.v = [1 + 1e-20j, 2]; save(\"{f}\", t); u = load(\"{f}\"); w = u.v;", f = toml.display()
+        )).unwrap();
+        assert_eq!(elems(&ev, "w"), vec![C::new(1.0, 1e-20), C::new(2.0, 0.0)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn toml_round_trips_complex_values_of_every_shape() {
+        let dir = std::env::temp_dir().join(format!("rustlab_toml_complex_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("c.toml");
+        let mut ev = Evaluator::new();
+        run(&mut ev, &format!(
+            "t.z = 3 - 0.25j; t.m = [1 + 2j, 3; -4j, 5.5]; t.k = reshape((1:8) + 1j * (8:-1:1), 2, 2, 2); \
+             t.r = [1, 2, 3]; t.zr = 1 + 0j; save(\"{f}\", t); u = load(\"{f}\"); \
+             z0 = t.z; m0 = t.m; k0 = t.k; z1 = u.z; m1 = u.m; k1 = u.k; r1 = u.r; zr1 = u.zr;",
+            f = f.display()
+        )).unwrap();
+        assert!(matches!(ev.get("z1"), Some(Value::Complex(_))));
+        assert!(matches!(ev.get("m1"), Some(Value::Matrix(m)) if m.dim() == (2, 2)));
+        assert!(matches!(ev.get("k1"), Some(Value::Tensor3(k)) if k.dim() == (2, 2, 2)));
+        for (a, b) in [("z0", "z1"), ("m0", "m1"), ("k0", "k1")] {
+            assert_eq!(elems(&ev, a), elems(&ev, b), "{a} vs {b}");
+        }
+        assert_eq!(elems(&ev, "r1"), vec![C::new(1.0, 0.0), C::new(2.0, 0.0), C::new(3.0, 0.0)]);
+        assert!(matches!(ev.get("zr1"), Some(Value::Scalar(x)) if *x == 1.0));
+        // Real arrays stay plain TOML numbers; only complex ones use the table.
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(!text.contains("[r.") && !text.contains("zr."), "{text}");
+        assert!(text.contains("__complex_re") && text.contains("__complex_im"), "{text}");
+        let err = run(&mut ev, &format!(
+            "s.__complex_re = 1; save(\"{}\", s);", f.display()
+        )).unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod angle_arrays {
+    use crate::Evaluator;
+    use crate::Value;
+    use std::f64::consts::PI;
+
+    fn eval(src: &str, name: &str) -> Value {
+        let mut ev = Evaluator::new();
+        let stmts = crate::parser::parse(crate::lexer::tokenize(src).unwrap()).unwrap();
+        ev.run(&stmts).unwrap();
+        ev.get(name).unwrap().clone()
+    }
+
+    #[test]
+    fn angle_of_a_matrix_is_elementwise_and_keeps_shape() {
+        let v = eval("A = angle([1j, -1; 1, -1j]);", "A");
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
+        assert_eq!(m.shape(), &[2, 2]);
+        let want = [[PI / 2.0, PI], [0.0, -PI / 2.0]];
+        for r in 0..2 {
+            for c in 0..2 {
+                assert_eq!(m[[r, c]].re, want[r][c], "({r},{c})");
+                assert_eq!(m[[r, c]].im, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn angle_of_a_negated_real_matrix_is_pi() {
+        let v = eval("A = angle(-[1, 2; 3, 4]);", "A");
+        let Value::Matrix(m) = v else { panic!("expected Matrix, got {v}") };
+        assert!(m.iter().all(|c| c.re == PI && c.im == 0.0), "{:?}", *m);
+    }
+
+    #[test]
+    fn angle_of_a_tensor3_keeps_shape() {
+        let v = eval("T = angle(-ones3(2, 3, 4));", "T");
+        let Value::Tensor3(t) = v else { panic!("expected Tensor3, got {v}") };
+        assert_eq!(t.shape(), &[2, 3, 4]);
+        assert!(t.iter().all(|c| c.re == PI && c.im == 0.0));
     }
 }

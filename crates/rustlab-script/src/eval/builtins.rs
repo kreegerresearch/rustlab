@@ -675,11 +675,19 @@ fn builtin_angle(args: Vec<Value>) -> Result<Value, ScriptError> {
         } else {
             std::f64::consts::PI
         })),
-        Value::Complex(c) => Ok(Value::Scalar(c.arg())),
+        // A zero imaginary part is real whatever its sign: `angle(-1)` is π.
+        Value::Complex(c) => Ok(Value::Scalar(Value::unsigned_zero_im(*c).arg())),
         Value::Vector(v) => {
-            let result: CVector = Array1::from_iter(v.iter().map(|&c| Complex::new(c.arg(), 0.0)));
+            let result: CVector =
+                Array1::from_iter(v.iter().map(|&c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)));
             Ok(Value::Vector(result.into()))
         }
+        Value::Matrix(m) => Ok(Value::Matrix(
+            m.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)).into(),
+        )),
+        Value::Tensor3(t) => Ok(Value::Tensor3(
+            t.mapv(|c| Complex::new(Value::unsigned_zero_im(c).arg(), 0.0)).into(),
+        )),
         other => Err(ScriptError::type_err(format!(
             "angle: unsupported type {}",
             other
@@ -794,12 +802,14 @@ fn apply_scalar_fn_promoting(
                 Ok(Value::Scalar(f(n)))
             }
         }
-        Value::Complex(c) => Ok(Value::Complex(fc(*c))),
+        // A `-0.0` imaginary part is read as `+0.0`, so the branch cut of
+        // `sqrt` / `log` puts `-4 - 0i` with `-4`.
+        Value::Complex(c) => Ok(Value::Complex(fc(Value::unsigned_zero_im(*c)))),
         // Real input avoids the complex formula. Contiguous arrays map in
         // parallel when long (`par_map`); the values are the same either way.
         Value::Vector(v) => {
             let real = is_real_vector(v);
-            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(c) };
+            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(Value::unsigned_zero_im(c)) };
             Ok(Value::Vector(match v.as_slice() {
                 Some(s) => CVector::from(super::elementwise::par_map(s, &map)),
                 None => v.mapv(map),
@@ -807,7 +817,7 @@ fn apply_scalar_fn_promoting(
         }
         Value::Matrix(m) => {
             let real = m.iter().all(|c| c.im == 0.0);
-            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(c) };
+            let map = |c: Complex<f64>| if real { elem(c.re) } else { fc(Value::unsigned_zero_im(c)) };
             Ok(Value::Matrix(match m.as_slice() {
                 Some(s) => Array2::from_shape_vec(m.dim(), super::elementwise::par_map(s, &map)).expect("same shape"),
                 None => m.mapv(map),
@@ -7216,7 +7226,8 @@ fn value_to_c64_array(val: &Value) -> Result<(Vec<Complex<f64>>, Vec<usize>), St
 
 /// Build the raw bytes of an NPY v1.0 file.
 fn build_npy_bytes(data: &[Complex<f64>], shape: &[usize]) -> Vec<u8> {
-    let real_only = data.iter().all(|c| c.im.abs() < 1e-12);
+    // Exact: a tolerance here silently dropped small imaginary parts.
+    let real_only = data.iter().all(|c| c.im == 0.0);
     let descr = if real_only { "<f8" } else { "<c16" };
 
     let shape_str = match shape {
@@ -7550,7 +7561,7 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
 // ── CSV helpers ────────────────────────────────────────────────────────────
 
 fn fmt_csv_cell(c: Complex<f64>) -> String {
-    if c.im.abs() < 1e-12 {
+    if c.im == 0.0 {
         format!("{}", c.re)
     } else if c.im >= 0.0 {
         format!("{}+{}i", c.re, c.im)

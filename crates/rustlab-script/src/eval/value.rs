@@ -331,17 +331,17 @@ impl Value {
                 class,
                 overflow,
             )),
-            Value::Complex(c) => Ok(Value::Complex(-c)),
+            Value::Complex(c) => Ok(Value::Complex(Self::neg_c64(c))),
             Value::Vector(mut v) => {
-                Shared::make_mut(&mut v).mapv_inplace(|x| -x);
+                Shared::make_mut(&mut v).mapv_inplace(Self::neg_c64);
                 Ok(Value::Vector(v))
             }
             Value::Matrix(mut m) => {
-                Shared::make_mut(&mut m).mapv_inplace(|x| -x);
+                Shared::make_mut(&mut m).mapv_inplace(Self::neg_c64);
                 Ok(Value::Matrix(m))
             }
             Value::Tensor3(mut t) => {
-                Shared::make_mut(&mut t).mapv_inplace(|x| -x);
+                Shared::make_mut(&mut t).mapv_inplace(Self::neg_c64);
                 Ok(Value::Tensor3(t))
             }
             Value::TransferFn { num, den } => Ok(Value::TransferFn {
@@ -460,6 +460,41 @@ impl Value {
         m
     }
 
+    /// Division with a real divisor done per component: `x / y` for real
+    /// `x`, and `(a / y, b / y)` for complex `x`. `num_complex` divides as
+    /// `x·conj(y) / |y|²` even when `y` is real, which rounds differently
+    /// from scalar `/` and overflows once `|y|²` does (`1e200 / 1e200` was
+    /// `NaN`). A complex divisor keeps that formula.
+    #[inline]
+    pub(crate) fn div_c64(x: C64, y: C64) -> C64 {
+        if y.im == 0.0 {
+            if x.im == 0.0 {
+                C64::new(x.re / y.re, 0.0)
+            } else {
+                C64::new(x.re / y.re, x.im / y.re)
+            }
+        } else {
+            x / y
+        }
+    }
+
+    /// `-x` without leaving `-0.0` in a zero imaginary part (`0.0 - 0.0` is
+    /// `+0.0`), so the negation of a real value is still real for `angle`
+    /// and the branch cuts of `sqrt`, `log` and `.^`.
+    #[inline]
+    pub(crate) fn neg_c64(x: C64) -> C64 {
+        C64::new(-x.re, 0.0 - x.im)
+    }
+
+    /// `x` with a `-0.0` imaginary part replaced by `+0.0` (`-0.0 + 0.0` is
+    /// `+0.0`; every other value is unchanged). A zero imaginary part means
+    /// a real value, whatever its sign, so functions that read the sign
+    /// through `atan2` (`arg`, complex `ln`, `sqrt`) see it through this.
+    #[inline]
+    pub(crate) fn unsigned_zero_im(x: C64) -> C64 {
+        C64::new(x.re, x.im + 0.0)
+    }
+
     /// Power `base ^ exp` for two complex operands, preserving realness.
     ///
     /// When both operands are real (zero imaginary part) the result is computed
@@ -485,6 +520,7 @@ impl Value {
             }
             // Negative base, non-integer exponent → genuinely complex below.
         }
+        let base = Self::unsigned_zero_im(base);
         let ln_base = Complex::new(base.norm().ln(), base.arg());
         (exp * ln_base).exp()
     }
@@ -547,7 +583,11 @@ impl Value {
             Add => &a_exp + &b_exp,
             Sub => &a_exp - &b_exp,
             ElemMul => &a_exp * &b_exp,
-            ElemDiv => &a_exp / &b_exp,
+            ElemDiv => Array2::from_shape_vec(
+                a_exp.dim(),
+                a_exp.iter().zip(b_exp.iter()).map(|(&x, &y)| Self::div_c64(x, y)).collect(),
+            )
+            .map_err(|e| e.to_string())?,
             ElemPow | Pow => {
                 let rows = a_exp.nrows();
                 let cols = a_exp.ncols();
@@ -1886,7 +1926,7 @@ impl Value {
                     Add => a + b,
                     Sub => a - b,
                     Mul | ElemMul => a * b,
-                    Div | ElemDiv => a / b,
+                    Div | ElemDiv => Self::div_c64(a, b),
                     Pow | ElemPow => Self::pow_c64(a, b),
                     _ => unreachable!(),
                 };
@@ -1917,7 +1957,9 @@ impl Value {
                             Add => &**a + &**b,
                             Sub => &**a - &**b,
                             ElemMul => &**a * &**b,
-                            ElemDiv => &**a / &**b,
+                            ElemDiv => Array1::from_iter(
+                                a.iter().zip(b.iter()).map(|(&x, &y)| Self::div_c64(x, y)),
+                            ),
                             ElemPow => Array1::from_iter(
                                 a.iter().zip(b.iter()).map(|(&x, &y)| Self::pow_c64(x, y)),
                             ),
@@ -1957,7 +1999,7 @@ impl Value {
                     Add => Array1::from_iter(vec.iter().map(|&x| scalar + x)),
                     Sub => Array1::from_iter(vec.iter().map(|&x| scalar - x)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| scalar * x)),
-                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| scalar / x)),
+                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| Self::div_c64(scalar, x))),
                     Pow | ElemPow => {
                         Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(scalar, x)))
                     }
@@ -1977,7 +2019,7 @@ impl Value {
                     Add => Array1::from_iter(vec.iter().map(|&x| x + scalar)),
                     Sub => Array1::from_iter(vec.iter().map(|&x| x - scalar)),
                     Mul | ElemMul => Array1::from_iter(vec.iter().map(|&x| x * scalar)),
-                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| x / scalar)),
+                    Div | ElemDiv => Array1::from_iter(vec.iter().map(|&x| Self::div_c64(x, scalar))),
                     Pow | ElemPow => {
                         Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(x, scalar)))
                     }
@@ -2097,7 +2139,7 @@ impl Value {
                         Add => scalar + x,
                         Sub => scalar - x,
                         Mul | ElemMul => scalar * x,
-                        Div | ElemDiv => scalar / x,
+                        Div | ElemDiv => Self::div_c64(scalar, x),
                         Pow | ElemPow => Self::pow_c64(scalar, x),
                         _ => unreachable!(),
                     })
@@ -2122,7 +2164,7 @@ impl Value {
                         Add => x + scalar,
                         Sub => x - scalar,
                         Mul | ElemMul => x * scalar,
-                        Div | ElemDiv => x / scalar,
+                        Div | ElemDiv => Self::div_c64(x, scalar),
                         Pow | ElemPow => Self::pow_c64(x, scalar),
                         _ => unreachable!(),
                     })
@@ -2161,7 +2203,7 @@ impl Value {
                                 Add => a + b,
                                 Sub => a - b,
                                 Mul | ElemMul => a * b,
-                                Div | ElemDiv => a / b,
+                                Div | ElemDiv => Self::div_c64(a, b),
                                 Pow | ElemPow => Self::pow_c64(a, b),
                                 _ => unreachable!(),
                             }
@@ -2189,7 +2231,9 @@ impl Value {
                     Add => Ok(Value::Tensor3((&**a + &**b).into())),
                     Sub => Ok(Value::Tensor3((&**a - &**b).into())),
                     ElemMul => Ok(Value::Tensor3((&**a * &**b).into())),
-                    ElemDiv => Ok(Value::Tensor3((&**a / &**b).into())),
+                    ElemDiv => Ok(Value::Tensor3(
+                        ndarray::Zip::from(&**a).and(&**b).map_collect(|&x, &y| Self::div_c64(x, y)).into(),
+                    )),
                     ElemPow => {
                         let data = a
                             .iter()

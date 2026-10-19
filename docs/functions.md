@@ -25,6 +25,8 @@ Numeric literals also accept an imaginary suffix: `2j`, `1.5i`, and `3e8j` are i
 
 rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
 
+Division by a real number (`./`, or `/` by a scalar) divides each part directly, so `x ./ y` on real arrays equals scalar `x / y` bit for bit, and `(a + bj) ./ y` is `a/y + (b/y)j`. Negating a real value keeps it real, and a zero imaginary part counts as real whatever its sign, so `angle(-1)` is `π` and `sqrt(-4)` is `2j`.
+
 ```
 u = [1.0, 2.0, 3.0]
 v = [4.0, 5.0, 6.0]
@@ -50,7 +52,7 @@ Absolute value or magnitude. Element-wise on all numeric types.
 ### `angle(x)`
 Phase angle in radians (`atan2(im, re)`).
 - Complex: `angle(1 + j*1)` → `0.7854` (π/4)
-- Vector: element-wise
+- Vector, matrix, or rank-3 tensor: element-wise, returns a real array of the same shape
 
 ### `real(x)`
 Real part of a scalar, complex number, vector, or matrix. A 1×1 matrix returns a scalar.
@@ -2668,9 +2670,9 @@ Save a single variable to a file. Format is determined by the file extension.
 
 | Extension | Format | Notes |
 |-----------|--------|-------|
-| `.npy` | NumPy binary | Real arrays stored as `float64`, complex as `complex128`. Compatible with `numpy.load()` in Python. |
-| `.csv` | CSV text | Complex values written as `a+bi`. Real arrays produce plain numbers. |
-| `.toml` | TOML text | Top-level value must be a struct. Nested structs, vectors, booleans, and strings are supported. |
+| `.npy` | NumPy binary | Arrays whose imaginary parts are all exactly zero are stored as `float64`, others as `complex128`. Compatible with `numpy.load()` in Python. |
+| `.csv` | CSV text | A cell with a nonzero imaginary part (however small) is written as `a+bi`, others as plain numbers. |
+| `.toml` | TOML text | Top-level value must be a struct. Nested structs, vectors, booleans, and strings are supported. A complex value (any nonzero imaginary part) is written as a table `{ __complex_re = …, __complex_im = … }` of its real and imaginary parts, each the same shape as the value, and loads back as the complex value. Real values stay plain numbers. `__complex_re`, `__complex_im`, `__tensor3_shape` and `__tensor3_data` are reserved field names. |
 
 ```
 save("signal.npy", x)

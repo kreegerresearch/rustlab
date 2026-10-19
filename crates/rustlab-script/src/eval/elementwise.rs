@@ -188,7 +188,7 @@ macro_rules! with_op {
             Add => { let $f = |x: C64, y: C64| x + y; $body }
             Sub => { let $f = |x: C64, y: C64| x - y; $body }
             Mul | ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            Div | ElemDiv => { let $f = |x: C64, y: C64| x / y; $body }
+            Div | ElemDiv => { let $f = Value::div_c64; $body }
             Pow | ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
             _ => unreachable!("checked by the caller"),
         }
@@ -199,7 +199,7 @@ macro_rules! with_op {
             Add => { let $f = |x: C64, y: C64| x + y; $body }
             Sub => { let $f = |x: C64, y: C64| x - y; $body }
             ElemMul => { let $f = |x: C64, y: C64| x * y; $body }
-            ElemDiv => { let $f = |x: C64, y: C64| x / y; $body }
+            ElemDiv => { let $f = Value::div_c64; $body }
             ElemPow => { let $f = |x: C64, y: C64| Value::pow_c64(x, y); $body }
             _ => unreachable!("checked by the caller"),
         }

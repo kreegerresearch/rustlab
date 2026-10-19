@@ -17,6 +17,34 @@ Perf flywheel iteration 02 (requests from `rustlab_llm`,
   operand directly, so no transpose is formed; the time is in `[matmul]`.
   A transpose of a vector (`v' * M`) or a standalone `A'` still has its
   row. Results are unchanged, bit for bit.
+- **Array division by a real number matches scalar division.** `./` (and
+  `/` by a scalar) on arrays ran complex division, `x·conj(y) / |y|²`,
+  even when `y` was real: about a third of `x ./ y` results differed from
+  `x / y` in the last digit, and `[1e200] ./ [1e200]` was `NaN` because
+  `|y|²` overflowed. A real divisor now divides each part directly, so
+  `x ./ y` equals `x / y` bit for bit, and `(a + bj) ./ y` is
+  `a/y + (b/y)j`. A complex divisor is unchanged. Results that depended
+  on the old last digit move by one rounding step.
+- **Negating a real value keeps it real.** `-v` left `-0.0` in every
+  imaginary part, so `angle(-[1, 2])` was `[-π, -π]` and the complex
+  branch of `sqrt`, `log` and `.^` put the result on the wrong side of the
+  cut (`sqrt(-[4, 1j])` started with `-2j`). Negation no longer makes a
+  negative zero, and `angle`, `.^` and the elementwise math builtins read a
+  zero imaginary part as real whatever its sign: `angle(-1)` is `π`.
+- **`save` keeps small imaginary parts.** NPY wrote real `<f8` data, and
+  CSV a real cell, whenever the imaginary part was below `1e-12`, dropping
+  it silently. Both now write real data only when the imaginary part is
+  exactly zero; real arrays still save as `<f8`. TOML has no complex
+  numbers and used to drop parts below `1e-15`, or refuse larger ones. A
+  complex scalar, vector, matrix or rank-3 tensor now saves as a table of
+  its parts (`__complex_re`, `__complex_im`, each the same shape as the
+  value) and loads back exactly. Real values are written as plain numbers,
+  as before. Those two field names are reserved, like the `Tensor3` ones.
+
+### Fixed
+- **`angle` accepts matrices and rank-3 tensors.** It returned an
+  "unsupported type" error for anything but a scalar or vector. It now works
+  element-wise and returns a real array of the same shape.
 
 ### Performance
 - **Products with a transposed matrix operand skip the transpose.**
