@@ -629,9 +629,9 @@ pub const HELP: &[HelpEntry] = &[
         detail: "feval(\"name\", arg1, arg2, ...)  — invoke any builtin or user function by name\n  Useful for dynamic/generic dispatch.\n\nExample:\n  feval(\"sin\", pi/2)   →  1.0\n  feval(\"my_fn\", x)" },
     // Profiling
     HelpEntry { name: "profile", brief: "Enable in-script call profiling",
-        detail: "profile(fn1, fn2, ...)  — track only the named functions\nprofile()              — track all function calls\n\nStats accumulate across multiple calls to profile().\nA final report is printed to stderr on script exit.\nFor CLI-flag profiling without source changes: rustlab run --profile script.rlab" },
+        detail: "profile(fn1, fn2, ...)  — report only the named functions\nprofile()              — report every call\n\nNested calls (inside user functions, arrayfun callbacks) get their own rows.\nColumns: Calls, Total (inclusive ms), Self (ms excluding profiled children),\nAvg, In/Out KB, Mbit/s.\nPseudo-rows: [top-level] (time outside any call; Self sums to wall time),\n[matmul] (A * B), and with --profile=ops: [+] [.*] ... [transpose] [index] [index-assign].\nparmap:<name> rows are CPU time summed across workers (not in TOTAL).\n\nA final report is printed to stderr on script exit.\nFrom the shell: rustlab run --profile script.rlab   (or --profile=ops)" },
     HelpEntry { name: "profile_report", brief: "Print the accumulated profiling table to stderr",
-        detail: "profile_report()  — prints the profiling table at this point in the script\n  Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active." },
+        detail: "profile_report()  — prints the profiling table at this point in the script\n  and starts a fresh one. Useful for mid-script snapshots.\n  A final report is always printed automatically at script exit when profiling is active.\n  See `help profile` for the columns and the bracketed rows." },
     // Persistent function-result cache
     HelpEntry { name: "cache", brief: "Skip recomputes — persistent function-result cache that survives restarts",
         detail: "cache enable [path]               — open or create a cache store\n\

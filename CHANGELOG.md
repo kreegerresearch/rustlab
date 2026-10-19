@@ -12,6 +12,12 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
 `perf/iterations/01-requests.md`). Plan: `dev/plans/perf_flywheel_iter01.md`.
 
 ### Breaking / behavior changes
+- **The profile report has a new `Self (ms)` column and new rows.** The table
+  is now Function, Calls, Total, Self, Avg, In, Out, Mbit/s (eight columns,
+  was seven), nested calls that used to be hidden now have rows, and
+  `profile(f)` reports calls `f` makes to other listed names. Migration: a
+  parser of the stderr table must expect the extra column after `Total`;
+  `TOTAL` is now the sum of main-thread self times.
 - **Real matrix products use a real multiply, so last digits can change.**
   When both operands of `A * B` (or a row vector times a matrix) have no
   imaginary parts, the product is formed from the real parts with a real
@@ -21,7 +27,19 @@ Perf flywheel iteration 01 (requests from `rustlab_llm`,
   product now stays real. Migration: none expected; a test comparing
   products bit-for-bit should compare with a tolerance.
 
-### Performance
+### Added
+- **The profiler sees inside user functions.** Every call is recorded where
+  it happens, nested calls and `arrayfun` callbacks included, with inclusive
+  (`Total`) and `Self` time. A `[top-level]` row holds time outside any
+  call, so the Self column sums to wall time (`TOTAL`). `[matmul]` rows time
+  matrix products. `rustlab run --profile=ops` adds one row per operator plus
+  `[transpose]`, `[index]` and `[index-assign]`. Calls inside `parmap` merge
+  as `parmap:<name>` rows (CPU time across workers, not in `TOTAL`).
+
+### Fixed
+- **In-script `profile()` now prints its report when `rustlab run` ends**, as
+  its help always said. Before, only an explicit `profile_report()` printed.
+
 - **`parmap` no longer copies the caller's variables into every task.**
   Workers start from the built-in constants and the user-defined functions;
   a lambda brings its captured values, and a user function already runs in

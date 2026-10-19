@@ -13,15 +13,33 @@ pub enum PlotMode {
     Viewer,
 }
 
+/// What `--profile` records.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ProfileMode {
+    /// Function calls (user functions, lambdas, builtins) plus `[matmul]`.
+    Calls,
+    /// Calls plus one row per operator, `[transpose]`, `[index]` and `[index-assign]`.
+    Ops,
+}
+
 #[derive(Args)]
 pub struct RunArgs {
     /// Path to a .rlab script file
     pub script: std::path::PathBuf,
 
-    /// Profile all function calls and print a report to stderr on exit.
+    /// Profile all function calls and print a report to stderr on exit:
+    /// calls, inclusive and self time per row, nested calls included.
+    /// `--profile=ops` also records operator and indexing rows.
     /// For selective profiling, add profile(fn1, fn2) inside the script instead.
-    #[arg(long)]
-    pub profile: bool,
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MODE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "calls"
+    )]
+    pub profile: Option<ProfileMode>,
 
     /// Where plot commands render: `tui` (default), `none`, or `viewer`.
     /// When omitted, `[viewer] auto_connect` in ~/.rustlabrc selects
@@ -68,8 +86,8 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
 
     // Use run_script_source to support report directives in scripts.
     // Fall back to direct run for profiling mode (no report support needed).
-    if args.profile {
-        let result = match rustlab_script::run_profiled(&source) {
+    if let Some(mode) = args.profile {
+        let result = match rustlab_script::run_profiled_with(&source, mode == ProfileMode::Ops) {
             Ok(()) => Ok(()),
             Err(rustlab_script::ScriptError::AudioEof) => Ok(()),
             Err(rustlab_script::ScriptError::Interrupted) => Ok(()),
@@ -80,6 +98,9 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
     } else {
         let mut ev = rustlab_script::Evaluator::new();
         let ok = super::repl::run_script_source(&source, &mut ev);
+        // An in-script `profile()` reports when the script ends, as its help
+        // text says (the `--profile` path above does the same).
+        ev.print_profile_report();
         // Scripted runs warn once, at the end, and only if no savefig /
         // saveanim consumed the figures — `quiver(...); savefig(...)`
         // scripts no longer emit stderr noise.

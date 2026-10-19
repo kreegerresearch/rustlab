@@ -1,7 +1,7 @@
 # Perf flywheel iteration 01
 
 **Status:** in progress
-**Current phase:** R2 (profiler)
+**Current phase:** R4 (elementwise ops and reductions)
 **Branch:** `feature/perf-iter01` (one PR, version 0.3.10)
 **Source request:** `../rustlab_llm/perf/iterations/01-requests.md`
 (measured on rustlab 0.3.9, `65d6507`, Apple M4 Max, 2026-10-18).
@@ -94,11 +94,53 @@ threads. That is R4's territory.
 
 ## R2: profiler that sees inside user functions
 
-**Status:** not started
+**Status:** done (all targets met)
 
-Call-stack profiler with inclusive and self time; `[matmul]` pseudo-row;
-`--profile=ops` for elementwise and index rows; parmap worker stats merged;
-fix the missing exit report for in-script `profile()` under `rustlab run`.
+- `eval/profile.rs` rewritten around a frame stack: `enter(name)` /
+  `exit(name, in, out)` record inclusive time (outermost activation only)
+  and self time (minus profiled children). The old `higher_order_depth`
+  suppression and `should_track` are gone. — done
+- Pseudo-rows: `[top-level]` (root frame from `enable`; restarted by each
+  report), `[matmul]` always, and under `enable_ops()` operator rows,
+  `[transpose]`, `[index]`, `[index-assign]` (`enter_op` / `exit_op`; the
+  `IndexAssign` arm moved verbatim into `exec_index_assign`). — done
+- `parmap` workers get `Profiler::for_worker()`; `ParmapBackend::run`
+  returns `ParmapOutput { values, profiles }` and the caller merges each
+  task's rows as `parmap:<name>` with `parallel = true`, excluded from
+  `TOTAL`. — done
+- `rustlab run --profile[=calls|ops]` (`require_equals`, so a bare
+  `--profile script.rlab` still works). `rustlab run` without `--profile`
+  now prints the report at exit when the script enabled `profile()`. — done
+- Tests: 9 new profiler unit tests (nested split with sleeps, self sum =
+  wall, recursion, `[matmul]` vs ops rows, index rows, parmap merge,
+  whitelist) replacing the two that asserted suppression; CLI
+  `tests/profile_report.rs` (exit report, bare flag, `=ops`, no report
+  when off).
+
+| Acceptance | Result |
+|---|---|
+| `--profile profile_step.rlab` lists `gpt_forward`, `gpt_backward`, `gpt_ln_fwd`, `gpt_gelu_grad`, a matmul row | **met** (main-thread rows plus `parmap:` rows) |
+| Self times sum to within 10 % of run time | **met** by construction: `TOTAL` = Σ self = `[top-level]` inclusive |
+| Overhead ≤ 10 % on `model.grad_flat` | **met**: 73.4–73.8 ms off, 73.7 ms `--profile`, 73.9–74.2 ms `--profile=ops` |
+| In-script `profile()` reports at exit | **met** |
+
+Cost with profiling off: `prim.scalar_loop_1e5` 16.75 → 17.2 ms (~3 %,
+repeatable, below the 10 % noise rule). It does not move with `#[inline]`
+on the disabled-path checks, so it is most likely code layout in the larger
+`eval_expr`; R4 reworks this path.
+
+**Contract note for `rustlab_llm`:** the table gained a `Self (ms)` column
+after `Total (ms)`, so `perf/run.py`'s seven-number regex no longer matches.
+An eight-column version:
+`\s+(\S+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$`
+with groups name, calls, total ms, self ms, avg µs, in KB, out KB, Mbit/s.
+
+Findings from the first nested profile (for iteration 02): inside each
+window, `gpt_backward` self time (236 ms CPU over 8 windows) and
+`gpt_forward` self (147 ms) are interpreter work outside builtins;
+`gpt_gelu_grad` is 110 ms; `gpt_flatten` runs per window (64 ms);
+`zeros` allocations 29 ms; `gpt_sinusoidal_pe` calls `sin`/`cos` 33,024
+times each.
 
 ## R4: real fast paths for elementwise ops and reductions
 

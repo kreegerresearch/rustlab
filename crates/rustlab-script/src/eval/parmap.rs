@@ -19,10 +19,20 @@
 //! Phase 3 makes it safe.
 
 use crate::error::ScriptError;
+use crate::eval::profile::FnStats;
 use crate::eval::value::Value;
 use crate::Evaluator;
 use rayon::prelude::*;
 use std::cell::Cell;
+use std::collections::HashMap;
+
+/// What a [`ParmapBackend`] returns: the per-element results in input
+/// order, plus the profiler rows each task recorded (empty unless
+/// profiling is on), for the caller to merge.
+pub struct ParmapOutput {
+    pub values: Vec<Value>,
+    pub profiles: Vec<HashMap<String, FnStats>>,
+}
 
 // ─── Pure-lambda contract ───────────────────────────────────────────────────
 //
@@ -121,7 +131,7 @@ pub trait ParmapBackend: Send + Sync {
         callable: Value,
         xs: Vec<Value>,
         master_seed: u64,
-    ) -> Result<Vec<Value>, ScriptError>;
+    ) -> Result<ParmapOutput, ScriptError>;
 }
 
 /// Shared-memory rayon backend. The only implementation shipped in Phase 2.
@@ -146,7 +156,7 @@ impl ParmapBackend for LocalRayonBackend {
         callable: Value,
         xs: Vec<Value>,
         master_seed: u64,
-    ) -> Result<Vec<Value>, ScriptError> {
+    ) -> Result<ParmapOutput, ScriptError> {
         use crate::eval::rng;
 
         // `map_init` builds one worker Evaluator per rayon split and reuses
@@ -168,7 +178,7 @@ impl ParmapBackend for LocalRayonBackend {
         // exactly what it was before; worker threads' RNGs are left in
         // whatever state the last task left them, which is fine because
         // each task re-seeds at entry.
-        let results: Vec<Result<Value, ScriptError>> = xs
+        let results: Vec<(Result<Value, ScriptError>, HashMap<String, FnStats>)> = xs
             .into_par_iter()
             .enumerate()
             .map_init(worker_factory, |worker, (idx, x)| {
@@ -179,7 +189,8 @@ impl ParmapBackend for LocalRayonBackend {
                 // if invoked during the lambda body. The guard restores
                 // the flag when it drops at end-of-task scope.
                 let _guard = ParallelContextGuard::enter();
-                worker.call_callable(callable.clone(), vec![x])
+                let r = worker.call_callable(callable.clone(), vec![x]);
+                (r, worker.take_profile_stats())
             })
             .collect();
 
@@ -187,7 +198,11 @@ impl ParmapBackend for LocalRayonBackend {
         // the input. Matches `for`-loop semantics; matches what users
         // intuit from MATLAB / Octave precedents.
         let mut out = Vec::with_capacity(results.len());
-        for (idx, r) in results.into_iter().enumerate() {
+        let mut profiles = Vec::new();
+        for (idx, (r, stats)) in results.into_iter().enumerate() {
+            if !stats.is_empty() {
+                profiles.push(stats);
+            }
             match r {
                 Ok(v) => out.push(v),
                 Err(e) => {
@@ -200,7 +215,7 @@ impl ParmapBackend for LocalRayonBackend {
                 }
             }
         }
-        Ok(out)
+        Ok(ParmapOutput { values: out, profiles })
     }
 }
 

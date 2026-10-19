@@ -1,81 +1,229 @@
-use std::collections::{HashMap, HashSet};
+//! Call profiler embedded in the [`Evaluator`](super::Evaluator).
+//!
+//! Every profiled call pushes a frame on a stack. When the frame pops, its
+//! elapsed time is the call's *inclusive* time, and that time minus what its
+//! children took is its *self* time. Nested user functions, the builtins
+//! they call and callbacks inside `arrayfun` all get their own rows.
+//!
+//! Besides named calls there are pseudo-rows in brackets:
+//! - `[top-level]` — script time outside any profiled call (statements,
+//!   loops, assignments at the top level). With it, the self times of all
+//!   main-thread rows add up to the wall time since profiling started.
+//! - `[matmul]` — matrix products (`A * B`), always on while profiling.
+//! - With op profiling (`--profile=ops`): one row per operator (`[+]`,
+//!   `[.*]`, …), `[transpose]`, `[index]` and `[index-assign]`.
+//!
+//! `parmap` workers profile into their own copies; their rows are merged
+//! back as `parmap:<name>`. Those rows are CPU time summed across threads,
+//! so they are reported but kept out of the wall-clock total.
+//!
+//! Zero overhead when disabled: every entry point short-circuits on
+//! `enabled`.
 
-/// Per-function accumulated statistics.
-#[derive(Default, Clone)]
+use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+
+/// Per-row accumulated statistics.
+#[derive(Default, Clone, Debug)]
 pub struct FnStats {
     pub call_count: u64,
+    /// Inclusive time: the call and everything it called. A recursive
+    /// function counts only its outermost activation, so this never
+    /// exceeds wall time on one thread.
     pub total_ns: u64,
+    /// Time in the call itself, excluding profiled children.
+    pub self_ns: u64,
     pub input_bytes: u64,
     pub output_bytes: u64,
+    /// True for rows merged from `parmap` workers (CPU time, not wall time).
+    pub parallel: bool,
 }
 
-/// Runtime profiler embedded in the Evaluator.
-/// Zero overhead when disabled — all hot paths short-circuit on `enabled`.
 #[derive(Clone)]
+struct Frame {
+    start: Instant,
+    child_ns: u64,
+}
+
+/// Handle returned by [`Profiler::enter_op`]; pass it back to
+/// [`Profiler::exit_op`]. `None` when nothing is being recorded.
+pub type OpFrame = Option<&'static str>;
+
+/// Name of the pseudo-row for script time outside any profiled call.
+pub const TOP_LEVEL: &str = "[top-level]";
+
+#[derive(Clone, Default)]
 pub struct Profiler {
     enabled: bool,
-    /// None = track all; Some(set) = track only these names.
+    /// Record per-operator and indexing rows (`--profile=ops`).
+    ops: bool,
+    /// None = report all; Some(set) = report only these names.
     whitelist: Option<HashSet<String>>,
-    /// While > 0, inner calls (lambdas/fns invoked as callbacks) are not recorded.
-    higher_order_depth: u32,
+    stack: Vec<Frame>,
+    /// Activations per name currently on the stack, for recursion.
+    active: HashMap<String, u32>,
+    /// Start of the `[top-level]` root and the time its children took.
+    /// `None` for a parmap worker, whose root is the parent's parmap call.
+    root: Option<Frame>,
     stats: HashMap<String, FnStats>,
 }
 
-impl Default for Profiler {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            whitelist: None,
-            higher_order_depth: 0,
-            stats: HashMap::new(),
-        }
-    }
-}
-
 impl Profiler {
-    /// Activate profiling. `names = None` tracks all; `Some(v)` tracks only the named functions.
+    /// Activate profiling. `names = None` tracks all; `Some(v)` tracks only
+    /// the named functions.
     pub fn enable(&mut self, names: Option<Vec<String>>) {
         self.enabled = true;
         self.whitelist = names.map(|v| v.into_iter().collect());
+        if self.root.is_none() {
+            self.root = Some(Frame { start: Instant::now(), child_ns: 0 });
+        }
+    }
+
+    /// Also record operator and indexing rows.
+    pub fn enable_ops(&mut self) {
+        self.ops = true;
     }
 
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
+
     pub fn has_data(&self) -> bool {
         !self.stats.is_empty()
     }
 
-    /// True when the next call to `record` for `name` should actually be stored.
-    /// Returns false immediately when profiling is disabled — no overhead.
-    pub fn should_track(&self, name: &str) -> bool {
-        self.enabled
-            && self.higher_order_depth == 0
-            && self.whitelist.as_ref().map_or(true, |s| s.contains(name))
+    /// Copy for a `parmap` worker: same settings, no data, no root.
+    pub fn for_worker(&self) -> Profiler {
+        Profiler {
+            enabled: self.enabled,
+            ops: self.ops,
+            whitelist: self.whitelist.clone(),
+            ..Profiler::default()
+        }
     }
 
-    /// Signal that we are entering a higher-order call (arrayfun, user fn, lambda).
-    /// Inner function calls will be suppressed until the matching `exit_higher_order`.
-    pub fn enter_higher_order(&mut self) {
-        self.higher_order_depth = self.higher_order_depth.saturating_add(1);
+    /// Whether `name` would appear in the report.
+    fn reports(&self, name: &str) -> bool {
+        self.whitelist.as_ref().map_or(true, |s| s.contains(name))
     }
 
-    pub fn exit_higher_order(&mut self) {
-        self.higher_order_depth = self.higher_order_depth.saturating_sub(1);
+    /// Start a profiled call. Returns false (and does nothing) when
+    /// profiling is off; the caller then skips [`exit`](Self::exit).
+    pub fn enter(&mut self, name: &str) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.stack.push(Frame { start: Instant::now(), child_ns: 0 });
+        match self.active.get_mut(name) {
+            Some(n) => *n += 1,
+            None => {
+                self.active.insert(name.to_string(), 1);
+            }
+        }
+        true
     }
 
-    pub fn record(&mut self, name: &str, elapsed_ns: u64, in_bytes: u64, out_bytes: u64) {
-        let s = self.stats.entry(name.to_string()).or_default();
-        s.call_count += 1;
-        s.total_ns += elapsed_ns;
-        s.input_bytes += in_bytes;
-        s.output_bytes += out_bytes;
+    /// Finish the call started by the matching [`enter`](Self::enter).
+    pub fn exit(&mut self, name: &str, in_bytes: u64, out_bytes: u64) {
+        let Some(frame) = self.stack.pop() else { return };
+        let elapsed = frame.start.elapsed().as_nanos() as u64;
+        let self_ns = elapsed.saturating_sub(frame.child_ns);
+        match self.stack.last_mut() {
+            Some(parent) => parent.child_ns += elapsed,
+            None => {
+                if let Some(root) = self.root.as_mut() {
+                    root.child_ns += elapsed;
+                }
+            }
+        }
+        let outermost = match self.active.get_mut(name) {
+            Some(n) => {
+                *n -= 1;
+                *n == 0
+            }
+            None => true,
+        };
+        if self.reports(name) {
+            let s = self.row(name);
+            s.call_count += 1;
+            if outermost {
+                s.total_ns += elapsed;
+            }
+            s.self_ns += self_ns;
+            s.input_bytes += in_bytes;
+            s.output_bytes += out_bytes;
+        }
     }
 
-    /// Drain the stats and return rows sorted by total time descending.
+    /// Start a pseudo-row for an operator. `[matmul]` is always recorded
+    /// while profiling; other operators only with op profiling on.
+    pub fn enter_op(&mut self, name: &'static str) -> OpFrame {
+        if !self.enabled || (!self.ops && name != "[matmul]") {
+            return None;
+        }
+        self.enter(name);
+        Some(name)
+    }
+
+    pub fn exit_op(&mut self, frame: OpFrame) {
+        if let Some(name) = frame {
+            self.exit(name, 0, 0);
+        }
+    }
+
+    fn row(&mut self, name: &str) -> &mut FnStats {
+        if !self.stats.contains_key(name) {
+            self.stats.insert(name.to_string(), FnStats::default());
+        }
+        self.stats.get_mut(name).expect("inserted above")
+    }
+
+    /// Drain a worker's rows (used per `parmap` task).
+    pub fn take_stats(&mut self) -> HashMap<String, FnStats> {
+        std::mem::take(&mut self.stats)
+    }
+
+    /// Merge a `parmap` worker's rows as `parmap:<name>` parallel rows.
+    pub fn merge_parallel(&mut self, worker: HashMap<String, FnStats>) {
+        for (name, w) in worker {
+            let key = format!("parmap:{name}");
+            if !self.reports(&name) && !self.reports(&key) {
+                continue;
+            }
+            let s = self.row(&key);
+            s.call_count += w.call_count;
+            s.total_ns += w.total_ns;
+            s.self_ns += w.self_ns;
+            s.input_bytes += w.input_bytes;
+            s.output_bytes += w.output_bytes;
+            s.parallel = true;
+        }
+    }
+
+    /// Drain the stats and return rows sorted by inclusive time, descending.
+    /// Closes the `[top-level]` row up to now and restarts it, so a
+    /// mid-script `profile_report()` and the final report do not overlap.
     pub fn take_report(&mut self) -> Vec<(String, FnStats)> {
+        if self.whitelist.is_none() {
+            if let Some(root) = self.root.as_mut() {
+                let elapsed = root.start.elapsed().as_nanos() as u64;
+                // A report from inside a call: the outermost open call is not
+                // in `child_ns` yet, and its time so far is not top-level.
+                let open_start = self.stack.first().map(|f| f.start);
+                let open = open_start.map_or(0, |t| t.elapsed().as_nanos() as u64);
+                let self_ns = elapsed.saturating_sub(root.child_ns + open);
+                // Restart the root. If a call is open, start the root where
+                // that call started: when it exits it adds its whole time to
+                // `child_ns`, which then cancels exactly.
+                *root = Frame { start: open_start.unwrap_or_else(Instant::now), child_ns: 0 };
+                let s = self.row(TOP_LEVEL);
+                s.call_count = 1;
+                s.total_ns += elapsed;
+                s.self_ns += self_ns;
+            }
+        }
         let mut rows: Vec<_> = std::mem::take(&mut self.stats).into_iter().collect();
-        rows.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
+        rows.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns).then_with(|| a.0.cmp(&b.0)));
         rows
     }
 }
@@ -83,86 +231,84 @@ impl Profiler {
 /// Print a profiling report to stderr.
 /// Called automatically at script end if any data was collected.
 pub fn print_report(rows: &[(String, FnStats)]) {
-    let non_zero: Vec<_> = rows.iter().filter(|(_, s)| s.total_ns > 0).collect();
-    if non_zero.is_empty() {
+    let shown: Vec<_> = rows.iter().filter(|(_, s)| s.total_ns > 0 || s.self_ns > 0).collect();
+    if shown.is_empty() {
         return;
     }
 
-    let fn_col = non_zero
-        .iter()
-        .map(|(n, _)| n.len())
-        .max()
-        .unwrap_or(8)
-        .max(8);
+    let fn_col = shown.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(8).max(8);
 
-    // Header
     eprintln!();
     eprintln!(
-        "  {:<fn_col$}  {:>6}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}",
+        "  {:<fn_col$}  {:>7}  {:>12}  {:>12}  {:>10}  {:>10}  {:>10}  {:>10}",
         "Function",
         "Calls",
         "Total (ms)",
+        "Self (ms)",
         "Avg (µs)",
         "In (KB)",
         "Out (KB)",
         "Mbit/s",
         fn_col = fn_col
     );
-    let sep_len = fn_col + 2 + 6 + 2 + 12 + 2 + 10 + 2 + 10 + 2 + 10 + 2 + 10 + 4;
-    let sep = "─".repeat(sep_len);
+    let sep = "─".repeat(fn_col + 2 + 7 + 2 + 12 + 2 + 12 + 2 + 10 + 2 + 10 + 2 + 10 + 2 + 10);
     eprintln!("  {sep}");
 
-    let mut tot_calls = 0u64;
-    let mut tot_ns = 0u64;
-    let mut tot_in = 0u64;
-    let mut tot_out = 0u64;
-
-    for (name, s) in &non_zero {
-        let total_ms = s.total_ns as f64 / 1_000_000.0;
-        let avg_us = s.total_ns as f64 / s.call_count as f64 / 1_000.0;
-        let in_kb = s.input_bytes as f64 / 1024.0;
-        let out_kb = s.output_bytes as f64 / 1024.0;
-        let secs = s.total_ns as f64 / 1_000_000_000.0;
+    let (mut calls, mut self_ns, mut bytes_in, mut bytes_out) = (0u64, 0u64, 0u64, 0u64);
+    let mut any_parallel = false;
+    for (name, s) in &shown {
+        let avg_us = s.total_ns as f64 / s.call_count.max(1) as f64 / 1_000.0;
+        let secs = s.total_ns as f64 / 1e9;
         let mbits = if secs > 0.0 {
-            (s.input_bytes + s.output_bytes) as f64 * 8.0 / secs / 1_000_000.0
+            (s.input_bytes + s.output_bytes) as f64 * 8.0 / secs / 1e6
         } else {
             0.0
         };
         eprintln!(
-            "  {:<fn_col$}  {:>6}  {:>12.3}  {:>10.3}  {:>10.2}  {:>10.2}  {:>10.1}",
+            "  {:<fn_col$}  {:>7}  {:>12.3}  {:>12.3}  {:>10.3}  {:>10.2}  {:>10.2}  {:>10.1}",
             name,
             s.call_count,
-            total_ms,
+            s.total_ns as f64 / 1e6,
+            s.self_ns as f64 / 1e6,
             avg_us,
-            in_kb,
-            out_kb,
+            s.input_bytes as f64 / 1024.0,
+            s.output_bytes as f64 / 1024.0,
             mbits,
             fn_col = fn_col
         );
-        tot_calls += s.call_count;
-        tot_ns += s.total_ns;
-        tot_in += s.input_bytes;
-        tot_out += s.output_bytes;
+        if s.parallel {
+            any_parallel = true;
+            continue;
+        }
+        calls += s.call_count;
+        self_ns += s.self_ns;
+        bytes_in += s.input_bytes;
+        bytes_out += s.output_bytes;
     }
 
     eprintln!("  {sep}");
-    let tot_ms = tot_ns as f64 / 1_000_000.0;
-    let tot_secs = tot_ns as f64 / 1_000_000_000.0;
-    let tot_mbits = if tot_secs > 0.0 {
-        (tot_in + tot_out) as f64 * 8.0 / tot_secs / 1_000_000.0
+    // The total is the sum of main-thread self times: the wall time covered
+    // by the rows above when `[top-level]` is present.
+    let secs = self_ns as f64 / 1e9;
+    let mbits = if secs > 0.0 {
+        (bytes_in + bytes_out) as f64 * 8.0 / secs / 1e6
     } else {
         0.0
     };
     eprintln!(
-        "  {:<fn_col$}  {:>6}  {:>12.3}  {:>10}  {:>10.2}  {:>10.2}  {:>10.1}",
+        "  {:<fn_col$}  {:>7}  {:>12.3}  {:>12.3}  {:>10}  {:>10.2}  {:>10.2}  {:>10.1}",
         "TOTAL",
-        tot_calls,
-        tot_ms,
+        calls,
+        self_ns as f64 / 1e6,
+        self_ns as f64 / 1e6,
         "",
-        tot_in as f64 / 1024.0,
-        tot_out as f64 / 1024.0,
-        tot_mbits,
+        bytes_in as f64 / 1024.0,
+        bytes_out as f64 / 1024.0,
+        mbits,
         fn_col = fn_col
     );
+    if any_parallel {
+        eprintln!("  parmap:* rows are CPU time summed across worker threads; TOTAL excludes them.");
+    }
     eprintln!();
 }

@@ -3927,19 +3927,41 @@ X = rk4(f, [1; 0], linspace(0, 10, 200))
 ## Profiling
 
 ### `profile(fn1, fn2, ...)`
-Enable call profiling for the named functions. Call with no arguments to track all functions. Function names can be bare identifiers or strings.
+Enable call profiling for the named functions. Call with no arguments to track all functions. Function names can be bare identifiers or strings. The report prints to stderr when the script ends; `profile_report()` prints one earlier.
 ```
-profile(fft, convolve)    # track only fft and convolve
-profile()                 # track all function calls
+profile(fft, convolve)    # report only fft and convolve
+profile()                 # report every call
 ```
 
+Every call is recorded where it happens, including calls nested inside user functions and the callbacks of `arrayfun`. Each row has:
+
+| Column | Meaning |
+|---|---|
+| Calls | Number of calls |
+| Total (ms) | Inclusive time: the call and everything it called. A recursive function counts its outermost call only. |
+| Self (ms) | Time in the call itself, excluding the profiled calls it made |
+| Avg (µs) | Total ÷ Calls |
+| In / Out (KB), Mbit/s | Bytes of numeric arguments and results, and their throughput |
+
+Rows in brackets are not functions:
+
+- `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
+- `[matmul]` — matrix products `A * B`, always recorded.
+- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands.
+
+Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
+
+With a name list, only those rows are reported and there is no `[top-level]` row. Self times still exclude every call made from the function, listed or not.
+
 ### `profile_report()`
-Print a profiling summary table to stderr showing call counts, total time, and data throughput for each tracked function.
+Print the profiling table to stderr now and start a fresh one. The table described under `profile` above is printed automatically at script exit, so this is for mid-script snapshots.
 ```
 profile(fft, convolve)
 # ... run workload ...
 profile_report()
 ```
+
+From the command line, `rustlab run --profile script.rlab` profiles everything without editing the script, and `rustlab run --profile=ops script.rlab` adds the operator and indexing rows.
 
 ---
 

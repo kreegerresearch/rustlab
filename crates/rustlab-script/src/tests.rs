@@ -6691,24 +6691,125 @@ mod profiling_tests {
     }
 
     #[test]
-    fn arrayfun_inner_calls_not_tracked_separately() {
-        // arrayfun(@sin, v) — sin is called N times as a callback.
-        // With profile(arrayfun, sin): arrayfun tracked; sin NOT (higher_order_depth suppresses it).
+    fn arrayfun_callbacks_get_their_own_rows() {
+        // arrayfun(@sin, v): sin runs once per element, nested under arrayfun.
         let (_, report) = run_profiled("arrayfun(@sin, 1:5);", Some(vec!["arrayfun", "sin"]));
         let af = find(&report, "arrayfun").expect("arrayfun tracked");
         assert_eq!(af.call_count, 1, "arrayfun called once");
-        // sin should not appear — suppressed by higher_order_depth
-        assert!(find(&report, "sin").is_none(), "sin inner calls suppressed");
+        let sin = find(&report, "sin").expect("callback sin recorded");
+        assert_eq!(sin.call_count, 5);
+        assert!(af.total_ns >= sin.total_ns, "parent inclusive covers child");
+        assert!(af.self_ns <= af.total_ns - sin.total_ns + 1);
     }
 
     #[test]
-    fn user_fn_tracked_inner_builtins_suppressed() {
+    fn user_fn_records_nested_builtins() {
         let src = "function y = myabs(x)\n  y = abs(x);\nend\nmyabs(3);";
         let (_, report) = run_profiled(src, Some(vec!["myabs", "abs"]));
         let mf = find(&report, "myabs").expect("myabs tracked");
         assert_eq!(mf.call_count, 1);
-        // abs is called inside myabs — higher_order_depth suppresses it
-        assert!(find(&report, "abs").is_none(), "inner abs suppressed");
+        let abs = find(&report, "abs").expect("inner abs recorded");
+        assert_eq!(abs.call_count, 1);
+        assert!(mf.total_ns >= abs.total_ns);
+    }
+
+    #[test]
+    fn inclusive_and_self_time_split_across_nested_functions() {
+        // a sleeps 40 ms itself and calls b, which sleeps 60 ms.
+        let src = "function r = b()\n  sleep(0.06); r = 1;\nend\n\
+                   function r = a()\n  sleep(0.04); r = b();\nend\n\
+                   x = a();";
+        let (_, report) = run_profiled(src, None);
+        let ms = |ns: u64| ns as f64 / 1e6;
+        let a = find(&report, "a").expect("a");
+        let b = find(&report, "b").expect("b");
+        let sleep = find(&report, "sleep").expect("sleep");
+        assert_eq!(sleep.call_count, 2);
+        assert!(ms(a.total_ns) >= 100.0 && ms(a.total_ns) < 160.0, "a total {}", ms(a.total_ns));
+        assert!(ms(b.total_ns) >= 60.0 && ms(b.total_ns) < 110.0, "b total {}", ms(b.total_ns));
+        // Sleeping is in the `sleep` rows, so a and b keep almost no self time.
+        assert!(ms(a.self_ns) < 20.0, "a self {}", ms(a.self_ns));
+        assert!(ms(b.self_ns) < 20.0, "b self {}", ms(b.self_ns));
+        assert!(ms(sleep.self_ns) >= 100.0);
+    }
+
+    #[test]
+    fn self_times_sum_to_top_level_total() {
+        let src = "function y = f(x)\n  y = x * x';\nend\n\
+                   A = randn(40, 40);\nfor k = 1:30\n  z = f(A) + 1;\nend";
+        let (_, report) = run_profiled(src, None);
+        let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level row");
+        let self_sum: u64 = report.iter().filter(|(_, s)| !s.parallel).map(|(_, s)| s.self_ns).sum();
+        let diff = (self_sum as f64 - top.total_ns as f64).abs();
+        assert!(diff <= 0.01 * top.total_ns as f64 + 1e5, "sum {self_sum} vs wall {}", top.total_ns);
+    }
+
+    #[test]
+    fn recursion_counts_inclusive_time_once() {
+        let src = "function r = fact(n)\n  if n <= 1\n    r = 1;\n  else\n    r = n * fact(n - 1);\n  end\nend\nx = fact(8);";
+        let (_, report) = run_profiled(src, None);
+        let f = find(&report, "fact").expect("fact");
+        let top = find(&report, crate::eval::profile::TOP_LEVEL).expect("top-level");
+        assert_eq!(f.call_count, 8);
+        assert!(f.total_ns <= top.total_ns, "recursive inclusive time must not exceed wall time");
+    }
+
+    #[test]
+    fn matmul_row_always_ops_rows_only_on_request() {
+        let src = "A = ones(8, 8); B = A * A; C = A + A; D = A';";
+        let (_, report) = run_profiled(src, None);
+        assert_eq!(find(&report, "[matmul]").expect("[matmul] row").call_count, 1);
+        assert!(find(&report, "[+]").is_none());
+        assert!(find(&report, "[transpose]").is_none());
+
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        assert_eq!(find(&report, "[matmul]").unwrap().call_count, 1);
+        assert_eq!(find(&report, "[+]").expect("[+] with ops").call_count, 1);
+        assert_eq!(find(&report, "[transpose]").expect("[transpose]").call_count, 1);
+        // Scalar multiply is an operator row, not a matrix product.
+        let (_, r2) = run_profiled("x = 2 * 3;", None);
+        assert!(find(&r2, "[matmul]").is_none());
+    }
+
+    #[test]
+    fn index_rows_with_ops() {
+        let src = "v = 1:10; w = v(3); v(4) = 7;";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        assert_eq!(find(&report, "[index]").expect("[index]").call_count, 1);
+        assert_eq!(find(&report, "[index-assign]").expect("[index-assign]").call_count, 1);
+    }
+
+    #[test]
+    fn parmap_worker_rows_merge_as_parallel() {
+        let src = "function y = sq(x)\n  y = abs(x)^2;\nend\ny = parmap(@sq, 1:6);";
+        let (_, report) = run_profiled(src, None);
+        let pm = find(&report, "parmap").expect("parmap row");
+        assert!(!pm.parallel);
+        let w = find(&report, "parmap:sq").expect("worker rows merged");
+        assert_eq!(w.call_count, 6);
+        assert!(w.parallel);
+        assert_eq!(find(&report, "parmap:abs").expect("nested worker row").call_count, 6);
+        assert!(find(&report, "sq").is_none(), "worker calls are not main-thread rows");
+    }
+
+    #[test]
+    fn whitelist_filters_rows_and_drops_top_level() {
+        let src = "function y = f(x)\n  y = abs(x);\nend\nfor k = 1:3\n  f(k);\nend";
+        let (_, report) = run_profiled(src, Some(vec!["f"]));
+        assert_eq!(report.len(), 1, "only f: {:?}", report.iter().map(|r| &r.0).collect::<Vec<_>>());
+        assert_eq!(find(&report, "f").unwrap().call_count, 3);
     }
 
     #[test]

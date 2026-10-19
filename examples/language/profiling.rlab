@@ -12,8 +12,12 @@
 #      The report is also printed automatically to stderr at script exit.
 #
 #   2. CLI flag (no source changes needed):
-#        rustlab run --profile script.r
+#        rustlab run --profile script.rlab
 #      Equivalent to calling profile() at the very top of the script.
+#      --profile=ops also times operators and indexing ([+], [.*], [index]).
+#
+# Nested calls get their own rows. "Total" is inclusive time, "Self" excludes
+# the profiled calls a function made; [top-level] is time outside any call.
 #
 # The report always goes to stderr so it does not mix with normal stdout output.
 #
