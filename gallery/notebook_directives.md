@@ -213,6 +213,51 @@ two-column gallery:
 The output is a tiled gallery without the surrounding boilerplate code —
 useful for "look at these results, the code is uninteresting" sections.
 
+## TOML and YAML
+
+Fences tagged `toml`, `yaml`, or `yml` are display-only. Nothing inside
+them runs. HTML, `notebook watch`, LaTeX, and PDF color comments, keys,
+strings, numbers, booleans, dates, tables, anchors, list dashes, and
+block scalars with the same token colors as a rustlab cell. A fence
+with no language tag stays plain text.
+
+```toml
+# server
+title = "hi # there"
+enabled = true
+port = 8080
+started = 1979-05-27T07:32:00Z
+
+[server]
+host = "localhost"
+
+[[users]]
+name = "ada"
+```
+
+```yaml
+# pipeline
+---
+name: demo
+count: 3
+ok: true
+empty: null
+when: 2001-12-15T02:59:43.1Z
+id: &id widget
+ref: *id
+items:
+  - one
+  - two
+note: |
+  block scalar
+  # not a comment
+...
+```
+
+```yml
+kind: sample
+```
+
 ## Summary
 
 | Directive | Purpose |

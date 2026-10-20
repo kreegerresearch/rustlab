@@ -22,7 +22,7 @@ throughout the project: in the REPL (`help`, `help <toolbox>`), the CLI
 | [Reproducible Random Data](seed.md) | `seed(N)` for bit-stable re-renders; `seed()` to re-randomize |
 | [Template Interpolation](template_interpolation.md) | `${expr}` syntax to embed computed values in prose; sprintf-style format specs |
 | [Multi-Notebook Rendering](multi_notebook.md) | Directory builds with cross-notebook links and the generated index page |
-| [Notebook Directives](notebook_directives.md) | Tour of every render directive — `hide`, `details`, `grid`, callouts, exercises/solutions, stacking |
+| [Notebook Directives](notebook_directives.md) | Tour of every render directive — `hide`, `details`, `grid`, callouts, exercises/solutions, stacking, plus highlighted `toml` / `yaml` fences |
 | [Mermaid Diagrams](mermaid_demo.md) | Embedded mermaid diagrams in rendered notebooks |
 | [File Embeds (Transclusion)](embeds_demo.md) | Obsidian-style `![[Document]]` transclusion across notebooks |
 | [Git diff in notebook watch](git_diff.md) | `watch --git-diff`: compare the working copy or two refs, with a filterable branch picker |

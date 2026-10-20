@@ -947,10 +947,11 @@ fn lang_label(label: &str) -> String {
     )
 }
 
-/// Bash / python fences use the rustlab source panel and token colors.
-/// Text fences use the quieter output panel and stay uncolored, same as
-/// printed cell output. The markdown renderer writes that output as a
-/// `text` fence, so it takes this path when the markdown is rendered.
+/// Bash / python / toml / yaml fences use the rustlab source panel and
+/// token colors. Text fences use the quieter output panel and stay
+/// uncolored, same as printed cell output. The markdown renderer writes
+/// that output as a `text` fence, so it takes this path when the markdown
+/// is rendered.
 fn emit_prose_fence(
     heading: &mut Option<HeadingCap>,
     out: &mut String,
@@ -966,7 +967,7 @@ fn emit_prose_fence(
             emit(heading, out, &neutralize_verb_end(body));
             emit(heading, out, "\n\\end{rlverb}\n\\end{rloutput}\n\n");
         }
-        ProseFence::Bash | ProseFence::Python => {
+        ProseFence::Bash | ProseFence::Python | ProseFence::Toml | ProseFence::Yaml => {
             emit(heading, out, "\\begin{rlsource}\n");
             emit(
                 heading,
@@ -1327,6 +1328,39 @@ mod tests {
         assert!(multi.contains("\\textcolor{rlstr}{\"\"\"a}"), "{multi}");
         assert!(multi.contains("\\textcolor{rlstr}{b\"\"\"}"), "{multi}");
         assert!(!multi.contains("\\textcolor{rlstr}{\"\"\"a\n"), "{multi}");
+    }
+
+    #[test]
+    fn md_to_latex_toml_and_yaml_use_source_colors() {
+        let toml = markdown_to_latex(
+            "```toml\n# note\nhost = \"hi\"\nport = 1\nflag = true\nstarted = 1979-05-27\n[[users]]\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(toml.contains("\\textcolor{rldim}{toml}"), "{toml}");
+        assert!(toml.contains("\\begin{rlsource}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlcom}{\\# note}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlfn}{host}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlstr}{\"hi\"}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlnum}{1}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlkw}{true}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlnum}{1979-05-27}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlop}{[[}"), "{toml}");
+        assert!(toml.contains("\\textcolor{rlkw}{users}"), "{toml}");
+        assert!(!toml.contains("minted"), "{toml}");
+
+        let yaml = markdown_to_latex(
+            "```yml\nname: \"a\"\ncount: 2\nok: null\nref: &id 1\nitems:\n  - x\ntext: |\n  hi\n---\n```\n",
+            &crate::render::LinkMode::single_file(),
+        );
+        assert!(yaml.contains("\\textcolor{rldim}{yaml}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlfn}{name}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlnum}{2}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlkw}{null}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlop}{\\&id}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlop}{-}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlop}{|}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlkw}{---}"), "{yaml}");
+        assert!(yaml.contains("\\textcolor{rlstr}{hi}"), "{yaml}");
     }
 
     #[test]

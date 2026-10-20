@@ -154,7 +154,7 @@ fn help_puts_render_detail_on_render_not_watch() {
         "format line should name json:\n{top_out}"
     );
     assert!(
-        top_out.contains("bash, python, or text"),
+        top_out.contains("bash, python, toml, yaml (or yml), or text"),
         "fence line missing:\n{top_out}"
     );
     assert!(
@@ -177,7 +177,7 @@ fn help_puts_render_detail_on_render_not_watch() {
         "render format line should name json:\n{render_out}"
     );
     assert!(
-        render_out.contains("bash, python, or text"),
+        render_out.contains("bash, python, toml, yaml (or yml), or text"),
         "render fence line missing:\n{render_out}"
     );
     assert!(

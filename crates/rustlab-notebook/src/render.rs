@@ -1281,7 +1281,7 @@ document.addEventListener('click', (e) => {{
     padding: 0.05rem 0 0.05rem 0.85rem;
     border-left: 3px solid {accent_primary};
   }}
-  /* Language chip shared by rustlab cells and bash/python/text fences. */
+  /* Language chip shared by rustlab cells and highlighted prose fences. */
   .rl-lang {{
     font: 600 0.75rem/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     color: var(--rl-text-dim);
@@ -1305,7 +1305,7 @@ document.addEventListener('click', (e) => {{
   .rl-src[open] > summary::before {{
     content: "▾";
   }}
-  /* Prose fences (bash / python / text). Same panel colors as a rustlab
+  /* Prose fences (bash / python / toml / yaml / text). Same panel colors as a rustlab
      cell: `.source` for code, `.output` for uncolored text. The accent
      rule matches the PDF tcolorbox. */
   .rl-fence {{
@@ -2821,9 +2821,9 @@ fn spans_cover(source: &str, spans: &[rustlab_script::highlight::HlSpan]) -> boo
     at == source.len()
 }
 
-/// Replace `bash` / `python` / `text` fences with a labeled panel. Other
-/// fences stay on pulldown's plain `<pre><code>` path. The HTML is escaped
-/// span markup — no event handlers.
+/// Replace `bash` / `python` / `toml` / `yaml` / `text` fences with a
+/// labeled panel. Other fences stay on pulldown's plain `<pre><code>`
+/// path. The HTML is escaped span markup — no event handlers.
 fn rewrite_prose_fences<'a>(events: Vec<Event<'a>>) -> Vec<Event<'a>> {
     use crate::fence_hl::ProseFence;
     let mut out = Vec::with_capacity(events.len());
@@ -2857,7 +2857,7 @@ fn prose_fence_html(lang: crate::fence_hl::ProseFence, source: &str) -> String {
     let body = display_body(source);
     let (class, inner) = match lang {
         ProseFence::Text => ("output", escape_html(body)),
-        ProseFence::Bash | ProseFence::Python => {
+        ProseFence::Bash | ProseFence::Python | ProseFence::Toml | ProseFence::Yaml => {
             ("source", spans_to_html(body, &lang.highlight(body)))
         }
     };
@@ -4337,6 +4337,119 @@ mod tests {
         let other = markdown_to_html("```javascript\nconst x = 1\n```\n");
         assert!(!other.contains("rl-lang"), "{other}");
         assert!(other.contains("language-javascript"), "{other}");
+    }
+
+    #[test]
+    fn prose_fence_toml_and_yaml_use_rustlab_token_classes() {
+        let toml = markdown_to_html(
+            "```toml\n# note\nhost = \"hi <b>\"\nport = 1\nflag = true\nstarted = 1979-05-27\n[[users]]\n```\n",
+        );
+        assert!(toml.contains("<div class=\"rl-lang\">toml</div>"), "{toml}");
+        assert!(toml.contains("class=\"source\""), "{toml}");
+        assert!(
+            toml.contains("<span class=\"syn-com\"># note</span>"),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("<span class=\"syn-fn\">host</span>"),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("<span class=\"syn-str\">&quot;hi &lt;b&gt;&quot;</span>"),
+            "{toml}"
+        );
+        assert!(toml.contains("<span class=\"syn-num\">1</span>"), "{toml}");
+        assert!(
+            toml.contains("<span class=\"syn-kw\">true</span>"),
+            "{toml}"
+        );
+        assert!(
+            toml.contains("<span class=\"syn-num\">1979-05-27</span>"),
+            "{toml}"
+        );
+        assert!(toml.contains("<span class=\"syn-op\">[[</span>"), "{toml}");
+        assert!(
+            toml.contains("<span class=\"syn-kw\">users</span>"),
+            "{toml}"
+        );
+        assert!(!toml.contains("<b>"), "{toml}");
+        assert!(!toml.contains("onclick"), "{toml}");
+
+        let yaml = markdown_to_html(
+            "```yaml\n# c\nname: \"a\"\ncount: 2\nok: false\nempty: null\nref: &id 1\nalias: *id\nitems:\n  - x\ntext: |\n  hi\n---\n```\n",
+        );
+        assert!(yaml.contains("<div class=\"rl-lang\">yaml</div>"), "{yaml}");
+        assert!(
+            yaml.contains("<span class=\"syn-fn\">name</span>"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("<span class=\"syn-num\">2</span>"), "{yaml}");
+        assert!(
+            yaml.contains("<span class=\"syn-kw\">false</span>"),
+            "{yaml}"
+        );
+        assert!(
+            yaml.contains("<span class=\"syn-kw\">null</span>"),
+            "{yaml}"
+        );
+        assert!(
+            yaml.contains("<span class=\"syn-op\">&amp;id</span>"),
+            "{yaml}"
+        );
+        assert!(yaml.contains("<span class=\"syn-op\">*id</span>"), "{yaml}");
+        assert!(yaml.contains("<span class=\"syn-op\">-</span>"), "{yaml}");
+        assert!(yaml.contains("<span class=\"syn-op\">|</span>"), "{yaml}");
+        assert!(yaml.contains("<span class=\"syn-kw\">---</span>"), "{yaml}");
+        assert!(!yaml.contains("<script"), "{yaml}");
+
+        let yml = markdown_to_html("```yml\nname: \"a\"\n```\n");
+        assert!(yml.contains("<div class=\"rl-lang\">yaml</div>"), "{yml}");
+        assert!(yml.contains("<span class=\"syn-fn\">name</span>"), "{yml}");
+
+        let untagged = markdown_to_html("```\nname: \"a\"\n```\n");
+        assert!(
+            untagged.contains("<div class=\"rl-lang\">text</div>"),
+            "{untagged}"
+        );
+        assert!(!untagged.contains("syn-"), "{untagged}");
+    }
+
+    #[test]
+    fn markup_fences_use_each_themes_token_colors() {
+        let md = "```toml\n# c\nhost = \"a\"\nport = 1\nflag = true\n```\n\n```yaml\nname: \"a\"\n---\n```\n";
+        let blocks = [Rendered::Markdown(md.to_string())];
+        for theme in [Theme::Mocha, Theme::Macchiato, Theme::Frappe, Theme::Latte] {
+            let colors = theme.colors();
+            let html = render_html(
+                "T",
+                &blocks,
+                &std::path::PathBuf::from("/tmp/rustlab_test_plots"),
+                "plots",
+                colors,
+                None,
+                &LinkMode::single_file(),
+            );
+            for class in [
+                "syn-com", "syn-fn", "syn-str", "syn-num", "syn-kw", "syn-op",
+            ] {
+                assert!(html.contains(class), "{theme:?} missing {class}");
+            }
+            for (role, hex) in [
+                ("syn-keyword", colors.syn_keyword),
+                ("syn-function", colors.syn_function),
+                ("syn-string", colors.syn_string),
+                ("syn-number", colors.syn_number),
+                ("syn-comment", colors.syn_comment),
+                ("syn-operator", colors.syn_operator),
+            ] {
+                assert!(
+                    html.contains(&format!("--rl-{role}: {hex};")),
+                    "{theme:?} missing {role} {hex}"
+                );
+            }
+            assert!(!html.contains("cdn"), "{theme:?}");
+            assert!(!html.contains("onclick"), "{theme:?}");
+        }
     }
 
     // ── render_html (integration) ──
