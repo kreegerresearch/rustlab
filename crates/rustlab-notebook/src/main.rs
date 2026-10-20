@@ -166,8 +166,13 @@ enum Command {
         /// Does not turn on the source editor.
         #[arg(long)]
         annotate: bool,
-        /// Compare the working copy with a git ref. Bare `--diff` uses
-        /// HEAD. The toolbar can change the ref without a restart
+        /// Enable git comparison. Off unless this flag or `[notebook] git_diff`
+        /// is set. Git reads the repository config; use it only on a
+        /// repository you trust.
+        #[arg(long)]
+        git_diff: bool,
+        /// Default ref once git diff is enabled. Bare `--diff` uses HEAD.
+        /// Does not enable git by itself. The toolbar can change the ref
         /// (`?diff=<ref>`, optional `?base=<ref>`). Ignored by the
         /// re-render-on-save watcher.
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
@@ -533,6 +538,7 @@ fn main() {
             comments,
             no_comments,
             annotate,
+            git_diff,
             diff,
         } => {
             let theme = resolve_theme(theme.as_deref(), &settings);
@@ -560,6 +566,7 @@ fn main() {
                 }
                 let comments_on =
                     resolve_comments(comments.as_deref(), no_comments, &settings).unwrap_or(true);
+                let git_on = git_diff || settings.notebook_git_diff();
                 let opts = rustlab_notebook::server::ServerOpts {
                     port,
                     no_browser,
@@ -568,6 +575,7 @@ fn main() {
                     annotate: annotate || editable,
                     comments_on,
                     diff,
+                    git_diff: git_on,
                 };
                 if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -576,9 +584,9 @@ fn main() {
                 return;
             }
 
-            if port.is_some() || no_browser || editable || annotate || diff.is_some() {
+            if port.is_some() || no_browser || editable || annotate || diff.is_some() || git_diff {
                 eprintln!(
-                    "warning: --port / --no-browser / --editable / --annotate / --diff only apply to the bare-input interactive server; ignored",
+                    "warning: --port / --no-browser / --editable / --annotate / --diff / --git-diff only apply to the bare-input interactive server; ignored",
                 );
             }
             rustlab_notebook::set_comment_display(resolve_comments(

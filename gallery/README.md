@@ -25,7 +25,7 @@ throughout the project: in the REPL (`help`, `help <toolbox>`), the CLI
 | [Notebook Directives](notebook_directives.md) | Tour of every render directive — `hide`, `details`, `grid`, callouts, exercises/solutions, stacking |
 | [Mermaid Diagrams](mermaid_demo.md) | Embedded mermaid diagrams in rendered notebooks |
 | [File Embeds (Transclusion)](embeds_demo.md) | Obsidian-style `![[Document]]` transclusion across notebooks |
-| [Git diff in notebook watch](git_diff.md) | `watch --diff`: compare the working copy or two refs, with a filterable branch picker |
+| [Git diff in notebook watch](git_diff.md) | `watch --git-diff`: compare the working copy or two refs, with a filterable branch picker |
 | [Parallel Monte Carlo](parallel_montecarlo.md) | `parmap` for deterministic parallel sampling with seeded RNG |
 
 ## linalg

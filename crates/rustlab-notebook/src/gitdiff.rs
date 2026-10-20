@@ -1,15 +1,22 @@
 //! Git diff for interactive `notebook watch`.
 //!
+//! Off unless `watch --git-diff` or `[notebook] git_diff` is set. When off,
+//! nothing here spawns git. When on, every invocation is a dashed plumbing
+//! binary (`git-rev-parse`, `git-cat-file`, `git-ls-tree`, `git-for-each-ref`,
+//! `git-hash-object`, `git-ls-files`) with config and environment overrides.
+//! Name-status is computed in-process from blob ids. There is no shell and
+//! no network. Refs are character-checked before they are placed in argv.
+//!
 //! The stored notebook HTML stays the working-copy render. A request with
 //! `?diff=<ref>` (and optional `?base=<ref>`) stamps that copy, or replaces
-//! `<main>` with the newer ref's text when both sides are refs. Git runs as
-//! a fixed argv with no shell. Refs are character-checked before they are
-//! placed in argv.
+//! `<main>` with the newer ref's text when both sides are refs.
 
-use std::collections::VecDeque;
+use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::Mutex;
+use std::process::{Command, Output, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 use crate::parse::{Block, CalloutKind, CodeDirectives, MermaidDirectives};
 use crate::render::{escape_html, markdown_to_html};
@@ -22,7 +29,8 @@ const MAX_LINES: usize = 400;
 static DIFF_DEFAULT: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
 static BLOB_CACHE: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
 
-/// `watch --diff` default, used when the request has no `diff` query.
+/// Default ref from `watch --diff`, installed only when git diff is enabled.
+/// Used when the request has no `diff` query.
 pub fn install_diff_default(v: Option<String>) {
     if let Some(slot) = DIFF_DEFAULT.get() {
         *slot.lock().expect("diff default") = v;
@@ -147,23 +155,19 @@ fn rel_ok(rel: &str) -> bool {
             .all(|s| !s.is_empty() && s != "." && s != "..")
 }
 
-pub fn show_args(rev: &str, rel: &str) -> Vec<String> {
+/// `cat-file blob` arguments. `cat-file` has no `--no-textconv`; the
+/// blob is the raw object, so diff drivers never see it.
+pub fn blob_args(rev: &str, rel: &str) -> Vec<String> {
     let spec = if rev == "index" {
         format!(":{rel}")
     } else {
         format!("{rev}:{rel}")
     };
-    vec![
-        "show".into(),
-        "--no-textconv".into(),
-        "--end-of-options".into(),
-        spec,
-    ]
+    vec!["blob".into(), "--end-of-options".into(), spec]
 }
 
 pub fn verify_args(rev: &str) -> Vec<String> {
     vec![
-        "rev-parse".into(),
         "--verify".into(),
         "--end-of-options".into(),
         format!("{rev}^{{commit}}"),
@@ -172,52 +176,41 @@ pub fn verify_args(rev: &str) -> Vec<String> {
 
 pub fn for_each_ref_args() -> Vec<String> {
     vec![
-        "for-each-ref".into(),
         "--format=%(refname)%00%(HEAD)%00%(refname:short)%00%(committerdate:unix)".into(),
         "refs/heads".into(),
         "refs/tags".into(),
     ]
 }
 
-pub fn recent_commit_args() -> Vec<String> {
-    vec![
-        "log".into(),
-        "-n".into(),
-        "12".into(),
-        "--format=%H%x09%h%x09%s".into(),
-        "--end-of-options".into(),
+/// `-c` equivalents applied as `GIT_CONFIG_KEY_*`. Dashed plumbing
+/// binaries do not parse `-c`. `safe.directory` is intentionally absent:
+/// a repository that fails the ownership check is refused.
+pub fn config_overrides() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("core.fsmonitor", "false"),
+        ("core.hooksPath", "/dev/null"),
+        ("core.pager", "cat"),
+        ("diff.external", ""),
+        ("protocol.allow", "never"),
+        ("core.sshCommand", "false"),
+        ("credential.helper", ""),
     ]
 }
 
-pub fn name_status_args(revs: &[&str]) -> Vec<String> {
-    let mut args = vec![
-        "diff".into(),
-        "--name-status".into(),
-        "-M".into(),
-        "--end-of-options".into(),
-    ];
-    args.extend(revs.iter().map(|s| (*s).to_string()));
-    args
-}
-
-fn untracked_args() -> Vec<String> {
-    vec![
-        "ls-files".into(),
-        "-z".into(),
-        "--others".into(),
-        "--exclude-standard".into(),
+/// Dashed binaries this module is willing to exec. Anything else is refused.
+pub fn plumbing_tools() -> &'static [&'static str] {
+    &[
+        "rev-parse",
+        "cat-file",
+        "ls-tree",
+        "for-each-ref",
+        "hash-object",
+        "ls-files",
     ]
 }
 
-fn commit_time_args(rev: &str) -> Vec<String> {
-    vec![
-        "log".into(),
-        "-1".into(),
-        "--format=%ct".into(),
-        "--end-of-options".into(),
-        rev.to_string(),
-    ]
-}
+const OWNERSHIP_MSG: &str = "refusing this repository (ownership check failed)";
+const WALK_CAP: usize = 2000;
 
 #[cfg(test)]
 fn argv_clean(args: &[String]) -> bool {
@@ -230,18 +223,150 @@ enum GitFail {
     Missing,
     NotRepo,
     Unknown,
+    Dubious,
 }
 
-fn run_git(dir: &Path, args: &[String]) -> Result<Output, GitFail> {
-    match Command::new("git").arg("-C").arg(dir).args(args).output() {
-        Ok(out) => Ok(out),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(GitFail::Missing),
-        Err(_) => Err(GitFail::Unknown),
+thread_local! {
+    static GIT_SPAWNS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many git processes this thread has spawned. Tests use it to prove
+/// the disabled path never starts git.
+pub fn git_spawns() -> u64 {
+    GIT_SPAWNS.with(|c| c.get())
+}
+
+fn note_spawn() {
+    GIT_SPAWNS.with(|c| c.set(c.get().saturating_add(1)));
+}
+
+pub fn ownership_refused(stderr: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    s.contains("dubious ownership") || s.contains("safe.directory")
+}
+
+fn oid_ok(s: &str) -> bool {
+    (s.len() == 40 || s.len() == 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn exec_dir() -> Result<PathBuf, GitFail> {
+    static CACHE: OnceLock<Result<PathBuf, ()>> = OnceLock::new();
+    match CACHE.get_or_init(|| probe_exec_dir().map_err(|_| ())) {
+        Ok(p) => Ok(p.clone()),
+        Err(()) => Err(GitFail::Missing),
     }
 }
 
+/// `git --exec-path` outside the notebook repo, so a repo `exec.path`
+/// or alias cannot redirect the probe.
+fn probe_exec_dir() -> Result<PathBuf, GitFail> {
+    let mut cmd = Command::new("git");
+    cmd.arg("--exec-path");
+    let tmp = std::env::temp_dir();
+    if tmp.is_dir() {
+        cmd.current_dir(&tmp);
+    }
+    scrub_git_env(&mut cmd);
+    note_spawn();
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GitFail::Missing),
+        Err(_) => return Err(GitFail::Unknown),
+    };
+    if !out.status.success() {
+        return Err(GitFail::Missing);
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        Err(GitFail::Missing)
+    } else {
+        Ok(PathBuf::from(s))
+    }
+}
+
+fn scrub_git_env(cmd: &mut Command) {
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_NAMESPACE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_EXEC_PATH",
+    ] {
+        cmd.env_remove(key);
+    }
+    for i in 0..64 {
+        cmd.env_remove(format!("GIT_CONFIG_KEY_{i}"));
+        cmd.env_remove(format!("GIT_CONFIG_VALUE_{i}"));
+    }
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_PAGER", "cat");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    let overrides = config_overrides();
+    cmd.env("GIT_CONFIG_COUNT", overrides.len().to_string());
+    for (i, (k, v)) in overrides.iter().enumerate() {
+        cmd.env(format!("GIT_CONFIG_KEY_{i}"), *k);
+        cmd.env(format!("GIT_CONFIG_VALUE_{i}"), *v);
+    }
+}
+
+fn run_plumbing(repo: &Path, tool: &str, args: &[String]) -> Result<Output, GitFail> {
+    run_plumbing_in(repo, tool, args, None)
+}
+
+fn run_plumbing_in(
+    repo: &Path,
+    tool: &str,
+    args: &[String],
+    stdin_bytes: Option<&[u8]>,
+) -> Result<Output, GitFail> {
+    if !plumbing_tools().contains(&tool) {
+        return Err(GitFail::Unknown);
+    }
+    let bin = exec_dir()?.join(format!("git-{tool}"));
+    if !bin.is_file() {
+        return Err(GitFail::Missing);
+    }
+    let mut cmd = Command::new(&bin);
+    cmd.args(args).current_dir(repo);
+    scrub_git_env(&mut cmd);
+    if stdin_bytes.is_some() {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    note_spawn();
+    // `spawn` inherits stdout/stderr unless they are piped, and
+    // `wait_with_output` only reads the piped handles. An unpiped
+    // success looks like an empty repository.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GitFail::Missing),
+        Err(_) => return Err(GitFail::Unknown),
+    };
+    if let Some(bytes) = stdin_bytes {
+        if let Some(mut sin) = child.stdin.take() {
+            let _ = sin.write_all(bytes);
+        }
+    }
+    let out = child.wait_with_output().map_err(|_| GitFail::Unknown)?;
+    if !out.status.success() && ownership_refused(&out.stderr) {
+        return Err(GitFail::Dubious);
+    }
+    Ok(out)
+}
+
 fn repo_root(start: &Path) -> Result<PathBuf, GitFail> {
-    let out = run_git(start, &["rev-parse".into(), "--show-toplevel".into()])?;
+    let out = run_plumbing(start, "rev-parse", &["--show-toplevel".into()])?;
     if !out.status.success() {
         return Err(GitFail::NotRepo);
     }
@@ -254,15 +379,15 @@ fn repo_root(start: &Path) -> Result<PathBuf, GitFail> {
 }
 
 fn verify(root: &Path, rev: &str) -> Result<String, GitFail> {
-    let out = run_git(root, &verify_args(rev))?;
+    let out = run_plumbing(root, "rev-parse", &verify_args(rev))?;
     if !out.status.success() {
         return Err(GitFail::Unknown);
     }
     let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if oid.is_empty() {
-        Err(GitFail::Unknown)
-    } else {
+    if oid_ok(&oid) {
         Ok(oid)
+    } else {
+        Err(GitFail::Unknown)
     }
 }
 
@@ -272,48 +397,269 @@ struct NameChange {
     old_path: Option<String>,
 }
 
-fn parse_name_status(text: &str) -> Vec<NameChange> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        if line.is_empty() {
+fn commit_blobs(root: &Path, oid: &str) -> Result<BTreeMap<String, String>, GitFail> {
+    if !oid_ok(oid) {
+        return Err(GitFail::Unknown);
+    }
+    let out = run_plumbing(
+        root,
+        "ls-tree",
+        &[
+            "-r".into(),
+            "-z".into(),
+            "--end-of-options".into(),
+            oid.to_string(),
+        ],
+    )?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
+    Ok(parse_ls_tree(&out.stdout))
+}
+
+fn parse_ls_tree(buf: &[u8]) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for rec in buf.split(|b| *b == 0) {
+        if rec.is_empty() {
             continue;
         }
-        let mut parts = line.split('\t');
-        let code = parts.next().unwrap_or("");
-        let status = code.chars().next().unwrap_or('?');
-        if matches!(status, 'R' | 'C') {
-            let old = parts.next().unwrap_or("").to_string();
-            let newp = parts.next().unwrap_or("").to_string();
-            if !newp.is_empty() && rel_ok(&newp) && (old.is_empty() || rel_ok(&old)) {
-                out.push(NameChange {
-                    status,
-                    path: newp,
-                    old_path: if old.is_empty() { None } else { Some(old) },
-                });
+        let Some(tab) = rec.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let meta = String::from_utf8_lossy(&rec[..tab]);
+        let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
+        let mut bits = meta.split_whitespace();
+        let mode = bits.next().unwrap_or("");
+        let kind = bits.next().unwrap_or("");
+        let oid = bits.next().unwrap_or("");
+        if kind != "blob" || mode == "120000" || mode == "160000" {
+            continue;
+        }
+        if oid_ok(oid) && rel_ok(&path) {
+            map.insert(path, oid.to_string());
+        }
+    }
+    map
+}
+
+fn index_blobs(root: &Path) -> Result<BTreeMap<String, String>, GitFail> {
+    let out = run_plumbing(root, "ls-files", &["-s".into(), "-z".into()])?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
+    let mut map = BTreeMap::new();
+    for rec in out.stdout.split(|b| *b == 0) {
+        if rec.is_empty() {
+            continue;
+        }
+        let Some(tab) = rec.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let meta = String::from_utf8_lossy(&rec[..tab]);
+        let path = String::from_utf8_lossy(&rec[tab + 1..]).into_owned();
+        let mut bits = meta.split_whitespace();
+        let mode = bits.next().unwrap_or("");
+        let oid = bits.next().unwrap_or("");
+        let stage = bits.next().unwrap_or("0");
+        if mode == "120000" || mode == "160000" || !rel_ok(&path) {
+            continue;
+        }
+        if stage != "0" {
+            map.insert(path, format!("unmerged:{oid}"));
+        } else if oid_ok(oid) {
+            map.insert(path, oid.to_string());
+        }
+    }
+    Ok(map)
+}
+
+fn walk_files(root: &Path) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for ent in rd.flatten() {
+            let Ok(ft) = ent.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
             }
-        } else if matches!(status, 'M' | 'A' | 'D' | 'T') {
-            if let Some(path) = parts.next() {
-                if rel_ok(path) {
-                    out.push(NameChange {
-                        status,
-                        path: path.to_string(),
-                        old_path: None,
-                    });
-                }
+            if ent.file_name() == *".git" {
+                continue;
+            }
+            let path = ent.path();
+            if ft.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if s.contains('\n') || !rel_ok(&s) {
+                continue;
+            }
+            if files.len() >= WALK_CAP {
+                return (files, true);
+            }
+            files.push(s);
+        }
+    }
+    (files, false)
+}
+
+fn hash_files(root: &Path, files: &[String]) -> Result<Vec<String>, GitFail> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut input = Vec::new();
+    for f in files {
+        input.extend_from_slice(f.as_bytes());
+        input.push(b'\n');
+    }
+    let args = vec!["--no-filters".into(), "--stdin-paths".into()];
+    let out = run_plumbing_in(root, "hash-object", &args, Some(&input))?;
+    if out.status.success() {
+        let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if lines.len() == files.len() {
+            return Ok(lines);
+        }
+    }
+    let mut oids = Vec::with_capacity(files.len());
+    for f in files {
+        let mut one = f.as_bytes().to_vec();
+        one.push(b'\n');
+        let single = run_plumbing_in(root, "hash-object", &args, Some(&one))?;
+        if single.status.success() {
+            oids.push(String::from_utf8_lossy(&single.stdout).trim().to_string());
+        } else {
+            oids.push(String::new());
+        }
+    }
+    Ok(oids)
+}
+
+fn worktree_blobs(root: &Path) -> Result<(BTreeMap<String, String>, bool), GitFail> {
+    let (files, truncated) = walk_files(root);
+    let oids = hash_files(root, &files)?;
+    let mut map = BTreeMap::new();
+    for (path, oid) in files.into_iter().zip(oids) {
+        if oid_ok(&oid) {
+            map.insert(path, oid);
+        }
+    }
+    Ok((map, truncated))
+}
+
+fn diff_maps(
+    old: &BTreeMap<String, String>,
+    new: &BTreeMap<String, String>,
+    emit_deletes: bool,
+) -> Vec<NameChange> {
+    let mut modified = Vec::new();
+    let mut added = Vec::new();
+    let mut deleted = Vec::new();
+    for (path, oid) in new {
+        match old.get(path) {
+            Some(prev) if prev == oid => {}
+            Some(_) => modified.push(NameChange {
+                status: 'M',
+                path: path.clone(),
+                old_path: None,
+            }),
+            None => added.push((path.clone(), oid.clone())),
+        }
+    }
+    if emit_deletes {
+        for (path, oid) in old {
+            if !new.contains_key(path) {
+                deleted.push((path.clone(), oid.clone()));
             }
         }
+    }
+    let mut add_count: HashMap<&str, usize> = HashMap::new();
+    let mut del_count: HashMap<&str, usize> = HashMap::new();
+    for (_, oid) in &added {
+        *add_count.entry(oid).or_default() += 1;
+    }
+    for (_, oid) in &deleted {
+        *del_count.entry(oid).or_default() += 1;
+    }
+    let mut used_del = vec![false; deleted.len()];
+    let mut out = modified;
+    for (path, oid) in &added {
+        let unique =
+            add_count[oid.as_str()] == 1 && del_count.get(oid.as_str()).copied().unwrap_or(0) == 1;
+        if unique {
+            if let Some((i, (old_path, _))) = deleted
+                .iter()
+                .enumerate()
+                .find(|(i, (_, o))| o == oid && !used_del[*i])
+            {
+                used_del[i] = true;
+                out.push(NameChange {
+                    status: 'R',
+                    path: path.clone(),
+                    old_path: Some(old_path.clone()),
+                });
+                continue;
+            }
+        }
+        out.push(NameChange {
+            status: 'A',
+            path: path.clone(),
+            old_path: None,
+        });
+    }
+    for (i, (path, _)) in deleted.iter().enumerate() {
+        if used_del[i] {
+            continue;
+        }
+        out.push(NameChange {
+            status: 'D',
+            path: path.clone(),
+            old_path: None,
+        });
     }
     out
 }
 
-fn name_status(root: &Path, revs: &[&str]) -> Vec<NameChange> {
-    let Ok(out) = run_git(root, &name_status_args(revs)) else {
-        return Vec::new();
+fn worktree_changes(root: &Path, against: Option<&str>) -> Result<Vec<NameChange>, GitFail> {
+    let old = match against {
+        Some(oid) => commit_blobs(root, oid)?,
+        None => index_blobs(root)?,
     };
-    if !out.status.success() {
-        return Vec::new();
+    let (new, truncated) = worktree_blobs(root)?;
+    Ok(diff_maps(&old, &new, !truncated))
+}
+
+fn ref_blobs(
+    root: &Path,
+    rev: &str,
+    oid: Option<&str>,
+) -> Result<BTreeMap<String, String>, GitFail> {
+    if rev == "index" {
+        index_blobs(root)
+    } else {
+        let owned;
+        let oid = if let Some(oid) = oid {
+            oid
+        } else {
+            owned = verify(root, rev)?;
+            owned.as_str()
+        };
+        commit_blobs(root, oid)
     }
-    parse_name_status(&String::from_utf8_lossy(&out.stdout))
 }
 
 fn show_blob(
@@ -325,13 +671,23 @@ fn show_blob(
     if !rel_ok(rel) {
         return Ok(None);
     }
-    let cache_key = oid.map(|o| format!("{o}:{rel}"));
+    let spec_rev: String = if rev == "index" {
+        "index".into()
+    } else if let Some(oid) = oid {
+        if !oid_ok(oid) {
+            return Err(GitFail::Unknown);
+        }
+        oid.to_string()
+    } else {
+        verify(root, rev)?
+    };
+    let cache_key = (spec_rev != "index").then(|| format!("{spec_rev}:{rel}"));
     if let Some(key) = &cache_key {
         if let Some(hit) = cache_get(key) {
             return Ok(Some(hit));
         }
     }
-    let out = run_git(root, &show_args(rev, rel))?;
+    let out = run_plumbing(root, "cat-file", &blob_args(&spec_rev, rel))?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -388,15 +744,72 @@ fn load_side(
     Ok(None)
 }
 
-fn commit_time(root: &Path, rev: &str) -> Option<i64> {
-    let out = run_git(root, &commit_time_args(rev)).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+struct CommitInfo {
+    time: i64,
+    subject: String,
+    parent: Option<String>,
 }
 
-fn file_dots_json(root: &Path, changes: &[NameChange]) -> String {
+fn read_commit(root: &Path, oid: &str) -> Result<CommitInfo, GitFail> {
+    if !oid_ok(oid) {
+        return Err(GitFail::Unknown);
+    }
+    let out = run_plumbing(
+        root,
+        "cat-file",
+        &["commit".into(), "--end-of-options".into(), oid.to_string()],
+    )?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut parent = None;
+    let mut time = None;
+    let mut past_header = false;
+    let mut subject = String::new();
+    for line in text.split('\n') {
+        if !past_header {
+            if line.is_empty() {
+                past_header = true;
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("parent ") {
+                if parent.is_none() {
+                    let p = rest.trim();
+                    if oid_ok(p) {
+                        parent = Some(p.to_string());
+                    }
+                }
+            } else if let Some(rest) = line.strip_prefix("committer ") {
+                let toks: Vec<&str> = rest.split_whitespace().collect();
+                if toks.len() >= 2 {
+                    time = toks[toks.len() - 2].parse().ok();
+                }
+            }
+        } else if subject.is_empty() {
+            subject = line.chars().take(72).collect();
+            break;
+        }
+    }
+    Ok(CommitInfo {
+        time: time.ok_or(GitFail::Unknown)?,
+        subject,
+        parent,
+    })
+}
+
+fn commit_time(root: &Path, rev: &str) -> Result<i64, GitFail> {
+    let owned;
+    let oid = if oid_ok(rev) {
+        rev
+    } else {
+        owned = verify(root, rev)?;
+        owned.as_str()
+    };
+    Ok(read_commit(root, oid)?.time)
+}
+
+fn file_dots_json(changes: &[NameChange]) -> String {
     let mut files: Vec<serde_json::Value> = Vec::new();
     for c in changes {
         if c.status == 'D' {
@@ -416,23 +829,6 @@ fn file_dots_json(root: &Path, changes: &[NameChange]) -> String {
             "label": label,
         }));
     }
-    if let Ok(out) = run_git(root, &untracked_args()) {
-        if out.status.success() {
-            for path in String::from_utf8_lossy(&out.stdout).split('\0') {
-                if path.is_empty() || !rel_ok(path) {
-                    continue;
-                }
-                if files.iter().any(|f| f["path"] == path) {
-                    continue;
-                }
-                files.push(serde_json::json!({
-                    "path": path,
-                    "status": "A",
-                    "label": "added",
-                }));
-            }
-        }
-    }
     serde_json::json!({ "files": files })
         .to_string()
         .replace('<', "\\u003c")
@@ -441,9 +837,19 @@ fn file_dots_json(root: &Path, changes: &[NameChange]) -> String {
 /// `GET /git/refs` body. Not a repository and a missing `git` are 200
 /// with an error field so the picker can explain itself.
 pub fn refs_json(start: &Path) -> String {
+    refs_json_if(true, start)
+}
+
+/// Same as [`refs_json`], but `enabled == false` returns immediately and
+/// does not spawn git.
+pub fn refs_json_if(enabled: bool, start: &Path) -> String {
+    if !enabled {
+        return refs_error("git diff is off");
+    }
     match collect_refs(start) {
         Ok(body) => body,
         Err(GitFail::Missing) => refs_error("git not found"),
+        Err(GitFail::Dubious) => refs_error(OWNERSHIP_MSG),
         Err(_) => refs_error("not a git repository"),
     }
 }
@@ -468,7 +874,7 @@ struct Listed {
 
 fn collect_refs(start: &Path) -> Result<String, GitFail> {
     let root = repo_root(start)?;
-    let out = run_git(&root, &for_each_ref_args())?;
+    let out = run_plumbing(&root, "for-each-ref", &for_each_ref_args())?;
     if !out.status.success() {
         return Err(GitFail::NotRepo);
     }
@@ -514,21 +920,26 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
     tags.sort_by(|a, b| b.date.cmp(&a.date).then(a.name.cmp(&b.name)));
 
     let mut commits = Vec::new();
-    if let Ok(log) = run_git(&root, &recent_commit_args()) {
-        if log.status.success() {
-            for line in String::from_utf8_lossy(&log.stdout).lines() {
-                let mut parts = line.splitn(3, '\t');
-                let rev = parts.next().unwrap_or("");
-                let short = parts.next().unwrap_or("");
-                let subject = parts.next().unwrap_or("");
-                if !ref_ok(rev) || !ref_ok(short) {
-                    continue;
-                }
-                let subject: String = subject.chars().take(72).collect();
+    if let Ok(head) = verify(&root, "HEAD") {
+        let mut oid = head;
+        for _ in 0..12 {
+            let info = match read_commit(&root, &oid) {
+                Ok(info) => info,
+                Err(GitFail::Dubious) => return Err(GitFail::Dubious),
+                Err(GitFail::Missing) => return Err(GitFail::Missing),
+                Err(_) => break,
+            };
+            let short: String = oid.chars().take(7).collect();
+            if ref_ok(&oid) && ref_ok(&short) {
+                let subject = info.subject;
                 commits.push(serde_json::json!({
-                    "rev": rev,
+                    "rev": oid,
                     "label": format!("{short} {subject}"),
                 }));
+            }
+            match info.parent {
+                Some(parent) => oid = parent,
+                None => break,
             }
         }
     }
@@ -576,6 +987,7 @@ pub fn present(p: Present<'_>) -> String {
     let root = match repo_root(start) {
         Ok(r) => r,
         Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
+        Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
         Err(_) => return decorate(p.html, p.diff, base, "not a git repository", None),
     };
     if safe_rel(p.source_path, p.jail, &root).is_err() {
@@ -597,6 +1009,9 @@ pub fn present(p: Present<'_>) -> String {
             Err(GitFail::Missing) => {
                 return decorate(p.html, p.diff, base, "git not found", None);
             }
+            Err(GitFail::Dubious) => {
+                return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None);
+            }
             Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
         }
     };
@@ -608,6 +1023,9 @@ pub fn present(p: Present<'_>) -> String {
                 Ok(oid) => Some(oid),
                 Err(GitFail::Missing) => {
                     return decorate(p.html, p.diff, base, "git not found", None);
+                }
+                Err(GitFail::Dubious) => {
+                    return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None);
                 }
                 Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
             }
@@ -622,13 +1040,25 @@ pub fn present(p: Present<'_>) -> String {
     present_working(p, &root, &rel, diff_oid.as_deref())
 }
 
+/// `enabled == false` returns the stored HTML and does not spawn git.
+pub fn present_if(enabled: bool, p: Present<'_>) -> String {
+    if !enabled {
+        return p.html.to_string();
+    }
+    present(p)
+}
+
 fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) -> String {
-    let changes = if p.diff == "index" {
-        name_status(root, &[])
-    } else {
-        name_status(root, &[p.diff])
+    let against = if p.diff == "index" { None } else { oid };
+    let changes = match worktree_changes(root, against) {
+        Ok(c) => c,
+        Err(GitFail::Dubious) => {
+            return decorate(p.html, p.diff, None, OWNERSHIP_MSG, None);
+        }
+        Err(GitFail::Missing) => return decorate(p.html, p.diff, None, "git not found", None),
+        Err(_) => Vec::new(),
     };
-    let dots = file_dots_json(root, &changes);
+    let dots = file_dots_json(&changes);
     let disk = match std::fs::read(p.source_path) {
         Ok(b) => b,
         Err(_) => {
@@ -657,6 +1087,7 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) ->
         Err(GitFail::Missing) => {
             return decorate(p.html, p.diff, None, "git not found", Some(&dots))
         }
+        Err(GitFail::Dubious) => return decorate(p.html, p.diff, None, OWNERSHIP_MSG, Some(&dots)),
         Err(_) => String::new(),
     };
     match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
@@ -685,7 +1116,13 @@ fn present_two_ref(
     let show_diff = match (p.diff == "index", base == "index") {
         (true, _) | (_, true) => true,
         _ => match (commit_time(root, p.diff), commit_time(root, base)) {
-            (Some(d), Some(b)) if b > d => false,
+            (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
+                return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, None);
+            }
+            (Err(GitFail::Missing), _) | (_, Err(GitFail::Missing)) => {
+                return decorate(p.html, p.diff, Some(base), "git not found", None);
+            }
+            (Ok(d), Ok(b)) if b > d => false,
             _ => true,
         },
     };
@@ -694,19 +1131,29 @@ fn present_two_ref(
     } else {
         (base, base_oid, p.diff, diff_oid)
     };
-    let changes = match (old_ref == "index", new_ref == "index") {
-        (true, true) => Vec::new(),
-        (true, false) => name_status(root, &[new_ref]),
-        (false, true) => name_status(root, &[old_ref]),
-        (false, false) => name_status(root, &[old_ref, new_ref]),
+    let changes = match (
+        ref_blobs(root, old_ref, old_oid),
+        ref_blobs(root, new_ref, new_oid),
+    ) {
+        (Ok(old), Ok(new)) => diff_maps(&old, &new, true),
+        (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
+            return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, None);
+        }
+        (Err(GitFail::Missing), _) | (_, Err(GitFail::Missing)) => {
+            return decorate(p.html, p.diff, Some(base), "git not found", None);
+        }
+        _ => Vec::new(),
     };
-    let dots = file_dots_json(root, &changes);
+    let dots = file_dots_json(&changes);
     let newer = match (p.diff == "index" || base == "index", show_diff) {
         (true, _) => None,
-        (false, true) => commit_time(root, p.diff)
-            .zip(commit_time(root, base))
-            .filter(|(d, b)| d > b)
-            .map(|_| ()),
+        (false, true) => match (commit_time(root, p.diff), commit_time(root, base)) {
+            (Ok(d), Ok(b)) if d > b => Some(()),
+            (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
+                return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, Some(&dots));
+            }
+            _ => None,
+        },
         (false, false) => Some(()),
     };
     let newer_word = if newer.is_some() { " (newer)" } else { "" };
@@ -716,12 +1163,14 @@ fn present_two_ref(
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
         Err(GitFail::Missing) => return fail("git not found"),
+        Err(GitFail::Dubious) => return fail(OWNERSHIP_MSG),
         Err(_) => String::new(),
     };
     let old_text = match load_side(root, old_ref, rel, &changes, old_oid) {
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
         Err(GitFail::Missing) => return fail("git not found"),
+        Err(GitFail::Dubious) => return fail(OWNERSHIP_MSG),
         Err(_) => String::new(),
     };
     if new_text.contains('\0') || old_text.contains('\0') {
@@ -1547,23 +1996,44 @@ mod tests {
 
     #[test]
     fn fixed_argv_has_end_of_options_and_no_shell() {
-        let show = show_args("HEAD", "notes/a.md");
+        let show = blob_args("HEAD", "notes/a.md");
         assert!(show.iter().any(|a| a == "--end-of-options"));
         assert!(argv_clean(&show), "{show:?}");
         assert_eq!(show.last().map(String::as_str), Some("HEAD:notes/a.md"));
-        let index = show_args("index", "notes/a.md");
+        let index = blob_args("index", "notes/a.md");
         assert_eq!(index.last().map(String::as_str), Some(":notes/a.md"));
         assert!(argv_clean(&verify_args("HEAD~2")));
         assert!(verify_args("HEAD~2")
             .iter()
             .any(|a| a == "--end-of-options"));
         assert!(argv_clean(&for_each_ref_args()));
-        assert!(argv_clean(&name_status_args(&["main", "topic"])));
-        assert!(name_status_args(&["main"])
-            .iter()
-            .any(|a| a == "--end-of-options"));
-        assert!(argv_clean(&recent_commit_args()));
         assert!(!show.iter().any(|a| a.contains(';') || a.contains('|')));
+        let keys: Vec<&str> = config_overrides().iter().map(|(k, _)| *k).collect();
+        for required in [
+            "core.fsmonitor",
+            "core.hooksPath",
+            "core.pager",
+            "diff.external",
+            "protocol.allow",
+            "core.sshCommand",
+            "credential.helper",
+        ] {
+            assert!(keys.contains(&required), "{keys:?}");
+        }
+        assert!(!keys.iter().any(|k| k.contains("safe.directory")));
+        for tool in plumbing_tools() {
+            assert!(!matches!(
+                *tool,
+                "diff" | "show" | "log" | "status" | "fetch" | "clone"
+            ));
+        }
+        assert!(ownership_refused(
+            b"fatal: detected dubious ownership in repository at /tmp/x\n"
+        ));
+        assert!(ownership_refused(
+            b"add it to the safe.directory list in the global config"
+        ));
+        assert!(!ownership_refused(b"not a git repository"));
     }
 
     #[test]
@@ -1776,5 +2246,116 @@ mod tests {
             live.contains("rl-diff-chg") || live.contains("changes vs main"),
             "{live}"
         );
+    }
+
+    #[test]
+    fn git_off_never_spawns_and_hostile_config_does_not_run() {
+        if !git_available() {
+            eprintln!("SKIP hostile git: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let marker = dir.join("marker");
+        let script = dir.join("hook.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho ran >> '{}'\n", marker.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perm = std::fs::metadata(&script).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&script, perm).unwrap();
+
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+        git(dir, &["config", "user.name", "Test"]);
+        let path = dir.join("n.md");
+        std::fs::write(&path, "# One\n").unwrap();
+        git(dir, &["add", "n.md"]);
+        git(dir, &["commit", "-m", "init"]);
+
+        let script_s = script.display().to_string();
+        let include = dir.join("hostile.ini");
+        std::fs::write(
+            &include,
+            format!("[core]\nfsmonitor = {script_s}\n[diff]\nexternal = {script_s}\n"),
+        )
+        .unwrap();
+        git(dir, &["config", "include.path", include.to_str().unwrap()]);
+        git(dir, &["config", "diff.attack.textconv", &script_s]);
+        std::fs::write(dir.join(".gitattributes"), "*.md diff=attack\n").unwrap();
+        for name in [
+            "cat-file",
+            "rev-parse",
+            "ls-tree",
+            "for-each-ref",
+            "hash-object",
+            "ls-files",
+        ] {
+            git(
+                dir,
+                &["config", &format!("alias.{name}"), &format!("!{script_s}")],
+            );
+        }
+        std::fs::write(&path, "# Two\n").unwrap();
+        let _ = std::fs::remove_file(&marker);
+
+        // Porcelain on purpose: these must run the fixture's programs so
+        // the assertion below proves the hooks are real. Output is
+        // captured so the marker script's git noise stays out of the log.
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .arg("status")
+            .output();
+        let _ = Command::new("git").arg("-C").arg(dir).arg("diff").output();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["cat-file", "-p", "HEAD"])
+            .output();
+        let tripped = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(
+            !tripped.is_empty(),
+            "fixture hooks did not run under plain git"
+        );
+        std::fs::remove_file(&marker).unwrap();
+
+        let html =
+            "<body><main><section class=\"rl-block\" id=\"b-1\"><p>Two</p></section></main></body>";
+        let before = git_spawns();
+        let off = present_if(
+            false,
+            Present {
+                html,
+                source_path: &path,
+                jail: Some(dir),
+                comments_on: true,
+                diff: "HEAD",
+                base: None,
+            },
+        );
+        let refs_off = refs_json_if(false, dir);
+        assert_eq!(git_spawns(), before, "git spawned while diff is off");
+        assert_eq!(off, html);
+        assert!(refs_off.contains("git diff is off"), "{refs_off}");
+        assert!(!marker.exists(), "disabled path ran a hook");
+
+        let _page = present(Present {
+            html,
+            source_path: &path,
+            jail: Some(dir),
+            comments_on: true,
+            diff: "HEAD",
+            base: None,
+        });
+        let refs = refs_json(dir);
+        assert!(
+            !marker.exists(),
+            "hardened git ran a repo hook or alias: {refs}"
+        );
+        assert!(!refs.contains("git diff is off"), "{refs}");
     }
 }

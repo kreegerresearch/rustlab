@@ -62,9 +62,12 @@ pub struct ServerOpts {
     /// Initial Comments checkbox. Markup is always rendered in watch so
     /// the reader can reveal notes. The CLI default is on.
     pub comments_on: bool,
-    /// `watch --diff [ref]`. `None` leaves diff off until `?diff=`.
-    /// Bare `--diff` is `Some("HEAD")`. Per-page queries override this.
+    /// Default ref once git is enabled. `None` does not stamp pages until `?diff=`.
+    /// Bare `--diff` is `Some("HEAD")`. Ignored unless [`Self::git_diff`] is set.
     pub diff: Option<String>,
+    /// `watch --git-diff` or `[notebook] git_diff`. Off by default. When
+    /// false the server never spawns git.
+    pub git_diff: bool,
 }
 
 /// Per-render page context the server threads into the renderer: the CSP
@@ -77,6 +80,8 @@ pub(super) struct PageCtx<'a> {
     pub jail_root: Option<&'a Path>,
     pub comments_on: bool,
     pub annotate: bool,
+    /// When false the ⋯ menu shows Show diff as unavailable.
+    pub git_diff: bool,
 }
 
 /// Start the interactive server against `input` and block until
@@ -104,7 +109,16 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
     if let Some(root) = &jail_root {
         eprintln!("[watch] notebook file I/O jailed to {}", root.display());
     }
-    crate::gitdiff::install_diff_default(opts.diff.clone());
+    if opts.git_diff {
+        eprintln!(
+            "[watch] git diff is on. Git reads this repository's config and includes, which can name programs (fsmonitor, hooks, diff drivers, credential helpers). Compare only a repository you trust."
+        );
+        crate::gitdiff::install_diff_default(opts.diff.clone());
+    } else if opts.diff.is_some() {
+        eprintln!(
+            "[watch] --diff is ignored until git diff is enabled (--git-diff or [notebook] git_diff = true)"
+        );
+    }
     let state = build_state(
         &canonical_input,
         is_dir,
@@ -114,6 +128,7 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
         opts.comments_on,
         csp_nonce,
         jail_root,
+        opts.git_diff,
     )?;
 
     // ── 3. Bind ───────────────────────────────────────────────────
@@ -187,6 +202,7 @@ fn build_state(
     comments_on: bool,
     csp_nonce: String,
     jail_root: Option<PathBuf>,
+    git_enabled: bool,
 ) -> Result<Arc<http::ServerState>> {
     let sources: Vec<PathBuf> = if is_dir {
         // Same listing rule as the static build: partials are transcluded,
@@ -401,6 +417,7 @@ fn build_state(
                 jail_root: jail_root.as_deref(),
                 comments_on,
                 annotate,
+                git_diff: git_enabled,
             },
         )
         .with_context(|| format!("rendering {} for server", path.display()))?;
@@ -446,6 +463,7 @@ fn build_state(
         jail_root,
         annotate,
         comments_on,
+        git_enabled,
     }))
 }
 
@@ -826,7 +844,15 @@ pub(super) fn render_for_server_cancellable(
         html
     };
     let html = ws::inject_ws_client_nonced(&html, page.nonce);
-    let html = page::inject_chrome_nonced(&html, theme, page::PageOpts { editable }, page.nonce);
+    let html = page::inject_chrome_nonced(
+        &html,
+        theme,
+        page::PageOpts {
+            editable,
+            git_diff: page.git_diff,
+        },
+        page.nonce,
+    );
     // Inline cell editing needs --editable AND an embed-free notebook:
     // cell saves splice the host `.md` by executable ordinal, which is
     // only sound when every rendered block comes from that file. The
@@ -1087,6 +1113,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -1114,6 +1141,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -1142,6 +1170,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -1174,6 +1203,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -1231,6 +1261,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let app = serve_test(state);
@@ -1315,6 +1346,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let app = serve_test(state);
@@ -1437,6 +1469,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let app = serve_test(state);
@@ -1474,6 +1507,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -1508,6 +1542,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let titles: Vec<&str> = state
@@ -1538,6 +1573,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let deep_slug = state.link_slugs.get("ch1/deep.md").unwrap();
@@ -1587,6 +1623,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let served: Vec<String> = state
@@ -1656,6 +1693,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         assert_eq!(state.index_title, "Welcome", "index.md title not hoisted");
@@ -1708,6 +1746,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         // Read slugs from the state rather than hardcoding slugify/dedup
@@ -1820,6 +1859,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let slug = |rel: &str| state.link_slugs.get(rel).unwrap().clone();
@@ -1878,6 +1918,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         assert!(state.single, "single-file mode");
@@ -1928,6 +1969,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let slug = state.order[0].clone();
@@ -1960,6 +2002,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         assert!(!state.single, "directory mode is not single");
@@ -2033,6 +2076,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let nb_alpha = state.notebook("alpha").unwrap().clone();
@@ -2147,6 +2191,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let slug = state.order[0].clone();
@@ -2246,6 +2291,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let note = state
@@ -2329,6 +2375,7 @@ mod tests {
             false,
             "testnonce".into(),
             Some(canon.clone()),
+            false,
         )
         .unwrap();
         let id = |rel: &str| state.link_slugs.get(rel).unwrap().clone();
@@ -2537,6 +2584,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         assert_eq!(state.link_slugs.get("ch2/only.md").unwrap(), "ch2/only");
@@ -2575,6 +2623,7 @@ mod tests {
             true,
             "testnonce".into(),
             None,
+            false,
         )
         .unwrap();
         let app = serve_test(state);

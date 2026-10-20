@@ -409,6 +409,7 @@ pub(super) fn schedule_render(
         let jail_root = state.jail_root.clone();
         let comments_on = state.comments_on;
         let annotate = state.annotate;
+        let git_diff = state.git_enabled;
         let render_result = tokio::task::spawn_blocking(move || {
             let mut cache = nb_cache.render_cache.lock().unwrap();
             super::render_for_server_cancellable(
@@ -428,6 +429,7 @@ pub(super) fn schedule_render(
                     jail_root: jail_root.as_deref(),
                     comments_on,
                     annotate,
+                    git_diff,
                 },
             )
         })
@@ -545,7 +547,8 @@ pub(super) fn schedule_render(
                 );
             }
             Broadcast::Full => {
-                let env: Arc<str> = Arc::from(ws::stamp_flash(&ws::full_envelope(&new_html), flash));
+                let env: Arc<str> =
+                    Arc::from(ws::stamp_flash(&ws::full_envelope(&new_html), flash));
                 let _ = nb.broadcast.send(env);
                 eprintln!("[watch] re-rendered {} (full)", nb.slug);
             }
@@ -646,6 +649,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         (state, nb)
     }
@@ -802,7 +806,9 @@ mod tests {
 
     /// Next content envelope, skipping the ▶ Run `cell_status` frame that
     /// follows every completed render.
-    async fn next_content(rx: &mut tokio::sync::broadcast::Receiver<Arc<str>>) -> serde_json::Value {
+    async fn next_content(
+        rx: &mut tokio::sync::broadcast::Receiver<Arc<str>>,
+    ) -> serde_json::Value {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
         loop {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -842,7 +848,10 @@ mod tests {
         std::fs::write(&nb_path, "# Initial\n\nbody WIDGET_FLASH.\n").unwrap();
         schedule_render(theme, state.clone(), nb.clone(), None, Some(42));
         let parsed = next_content(&mut sub).await;
-        assert_eq!(parsed["flash"], 42, "widget render must echo its request id");
+        assert_eq!(
+            parsed["flash"], 42,
+            "widget render must echo its request id"
+        );
         assert!(
             parsed.to_string().contains("WIDGET_FLASH"),
             "widget render missing the new body"
