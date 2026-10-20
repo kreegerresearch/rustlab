@@ -549,11 +549,20 @@ mod tests {
     fn mocha_css_tokens_match_palette_fields() {
         let tokens = MOCHA.css_tokens();
         assert_eq!(tokens.len(), 34);
-        assert_eq!(tokens[26], ("--rl-diff-add-bg", "rgba(166, 227, 161, 0.32)"));
+        assert_eq!(
+            tokens[26],
+            ("--rl-diff-add-bg", "rgba(166, 227, 161, 0.32)")
+        );
         assert_eq!(tokens[27], ("--rl-diff-add-bar", "#a6e3a1"));
-        assert_eq!(tokens[28], ("--rl-diff-del-bg", "rgba(243, 139, 168, 0.40)"));
+        assert_eq!(
+            tokens[28],
+            ("--rl-diff-del-bg", "rgba(243, 139, 168, 0.40)")
+        );
         assert_eq!(tokens[29], ("--rl-diff-del-bar", "#f38ba8"));
-        assert_eq!(tokens[30], ("--rl-diff-chg-bg", "rgba(249, 226, 175, 0.28)"));
+        assert_eq!(
+            tokens[30],
+            ("--rl-diff-chg-bg", "rgba(249, 226, 175, 0.28)")
+        );
         assert_eq!(tokens[31], ("--rl-diff-chg-bar", "#f9e2af"));
         assert_eq!(tokens[32], ("--rl-diff-add-line", "#4a5d53"));
         assert_eq!(tokens[33], ("--rl-diff-del-line", "#734a5f"));
@@ -789,8 +798,14 @@ mod tests {
             ] {
                 let on_page = contrast_ratio(bar, c.bg).unwrap();
                 let on_wash = contrast_ratio(bar, &wash).unwrap();
-                assert!(on_page >= 3.0, "{name} {label} bar on page {on_page:.2} < 3");
-                assert!(on_wash >= 3.0, "{name} {label} bar on wash {on_wash:.2} < 3");
+                assert!(
+                    on_page >= 3.0,
+                    "{name} {label} bar on page {on_page:.2} < 3"
+                );
+                assert!(
+                    on_wash >= 3.0,
+                    "{name} {label} bar on wash {on_wash:.2} < 3"
+                );
             }
             if c.is_dark() {
                 assert!(

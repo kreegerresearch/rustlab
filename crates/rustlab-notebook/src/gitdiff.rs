@@ -142,7 +142,9 @@ fn rel_ok(rel: &str) -> bool {
         && !rel.contains('\\')
         && !rel.contains('\0')
         && !rel.contains(':')
-        && rel.split('/').all(|s| !s.is_empty() && s != "." && s != "..")
+        && rel
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
 }
 
 pub fn show_args(rev: &str, rel: &str) -> Vec<String> {
@@ -314,7 +316,12 @@ fn name_status(root: &Path, revs: &[&str]) -> Vec<NameChange> {
     parse_name_status(&String::from_utf8_lossy(&out.stdout))
 }
 
-fn show_blob(root: &Path, rev: &str, rel: &str, oid: Option<&str>) -> Result<Option<String>, GitFail> {
+fn show_blob(
+    root: &Path,
+    rev: &str,
+    rel: &str,
+    oid: Option<&str>,
+) -> Result<Option<String>, GitFail> {
     if !rel_ok(rel) {
         return Ok(None);
     }
@@ -491,7 +498,11 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
     let mut rest: Vec<Listed> = heads.into_iter().filter(|h| !h.current).collect();
     rest.sort_by(|a, b| {
         fn rank(name: &str) -> u8 {
-            if name == "main" { 0 } else { 1 }
+            if name == "main" {
+                0
+            } else {
+                1
+            }
         }
         rank(&a.name)
             .cmp(&rank(&b.name))
@@ -621,13 +632,7 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) ->
     let disk = match std::fs::read(p.source_path) {
         Ok(b) => b,
         Err(_) => {
-            return decorate(
-                p.html,
-                p.diff,
-                None,
-                "could not read notebook",
-                Some(&dots),
-            );
+            return decorate(p.html, p.diff, None, "could not read notebook", Some(&dots));
         }
     };
     if disk.contains(&0) {
@@ -649,7 +654,9 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) ->
         }
         Ok(Some(s)) => s,
         Ok(None) => String::new(),
-        Err(GitFail::Missing) => return decorate(p.html, p.diff, None, "git not found", Some(&dots)),
+        Err(GitFail::Missing) => {
+            return decorate(p.html, p.diff, None, "git not found", Some(&dots))
+        }
         Err(_) => String::new(),
     };
     match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
@@ -696,7 +703,10 @@ fn present_two_ref(
     let dots = file_dots_json(root, &changes);
     let newer = match (p.diff == "index" || base == "index", show_diff) {
         (true, _) => None,
-        (false, true) => commit_time(root, p.diff).zip(commit_time(root, base)).filter(|(d, b)| d > b).map(|_| ()),
+        (false, true) => commit_time(root, p.diff)
+            .zip(commit_time(root, base))
+            .filter(|(d, b)| d > b)
+            .map(|_| ()),
         (false, false) => Some(()),
     };
     let newer_word = if newer.is_some() { " (newer)" } else { "" };
@@ -777,7 +787,12 @@ fn stamp_working(
                 out.push_str(&removed_section(unit));
             }
         }
-        out.push_str(&stamp_section(&sections[idx].html, &marks[idx], &units[idx], false));
+        out.push_str(&stamp_section(
+            &sections[idx].html,
+            &marks[idx],
+            &units[idx],
+            false,
+        ));
         cursor = *end;
     }
     for (at, unit) in &removed {
@@ -884,7 +899,11 @@ fn align(
 }
 
 /// Document-order labels: `same`, `added`, `changed`, `removed`.
-pub fn align_sides(old: &str, new_src: &str, comments_on: bool) -> Result<Vec<&'static str>, &'static str> {
+pub fn align_sides(
+    old: &str,
+    new_src: &str,
+    comments_on: bool,
+) -> Result<Vec<&'static str>, &'static str> {
     let (marks, removed, units) = align(old, new_src, comments_on)?;
     let mut out = Vec::new();
     for (idx, mark) in marks.iter().enumerate() {
@@ -1130,7 +1149,11 @@ fn unit_of(block: &Block) -> Option<Unit> {
             fp: format!("w\0{source}"),
             text: source.clone(),
         }),
-        Block::Callout { kind, title, content } => Some(Unit {
+        Block::Callout {
+            kind,
+            title,
+            content,
+        } => Some(Unit {
             kind: Kind::Callout,
             fp: format!(
                 "c\0{}\0{}\0{content}",
@@ -1148,9 +1171,7 @@ fn code_fp(source: &str, d: &CodeDirectives) -> String {
         "code\0{source}\0{}\0{}\0{}\0{}\0{}",
         d.hidden,
         d.details.as_deref().unwrap_or(""),
-        d.grid_cols
-            .map(|n| n.to_string())
-            .unwrap_or_default(),
+        d.grid_cols.map(|n| n.to_string()).unwrap_or_default(),
         d.caption.as_deref().unwrap_or(""),
         d.source_open
             .map(|b| if b { "1" } else { "0" })
@@ -1220,7 +1241,11 @@ fn fresh_section(unit: &Unit, mark: &Mark, idx: usize, two_ref: bool) -> String 
             let lines = old
                 .map(|o| line_diff_html(o, &unit.text))
                 .unwrap_or_default();
-            let lang = if unit.kind == Kind::Code { "rustlab" } else { "mermaid" };
+            let lang = if unit.kind == Kind::Code {
+                "rustlab"
+            } else {
+                "mermaid"
+            };
             format!(
                 "<div class=\"code-block\"><div class=\"rl-cell\">\
 <details class=\"rl-src\" open><summary class=\"rl-lang\">{lang}</summary>\
@@ -1230,16 +1255,17 @@ fn fresh_section(unit: &Unit, mark: &Mark, idx: usize, two_ref: bool) -> String 
             )
         }
         Kind::Prose | Kind::Callout => {
-            format!("<div class=\"prose\">\n{}\n</div>\n{note}", markdown_to_html(&unit.text))
+            format!(
+                "<div class=\"prose\">\n{}\n</div>\n{note}",
+                markdown_to_html(&unit.text)
+            )
         }
         Kind::Widget => format!(
             "<pre class=\"source\"><code>{}</code></pre>\n{note}",
             escape_html(&unit.text)
         ),
     };
-    format!(
-        "<section class=\"rl-block{class}\" id=\"b-git-{idx}\">\n{tag_html}{body}</section>\n"
-    )
+    format!("<section class=\"rl-block{class}\" id=\"b-git-{idx}\">\n{tag_html}{body}</section>\n")
 }
 
 fn removed_section(unit: &Unit) -> String {
@@ -1380,10 +1406,7 @@ fn decorate(
 ) -> String {
     let base = base.unwrap_or("");
     let mut out = patch_body(html, diff, base);
-    out = out.replace(
-        "id=\"rl-diff\" hidden",
-        "id=\"rl-diff\"",
-    );
+    out = out.replace("id=\"rl-diff\" hidden", "id=\"rl-diff\"");
     out = out.replace(
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet\"",
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\"",
@@ -1397,25 +1420,20 @@ fn decorate(
         "aria-label=\"More\" title=\"More\"",
         "aria-label=\"More, diff on\" title=\"More, diff on\"",
     );
-    let banner_html = format!(
-        "<p id=\"rl-diff-banner\">{}</p>",
-        escape_html(banner)
-    );
+    let banner_html = format!("<p id=\"rl-diff-banner\">{}</p>", escape_html(banner));
     if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
         out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
     } else if out.contains("<p id=\"rl-diff-banner\" hidden>") {
         // already filled; leave the chrome copy and also put one in main
     }
     let mut extra = String::new();
-    if !out.contains("id=\"rl-diff-banner\"") || out.contains("<p id=\"rl-diff-banner\" hidden></p>")
+    if !out.contains("id=\"rl-diff-banner\"")
+        || out.contains("<p id=\"rl-diff-banner\" hidden></p>")
     {
         extra.push_str(&banner_html);
     }
     if let Some(files) = files {
-        extra.push_str(&format!(
-            "<div id=\"rl-git-files\" hidden>{}</div>",
-            files
-        ));
+        extra.push_str(&format!("<div id=\"rl-git-files\" hidden>{}</div>", files));
     }
     if !extra.is_empty() {
         out = insert_after_main(&out, &extra);
@@ -1494,7 +1512,14 @@ mod tests {
 
     #[test]
     fn ref_checker_accepts_common_forms() {
-        for ok in ["HEAD", "HEAD~2", "origin/main", &"a".repeat(40), "index", "refs/heads/off"] {
+        for ok in [
+            "HEAD",
+            "HEAD~2",
+            "origin/main",
+            &"a".repeat(40),
+            "index",
+            "refs/heads/off",
+        ] {
             assert!(ref_ok(ok), "{ok}");
         }
     }
@@ -1529,10 +1554,14 @@ mod tests {
         let index = show_args("index", "notes/a.md");
         assert_eq!(index.last().map(String::as_str), Some(":notes/a.md"));
         assert!(argv_clean(&verify_args("HEAD~2")));
-        assert!(verify_args("HEAD~2").iter().any(|a| a == "--end-of-options"));
+        assert!(verify_args("HEAD~2")
+            .iter()
+            .any(|a| a == "--end-of-options"));
         assert!(argv_clean(&for_each_ref_args()));
         assert!(argv_clean(&name_status_args(&["main", "topic"])));
-        assert!(name_status_args(&["main"]).iter().any(|a| a == "--end-of-options"));
+        assert!(name_status_args(&["main"])
+            .iter()
+            .any(|a| a == "--end-of-options"));
         assert!(argv_clean(&recent_commit_args()));
         assert!(!show.iter().any(|a| a.contains(';') || a.contains('|')));
     }
@@ -1565,14 +1594,8 @@ mod tests {
             align_sides(&old, &inserted, true).unwrap(),
             vec!["same", "same", "added"]
         );
-        assert_eq!(
-            align_sides(&old, a, true).unwrap(),
-            vec!["same", "removed"]
-        );
-        assert_eq!(
-            align_sides(a, b, true).unwrap(),
-            vec!["changed"]
-        );
+        assert_eq!(align_sides(&old, a, true).unwrap(), vec!["same", "removed"]);
+        assert_eq!(align_sides(a, b, true).unwrap(), vec!["changed"]);
         let swap_old = format!("{a}\n{b}");
         let swap_new = format!("{b}\n{a}");
         let sides = align_sides(&swap_old, &swap_new, true).unwrap();
@@ -1585,10 +1608,7 @@ mod tests {
     fn code_directive_change_is_a_substitute() {
         let old = "```rustlab\nx = 1\n```\n";
         let new_src = "<!-- hide -->\n```rustlab\nx = 1\n```\n";
-        assert_eq!(
-            align_sides(old, new_src, true).unwrap(),
-            vec!["changed"]
-        );
+        assert_eq!(align_sides(old, new_src, true).unwrap(), vec!["changed"]);
     }
 
     #[test]
@@ -1608,8 +1628,14 @@ mod tests {
         let html = "<body><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>A changed</p></div></section>\n</main></body>";
         let (out, n) = stamp_working(html, old, new_src, true).unwrap();
         assert!(n >= 1, "{out}");
-        assert!(out.contains("rl-diff-chg") || out.contains("rl-diff-del"), "{out}");
-        assert!(out.contains("plot(&quot;old&quot;)") || out.contains("plot(\"old\")"), "{out}");
+        assert!(
+            out.contains("rl-diff-chg") || out.contains("rl-diff-del"),
+            "{out}"
+        );
+        assert!(
+            out.contains("plot(&quot;old&quot;)") || out.contains("plot(\"old\")"),
+            "{out}"
+        );
         let del = out.split("rl-diff-del").nth(1).unwrap_or("");
         assert!(!del.contains("plot-container"), "{out}");
     }
@@ -1636,7 +1662,8 @@ mod tests {
         let big = "x".repeat(MAX_BYTES + 1);
         let err = align(big.as_str(), "y", true).unwrap_err();
         assert_eq!(err, "diff was too large");
-        let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><p>y</p></section></main></body>";
+        let html =
+            "<body><main><section class=\"rl-block\" id=\"b-1\"><p>y</p></section></main></body>";
         let out = decorate(html, "HEAD", None, "diff was too large", None);
         assert!(!out.contains("rl-diff-add"), "{out}");
         assert!(out.contains("diff was too large"), "{out}");
@@ -1745,7 +1772,9 @@ mod tests {
             base: None,
         });
         assert!(live.contains("EXECUTED"), "{live}");
-        assert!(live.contains("rl-diff-chg") || live.contains("changes vs main"), "{live}");
+        assert!(
+            live.contains("rl-diff-chg") || live.contains("changes vs main"),
+            "{live}"
+        );
     }
 }
-

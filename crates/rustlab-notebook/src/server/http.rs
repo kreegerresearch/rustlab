@@ -2459,12 +2459,9 @@ mod tests {
         let app = router(single_state("<h1>hello</h1>"));
         let res = app
             .oneshot(
-                host(
-                    axum::http::Request::builder()
-                        .uri("/n/nope?diff=HEAD&base=main"),
-                )
-                .body(Body::empty())
-                .unwrap(),
+                host(axum::http::Request::builder().uri("/n/nope?diff=HEAD&base=main"))
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -2609,12 +2606,9 @@ mod tests {
         let app = router(state);
         let res = app
             .oneshot(
-                host(
-                    axum::http::Request::builder()
-                        .uri("/n/nb?diff=main&base=topic"),
-                )
-                .body(Body::empty())
-                .unwrap(),
+                host(axum::http::Request::builder().uri("/n/nb?diff=main&base=topic"))
+                    .body(Body::empty())
+                    .unwrap(),
             )
             .await
             .unwrap();

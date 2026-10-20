@@ -995,7 +995,10 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
             "button reads Source in read-only mode"
         );
         assert!(out.contains("id=\"rl-more-btn\""), "overflow button");
-        assert!(out.contains("aria-expanded=\"false\""), "menu starts closed");
+        assert!(
+            out.contains("aria-expanded=\"false\""),
+            "menu starts closed"
+        );
         assert!(out.contains("id=\"rl-more-panel\" class=\"rl-more-panel\" hidden"));
         assert!(out.contains(">Show diff<") || out.contains("Show diff</button>"));
         assert!(out.contains("role=\"switch\""), "diff is a switch");
