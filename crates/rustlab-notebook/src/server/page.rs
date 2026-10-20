@@ -83,6 +83,8 @@ fn chrome_style(c: &ThemeColors) -> String {
      be scoped to `body.topbar-layout`, which no longer exists — leaving the
      toolbar sitting on top of the next-notebook link, unclickable. */
   .topbar {{ padding-right: 9rem; }}
+  body.rl-diff-on .topbar {{ padding-right: 28rem; }}
+  #rl-toolbar {{ flex-wrap: wrap; justify-content: flex-end; max-width: min(70vw, 40rem); }}
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg_secondary}; color: {text};
@@ -92,6 +94,57 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button:hover {{ border-color: {accent}; }}
   #rl-toolbar button.active {{ background: {accent}; color: {bg}; border-color: {accent}; }}
   #rl-toolbar button[hidden] {{ display: none; }}
+  #rl-toolbar button.rl-quiet {{ opacity: 0.72; padding: 4px 8px; }}
+  #rl-diff {{ display: inline-flex; gap: 4px; align-items: center; }}
+  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden] {{ display: none !important; }}
+  #rl-diff input {{
+    font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-radius: 6px;
+    padding: 3px 6px; width: 8.5rem;
+  }}
+  .rl-diff-lab {{ font: 12px/1 system-ui, sans-serif; color: {text_dim}; display: inline-flex; gap: 4px; align-items: center; }}
+  .rl-diff-combo {{ position: relative; display: inline-flex; }}
+  .rl-diff-menu {{
+    position: absolute; top: calc(100% + 2px); left: 0; z-index: 100001;
+    margin: 0; padding: 2px; list-style: none;
+    min-width: 100%; width: max-content; max-width: 16rem; max-height: 11rem; overflow: auto;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-radius: 6px;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }}
+  .rl-diff-menu li {{ padding: 2px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .rl-diff-menu li[aria-selected="true"] {{ background: {accent}; color: {bg}; }}
+  .rl-diff-menu li.rl-diff-hint {{ color: {text_dim}; cursor: default; }}
+  #rl-diff-pos {{ font: 11px/1 ui-monospace, monospace; color: {text_dim}; min-width: 2.2rem; text-align: center; }}
+  #rl-diff-banner {{
+    position: fixed; top: 46px; right: 14px; z-index: 100000; margin: 0;
+    padding: 4px 8px; max-width: 28rem;
+    background: {bg_secondary}; color: {text_dim};
+    border: 1px solid {border}; border-radius: 6px;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }}
+  section.rl-diff-add, section.rl-diff-chg {{
+    background: var(--rl-diff-add-bg, transparent);
+    box-shadow: inset 4px 0 0 var(--rl-diff-add-bar, transparent);
+  }}
+  section.rl-diff-del {{
+    background: var(--rl-diff-del-bg, transparent);
+    box-shadow: inset 4px 0 0 var(--rl-diff-del-bar, transparent);
+  }}
+  .rl-diff-tag, .rl-diff-note {{
+    font: 11px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim}; margin: 4px 8px;
+  }}
+  .rl-diff-lines {{ margin: 4px 0 8px; }}
+  .rl-ln {{ display: flex; background: var(--rl-code-bg, {code_bg}); color: {text}; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
+  .rl-ln-gutter {{ width: 3px; flex: none; }}
+  .rl-ln-add .rl-ln-gutter {{ background: var(--rl-diff-add-bar, transparent); }}
+  .rl-ln-del .rl-ln-gutter {{ background: var(--rl-diff-del-bar, transparent); }}
+  .rl-ln code {{ white-space: pre-wrap; }}
+  .fb-git {{
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-left: 6px; background: var(--rl-diff-add-bar, currentColor); vertical-align: middle;
+  }}
   body {{ --rl-pane-w: min(760px, max(360px, 42vw)); }}
   /* A comment column needs the pane narrower, or the fixed pane paints
      over the margin. The column starts at 14rem and can be dragged;
@@ -227,12 +280,17 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     let nonce_attr = crate::render::nonce_attr(nonce);
     let editable_js = if opts.editable { "true" } else { "false" };
 
-    // Toolbar: read-only mode shows just "Source"; editable mode shows
-    // "Edit" plus a Save button (hidden until the editor is open).
+    // Diff stays one quiet button until it is on. The compare picker is
+    // in the markup either way and is unhidden per request.
+    let diff_chrome = r#"<button id="rl-diff-toggle" type="button" class="rl-quiet" title="Compare with git">Diff</button><span id="rl-diff" hidden><button id="rl-diff-prev" type="button" title="Previous change ([)">‹</button><span id="rl-diff-pos"></span><button id="rl-diff-next" type="button" title="Next change (])">›</button><label class="rl-diff-lab">vs <span class="rl-diff-combo"><input id="rl-diff-ref" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare against" aria-expanded="false" aria-controls="rl-diff-ref-list"><ul id="rl-diff-ref-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label><label class="rl-diff-lab">from <span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare from" aria-expanded="false" aria-controls="rl-diff-base-list"><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label></span><p id="rl-diff-banner" hidden></p>"#;
     let toolbar = if opts.editable {
-        r#"<div id="rl-toolbar"><button id="rl-source-save" hidden title="Save (Ctrl/Cmd-S)">Save</button><button id="rl-source-toggle" title="Edit notebook source">Edit</button></div>"#
+        format!(
+            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-save\" hidden title=\"Save (Ctrl/Cmd-S)\">Save</button><button id=\"rl-source-toggle\" title=\"Edit notebook source\">Edit</button></div>"
+        )
     } else {
-        r#"<div id="rl-toolbar"><button id="rl-source-toggle" title="Show notebook source">Source</button></div>"#
+        format!(
+            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-toggle\" title=\"Show notebook source\">Source</button></div>"
+        )
     };
 
     // Pane body: editor host (editable) or read-only <pre>.
@@ -253,7 +311,7 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
         String::new()
     };
 
-    format!(
+    let mut out = format!(
         r##"{toolbar}
 <aside id="rl-source-pane" aria-hidden="true">
   <div id="rl-source-head"><span id="rl-source-name">source</span><span id="rl-source-status"></span></div>
@@ -379,13 +437,413 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
         cm_scripts = cm_scripts,
         editable_js = editable_js,
         nonce_attr = nonce_attr,
-    )
+    );
+    out.push_str(&format!(
+        "<script{nonce_attr}>\n{DIFF_CLIENT_SCRIPT}\n</script>\n"
+    ));
+    out
 }
+
+/// Picker, keyboard prev/next, and branch list. A raw string so the
+/// braces are not doubled by the chrome `format!`.
+///
+/// `rlDiffFilter` / `rlDiffRefOk` / `rlDiffChoose` stay at the top so a
+/// node test can load this file. `rlDiffRefOk` matches `gitdiff::ref_ok`.
+pub(crate) const DIFF_CLIENT_SCRIPT: &str = r#"function rlDiffFilter(items, query) {
+  var q = String(query || '').toLowerCase();
+  var out = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (!q || String(it.label).toLowerCase().indexOf(q) !== -1 || String(it.value).toLowerCase().indexOf(q) !== -1) {
+      out.push(it);
+    }
+  }
+  return out;
+}
+function rlDiffRefOk(s) {
+  if (!s || s.length > 256 || s.charAt(0) === '-' || s.indexOf('..') !== -1) return false;
+  return /^[A-Za-z0-9._/^~@{}-]+$/.test(s);
+}
+function rlDiffChoose(matches, query, highlight, armed) {
+  var typed = String(query || '').trim();
+  var hi = highlight | 0;
+  if ((armed || typed) && matches.length && hi >= 0 && hi < matches.length) {
+    return matches[hi].value;
+  }
+  if (typed && matches.length === 0 && rlDiffRefOk(typed)) return typed;
+  return null;
+}
+(function () {
+  if (typeof document === 'undefined') return;
+  var toggle = document.getElementById('rl-diff-toggle');
+  if (!toggle) return;
+  var vs = document.getElementById('rl-diff-ref');
+  var from = document.getElementById('rl-diff-base');
+  var vsList = document.getElementById('rl-diff-ref-list');
+  var fromList = document.getElementById('rl-diff-base-list');
+  var pos = document.getElementById('rl-diff-pos');
+
+  function params() {
+    var cur = new URLSearchParams(location.search);
+    if (!cur.get('diff') && document.body.dataset.rlDiff) {
+      cur.set('diff', document.body.dataset.rlDiff);
+    }
+    if (!cur.get('base') && document.body.dataset.rlBase) {
+      cur.set('base', document.body.dataset.rlBase);
+    }
+    return cur;
+  }
+  function go(diff, base) {
+    var u = new URL(location.href);
+    var cur = params();
+    if (!diff || diff === 'off') {
+      u.searchParams.set('diff', 'off');
+      u.searchParams.delete('base');
+    } else {
+      u.searchParams.set('diff', diff);
+      if (base) u.searchParams.set('base', base);
+      else u.searchParams.delete('base');
+    }
+    if (cur.get('cm')) u.searchParams.set('cm', cur.get('cm'));
+    location.assign(u.toString());
+  }
+  function on() {
+    return document.body.classList.contains('rl-diff-on');
+  }
+  toggle.addEventListener('click', function () {
+    if (on()) go('off', '');
+    else go('HEAD', '');
+  });
+
+  function labelOf(items, value) {
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].value === value) return items[i].label;
+    }
+    return value;
+  }
+  function mount(input, list, which) {
+    if (!input || !list) return { setItems: function () {}, value: function () { return ''; } };
+    var items = [];
+    var filtering = false;
+    var highlight = 0;
+    var armed = false;
+    function committed() { return input.getAttribute('data-value') || ''; }
+    function query() { return filtering ? input.value : ''; }
+    function rows() { return rlDiffFilter(items, query()); }
+    function close(restore) {
+      list.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      if (restore) input.value = labelOf(items, committed());
+      filtering = false;
+      armed = false;
+    }
+    function render() {
+      var found = rows();
+      list.textContent = '';
+      if (!found.length) {
+        var hint = document.createElement('li');
+        hint.className = 'rl-diff-hint';
+        var typed = input.value.trim();
+        hint.textContent = (typed && rlDiffRefOk(typed)) ? ('use ' + typed) : 'no match';
+        list.appendChild(hint);
+      } else {
+        if (highlight >= found.length) highlight = found.length - 1;
+        if (highlight < 0) highlight = 0;
+        found.forEach(function (it, i) {
+          var li = document.createElement('li');
+          li.textContent = it.label;
+          li.setAttribute('role', 'option');
+          if (i === highlight) li.setAttribute('aria-selected', 'true');
+          li.addEventListener('mousedown', function (ev) {
+            ev.preventDefault();
+            pick(it.value);
+          });
+          list.appendChild(li);
+        });
+        var sel = list.querySelector('[aria-selected="true"]');
+        if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
+      }
+      list.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+    }
+    function pick(value) {
+      var diff = which === 'diff' ? value : (vs ? (vs.getAttribute('data-value') || 'HEAD') : 'HEAD');
+      var base = which === 'base' ? value : (from ? (from.getAttribute('data-value') || '') : '');
+      if (value === committed()) { close(true); return; }
+      go(diff, base);
+    }
+    input.addEventListener('focus', function () {
+      filtering = false;
+      armed = false;
+      var all = rlDiffFilter(items, '');
+      highlight = 0;
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].value === committed()) { highlight = i; break; }
+      }
+      input.select();
+      render();
+    });
+    input.addEventListener('input', function () {
+      filtering = true;
+      armed = false;
+      highlight = 0;
+      render();
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        var n = rows().length;
+        if (!n) { render(); return; }
+        if (list.hidden) { render(); return; }
+        highlight += e.key === 'ArrowDown' ? 1 : -1;
+        if (highlight < 0) highlight = 0;
+        if (highlight >= n) highlight = n - 1;
+        armed = true;
+        render();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        var chosen = rlDiffChoose(rows(), query(), highlight, armed);
+        if (chosen === null) {
+          var typed = input.value.trim();
+          if (filtering && typed && rlDiffRefOk(typed) && !rows().length) chosen = typed;
+        }
+        if (chosen === null) return;
+        pick(chosen);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close(true);
+      }
+    });
+    input.addEventListener('blur', function () {
+      setTimeout(function () { close(true); }, 0);
+    });
+    return {
+      value: committed,
+      setItems: function (next, value) {
+        items = next;
+        input.setAttribute('data-value', value);
+        input.value = labelOf(items, value);
+        close(false);
+        input.value = labelOf(items, value);
+      }
+    };
+  }
+  var vsCombo = mount(vs, vsList, 'diff');
+  var fromCombo = mount(from, fromList, 'base');
+  if (vs && document.body.dataset.rlDiff) {
+    vs.setAttribute('data-value', document.body.dataset.rlDiff);
+    vs.value = document.body.dataset.rlDiff;
+  }
+  if (from) {
+    var initialBase = document.body.dataset.rlBase || '';
+    from.setAttribute('data-value', initialBase);
+    from.value = initialBase || 'working copy';
+  }
+  function fill(data) {
+    var branches = (data && data.branches) || [];
+    var shared = [];
+    branches.forEach(function (b) {
+      shared.push({ value: b.name, label: b.current ? b.name + ' (current)' : b.name });
+    });
+    shared.push({ value: 'HEAD', label: 'HEAD' });
+    shared.push({ value: 'index', label: 'index' });
+    ((data && data.tags) || []).forEach(function (t) {
+      shared.push({ value: t.name, label: t.name });
+    });
+    ((data && data.commits) || []).forEach(function (c) {
+      shared.push({ value: c.rev, label: c.label });
+    });
+    var want = document.body.dataset.rlDiff || 'HEAD';
+    var base = document.body.dataset.rlBase || '';
+    var vsItems = shared.slice();
+    if (!vsItems.some(function (it) { return it.value === want; })) {
+      vsItems.push({ value: want, label: want });
+    }
+    var fromItems = [{ value: '', label: 'working copy' }].concat(shared);
+    if (base && !fromItems.some(function (it) { return it.value === base; })) {
+      fromItems.push({ value: base, label: base });
+    }
+    vsCombo.setItems(vsItems, want);
+    fromCombo.setItems(fromItems, base);
+    if (data && data.error) {
+      var banner = document.getElementById('rl-diff-banner');
+      if (banner && !banner.textContent) banner.textContent = data.error;
+    }
+  }
+  if (on() && vs) {
+    fetch('/git/refs').then(function (r) { return r.json(); }).then(fill).catch(function () {});
+  }
+
+  function changes() {
+    return Array.prototype.slice.call(document.querySelectorAll('main section.rl-diff'));
+  }
+  function fullyVisible(el) {
+    var r = el.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= window.innerHeight;
+  }
+  function step(dir) {
+    var list = changes();
+    if (!list.length) { if (pos) pos.textContent = '0'; return; }
+    var cur = -1;
+    list.forEach(function (el, i) {
+      if (el.getBoundingClientRect().top < 80) cur = i;
+    });
+    var i = cur + dir;
+    if (dir > 0) { while (i < list.length && fullyVisible(list[i])) i++; }
+    else { while (i >= 0 && fullyVisible(list[i])) i--; }
+    if (i < 0) i = 0;
+    if (i >= list.length) i = list.length - 1;
+    list[i].scrollIntoView({ block: 'center' });
+    if (pos) pos.textContent = (i + 1) + '/' + list.length;
+  }
+  var prev = document.getElementById('rl-diff-prev');
+  var next = document.getElementById('rl-diff-next');
+  if (prev) prev.addEventListener('click', function () { step(-1); });
+  if (next) next.addEventListener('click', function () { step(1); });
+  document.addEventListener('keydown', function (e) {
+    if (!on()) return;
+    if (e.key !== '[' && e.key !== ']') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    if (!t || !t.closest) return;
+    if (t.closest('input, textarea, select, .CodeMirror')) return;
+    e.preventDefault();
+    step(e.key === ']' ? 1 : -1);
+  });
+
+  document.addEventListener('click', function (ev) {
+    if (!on()) return;
+    var a = ev.target && ev.target.closest && ev.target.closest('a');
+    if (!a || a.target === '_blank') return;
+    var href = a.getAttribute('href');
+    if (!href || href.charAt(0) === '#') return;
+    var url;
+    try { url = new URL(a.href, location.href); } catch (err) { return; }
+    if (url.origin !== location.origin) return;
+    if (!(url.pathname === '/' || url.pathname.indexOf('/n/') === 0)) return;
+    var cur = params();
+    ['diff', 'base', 'cm'].forEach(function (k) {
+      if (cur.get(k) && !url.searchParams.get(k)) url.searchParams.set(k, cur.get(k));
+    });
+    if (url.toString() !== a.href) {
+      ev.preventDefault();
+      location.assign(url.toString());
+    }
+  });
+
+  var box = document.getElementById('rl-comments');
+  if (box) {
+    box.addEventListener('change', function () {
+      if (!on()) return;
+      var u = new URL(location.href);
+      var cur = params();
+      if (cur.get('diff')) u.searchParams.set('diff', cur.get('diff'));
+      if (cur.get('base')) u.searchParams.set('base', cur.get('base'));
+      u.searchParams.set('cm', box.checked ? '1' : '0');
+      location.assign(u.toString());
+    });
+  }
+
+  function paint() {
+    var el = document.getElementById('rl-git-files');
+    if (!el) return;
+    var data;
+    try { data = JSON.parse(el.textContent || '{"files":[]}'); } catch (err) { return; }
+    var files = data.files || [];
+    Array.prototype.forEach.call(document.querySelectorAll('a.fb-link'), function (a) {
+      var href = a.getAttribute('href') || '';
+      var pub = href.replace(/^\/n\//, '');
+      var hit = null;
+      files.forEach(function (f) {
+        var p = String(f.path || '').replace(/\\/g, '/');
+        if (p === pub || p === pub + '.md' || p.endsWith('/' + pub) || p.endsWith('/' + pub + '.md')) hit = f;
+      });
+      var old = a.querySelector('.fb-git');
+      if (old) old.remove();
+      if (!hit) return;
+      var dot = document.createElement('span');
+      dot.className = 'fb-git';
+      dot.title = hit.label || hit.status || 'changed';
+      a.appendChild(dot);
+    });
+  }
+  paint();
+  var prevAfter = window.__rlAfterUpdate;
+  window.__rlAfterUpdate = function () {
+    if (prevAfter) prevAfter();
+    paint();
+  };
+})();
+"#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rustlab_plot::Theme;
+
+    #[test]
+    fn diff_client_script_passes_node_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("diff.js");
+        std::fs::write(&path, DIFF_CLIENT_SCRIPT).unwrap();
+        match std::process::Command::new("node")
+            .arg("--check")
+            .arg(&path)
+            .status()
+        {
+            Ok(st) => assert!(st.success(), "node --check failed"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("SKIP diff script syntax: node not found");
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn diff_filter_narrows_and_keeps_a_valid_free_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filter.js");
+        let mut harness = DIFF_CLIENT_SCRIPT.to_string();
+        harness.push_str(
+            r#"
+const assert = require('assert');
+const items = [
+  {value:'topic', label:'topic (current)'},
+  {value:'main', label:'main'},
+  {value:'feature-x', label:'feature-x'},
+  {value:'HEAD', label:'HEAD'},
+];
+let m = rlDiffFilter(items, 'FEA');
+assert.strictEqual(m.length, 1);
+assert.strictEqual(m[0].value, 'feature-x');
+m = rlDiffFilter(items, 'current');
+assert.strictEqual(m.length, 1);
+assert.strictEqual(m[0].value, 'topic');
+m = rlDiffFilter(items, '');
+assert.strictEqual(m.length, items.length);
+assert.strictEqual(m[0].value, 'topic');
+m = rlDiffFilter(items, 'a');
+assert.deepStrictEqual(m.map(function (it) { return it.value; }), ['main', 'feature-x', 'HEAD']);
+assert.strictEqual(rlDiffChoose(m, 'a', 1, false), 'feature-x');
+assert.strictEqual(rlDiffChoose(rlDiffFilter(items, ''), '', 1, false), null);
+assert.strictEqual(rlDiffChoose(rlDiffFilter(items, ''), '', 1, true), 'main');
+assert.strictEqual(rlDiffChoose([], 'HEAD~2', 0, false), 'HEAD~2');
+assert.strictEqual(rlDiffChoose([], 'refs/heads/off', 0, false), 'refs/heads/off');
+assert.strictEqual(rlDiffChoose([], 'main..HEAD', 0, false), null);
+assert.strictEqual(rlDiffChoose([], 'not a ref', 0, false), null);
+assert.strictEqual(rlDiffChoose([], '-rf', 0, false), null);
+"#,
+        );
+        std::fs::write(&path, harness).unwrap();
+        match std::process::Command::new("node").arg(&path).status() {
+            Ok(st) => assert!(st.success(), "filter harness failed"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("SKIP diff filter: node not found");
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
 
     fn render(editable: bool) -> String {
         let html = "<!doctype html><html><head><title>x</title></head><body><main><p>hi</p></main></body></html>";
@@ -404,6 +862,11 @@ mod tests {
         assert!(
             out.contains(">Source<"),
             "button reads Source in read-only mode"
+        );
+        assert!(out.contains("id=\"rl-diff-toggle\""), "quiet Diff button");
+        assert!(
+            out.contains("id=\"rl-diff\" hidden"),
+            "compare picker stays collapsed until diff is on"
         );
         assert!(out.contains("/raw/' + encodeSlug(slug)"));
         // No editor assets referenced.

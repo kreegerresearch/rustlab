@@ -6,6 +6,23 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.12
+
+### Added
+- **`rustlab-notebook watch --diff [ref]` compares a notebook with git.**
+  The toolbar has one quiet **Diff** button. Turning it on shows a compact
+  picker: **vs** a ref (`?diff=<ref>`, default `HEAD`) and an optional
+  **from** side (`?base=<ref>`, default the working copy). Typing filters
+  the list; Enter picks a match or a valid ref that is not in the list;
+  Esc closes the list. The lists are local branches (current branch first, then `main`), recent tags, and
+  recent commits, from read-only `GET /git/refs` (`git for-each-ref`,
+  fixed argv). Changing a side reloads that page; it does not restart the
+  server and it does not move other tabs. `[` and `]` jump to the previous
+  and next change. Working copy vs a ref keeps the live outputs and labels
+  them. Two refs show the newer commit's text and say the code was not
+  run. The old notebook is never executed. `--diff` on the
+  re-render-on-save watcher is ignored.
+
 ## 0.3.11
 
 Perf flywheel iteration 02 (requests from `rustlab_llm`,

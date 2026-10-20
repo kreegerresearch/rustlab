@@ -284,7 +284,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/n/{*path}", get(notebook_page))
         .route("/raw/{*slug}", get(raw_source))
         .route("/assets/{*path}", get(asset))
-        .route("/plots/{*path}", get(plot));
+        .route("/plots/{*path}", get(plot))
+        .route("/git/refs", get(git_refs));
 
     // The write-back route exists only under `--editable`. The wildcard
     // is required because a directory identity contains `/`.
@@ -498,11 +499,33 @@ pub(crate) fn slug_segments_unsafe(slug: &str) -> bool {
         .any(|seg| seg.is_empty() || seg == "." || seg == "..")
 }
 
+/// Read-only branch, tag, and recent-commit list for the compare picker.
+/// POST is not mounted; axum answers it with 405.
+async fn git_refs(State(state): State<Arc<ServerState>>) -> Response {
+    let start = state.jail_root.clone().or_else(|| {
+        state
+            .order
+            .first()
+            .and_then(|slug| state.notebooks.get(slug))
+            .and_then(|nb| nb.source_path.parent().map(|p| p.to_path_buf()))
+    });
+    let body = match &start {
+        Some(dir) => crate::gitdiff::refs_json(dir),
+        None => crate::gitdiff::refs_json(std::path::Path::new(".")),
+    };
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
 async fn notebook_page(
     State(state): State<Arc<ServerState>>,
     AxPath(path): AxPath<String>,
     req: Request,
 ) -> Response {
+    let query = req.uri().query().unwrap_or("").to_string();
     if let Some(slug) = ws_slug(&path) {
         let upgrade = req
             .headers()
@@ -519,7 +542,7 @@ async fn notebook_page(
             }
         }
     }
-    serve_notebook_path(state, path).await
+    serve_notebook_path(state, path, &query).await
 }
 
 /// Live-reload socket: the notebook identity plus a trailing `/ws`.
@@ -541,13 +564,33 @@ fn ws_slug(path: &str) -> Option<String> {
 /// when `/n/{slug}/ws` is fetched without a WebSocket upgrade, so a
 /// public page whose path ends in `/ws` is not swallowed by the socket
 /// route.
-pub(super) async fn serve_notebook_path(state: Arc<ServerState>, path: String) -> Response {
+pub(super) async fn serve_notebook_path(
+    state: Arc<ServerState>,
+    path: String,
+    query: &str,
+) -> Response {
     match resolve_watch_page(&state, &path) {
         PageHit::Serve(slug) => match state.notebook(&slug) {
             Some(nb) => {
-                // Nonces were stamped when this HTML was rendered
-                // (`render_for_server_cancellable`); nothing is added here.
+                // Nonces were stamped when this HTML was rendered.
+                // A diff query stamps a copy; the stored HTML stays plain.
                 let html = nb.html.read().await.clone();
+                let parsed = crate::gitdiff::parse_query(query);
+                let cli = crate::gitdiff::diff_default();
+                let html = if let Some(diff) = crate::gitdiff::resolve_diff(&parsed, cli.as_deref())
+                {
+                    let comments_on = parsed.cm.unwrap_or(state.comments_on);
+                    crate::gitdiff::present(crate::gitdiff::Present {
+                        html: &html,
+                        source_path: &nb.source_path,
+                        jail: state.jail_root.as_deref(),
+                        comments_on,
+                        diff: &diff,
+                        base: parsed.base.as_deref(),
+                    })
+                } else {
+                    html
+                };
                 html_response(&state, html)
             }
             None => (StatusCode::NOT_FOUND, "notebook not found").into_response(),
@@ -2377,5 +2420,209 @@ mod tests {
             .filter(|n| n.contains(".tmp"))
             .collect();
         assert!(temps.is_empty(), "{temps:?}");
+    }
+
+    #[tokio::test]
+    async fn post_git_refs_is_not_a_route() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/git/refs"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn post_diff_is_not_a_route() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().method("POST").uri("/diff"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn unknown_slug_does_not_invent_a_diff_page() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .uri("/n/nope?diff=HEAD&base=main"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn git_refs_lists_current_branch_first() {
+        if !std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            eprintln!("SKIP git refs route: git not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "{args:?}");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let src = dir.path().join("nb.md");
+        std::fs::write(&src, "# nb\n").unwrap();
+        git(&["add", "nb.md"]);
+        git(&["commit", "-m", "init"]);
+        git(&["checkout", "-b", "topic"]);
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new(
+            "nb".into(),
+            src,
+            "nb".into(),
+            "<h1>hello</h1>".into(),
+        ));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".into(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".into()],
+            plot_dir,
+            editable: false,
+            link_slugs: HashMap::new(),
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".into(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".into(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: Some(dir.path().to_path_buf()),
+            annotate: false,
+            comments_on: true,
+        });
+        let app = router(state);
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/git/refs"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["error"].is_null(), "{body}");
+        let names: Vec<&str> = v["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["name"].as_str())
+            .collect();
+        assert_eq!(names.first().copied(), Some("topic"), "{body}");
+        assert!(names.contains(&"main"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn two_ref_page_does_not_keep_executed_output() {
+        if !std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            eprintln!("SKIP two-ref page: git not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "{args:?}");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let src = dir.path().join("nb.md");
+        std::fs::write(&src, "# One\n").unwrap();
+        git(&["add", "nb.md"]);
+        git(&["commit", "-m", "one"]);
+        git(&["checkout", "-b", "topic"]);
+        std::fs::write(&src, "# Two\n\n```rustlab\nx = 1\n```\n").unwrap();
+        git(&["add", "nb.md"]);
+        git(&["commit", "-m", "two"]);
+        let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><pre class=\"output\">EXECUTED</pre><div class=\"plot-container\"></div></section></main></body>";
+        let plot_dir = TempDir::new().unwrap();
+        let nb = Arc::new(Notebook::new("nb".into(), src, "nb".into(), html.into()));
+        let mut notebooks = HashMap::new();
+        notebooks.insert("nb".into(), nb);
+        let state = Arc::new(ServerState {
+            notebooks,
+            order: vec!["nb".into()],
+            plot_dir,
+            editable: false,
+            link_slugs: HashMap::new(),
+            single: true,
+            theme: Theme::Dark.colors(),
+            index_title: "nb".into(),
+            index_body: tokio::sync::RwLock::new(String::new()),
+            index_md_path: None,
+            render_tx: std::sync::OnceLock::new(),
+            csp_nonce: "testnonce".into(),
+            bind_port: std::sync::atomic::AtomicU16::new(8042),
+            jail_root: Some(dir.path().to_path_buf()),
+            annotate: false,
+            comments_on: true,
+        });
+        let app = router(state);
+        let res = app
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .uri("/n/nb?diff=main&base=topic"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 256 * 1024).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("not run"), "{body}");
+        assert!(!body.contains("EXECUTED"), "{body}");
+        assert!(!body.contains("plot-container"), "{body}");
     }
 }

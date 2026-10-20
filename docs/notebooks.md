@@ -204,7 +204,13 @@ rustlab-notebook watch analysis.md --port 9000           # custom port (fails lo
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
+rustlab-notebook watch notebooks/ --diff               # open comparing each page with HEAD
+rustlab-notebook watch notebooks/ --diff main          # the same, against main
 ```
+
+The toolbar always has one quiet **Diff** button. It does nothing with git until you turn it on. On, a compact picker appears: **vs** is the other side (`?diff=<ref>`), **from** defaults to the working copy and can be another ref (`?base=<ref>`). The lists are local branches (the current branch first, then `main`), recent tags, and recent commits, filled by `GET /git/refs`. Typing filters the list. Arrow keys move through the matches, Enter picks one, and Esc closes it. A valid ref that matches nothing is still accepted. Changing either side reloads that page; other tabs keep their own query. `[` and `]` move to the previous and next change when you are not typing.
+
+Working copy against a ref keeps the live outputs and labels a changed code cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` on the re-render-on-save watcher (`--obsidian` or `--output`) is ignored.
 
 Behaviour:
 

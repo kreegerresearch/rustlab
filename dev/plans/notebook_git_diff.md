@@ -1,12 +1,33 @@
 # Plan: git diff inside `notebook watch`
 
-**Status:** design only — not started
-**Current phase:** none (no implementation until this plan is accepted)
+**Status:** Phase 1 implemented (0.3.12). Phases 2 and 3 not started.
+**Current phase:** Phase 1 complete
 **Created:** 2026-10-14
+**Decided:** 2026-10-20 (Michael). The ten open questions below are closed. Two of them were changed after the first recommendation: the compare ref is per page, and two refs are allowed.
 **Issue:** [#66](https://github.com/kreegerresearch/rustlab/issues/66) (Michael)
 **Surfaces:** interactive `rustlab-notebook watch` first. Static `render --diff` is a later phase.
 
-This is a design document. It does not add code, routes, or dependencies.
+## Decisions (2026-10-20)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Diff button without `--diff`? | **Yes, but quiet.** One `Diff` button in the toolbar. The compare picker stays hidden until diff is on. There is **not** one server-wide ref. Each page carries `?diff=<ref>` (and optional `?base=<ref>`). Changing the picker updates that page without a restart. |
+| 2 | Default ref `HEAD`? | **Yes.** `index` is explicit (`git show :path`). |
+| 3 | Run the old notebook? | **No.** Working copy vs a ref keeps the live outputs and labels them "output is the working copy". |
+| 4 | Inline bars or side-by-side? | **Inline bars.** |
+| 5 | Always strip `%%`? | **No.** Follow the Comments checkbox. While diff is on, the checkbox reloads with `?cm=0` or `?cm=1`. |
+| 6 | Word-level prose in v1? | **No.** Whole blocks, plus a line diff inside a changed code cell. |
+| 7 | `render --diff` in v1? | **No.** Phase 3. |
+| 8 | Two refs? | **Yes, as two query params, not a range.** Optional `from` defaults to the working copy. `?diff=main&base=feature-x` compares those two refs. The page shows the newer commit's text (by commit time; a tie, or either side `index`, shows the `diff` param) and **does not execute it**. The banner says the code was not run. A single ref that contains `..` (`main..HEAD`) is still rejected: "one ref; the page is the working copy." |
+| 9 | Embeds? | **Host file only**, with the banner "embeds are not part of this diff". |
+| 10 | Ghost rows for deleted files? | **No.** The browser lists files on disk. |
+
+Also decided with those two changes:
+
+- The picker lists local branches (current branch first, then `main`, then the rest by committer date), then recent tags and recent commits. Typing in the field filters that list (case-insensitive substring). Arrow keys move through the matches, Enter picks one, and Esc closes the list without changing the ref. Text that matches nothing is still used when it is a valid ref. The list comes from `GET /git/refs`, a read-only route. Its argv is a fixed `git for-each-ref`. No new POST.
+- Prev / next also use `[` and `]` when focus is not in an input, a textarea, a select, or CodeMirror. The buttons stay, so the editor is not stolen.
+- `?diff=off` forces diff off even when the process was started with `--diff`. A branch literally named `off` is listed as `refs/heads/off`.
+- Stored notebook HTML stays the unstamped working-copy render. A diff query stamps a copy of that page. A live content update (`full` / `partial` / `reconcile`) while a diff query is active reloads the page. `cell_status` does not.
 
 ## Goal
 
@@ -22,14 +43,14 @@ One comparison, one view, no second execution.
 
 | Choice | MVP |
 |---|---|
-| What is compared | The file on disk (after) against one git object (before). Default object: `HEAD`. |
-| How you turn it on | `watch --diff` or `watch --diff <ref>`, the toolbar **Diff** button, or `?diff=<ref>`. |
+| What is compared | The file on disk (after) against one git object (before), default `HEAD`. Or two refs via `?diff=` and `?base=` (the newer side is shown and not executed). |
+| How you turn it on | `watch --diff` or `watch --diff <ref>`, a quiet toolbar **Diff** button, then a compact `vs` / `from` picker, or `?diff=<ref>` and optional `?base=<ref>`. |
 | What you see | The rendered notebook, with a bar on added, removed, and changed blocks. Prev / next jumps between those blocks. |
 | Code cells | Line diff of the cell source. The output and plots underneath are the working copy, labeled as such. The old cell is not run. |
 | Prose | The whole block is marked. Word-level paint inside a paragraph waits. |
 | Comments | Same as the page. Comments on: a new `%%` shows up as a changed block and its margin card. Comments off: both sides are stripped before alignment, so a comment-only edit stays quiet. |
 | Where the old text comes from | `git show`, fixed argv, no shell, no new crate. |
-| Who shares the ref | The whole watch process. One user, one ref. Same idea as one working copy per server. |
+| Who shares the ref | Nobody. The ref is the page query, not a field on `ServerState`. Two tabs can compare different refs. |
 
 Side-by-side is not part of the plan. The page already has a file browser, a table of contents, and an 18rem comment column. A second rendered copy does not fit, and it would show two copies of every plot.
 
@@ -76,20 +97,26 @@ flowchart LR
 
 ### 1.1 Turning it on
 
-All three do the same thing. The server stores one `DiffRef` on `ServerState`.
+Diff is a query on the page, not a `DiffRef` stored on `ServerState`.
 
 | Entry | Effect |
 |---|---|
-| `rustlab-notebook watch path` | Unchanged. No git calls. |
-| `watch path --diff` | Diff on, ref `HEAD`. |
-| `watch path --diff <ref>` | Diff on, that ref. |
-| `watch path --diff index` | Diff on, the index (`git show :path`). |
-| Toolbar **Diff** | Toggles. Off returns the page to today's render. |
-| Ref field | Replaces the ref and re-renders. |
-| `GET /n/<slug>?diff=<ref>` | Sets the server ref, then serves the page. |
-| `GET /n/<slug>` with no query | Uses whatever the server already has, including "off". |
+| `rustlab-notebook watch path` | Unchanged, plus one quiet **Diff** button. No git calls. |
+| `watch path --diff` | That browser session opens with `?diff=HEAD` as the default when the query is absent. |
+| `watch path --diff <ref>` | Same, default ref `<ref>`. |
+| `watch path --diff index` | Default is the index (`git show :path`). |
+| Toolbar **Diff** | One quiet button. Off → `?diff=off` (clears `base`). On → `?diff=HEAD` and the picker appears. |
+| `vs` field | Compact text field. Typing filters the list. Enter sets `?diff=<ref>` and reloads. No restart. |
+| `from` field | Same control. Empty means the working copy. A ref sets `?base=<ref>`. |
+| Free text | Typed text that matches no row is still used when it passes the character check. |
+| `GET /n/<slug>?diff=<ref>` | Stamps that response only. Other tabs are untouched. |
+| `GET /n/<slug>?diff=<ref>&base=<other>` | Branch vs branch. The newer side's text is rendered and not executed. |
+| `GET /n/<slug>?diff=off` | Forces off, even if `--diff` set a default. |
+| `GET /n/<slug>` with no query | Uses the CLI default, or plain watch when `--diff` was not passed. |
 
-The ref field and `?diff=` accept `HEAD`, `HEAD~3`, `origin/main`, a hex sha, or the token `index`. They do not accept a range. `main..HEAD` is rejected with "one ref; the page is the working copy."
+`GET /git/refs` fills both fields: `git -C <root> for-each-ref --format=… refs/heads refs/tags`, sorted in Rust (current branch, then `main`, then other heads by date, then tags). Recent commits are an optional `git log -n 12`. Every name is run through the same character check before it is sent. Not a repo, or `git` missing, is HTTP 200 with an `error` field and empty lists. POST `/git/refs` is not mounted (405).
+
+The ref field and `?diff=` / `?base=` accept `HEAD`, `HEAD~3`, `origin/main`, a hex sha, or the token `index`. They do not accept a range. `main..HEAD` in one parameter is rejected with "one ref; the page is the working copy." Two refs are two parameters, not `A..B`.
 
 `--diff` on the non-interactive watcher (`--obsidian` or `--output`, `watch.rs`) is ignored with the same kind of warning `--editable` already prints. Diff mode is the interactive server only.
 
@@ -110,25 +137,23 @@ Removed blocks are inserted in `<main>` at the aligned position, each wrapped in
 
 ### 1.3 Prev / next
 
-Two toolbar buttons and a counter (`2/5`). They call `scrollIntoView` on `section.rl-diff` inside `<main>`. They are buttons, not `j` / `k`, so they do not fight the editor. A block that is already on screen is skipped in that direction.
+Two toolbar buttons and a counter (`2/5`). They call `scrollIntoView` on `section.rl-diff` inside `<main>`. `[` and `]` do the same when focus is not in an input, a textarea, a select, or CodeMirror. A block that is already fully on screen is skipped in that direction.
 
 ### 1.4 Sidebar
 
 Directory watch only. Single-file watch has no file browser; the toolbar counter is the marker.
 
-`FileEntry` gains an optional status letter. `render_nav` prints `<span class="fb-git" title="modified">●</span>` inside the existing `<a class="fb-link">`, before `.fb-name`. The letter is the tooltip (`modified`, `added`, `renamed`, `deleted`). Deleted files have no row, because the browser lists files on disk. The dot is enough; the row does not gain a second line of text.
+`FileEntry` does not gain a field. Dots are painted by the page script from a hidden `<div id="rl-git-files">` inside `<main>`, so `chrome_fingerprint` stays stable. The dot uses the add-bar color and a `title` (`modified`, `added`, `renamed`, `copied`, `type changed`). Deleted files have no row, because the browser lists files on disk.
 
-Status comes from one `git diff --name-status -M <ref>` for the repo, filtered to `.md` paths inside the jail. It is refreshed when a render finishes, not on a timer. If the map is unchanged, nothing is sent.
+Status comes from one `git diff --name-status -M` (working copy vs the ref, or the two refs). Untracked files use `git ls-files -z --others --exclude-standard`. The JSON is part of the stamped page, not a separate broadcast.
 
 ### 1.5 Source pane
 
 Unchanged in the MVP. **Source** still shows the working copy via `GET /raw/{slug}`. A unified source diff in that pane is phase 2.
 
-### 1.6 One ref for the process
+### 1.6 The ref is the page, not the process
 
-`nb.html` is one string per notebook, and the WebSocket broadcasts that one string. Two tabs cannot show two refs. The comments plan already treats the server as one working copy, not a multi-user editor. The diff ref follows that.
-
-Opening `?diff=other` moves every connected tab to `other` on the next render. That is the simple behavior. A per-tab ref would need a second HTML document and a second broadcast, which the current `Notebook.html` slot does not have.
+`Notebook.html` stays the unstamped working-copy render. `GET /n/<slug>?diff=&base=` stamps a copy for that response. Two tabs can show two comparisons. A live content frame (`full`, `partial`, `reconcile`) while the query is on reloads the page, because removed sections would desync a position-based patch. `cell_status` does not reload. Turning diff off is `?diff=off` on that page only.
 
 ## 2. Granularity
 
@@ -160,8 +185,8 @@ Default: **do not run the old notebook.**
 | | Old side | New side |
 |---|---|---|
 | Code source | Line diff against the new source | Line diff, in the source disclosure |
-| Printed output, errors | Omitted | Working-copy output |
-| Plots (Plotly, SVG, GIF) | Omitted | Working-copy figures |
+| Printed output, errors | Omitted | Working-copy output when one side is the working copy. When both sides are refs, neither side is run and the page says "code was not run". |
+| Plots (Plotly, SVG, GIF) | Omitted | Working-copy figures, or none when both sides are refs |
 | Mermaid SVG | Omitted | Current SVG, one `mermaid` render |
 | Widgets | Old TOML shown as text if the block was removed | Current control |
 
@@ -176,7 +201,7 @@ The line "output is the working copy" is the honest label on a changed code cell
 | Old blob text | In memory, keyed by `(repo, ref, relative path)` → git oid → bytes | Ref change, or oid change on the next `git rev-parse` |
 | Old parse | Derived from that blob. Not stored in `NotebookCache`. | With the blob |
 | Working copy | Existing `NotebookCache` | Unchanged |
-| Name-status map | One `HashMap` on `ServerState` | Recomputed at the end of a render; broadcast only if it changed |
+| Name-status map | Computed while stamping the page. Not stored on `ServerState`. | With the page |
 
 Turning diff on does not clear the execution cache. The render that follows is a normal working-copy render plus a classify step. A prose-only save still costs no re-execution.
 
@@ -191,8 +216,12 @@ Use the `git` binary through `std::process::Command`. No shell. No `gix`, no `gi
 | Repo root, once | `git -C <start> rev-parse --show-toplevel` |
 | Ref check | `git -C <root> rev-parse --verify --end-of-options <ref>^{commit}` |
 | Old file | `git -C <root> show --no-textconv --end-of-options <rev>:<relpath>` |
-| Sidebar | `git -C <root> diff --name-status -M --end-of-options <rev>` |
+| Sidebar | `git -C <root> diff --name-status -M --end-of-options <rev>` or `<base> <shown>` |
 | Index file | `git -C <root> show --no-textconv --end-of-options :<relpath>` |
+| Branch list | `git -C <root> for-each-ref --format=%(refname)%00%(HEAD)%00%(refname:short)%00%(committerdate:unix) refs/heads refs/tags` |
+| Recent commits | `git -C <root> log -n 12 --format=%H%x09%h%x09%s --end-of-options` |
+| Commit time | `git -C <root> log -1 --format=%ct --end-of-options <verified>` |
+| Untracked | `git -C <root> ls-files -z --others --exclude-standard` |
 
 `<start>` is the notebook's directory (single file) or the watched directory. `<relpath>` is computed from the notebook's real path and the toplevel. It is never taken from the URL.
 
@@ -232,17 +261,7 @@ Compare the fenced source. The SVG on the page is the working copy, from the exi
 
 ## 5. Live updates
 
-Diff classes are produced on the server and live inside each `<section>`. A save still follows `render_loop`: notify, 250 ms debounce, `NotebookCache`, then `server/diff.rs` partial / reconcile / full. The previous HTML and the new HTML both carry diff classes, so a small edit still patches one section.
-
-Order on each render:
-
-1. Working-copy render, as today.
-2. Load the cached old blob (one `git show` only if the oid changed).
-3. Align and stamp classes, including removed sections.
-4. `classify` against `prev_blocks` and broadcast.
-5. If the name-status map changed, broadcast `{"kind":"git_status","files":{"ch2/filters.md":"M"}}`.
-
-The client handles `git_status` by updating `.fb-git` dots. It does not replace `<main>`. Putting the dots into the file-browser HTML instead would change `chrome_fingerprint` and force a full refresh on every status change. The small message avoids that.
+The stored HTML is not stamped. `classify` still compares working-copy renders. A browser that has `?diff=` set reloads on `full` / `partial` / `reconcile` so the stamped copy, including removed sections and file dots, is rebuilt. `cell_status` is left alone. File dots are not a `git_status` frame and are not written into the file-browser HTML.
 
 The read-only Source pane still refreshes from `/raw/` on `__rlAfterUpdate`. Diff mode does not change that.
 
@@ -254,12 +273,12 @@ Fits the current model (`docs/security.md`, `server/auth.rs`). No new trust boun
 
 | Rule | How |
 |---|---|
-| Read-only git | The only subcommands are `rev-parse`, `show`, and `diff`. No `checkout`, `apply`, `add`, `commit`, `clean`, or `config`. |
+| Read-only git | The only subcommands are `rev-parse`, `show`, `diff`, `for-each-ref`, `log`, and `ls-files`. No `checkout`, `apply`, `add`, `commit`, `clean`, or `config`. |
 | No shell | `Command::new("git")` with an argument vector. |
 | Ref characters | Allow `A–Z a–z 0–9 . _ / ^ ~ @ { } -` only. Reject empty, longer than 256 bytes, a leading `-`, `:`, whitespace, `\`, and any other byte. `:` is rejected so a ref cannot smuggle `ref:otherpath` into `git show`. |
 | Then ask git | `rev-parse --verify --end-of-options <ref>^{commit}` must succeed. A ref that passes the character check and is not a commit is still rejected. `index` skips this and uses the `:` stage. |
 | Path | Relative path from toplevel to `Notebook.source_path`. Reject `..`, absolute paths, and anything outside the toplevel or the jail. The URL slug is resolved to a notebook the server already has, then the path is taken from that notebook. |
-| Routes | No new `POST`. No new write. `?diff=` is a query on the existing `GET /n/...`. Loopback `Host` already covers every request. Origin checks on `POST /save`, `POST /annotate`, and the WebSocket stay as they are. |
+| Routes | No new `POST`. No new write. `?diff=` and `?base=` are queries on the existing `GET /n/...`. `GET /git/refs` is read-only. Loopback `Host` already covers every request. Origin checks on `POST /save`, `POST /annotate`, and the WebSocket stay as they are. CSP nonces are unchanged; the picker script is a nonced `<script>` with no inline `on*` handlers. |
 | CSP | Diff markup is rendered by the server into the page. No inline handlers. Styles use the existing nonce-free stylesheet and `--rl-*` tokens. No CDN. `connect-src` is unchanged. |
 | User files | `/raw/` and `/plots/` keep `USER_FILE_CSP` and `nosniff`. Git output is not served from those routes. |
 | Jail | `git -C` is the repo root only when that root contains the watched directory. A `--jail-root` that is wider than the repo still does not let `git show` read a path outside the repo. A notebook path outside the jail is not a notebook the server renders. |
@@ -286,7 +305,7 @@ Fits the current model (`docs/security.md`, `server/auth.rs`). No new trust boun
 | Merge conflict markers | They are ordinary lines. If they are in the working copy, they render as text and the block shows as changed. No special conflict UI. |
 | Submodules, sparse checkout | If `git show` fails, the toolbar shows the failure and the page is plain watch. |
 | `--editable` at the same time | Allowed. Saves write the working copy as today, then the diff refreshes. Diff mode adds no save path. |
-| Two refs (`A..B`) | Rejected in the MVP. The page is always the working copy. |
+| Two refs | Allowed as `?diff=<ref>&base=<ref>`. The newer side is shown and not executed. A range string in one parameter is still rejected. |
 | Interactive watcher vs `--obsidian` | `--diff` ignored on the disk re-renderer, with a warning. |
 
 ## 8. Colors
@@ -311,17 +330,17 @@ Each phase is shippable on its own. Do not start phase 2 in the same change as p
 
 ### Phase 1 — MVP
 
-- `watch --diff` and `watch --diff <ref>`, including `index`.
-- Toolbar toggle, ref field, prev / next, counter.
-- `?diff=<ref>` updates the single server ref.
-- Block LCS, inline bars, removed sections from old source, line diff inside a changed code cell, working-copy outputs only.
+- `watch --diff` and `watch --diff <ref>`, including `index`. The flag is a default for pages that omit `diff`.
+- Quiet toolbar **Diff** button. The `vs` / `from` picker is hidden until diff is on.
+- `?diff=<ref>` and optional `?base=<ref>` stamp that response only. `GET /git/refs` fills the lists.
+- Block LCS, inline bars, removed sections from old source, line diff inside a changed code cell. Working copy vs a ref keeps live outputs. Two refs render the newer text and do not run it.
 - Sidebar dots and the `git_status` frame.
 - `git` subprocess, ref check, path check, size cap.
 - Comment toggle behavior in §4.1.
 - Four theme tokens and contrast tests.
 - Banners for not-a-repo, untracked, rename, embeds, bad ref, too large.
 
-Watch with no `--diff` is byte-for-byte the same HTML as today, aside from the **Diff** button in the toolbar. That button is the one visible change when the feature shipped and diff is off. If a quieter default is wanted, hide the button until `--diff` is passed; the recommended default is to show it, so the feature is discoverable. See open question 1.
+Watch with no `--diff` is the same HTML as today, aside from the quiet **Diff** button. The picker stays hidden until that button is on.
 
 ### Phase 2 — finer text
 
@@ -339,7 +358,7 @@ Not scheduled, and not recommended unless phase 1 feels insufficient:
 - Side-by-side rendered panes.
 - Running the old notebook to diff plots.
 - A `gix` / `git2` dependency.
-- Two-ref diff (`A..B`) with no working copy.
+- A range syntax (`A..B`) inside one ref parameter. Two refs already ship as `?diff=` and `?base=`.
 - Ghost rows for files deleted from disk.
 - Diff on the `--obsidian` disk watcher.
 
@@ -369,7 +388,7 @@ Phase 3 adds one static HTML render of a fixture and checks the classes and the 
 
 When phase 1 is built, the same change should:
 
-- Bump the workspace version (rule 12). The current version is 0.3.9. New CLI behavior and, when diff is on, different HTML are observable.
+- Bump the workspace version (rule 12). Phase 1 lands as 0.3.12. New CLI behavior and, when diff is on, different HTML are observable.
 - Document the flag and the toolbar in `docs/notebooks.md`, and the read-only git calls in `docs/security.md`.
 - Add a `CHANGELOG.md` entry under Added.
 - Mention the flag in `docs/agent-guide.md` where watch flags are listed.
@@ -379,17 +398,6 @@ No new builtin, so `docs/functions.md`, `docs/quickref.md`, and REPL help stay a
 
 Likely files, phase 1: `main.rs` (clap), `server/mod.rs`, `server/http.rs`, `server/page.rs`, `server/ws.rs`, `server/render_loop.rs`, `file_browser.rs`, `render.rs` or a new `gitdiff.rs` for align-and-stamp, `theme.rs`, tests next to those. `execute.rs` and `cache.rs` should not need a second execution path.
 
-## 12. Open questions
+## 12. Open questions — decided
 
-Recommended answers are the ones this plan uses. A "no" on any of them changes the phase, not the security rules.
-
-1. **Show the Diff button when the server was started without `--diff`?** Recommend yes, so it can be turned on without a restart. The button does nothing git-related until it is pressed.
-2. **Default ref `HEAD`?** Recommend yes. The index is an explicit `index` token for "what did I stage".
-3. **Run the old notebook so plots can be compared?** Recommend no. Source line diff plus the current plot. Revisit only if review of figures is the actual pain.
-4. **Inline bars, or side-by-side?** Recommend inline. Skip side-by-side.
-5. **Strip `%%` out of the diff always?** Recommend no. Follow the Comments checkbox.
-6. **Word-level prose in the first version?** Recommend no. Whole blocks, plus line diff inside changed code cells.
-7. **`render --diff` in the first version?** Recommend no. Watch first, static HTML in phase 3.
-8. **Two refs (`A..B`)?** Recommend no. The page is the working copy.
-9. **Embeds.** Recommend diffing the host file only, with a banner. Expanding the old embed tree means `git show` of every embedded path and a second compose. Not worth it until a notebook that is mostly embeds shows up in review.
-10. **Deleted files as extra sidebar rows?** Recommend no. The browser lists files that exist.
+Closed on 2026-10-20. The table at the top of this file is the record. Questions 1 and 8 were changed from the first recommendation: the button is quiet and the ref is per page, and two refs are allowed through `base` (the newer side is not executed). A range string in one ref is still rejected.

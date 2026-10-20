@@ -480,6 +480,43 @@ mod tests {
     }
 
     #[test]
+    fn classify_stays_partial_when_diff_classes_are_on_both_sides() {
+        let prev = vec![
+            block(
+                "b-a",
+                "<section class=\"rl-block rl-diff rl-diff-add\" id=\"b-a\">A</section>",
+            ),
+            block("b-b", "<section class=\"rl-block\" id=\"b-b\">B</section>"),
+            block(
+                "b-c",
+                "<section class=\"rl-block rl-diff rl-diff-chg\" id=\"b-c\">C</section>",
+            ),
+        ];
+        let new = vec![
+            block(
+                "b-a",
+                "<section class=\"rl-block rl-diff rl-diff-add\" id=\"b-a\">A</section>",
+            ),
+            block(
+                "b-b",
+                "<section class=\"rl-block rl-diff rl-diff-chg\" id=\"b-b\">B!</section>",
+            ),
+            block(
+                "b-c",
+                "<section class=\"rl-block rl-diff rl-diff-chg\" id=\"b-c\">C</section>",
+            ),
+        ];
+        match classify(&prev, &new, true) {
+            Broadcast::Partial(diffs) => {
+                assert_eq!(diffs.len(), 1);
+                assert_eq!(diffs[0].position, 1);
+                assert!(diffs[0].html.contains("B!"));
+            }
+            other => panic!("expected Partial, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn classify_one_of_three_changes_is_partial() {
         let prev = vec![
             block("b-a", "<section ...>A</section>"),

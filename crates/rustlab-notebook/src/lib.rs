@@ -3,6 +3,7 @@ pub mod check;
 pub mod comments;
 pub mod embed;
 pub mod execute;
+pub mod gitdiff;
 pub mod fence_hl;
 mod file_browser;
 #[cfg(feature = "mermaid")]
