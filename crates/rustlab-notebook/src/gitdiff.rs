@@ -1,0 +1,1780 @@
+//! Git diff for interactive `notebook watch`.
+//!
+//! The stored notebook HTML stays the working-copy render. A request with
+//! `?diff=<ref>` (and optional `?base=<ref>`) stamps that copy, or replaces
+//! `<main>` with the newer ref's text when both sides are refs. Git runs as
+//! a fixed argv with no shell. Refs are character-checked before they are
+//! placed in argv.
+
+use std::collections::VecDeque;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::Mutex;
+
+use crate::parse::{Block, CalloutKind, CodeDirectives, MermaidDirectives};
+use crate::render::{escape_html, markdown_to_html};
+use crate::server::diff::split_blocks;
+
+const MAX_BYTES: usize = 512 * 1024;
+const MAX_BLOCKS: usize = 400;
+const MAX_LINES: usize = 400;
+
+static DIFF_DEFAULT: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+static BLOB_CACHE: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
+
+/// `watch --diff` default, used when the request has no `diff` query.
+pub fn install_diff_default(v: Option<String>) {
+    if let Some(slot) = DIFF_DEFAULT.get() {
+        *slot.lock().expect("diff default") = v;
+    } else {
+        let _ = DIFF_DEFAULT.set(Mutex::new(v));
+    }
+}
+
+pub fn diff_default() -> Option<String> {
+    DIFF_DEFAULT
+        .get()
+        .and_then(|m| m.lock().ok().map(|g| g.clone()))?
+}
+
+/// Query string of a watch page. Absent keys stay `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchQuery {
+    pub diff: Option<String>,
+    pub base: Option<String>,
+    pub cm: Option<bool>,
+}
+
+pub fn parse_query(q: &str) -> WatchQuery {
+    let mut diff = None;
+    let mut base = None;
+    let mut cm = None;
+    for pair in q.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let mut it = pair.splitn(2, '=');
+        let key = it.next().unwrap_or("");
+        let val = percent_decode(it.next().unwrap_or(""));
+        match key {
+            "diff" => diff = Some(val),
+            "base" => base = Some(val),
+            "cm" => cm = Some(matches!(val.as_str(), "1" | "on" | "true")),
+            _ => {}
+        }
+    }
+    WatchQuery { diff, base, cm }
+}
+
+/// `?diff=off` forces off. A missing `diff` uses the CLI default.
+pub fn resolve_diff(q: &WatchQuery, cli: Option<&str>) -> Option<String> {
+    match q.diff.as_deref() {
+        Some("off") => None,
+        Some(s) => Some(s.to_string()),
+        None => cli.map(str::to_string),
+    }
+}
+
+/// Character check shared by `?diff=`, `?base=`, and the branch list.
+/// `index` is the staged blob. A range (`..`) is rejected here.
+pub fn ref_ok(s: &str) -> bool {
+    if s.is_empty() || s.len() > 256 || s.starts_with('-') || s.contains("..") {
+        return false;
+    }
+    if s == "index" {
+        return true;
+    }
+    s.bytes().all(|b| {
+        matches!(
+            b,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'.'
+                | b'_'
+                | b'/'
+                | b'^'
+                | b'~'
+                | b'@'
+                | b'{'
+                | b'}'
+                | b'-'
+        )
+    })
+}
+
+fn ref_problem(s: &str) -> Option<&'static str> {
+    if s.contains("..") {
+        Some("one ref; the page is the working copy.")
+    } else if !ref_ok(s) {
+        Some("unknown ref")
+    } else {
+        None
+    }
+}
+
+/// Repo-relative notebook path. Rejects `..`, absolute paths, and a
+/// notebook that sits outside the jail or the repository.
+pub fn safe_rel(notebook: &Path, jail: Option<&Path>, repo: &Path) -> Result<String, ()> {
+    let nb = std::fs::canonicalize(notebook).map_err(|_| ())?;
+    if let Some(jail) = jail {
+        let jail = std::fs::canonicalize(jail).map_err(|_| ())?;
+        if !nb.starts_with(&jail) {
+            return Err(());
+        }
+    }
+    let repo = std::fs::canonicalize(repo).map_err(|_| ())?;
+    let rel = nb.strip_prefix(&repo).map_err(|_| ())?;
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err(());
+    }
+    let s = rel.to_string_lossy().replace('\\', "/");
+    if rel_ok(&s) {
+        Ok(s)
+    } else {
+        Err(())
+    }
+}
+
+fn rel_ok(rel: &str) -> bool {
+    !rel.is_empty()
+        && !rel.starts_with('/')
+        && !rel.contains('\\')
+        && !rel.contains('\0')
+        && !rel.contains(':')
+        && rel
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+pub fn show_args(rev: &str, rel: &str) -> Vec<String> {
+    let spec = if rev == "index" {
+        format!(":{rel}")
+    } else {
+        format!("{rev}:{rel}")
+    };
+    vec![
+        "show".into(),
+        "--no-textconv".into(),
+        "--end-of-options".into(),
+        spec,
+    ]
+}
+
+pub fn verify_args(rev: &str) -> Vec<String> {
+    vec![
+        "rev-parse".into(),
+        "--verify".into(),
+        "--end-of-options".into(),
+        format!("{rev}^{{commit}}"),
+    ]
+}
+
+pub fn for_each_ref_args() -> Vec<String> {
+    vec![
+        "for-each-ref".into(),
+        "--format=%(refname)%00%(HEAD)%00%(refname:short)%00%(committerdate:unix)".into(),
+        "refs/heads".into(),
+        "refs/tags".into(),
+    ]
+}
+
+pub fn recent_commit_args() -> Vec<String> {
+    vec![
+        "log".into(),
+        "-n".into(),
+        "12".into(),
+        "--format=%H%x09%h%x09%s".into(),
+        "--end-of-options".into(),
+    ]
+}
+
+pub fn name_status_args(revs: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "diff".into(),
+        "--name-status".into(),
+        "-M".into(),
+        "--end-of-options".into(),
+    ];
+    args.extend(revs.iter().map(|s| (*s).to_string()));
+    args
+}
+
+fn untracked_args() -> Vec<String> {
+    vec![
+        "ls-files".into(),
+        "-z".into(),
+        "--others".into(),
+        "--exclude-standard".into(),
+    ]
+}
+
+fn commit_time_args(rev: &str) -> Vec<String> {
+    vec![
+        "log".into(),
+        "-1".into(),
+        "--format=%ct".into(),
+        "--end-of-options".into(),
+        rev.to_string(),
+    ]
+}
+
+#[cfg(test)]
+fn argv_clean(args: &[String]) -> bool {
+    const BAD: &[char] = &[';', '|', '&', '$', '`', '\n', '<', '>'];
+    args.iter().all(|a| !a.chars().any(|c| BAD.contains(&c)))
+}
+
+#[derive(Debug)]
+enum GitFail {
+    Missing,
+    NotRepo,
+    Unknown,
+}
+
+fn run_git(dir: &Path, args: &[String]) -> Result<Output, GitFail> {
+    match Command::new("git").arg("-C").arg(dir).args(args).output() {
+        Ok(out) => Ok(out),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(GitFail::Missing),
+        Err(_) => Err(GitFail::Unknown),
+    }
+}
+
+fn repo_root(start: &Path) -> Result<PathBuf, GitFail> {
+    let out = run_git(start, &["rev-parse".into(), "--show-toplevel".into()])?;
+    if !out.status.success() {
+        return Err(GitFail::NotRepo);
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        Err(GitFail::NotRepo)
+    } else {
+        Ok(PathBuf::from(s))
+    }
+}
+
+fn verify(root: &Path, rev: &str) -> Result<String, GitFail> {
+    let out = run_git(root, &verify_args(rev))?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if oid.is_empty() {
+        Err(GitFail::Unknown)
+    } else {
+        Ok(oid)
+    }
+}
+
+struct NameChange {
+    status: char,
+    path: String,
+    old_path: Option<String>,
+}
+
+fn parse_name_status(text: &str) -> Vec<NameChange> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let code = parts.next().unwrap_or("");
+        let status = code.chars().next().unwrap_or('?');
+        if matches!(status, 'R' | 'C') {
+            let old = parts.next().unwrap_or("").to_string();
+            let newp = parts.next().unwrap_or("").to_string();
+            if !newp.is_empty() && rel_ok(&newp) && (old.is_empty() || rel_ok(&old)) {
+                out.push(NameChange {
+                    status,
+                    path: newp,
+                    old_path: if old.is_empty() { None } else { Some(old) },
+                });
+            }
+        } else if matches!(status, 'M' | 'A' | 'D' | 'T') {
+            if let Some(path) = parts.next() {
+                if rel_ok(path) {
+                    out.push(NameChange {
+                        status,
+                        path: path.to_string(),
+                        old_path: None,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn name_status(root: &Path, revs: &[&str]) -> Vec<NameChange> {
+    let Ok(out) = run_git(root, &name_status_args(revs)) else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_name_status(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn show_blob(
+    root: &Path,
+    rev: &str,
+    rel: &str,
+    oid: Option<&str>,
+) -> Result<Option<String>, GitFail> {
+    if !rel_ok(rel) {
+        return Ok(None);
+    }
+    let cache_key = oid.map(|o| format!("{o}:{rel}"));
+    if let Some(key) = &cache_key {
+        if let Some(hit) = cache_get(key) {
+            return Ok(Some(hit));
+        }
+    }
+    let out = run_git(root, &show_args(rev, rel))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    if out.stdout.contains(&0) {
+        return Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if let Some(key) = cache_key {
+        cache_put(key, text.clone());
+    }
+    Ok(Some(text))
+}
+
+fn cache_get(key: &str) -> Option<String> {
+    BLOB_CACHE
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+fn cache_put(key: String, val: String) {
+    if let Ok(mut cache) = BLOB_CACHE.lock() {
+        if let Some(pos) = cache.iter().position(|(k, _)| k == &key) {
+            cache.remove(pos);
+        }
+        cache.push_front((key, val));
+        while cache.len() > 32 {
+            cache.pop_back();
+        }
+    }
+}
+
+/// Load `rel` at `rev`. A rename in `changes` (new path == `rel`) falls
+/// back to the old path, which is the name `rev` still has.
+fn load_side(
+    root: &Path,
+    rev: &str,
+    rel: &str,
+    changes: &[NameChange],
+    oid: Option<&str>,
+) -> Result<Option<String>, GitFail> {
+    if let Some(text) = show_blob(root, rev, rel, oid)? {
+        return Ok(Some(text));
+    }
+    if let Some(old) = changes
+        .iter()
+        .find(|c| c.path == rel)
+        .and_then(|c| c.old_path.as_deref())
+    {
+        return show_blob(root, rev, old, oid);
+    }
+    Ok(None)
+}
+
+fn commit_time(root: &Path, rev: &str) -> Option<i64> {
+    let out = run_git(root, &commit_time_args(rev)).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn file_dots_json(root: &Path, changes: &[NameChange]) -> String {
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    for c in changes {
+        if c.status == 'D' {
+            continue;
+        }
+        let label = match c.status {
+            'M' => "modified",
+            'A' => "added",
+            'R' => "renamed",
+            'C' => "copied",
+            'T' => "type changed",
+            _ => "changed",
+        };
+        files.push(serde_json::json!({
+            "path": c.path,
+            "status": c.status.to_string(),
+            "label": label,
+        }));
+    }
+    if let Ok(out) = run_git(root, &untracked_args()) {
+        if out.status.success() {
+            for path in String::from_utf8_lossy(&out.stdout).split('\0') {
+                if path.is_empty() || !rel_ok(path) {
+                    continue;
+                }
+                if files.iter().any(|f| f["path"] == path) {
+                    continue;
+                }
+                files.push(serde_json::json!({
+                    "path": path,
+                    "status": "A",
+                    "label": "added",
+                }));
+            }
+        }
+    }
+    serde_json::json!({ "files": files })
+        .to_string()
+        .replace('<', "\\u003c")
+}
+
+/// `GET /git/refs` body. Not a repository and a missing `git` are 200
+/// with an error field so the picker can explain itself.
+pub fn refs_json(start: &Path) -> String {
+    match collect_refs(start) {
+        Ok(body) => body,
+        Err(GitFail::Missing) => refs_error("git not found"),
+        Err(_) => refs_error("not a git repository"),
+    }
+}
+
+fn refs_error(msg: &str) -> String {
+    serde_json::json!({
+        "error": msg,
+        "branches": [],
+        "tags": [],
+        "commits": [],
+    })
+    .to_string()
+}
+
+#[derive(Clone)]
+struct Listed {
+    name: String,
+    current: bool,
+    date: i64,
+    tag: bool,
+}
+
+fn collect_refs(start: &Path) -> Result<String, GitFail> {
+    let root = repo_root(start)?;
+    let out = run_git(&root, &for_each_ref_args())?;
+    if !out.status.success() {
+        return Err(GitFail::NotRepo);
+    }
+    let mut rows = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut parts = line.split('\0');
+        let full = parts.next().unwrap_or("");
+        let head = parts.next().unwrap_or("");
+        let short = parts.next().unwrap_or("");
+        let date: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+        let tag = full.starts_with("refs/tags/");
+        // `?diff=off` means off, so a branch literally named off is sent
+        // as its full refname, which still passes the character check.
+        let name = if short == "off" { full } else { short };
+        if !ref_ok(name) {
+            continue;
+        }
+        rows.push(Listed {
+            name: name.to_string(),
+            current: head.starts_with('*'),
+            date,
+            tag,
+        });
+    }
+    let heads: Vec<Listed> = rows.iter().filter(|r| !r.tag).cloned().collect();
+    let mut current: Vec<Listed> = heads.iter().filter(|h| h.current).cloned().collect();
+    let mut rest: Vec<Listed> = heads.into_iter().filter(|h| !h.current).collect();
+    rest.sort_by(|a, b| {
+        fn rank(name: &str) -> u8 {
+            if name == "main" {
+                0
+            } else {
+                1
+            }
+        }
+        rank(&a.name)
+            .cmp(&rank(&b.name))
+            .then(b.date.cmp(&a.date))
+            .then(a.name.cmp(&b.name))
+    });
+    current.append(&mut rest);
+    let mut tags: Vec<Listed> = rows.into_iter().filter(|r| r.tag).collect();
+    tags.sort_by(|a, b| b.date.cmp(&a.date).then(a.name.cmp(&b.name)));
+
+    let mut commits = Vec::new();
+    if let Ok(log) = run_git(&root, &recent_commit_args()) {
+        if log.status.success() {
+            for line in String::from_utf8_lossy(&log.stdout).lines() {
+                let mut parts = line.splitn(3, '\t');
+                let rev = parts.next().unwrap_or("");
+                let short = parts.next().unwrap_or("");
+                let subject = parts.next().unwrap_or("");
+                if !ref_ok(rev) || !ref_ok(short) {
+                    continue;
+                }
+                let subject: String = subject.chars().take(72).collect();
+                commits.push(serde_json::json!({
+                    "rev": rev,
+                    "label": format!("{short} {subject}"),
+                }));
+            }
+        }
+    }
+
+    let branches: Vec<_> = current
+        .iter()
+        .map(|h| serde_json::json!({"name": h.name, "current": h.current}))
+        .collect();
+    let tag_json: Vec<_> = tags
+        .iter()
+        .map(|t| serde_json::json!({"name": t.name}))
+        .collect();
+    Ok(serde_json::json!({
+        "error": null,
+        "branches": branches,
+        "tags": tag_json,
+        "commits": commits,
+    })
+    .to_string()
+    .replace('<', "\\u003c"))
+}
+
+/// Inputs for one page view. `diff` is the "vs" side. `base` set means
+/// both sides are refs and neither notebook is executed.
+pub struct Present<'a> {
+    pub html: &'a str,
+    pub source_path: &'a Path,
+    pub jail: Option<&'a Path>,
+    pub comments_on: bool,
+    pub diff: &'a str,
+    pub base: Option<&'a str>,
+}
+
+pub fn present(p: Present<'_>) -> String {
+    let base = p.base.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(msg) = ref_problem(p.diff) {
+        return decorate(p.html, p.diff, base, msg, None);
+    }
+    if let Some(b) = base.as_deref() {
+        if let Some(msg) = ref_problem(b) {
+            return decorate(p.html, p.diff, base, msg, None);
+        }
+    }
+    let start = p.source_path.parent().unwrap_or(p.source_path);
+    let root = match repo_root(start) {
+        Ok(r) => r,
+        Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
+        Err(_) => return decorate(p.html, p.diff, base, "not a git repository", None),
+    };
+    if safe_rel(p.source_path, p.jail, &root).is_err() {
+        return decorate(
+            p.html,
+            p.diff,
+            base,
+            "path escapes notebook directory",
+            None,
+        );
+    }
+    let rel = safe_rel(p.source_path, p.jail, &root).expect("checked");
+
+    let diff_oid = if p.diff == "index" {
+        None
+    } else {
+        match verify(&root, p.diff) {
+            Ok(oid) => Some(oid),
+            Err(GitFail::Missing) => {
+                return decorate(p.html, p.diff, base, "git not found", None);
+            }
+            Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
+        }
+    };
+    let base_oid = if let Some(b) = base.as_deref() {
+        if b == "index" {
+            None
+        } else {
+            match verify(&root, b) {
+                Ok(oid) => Some(oid),
+                Err(GitFail::Missing) => {
+                    return decorate(p.html, p.diff, base, "git not found", None);
+                }
+                Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(b) = base.as_deref() {
+        return present_two_ref(p, &root, &rel, b, diff_oid.as_deref(), base_oid.as_deref());
+    }
+    present_working(p, &root, &rel, diff_oid.as_deref())
+}
+
+fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) -> String {
+    let changes = if p.diff == "index" {
+        name_status(root, &[])
+    } else {
+        name_status(root, &[p.diff])
+    };
+    let dots = file_dots_json(root, &changes);
+    let disk = match std::fs::read(p.source_path) {
+        Ok(b) => b,
+        Err(_) => {
+            return decorate(p.html, p.diff, None, "could not read notebook", Some(&dots));
+        }
+    };
+    if disk.contains(&0) {
+        return decorate(p.html, p.diff, None, "not a text notebook", Some(&dots));
+    }
+    let new_text = String::from_utf8_lossy(&disk).into_owned();
+    if crate::embed::has_markdown_embeds(&new_text) {
+        return decorate(
+            p.html,
+            p.diff,
+            None,
+            "embeds are not part of this diff",
+            Some(&dots),
+        );
+    }
+    let old_text = match load_side(root, p.diff, rel, &changes, oid) {
+        Ok(Some(s)) if s.contains('\0') => {
+            return decorate(p.html, p.diff, None, "not a text notebook", Some(&dots));
+        }
+        Ok(Some(s)) => s,
+        Ok(None) => String::new(),
+        Err(GitFail::Missing) => {
+            return decorate(p.html, p.diff, None, "git not found", Some(&dots))
+        }
+        Err(_) => String::new(),
+    };
+    match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
+        Ok((html, n)) => {
+            let banner = if n == 0 {
+                format!("no changes vs {}", p.diff)
+            } else {
+                format!("{n} changes vs {}", p.diff)
+            };
+            decorate(&html, p.diff, None, &banner, Some(&dots))
+        }
+        Err(msg) => decorate(p.html, p.diff, None, msg, Some(&dots)),
+    }
+}
+
+fn present_two_ref(
+    p: Present<'_>,
+    root: &Path,
+    rel: &str,
+    base: &str,
+    diff_oid: Option<&str>,
+    base_oid: Option<&str>,
+) -> String {
+    // `git diff A B` lists what changes from A to B. The page shows the
+    // newer commit. A tie, or either side `index`, keeps the `diff` param.
+    let show_diff = match (p.diff == "index", base == "index") {
+        (true, _) | (_, true) => true,
+        _ => match (commit_time(root, p.diff), commit_time(root, base)) {
+            (Some(d), Some(b)) if b > d => false,
+            _ => true,
+        },
+    };
+    let (new_ref, new_oid, old_ref, old_oid) = if show_diff {
+        (p.diff, diff_oid, base, base_oid)
+    } else {
+        (base, base_oid, p.diff, diff_oid)
+    };
+    let changes = match (old_ref == "index", new_ref == "index") {
+        (true, true) => Vec::new(),
+        (true, false) => name_status(root, &[new_ref]),
+        (false, true) => name_status(root, &[old_ref]),
+        (false, false) => name_status(root, &[old_ref, new_ref]),
+    };
+    let dots = file_dots_json(root, &changes);
+    let newer = match (p.diff == "index" || base == "index", show_diff) {
+        (true, _) => None,
+        (false, true) => commit_time(root, p.diff)
+            .zip(commit_time(root, base))
+            .filter(|(d, b)| d > b)
+            .map(|_| ()),
+        (false, false) => Some(()),
+    };
+    let newer_word = if newer.is_some() { " (newer)" } else { "" };
+    let fail = |msg: &str| decorate(p.html, p.diff, Some(base), msg, Some(&dots));
+
+    let new_text = match load_side(root, new_ref, rel, &changes, new_oid) {
+        Ok(Some(s)) => s,
+        Ok(None) => String::new(),
+        Err(GitFail::Missing) => return fail("git not found"),
+        Err(_) => String::new(),
+    };
+    let old_text = match load_side(root, old_ref, rel, &changes, old_oid) {
+        Ok(Some(s)) => s,
+        Ok(None) => String::new(),
+        Err(GitFail::Missing) => return fail("git not found"),
+        Err(_) => String::new(),
+    };
+    if new_text.contains('\0') || old_text.contains('\0') {
+        return fail("not a text notebook");
+    }
+    let banner = format!("showing {new_ref}{newer_word} vs {old_ref} — code was not run");
+    if crate::embed::has_markdown_embeds(&new_text) || crate::embed::has_markdown_embeds(&old_text)
+    {
+        let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
+        return decorate(
+            &page,
+            p.diff,
+            Some(base),
+            "embeds are not part of this diff — code was not run",
+            Some(&dots),
+        );
+    }
+    match render_aligned(&old_text, &new_text, p.comments_on, true) {
+        Ok((inner, _)) => {
+            let page = replace_main(p.html, &inner);
+            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+        }
+        Err(msg) => {
+            let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
+            let banner = format!("{msg} — code was not run");
+            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+        }
+    }
+}
+
+fn stamp_working(
+    html: &str,
+    old: &str,
+    new_src: &str,
+    comments_on: bool,
+) -> Result<(String, usize), &'static str> {
+    let (marks, removed, units) = align(old, new_src, comments_on)?;
+    let sections = split_blocks(html);
+    if sections.len() != units.len() {
+        return Err("could not align");
+    }
+    let n = count_changes(&marks, &removed);
+    if n == 0 {
+        return Ok((html.to_string(), 0));
+    }
+    let mut ranges = Vec::with_capacity(sections.len());
+    let mut cursor = 0usize;
+    for sec in &sections {
+        let Some(rel) = html[cursor..].find(sec.html.as_str()) else {
+            return Err("could not align");
+        };
+        let start = cursor + rel;
+        let end = start + sec.html.len();
+        ranges.push((start, end));
+        cursor = end;
+    }
+    let mut out = String::with_capacity(html.len() + 1024);
+    cursor = 0;
+    for (idx, (start, end)) in ranges.iter().enumerate() {
+        out.push_str(&html[cursor..*start]);
+        for (at, unit) in &removed {
+            if *at == idx {
+                out.push_str(&removed_section(unit));
+            }
+        }
+        out.push_str(&stamp_section(
+            &sections[idx].html,
+            &marks[idx],
+            &units[idx],
+            false,
+        ));
+        cursor = *end;
+    }
+    for (at, unit) in &removed {
+        if *at == units.len() {
+            out.push_str(&removed_section(unit));
+        }
+    }
+    out.push_str(&html[cursor..]);
+    Ok((out, n))
+}
+
+fn render_aligned(
+    old: &str,
+    new_src: &str,
+    comments_on: bool,
+    two_ref: bool,
+) -> Result<(String, usize), &'static str> {
+    let (marks, removed, units) = align(old, new_src, comments_on)?;
+    let n = count_changes(&marks, &removed);
+    let mut body = String::new();
+    if two_ref {
+        body.push_str("<p class=\"rl-diff-note\">code was not run</p>\n");
+    }
+    for (idx, unit) in units.iter().enumerate() {
+        for (at, gone) in &removed {
+            if *at == idx {
+                body.push_str(&removed_section(gone));
+            }
+        }
+        body.push_str(&fresh_section(unit, &marks[idx], idx, two_ref));
+    }
+    for (at, gone) in &removed {
+        if *at == units.len() {
+            body.push_str(&removed_section(gone));
+        }
+    }
+    Ok((body, n))
+}
+
+fn render_plain(src: &str, comments_on: bool) -> String {
+    let prepared = prepare(src, comments_on);
+    let units = units_of(&prepared);
+    let mut body = String::from("<p class=\"rl-diff-note\">code was not run</p>\n");
+    for (idx, unit) in units.iter().enumerate() {
+        body.push_str(&fresh_section(unit, &Mark::Same, idx, true));
+    }
+    body
+}
+
+fn count_changes(marks: &[Mark], removed: &[(usize, Unit)]) -> usize {
+    marks.iter().filter(|m| !matches!(m, Mark::Same)).count() + removed.len()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Prose,
+    Code,
+    Mermaid,
+    Widget,
+    Callout,
+}
+
+#[derive(Clone, Debug)]
+struct Unit {
+    kind: Kind,
+    fp: String,
+    text: String,
+}
+
+#[derive(Debug)]
+enum Mark {
+    Same,
+    Added,
+    Changed { old_text: String },
+}
+
+fn prepare(src: &str, comments_on: bool) -> String {
+    if comments_on {
+        src.to_string()
+    } else {
+        crate::comments::strip_source(src)
+    }
+}
+
+fn align(
+    old: &str,
+    new_src: &str,
+    comments_on: bool,
+) -> Result<(Vec<Mark>, Vec<(usize, Unit)>, Vec<Unit>), &'static str> {
+    if old.contains('\0') || new_src.contains('\0') {
+        return Err("not a text notebook");
+    }
+    if old.len() > MAX_BYTES || new_src.len() > MAX_BYTES {
+        return Err("diff was too large");
+    }
+    let old_u = units_of(&prepare(old, comments_on));
+    let new_u = units_of(&prepare(new_src, comments_on));
+    if old_u.len() > MAX_BLOCKS || new_u.len() > MAX_BLOCKS {
+        return Err("diff was too large");
+    }
+    let ops = diff_ops(old_u.len(), new_u.len(), |i, j| old_u[i].fp == new_u[j].fp);
+    let (marks, removed) = coalesce(&old_u, &new_u, &ops);
+    Ok((marks, removed, new_u))
+}
+
+/// Document-order labels: `same`, `added`, `changed`, `removed`.
+pub fn align_sides(
+    old: &str,
+    new_src: &str,
+    comments_on: bool,
+) -> Result<Vec<&'static str>, &'static str> {
+    let (marks, removed, units) = align(old, new_src, comments_on)?;
+    let mut out = Vec::new();
+    for (idx, mark) in marks.iter().enumerate() {
+        for (at, _) in &removed {
+            if *at == idx {
+                out.push("removed");
+            }
+        }
+        out.push(match mark {
+            Mark::Same => "same",
+            Mark::Added => "added",
+            Mark::Changed { .. } => "changed",
+        });
+    }
+    for (at, _) in &removed {
+        if *at == units.len() {
+            out.push("removed");
+        }
+    }
+    Ok(out)
+}
+
+enum Op {
+    /// New-side index of a block or line that matched.
+    Eq(usize),
+    Del(usize),
+    Ins(usize),
+}
+
+fn diff_ops(n: usize, m: usize, eq: impl Fn(usize, usize) -> bool) -> Vec<Op> {
+    let mut dp = vec![vec![0u32; m + 1]; n + 1];
+    for i in 0..n {
+        for j in 0..m {
+            dp[i + 1][j + 1] = if eq(i, j) {
+                dp[i][j] + 1
+            } else {
+                dp[i][j + 1].max(dp[i + 1][j])
+            };
+        }
+    }
+    let mut ops = Vec::new();
+    let (mut i, mut j) = (n, m);
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && eq(i - 1, j - 1) {
+            ops.push(Op::Eq(j - 1));
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            ops.push(Op::Ins(j - 1));
+            j -= 1;
+        } else {
+            ops.push(Op::Del(i - 1));
+            i -= 1;
+        }
+    }
+    ops.reverse();
+    ops
+}
+
+fn coalesce(old: &[Unit], new_u: &[Unit], ops: &[Op]) -> (Vec<Mark>, Vec<(usize, Unit)>) {
+    let mut marks = Vec::new();
+    for _ in new_u {
+        marks.push(Mark::Same);
+    }
+    let mut removed = Vec::new();
+    let mut i = 0;
+    while i < ops.len() {
+        match ops[i] {
+            Op::Eq(_) => i += 1,
+            Op::Ins(ni) => {
+                marks[ni] = Mark::Added;
+                i += 1;
+            }
+            Op::Del(_) => {
+                let mut dels = Vec::new();
+                while i < ops.len() {
+                    if let Op::Del(oi) = ops[i] {
+                        dels.push(oi);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let mut ins = Vec::new();
+                while i < ops.len() {
+                    if let Op::Ins(ni) = ops[i] {
+                        ins.push(ni);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let anchor = ins
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| next_new(ops, i, new_u.len()));
+                apply_hunk(old, new_u, &dels, &ins, anchor, &mut marks, &mut removed);
+            }
+        }
+    }
+    (marks, removed)
+}
+
+fn next_new(ops: &[Op], from: usize, len: usize) -> usize {
+    for op in &ops[from..] {
+        match op {
+            Op::Eq(n) | Op::Ins(n) => return *n,
+            Op::Del(_) => {}
+        }
+    }
+    len
+}
+
+fn apply_hunk(
+    old: &[Unit],
+    new_u: &[Unit],
+    dels: &[usize],
+    ins: &[usize],
+    anchor: usize,
+    marks: &mut [Mark],
+    removed: &mut Vec<(usize, Unit)>,
+) {
+    let mut del_used = vec![false; dels.len()];
+    let mut ins_used = vec![false; ins.len()];
+    for (di, &oi) in dels.iter().enumerate() {
+        if let Some(ii) = ins
+            .iter()
+            .enumerate()
+            .find(|(ii, &ni)| !ins_used[*ii] && new_u[ni].fp == old[oi].fp)
+            .map(|(ii, _)| ii)
+        {
+            del_used[di] = true;
+            ins_used[ii] = true;
+            marks[ins[ii]] = Mark::Added;
+            removed.push((anchor, clone_unit(&old[oi])));
+        }
+    }
+    let mut di = 0;
+    let mut ii = 0;
+    loop {
+        while di < dels.len() && del_used[di] {
+            di += 1;
+        }
+        while ii < ins.len() && ins_used[ii] {
+            ii += 1;
+        }
+        if di >= dels.len() && ii >= ins.len() {
+            break;
+        }
+        if di < dels.len() && ii < ins.len() && old[dels[di]].kind == new_u[ins[ii]].kind {
+            marks[ins[ii]] = Mark::Changed {
+                old_text: old[dels[di]].text.clone(),
+            };
+            di += 1;
+            ii += 1;
+        } else if di < dels.len() {
+            removed.push((anchor, clone_unit(&old[dels[di]])));
+            di += 1;
+        } else {
+            marks[ins[ii]] = Mark::Added;
+            ii += 1;
+        }
+    }
+}
+
+fn clone_unit(u: &Unit) -> Unit {
+    Unit {
+        kind: u.kind,
+        fp: u.fp.clone(),
+        text: u.text.clone(),
+    }
+}
+
+fn units_of(src: &str) -> Vec<Unit> {
+    let blocks = crate::parse::parse_notebook(src);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < blocks.len() {
+        match &blocks[i] {
+            Block::Markdown(s) if s.trim().is_empty() => i += 1,
+            Block::ExerciseStart | Block::SolutionStart => i += 1,
+            Block::Mermaid { directives, .. } if directives.hidden => i += 1,
+            Block::Widget { .. } if panel_at(&blocks, i) => {
+                let mut parts = Vec::new();
+                while matches!(blocks.get(i), Some(Block::Widget { .. })) {
+                    if let Block::Widget { source, .. } = &blocks[i] {
+                        parts.push(source.clone());
+                    }
+                    i += 1;
+                }
+                if let Some(Block::Code { source, directives }) = blocks.get(i) {
+                    parts.push(code_fp(source, directives));
+                    let text = source.clone();
+                    out.push(Unit {
+                        kind: Kind::Code,
+                        fp: format!("panel\0{}", parts.join("\0")),
+                        text,
+                    });
+                    i += 1;
+                }
+            }
+            other => {
+                if let Some(unit) = unit_of(other) {
+                    out.push(unit);
+                }
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn panel_at(blocks: &[Block], idx: usize) -> bool {
+    if !matches!(blocks.get(idx), Some(Block::Widget { .. })) {
+        return false;
+    }
+    let mut i = idx;
+    while matches!(blocks.get(i), Some(Block::Widget { .. })) {
+        i += 1;
+    }
+    matches!(blocks.get(i), Some(Block::Code { .. }))
+}
+
+fn unit_of(block: &Block) -> Option<Unit> {
+    match block {
+        Block::Markdown(s) => Some(Unit {
+            kind: Kind::Prose,
+            fp: format!("md\0{s}"),
+            text: s.clone(),
+        }),
+        Block::Code { source, directives } => Some(Unit {
+            kind: Kind::Code,
+            fp: code_fp(source, directives),
+            text: source.clone(),
+        }),
+        Block::Mermaid { source, directives } => Some(Unit {
+            kind: Kind::Mermaid,
+            fp: mermaid_fp(source, directives),
+            text: source.clone(),
+        }),
+        Block::Widget { source, .. } => Some(Unit {
+            kind: Kind::Widget,
+            fp: format!("w\0{source}"),
+            text: source.clone(),
+        }),
+        Block::Callout {
+            kind,
+            title,
+            content,
+        } => Some(Unit {
+            kind: Kind::Callout,
+            fp: format!(
+                "c\0{}\0{}\0{content}",
+                callout_tag(*kind),
+                title.as_deref().unwrap_or("")
+            ),
+            text: content.clone(),
+        }),
+        Block::ExerciseStart | Block::SolutionStart => None,
+    }
+}
+
+fn code_fp(source: &str, d: &CodeDirectives) -> String {
+    format!(
+        "code\0{source}\0{}\0{}\0{}\0{}\0{}",
+        d.hidden,
+        d.details.as_deref().unwrap_or(""),
+        d.grid_cols.map(|n| n.to_string()).unwrap_or_default(),
+        d.caption.as_deref().unwrap_or(""),
+        d.source_open
+            .map(|b| if b { "1" } else { "0" })
+            .unwrap_or(""),
+    )
+}
+
+fn mermaid_fp(source: &str, d: &MermaidDirectives) -> String {
+    format!(
+        "mm\0{source}\0{}\0{}\0{}",
+        d.hidden,
+        d.details.as_deref().unwrap_or(""),
+        d.caption.as_deref().unwrap_or(""),
+    )
+}
+
+fn callout_tag(k: CalloutKind) -> &'static str {
+    match k {
+        CalloutKind::Note => "note",
+        CalloutKind::Tip => "tip",
+        CalloutKind::Important => "important",
+        CalloutKind::Warning => "warning",
+        CalloutKind::Caution => "caution",
+    }
+}
+
+fn stamp_section(section: &str, mark: &Mark, unit: &Unit, _two: bool) -> String {
+    match mark {
+        Mark::Same => section.to_string(),
+        Mark::Added => {
+            let s = with_class(section, "rl-diff rl-diff-add");
+            insert_after_open(&s, "<span class=\"rl-diff-tag\">added</span>")
+        }
+        Mark::Changed { old_text } => {
+            let mut s = with_class(section, "rl-diff rl-diff-chg");
+            s = insert_after_open(&s, "<span class=\"rl-diff-tag\">changed</span>");
+            if matches!(unit.kind, Kind::Code | Kind::Mermaid) {
+                let lines = line_diff_html(old_text, &unit.text);
+                let note = "<p class=\"rl-diff-note\">output is the working copy</p>";
+                s = inject_after_source(&s, &lines, note);
+            }
+            s
+        }
+    }
+}
+
+fn fresh_section(unit: &Unit, mark: &Mark, idx: usize, two_ref: bool) -> String {
+    let (class, tag, old) = match mark {
+        Mark::Same => ("", "", None),
+        Mark::Added => (" rl-diff rl-diff-add", "added", None),
+        Mark::Changed { old_text } => (" rl-diff rl-diff-chg", "changed", Some(old_text.as_str())),
+    };
+    let tag_html = if tag.is_empty() {
+        String::new()
+    } else {
+        format!("<span class=\"rl-diff-tag\">{tag}</span>")
+    };
+    let note = if two_ref && matches!(unit.kind, Kind::Code | Kind::Mermaid) {
+        "<p class=\"rl-diff-note\">code was not run</p>\n"
+    } else if !two_ref && old.is_some() && matches!(unit.kind, Kind::Code | Kind::Mermaid) {
+        "<p class=\"rl-diff-note\">output is the working copy</p>\n"
+    } else {
+        ""
+    };
+    let body = match unit.kind {
+        Kind::Code | Kind::Mermaid => {
+            let lines = old
+                .map(|o| line_diff_html(o, &unit.text))
+                .unwrap_or_default();
+            let lang = if unit.kind == Kind::Code {
+                "rustlab"
+            } else {
+                "mermaid"
+            };
+            format!(
+                "<div class=\"code-block\"><div class=\"rl-cell\">\
+<details class=\"rl-src\" open><summary class=\"rl-lang\">{lang}</summary>\
+<pre class=\"source\"><code>{}</code></pre>{lines}</details>\
+{note}</div></div>\n",
+                escape_html(&unit.text)
+            )
+        }
+        Kind::Prose | Kind::Callout => {
+            format!(
+                "<div class=\"prose\">\n{}\n</div>\n{note}",
+                markdown_to_html(&unit.text)
+            )
+        }
+        Kind::Widget => format!(
+            "<pre class=\"source\"><code>{}</code></pre>\n{note}",
+            escape_html(&unit.text)
+        ),
+    };
+    format!("<section class=\"rl-block{class}\" id=\"b-git-{idx}\">\n{tag_html}{body}</section>\n")
+}
+
+fn removed_section(unit: &Unit) -> String {
+    let body = match unit.kind {
+        Kind::Code | Kind::Mermaid | Kind::Widget => {
+            format!(
+                "<pre class=\"source\"><code>{}</code></pre>\n<p class=\"rl-diff-note\">removed</p>\n",
+                escape_html(&unit.text)
+            )
+        }
+        Kind::Prose | Kind::Callout => {
+            format!(
+                "<div class=\"prose\">\n{}\n</div>\n<p class=\"rl-diff-note\">removed</p>\n",
+                markdown_to_html(&unit.text)
+            )
+        }
+    };
+    format!(
+        "<section class=\"rl-block rl-diff rl-diff-del\" id=\"b-gitdel-{}\">\n{body}</section>\n",
+        blake_id(&unit.fp)
+    )
+}
+
+fn blake_id(s: &str) -> u32 {
+    // A short stable id. Not a hash crate — a multiply-xor of the bytes.
+    let mut h: u32 = 2166136261;
+    for b in s.as_bytes() {
+        h ^= *b as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    h
+}
+
+fn with_class(section: &str, class: &str) -> String {
+    section.replacen(
+        "<section class=\"rl-block\"",
+        &format!("<section class=\"rl-block {class}\""),
+        1,
+    )
+}
+
+fn insert_after_open(section: &str, extra: &str) -> String {
+    match section.find('>') {
+        Some(i) => {
+            let mut s = String::with_capacity(section.len() + extra.len());
+            s.push_str(&section[..=i]);
+            s.push_str(extra);
+            s.push_str(&section[i + 1..]);
+            s
+        }
+        None => section.to_string(),
+    }
+}
+
+fn inject_after_source(section: &str, lines: &str, note: &str) -> String {
+    let mut s = section.to_string();
+    if let Some(src) = s.find("class=\"source\"") {
+        if let Some(rel) = s[src..].find("</pre>") {
+            let at = src + rel + "</pre>".len();
+            s.insert_str(at, lines);
+        }
+    }
+    if let Some(end) = s.rfind("</section>") {
+        s.insert_str(end, note);
+    }
+    s
+}
+
+fn line_diff_html(old: &str, new_src: &str) -> String {
+    let a: Vec<&str> = old.split('\n').collect();
+    let b: Vec<&str> = new_src.split('\n').collect();
+    if a.len() > MAX_LINES || b.len() > MAX_LINES {
+        return "<p class=\"rl-diff-note\">line diff omitted</p>".into();
+    }
+    let ops = diff_ops(a.len(), b.len(), |i, j| a[i] == b[j]);
+    let mut html = String::from("<div class=\"rl-diff-lines\">");
+    let mut i = 0usize;
+    let mut j = 0usize;
+    for op in &ops {
+        match op {
+            Op::Eq(_) => {
+                html.push_str(&line_row("rl-ln-ctx", a.get(i).copied().unwrap_or("")));
+                i += 1;
+                j += 1;
+            }
+            Op::Del(_) => {
+                html.push_str(&line_row("rl-ln-del", a.get(i).copied().unwrap_or("")));
+                i += 1;
+            }
+            Op::Ins(_) => {
+                html.push_str(&line_row("rl-ln-add", b.get(j).copied().unwrap_or("")));
+                j += 1;
+            }
+        }
+    }
+    html.push_str("</div>");
+    html
+}
+
+fn line_row(class: &str, text: &str) -> String {
+    let mark = if class.ends_with("add") {
+        "+"
+    } else if class.ends_with("del") {
+        "-"
+    } else {
+        ""
+    };
+    format!(
+        "<div class=\"rl-ln {class}\"><span class=\"rl-ln-gutter\" aria-hidden=\"true\">{mark}</span><code>{}</code></div>",
+        escape_html(text)
+    )
+}
+
+fn replace_main(html: &str, inner: &str) -> String {
+    let Some(start) = html.find("<main") else {
+        return format!("{html}{inner}");
+    };
+    let Some(gt) = html[start..].find('>') else {
+        return html.to_string();
+    };
+    let inner_start = start + gt + 1;
+    let Some(end_rel) = html[inner_start..].find("</main>") else {
+        return html.to_string();
+    };
+    let mut out = String::with_capacity(html.len() + inner.len());
+    out.push_str(&html[..inner_start]);
+    out.push_str(inner);
+    out.push_str(&html[inner_start + end_rel..]);
+    out
+}
+
+fn decorate(
+    html: &str,
+    diff: &str,
+    base: Option<&str>,
+    banner: &str,
+    files: Option<&str>,
+) -> String {
+    let base = base.unwrap_or("");
+    let mut out = patch_body(html, diff, base);
+    out = out.replace("id=\"rl-diff\" hidden", "id=\"rl-diff\"");
+    out = out.replace(
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet\"",
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\"",
+    );
+    out = out.replace(
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"false\"",
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"true\"",
+    );
+    out = out.replace("id=\"rl-diff-dot\" hidden", "id=\"rl-diff-dot\"");
+    out = out.replace(
+        "aria-label=\"More\" title=\"More\"",
+        "aria-label=\"More, diff on\" title=\"More, diff on\"",
+    );
+    let banner_html = format!("<p id=\"rl-diff-banner\">{}</p>", escape_html(banner));
+    if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
+        out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
+    } else if out.contains("<p id=\"rl-diff-banner\" hidden>") {
+        // already filled; leave the chrome copy and also put one in main
+    }
+    let mut extra = String::new();
+    if !out.contains("id=\"rl-diff-banner\"")
+        || out.contains("<p id=\"rl-diff-banner\" hidden></p>")
+    {
+        extra.push_str(&banner_html);
+    }
+    if let Some(files) = files {
+        extra.push_str(&format!("<div id=\"rl-git-files\" hidden>{}</div>", files));
+    }
+    if !extra.is_empty() {
+        out = insert_after_main(&out, &extra);
+    }
+    // The chrome placeholder was replaced above. If it was missing, the
+    // banner inserted into main is the one the page shows.
+    if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
+        out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
+    }
+    out
+}
+
+fn insert_after_main(html: &str, extra: &str) -> String {
+    let Some(i) = html.find("<main") else {
+        return format!("{extra}{html}");
+    };
+    let Some(rel) = html[i..].find('>') else {
+        return html.to_string();
+    };
+    let at = i + rel + 1;
+    let mut out = String::with_capacity(html.len() + extra.len());
+    out.push_str(&html[..at]);
+    out.push_str(extra);
+    out.push_str(&html[at..]);
+    out
+}
+
+fn patch_body(html: &str, diff: &str, base: &str) -> String {
+    let Some(i) = html.find("<body") else {
+        return html.to_string();
+    };
+    let Some(rel) = html[i..].find('>') else {
+        return html.to_string();
+    };
+    let tag = &html[i..i + rel];
+    let attrs = format!(
+        " data-rl-diff=\"{}\" data-rl-base=\"{}\"",
+        escape_html(diff),
+        escape_html(base)
+    );
+    let new_tag = if let Some(c) = tag.find("class=\"") {
+        let at = c + "class=\"".len();
+        format!("{}rl-diff-on {}{}", &tag[..at], &tag[at..], attrs)
+    } else {
+        format!("{tag} class=\"rl-diff-on\"{attrs}")
+    };
+    let mut out = String::with_capacity(html.len() + 64);
+    out.push_str(&html[..i]);
+    out.push_str(&new_tag);
+    out.push_str(&html[i + rel..]);
+    out
+}
+
+fn percent_decode(s: &str) -> String {
+    let s = s.replace('+', " ");
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_checker_accepts_common_forms() {
+        for ok in [
+            "HEAD",
+            "HEAD~2",
+            "origin/main",
+            &"a".repeat(40),
+            "index",
+            "refs/heads/off",
+        ] {
+            assert!(ref_ok(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn ref_checker_rejects_metacharacters_ranges_and_flags() {
+        for bad in [
+            "HEAD;id",
+            "-rf",
+            "HEAD:../../x",
+            "main..HEAD",
+            "HEAD\n",
+            &"a".repeat(300),
+            "",
+            "has space",
+            "a\\b",
+        ] {
+            assert!(!ref_ok(bad), "{bad:?}");
+        }
+        assert_eq!(
+            ref_problem("main..HEAD"),
+            Some("one ref; the page is the working copy.")
+        );
+    }
+
+    #[test]
+    fn fixed_argv_has_end_of_options_and_no_shell() {
+        let show = show_args("HEAD", "notes/a.md");
+        assert!(show.iter().any(|a| a == "--end-of-options"));
+        assert!(argv_clean(&show), "{show:?}");
+        assert_eq!(show.last().map(String::as_str), Some("HEAD:notes/a.md"));
+        let index = show_args("index", "notes/a.md");
+        assert_eq!(index.last().map(String::as_str), Some(":notes/a.md"));
+        assert!(argv_clean(&verify_args("HEAD~2")));
+        assert!(verify_args("HEAD~2")
+            .iter()
+            .any(|a| a == "--end-of-options"));
+        assert!(argv_clean(&for_each_ref_args()));
+        assert!(argv_clean(&name_status_args(&["main", "topic"])));
+        assert!(name_status_args(&["main"])
+            .iter()
+            .any(|a| a == "--end-of-options"));
+        assert!(argv_clean(&recent_commit_args()));
+        assert!(!show.iter().any(|a| a.contains(';') || a.contains('|')));
+    }
+
+    #[test]
+    fn safe_rel_stays_inside_jail_and_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let jail = tmp.path().join("jail");
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::create_dir_all(&jail).unwrap();
+        let file = repo.join("sub").join("a.md");
+        std::fs::write(&file, "x").unwrap();
+        assert!(safe_rel(&file, Some(&jail), &repo).is_err());
+        let rel = safe_rel(&file, Some(&repo), &repo).unwrap();
+        assert_eq!(rel, "sub/a.md");
+        assert!(rel_ok(&rel));
+        assert!(!rel_ok("../a.md"));
+        assert!(!rel_ok("/etc/passwd"));
+    }
+
+    #[test]
+    fn align_insert_delete_substitute_and_swap() {
+        let a = "```rustlab\nx = 1\n```\n";
+        let b = "```rustlab\ny = 2\n```\n";
+        let c = "```rustlab\nz = 3\n```\n";
+        let old = format!("{a}\n{b}");
+        let inserted = format!("{a}\n{b}\n{c}");
+        assert_eq!(
+            align_sides(&old, &inserted, true).unwrap(),
+            vec!["same", "same", "added"]
+        );
+        assert_eq!(align_sides(&old, a, true).unwrap(), vec!["same", "removed"]);
+        assert_eq!(align_sides(a, b, true).unwrap(), vec!["changed"]);
+        let swap_old = format!("{a}\n{b}");
+        let swap_new = format!("{b}\n{a}");
+        let sides = align_sides(&swap_old, &swap_new, true).unwrap();
+        assert!(sides.contains(&"removed"), "{sides:?}");
+        assert!(sides.contains(&"added"), "{sides:?}");
+        assert!(!sides.contains(&"changed"), "{sides:?}");
+    }
+
+    #[test]
+    fn code_directive_change_is_a_substitute() {
+        let old = "```rustlab\nx = 1\n```\n";
+        let new_src = "<!-- hide -->\n```rustlab\nx = 1\n```\n";
+        assert_eq!(align_sides(old, new_src, true).unwrap(), vec!["changed"]);
+    }
+
+    #[test]
+    fn comment_only_edit_follows_the_checkbox() {
+        let old = "Hello\n";
+        let new_src = "Hello %%secret%%\n";
+        let off = align_sides(old, new_src, false).unwrap();
+        let on = align_sides(old, new_src, true).unwrap();
+        assert_eq!(off, vec!["same"], "comments off: {off:?}");
+        assert_eq!(on, vec!["changed"], "comments on: {on:?}");
+    }
+
+    #[test]
+    fn stamp_marks_added_changed_and_removed_without_plots_on_removed() {
+        let old = "# A\n\n```rustlab\nplot(\"old\")\n```\n";
+        let new_src = "# A changed\n";
+        let html = "<body><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>A changed</p></div></section>\n</main></body>";
+        let (out, n) = stamp_working(html, old, new_src, true).unwrap();
+        assert!(n >= 1, "{out}");
+        assert!(
+            out.contains("rl-diff-chg") || out.contains("rl-diff-del"),
+            "{out}"
+        );
+        assert!(
+            out.contains("plot(&quot;old&quot;)") || out.contains("plot(\"old\")"),
+            "{out}"
+        );
+        let del = out.split("rl-diff-del").nth(1).unwrap_or("");
+        assert!(!del.contains("plot-container"), "{out}");
+    }
+
+    #[test]
+    fn changed_code_keeps_both_lines_and_labels_working_copy() {
+        let old = "```rustlab\nold line\n```\n";
+        let new_src = "```rustlab\nnew line\n```\n";
+        let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"code-block\"><pre class=\"source\"><code>new line</code></pre><pre class=\"output\">ran</pre></section></main></body>";
+        let (out, _) = stamp_working(html, old, new_src, true).unwrap();
+        assert!(out.contains("rl-diff-chg"), "{out}");
+        assert!(out.contains("rl-ln-del"), "{out}");
+        assert!(out.contains("rl-ln-add"), "{out}");
+        assert!(out.contains(">-<"), "{out}");
+        assert!(out.contains(">+<"), "{out}");
+        assert!(out.contains("old line"), "{out}");
+        assert!(out.contains("new line"), "{out}");
+        assert!(out.contains("output is the working copy"), "{out}");
+        assert!(out.contains(">ran<") || out.contains("ran"), "{out}");
+    }
+
+    #[test]
+    fn size_cap_adds_no_diff_class() {
+        let big = "x".repeat(MAX_BYTES + 1);
+        let err = align(big.as_str(), "y", true).unwrap_err();
+        assert_eq!(err, "diff was too large");
+        let html =
+            "<body><main><section class=\"rl-block\" id=\"b-1\"><p>y</p></section></main></body>";
+        let out = decorate(html, "HEAD", None, "diff was too large", None);
+        assert!(!out.contains("rl-diff-add"), "{out}");
+        assert!(out.contains("diff was too large"), "{out}");
+    }
+
+    #[test]
+    fn two_ref_render_says_not_run_and_drops_live_output() {
+        let old = "# Old\n\n```rustlab\nx = 1\n```\n";
+        let new_src = "# New\n\n```rustlab\nx = 2\n```\n";
+        let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><pre class=\"output\">EXECUTED</pre><div class=\"plot-container\"></div></section></main></body>";
+        let (inner, _) = render_aligned(old, new_src, true, true).unwrap();
+        let page = replace_main(html, &inner);
+        assert!(page.contains("not run"), "{page}");
+        assert!(!page.contains("EXECUTED"), "{page}");
+        assert!(!page.contains("plot-container"), "{page}");
+        assert!(page.contains("x = 2"), "{page}");
+    }
+
+    fn git_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    #[test]
+    fn branch_list_puts_current_then_main() {
+        if !git_available() {
+            eprintln!("SKIP branch list: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+        git(dir, &["config", "user.name", "Test"]);
+        std::fs::write(dir.join("n.md"), "# A\n").unwrap();
+        git(dir, &["add", "n.md"]);
+        git(dir, &["commit", "-m", "init"]);
+        git(dir, &["checkout", "-b", "topic"]);
+        let body = refs_json(dir);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v["error"].is_null(), "{body}");
+        let names: Vec<&str> = v["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names.first().copied(), Some("topic"), "{body}");
+        assert!(names.iter().any(|n| *n == "main"), "{body}");
+        assert!(names.iter().all(|n| ref_ok(n)), "{body}");
+    }
+
+    #[test]
+    fn present_two_ref_and_working_copy_against_a_repo() {
+        if !git_available() {
+            eprintln!("SKIP present fixture: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["config", "user.email", "t@example.com"]);
+        git(dir, &["config", "user.name", "Test"]);
+        let path = dir.join("n.md");
+        std::fs::write(&path, "# One\n").unwrap();
+        git(dir, &["add", "n.md"]);
+        git(dir, &["commit", "-m", "one"]);
+        git(dir, &["checkout", "-b", "topic"]);
+        std::fs::write(&path, "# Two\n").unwrap();
+        git(dir, &["add", "n.md"]);
+        git(dir, &["commit", "-m", "two"]);
+        let html = "<body><div id=\"rl-toolbar\"><button id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet\">Diff</button><span id=\"rl-diff\" hidden></span></div><p id=\"rl-diff-banner\" hidden></p><main><section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>Two</p></div><pre class=\"output\">EXECUTED</pre></section></main></body>";
+        let page = present(Present {
+            html,
+            source_path: &path,
+            jail: Some(dir),
+            comments_on: true,
+            diff: "main",
+            base: Some("topic"),
+        });
+        assert!(page.contains("not run"), "{page}");
+        assert!(!page.contains("EXECUTED"), "{page}");
+        assert!(!page.contains("plot-container"));
+        assert!(page.contains("id=\"rl-diff\""), "{page}");
+        assert!(!page.contains("id=\"rl-diff\" hidden"), "{page}");
+
+        let live = present(Present {
+            html,
+            source_path: &path,
+            jail: Some(dir),
+            comments_on: true,
+            diff: "main",
+            base: None,
+        });
+        assert!(live.contains("EXECUTED"), "{live}");
+        assert!(
+            live.contains("rl-diff-chg") || live.contains("changes vs main"),
+            "{live}"
+        );
+    }
+}

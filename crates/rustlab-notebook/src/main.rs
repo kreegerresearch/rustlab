@@ -166,6 +166,12 @@ enum Command {
         /// Does not turn on the source editor.
         #[arg(long)]
         annotate: bool,
+        /// Compare the working copy with a git ref. Bare `--diff` uses
+        /// HEAD. The toolbar can change the ref without a restart
+        /// (`?diff=<ref>`, optional `?base=<ref>`). Ignored by the
+        /// re-render-on-save watcher.
+        #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
+        diff: Option<String>,
     },
     /// Lint .md notebook source(s) for rustlab-shaped failures
     #[command(
@@ -527,6 +533,7 @@ fn main() {
             comments,
             no_comments,
             annotate,
+            diff,
         } => {
             let theme = resolve_theme(theme.as_deref(), &settings);
             set_default_theme(theme);
@@ -560,6 +567,7 @@ fn main() {
                     jail_root,
                     annotate: annotate || editable,
                     comments_on,
+                    diff,
                 };
                 if let Err(e) = rustlab_notebook::server::start(&input, colors, opts) {
                     eprintln!("rustlab-notebook watch: {e:#}");
@@ -568,9 +576,9 @@ fn main() {
                 return;
             }
 
-            if port.is_some() || no_browser || editable || annotate {
+            if port.is_some() || no_browser || editable || annotate || diff.is_some() {
                 eprintln!(
-                    "warning: --port / --no-browser / --editable / --annotate only apply to the bare-input interactive server; ignored",
+                    "warning: --port / --no-browser / --editable / --annotate / --diff only apply to the bare-input interactive server; ignored",
                 );
             }
             rustlab_notebook::set_comment_display(resolve_comments(

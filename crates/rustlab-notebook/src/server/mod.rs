@@ -62,6 +62,9 @@ pub struct ServerOpts {
     /// Initial Comments checkbox. Markup is always rendered in watch so
     /// the reader can reveal notes. The CLI default is on.
     pub comments_on: bool,
+    /// `watch --diff [ref]`. `None` leaves diff off until `?diff=`.
+    /// Bare `--diff` is `Some("HEAD")`. Per-page queries override this.
+    pub diff: Option<String>,
 }
 
 /// Per-render page context the server threads into the renderer: the CSP
@@ -101,6 +104,7 @@ pub fn start(input: &Path, theme: &'static ThemeColors, opts: ServerOpts) -> Res
     if let Some(root) = &jail_root {
         eprintln!("[watch] notebook file I/O jailed to {}", root.display());
     }
+    crate::gitdiff::install_diff_default(opts.diff.clone());
     let state = build_state(
         &canonical_input,
         is_dir,

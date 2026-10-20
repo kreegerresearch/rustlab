@@ -81,6 +81,15 @@ such as an SVG is not a page on the watch origin: those responses use
 the sandbox policy in H3, so a script inside the file cannot present a
 loopback `Origin`.
 
+Git comparison (`--diff`, `?diff=`, `?base=`, `GET /git/refs`) is read-only.
+The server runs `git` with a fixed argument vector and no shell:
+`rev-parse`, `show --no-textconv`, `diff --name-status`, `for-each-ref`,
+`log`, and `ls-files`. A ref is character-checked (no `..`, no leading
+`-`, no `:`) and then `rev-parse --verify --end-of-options`. The path is
+the notebook the server already has, and it must stay inside the jail and
+the repository. There is no new POST route. The picker script is a nonced
+`<script>` with no inline event handlers.
+
 ## H3 — HTML / XSS + CSP
 
 - Raw HTML in markdown prose (`Event::Html` / `InlineHtml`) goes through

@@ -730,6 +730,19 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
+        function diffQueryOn() {
+          try {
+            const q = new URLSearchParams(location.search);
+            const d = q.get('diff');
+            if (d === 'off') return false;
+            if (d) return true;
+          } catch (e) {}
+          return !!(document.body && document.body.classList.contains('rl-diff-on'));
+        }
+        if ((msg.kind === 'full' || msg.kind === 'partial' || msg.kind === 'reconcile') && diffQueryOn()) {
+          location.reload();
+          return;
+        }
         if (msg.kind === 'full' && typeof msg.html === 'string') {
           applyFull(msg.html, msg.flash);
         } else if (msg.kind === 'partial' && Array.isArray(msg.blocks)) {
