@@ -210,7 +210,7 @@ rustlab-notebook watch notebooks/ --diff main          # the same, against main
 
 The toolbar always has one quiet **Diff** button. It does nothing with git until you turn it on. On, a compact picker appears: **vs** is the other side (`?diff=<ref>`), **from** defaults to the working copy and can be another ref (`?base=<ref>`). The lists are local branches (the current branch first, then `main`), recent tags, and recent commits, filled by `GET /git/refs`. Typing filters the list. Arrow keys move through the matches, Enter picks one, and Esc closes it. A valid ref that matches nothing is still accepted. Changing either side reloads that page; other tabs keep their own query. `[` and `]` move to the previous and next change when you are not typing.
 
-Working copy against a ref keeps the live outputs and labels a changed code cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` on the re-render-on-save watcher (`--obsidian` or `--output`) is ignored.
+Added blocks and lines are tinted green, removed ones red and struck through, and changed blocks amber, each with a side bar. A changed code cell tints whole lines and marks them `+` or `-`. Working copy against a ref keeps the live outputs and labels that cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` on the re-render-on-save watcher (`--obsidian` or `--output`) is ignored.
 
 Behaviour:
 

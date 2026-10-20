@@ -127,10 +127,10 @@ Inline, on the rendered page, inside `<main>`.
 | Alignment | What the page shows |
 |---|---|
 | Unchanged | Today's section. No extra class. |
-| Added | Current section plus `rl-diff rl-diff-add` and a one-word label "added". |
-| Removed | A section built from the **old source only**, class `rl-diff rl-diff-del`, label "removed". Prose goes through the normal markdown renderer (math, highlights, margin cards). A removed code or mermaid block is source in a `<pre>`, not an executed cell and not an SVG. |
-| Changed prose | Current section plus `rl-diff rl-diff-chg` and the label "changed". |
-| Changed code | Current section, same label. The source disclosure shows a line diff of that cell. Output, errors, and plots stay the working-copy render, with the line "output is the working copy". |
+| Added | Current section plus `rl-diff rl-diff-add`, a green tint, a green side bar, and a one-word label "added". |
+| Removed | A section built from the **old source only**, class `rl-diff rl-diff-del`, red tint, red side bar, struck-through text, label "removed". Prose goes through the normal markdown renderer (math, highlights, margin cards). A removed code or mermaid block is source in a `<pre>`, not an executed cell and not an SVG. |
+| Changed prose | Current section plus `rl-diff rl-diff-chg`, an amber tint, an amber side bar, and the label "changed". |
+| Changed code | Current section, same amber block. The line diff tints added lines green and removed lines red, with `+` / `-` in the gutter. Output, errors, and plots stay the working-copy render, with the line "output is the working copy". |
 | Changed mermaid | Current SVG (one render) plus the label. Old diagram source is not drawn as a second picture. |
 
 Removed blocks are inserted in `<main>` at the aligned position, each wrapped in `<section class="rl-block rl-diff rl-diff-del">` so the existing live-reload walker (`server/diff.rs`) still sees a flat list of sections. They are not in the working file, so they have no `data-code-idx` and no Run / Edit controls.

@@ -20,8 +20,10 @@ hidden until diff is on.
   becomes `?diff=main&base=feature-x`.
 - `[` and `]` move to the previous and next change.
 
-Working copy against a ref keeps the live outputs. A changed code cell
-says the output is the working copy. The old notebook is not run.
+Added blocks are tinted green, removed blocks red and struck through,
+and changed blocks amber. A changed code cell tints whole lines and
+marks them `+` or `-`. Working copy against a ref keeps the live
+outputs. The old notebook is not run.
 
 Two branches, with no working copy on the page, show the newer side's
 text and say the code was not run.

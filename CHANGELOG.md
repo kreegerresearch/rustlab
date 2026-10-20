@@ -20,8 +20,10 @@ should re-validate against those entries when upgrading.
   server and it does not move other tabs. `[` and `]` jump to the previous
   and next change. Working copy vs a ref keeps the live outputs and labels
   them. Two refs show the newer commit's text and say the code was not
-  run. The old notebook is never executed. `--diff` on the
-  re-render-on-save watcher is ignored.
+  run. The old notebook is never executed. Added blocks and lines
+  are tinted green, removed ones red and struck through, and changed
+  blocks amber; code lines also carry `+` or `-`. Dark tints are
+  translucent. `--diff` on the re-render-on-save watcher is ignored.
 
 ## 0.3.11
 

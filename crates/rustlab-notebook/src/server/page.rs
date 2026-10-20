@@ -124,7 +124,7 @@ fn chrome_style(c: &ThemeColors) -> String {
     border: 1px solid {border}; border-radius: 6px;
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
-  section.rl-diff-add, section.rl-diff-chg {{
+  section.rl-diff-add {{
     background: var(--rl-diff-add-bg, transparent);
     box-shadow: inset 4px 0 0 var(--rl-diff-add-bar, transparent);
   }}
@@ -132,15 +132,37 @@ fn chrome_style(c: &ThemeColors) -> String {
     background: var(--rl-diff-del-bg, transparent);
     box-shadow: inset 4px 0 0 var(--rl-diff-del-bar, transparent);
   }}
+  section.rl-diff-del .prose,
+  section.rl-diff-del pre {{
+    text-decoration: line-through;
+    text-decoration-color: var(--rl-diff-del-bar, currentColor);
+  }}
+  section.rl-diff-chg {{
+    background: var(--rl-diff-chg-bg, transparent);
+    box-shadow: inset 4px 0 0 var(--rl-diff-chg-bar, transparent);
+  }}
   .rl-diff-tag, .rl-diff-note {{
     font: 11px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim}; margin: 4px 8px;
   }}
   .rl-diff-lines {{ margin: 4px 0 8px; }}
-  .rl-ln {{ display: flex; background: var(--rl-code-bg, {code_bg}); color: {text}; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
-  .rl-ln-gutter {{ width: 3px; flex: none; }}
-  .rl-ln-add .rl-ln-gutter {{ background: var(--rl-diff-add-bar, transparent); }}
-  .rl-ln-del .rl-ln-gutter {{ background: var(--rl-diff-del-bar, transparent); }}
-  .rl-ln code {{ white-space: pre-wrap; }}
+  .rl-ln {{
+    display: flex; align-items: stretch;
+    background: var(--rl-code-bg, {code_bg}); color: {text};
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }}
+  .rl-ln-gutter {{
+    width: 1.4em; flex: none; text-align: center; color: inherit; user-select: none;
+  }}
+  .rl-ln-add {{
+    background: var(--rl-diff-add-line, var(--rl-diff-add-bg));
+    box-shadow: inset 4px 0 0 var(--rl-diff-add-bar, transparent);
+  }}
+  .rl-ln-del {{
+    background: var(--rl-diff-del-line, var(--rl-diff-del-bg));
+    box-shadow: inset 4px 0 0 var(--rl-diff-del-bar, transparent);
+  }}
+  .rl-ln-del code {{ text-decoration: line-through; text-decoration-color: var(--rl-diff-del-bar, currentColor); }}
+  .rl-ln code {{ white-space: pre-wrap; flex: 1; }}
   .fb-git {{
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
     margin-left: 6px; background: var(--rl-diff-add-bar, currentColor); vertical-align: middle;

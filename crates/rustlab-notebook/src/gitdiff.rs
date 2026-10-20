@@ -1340,8 +1340,15 @@ fn line_diff_html(old: &str, new_src: &str) -> String {
 }
 
 fn line_row(class: &str, text: &str) -> String {
+    let mark = if class.ends_with("add") {
+        "+"
+    } else if class.ends_with("del") {
+        "-"
+    } else {
+        ""
+    };
     format!(
-        "<div class=\"rl-ln {class}\"><span class=\"rl-ln-gutter\"></span><code>{}</code></div>",
+        "<div class=\"rl-ln {class}\"><span class=\"rl-ln-gutter\" aria-hidden=\"true\">{mark}</span><code>{}</code></div>",
         escape_html(text)
     )
 }
@@ -1605,6 +1612,10 @@ mod tests {
         let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"code-block\"><pre class=\"source\"><code>new line</code></pre><pre class=\"output\">ran</pre></section></main></body>";
         let (out, _) = stamp_working(html, old, new_src, true).unwrap();
         assert!(out.contains("rl-diff-chg"), "{out}");
+        assert!(out.contains("rl-ln-del"), "{out}");
+        assert!(out.contains("rl-ln-add"), "{out}");
+        assert!(out.contains(">-<"), "{out}");
+        assert!(out.contains(">+<"), "{out}");
         assert!(out.contains("old line"), "{out}");
         assert!(out.contains("new line"), "{out}");
         assert!(out.contains("output is the working copy"), "{out}");
