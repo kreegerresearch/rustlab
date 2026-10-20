@@ -9,6 +9,15 @@ should re-validate against those entries when upgrading.
 ## 0.3.12
 
 ### Added
+- **TOML and YAML fences are highlighted in notebooks.** A fence tagged
+  `toml`, `yaml`, or `yml` is display-only (nothing in it runs) and is
+  colored in HTML, `notebook watch`, LaTeX, and PDF: comments, keys,
+  strings (including multiline and YAML block scalars), numbers, booleans
+  and `null`, dates, TOML tables and arrays of tables, YAML anchors and
+  aliases, list dashes, and `---` / `...`. Colors are the existing rustlab
+  token roles, so mocha, macchiato, frappé, and latte stay readable. A
+  fence with no language tag stays plain text. Other tags are unchanged.
+  Markdown export still copies the fence through for the host renderer.
 - **`rustlab-notebook watch --diff [ref]` compares a notebook with git.**
   The toolbar has a `⋯` menu. **Show diff** inside it turns on a compact
   picker, and a dot on the icon shows that diff is on. On/off is the
