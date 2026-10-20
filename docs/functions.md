@@ -3912,6 +3912,16 @@ arrayfun(@(x) x^2, 1:5)          # → [1, 4, 9, 16, 25]
 arrayfun(@abs, [-3, 4, -5])      # → [3, 4, 5]
 ```
 
+### `parmap(f, xs)`
+Parallel `arrayfun`. `f` is a lambda or a function handle; `xs` is a vector or a colon range. Scalar results pack into a vector. Equal-length vector results pack into a matrix with one row per call. Equal-shape matrix results pack into a rank-3 tensor, page `k` at `result(:, :, k)`.
+
+Workers do not inherit the caller's variables (a lambda still sees the names it captured). They do inherit the caller's path jail and plot context for the duration of the task. `save`, `load`, `run`, `whos`, `sparameters("file.s2p")`, `cache enable`, and `cache add file` succeed or fail inside `parmap` the same way they do outside it. Plotting, `fprintf`, `savefig`, `saveanim`, and `seed` / `rng` are rejected with `parmap: cannot … from a parallel lambda`.
+
+```
+seed(1);
+y = parmap(@(k) k * k, 1:4)   # → [1, 4, 9, 16]
+```
+
 ### `feval("name", args...)`
 Call a function by string name. Useful for dynamic dispatch.
 ```

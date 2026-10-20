@@ -23,7 +23,6 @@ use num_complex::Complex;
 pub use profile::FnStats;
 use rustlab_core::C64;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use value::NumberFormat;
@@ -3540,8 +3539,13 @@ impl Evaluator {
     }
 
     fn cache_enable(&mut self, path: Option<&str>) -> Result<(), ScriptError> {
+        let path = match path {
+            Some(p) => p,
+            None => crate::cache_registry::DEFAULT_STORE_PATH,
+        };
+        let path = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
         self.cache_registry
-            .enable(path.map(PathBuf::from))
+            .enable(Some(path))
             .map_err(|e| ScriptError::runtime(format!("cache enable: {e}")))?;
         // Echo the resolved store path. Until this was added, `cache
         // enable` ran silently — which made a typo like `cache list`
@@ -3718,7 +3722,7 @@ impl Evaluator {
                 "cache add file: no active store — run `cache enable` first".to_string(),
             ));
         }
-        let path_buf = PathBuf::from(path);
+        let path_buf = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
         let canonical = std::fs::canonicalize(&path_buf)
             .map_err(|e| ScriptError::runtime(format!("cache add file: {path}: {e}")))?;
         let stmts = crate::parse_file(&canonical)?;

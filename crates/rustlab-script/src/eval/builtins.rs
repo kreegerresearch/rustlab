@@ -9810,6 +9810,7 @@ fn builtin_whos_file(args: Vec<Value>) -> Result<Value, ScriptError> {
     use std::io::Read;
     use zip::ZipArchive;
 
+    let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let file = std::fs::File::open(&path).map_err(|e| ScriptError::runtime(e.to_string()))?;
     let mut zip = ZipArchive::new(file).map_err(|e| ScriptError::runtime(e.to_string()))?;
 
@@ -15441,10 +15442,10 @@ fn builtin_sparameters(args: Vec<Value>) -> Result<Value, ScriptError> {
     // (1) String → Touchstone file path
     if args.len() == 1 {
         if let Value::Str(path) = &args[0] {
-            let data = super::touchstone::read_touchstone(std::path::Path::new(path))
-                .map_err(|e| ScriptError::runtime(e))?;
-            let mut v =
-                build_sparameters_struct(data.parameters, data.frequencies, data.z0)?;
+            let path = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
+            let data =
+                super::touchstone::read_touchstone(&path).map_err(|e| ScriptError::runtime(e))?;
+            let mut v = build_sparameters_struct(data.parameters, data.frequencies, data.z0)?;
             // Phase 6: attach noise-parameter fields if the file carried them.
             if let Some(noise) = data.noise {
                 if let Value::Struct(ref mut fields) = v {

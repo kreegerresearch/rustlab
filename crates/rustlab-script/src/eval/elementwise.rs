@@ -22,6 +22,11 @@
 //! once per driver rather than once per operator and operand kind, and
 //! there is no separate sequential copy of each kernel. The dynamic call
 //! happens once per chunk, never per element.
+//!
+//! The allocating driver writes each slot once (no zero-fill) and calls
+//! `set_len` only after every chunk counted a write for every slot. A short
+//! kernel panics first, so uninitialised `C64`s are never readable and are
+//! not dropped (`C64` is `Copy`, and the `Vec` length stays 0).
 
 use super::shared::Shared;
 use super::value::Value;
@@ -239,6 +244,165 @@ fn track(flags: &mut RealFlags, x: C64, y: C64, z: C64) {
 /// chunk)`, returning the flags it gathered.
 type ChunkFn<'a, T> = dyn Fn(usize, &mut [T]) -> RealFlags + Sync + 'a;
 
+/// Sequential fill of one uninitialised chunk. `push` / `extend_from_slice`
+/// / `fill_map` / `fill_zip` initialise the next slots in order and count
+/// them. The driver publishes the buffer only when every chunk is full, so
+/// a short zip panics instead of `set_len` over unwritten slots.
+pub(crate) struct SeqChunk<'a> {
+    slots: &'a mut [MaybeUninit<C64>],
+    filled: usize,
+}
+
+impl SeqChunk<'_> {
+    fn new(slots: &mut [MaybeUninit<C64>]) -> SeqChunk<'_> {
+        SeqChunk { slots, filled: 0 }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn is_full(&self) -> bool {
+        self.filled == self.slots.len()
+    }
+
+    /// Write `v` into the next slot. Returns false when the chunk is
+    /// already full (the slot is left untouched).
+    pub(crate) fn push(&mut self, v: C64) -> bool {
+        if self.filled >= self.slots.len() {
+            return false;
+        }
+        self.slots[self.filled].write(v);
+        self.filled += 1;
+        true
+    }
+
+    /// Copy `src` into the next slots. Returns false (and writes nothing)
+    /// when `src` does not fit.
+    pub(crate) fn extend_from_slice(&mut self, src: &[C64]) -> bool {
+        let rest = self.slots.len() - self.filled;
+        if src.len() > rest {
+            return false;
+        }
+        let dest = &mut self.slots[self.filled..self.filled + src.len()];
+        for (d, &x) in dest.iter_mut().zip(src) {
+            d.write(x);
+        }
+        self.filled += src.len();
+        true
+    }
+
+    /// Map `src` into the still-unwritten suffix. Writes nothing and
+    /// returns false when `src` is shorter than that suffix.
+    ///
+    /// The inner zip is the same shape as the pre-0.3.13 kernel: after the
+    /// length check, `zip` stops on `dest`, so every slot is written and
+    /// the index is not re-checked per element.
+    #[inline(always)]
+    fn fill_map(&mut self, src: &[C64], mut f: impl FnMut(C64) -> C64) -> bool {
+        let n = self.slots.len() - self.filled;
+        if src.len() < n {
+            return false;
+        }
+        let dest = &mut self.slots[self.filled..self.filled + n];
+        for (d, &x) in dest.iter_mut().zip(src) {
+            d.write(f(x));
+        }
+        self.filled += n;
+        true
+    }
+
+    /// Zip `xs` and `ys` into the still-unwritten suffix. Writes nothing
+    /// and returns false when either side is shorter than that suffix.
+    #[inline(always)]
+    fn fill_zip(
+        &mut self,
+        xs: &[C64],
+        ys: &[C64],
+        mut f: impl FnMut(C64, C64) -> C64,
+        flags: &mut RealFlags,
+    ) -> bool {
+        let n = self.slots.len() - self.filled;
+        if xs.len() < n || ys.len() < n {
+            return false;
+        }
+        let dest = &mut self.slots[self.filled..self.filled + n];
+        for ((d, &x), &y) in dest.iter_mut().zip(xs).zip(ys) {
+            let z = f(x, y);
+            track(flags, x, y, z);
+            d.write(z);
+        }
+        self.filled += n;
+        true
+    }
+}
+
+/// Random-access fill. Bits are set only after the corresponding slots are
+/// written. Coverage is the popcount of those bits, once per chunk: a hole
+/// leaves the count short, and a repeated index does not add a second bit.
+/// The popcount is not on the per-element path.
+///
+/// Transpose uses [`drive_counted`] instead (a run-length count, plus this
+/// bitset in debug). This driver stays for the hole regression test.
+#[cfg(test)]
+struct RandChunk<'a> {
+    slots: &'a mut [MaybeUninit<C64>],
+    seen: Vec<u64>,
+}
+
+#[cfg(test)]
+impl RandChunk<'_> {
+    fn new(slots: &mut [MaybeUninit<C64>]) -> RandChunk<'_> {
+        let words = slots.len().div_ceil(64);
+        RandChunk {
+            slots,
+            seen: vec![0; words],
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn is_full(&self) -> bool {
+        let n = self.slots.len();
+        let mut covered = 0usize;
+        let full_words = n / 64;
+        for word in &self.seen[..full_words] {
+            covered += word.count_ones() as usize;
+        }
+        let tail = n % 64;
+        if tail != 0 {
+            let mask = (1u64 << tail) - 1;
+            covered += (self.seen[full_words] & mask).count_ones() as usize;
+        }
+        covered == n
+    }
+
+    /// Record `lo..hi` as initialised. Caller has already written those slots.
+    #[inline(always)]
+    fn mark_range(&mut self, mut lo: usize, hi: usize) {
+        while lo < hi {
+            let word = lo >> 6;
+            let bit = lo & 63;
+            let width = (64 - bit).min(hi - lo);
+            let mask = if width == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << width) - 1) << bit
+            };
+            self.seen[word] |= mask;
+            lo += width;
+        }
+    }
+
+    #[inline(always)]
+    fn write_one(&mut self, i: usize, v: C64) {
+        self.slots[i].write(v);
+        self.mark_range(i, i + 1);
+    }
+}
+
 /// Run `k` over `xs`: whole, or in parallel chunks when long.
 fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
     if xs.len() < PAR_MIN_LEN {
@@ -250,29 +414,88 @@ fn drive(xs: &mut [C64], k: &ChunkFn<C64>) -> RealFlags {
         .reduce(|| NO_FLAGS, combine)
 }
 
-/// A new length-`n` buffer filled by `k`, which must initialise every
-/// element of each chunk it is given.
-fn drive_new(n: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
+type NewChunkFn<'a> = dyn Fn(usize, &mut SeqChunk<'_>) -> RealFlags + Sync + 'a;
+
+/// A new length-`n` buffer filled by `k`. The buffer is published only
+/// when every chunk reports a full sequential fill.
+fn drive_new(n: usize, k: &NewChunkFn<'_>) -> (Vec<C64>, RealFlags) {
     drive_new_sized(n, PAR_MIN_LEN, PAR_CHUNK, k)
 }
 
 /// [`drive_new`] with its own parallel threshold and chunk length, for
 /// kernels much costlier per element than arithmetic.
-fn drive_new_sized(n: usize, min_len: usize, chunk: usize, k: &ChunkFn<MaybeUninit<C64>>) -> (Vec<C64>, RealFlags) {
+fn drive_new_sized(
+    n: usize,
+    min_len: usize,
+    chunk: usize,
+    k: &NewChunkFn<'_>,
+) -> (Vec<C64>, RealFlags) {
     let mut out: Vec<C64> = Vec::with_capacity(n);
+    if n == 0 {
+        return (out, NO_FLAGS);
+    }
     let dst = &mut out.spare_capacity_mut()[..n];
     let flags = if n < min_len {
-        k(0, dst)
+        finish_seq(dst, 0, k)
     } else {
         dst.par_chunks_mut(chunk)
             .enumerate()
-            .map(|(i, c)| k(i * chunk, c))
+            .map(|(i, c)| finish_seq(c, i * chunk, k))
             .reduce(|| NO_FLAGS, combine)
     };
-    // SAFETY: the chunks cover `0..n` exactly once and `k` initialises every
-    // element of each chunk it is given.
+    // SAFETY: `finish_seq` panics unless that chunk's `filled` equals its
+    // length, and `filled` advances only after `MaybeUninit::write`. The
+    // chunks partition `0..n`. `C64` is `Copy`, so a panic before `set_len`
+    // drops a len-0 `Vec` and does not drop uninitialised slots.
     unsafe { out.set_len(n) };
     (out, flags)
+}
+
+fn finish_seq(slots: &mut [MaybeUninit<C64>], offset: usize, k: &NewChunkFn<'_>) -> RealFlags {
+    let mut chunk = SeqChunk::new(slots);
+    let flags = k(offset, &mut chunk);
+    assert!(
+        chunk.is_full(),
+        "elementwise fill stopped short of {} elements",
+        chunk.len()
+    );
+    flags
+}
+
+#[cfg(test)]
+type RandChunkFn<'a> = dyn Fn(usize, &mut RandChunk<'_>) + Sync + 'a;
+
+/// Like [`drive_new`], but the kernel writes by index. Published only when
+/// the per-chunk bitset covers every slot.
+#[cfg(test)]
+fn drive_new_rand(n: usize, k: &RandChunkFn<'_>) -> Vec<C64> {
+    let mut out: Vec<C64> = Vec::with_capacity(n);
+    if n == 0 {
+        return out;
+    }
+    let dst = &mut out.spare_capacity_mut()[..n];
+    let run = |slots: &mut [MaybeUninit<C64>], offset: usize| {
+        let mut chunk = RandChunk::new(slots);
+        k(offset, &mut chunk);
+        assert!(
+            chunk.is_full(),
+            "elementwise fill stopped short of {} elements",
+            chunk.len()
+        );
+    };
+    if n < PAR_MIN_LEN {
+        run(dst, 0);
+    } else {
+        dst.par_chunks_mut(PAR_CHUNK)
+            .enumerate()
+            .for_each(|(i, c)| run(c, i * PAR_CHUNK));
+    }
+    // SAFETY: `run` panics unless the bitset count equals the chunk length.
+    // A bit is set only after `MaybeUninit::write` of that index, and a
+    // repeated index does not increase the count. `C64` is `Copy`, so a
+    // panic before `set_len` does not drop uninitialised slots.
+    unsafe { out.set_len(n) };
+    out
 }
 
 // ── Kernels ─────────────────────────────────────────────────────────────────
@@ -293,10 +516,8 @@ fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
         a => {
             let v = a.get();
             let src = data(v);
-            let (out, _) = drive_new(src.len(), &|o, c: &mut [MaybeUninit<C64>]| {
-                for (d, &x) in c.iter_mut().zip(&src[o..]) {
-                    d.write(f(x));
-                }
+            let (out, _) = drive_new(src.len(), &|o, c: &mut SeqChunk<'_>| {
+                c.fill_map(&src[o..], &f);
                 NO_FLAGS
             });
             shaped_like(v, out)
@@ -341,13 +562,9 @@ fn zip_arrays_with(f: impl Fn(C64, C64) -> C64 + Sync, l: Operand, r: Operand, r
         }
         (l, r) => {
             let (a, b) = (data(l.get()), data(r.get()));
-            let (out, flags) = drive_new(a.len(), &|o, c: &mut [MaybeUninit<C64>]| {
+            let (out, flags) = drive_new(a.len(), &|o, c: &mut SeqChunk<'_>| {
                 let mut fl = NO_FLAGS;
-                for ((d, &x), &y) in c.iter_mut().zip(&a[o..]).zip(&b[o..]) {
-                    let z = f(x, y);
-                    track(&mut fl, x, y, z);
-                    d.write(z);
-                }
+                c.fill_zip(&a[o..], &b[o..], &f, &mut fl);
                 fl
             });
             (shaped_like(l.get(), out), flags)
@@ -381,7 +598,7 @@ pub(crate) fn par_block_copy(
     }
     let src = m.as_slice()?;
     let stride = m.ncols();
-    let (out, _) = drive_new(n, &|o, dst: &mut [MaybeUninit<C64>]| {
+    let (out, _) = drive_new(n, &|o, dst: &mut SeqChunk<'_>| {
         // Copy the chunk row segment by row segment.
         let end = o + dst.len();
         let mut k = o;
@@ -389,8 +606,11 @@ pub(crate) fn par_block_copy(
             let (i, j) = (k / nc, k % nc);
             let len = (nc - j).min(end - k);
             let from = (r0 + i) * stride + c0 + j;
-            for (d, &x) in dst[k - o..k - o + len].iter_mut().zip(&src[from..from + len]) {
-                d.write(x);
+            let Some(seg) = src.get(from..from + len) else {
+                break;
+            };
+            if !dst.extend_from_slice(seg) {
+                break;
             }
             k += len;
         }
@@ -407,23 +627,65 @@ const PAR_MAP_CHUNK: usize = 1 << 12;
 
 /// `f` of every element of `src`, in parallel from [`PAR_MAP_MIN_LEN`].
 pub(crate) fn par_map(src: &[C64], f: &(dyn Fn(C64) -> C64 + Sync)) -> Vec<C64> {
-    drive_new_sized(src.len(), PAR_MAP_MIN_LEN, PAR_MAP_CHUNK, &|o, c: &mut [MaybeUninit<C64>]| {
-        for (d, &x) in c.iter_mut().zip(&src[o..]) {
-            d.write(f(x));
-        }
+    drive_new_sized(
+        src.len(),
+        PAR_MAP_MIN_LEN,
+        PAR_MAP_CHUNK,
+        &|o, c: &mut SeqChunk<'_>| {
+            c.fill_map(&src[o..], &mut |x| f(x));
+            NO_FLAGS
+        },
+    )
+    .0
+}
+
+/// A new length-`n` buffer filled in order by `k(offset, chunk)`. Each
+/// chunk must `push` / `extend_from_slice` every slot; a short chunk panics
+/// before the buffer is published. Parallel when `n` is long.
+pub(crate) fn par_fill(n: usize, k: &(dyn Fn(usize, &mut SeqChunk<'_>) + Sync)) -> Vec<C64> {
+    drive_new(n, &|o, c: &mut SeqChunk<'_>| {
+        k(o, c);
         NO_FLAGS
     })
     .0
 }
 
-/// A new length-`n` buffer filled by `k(offset, chunk)`, which must write
-/// every element of each chunk it is given; in parallel chunks when long.
-pub(crate) fn par_fill(n: usize, k: &(dyn Fn(usize, &mut [MaybeUninit<C64>]) + Sync)) -> Vec<C64> {
-    drive_new(n, &|o, c: &mut [MaybeUninit<C64>]| {
-        k(o, c);
-        NO_FLAGS
-    })
-    .0
+/// A new length-`n` buffer filled by `k`, which returns how many slots of
+/// the chunk it initialised. Published only when every chunk reports its
+/// own length. The count is the sum of destination-slice lengths that were
+/// zipped with an iterator of that same length, so a short source cannot
+/// report a full chunk.
+fn drive_counted(
+    n: usize,
+    k: &(dyn Fn(usize, &mut [MaybeUninit<C64>]) -> usize + Sync),
+) -> Vec<C64> {
+    let mut out: Vec<C64> = Vec::with_capacity(n);
+    if n == 0 {
+        return out;
+    }
+    let dst = &mut out.spare_capacity_mut()[..n];
+    let run = |c: &mut [MaybeUninit<C64>], o: usize| {
+        let written = k(o, c);
+        assert_eq!(
+            written,
+            c.len(),
+            "elementwise fill stopped short of {} elements",
+            c.len()
+        );
+    };
+    if n < PAR_MIN_LEN {
+        run(dst, 0);
+    } else {
+        dst.par_chunks_mut(PAR_CHUNK)
+            .enumerate()
+            .for_each(|(i, c)| run(c, i * PAR_CHUNK));
+    }
+    // SAFETY: `run` panics unless `k` reported a write for every slot, and
+    // `k` adds to that count only after a zip that initialises a slice of
+    // that length. `C64` is `Copy`, so a panic before `set_len` drops a
+    // len-0 `Vec` and does not drop uninitialised slots.
+    unsafe { out.set_len(n) };
+    out
 }
 
 /// The transpose of the row-major `rows × cols` slice `src` (conjugated
@@ -436,41 +698,79 @@ pub(crate) fn par_transpose(src: &[C64], rows: usize, cols: usize, conj: bool) -
     if n == 0 {
         return Vec::new();
     }
-    let k = |o: usize, dst: &mut [MaybeUninit<C64>]| {
+    drive_counted(n, &|o, dst| {
         if conj {
             transpose_chunk::<true>(src, rows, cols, o, dst)
         } else {
             transpose_chunk::<false>(src, rows, cols, o, dst)
         }
-    };
-    par_fill(n, &k)
+    })
 }
 
 /// Output positions `o..o + dst.len()` of `par_transpose`: the whole
 /// output rows in tiles, a partial first or last row element by element.
-fn transpose_chunk<const CONJ: bool>(src: &[C64], rows: usize, cols: usize, o: usize, dst: &mut [MaybeUninit<C64>]) {
+/// Returns how many slots were initialised.
+fn transpose_chunk<const CONJ: bool>(
+    src: &[C64],
+    rows: usize,
+    cols: usize,
+    o: usize,
+    dst: &mut [MaybeUninit<C64>],
+) -> usize {
     const TILE: usize = 32;
     let f = |x: C64| if CONJ { x.conj() } else { x };
     let end = o + dst.len();
-    // One output row's positions lo..hi (0-based within row j).
-    let mut part = |j: usize, lo: usize, hi: usize| {
-        for i in lo..hi {
-            dst[j * rows + i - o].write(f(src[i * cols + j]));
+    let mut written = 0usize;
+    // Debug builds also record indices. A repeated index does not increase
+    // the popcount, so an aliasing hole panics before `set_len`. Release
+    // builds keep the write loop as a plain zip plus a run-length add:
+    // the per-chunk bitset was a measurable share of `reshape`.
+    #[cfg(debug_assertions)]
+    let mut seen = vec![0u64; dst.len().div_ceil(64)];
+    #[cfg(debug_assertions)]
+    let mark = |seen: &mut [u64], mut lo: usize, hi: usize| {
+        while lo < hi {
+            let word = lo >> 6;
+            let bit = lo & 63;
+            let width = (64 - bit).min(hi - lo);
+            let mask = if width == 64 {
+                u64::MAX
+            } else {
+                ((1u64 << width) - 1) << bit
+            };
+            seen[word] |= mask;
+            lo += width;
         }
+    };
+    // One output row's positions lo..hi (0-based within row j). `lo..hi`
+    // has length `count`, so the zip initialises every slot of `out`.
+    let mut part = |j: usize, lo: usize, hi: usize, dst: &mut [MaybeUninit<C64>]| {
+        let start = j * rows + lo - o;
+        let count = hi - lo;
+        let out = &mut dst[start..start + count];
+        for (d, i) in out.iter_mut().zip(lo..hi) {
+            d.write(f(src[i * cols + j]));
+        }
+        written += count;
+        #[cfg(debug_assertions)]
+        mark(&mut seen, start, start + count);
     };
     let (j_first, j_last) = (o / rows, (end - 1) / rows);
     if j_first == j_last {
-        return part(j_first, o - j_first * rows, end - j_first * rows);
+        part(j_first, o - j_first * rows, end - j_first * rows, dst);
+        #[cfg(debug_assertions)]
+        assert_covered(&seen, dst.len());
+        return written;
     }
     // Whole rows j_lo..j_hi.
     let mut j_lo = j_first;
     if o % rows != 0 {
-        part(j_first, o % rows, rows);
+        part(j_first, o % rows, rows, dst);
         j_lo += 1;
     }
     let j_hi = end / rows;
     if end % rows != 0 {
-        part(j_last, 0, end % rows);
+        part(j_last, 0, end % rows, dst);
     }
     // One side of each tile is strided. A stride with many factors of two
     // maps the tile's rows to a few cache sets and thrashes (129 × 512 read
@@ -483,21 +783,51 @@ fn transpose_chunk<const CONJ: bool>(src: &[C64], rows: usize, cols: usize, o: u
             let i1 = (i0 + TILE).min(rows);
             if write_runs {
                 for j in j0..j1 {
-                    let out = &mut dst[j * rows + i0 - o..j * rows + i1 - o];
+                    let start = j * rows + i0 - o;
+                    let count = i1 - i0;
+                    let out = &mut dst[start..start + count];
                     for (d, i) in out.iter_mut().zip(i0..i1) {
                         d.write(f(src[i * cols + j]));
                     }
+                    written += count;
+                    #[cfg(debug_assertions)]
+                    mark(&mut seen, start, start + count);
                 }
             } else {
                 for i in i0..i1 {
                     let row = &src[i * cols + j0..i * cols + j1];
+                    let mut n = 0usize;
                     for (j, &x) in (j0..j1).zip(row) {
-                        dst[j * rows + i - o].write(f(x));
+                        let at = j * rows + i - o;
+                        dst[at].write(f(x));
+                        n += 1;
+                        #[cfg(debug_assertions)]
+                        mark(&mut seen, at, at + 1);
                     }
+                    written += n;
                 }
             }
         }
     }
+    #[cfg(debug_assertions)]
+    assert_covered(&seen, dst.len());
+    written
+}
+
+/// Popcount of the debug coverage bitset. Bits past `n` stay clear.
+#[cfg(debug_assertions)]
+fn assert_covered(seen: &[u64], n: usize) {
+    let mut covered = 0usize;
+    let full_words = n / 64;
+    for word in &seen[..full_words] {
+        covered += word.count_ones() as usize;
+    }
+    let tail = n % 64;
+    if tail != 0 {
+        let mask = (1u64 << tail) - 1;
+        covered += (seen[full_words] & mask).count_ones() as usize;
+    }
+    assert_eq!(covered, n, "elementwise fill stopped short of {n} elements");
 }
 
 /// `v[start..start+n]` copied in parallel, or `None` when short.
@@ -506,10 +836,8 @@ pub(crate) fn par_vector_copy(v: &rustlab_core::CVector, start: usize, n: usize)
         return None;
     }
     let src = &v.as_slice()?[start..start + n];
-    let (out, _) = drive_new(n, &|o, dst: &mut [MaybeUninit<C64>]| {
-        for (d, &x) in dst.iter_mut().zip(&src[o..]) {
-            d.write(x);
-        }
+    let (out, _) = drive_new(n, &|o, dst: &mut SeqChunk<'_>| {
+        dst.fill_map(&src[o..], &mut |x| x);
         NO_FLAGS
     });
     Some(ndarray::Array1::from_vec(out))
@@ -765,5 +1093,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "elementwise fill stopped short")]
+    fn allocating_kernel_that_writes_nothing_panics() {
+        let _ = drive_new(4, &|_o, _c| NO_FLAGS);
+    }
+
+    #[test]
+    #[should_panic(expected = "elementwise fill stopped short")]
+    fn parallel_allocating_kernel_that_writes_nothing_panics() {
+        // Below the production threshold, so this stays a unit test, but
+        // still takes the rayon chunk path (`min_len` / `chunk`).
+        let _ = drive_new_sized(64, 8, 16, &|_o, _c| NO_FLAGS);
+    }
+
+    #[test]
+    #[should_panic(expected = "elementwise fill stopped short")]
+    fn random_fill_with_a_hole_panics() {
+        let _ = drive_new_rand(4, &|_o, c| {
+            c.write_one(0, C64::new(1.0, 0.0));
+            c.write_one(1, C64::new(1.0, 0.0));
+            c.write_one(3, C64::new(1.0, 0.0));
+        });
+    }
+
+    #[test]
+    fn allocating_map_writes_every_slot_once() {
+        let src = [C64::new(1.0, 0.0), C64::new(2.0, 0.0), C64::new(3.0, 0.0)];
+        let (out, _) = drive_new(src.len(), &|o, c| {
+            assert!(c.fill_map(&src[o..], &mut |x: C64| C64::new(x.re + 1.0, 0.0)));
+            NO_FLAGS
+        });
+        assert_eq!(
+            out,
+            vec![C64::new(2.0, 0.0), C64::new(3.0, 0.0), C64::new(4.0, 0.0)]
+        );
     }
 }

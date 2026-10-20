@@ -2600,8 +2600,11 @@ impl Value {
             };
             pieces.push(p);
         }
-        let out = super::elementwise::par_fill(total, &|o, dst: &mut [std::mem::MaybeUninit<C64>]| {
-            // The piece holding output position o, then onward.
+        let out = super::elementwise::par_fill(total, &|o, dst| {
+            // The piece holding output position o, then onward. Pieces
+            // cover `0..total` without gaps, so this walks the chunk in
+            // order. A short source leaves the chunk unfilled and the
+            // driver refuses to publish it.
             let mut k = starts.partition_point(|&s| s <= o) - 1;
             let mut at = o;
             let end = o + dst.len();
@@ -2610,13 +2613,16 @@ impl Value {
                 let stop = next.min(end);
                 match pieces[k] {
                     Piece::One(c) => {
-                        if stop > at {
-                            dst[at - o].write(c);
+                        if stop > at && !dst.push(c) {
+                            break;
                         }
                     }
                     Piece::Run(src) => {
-                        for (d, &x) in dst[at - o..stop - o].iter_mut().zip(&src[at - s..]) {
-                            d.write(x);
+                        let n = stop - at;
+                        let from = at - s;
+                        match src.get(from..from + n) {
+                            Some(seg) if dst.extend_from_slice(seg) => {}
+                            _ => break,
                         }
                     }
                 }
