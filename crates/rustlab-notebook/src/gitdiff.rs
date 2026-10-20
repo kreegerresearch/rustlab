@@ -1388,6 +1388,15 @@ fn decorate(
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet\"",
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\"",
     );
+    out = out.replace(
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"false\"",
+        "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"true\"",
+    );
+    out = out.replace("id=\"rl-diff-dot\" hidden", "id=\"rl-diff-dot\"");
+    out = out.replace(
+        "aria-label=\"More\" title=\"More\"",
+        "aria-label=\"More, diff on\" title=\"More, diff on\"",
+    );
     let banner_html = format!(
         "<p id=\"rl-diff-banner\">{}</p>",
         escape_html(banner)

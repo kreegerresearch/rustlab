@@ -10,8 +10,9 @@ should re-validate against those entries when upgrading.
 
 ### Added
 - **`rustlab-notebook watch --diff [ref]` compares a notebook with git.**
-  The toolbar has one quiet **Diff** button. Turning it on shows a compact
-  picker: **vs** a ref (`?diff=<ref>`, default `HEAD`) and an optional
+  The toolbar has a `⋯` menu. **Show diff** inside it turns on a compact
+  picker, and a dot on the icon shows that diff is on. On/off is the
+  `?diff=` query plus `sessionStorage` for the tab. **vs** is a ref (`?diff=<ref>`, default `HEAD`) and an optional
   **from** side (`?base=<ref>`, default the working copy). Typing filters
   the list; Enter picks a match or a valid ref that is not in the list;
   Esc closes the list. The lists are local branches (current branch first, then `main`), recent tags, and

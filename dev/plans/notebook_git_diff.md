@@ -11,7 +11,7 @@
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Diff button without `--diff`? | **Yes, but quiet.** One `Diff` button in the toolbar. The compare picker stays hidden until diff is on. There is **not** one server-wide ref. Each page carries `?diff=<ref>` (and optional `?base=<ref>`). Changing the picker updates that page without a restart. |
+| 1 | Diff button without `--diff`? | **Yes, but out of the way.** The toolbar shows a `⋯` menu. Opening it is one click; **Show diff** is the next click. The `vs` / `from` picker is inside that menu and appears only while diff is on. A dot on the icon is the mark that diff is on. On/off is `?diff=` plus `sessionStorage` (`rl-diff-pref`), so a later page without a query follows the last choice. `?diff=off` forces off. There is **not** one server-wide ref. |
 | 2 | Default ref `HEAD`? | **Yes.** `index` is explicit (`git show :path`). |
 | 3 | Run the old notebook? | **No.** Working copy vs a ref keeps the live outputs and labels them "output is the working copy". |
 | 4 | Inline bars or side-by-side? | **Inline bars.** |
@@ -44,7 +44,7 @@ One comparison, one view, no second execution.
 | Choice | MVP |
 |---|---|
 | What is compared | The file on disk (after) against one git object (before), default `HEAD`. Or two refs via `?diff=` and `?base=` (the newer side is shown and not executed). |
-| How you turn it on | `watch --diff` or `watch --diff <ref>`, a quiet toolbar **Diff** button, then a compact `vs` / `from` picker, or `?diff=<ref>` and optional `?base=<ref>`. |
+| How you turn it on | `watch --diff` or `watch --diff <ref>`, the toolbar `⋯` menu's **Show diff** switch, or `?diff=<ref>` and optional `?base=<ref>`. The picker stays inside the menu. |
 | What you see | The rendered notebook, with a bar on added, removed, and changed blocks. Prev / next jumps between those blocks. |
 | Code cells | Line diff of the cell source. The output and plots underneath are the working copy, labeled as such. The old cell is not run. |
 | Prose | The whole block is marked. Word-level paint inside a paragraph waits. |
@@ -59,7 +59,12 @@ Side-by-side is not part of the plan. The page already has a file browser, a tab
 Toolbar when diff is on, directory watch, comments on. The file browser lists names only today (`file_browser.rs`); a dot is the only addition.
 
 ```
-┌ topbar: filters.md          [ ↑ 2/5 ] [ ↓ ]  Diff [on]  vs [ HEAD____ ]   [ Source ]
+┌ topbar: filters.md                                           [ ⋯• ] [ Source ]
+│                                              ┌ Show diff [on]          ┐
+│                                              │ ‹ 2/5 ›                 │
+│                                              │ vs  [ HEAD____ ]        │
+│                                              │ from [ working copy ]   │
+│                                              └─────────────────────────┘
 ├────────────┬───────────────────────────────────────────────────┬─────────────┐
 │ Notebooks  │                                                   │ comments    │
 │ ● filters  │  prose, unchanged                                │             │
@@ -331,7 +336,7 @@ Each phase is shippable on its own. Do not start phase 2 in the same change as p
 ### Phase 1 — MVP
 
 - `watch --diff` and `watch --diff <ref>`, including `index`. The flag is a default for pages that omit `diff`.
-- Quiet toolbar **Diff** button. The `vs` / `from` picker is hidden until diff is on.
+- Toolbar `⋯` menu. **Show diff** is one click after the menu opens. The `vs` / `from` picker stays in the menu until diff is on. A dot on the icon marks diff on. `sessionStorage` remembers the choice beside `?diff=`.
 - `?diff=<ref>` and optional `?base=<ref>` stamp that response only. `GET /git/refs` fills the lists.
 - Block LCS, inline bars, removed sections from old source, line diff inside a changed code cell. Working copy vs a ref keeps live outputs. Two refs render the newer text and do not run it.
 - Sidebar dots and the `git_status` frame.
@@ -340,7 +345,7 @@ Each phase is shippable on its own. Do not start phase 2 in the same change as p
 - Four theme tokens and contrast tests.
 - Banners for not-a-repo, untracked, rename, embeds, bad ref, too large.
 
-Watch with no `--diff` is the same HTML as today, aside from the quiet **Diff** button. The picker stays hidden until that button is on.
+Watch with no `--diff` is the same HTML as today, aside from the `⋯` button. The picker stays inside that menu until diff is on.
 
 ### Phase 2 — finer text
 

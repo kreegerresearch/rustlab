@@ -83,7 +83,6 @@ fn chrome_style(c: &ThemeColors) -> String {
      be scoped to `body.topbar-layout`, which no longer exists — leaving the
      toolbar sitting on top of the next-notebook link, unclickable. */
   .topbar {{ padding-right: 9rem; }}
-  body.rl-diff-on .topbar {{ padding-right: 28rem; }}
   #rl-toolbar {{ flex-wrap: wrap; justify-content: flex-end; max-width: min(70vw, 40rem); }}
   #rl-toolbar button {{
     font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -95,16 +94,47 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-toolbar button.active {{ background: {accent}; color: {bg}; border-color: {accent}; }}
   #rl-toolbar button[hidden] {{ display: none; }}
   #rl-toolbar button.rl-quiet {{ opacity: 0.72; padding: 4px 8px; }}
-  #rl-diff {{ display: inline-flex; gap: 4px; align-items: center; }}
-  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden] {{ display: none !important; }}
+  .rl-more {{ position: relative; display: inline-flex; align-items: center; }}
+  #rl-more-btn {{ min-width: 2rem; letter-spacing: 0.08em; }}
+  .rl-diff-dot {{
+    position: absolute; top: -1px; right: -1px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--rl-diff-add-bar, {accent}); pointer-events: none;
+  }}
+  .rl-more-panel {{
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 100002;
+    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+    min-width: 16rem; padding: 8px;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.28);
+  }}
+  #rl-toolbar #rl-diff-toggle {{
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: transparent; color: {text};
+  }}
+  #rl-toolbar #rl-diff-toggle.active {{ background: transparent; color: {text}; border-color: {border}; }}
+  .rl-switch {{
+    width: 28px; height: 16px; border-radius: 99px; flex: none; position: relative;
+    border: 1px solid {border}; background: {bg};
+  }}
+  .rl-switch::after {{
+    content: ""; position: absolute; top: 1px; left: 1px;
+    width: 12px; height: 12px; border-radius: 50%; background: {text};
+  }}
+  #rl-diff-toggle[aria-checked="true"] .rl-switch {{ background: {accent}; border-color: {accent}; }}
+  #rl-diff-toggle[aria-checked="true"] .rl-switch::after {{ left: 13px; background: {bg}; }}
+  #rl-diff {{ display: flex; flex-direction: column; gap: 6px; align-items: stretch; }}
+  .rl-diff-nav {{ display: flex; gap: 4px; align-items: center; }}
+  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden],
+  .rl-more-panel[hidden], #rl-diff-dot[hidden] {{ display: none !important; }}
   #rl-diff input {{
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-    background: {bg_secondary}; color: {text};
+    background: {bg}; color: {text};
     border: 1px solid {border}; border-radius: 6px;
-    padding: 3px 6px; width: 8.5rem;
+    padding: 3px 6px; width: 100%; box-sizing: border-box;
   }}
-  .rl-diff-lab {{ font: 12px/1 system-ui, sans-serif; color: {text_dim}; display: inline-flex; gap: 4px; align-items: center; }}
-  .rl-diff-combo {{ position: relative; display: inline-flex; }}
+  .rl-diff-lab {{ font: 12px/1 system-ui, sans-serif; color: {text_dim}; display: flex; gap: 4px; align-items: center; }}
+  .rl-diff-combo {{ position: relative; display: flex; flex: 1; min-width: 0; }}
   .rl-diff-menu {{
     position: absolute; top: calc(100% + 2px); left: 0; z-index: 100001;
     margin: 0; padding: 2px; list-style: none;
@@ -302,9 +332,10 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     let nonce_attr = crate::render::nonce_attr(nonce);
     let editable_js = if opts.editable { "true" } else { "false" };
 
-    // Diff stays one quiet button until it is on. The compare picker is
-    // in the markup either way and is unhidden per request.
-    let diff_chrome = r#"<button id="rl-diff-toggle" type="button" class="rl-quiet" title="Compare with git">Diff</button><span id="rl-diff" hidden><button id="rl-diff-prev" type="button" title="Previous change ([)">‹</button><span id="rl-diff-pos"></span><button id="rl-diff-next" type="button" title="Next change (])">›</button><label class="rl-diff-lab">vs <span class="rl-diff-combo"><input id="rl-diff-ref" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare against" aria-expanded="false" aria-controls="rl-diff-ref-list"><ul id="rl-diff-ref-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label><label class="rl-diff-lab">from <span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare from" aria-expanded="false" aria-controls="rl-diff-base-list"><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label></span><p id="rl-diff-banner" hidden></p>"#;
+    // The toolbar shows one ⋯ until it is opened. Show diff and the
+    // compare picker live in that panel. The picker stays hidden until
+    // diff is on; a dot on the icon is the only mark while the panel is shut.
+    let diff_chrome = r#"<div id="rl-more" class="rl-more"><button id="rl-more-btn" type="button" class="rl-quiet" aria-expanded="false" aria-haspopup="true" aria-controls="rl-more-panel" aria-label="More" title="More">⋯</button><span id="rl-diff-dot" class="rl-diff-dot" hidden></span><div id="rl-more-panel" class="rl-more-panel" hidden role="region" aria-label="More"><button id="rl-diff-toggle" type="button" class="rl-quiet" role="switch" aria-checked="false"><span class="rl-switch" aria-hidden="true"></span>Show diff</button><div id="rl-diff" hidden><div class="rl-diff-nav"><button id="rl-diff-prev" type="button" title="Previous change ([)">‹</button><span id="rl-diff-pos"></span><button id="rl-diff-next" type="button" title="Next change (])">›</button></div><label class="rl-diff-lab">vs <span class="rl-diff-combo"><input id="rl-diff-ref" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare against" aria-expanded="false" aria-controls="rl-diff-ref-list"><ul id="rl-diff-ref-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label><label class="rl-diff-lab">from <span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare from" aria-expanded="false" aria-controls="rl-diff-base-list"><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label></div></div></div><p id="rl-diff-banner" hidden></p>"#;
     let toolbar = if opts.editable {
         format!(
             "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-save\" hidden title=\"Save (Ctrl/Cmd-S)\">Save</button><button id=\"rl-source-toggle\" title=\"Edit notebook source\">Edit</button></div>"
@@ -495,15 +526,44 @@ function rlDiffChoose(matches, query, highlight, armed) {
   if (typed && matches.length === 0 && rlDiffRefOk(typed)) return typed;
   return null;
 }
+function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
+  if (queryDiff === 'off') return { action: 'store-off', diff: '', base: '' };
+  if (queryDiff) return { action: 'store-on', diff: queryDiff, base: queryBase || '' };
+  if (bodyOn) return { action: 'keep', diff: '', base: '' };
+  if (saved && saved.on) {
+    var diff = saved.diff || 'HEAD';
+    var base = saved.base || '';
+    if (!rlDiffRefOk(diff) || (base && !rlDiffRefOk(base))) return { action: 'none', diff: '', base: '' };
+    return { action: 'navigate', diff: diff, base: base };
+  }
+  return { action: 'none', diff: '', base: '' };
+}
 (function () {
   if (typeof document === 'undefined') return;
   var toggle = document.getElementById('rl-diff-toggle');
   if (!toggle) return;
+  var moreBtn = document.getElementById('rl-more-btn');
+  var panel = document.getElementById('rl-more-panel');
+  var dot = document.getElementById('rl-diff-dot');
   var vs = document.getElementById('rl-diff-ref');
   var from = document.getElementById('rl-diff-base');
   var vsList = document.getElementById('rl-diff-ref-list');
   var fromList = document.getElementById('rl-diff-base-list');
   var pos = document.getElementById('rl-diff-pos');
+  var PREF = 'rl-diff-pref';
+  function readPref() {
+    try {
+      var raw = sessionStorage.getItem(PREF);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) { return null; }
+  }
+  function store(onFlag, diff, base) {
+    try {
+      sessionStorage.setItem(PREF, JSON.stringify({
+        on: !!onFlag, diff: diff || 'HEAD', base: base || ''
+      }));
+    } catch (err) {}
+  }
 
   function params() {
     var cur = new URLSearchParams(location.search);
@@ -519,9 +579,11 @@ function rlDiffChoose(matches, query, highlight, armed) {
     var u = new URL(location.href);
     var cur = params();
     if (!diff || diff === 'off') {
+      store(false, '', '');
       u.searchParams.set('diff', 'off');
       u.searchParams.delete('base');
     } else {
+      store(true, diff, base || '');
       u.searchParams.set('diff', diff);
       if (base) u.searchParams.set('base', base);
       else u.searchParams.delete('base');
@@ -531,6 +593,43 @@ function rlDiffChoose(matches, query, highlight, armed) {
   }
   function on() {
     return document.body.classList.contains('rl-diff-on');
+  }
+  (function restore() {
+    var q = new URLSearchParams(location.search);
+    var decision = rlDiffPrefApply(q.get('diff'), q.get('base') || '', on(), readPref());
+    if (decision.action === 'store-off') store(false, '', '');
+    else if (decision.action === 'store-on') store(true, decision.diff, decision.base);
+    else if (decision.action === 'keep') {
+      store(true, document.body.dataset.rlDiff || 'HEAD', document.body.dataset.rlBase || '');
+    } else if (decision.action === 'navigate') go(decision.diff, decision.base);
+  })();
+  function menuOpen() { return !!(panel && !panel.hidden); }
+  function setMenu(open) {
+    if (!panel || !moreBtn) return;
+    panel.hidden = !open;
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) toggle.focus();
+  }
+  if (moreBtn && panel) {
+    moreBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setMenu(!menuOpen());
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !menuOpen()) return;
+      setMenu(false);
+      moreBtn.focus();
+    });
+    document.addEventListener('click', function (ev) {
+      if (!menuOpen()) return;
+      if (panel.contains(ev.target) || moreBtn.contains(ev.target)) return;
+      setMenu(false);
+    });
+  }
+  if (dot) dot.hidden = !on();
+  if (moreBtn && on()) {
+    moreBtn.setAttribute('aria-label', 'More, diff on');
+    moreBtn.title = 'More, diff on';
   }
   toggle.addEventListener('click', function () {
     if (on()) go('off', '');
@@ -633,8 +732,10 @@ function rlDiffChoose(matches, query, highlight, armed) {
         pick(chosen);
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        e.stopPropagation();
-        close(true);
+        if (!list.hidden) {
+          e.stopPropagation();
+          close(true);
+        }
       }
     });
     input.addEventListener('blur', function () {
@@ -855,6 +956,14 @@ assert.strictEqual(rlDiffChoose([], 'refs/heads/off', 0, false), 'refs/heads/off
 assert.strictEqual(rlDiffChoose([], 'main..HEAD', 0, false), null);
 assert.strictEqual(rlDiffChoose([], 'not a ref', 0, false), null);
 assert.strictEqual(rlDiffChoose([], '-rf', 0, false), null);
+assert.strictEqual(rlDiffPrefApply('off', '', false, {on:true, diff:'HEAD'}).action, 'store-off');
+assert.strictEqual(rlDiffPrefApply('main', 'topic', false, null).action, 'store-on');
+assert.strictEqual(rlDiffPrefApply('main', 'topic', false, null).base, 'topic');
+assert.strictEqual(rlDiffPrefApply(null, '', true, null).action, 'keep');
+assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:''}).action, 'navigate');
+assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:''}).diff, 'HEAD');
+assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'main..HEAD'}).action, 'none');
+assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
 "#,
         );
         std::fs::write(&path, harness).unwrap();
@@ -885,10 +994,21 @@ assert.strictEqual(rlDiffChoose([], '-rf', 0, false), null);
             out.contains(">Source<"),
             "button reads Source in read-only mode"
         );
-        assert!(out.contains("id=\"rl-diff-toggle\""), "quiet Diff button");
+        assert!(out.contains("id=\"rl-more-btn\""), "overflow button");
+        assert!(out.contains("aria-expanded=\"false\""), "menu starts closed");
+        assert!(out.contains("id=\"rl-more-panel\" class=\"rl-more-panel\" hidden"));
+        assert!(out.contains(">Show diff<") || out.contains("Show diff</button>"));
+        assert!(out.contains("role=\"switch\""), "diff is a switch");
+        assert!(out.contains("aria-checked=\"false\""));
+        assert!(!out.contains("onclick="), "no inline handlers");
+        assert!(out.contains("id=\"rl-diff-toggle\""), "show-diff switch");
         assert!(
             out.contains("id=\"rl-diff\" hidden"),
             "compare picker stays collapsed until diff is on"
+        );
+        assert!(
+            !out.contains(">Diff</button>"),
+            "the toolbar does not show a Diff label"
         );
         assert!(out.contains("/raw/' + encodeSlug(slug)"));
         // No editor assets referenced.
