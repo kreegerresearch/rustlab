@@ -174,6 +174,8 @@ pub struct NotebookSettings {
     pub code: Option<CodeFold>,
     /// `[notebook] comments` = `"on"` | `"off"`. `None` leaves the format default.
     pub comments: Option<bool>,
+    /// `[notebook] git_diff`. Missing key → off.
+    pub git_diff: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -210,6 +212,11 @@ impl UserSettings {
     /// `[notebook] comments`, when set. `None` means the format default.
     pub fn notebook_comments(&self) -> Option<bool> {
         self.notebook.comments
+    }
+
+    /// `[notebook] git_diff`. Missing key stays off.
+    pub fn notebook_git_diff(&self) -> bool {
+        self.notebook.git_diff.unwrap_or(false)
     }
 
     /// Notebook page/plot theme: `[notebook] theme`, else `[plot] theme`,
@@ -576,6 +583,9 @@ fn parse_notebook_section(
                     }
                 });
             }
+            "git_diff" => {
+                settings.notebook.git_diff = Some(expect_bool(v, path, "notebook.git_diff")?);
+            }
             other => unknown.push(format!("notebook.{other}")),
         }
     }
@@ -916,6 +926,25 @@ mod tests {
         assert_eq!(off.settings.notebook_comments(), Some(false));
         let bad = parse_toml(
             "[notebook]\ncomments = \"maybe\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        );
+        assert!(bad.is_err());
+    }
+
+    #[test]
+    fn notebook_git_diff_defaults_off() {
+        let off = parse_toml("", Path::new("rc"), ConfigSource::Defaults).unwrap();
+        assert!(!off.settings.notebook_git_diff());
+        let on = parse_toml(
+            "[notebook]\ngit_diff = true\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert!(on.settings.notebook_git_diff());
+        let bad = parse_toml(
+            "[notebook]\ngit_diff = \"yes\"\n",
             Path::new("rc"),
             ConfigSource::Defaults,
         );

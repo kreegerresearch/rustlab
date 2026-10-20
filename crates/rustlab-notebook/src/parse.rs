@@ -803,6 +803,28 @@ mod tests {
     }
 
     #[test]
+    fn toml_and_yaml_fences_are_display_only() {
+        // Markup fences stay in the markdown block. Only ```rustlab runs.
+        let src = "```toml\nx = 1\n```\n\n```yaml\ny = 2\n```\n\n```yml\nz = 3\n```\n\n```rustlab\nw = 4\n```\n";
+        let blocks = parse_notebook(src);
+        let code: Vec<_> = blocks
+            .iter()
+            .filter(|b| matches!(b, Block::Code { .. }))
+            .collect();
+        assert_eq!(code.len(), 1, "{blocks:?}");
+        assert!(is_code(code[0], "w = 4", false));
+        let md = blocks.iter().find_map(|b| match b {
+            Block::Markdown(s) => Some(s.as_str()),
+            _ => None,
+        });
+        let md = md.expect("markup fences stay markdown");
+        assert!(md.contains("```toml"), "{md}");
+        assert!(md.contains("```yaml"), "{md}");
+        assert!(md.contains("```yml"), "{md}");
+        assert!(!md.contains("```rustlab"), "{md}");
+    }
+
+    #[test]
     fn multiple_code_blocks() {
         let src = "Text\n\n```rustlab\na = 1\n```\n\nMiddle\n\n```rustlab\nb = 2\n```\n\nEnd";
         let blocks = parse_notebook(src);

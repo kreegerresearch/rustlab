@@ -85,6 +85,7 @@ fn build_state() -> (
         jail_root: None,
         annotate: false,
         comments_on: true,
+        git_enabled: false,
     });
     (state, src_dir, plot_dir)
 }

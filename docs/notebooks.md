@@ -204,13 +204,30 @@ rustlab-notebook watch analysis.md --port 9000           # custom port (fails lo
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
-rustlab-notebook watch notebooks/ --diff               # open comparing each page with HEAD
-rustlab-notebook watch notebooks/ --diff main          # the same, against main
+rustlab-notebook watch notebooks/ --git-diff            # enable git; Show diff starts off
+rustlab-notebook watch notebooks/ --git-diff --diff   # the same, defaulting each page to HEAD
+rustlab-notebook watch notebooks/ --git-diff --diff main
 ```
 
-The toolbar shows a `⋯` menu. Open it, then **Show diff**. That is two clicks, and no more. While diff is on, the same menu holds the picker and a dot sits on the icon: **vs** is the other side (`?diff=<ref>`), **from** defaults to the working copy and can be another ref (`?base=<ref>`). The lists are local branches (the current branch first, then `main`), recent tags, and recent commits, filled by `GET /git/refs`. Typing filters the list. Arrow keys move through the matches, Enter picks one, and Esc closes the list, then the menu. A valid ref that matches nothing is still accepted. Changing either side reloads that page; other tabs keep their own query. The on/off choice is also kept in `sessionStorage` for this tab, so a notebook opened without `?diff=` follows the last choice. `?diff=off` forces it off. `[` and `]` move to the previous and next change when you are not typing.
+Git comparison is off unless `--git-diff` or `[notebook] git_diff = true`.
+`--diff` alone does not enable it. The toolbar shows a `⋯` menu. Open it,
+then **Show diff** when that switch is available. That is two clicks, and
+no more. While git is off the switch is disabled and the menu says to pass
+`--git-diff` for a repository you trust. While git is on, the menu notes
+that git reads the repository config, and the same menu holds the picker.
+A dot sits on the icon while diff is on: **vs** is the other side
+(`?diff=<ref>`), **from** defaults to the working copy and can be another
+ref (`?base=<ref>`). The lists are local branches (the current branch
+first, then `main`), recent tags, and recent commits, filled by
+`GET /git/refs`. Typing filters the list. Arrow keys move through the
+matches, Enter picks one, and Esc closes the list, then the menu. A valid
+ref that matches nothing is still accepted. Changing either side reloads
+that page; other tabs keep their own query. The on/off choice is also kept
+in `sessionStorage` for this tab, so a notebook opened without `?diff=`
+follows the last choice. `?diff=off` forces it off. `[` and `]` move to
+the previous and next change when you are not typing.
 
-Added blocks and lines are tinted green, removed ones red and struck through, and changed blocks amber, each with a side bar. A changed code cell tints whole lines and marks them `+` or `-`. Working copy against a ref keeps the live outputs and labels that cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` on the re-render-on-save watcher (`--obsidian` or `--output`) is ignored.
+Added blocks and lines are tinted green, removed ones red and struck through, and changed blocks amber, each with a side bar. A changed code cell tints whole lines and marks them `+` or `-`. Working copy against a ref keeps the live outputs and labels that cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` and `--git-diff` on the re-render-on-save watcher (`--obsidian` or `--output`) are ignored.
 
 Behaviour:
 
@@ -613,15 +630,20 @@ animations stay full width, outside the panels, in every format.
 `<!-- grid: N -->` lays plots out in a row of minipages (at most four
 across; a short last row stays left-aligned).
 
-Fenced blocks tagged `bash`, `python`, or `text` (any capitalisation)
-get the same panel in HTML, `notebook watch`, and PDF. A fence with
-no language tag is `text`. `bash` and `python` are colored on the
-server with the rustlab token colors — comments, strings, keywords,
-and numbers — and a small language label. `text` is not colored and
-uses the quieter printed-output background, including a `text` fence
-the markdown renderer writes for cell stdout. Other fence tags
-(`javascript`, `sh`) are unchanged, and an indented code block is
-not a fence. There is no client-side highlighter.
+Fenced blocks tagged `bash`, `python`, `toml`, `yaml`, `yml`, or
+`text` (any capitalisation) get the same panel in HTML, `notebook
+watch`, LaTeX, and PDF. A fence with no language tag is `text`.
+`bash`, `python`, `toml`, and `yaml` (`yml` is the same highlighter)
+are colored on the server with the rustlab token colors — comments,
+strings, keywords, numbers, and for TOML and YAML also keys, tables,
+dates, booleans, anchors, list dashes, and block scalars — and a
+small language label. The colors are the existing theme roles, so
+they stay readable in mocha, macchiato, frappé, and latte. `text` is
+not colored and uses the quieter printed-output background, including
+a `text` fence the markdown renderer writes for cell stdout. TOML and
+YAML fences are display-only: they are never executed. Other fence
+tags (`javascript`, `sh`) are unchanged, and an indented code block
+is not a fence. There is no client-side highlighter and no CDN.
 
 Errors are shown inline in red. Execution continues with subsequent blocks.
 
@@ -1436,7 +1458,7 @@ open. File offsets are stamped only while annotating, and only on text
 the markdown parser already treated as text, so headings, lists,
 tables, and the other block syntax match a page that is not annotating.
 A `%%` before a
-`bash`, `python`, or `text` fence stays a prose note. The browser sends
+`bash`, `python`, `toml`, `yaml`, `yml`, or `text` fence stays a prose note. The browser sends
 `POST /annotate/{slug}` with `If-Match` set to the source hash stamped
 on the page. A mismatch is 409 and the file is not written. A target
 inside a code fence is 400 and the file is not written. A successful
@@ -1566,10 +1588,11 @@ The page also has:
   lexer rules as the interpreter (`#` and `%` comments, keywords, strings,
   numbers, operators, call-like names) and follow the Catppuccin theme.
   Token text is escaped HTML (`<span class="syn-*">`); there is no
-  client-side highlighter. Fences tagged `bash` or `python` use those
-  same token colors; a `text` fence is uncolored on the printed-output
-  background. Other fence tags, inline code, and printed output are not
-  highlighted.
+  client-side highlighter. Fences tagged `bash`, `python`, `toml`, or
+  `yaml` (`yml` too) use those same token colors; a `text` fence is
+  uncolored on the printed-output background. TOML and YAML fences are
+  not executed. Other fence tags, inline code, and printed output are
+  not highlighted.
 - Responsive layout (sidebar collapses on mobile)
 
 ### Markdown (`--format markdown`)

@@ -5,9 +5,15 @@
 `rustlab-notebook watch` can compare the page you are reading with a
 git ref. The notebook file itself is not modified.
 
-Open the `⋯` menu in the toolbar and turn on **Show diff**, or start
-the server with `--diff` (default `HEAD`) or `--diff main`. The picker
-stays in that menu. A dot on the icon means diff is on.
+Git comparison is off until you start the server with `--git-diff`, or
+set `[notebook] git_diff = true`. `--diff` alone does not enable it.
+Optional `--diff` (default `HEAD`) or `--diff main` picks the default
+ref once git is on. The terminal warns that git reads the repository
+config; use this only on a repository you trust.
+
+Open the `⋯` menu in the toolbar and turn on **Show diff**. While git is
+off that switch is unavailable. The picker stays in that menu. A dot on
+the icon means diff is on.
 
 - **vs** sets `?diff=<ref>`. The list is local branches (current branch
   first, then `main`), then recent tags and commits. Typing filters that

@@ -194,8 +194,8 @@ rustlab-notebook render note.md                 # → note.html (self-contained,
 rustlab-notebook render note.md -f markdown -o out.md   # GitHub-friendly .md + plots/<stem>/*.svg
 rustlab-notebook render dir/                    # render every .md + index.html
 rustlab-notebook watch note.md                  # live-reload server at http://127.0.0.1:8042
-rustlab-notebook watch note.md --diff           # same server; pages can compare with HEAD
-rustlab-notebook watch note.md --diff main      # default the other side to main
+rustlab-notebook watch note.md --git-diff      # enable git comparison (off by default)
+rustlab-notebook watch note.md --git-diff --diff main   # default the other side to main
 rustlab-notebook check note.md                  # lint (exit 2 errors / 1 warnings / 0 clean)
 rustlab-notebook clean note.md                  # strip generated header and output sentinels (in place)
 rustlab-notebook strip note.md --in-place       # unwrap ==highlights== and delete %%comments%%
@@ -205,9 +205,10 @@ Authoring features an agent should use (full reference: [`docs/notebooks.md`](no
 
 - **Template interpolation in prose:** `${expr}` evaluates against the notebook environment; `${expr:%.3f}` formats; `\${...}` escapes.
 - **Directives** as HTML comments immediately before a fence (stackable): `<!-- hide -->` (run but hide source), `<!-- details: Title -->` (collapsible output), `<!-- grid: 2 -->` (plot grid). Also `<!-- exercise -->` / `<!-- solution -->` for teaching material.
+- **TOML and YAML fences:** ` ```toml `, ` ```yaml `, and ` ```yml ` are display-only (nothing in them runs). HTML, `notebook watch`, LaTeX, and PDF highlight comments, keys, strings, numbers, booleans, dates, tables, anchors, list dashes, and block scalars with the same token colors as a rustlab cell. A fence with no language tag stays plain text. Other tags (`javascript`, `sh`) are unchanged.
 - **Embeds:** `![[_setup.md]]` transcludes another file; its rustlab blocks execute in the host's evaluator (shared-variable setup across lessons). `[[Other Notebook]]` wikilinks cross-reference; directory renders get navigation automatically.
 - **Interactive widgets:** a ` ```rustlab-widget ` fence with TOML body (`name`, `type = "slider"|"number"|"option"`, bounds/choices, `default`, and on a slider `run = "live"` or `"release"`) plus `val = widget("name")` in code. Fences immediately above a rustlab cell render as that cell's control panel; a heading or paragraph in between keeps a full-width bar with a `drives: Figure N` link. A widget change outlines the plots from that render only: the page sends a request id, and a file save or a preempted render does not flash. `notebook watch` is interactive. Batch HTML shows the same controls disabled at the declared default. Markdown, LaTeX, and PDF show label = value.
-- **Git diff in `notebook watch`:** a quiet toolbar **Diff** button. On, pick **vs** a ref (`?diff=`) and optionally **from** another ref (`?base=`). Working copy vs a ref keeps live outputs. Two refs show the newer side's text and do not run it. `[` / `]` step through changes. `GET /git/refs` lists branches. No new POST. See `docs/notebooks.md` and `dev/plans/notebook_git_diff.md`.
+- **Git diff in `notebook watch`:** off unless `watch --git-diff` or `[notebook] git_diff = true`. The `⋯` menu's **Show diff** is disabled until then. On, pick **vs** a ref (`?diff=`) and optionally **from** another ref (`?base=`). Working copy vs a ref keeps live outputs. Two refs show the newer side's text and do not run it. `[` / `]` step through changes. `GET /git/refs` lists branches. No new POST. Git is plumbing-only and refuses a repo that fails the ownership check. See `docs/notebooks.md`, `docs/security.md`, and `dev/plans/notebook_git_diff.md`.
 - **Frontmatter:** `title:` and `order:` control the directory index.
 - **Caching for slow cells:** put `cache enable` in an early block — pure user functions get a persistent SQLite-backed result cache (`.rustlab/cache.db`) that survives re-renders. Functions that call `rand`, plotting, or I/O are excluded automatically.
 
