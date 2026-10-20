@@ -18,22 +18,37 @@ should re-validate against those entries when upgrading.
   token roles, so mocha, macchiato, frappé, and latte stay readable. A
   fence with no language tag stays plain text. Other tags are unchanged.
   Markdown export still copies the fence through for the host renderer.
-- **`rustlab-notebook watch --diff [ref]` compares a notebook with git.**
-  The toolbar has a `⋯` menu. **Show diff** inside it turns on a compact
-  picker, and a dot on the icon shows that diff is on. On/off is the
-  `?diff=` query plus `sessionStorage` for the tab. **vs** is a ref (`?diff=<ref>`, default `HEAD`) and an optional
-  **from** side (`?base=<ref>`, default the working copy). Typing filters
-  the list; Enter picks a match or a valid ref that is not in the list;
-  Esc closes the list. The lists are local branches (current branch first, then `main`), recent tags, and
-  recent commits, from read-only `GET /git/refs` (`git for-each-ref`,
-  fixed argv). Changing a side reloads that page; it does not restart the
-  server and it does not move other tabs. `[` and `]` jump to the previous
-  and next change. Working copy vs a ref keeps the live outputs and labels
-  them. Two refs show the newer commit's text and say the code was not
-  run. The old notebook is never executed. Added blocks and lines
-  are tinted green, removed ones red and struck through, and changed
-  blocks amber; code lines also carry `+` or `-`. Dark tints are
-  translucent. `--diff` on the re-render-on-save watcher is ignored.
+- **`rustlab-notebook watch --git-diff` compares a notebook with git.**
+  Git is off unless that flag or `[notebook] git_diff = true` is set.
+  While it is off the server does not spawn git, and **Show diff** in the
+  toolbar `⋯` menu is unavailable with a short hint. Turning it on prints
+  a terminal warning, and the menu notes that git reads the repository
+  config: use it only on a repository you trust. Optional `--diff [ref]`
+  sets the default ref (bare `--diff` is `HEAD`) and does not enable git
+  by itself. **Show diff** then turns on a compact picker, and a dot on
+  the icon shows that diff is on. On/off is the `?diff=` query plus
+  `sessionStorage` for the tab. **vs** is a ref (`?diff=<ref>`, default
+  `HEAD`) and an optional **from** side (`?base=<ref>`, default the
+  working copy). Typing filters the list; Enter picks a match or a valid
+  ref that is not in the list; Esc closes the list. The lists are local
+  branches (current branch first, then `main`), recent tags, and recent
+  commits, from read-only `GET /git/refs`. Changing a side reloads that
+  page; it does not restart the server and it does not move other tabs.
+  `[` and `]` jump to the previous and next change. Working copy vs a ref
+  keeps the live outputs and labels them. Two refs show the newer
+  commit's text and say the code was not run. The old notebook is never
+  executed. Added blocks and lines are tinted green, removed ones red and
+  struck through, and changed blocks amber; code lines also carry `+` or
+  `-`. Dark tints are translucent. `--diff` and `--git-diff` on the
+  re-render-on-save watcher are ignored.
+  Git, when enabled, is plumbing only (`rev-parse`, `cat-file`, `ls-tree`,
+  `for-each-ref`, `hash-object`, `ls-files`) with the diff computed in
+  this process. Each invocation overrides `core.fsmonitor`,
+  `core.hooksPath`, `core.pager`, `diff.external`, `protocol.allow`,
+  `core.sshCommand`, and `credential.helper`, drops inherited `GIT_DIR` /
+  `GIT_CONFIG_*`, and refuses a repository that fails git's ownership
+  check. It does not add a `safe.directory` exception and it does not
+  fetch.
 
 ## 0.3.11
 

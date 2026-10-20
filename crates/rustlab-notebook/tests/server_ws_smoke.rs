@@ -66,6 +66,7 @@ fn single_state_with(
         jail_root: None,
         annotate: false,
         comments_on: true,
+        git_enabled: false,
     })
 }
 
@@ -1105,6 +1106,7 @@ async fn directory_link_navigation_opens_target_websocket() {
         jail_root: None,
         annotate: false,
         comments_on: true,
+        git_enabled: false,
     });
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1230,6 +1232,7 @@ async fn single_file_sibling_link_stays_unresolved_and_404s() {
         jail_root: None,
         annotate: false,
         comments_on: true,
+        git_enabled: false,
     });
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

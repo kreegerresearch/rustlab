@@ -25,6 +25,9 @@ pub struct PageOpts {
     /// from `/assets/codemirror/…`. When false it is a read-only view
     /// of the on-disk `.md` and no editor assets are referenced.
     pub editable: bool,
+    /// `watch --git-diff`. When false Show diff is disabled and the
+    /// page never asks for `/git/refs`.
+    pub git_diff: bool,
 }
 
 /// Inject the toolbar + source-pane chrome into a fully-rendered page.
@@ -123,6 +126,8 @@ fn chrome_style(c: &ThemeColors) -> String {
   }}
   #rl-diff-toggle[aria-checked="true"] .rl-switch {{ background: {accent}; border-color: {accent}; }}
   #rl-diff-toggle[aria-checked="true"] .rl-switch::after {{ left: 13px; background: {bg}; }}
+  #rl-toolbar #rl-diff-toggle:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+  p.rl-git-note {{ margin: 0; font: 11px/1.35 system-ui, sans-serif; color: {text_dim}; }}
   #rl-diff {{ display: flex; flex-direction: column; gap: 6px; align-items: stretch; }}
   .rl-diff-nav {{ display: flex; gap: 4px; align-items: center; }}
   #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden],
@@ -335,7 +340,27 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     // The toolbar shows one ⋯ until it is opened. Show diff and the
     // compare picker live in that panel. The picker stays hidden until
     // diff is on; a dot on the icon is the only mark while the panel is shut.
+    let git_flag = if opts.git_diff { "on" } else { "off" };
+    let git_extra = if opts.git_diff {
+        format!(" data-rl-git=\"{git_flag}\"")
+    } else {
+        format!(" disabled aria-disabled=\"true\" data-rl-git=\"{git_flag}\"")
+    };
+    let git_note = if opts.git_diff {
+        "Git reads this repository's config. Compare only a repo you trust."
+    } else {
+        "Git diff is off. Pass --git-diff to compare a repository you trust."
+    };
     let diff_chrome = r#"<div id="rl-more" class="rl-more"><button id="rl-more-btn" type="button" class="rl-quiet" aria-expanded="false" aria-haspopup="true" aria-controls="rl-more-panel" aria-label="More" title="More">⋯</button><span id="rl-diff-dot" class="rl-diff-dot" hidden></span><div id="rl-more-panel" class="rl-more-panel" hidden role="region" aria-label="More"><button id="rl-diff-toggle" type="button" class="rl-quiet" role="switch" aria-checked="false"><span class="rl-switch" aria-hidden="true"></span>Show diff</button><div id="rl-diff" hidden><div class="rl-diff-nav"><button id="rl-diff-prev" type="button" title="Previous change ([)">‹</button><span id="rl-diff-pos"></span><button id="rl-diff-next" type="button" title="Next change (])">›</button></div><label class="rl-diff-lab">vs <span class="rl-diff-combo"><input id="rl-diff-ref" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare against" aria-expanded="false" aria-controls="rl-diff-ref-list"><ul id="rl-diff-ref-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label><label class="rl-diff-lab">from <span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare from" aria-expanded="false" aria-controls="rl-diff-base-list"><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label></div></div></div><p id="rl-diff-banner" hidden></p>"#;
+    let diff_chrome = diff_chrome
+        .replace(
+            "aria-checked=\"false\"",
+            &format!("aria-checked=\"false\"{git_extra}"),
+        )
+        .replace(
+            "Show diff</button>",
+            &format!("Show diff</button><p class=\"rl-git-note\">{git_note}</p>"),
+        );
     let toolbar = if opts.editable {
         format!(
             "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-save\" hidden title=\"Save (Ctrl/Cmd-S)\">Save</button><button id=\"rl-source-toggle\" title=\"Edit notebook source\">Edit</button></div>"
@@ -542,6 +567,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
   if (typeof document === 'undefined') return;
   var toggle = document.getElementById('rl-diff-toggle');
   if (!toggle) return;
+  var gitOn = toggle.getAttribute('data-rl-git') === 'on';
   var moreBtn = document.getElementById('rl-more-btn');
   var panel = document.getElementById('rl-more-panel');
   var dot = document.getElementById('rl-diff-dot');
@@ -595,6 +621,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     return document.body.classList.contains('rl-diff-on');
   }
   (function restore() {
+    if (!gitOn) return;
     var q = new URLSearchParams(location.search);
     var decision = rlDiffPrefApply(q.get('diff'), q.get('base') || '', on(), readPref());
     if (decision.action === 'store-off') store(false, '', '');
@@ -632,6 +659,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     moreBtn.title = 'More, diff on';
   }
   toggle.addEventListener('click', function () {
+    if (!gitOn) return;
     if (on()) go('off', '');
     else go('HEAD', '');
   });
@@ -794,7 +822,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       if (banner && !banner.textContent) banner.textContent = data.error;
     }
   }
-  if (on() && vs) {
+  if (gitOn && on() && vs) {
     fetch('/git/refs').then(function (r) { return r.json(); }).then(fill).catch(function () {});
   }
 
@@ -978,7 +1006,14 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
 
     fn render(editable: bool) -> String {
         let html = "<!doctype html><html><head><title>x</title></head><body><main><p>hi</p></main></body></html>";
-        inject_chrome(html, Theme::Dark.colors(), PageOpts { editable })
+        inject_chrome(
+            html,
+            Theme::Dark.colors(),
+            PageOpts {
+                editable,
+                git_diff: false,
+            },
+        )
     }
 
     #[test]
@@ -1003,6 +1038,18 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
         assert!(out.contains(">Show diff<") || out.contains("Show diff</button>"));
         assert!(out.contains("role=\"switch\""), "diff is a switch");
         assert!(out.contains("aria-checked=\"false\""));
+        assert!(
+            out.contains("data-rl-git=\"off\""),
+            "git diff is off by default"
+        );
+        assert!(
+            out.contains("disabled"),
+            "show diff is unavailable until enabled"
+        );
+        assert!(
+            out.contains("Git diff is off"),
+            "the menu explains how to turn git diff on"
+        );
         assert!(!out.contains("onclick="), "no inline handlers");
         assert!(out.contains("id=\"rl-diff-toggle\""), "show-diff switch");
         assert!(
@@ -1023,6 +1070,26 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
         assert!(
             out.contains("var prevAfter = window.__rlAfterUpdate;"),
             "chrome must chain the comment-placement hook"
+        );
+    }
+
+    #[test]
+    fn git_diff_on_names_the_trust_note() {
+        let html = "<!doctype html><html><head><title>x</title></head><body><main><p>hi</p></main></body></html>";
+        let out = inject_chrome(
+            html,
+            Theme::Dark.colors(),
+            PageOpts {
+                editable: false,
+                git_diff: true,
+            },
+        );
+        assert!(out.contains("data-rl-git=\"on\""));
+        assert!(out.contains("Compare only a repo you trust"));
+        assert!(!out.contains("aria-disabled=\"true\""));
+        assert!(
+            out.contains("gitOn"),
+            "the page skips git when the flag is off"
         );
     }
 
@@ -1102,7 +1169,10 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
         let out = inject_chrome(
             "<p>bare</p>",
             Theme::Dark.colors(),
-            PageOpts { editable: false },
+            PageOpts {
+                editable: false,
+                git_diff: false,
+            },
         );
         assert!(out.contains("rl-toolbar"));
         assert!(out.contains("<p>bare</p>"));

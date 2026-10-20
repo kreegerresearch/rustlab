@@ -191,6 +191,9 @@ pub struct ServerState {
     pub annotate: bool,
     /// Initial Comments checkbox on watch pages.
     pub comments_on: bool,
+    /// `watch --git-diff` or `[notebook] git_diff`. When false the server
+    /// never spawns git, including for `?diff=` and `GET /git/refs`.
+    pub git_enabled: bool,
 }
 
 impl ServerState {
@@ -509,9 +512,13 @@ async fn git_refs(State(state): State<Arc<ServerState>>) -> Response {
             .and_then(|slug| state.notebooks.get(slug))
             .and_then(|nb| nb.source_path.parent().map(|p| p.to_path_buf()))
     });
-    let body = match &start {
-        Some(dir) => crate::gitdiff::refs_json(dir),
-        None => crate::gitdiff::refs_json(std::path::Path::new(".")),
+    let body = if !state.git_enabled {
+        crate::gitdiff::refs_json_if(false, std::path::Path::new("."))
+    } else {
+        match &start {
+            Some(dir) => crate::gitdiff::refs_json(dir),
+            None => crate::gitdiff::refs_json(std::path::Path::new(".")),
+        }
     };
     (
         [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
@@ -577,17 +584,20 @@ pub(super) async fn serve_notebook_path(
                 let html = nb.html.read().await.clone();
                 let parsed = crate::gitdiff::parse_query(query);
                 let cli = crate::gitdiff::diff_default();
-                let html = if let Some(diff) = crate::gitdiff::resolve_diff(&parsed, cli.as_deref())
-                {
-                    let comments_on = parsed.cm.unwrap_or(state.comments_on);
-                    crate::gitdiff::present(crate::gitdiff::Present {
-                        html: &html,
-                        source_path: &nb.source_path,
-                        jail: state.jail_root.as_deref(),
-                        comments_on,
-                        diff: &diff,
-                        base: parsed.base.as_deref(),
-                    })
+                let html = if state.git_enabled {
+                    if let Some(diff) = crate::gitdiff::resolve_diff(&parsed, cli.as_deref()) {
+                        let comments_on = parsed.cm.unwrap_or(state.comments_on);
+                        crate::gitdiff::present(crate::gitdiff::Present {
+                            html: &html,
+                            source_path: &nb.source_path,
+                            jail: state.jail_root.as_deref(),
+                            comments_on,
+                            diff: &diff,
+                            base: parsed.base.as_deref(),
+                        })
+                    } else {
+                        html
+                    }
                 } else {
                     html
                 };
@@ -1055,6 +1065,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         })
     }
 
@@ -1191,6 +1202,7 @@ mod tests {
             jail_root,
             annotate,
             comments_on: true,
+            git_enabled: false,
         });
         (state, src)
     }
@@ -1692,6 +1704,7 @@ mod tests {
             jail_root,
             annotate: true,
             comments_on: true,
+            git_enabled: false,
         })
     }
 
@@ -1791,6 +1804,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let app = router(editable_state.clone());
         let res = app
@@ -1841,6 +1855,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let app = router(editable_state);
         let res = app
@@ -1888,6 +1903,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let app = router(editable_state);
         let res = app
@@ -1986,6 +2002,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let app = router(state);
         let res = app
@@ -2245,6 +2262,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         (state, src)
     }
@@ -2341,6 +2359,7 @@ mod tests {
             jail_root: None,
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let res = post_save(&state, "# not an svg\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -2381,6 +2400,7 @@ mod tests {
             jail_root: Some(jail.path().to_path_buf()),
             annotate: false,
             comments_on: true,
+            git_enabled: false,
         });
         let res = post_save(&state, "# pwn\n").await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
@@ -2523,6 +2543,7 @@ mod tests {
             jail_root: Some(dir.path().to_path_buf()),
             annotate: false,
             comments_on: true,
+            git_enabled: true,
         });
         let app = router(state);
         let res = app
@@ -2602,6 +2623,7 @@ mod tests {
             jail_root: Some(dir.path().to_path_buf()),
             annotate: false,
             comments_on: true,
+            git_enabled: true,
         });
         let app = router(state);
         let res = app
