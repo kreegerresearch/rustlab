@@ -70,6 +70,10 @@ theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, l
 # notebook watch. "off" matches `--no-comments`. PDF and LaTeX stay off
 # unless the command passes `--comments`. CLI wins over this key.
 # comments = "on"         # on | off
+# Git comparison in `notebook watch`. Off unless this is true or the
+# command passes `--git-diff`. Git reads the repository's config; enable
+# it only for a repository you trust. `--diff REF` does not enable this.
+# git_diff = false
 
 [repl]
 # rustyline history cap (most recent N lines written back to

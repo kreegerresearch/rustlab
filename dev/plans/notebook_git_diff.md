@@ -11,8 +11,8 @@
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Diff button without `--diff`? | **Yes, but out of the way.** The toolbar shows a `⋯` menu. Opening it is one click; **Show diff** is the next click. The `vs` / `from` picker is inside that menu and appears only while diff is on. A dot on the icon is the mark that diff is on. On/off is `?diff=` plus `sessionStorage` (`rl-diff-pref`), so a later page without a query follows the last choice. `?diff=off` forces off. There is **not** one server-wide ref. |
-| 2 | Default ref `HEAD`? | **Yes.** `index` is explicit (`git show :path`). |
+| 1 | Diff button without `--diff`? | **The menu is always there; git is not.** `watch` does not spawn git unless `--git-diff` or `[notebook] git_diff = true`. `--diff [ref]` only sets the default ref, and it is ignored (with a warning) while git is off. The toolbar shows a `⋯` menu. Opening it is one click. **Show diff** is the next click when git is enabled, and disabled with a short hint when it is not. The `vs` / `from` picker stays inside that menu and appears only while diff is on. A dot on the icon marks diff on. On/off is `?diff=` plus `sessionStorage` (`rl-diff-pref`). `?diff=off` forces off. There is **not** one server-wide ref. |
+| 2 | Default ref `HEAD`? | **Yes**, once git is enabled. `index` is the index stage (`git-cat-file blob :path`). |
 | 3 | Run the old notebook? | **No.** Working copy vs a ref keeps the live outputs and labels them "output is the working copy". |
 | 4 | Inline bars or side-by-side? | **Inline bars.** |
 | 5 | Always strip `%%`? | **No.** Follow the Comments checkbox. While diff is on, the checkbox reloads with `?cm=0` or `?cm=1`. |
@@ -24,7 +24,7 @@
 
 Also decided with those two changes:
 
-- The picker lists local branches (current branch first, then `main`, then the rest by committer date), then recent tags and recent commits. Typing in the field filters that list (case-insensitive substring). Arrow keys move through the matches, Enter picks one, and Esc closes the list without changing the ref. Text that matches nothing is still used when it is a valid ref. The list comes from `GET /git/refs`, a read-only route. Its argv is a fixed `git for-each-ref`. No new POST.
+- The picker lists local branches (current branch first, then `main`, then the rest by committer date), then recent tags and recent commits. Typing in the field filters that list (case-insensitive substring). Arrow keys move through the matches, Enter picks one, and Esc closes the list without changing the ref. Text that matches nothing is still used when it is a valid ref. The list comes from `GET /git/refs`, a read-only route. Its argv is the dashed `git-for-each-ref` binary. Recent commits are a first-parent walk of `git-cat-file commit`, not `git log`. No new POST. When git is off, that route returns "git diff is off" and does not spawn git.
 - Prev / next also use `[` and `]` when focus is not in an input, a textarea, a select, or CodeMirror. The buttons stay, so the editor is not stolen.
 - `?diff=off` forces diff off even when the process was started with `--diff`. A branch literally named `off` is listed as `refs/heads/off`.
 - Stored notebook HTML stays the unstamped working-copy render. A diff query stamps a copy of that page. A live content update (`full` / `partial` / `reconcile`) while a diff query is active reloads the page. `cell_status` does not.
@@ -44,12 +44,12 @@ One comparison, one view, no second execution.
 | Choice | MVP |
 |---|---|
 | What is compared | The file on disk (after) against one git object (before), default `HEAD`. Or two refs via `?diff=` and `?base=` (the newer side is shown and not executed). |
-| How you turn it on | `watch --diff` or `watch --diff <ref>`, the toolbar `⋯` menu's **Show diff** switch, or `?diff=<ref>` and optional `?base=<ref>`. The picker stays inside the menu. |
+| How you turn it on | `watch --git-diff` or `[notebook] git_diff = true`. Optional `--diff <ref>` sets the default ref and does not enable git by itself. Then the toolbar `⋯` menu's **Show diff** switch, or `?diff=<ref>` and optional `?base=<ref>`. The picker stays inside the menu. |
 | What you see | The rendered notebook, with a bar on added, removed, and changed blocks. Prev / next jumps between those blocks. |
 | Code cells | Line diff of the cell source. The output and plots underneath are the working copy, labeled as such. The old cell is not run. |
 | Prose | The whole block is marked. Word-level paint inside a paragraph waits. |
 | Comments | Same as the page. Comments on: a new `%%` shows up as a changed block and its margin card. Comments off: both sides are stripped before alignment, so a comment-only edit stays quiet. |
-| Where the old text comes from | `git show`, fixed argv, no shell, no new crate. |
+| Where the old text comes from | `git-cat-file blob`, fixed argv, no shell, no new crate. Name-status is computed in-process from blob ids. |
 | Who shares the ref | Nobody. The ref is the page query, not a field on `ServerState`. Two tabs can compare different refs. |
 
 Side-by-side is not part of the plan. The page already has a file browser, a table of contents, and an 18rem comment column. A second rendered copy does not fit, and it would show two copies of every plot.
@@ -89,7 +89,7 @@ Toolbar when diff is on, directory watch, comments on. The file browser lists na
 ```mermaid
 flowchart LR
   disk["working copy .md"] --> render["normal watch render"]
-  git["git show REF:path"] --> old["parse old blocks, do not run"]
+  git["git-cat-file blob REF:path"] --> old["parse old blocks, do not run"]
   disk --> parseNew["parse host blocks"]
   parseNew --> align["block LCS"]
   old --> align
@@ -106,11 +106,13 @@ Diff is a query on the page, not a `DiffRef` stored on `ServerState`.
 
 | Entry | Effect |
 |---|---|
-| `rustlab-notebook watch path` | Unchanged, plus one quiet **Diff** button. No git calls. |
-| `watch path --diff` | That browser session opens with `?diff=HEAD` as the default when the query is absent. |
-| `watch path --diff <ref>` | Same, default ref `<ref>`. |
-| `watch path --diff index` | Default is the index (`git show :path`). |
-| Toolbar **Diff** | One quiet button. Off → `?diff=off` (clears `base`). On → `?diff=HEAD` and the picker appears. |
+| `rustlab-notebook watch path` | Unchanged, plus a `⋯` menu. **Show diff** is disabled. No git calls, including no file-tree dots and no `for-each-ref`. |
+| `watch path --git-diff` | Enables git. The terminal prints a trust warning. The menu note says git reads the repository config. A page with no query uses `?diff=HEAD` when `--diff` was also passed; otherwise the page stays plain until **Show diff**. |
+| `watch path --git-diff --diff` | Same, and the default ref is `HEAD`. |
+| `watch path --git-diff --diff <ref>` | Same, default ref `<ref>`. |
+| `watch path --git-diff --diff index` | Default is the index (`git-cat-file blob :path`). |
+| `watch path --diff` without `--git-diff` | Warning on stderr. Git stays off. |
+| Toolbar **Show diff** | Inside the `⋯` menu. When git is off, the switch is disabled and the hint says to pass `--git-diff`. When git is on, off → `?diff=off` (clears `base`); on → `?diff=HEAD` and the picker appears. |
 | `vs` field | Compact text field. Typing filters the list. Enter sets `?diff=<ref>` and reloads. No restart. |
 | `from` field | Same control. Empty means the working copy. A ref sets `?base=<ref>`. |
 | Free text | Typed text that matches no row is still used when it passes the character check. |
@@ -119,11 +121,11 @@ Diff is a query on the page, not a `DiffRef` stored on `ServerState`.
 | `GET /n/<slug>?diff=off` | Forces off, even if `--diff` set a default. |
 | `GET /n/<slug>` with no query | Uses the CLI default, or plain watch when `--diff` was not passed. |
 
-`GET /git/refs` fills both fields: `git -C <root> for-each-ref --format=… refs/heads refs/tags`, sorted in Rust (current branch, then `main`, then other heads by date, then tags). Recent commits are an optional `git log -n 12`. Every name is run through the same character check before it is sent. Not a repo, or `git` missing, is HTTP 200 with an `error` field and empty lists. POST `/git/refs` is not mounted (405).
+`GET /git/refs` fills both fields only when git is enabled: dashed `git-for-each-ref` with a fixed format, sorted in Rust (current branch, then `main`, then other heads by date, then tags). Recent commits are the first 12 of a first-parent walk (`git-cat-file commit`), not `git log`. Every name is run through the same character check before it is sent. Git off, not a repo, a failed ownership check, or `git` missing is HTTP 200 with an `error` field and empty lists. POST `/git/refs` is not mounted (405).
 
 The ref field and `?diff=` / `?base=` accept `HEAD`, `HEAD~3`, `origin/main`, a hex sha, or the token `index`. They do not accept a range. `main..HEAD` in one parameter is rejected with "one ref; the page is the working copy." Two refs are two parameters, not `A..B`.
 
-`--diff` on the non-interactive watcher (`--obsidian` or `--output`, `watch.rs`) is ignored with the same kind of warning `--editable` already prints. Diff mode is the interactive server only.
+`--diff` and `--git-diff` on the non-interactive watcher (`--obsidian` or `--output`, `watch.rs`) are ignored with the same kind of warning `--editable` already prints. Diff mode is the interactive server only. The config key does not turn git on for that watcher.
 
 ### 1.2 The view
 
@@ -150,7 +152,7 @@ Directory watch only. Single-file watch has no file browser; the toolbar counter
 
 `FileEntry` does not gain a field. Dots are painted by the page script from a hidden `<div id="rl-git-files">` inside `<main>`, so `chrome_fingerprint` stays stable. The dot uses the add-bar color and a `title` (`modified`, `added`, `renamed`, `copied`, `type changed`). Deleted files have no row, because the browser lists files on disk.
 
-Status comes from one `git diff --name-status -M` (working copy vs the ref, or the two refs). Untracked files use `git ls-files -z --others --exclude-standard`. The JSON is part of the stamped page, not a separate broadcast.
+Status is computed in-process. A commit side is `git-ls-tree -r -z` (blobs only; modes 120000 and 160000 are skipped). The working copy is a walk that does not follow symlinks, skips a directory named `.git`, and stops at 2000 files. Regular files are hashed with one `git-hash-object --no-filters --stdin-paths`. An oid that is unique among additions and unique among deletions is reported as a rename; this is exact content, not similarity `-M`. A truncated walk does not emit deletions. The JSON is part of the stamped page, not a separate broadcast. Git off means no dots and no walk.
 
 ### 1.5 Source pane
 
@@ -167,7 +169,7 @@ Unchanged in the MVP. **Source** still shows the working copy via `GET /raw/{slu
 Alignment runs on the **host file**, before `embed::expand_embeds`.
 
 1. Read the working copy.
-2. Read the old blob (`git show`).
+2. Read the old blob (`git-cat-file blob`).
 3. If the page's comment toggle is off, run both strings through `comments::strip_source`.
 4. `parse_notebook` each string. Do not expand embeds. Do not execute.
 5. Fingerprint each block: kind + body. Kind is markdown, code, mermaid, widget, callout, exercise, solution. Body is the source (code and mermaid) or the markdown text. Directives (`<!-- hide -->`, `<!-- code: collapsed -->`) are part of the code fingerprint so a hide/show edit counts as a change.
@@ -274,44 +276,54 @@ Turning the toggle off re-renders once without stamping, then the page is today'
 
 ## 6. Security
 
-Fits the current model (`docs/security.md`, `server/auth.rs`). No new trust boundary.
+Fits the current model (`docs/security.md`, `server/auth.rs`). Opening an untrusted folder must not run programs named in that folder's `.git/config` or its includes.
 
 | Rule | How |
 |---|---|
-| Read-only git | The only subcommands are `rev-parse`, `show`, `diff`, `for-each-ref`, `log`, and `ls-files`. No `checkout`, `apply`, `add`, `commit`, `clean`, or `config`. |
-| No shell | `Command::new("git")` with an argument vector. |
-| Ref characters | Allow `A–Z a–z 0–9 . _ / ^ ~ @ { } -` only. Reject empty, longer than 256 bytes, a leading `-`, `:`, whitespace, `\`, and any other byte. `:` is rejected so a ref cannot smuggle `ref:otherpath` into `git show`. |
-| Then ask git | `rev-parse --verify --end-of-options <ref>^{commit}` must succeed. A ref that passes the character check and is not a commit is still rejected. `index` skips this and uses the `:` stage. |
-| Path | Relative path from toplevel to `Notebook.source_path`. Reject `..`, absolute paths, and anything outside the toplevel or the jail. The URL slug is resolved to a notebook the server already has, then the path is taken from that notebook. |
+| Opt-in | Git is off unless `watch --git-diff` or `[notebook] git_diff = true`. Off means no spawn at all: no `for-each-ref`, no file-tree dots, `?diff=` ignored. **Show diff** is `disabled` with the hint "Git diff is off. Pass --git-diff to compare a repository you trust." |
+| Trust warning | The first time the process enables git, stderr says git reads the repository config and includes, which can name programs, and that diff is for a repository you trust. The menu shows the one-line note "Git reads this repository's config. Compare only a repo you trust." |
+| Plumbing only | Dashed binaries from `git --exec-path`, probed with cwd outside the notebook repo: `git-rev-parse`, `git-cat-file`, `git-ls-tree`, `git-for-each-ref`, `git-hash-object`, `git-ls-files`. No `diff`, `show`, `log`, `status`, `fetch`, or `clone`. Name-status is in-process. A missing exec-path fails closed; there is no fall-through to `git <cmd>`. |
+| No shell | `Command::new` on that absolute binary with an argument vector. |
+| Config overrides | Every child gets `GIT_CONFIG_KEY_*` for `core.fsmonitor=false`, `core.hooksPath=/dev/null`, `core.pager=cat`, `diff.external=` (empty), `protocol.allow=never`, `core.sshCommand=false`, `credential.helper=` (empty). `safe.directory` is not set. |
+| Environment | `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`. The child does not inherit `GIT_DIR`, `GIT_WORK_TREE`, `GIT_CONFIG`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_KEY_*`, `GIT_CONFIG_VALUE_*`, `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, or `GIT_EXEC_PATH`. |
+| No network | No fetch. `protocol.allow=never`. |
+| Ownership | A non-zero exit whose stderr says "dubious ownership" or "safe.directory" is refused ("refusing this repository (ownership check failed)"). No `safe.directory` override is added. |
+| Filters | Blob bytes come from `git-cat-file blob`, which does not run textconv. Worktree hashes use `git-hash-object --no-filters`. Porcelain `git diff` / `git show` are not invoked, so `--no-ext-diff` and `--no-textconv` have no command to attach to. |
+| Ref characters | Allow `A–Z a–z 0–9 . _ / ^ ~ @ { } -` only. Reject empty, longer than 256 bytes, a leading `-`, `:`, whitespace, `\`, and any other byte. `:` is rejected so a ref cannot smuggle `ref:otherpath` into the blob spec. The blob spec uses the verified oid plus a path that itself contains no `:`. |
+| Then ask git | `git-rev-parse --verify --end-of-options <ref>^{commit}` must succeed. A ref that passes the character check and is not a commit is still rejected. `index` skips this and uses the `:` stage via `git-ls-files`. |
+| Path | Relative path from toplevel to `Notebook.source_path`. Reject `..`, absolute paths, and anything outside the toplevel or the jail. The URL slug is resolved to a notebook the server already has, then the path is taken from that notebook. The child cwd is that repo root. There is no `-C` (the wrapper is not used). |
 | Routes | No new `POST`. No new write. `?diff=` and `?base=` are queries on the existing `GET /n/...`. `GET /git/refs` is read-only. Loopback `Host` already covers every request. Origin checks on `POST /save`, `POST /annotate`, and the WebSocket stay as they are. CSP nonces are unchanged; the picker script is a nonced `<script>` with no inline `on*` handlers. |
 | CSP | Diff markup is rendered by the server into the page. No inline handlers. Styles use the existing nonce-free stylesheet and `--rl-*` tokens. No CDN. `connect-src` is unchanged. |
 | User files | `/raw/` and `/plots/` keep `USER_FILE_CSP` and `nosniff`. Git output is not served from those routes. |
-| Jail | `git -C` is the repo root only when that root contains the watched directory. A `--jail-root` that is wider than the repo still does not let `git show` read a path outside the repo. A notebook path outside the jail is not a notebook the server renders. |
-| Textconv | `--no-textconv` so a hostile `.gitattributes` filter does not run. |
-| Huge output | Cap the blob read (the 512 KiB skip). Drop stderr from git except a short banner. |
+| Jail | The repo root is used only when it contains the watched directory. A `--jail-root` that is wider than the repo still does not let a blob read escape the repo. A notebook path outside the jail is not a notebook the server renders. |
+| Huge output | Cap the blob read (the 512 KiB skip). The worktree walk caps at 2000 files. Drop stderr from git except a short banner. |
 
-`git show` of a blob the user already has in `.git` is the same trust as reading the working tree, which watch already does.
+Reading a blob the user already has in `.git` is the same trust as reading the working tree, which watch already does. Running a program named by that repo's config is not. That is why git is opt-in and why the overrides exist.
+
+Residual: the operator's own `~/.gitconfig` is still read (system config is not). Command-line overrides win for the keys above, including when an `include.path` sets them. Other program-naming keys (`gpg.program`, `core.editor`) are not overridden; these plumbing commands do not consult them. Rename detection is exact oid equality, not similarity `-M`. The walk skips symlinks and does not apply `.gitignore`, so ignored files can count as added and can exhaust the 2000-file cap; a truncated walk does not emit deletions. Submodules are not diffed. `--no-filters` means a clean-filter blob can show as modified. Alias protection depends on exec'ing the dashed binaries.
 
 ## 7. Edge cases
 
 | Case | Behavior |
 |---|---|
-| Not a git repo | Watch works. **Diff** is disabled. Toolbar: "not a git repository". |
-| `git` missing | Same, with "git not found". |
+| Git off (the default) | Watch works. **Show diff** is disabled, with the `--git-diff` hint. No git process. `?diff=` is ignored. |
+| Not a git repo | Watch works once git is enabled. Toolbar: "not a git repository". |
+| Dubious ownership | Refused. Toolbar: "refusing this repository (ownership check failed)". No `safe.directory` exception is written. |
+| `git` missing | Toolbar: "git not found". |
 | Bad ref | Page stays on the previous good ref, or on plain watch if there was none. Toolbar: "unknown ref". The notebook still loads. |
-| Untracked file | Every host block is "added". No `git show`. |
+| Untracked file | Every host block is "added". No blob read of a missing path. |
 | Clean file | Toolbar: "no changes". No bars. |
-| Renamed | `git diff -M --name-status` reports `R`. `git show` uses the old path. The row tooltip says "renamed". |
+| Renamed | Exact unique oid match between one added and one deleted path. The old blob is read at the old path. The row tooltip says "renamed". Similarity `-M` is not used. |
 | Deleted from disk | No page and no browser row. Not in the MVP. |
 | Deleted block inside a file | A "removed" section, as in §1.2. |
 | Binary / NUL in the blob | Skip inline diff. Toolbar: "not a text notebook". |
 | Huge file | §2.4 cap. Normal render, no bars. |
 | Embeds | Host file only. Banner in §2.1. |
 | Merge conflict markers | They are ordinary lines. If they are in the working copy, they render as text and the block shows as changed. No special conflict UI. |
-| Submodules, sparse checkout | If `git show` fails, the toolbar shows the failure and the page is plain watch. |
+| Submodules, sparse checkout | Submodule gitlinks are skipped. A missing blob leaves that side empty and the page still loads. |
 | `--editable` at the same time | Allowed. Saves write the working copy as today, then the diff refreshes. Diff mode adds no save path. |
 | Two refs | Allowed as `?diff=<ref>&base=<ref>`. The newer side is shown and not executed. A range string in one parameter is still rejected. |
-| Interactive watcher vs `--obsidian` | `--diff` ignored on the disk re-renderer, with a warning. |
+| Interactive watcher vs `--obsidian` | `--diff` and `--git-diff` ignored on the disk re-renderer, with a warning. |
 
 ## 8. Colors
 
@@ -335,7 +347,7 @@ Each phase is shippable on its own. Do not start phase 2 in the same change as p
 
 ### Phase 1 — MVP
 
-- `watch --diff` and `watch --diff <ref>`, including `index`. The flag is a default for pages that omit `diff`.
+- `watch --git-diff`, or `[notebook] git_diff = true`. Optional `--diff` / `--diff <ref>` / `--diff index` is only the default ref, and only after git is enabled. A terminal warning and a one-line menu note say to use this on a repository you trust.
 - Toolbar `⋯` menu. **Show diff** is one click after the menu opens. The `vs` / `from` picker stays in the menu until diff is on. A dot on the icon marks diff on. `sessionStorage` remembers the choice beside `?diff=`.
 - `?diff=<ref>` and optional `?base=<ref>` stamp that response only. `GET /git/refs` fills the lists.
 - Block LCS, inline bars, removed sections from old source, line diff inside a changed code cell. Working copy vs a ref keeps live outputs. Two refs render the newer text and do not run it.
@@ -345,7 +357,7 @@ Each phase is shippable on its own. Do not start phase 2 in the same change as p
 - Four theme tokens and contrast tests.
 - Banners for not-a-repo, untracked, rename, embeds, bad ref, too large.
 
-Watch with no `--diff` is the same HTML as today, aside from the `⋯` button. The picker stays inside that menu until diff is on.
+Watch with no `--git-diff` and no `[notebook] git_diff` is the same HTML as today, aside from the `⋯` button. **Show diff** in that menu is unavailable. The picker stays inside that menu until diff is on.
 
 ### Phase 2 — finer text
 
@@ -374,14 +386,16 @@ Phase 1, in the same change as the code. Headless, no browser, no network.
 | Test | What it pins |
 |---|---|
 | Ref checker | Accepts `HEAD`, `HEAD~2`, `origin/main`, a 40-hex sha, `index`. Rejects `HEAD;id`, `-rf`, `HEAD:../../x`, `main..HEAD`, a newline, a 300-byte string. |
-| Argv builder | The `show` / `diff` / `rev-parse` vectors contain `--end-of-options` and never a shell metacharacter. Path argument equals the computed relative path. |
+| Argv builder | The blob / `rev-parse` vectors contain `--end-of-options` and never a shell metacharacter. Path argument equals the computed relative path. Override keys include the fsmonitor / hooks / pager / external-diff / protocol / ssh / credential list and do not include `safe.directory`. Plumbing tools are not `diff`, `show`, `log`, `status`, `fetch`, or `clone`. |
 | Block LCS | Insert, delete, substitute, and a swap of two blocks. Code directive change is a substitute. |
 | Comment strip | With comments off, a `%%`-only edit aligns as unchanged. With comments on, it is a change. |
 | Render classes | A fixture notebook yields `rl-diff-add`, `rl-diff-del`, `rl-diff-chg` on the right sections. A changed code section contains the new output and both source lines. A removed code section contains no plot markup. |
 | Themes | `contrast_ratio` of `--rl-text` on both washes ≥ 4.5, and each bar against `--rl-bg` ≥ 3, for all four palettes. |
-| Git fixture | Temp repo: clean, modified, untracked, renamed (`-M`), not a repo, missing blob. Uses the real `git` if present; skips with a reason if it is not, except the argv and ref-checker tests, which do not need `git`. |
+| Git fixture | Temp repo: branches, two-ref and working-copy pages. Uses the real `git` if present; skips with a reason if it is not, except the argv and ref-checker tests, which do not need `git`. |
+| Git off | `present_if(false)` and `refs_json_if(false)` do not increase the spawn counter. The page HTML is unchanged. The refs body says "git diff is off". |
+| Hostile config | A fixture whose `include.path`, `core.fsmonitor`, `diff.external`, `diff.<drv>.textconv`, and plumbing aliases point at a marker script. Plain `git status` / `git diff` / `git cat-file` write the marker. The hardened path does not. |
 | Router | Diff on does not mount a route that was not already mounted. No new POST. |
-| Jail | A slug that is not one of the server's notebooks does not produce a `git show` path. |
+| Jail | A slug that is not one of the server's notebooks does not produce a blob path. |
 | Live HTML | After a one-block edit, `classify` is still `Partial` when diff classes are present on both sides. |
 | Size cap | Over the cap, the HTML has no `rl-diff` section. |
 
