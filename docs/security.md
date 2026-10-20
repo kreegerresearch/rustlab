@@ -112,8 +112,17 @@ event handlers.
 The operator's `~/.gitconfig` is still read. The overrides above win for
 those keys, including when the repository's `include.path` sets them.
 Other program-naming keys are not overridden; these plumbing commands do
-not consult them. The worktree walk does not follow symlinks and does not
-apply `.gitignore`.
+not consult them. The worktree listing is `git-ls-files -z --cached
+--others --exclude-standard`, so ignored paths and the contents of a
+nested repository are not hashed. Symlinks are not followed. A tracked
+symlink keeps its old blob id so it is not reported deleted. Hashes use
+`git-hash-object --no-filters`. CRLF is folded to LF in this process
+before that hash and before the line diff, so a line-ending-only
+checkout is not a change. Clean and smudge filters are still not run:
+a filter that rewrites the blob can show the file as modified. An
+untracked-file cap still applies to non-notebook paths; notebook paths
+and paths that exist on the other side are kept, so a deletion is not
+dropped when that cap trips.
 
 ## H3 — HTML / XSS + CSP
 

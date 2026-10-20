@@ -22,12 +22,43 @@ should re-validate against those entries when upgrading.
   outside the jail fails with `path escapes notebook directory`. The
   default `cache enable` store (`.rustlab/cache.db`) is checked too.
 
+### Changed
+- **`notebook watch` keeps Comments in the `⋯` menu.** The toolbar is
+  `⋯` and **Source**. **Comments** is a labeled switch beside **Show
+  diff**. It is still the `#rl-comments` checkbox, so the margin hides
+  the same way, and the choice is still `sessionStorage`
+  `rl-comments-visible`. Comments on does not mark the icon. A dot means
+  diff is on or comments are hidden. Static HTML keeps the checkbox in
+  the page header.
+
 ### Fixed
 - **Allocating elementwise fills no longer publish an uninitialised
   buffer.** The parallel `+` / `.*` / `par_map` / reshape / `parmap` row
   pack paths still write each result once (no zero-fill pass). `set_len`
   runs only after every slot of every chunk was written. A kernel that
   stops short panics instead of exposing uninitialised memory.
+- **Notebook git diff follows the files git would list.** The working
+  copy is `git ls-files --cached --others --exclude-standard`, so ignored
+  paths and a nested repository's files are not reported as added.
+  Symlinks are not followed. Notebook paths and paths present on the
+  other side are kept when the untracked cap trips, so a deletion is
+  still shown. CRLF is folded to LF in-process (clean filters are still
+  not run), so a line-ending-only file is not a change on every line.
+  An unborn branch compares against an empty tree. A renamed notebook
+  with edits is paired when the line overlap is unambiguous. The picker
+  includes remote-tracking branches, and a branch name may contain `+`.
+  A commit or checkout refreshes the open comparison. A missing notebook
+  can still be compared by its repo-relative path.
+- **A notebook that exists on only one side of a git diff is a notice,
+  and the next ref is computed again.** `new file — not on <ref>` (the
+  file is in the working copy, or on the shown side, and not on the
+  other) and `deleted — not in the working copy` / `not on <ref>` (the
+  other direction) replace painting every block green or red. The page
+  chrome stays in place, including after **from** is set. A missing blob
+  is not cached, and a cached blob is keyed by the repository and the
+  commit, so switching **vs** / **from**, toggling **Show diff**, editing,
+  or reloading does not keep the one-sided result. `?diff=` still wins
+  over the tab's saved ref.
 
 ## 0.3.12
 

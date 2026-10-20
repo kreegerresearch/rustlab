@@ -3062,6 +3062,8 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 "#
 }
 
+/// Header checkbox for static HTML. `notebook watch` moves this label
+/// into the `⋯` menu (`page::hoist_comments_toggle`) and keeps the id.
 pub(crate) fn toggle_html(checked: bool) -> String {
     let attr = if checked { " checked" } else { "" };
     format!(
@@ -5643,9 +5645,9 @@ mod tests {
             !css.contains("body:not(.has-files)"),
             "the file browser must not drop the margin column"
         );
-        assert!(css.contains(
-            "body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px !important; }"
-        ));
+        assert!(
+            css.contains("body:has(#rl-comments:not(:checked)) { --rl-cm-col: 0px !important; }")
+        );
         assert!(css.contains(
             "body:has(#rl-comments:not(:checked)) .rl-cm-margin,\nbody:has(#rl-comments:not(:checked)) .rl-cm-ref,"
         ));
@@ -5746,14 +5748,16 @@ mod tests {
             "the width is set on body, where the column custom property lives"
         );
         let css = comment_css();
-        assert!(css.contains(
-            "body.has-cm-margin.rl-cm-collapsed { --rl-cm-col: 2.5rem !important; }"
-        ));
+        assert!(
+            css.contains("body.has-cm-margin.rl-cm-collapsed { --rl-cm-col: 2.5rem !important; }")
+        );
         assert!(css.contains("#rl-cm-resize"));
         assert!(css.contains("cursor: col-resize"));
         assert!(css.contains("touch-action: none"));
         assert!(css.contains("z-index: 160"));
-        let wide = css.find("body.has-cm-margin.rl-cm-collapsed").expect("strip");
+        let wide = css
+            .find("body.has-cm-margin.rl-cm-collapsed")
+            .expect("strip");
         let narrow_at = css.find("@media (max-width: 799px)").expect("narrow");
         assert!(wide < narrow_at, "the strip rule is not the narrow drawer");
         let print = css.find("@media print").expect("print");

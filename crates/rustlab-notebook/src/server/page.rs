@@ -53,13 +53,72 @@ pub fn inject_chrome_nonced(
         }
         None => format!("{head_extra}{html}"),
     };
-    match with_head.rfind("</body>") {
+    let page = match with_head.rfind("</body>") {
         Some(idx) => {
             let (pre, rest) = with_head.split_at(idx);
             format!("{pre}{body_extra}{rest}")
         }
         None => format!("{with_head}{body_extra}"),
+    };
+    hoist_comments_toggle(&page)
+}
+
+/// Move the header Comments checkbox into the ⋯ panel.
+///
+/// Static HTML keeps the checkbox in `header.topbar`. Watch is the only
+/// page with the menu, so the hoist runs here. The input keeps
+/// `id="rl-comments"`: the margin CSS is `body:has(#rl-comments:not(:checked))`
+/// and the saved choice is still `rl-comments-visible`. The status span
+/// stays outside `<main>` so a saved-while-hidden note still has a place
+/// to land.
+fn hoist_comments_toggle(html: &str) -> String {
+    const START: &str = "<label class=\"rl-comments-toggle\">";
+    const PANEL: &str = "<div id=\"rl-more-panel\" class=\"rl-more-panel\" hidden role=\"region\" aria-label=\"More\">";
+    let Some(i) = html.find(START) else {
+        return html.to_string();
+    };
+    let Some(rel_end) = html[i..].find("</label>") else {
+        return html.to_string();
+    };
+    let end = i + rel_end + "</label>".len();
+    let Some(panel) = html.find(PANEL) else {
+        return html.to_string();
+    };
+    let checked = html[i..end].contains(" checked");
+    let switch = comments_menu_switch(checked);
+    let mut out = String::with_capacity(html.len() + switch.len());
+    out.push_str(&html[..i]);
+    out.push_str(&html[end..]);
+    // The panel tag is after the label in document order, so dropping
+    // the label shifts its index.
+    let panel = if panel >= end {
+        panel - (end - i)
+    } else {
+        panel
+    };
+    let at = panel + PANEL.len();
+    if at > out.len() || !out[panel..].starts_with(PANEL) {
+        return html.to_string();
     }
+    out.insert_str(at, &switch);
+    if !checked && out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden>") {
+        out = out.replace(
+            "<span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden>",
+            "<span id=\"rl-diff-dot\" class=\"rl-diff-dot\">",
+        );
+        out = out.replace(
+            "aria-label=\"More\" title=\"More\"",
+            "aria-label=\"More, comments off\" title=\"More, comments off\"",
+        );
+    }
+    out
+}
+
+fn comments_menu_switch(checked: bool) -> String {
+    let attr = if checked { " checked" } else { "" };
+    format!(
+        "<label class=\"rl-comments-toggle rl-menu-switch\"><input type=\"checkbox\" id=\"rl-comments\" role=\"switch\"{attr}><span class=\"rl-switch\" aria-hidden=\"true\"></span>Comments</label>"
+    )
 }
 
 /// `<head>` additions: the chrome `<style>`, plus (when editable) the
@@ -127,6 +186,36 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-diff-toggle[aria-checked="true"] .rl-switch {{ background: {accent}; border-color: {accent}; }}
   #rl-diff-toggle[aria-checked="true"] .rl-switch::after {{ left: 13px; background: {bg}; }}
   #rl-toolbar #rl-diff-toggle:disabled {{ opacity: 0.45; cursor: not-allowed; }}
+  /* In-panel switches stay full contrast. A disabled Show diff stays dim,
+     and the ⋯ button keeps .rl-quiet. */
+  #rl-toolbar #rl-more-panel .rl-quiet:not(:disabled),
+  #rl-toolbar .rl-menu-switch {{ opacity: 1; }}
+  #rl-toolbar .rl-menu-switch {{
+    position: relative;
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    box-sizing: border-box; text-align: left;
+    font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: transparent; color: {text};
+    border: 1px solid transparent; border-radius: 6px;
+    padding: 6px 8px; cursor: pointer;
+  }}
+  #rl-toolbar .rl-menu-switch input {{
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }}
+  #rl-comments:checked + .rl-switch {{ background: {accent}; border-color: {accent}; }}
+  #rl-comments:checked + .rl-switch::after {{ left: 13px; background: {bg}; }}
+  #rl-comments:focus-visible + .rl-switch {{
+    outline: 2px solid {accent}; outline-offset: 2px;
+  }}
+  #rl-cm-confirm:empty {{ display: none !important; }}
+  #rl-cm-confirm:not(:empty) {{
+    position: fixed; top: 46px; right: 14px; z-index: 100001; margin: 0;
+    padding: 4px 8px; max-width: 22rem;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-radius: 6px;
+    font: 12px/1.35 system-ui, sans-serif;
+  }}
   p.rl-git-note {{ margin: 0; font: 11px/1.35 system-ui, sans-serif; color: {text_dim}; }}
   #rl-diff {{ display: flex; flex-direction: column; gap: 6px; align-items: stretch; }}
   .rl-diff-nav {{ display: flex; gap: 4px; align-items: center; }}
@@ -158,6 +247,13 @@ fn chrome_style(c: &ThemeColors) -> String {
     background: {bg_secondary}; color: {text_dim};
     border: 1px solid {border}; border-radius: 6px;
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }}
+  .rl-diff-notice {{
+    margin: 0 0 1rem; padding: 0.6rem 0.85rem;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-left: 4px solid {accent};
+    border-radius: 6px;
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
   section.rl-diff-add {{
     background: var(--rl-diff-add-bg, transparent);
@@ -337,9 +433,10 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     let nonce_attr = crate::render::nonce_attr(nonce);
     let editable_js = if opts.editable { "true" } else { "false" };
 
-    // The toolbar shows one ⋯ until it is opened. Show diff and the
-    // compare picker live in that panel. The picker stays hidden until
-    // diff is on; a dot on the icon is the only mark while the panel is shut.
+    // The toolbar shows ⋯ and Source until ⋯ is opened. Comments and
+    // Show diff live in that panel. The picker stays hidden until diff
+    // is on. A dot on the icon means a non-default choice (diff on, or
+    // comments hidden). Comments on does not light it.
     let git_flag = if opts.git_diff { "on" } else { "off" };
     let git_extra = if opts.git_diff {
         format!(" data-rl-git=\"{git_flag}\"")
@@ -540,7 +637,7 @@ pub(crate) const DIFF_CLIENT_SCRIPT: &str = r#"function rlDiffFilter(items, quer
 }
 function rlDiffRefOk(s) {
   if (!s || s.length > 256 || s.charAt(0) === '-' || s.indexOf('..') !== -1) return false;
-  return /^[A-Za-z0-9._/^~@{}-]+$/.test(s);
+  return /^[A-Za-z0-9._/^~@{}+-]+$/.test(s);
 }
 function rlDiffChoose(matches, query, highlight, armed) {
   var typed = String(query || '').trim();
@@ -550,6 +647,15 @@ function rlDiffChoose(matches, query, highlight, armed) {
   }
   if (typed && matches.length === 0 && rlDiffRefOk(typed)) return typed;
   return null;
+}
+function rlMoreMark(diffOn, commentsOff) {
+  var bits = [];
+  if (diffOn) bits.push('diff on');
+  if (commentsOff) bits.push('comments off');
+  return {
+    dot: bits.length > 0,
+    label: bits.length ? ('More, ' + bits.join(', ')) : 'More'
+  };
 }
 function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
   if (queryDiff === 'off') return { action: 'store-off', diff: '', base: '' };
@@ -635,7 +741,11 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     if (!panel || !moreBtn) return;
     panel.hidden = !open;
     moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) toggle.focus();
+    if (open) {
+      var first = panel.querySelector('button, input, a, select, textarea');
+      if (first) first.focus();
+      else toggle.focus();
+    }
   }
   if (moreBtn && panel) {
     moreBtn.addEventListener('click', function (ev) {
@@ -653,11 +763,16 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       setMenu(false);
     });
   }
-  if (dot) dot.hidden = !on();
-  if (moreBtn && on()) {
-    moreBtn.setAttribute('aria-label', 'More, diff on');
-    moreBtn.title = 'More, diff on';
+  function syncMoreMark() {
+    var box = document.getElementById('rl-comments');
+    var mark = rlMoreMark(on(), !!(box && !box.checked));
+    if (dot) dot.hidden = !mark.dot;
+    if (moreBtn) {
+      moreBtn.setAttribute('aria-label', mark.label);
+      moreBtn.title = mark.label;
+    }
   }
+  syncMoreMark();
   toggle.addEventListener('click', function () {
     if (!gitOn) return;
     if (on()) go('off', '');
@@ -848,6 +963,17 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     list[i].scrollIntoView({ block: 'center' });
     if (pos) pos.textContent = (i + 1) + '/' + list.length;
   }
+  function showPos() {
+    if (!pos) return;
+    var list = changes();
+    if (!list.length) { pos.textContent = '0/0'; return; }
+    var cur = 0;
+    list.forEach(function (el, i) {
+      if (el.getBoundingClientRect().top < 80) cur = i;
+    });
+    pos.textContent = (cur + 1) + '/' + list.length;
+  }
+  if (on()) showPos();
   var prev = document.getElementById('rl-diff-prev');
   var next = document.getElementById('rl-diff-next');
   if (prev) prev.addEventListener('click', function () { step(-1); });
@@ -886,6 +1012,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
   var box = document.getElementById('rl-comments');
   if (box) {
     box.addEventListener('change', function () {
+      syncMoreMark();
       if (!on()) return;
       var u = new URL(location.href);
       var cur = params();
@@ -979,6 +1106,7 @@ assert.deepStrictEqual(m.map(function (it) { return it.value; }), ['main', 'feat
 assert.strictEqual(rlDiffChoose(m, 'a', 1, false), 'feature-x');
 assert.strictEqual(rlDiffChoose(rlDiffFilter(items, ''), '', 1, false), null);
 assert.strictEqual(rlDiffChoose(rlDiffFilter(items, ''), '', 1, true), 'main');
+assert.strictEqual(rlDiffRefOk('topic+1'), true);
 assert.strictEqual(rlDiffChoose([], 'HEAD~2', 0, false), 'HEAD~2');
 assert.strictEqual(rlDiffChoose([], 'refs/heads/off', 0, false), 'refs/heads/off');
 assert.strictEqual(rlDiffChoose([], 'main..HEAD', 0, false), null);
@@ -992,6 +1120,18 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:
 assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:''}).diff, 'HEAD');
 assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'main..HEAD'}).action, 'none');
 assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
+var mark = rlMoreMark(false, false);
+assert.strictEqual(mark.dot, false);
+assert.strictEqual(mark.label, 'More');
+mark = rlMoreMark(true, false);
+assert.strictEqual(mark.dot, true);
+assert.strictEqual(mark.label, 'More, diff on');
+mark = rlMoreMark(false, true);
+assert.strictEqual(mark.dot, true);
+assert.strictEqual(mark.label, 'More, comments off');
+mark = rlMoreMark(true, true);
+assert.strictEqual(mark.dot, true);
+assert.strictEqual(mark.label, 'More, diff on, comments off');
 "#,
         );
         std::fs::write(&path, harness).unwrap();
@@ -1070,6 +1210,96 @@ assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
         assert!(
             out.contains("var prevAfter = window.__rlAfterUpdate;"),
             "chrome must chain the comment-placement hook"
+        );
+    }
+
+    fn page_with_comments(checked: bool) -> String {
+        let toggle = crate::comments::toggle_html(checked);
+        format!(
+            "<!doctype html><html><head><title>x</title></head><body><header class=\"topbar\">{toggle}</header><main><p>hi</p></main></body></html>"
+        )
+    }
+
+    #[test]
+    fn watch_moves_comments_into_the_menu() {
+        let out = inject_chrome(
+            &page_with_comments(true),
+            Theme::Dark.colors(),
+            PageOpts {
+                editable: false,
+                git_diff: true,
+            },
+        );
+        let main_at = out.find("<main>").unwrap();
+        let header = &out[..main_at];
+        assert!(
+            !header.contains("id=\"rl-comments\""),
+            "the header no longer holds the checkbox"
+        );
+        assert!(
+            header.contains("id=\"rl-cm-confirm\""),
+            "the saved-note status stays outside the menu"
+        );
+        let panel = out.find("id=\"rl-more-panel\"").unwrap();
+        let source = out.find("id=\"rl-source-toggle\"").unwrap();
+        assert!(panel < source, "the menu comes before the Source button");
+        let menu = &out[panel..source];
+        assert!(menu.contains("id=\"rl-comments\""), "{menu}");
+        assert!(menu.contains("role=\"switch\""), "{menu}");
+        assert!(menu.contains(">Comments</label>"), "{menu}");
+        assert!(menu.contains(" checked"), "default is on");
+        assert!(
+            menu.contains("Show diff</button>"),
+            "both switches share the menu"
+        );
+        assert!(
+            out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden>"),
+            "comments on does not light the dot"
+        );
+        assert!(!out.contains("onclick="));
+        assert!(out.contains("#rl-comments:checked"));
+        assert!(out.contains("rl-comments-visible") || out.contains("syncMoreMark"));
+        // Toolbar controls outside the panel are ⋯ and Source.
+        let toolbar = out.find("id=\"rl-toolbar\"").unwrap();
+        let after = &out[toolbar..];
+        let panel_in_toolbar = after.find("id=\"rl-more-panel\"").unwrap();
+        let before_panel = &after[..panel_in_toolbar];
+        assert!(before_panel.contains("⋯") || before_panel.contains("id=\"rl-more-btn\""));
+        assert!(!before_panel.contains("Comments"));
+    }
+
+    #[test]
+    fn comments_off_lights_the_menu_dot() {
+        let out = inject_chrome(
+            &page_with_comments(false),
+            Theme::Latte.colors(),
+            PageOpts {
+                editable: false,
+                git_diff: false,
+            },
+        );
+        assert!(
+            out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\">"),
+            "hiding comments is the non-default mark"
+        );
+        assert!(
+            !out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden>"),
+            "the dot is not left hidden"
+        );
+        assert!(out.contains("aria-label=\"More, comments off\""));
+        let panel = out.find("id=\"rl-more-panel\"").unwrap();
+        let slice = &out[panel..panel + 800];
+        assert!(
+            slice.contains("id=\"rl-comments\" role=\"switch\""),
+            "{slice}"
+        );
+        assert!(
+            !slice.contains("id=\"rl-comments\" role=\"switch\" checked"),
+            "off stays unchecked"
+        );
+        assert!(
+            out.contains("var(--rl-"),
+            "latte still paints the switch with theme tokens"
         );
     }
 

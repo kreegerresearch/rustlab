@@ -168,6 +168,26 @@ pub fn spawn(
         .watch(&watch_target, mode)
         .with_context(|| format!("watching {}", watch_target.display()))?;
 
+    // A checkout or commit updates `.git` and may not touch the notebook
+    // file. Watch the git dir when diff is enabled so `?diff=` reloads.
+    // A notebook directory that already contains `.git` is covered by the
+    // recursive watch above; the bridge still has to recognise those paths.
+    let mut git_dirs: Vec<PathBuf> = Vec::new();
+    if state.git_enabled {
+        if let Some(nb) = state.notebooks.values().next() {
+            if let Some(start) = nb.source_path.parent() {
+                for dir in crate::gitdiff::git_watch_paths(start) {
+                    let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
+                    if !canon.starts_with(&watch_target) {
+                        let _ = watcher.watch(&canon, RecursiveMode::Recursive);
+                    }
+                    git_dirs.push(canon);
+                }
+            }
+        }
+    }
+    let all_slugs: Vec<String> = state.notebooks.keys().cloned().collect();
+
     // Bridge: std mpsc (notify thread) → tokio mpsc (coordinator task).
     // Forwards a plain render request for whichever notebook changed.
     let (tx, rx) = mpsc::unbounded_channel::<RenderRequest>();
@@ -191,6 +211,14 @@ pub fn spawn(
                 continue;
             }
             for path in &event.paths {
+                if git_meta_path(path, &git_dirs) {
+                    for slug in &all_slugs {
+                        if tx.send(RenderRequest::rerender(slug.clone())).is_err() {
+                            return;
+                        }
+                    }
+                    continue;
+                }
                 let req = match match_slug(&by_path, path) {
                     Some(slug) => Some(RenderRequest::rerender(slug)),
                     None => {
@@ -234,6 +262,18 @@ fn match_slug(by_path: &HashMap<PathBuf, String>, path: &Path) -> Option<String>
         }
     }
     hit.cloned()
+}
+
+/// True when `path` is inside a git metadata directory. Those events
+/// refresh every open notebook; they are not notebook saves.
+fn git_meta_path(path: &Path, git_dirs: &[PathBuf]) -> bool {
+    if git_dirs.is_empty() {
+        return false;
+    }
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    git_dirs
+        .iter()
+        .any(|dir| canon.starts_with(dir) || path.starts_with(dir))
 }
 
 /// Decide whether a notify event is a content-changing save worth

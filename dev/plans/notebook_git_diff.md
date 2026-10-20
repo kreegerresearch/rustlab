@@ -152,7 +152,7 @@ Directory watch only. Single-file watch has no file browser; the toolbar counter
 
 `FileEntry` does not gain a field. Dots are painted by the page script from a hidden `<div id="rl-git-files">` inside `<main>`, so `chrome_fingerprint` stays stable. The dot uses the add-bar color and a `title` (`modified`, `added`, `renamed`, `copied`, `type changed`). Deleted files have no row, because the browser lists files on disk.
 
-Status is computed in-process. A commit side is `git-ls-tree -r -z` (blobs only; modes 120000 and 160000 are skipped). The working copy is a walk that does not follow symlinks, skips a directory named `.git`, and stops at 2000 files. Regular files are hashed with one `git-hash-object --no-filters --stdin-paths`. An oid that is unique among additions and unique among deletions is reported as a rename; this is exact content, not similarity `-M`. A truncated walk does not emit deletions. The JSON is part of the stamped page, not a separate broadcast. Git off means no dots and no walk.
+Status is computed in-process. A commit side is `git-ls-tree -r -z` (blobs only; modes 120000 and 160000 are skipped). The working copy is `git-ls-files -z --cached --others --exclude-standard`: ignored paths are absent, a nested repository is one directory entry and is dropped, and symlinks are not followed (a tracked symlink keeps the old blob id so it is not a deletion). Regular files are hashed with `git-hash-object --no-filters`. CRLF bytes are folded to LF in this process before the hash and before the line diff. Clean and smudge filters are not run. An exact oid match is a rename. The open notebook, when it is an addition, is also paired with one deleted `.md` when the nonempty-line overlap is at least 0.5 and beats the next candidate by 0.15. The untracked cap is 2000 non-notebook paths; every path on the other side and every `.md` is kept, so a deletion is still emitted. The JSON is part of the stamped page, not a separate broadcast. Git off means no dots and no listing.
 
 ### 1.5 Source pane
 
@@ -289,7 +289,7 @@ Fits the current model (`docs/security.md`, `server/auth.rs`). Opening an untrus
 | No network | No fetch. `protocol.allow=never`. |
 | Ownership | A non-zero exit whose stderr says "dubious ownership" or "safe.directory" is refused ("refusing this repository (ownership check failed)"). No `safe.directory` override is added. |
 | Filters | Blob bytes come from `git-cat-file blob`, which does not run textconv. Worktree hashes use `git-hash-object --no-filters`. Porcelain `git diff` / `git show` are not invoked, so `--no-ext-diff` and `--no-textconv` have no command to attach to. |
-| Ref characters | Allow `A–Z a–z 0–9 . _ / ^ ~ @ { } -` only. Reject empty, longer than 256 bytes, a leading `-`, `:`, whitespace, `\`, and any other byte. `:` is rejected so a ref cannot smuggle `ref:otherpath` into the blob spec. The blob spec uses the verified oid plus a path that itself contains no `:`. |
+| Ref characters | Allow `A–Z a–z 0–9 . _ / ^ ~ @ { } - +` only. Reject empty, longer than 256 bytes, a leading `-`, `:`, whitespace, `\`, and any other byte. `:` is rejected so a ref cannot smuggle `ref:otherpath` into the blob spec. The blob spec uses the verified oid plus a path that itself contains no `:`. |
 | Then ask git | `git-rev-parse --verify --end-of-options <ref>^{commit}` must succeed. A ref that passes the character check and is not a commit is still rejected. `index` skips this and uses the `:` stage via `git-ls-files`. |
 | Path | Relative path from toplevel to `Notebook.source_path`. Reject `..`, absolute paths, and anything outside the toplevel or the jail. The URL slug is resolved to a notebook the server already has, then the path is taken from that notebook. The child cwd is that repo root. There is no `-C` (the wrapper is not used). |
 | Routes | No new `POST`. No new write. `?diff=` and `?base=` are queries on the existing `GET /n/...`. `GET /git/refs` is read-only. Loopback `Host` already covers every request. Origin checks on `POST /save`, `POST /annotate`, and the WebSocket stay as they are. CSP nonces are unchanged; the picker script is a nonced `<script>` with no inline `on*` handlers. |
@@ -300,7 +300,7 @@ Fits the current model (`docs/security.md`, `server/auth.rs`). Opening an untrus
 
 Reading a blob the user already has in `.git` is the same trust as reading the working tree, which watch already does. Running a program named by that repo's config is not. That is why git is opt-in and why the overrides exist.
 
-Residual: the operator's own `~/.gitconfig` is still read (system config is not). Command-line overrides win for the keys above, including when an `include.path` sets them. Other program-naming keys (`gpg.program`, `core.editor`) are not overridden; these plumbing commands do not consult them. Rename detection is exact oid equality, not similarity `-M`. The walk skips symlinks and does not apply `.gitignore`, so ignored files can count as added and can exhaust the 2000-file cap; a truncated walk does not emit deletions. Submodules are not diffed. `--no-filters` means a clean-filter blob can show as modified. Alias protection depends on exec'ing the dashed binaries.
+Residual: the operator's own `~/.gitconfig` is still read (system config is not). Command-line overrides win for the keys above, including when an `include.path` sets them. Other program-naming keys (`gpg.program`, `core.editor`) are not overridden; these plumbing commands do not consult them. Exact oid equality is a rename. An edited rename is an in-process line overlap on the open notebook only, so a total rewrite can stay an add plus a delete. The listing skips symlinks and applies exclude rules, so ignored files are not additions. Untracked non-notebook paths above 2000 are dropped from the dots; deletions of tracked paths are not. Submodules are not diffed. `--no-filters` means a clean-filter blob can show as modified. `git status` with `core.autocrlf` off can still call a CRLF worktree modified; this page folds CRLF and does not. Alias protection depends on exec'ing the dashed binaries.
 
 ## 7. Edge cases
 
@@ -311,10 +311,10 @@ Residual: the operator's own `~/.gitconfig` is still read (system config is not)
 | Dubious ownership | Refused. Toolbar: "refusing this repository (ownership check failed)". No `safe.directory` exception is written. |
 | `git` missing | Toolbar: "git not found". |
 | Bad ref | Page stays on the previous good ref, or on plain watch if there was none. Toolbar: "unknown ref". The notebook still loads. |
-| Untracked file | Every host block is "added". No blob read of a missing path. |
+| Untracked file | Banner `new file — not on <ref>` and one notice. The working copy stays as rendered. Blocks are not all marked added. |
 | Clean file | Toolbar: "no changes". No bars. |
 | Renamed | Exact unique oid match between one added and one deleted path. The old blob is read at the old path. The row tooltip says "renamed". Similarity `-M` is not used. |
-| Deleted from disk | No page and no browser row. Not in the MVP. |
+| Deleted from disk | If the page is still being served: banner `deleted — not in the working copy (still on <ref>)`, the ref's text as removed blocks, and the picker still works. The file browser still has no row for a path that is not on disk. Putting the file back and reloading is a normal diff. |
 | Deleted block inside a file | A "removed" section, as in §1.2. |
 | Binary / NUL in the blob | Skip inline diff. Toolbar: "not a text notebook". |
 | Huge file | §2.4 cap. Normal render, no bars. |
