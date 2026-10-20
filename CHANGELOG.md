@@ -6,6 +6,29 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.13
+
+### Breaking / behavior changes
+- **`parmap` workers use the caller's path jail and plot context.**
+  `save`, `load`, and `run` inside `parmap` are accepted or rejected the
+  same way they are on the calling thread. A worker does not keep that
+  jail after the task, so a later unjailed `parmap` is not stuck with a
+  notebook root. Plot context (`Notebook` / `Headless` / `Terminal`) is
+  installed for the task as well.
+- **`whos`, `sparameters` (file form), `cache enable`, and `cache add file`
+  honor the path jail.** Previously those reads and the cache store path
+  skipped `check_path`, including on the calling thread. With no jail
+  (REPL, `rustlab run`) the path is unchanged. Inside a notebook, a path
+  outside the jail fails with `path escapes notebook directory`. The
+  default `cache enable` store (`.rustlab/cache.db`) is checked too.
+
+### Fixed
+- **Allocating elementwise fills no longer publish an uninitialised
+  buffer.** The parallel `+` / `.*` / `par_map` / reshape / `parmap` row
+  pack paths still write each result once (no zero-fill pass). `set_len`
+  runs only after every slot of every chunk was written. A kernel that
+  stops short panics instead of exposing uninitialised memory.
+
 ## 0.3.12
 
 ### Added

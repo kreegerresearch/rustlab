@@ -56,6 +56,16 @@ impl PathJailGuard {
         Self::with_base(root, base)
     }
 
+    /// Install `jail` for this guard's lifetime, then restore whatever was
+    /// current. `None` clears the jail. `parmap` workers use this so a
+    /// reused rayon thread both inherits the caller's jail and drops it
+    /// again when the task ends.
+    pub fn install(jail: Option<PathJail>) -> Self {
+        let prev = path_jail();
+        set_path_jail(jail);
+        Self { prev }
+    }
+
     /// Jail to `root`, resolving relative paths against `base`. A missing
     /// `base` falls back to `root`.
     pub fn with_base(root: Option<PathBuf>, base: Option<PathBuf>) -> Self {

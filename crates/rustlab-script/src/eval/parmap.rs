@@ -75,6 +75,35 @@ impl Drop for ParallelContextGuard {
     }
 }
 
+/// Installs the calling thread's path jail and plot context for one
+/// worker task, then restores whatever that worker thread had before.
+///
+/// Both are thread-locals, so a rayon worker does not see them unless
+/// they are copied in. Restoring (including `None` for the jail) means a
+/// reused worker cannot keep a notebook jail after the task, and a later
+/// unjailed `parmap` cannot inherit a stale root.
+struct WorkerScope {
+    _jail: crate::path_jail::PathJailGuard,
+    plot_prev: rustlab_plot::PlotContext,
+}
+
+impl WorkerScope {
+    fn enter(jail: Option<crate::path_jail::PathJail>, plot: rustlab_plot::PlotContext) -> Self {
+        let plot_prev = rustlab_plot::plot_context();
+        rustlab_plot::set_plot_context(plot);
+        Self {
+            _jail: crate::path_jail::PathJailGuard::install(jail),
+            plot_prev,
+        }
+    }
+}
+
+impl Drop for WorkerScope {
+    fn drop(&mut self) {
+        rustlab_plot::set_plot_context(self.plot_prev);
+    }
+}
+
 /// Returns `Err(...)` if the current thread is inside a `parmap` worker
 /// task (i.e. running a parallel-lambda body); otherwise returns `Ok(())`.
 ///
@@ -179,10 +208,17 @@ impl ParmapBackend for LocalRayonBackend {
         // exactly what it was before; worker threads' RNGs are left in
         // whatever state the last task left them, which is fine because
         // each task re-seeds at entry.
+        // Captured on the calling thread. Workers install these per task.
+        let jail = crate::path_jail::path_jail();
+        let plot = rustlab_plot::plot_context();
         let results: Vec<(Result<Value, ScriptError>, HashMap<String, FnStats>)> = xs
             .into_par_iter()
             .enumerate()
             .map_init(worker_factory, |worker, (idx, x)| {
+                // Same path jail and plot context as the caller, for this
+                // task only. Nested `parmap` re-captures whatever this
+                // task installed.
+                let _scope = WorkerScope::enter(jail.clone(), plot);
                 // Install per-task RNG seed.
                 rng::seed_rng(rng::derive_task_seed(master_seed, idx));
                 // Mark this thread as inside a parmap worker — impure
@@ -301,30 +337,39 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
             }
         }
     }
-    // Rows are written straight into the uninitialised output, one rayon
-    // task per row: a batch of gradient rows is ~100 MB, and a serial copy
-    // into a zero-filled buffer was a visible share of a parmap call.
+    // One write per element, in parallel, into spare capacity. A row that
+    // is not a vector of `row_len` panics before `set_len`, so a missed
+    // write is never published. `C64` is `Copy`: a panic drops a len-0
+    // `Vec` and does not drop uninitialised slots. This stays a direct
+    // write (no zero-fill, no second copy of the ~100 MB gradient rows).
     let nrows = results.len();
-    let mut out = ndarray::Array2::<num_complex::Complex<f64>>::uninit((nrows, row_len));
-    if row_len > 0 {
-        let flat = out
-            .as_slice_mut()
-            .expect("freshly allocated array is contiguous");
-        flat.par_chunks_mut(row_len)
+    let n = nrows * row_len;
+    let mut flat: Vec<num_complex::Complex<f64>> = Vec::with_capacity(n);
+    if n > 0 {
+        let dst = &mut flat.spare_capacity_mut()[..n];
+        dst.par_chunks_mut(row_len)
             .zip(results.par_iter())
-            .for_each(|(dst, v)| {
-                if let Value::Vector(vec) = v {
-                    for (d, s) in dst.iter_mut().zip(vec.iter()) {
-                        d.write(*s);
-                    }
+            .for_each(|(chunk, v)| {
+                let Value::Vector(vec) = v else {
+                    panic!("parmap: row changed type after validation");
+                };
+                assert_eq!(
+                    vec.len(),
+                    chunk.len(),
+                    "parmap: row fill stopped short of {} elements",
+                    chunk.len()
+                );
+                for (d, s) in chunk.iter_mut().zip(vec.iter()) {
+                    d.write(*s);
                 }
             });
+        // SAFETY: each chunk has length `row_len` and was zipped with a
+        // vector of that length, so every slot was written. The assert
+        // above runs before `set_len`. Chunks partition `0..n`.
+        unsafe { flat.set_len(n) };
     }
-    // SAFETY: every element was written above. Each of the `nrows` chunks
-    // has length `row_len` and was paired with a result that was checked
-    // to be a vector of exactly `row_len` elements; with `row_len == 0`
-    // there is nothing to initialise.
-    let m = unsafe { out.assume_init() };
+    let m =
+        ndarray::Array2::from_shape_vec((nrows, row_len), flat).expect("nrows × row_len elements");
     Ok(Value::Matrix(m.into()))
 }
 
@@ -514,5 +559,47 @@ mod tests {
     fn validate_rejects_non_callable() {
         let err = validate_callable(&Value::Scalar(42.0)).unwrap_err();
         assert!(err.to_string().contains("lambda or function handle"));
+    }
+
+    #[test]
+    fn worker_scope_inherits_caller_jail_and_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let _jail = crate::path_jail::PathJailGuard::with_base(Some(root.clone()), Some(root));
+        struct PlotRestore(rustlab_plot::PlotContext);
+        impl Drop for PlotRestore {
+            fn drop(&mut self) {
+                rustlab_plot::set_plot_context(self.0);
+            }
+        }
+        let _plot = PlotRestore(rustlab_plot::plot_context());
+        rustlab_plot::set_plot_context(rustlab_plot::PlotContext::Headless);
+        let jail = crate::path_jail::path_jail();
+        let plot = rustlab_plot::plot_context();
+        (0..64).into_par_iter().for_each(|_| {
+            // Rayon may run a task on this thread, which already holds the
+            // jail. Restore must put back that thread's previous state,
+            // not unconditionally clear it.
+            let before_plot = rustlab_plot::plot_context();
+            let before_root = crate::path_jail::path_jail().map(|j| j.root);
+            let scope = WorkerScope::enter(jail.clone(), plot);
+            assert_eq!(
+                rustlab_plot::plot_context(),
+                rustlab_plot::PlotContext::Headless
+            );
+            let installed = crate::path_jail::path_jail().expect("jail installed on worker");
+            assert_eq!(installed.root, dir.path());
+            drop(scope);
+            assert_eq!(rustlab_plot::plot_context(), before_plot);
+            assert_eq!(crate::path_jail::path_jail().map(|j| j.root), before_root);
+        });
+        assert_eq!(
+            rustlab_plot::plot_context(),
+            rustlab_plot::PlotContext::Headless
+        );
+        assert_eq!(
+            crate::path_jail::path_jail().map(|j| j.root),
+            Some(dir.path().to_path_buf())
+        );
     }
 }

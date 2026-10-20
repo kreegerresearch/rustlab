@@ -14947,6 +14947,197 @@ mod parmap_worker_env {
         .unwrap();
         assert_eq!(get_vec(&ev, "y"), get_vec(&ev, "z"));
     }
+
+    fn expect_err(src: &str) -> String {
+        match run_src(src) {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        }
+    }
+
+    fn jail_at(path: &std::path::Path) -> crate::path_jail::PathJailGuard {
+        crate::path_jail::PathJailGuard::with_base(
+            Some(path.to_path_buf()),
+            Some(path.to_path_buf()),
+        )
+    }
+
+    #[test]
+    fn parmap_save_load_run_outside_jail_match_the_caller() {
+        let jail = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let leak = outside.path().join("leak.npy");
+        let secret = outside.path().join("secret.npy");
+        std::fs::write(&secret, b"not-a-real-npy").unwrap();
+        std::fs::write(outside.path().join("evil.rlab"), "z = 1\n").unwrap();
+        let _g = jail_at(jail.path());
+
+        let save_src = format!(
+            "function y = put(k)\n  save(\"{}\", k);\n  y = k;\nend\n",
+            leak.display()
+        );
+        let direct = expect_err(&format!("{save_src}y = put(1);"));
+        let par = expect_err(&format!("{save_src}y = parmap(@put, 1:2);"));
+        assert!(
+            direct.contains("escapes notebook directory"),
+            "direct: {direct}"
+        );
+        assert!(par.contains("escapes notebook directory"), "parmap: {par}");
+        assert!(!leak.exists(), "save escaped via parmap");
+
+        let load_src = format!(
+            "function y = grab(k)\n  y = load(\"{}\");\nend\n",
+            secret.display()
+        );
+        let direct = expect_err(&format!("{load_src}y = grab(1);"));
+        let par = expect_err(&format!("{load_src}y = parmap(@grab, 1);"));
+        assert!(
+            direct.contains("escapes notebook directory"),
+            "load direct: {direct}"
+        );
+        assert!(
+            par.contains("escapes notebook directory"),
+            "load parmap: {par}"
+        );
+
+        let run_path = outside.path().join("evil.rlab");
+        let run_src_s = format!(
+            "function y = go(k)\n  run \"{}\";\n  y = k;\nend\n",
+            run_path.display()
+        );
+        let direct = expect_err(&format!("{run_src_s}y = go(1);"));
+        let par = expect_err(&format!("{run_src_s}y = parmap(@go, 1);"));
+        assert!(
+            direct.contains("escapes notebook directory"),
+            "run direct: {direct}"
+        );
+        assert!(
+            par.contains("escapes notebook directory"),
+            "run parmap: {par}"
+        );
+    }
+
+    #[test]
+    fn parmap_save_load_run_inside_jail_succeed() {
+        let jail = tempfile::tempdir().unwrap();
+        std::fs::write(jail.path().join("inc.rlab"), "z = 4\n").unwrap();
+        let _g = jail_at(jail.path());
+        let ev = run_src(
+            "function y = put(k)\n  save(\"ok.npy\", k);\n  y = k;\nend\n\
+             function y = grab(k)\n  y = load(\"ok.npy\");\nend\n\
+             function y = go(k)\n  run \"inc.rlab\";\n  y = z;\nend\n\
+             a = parmap(@put, 1);\n\
+             b = parmap(@grab, 1);\n\
+             c = parmap(@go, 1);",
+        )
+        .unwrap();
+        assert_eq!(get_vec(&ev, "a"), vec![1.0]);
+        assert_eq!(get_vec(&ev, "c"), vec![4.0]);
+        match ev.get("b").unwrap() {
+            Value::Vector(v) => assert!((v[0].re - 1.0).abs() < 1e-12, "{v:?}"),
+            Value::Matrix(m) => assert!((m[[0, 0]].re - 1.0).abs() < 1e-12, "{m:?}"),
+            other => panic!("load via parmap returned {other:?}"),
+        }
+        assert!(jail.path().join("ok.npy").is_file());
+    }
+
+    #[test]
+    fn parmap_does_not_keep_a_stale_jail() {
+        let jail = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let leak = outside.path().join("later.npy");
+        let src = format!(
+            "function y = put(k)\n  save(\"{}\", k);\n  y = k;\nend\ny = parmap(@put, 1);\n",
+            leak.display()
+        );
+        {
+            let _g = jail_at(jail.path());
+            let err = expect_err(&src);
+            assert!(err.contains("escapes notebook directory"), "{err}");
+            assert!(!leak.exists());
+        }
+        run_src(&src).unwrap();
+        assert!(leak.is_file(), "unjailed parmap should be allowed to save");
+    }
+
+    #[test]
+    fn nested_parmap_is_still_jailed() {
+        let jail = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let leak = outside.path().join("nested.npy");
+        let _g = jail_at(jail.path());
+        let src = format!(
+            "function y = leak(k)\n  save(\"{}\", k);\n  y = k;\nend\n\
+             y = parmap(@(k) parmap(@leak, [k]), 1:2);\n",
+            leak.display()
+        );
+        let err = expect_err(&src);
+        assert!(err.contains("escapes notebook directory"), "{err}");
+        assert!(!leak.exists());
+    }
+
+    #[test]
+    fn jailed_whos_sparameters_and_cache_match_inside_parmap() {
+        let jail = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let npz = outside.path().join("v.npz");
+        let s2p = outside.path().join("v.s2p");
+        let db = outside.path().join("c.rcache");
+        let lib = outside.path().join("lib.rlab");
+        std::fs::write(&lib, "function r = f(x)\n r = x;\nend\n").unwrap();
+        let _g = jail_at(jail.path());
+
+        for (label, src) in [
+            ("whos", format!("whos(\"{}\")", npz.display())),
+            ("sparameters", format!("sparameters(\"{}\")", s2p.display())),
+            ("cache enable", format!("cache enable \"{}\"", db.display())),
+        ] {
+            let err = expect_err(&src);
+            assert!(
+                err.contains("escapes notebook directory"),
+                "{label} direct: {err}"
+            );
+        }
+
+        let cases = [
+            (
+                "whos",
+                format!(
+                    "function y = w(k)\n  whos(\"{}\");\n  y = k;\nend\ny = parmap(@w, 1);\n",
+                    npz.display()
+                ),
+            ),
+            (
+                "sparameters",
+                format!(
+                    "function y = w(k)\n  sparameters(\"{}\");\n  y = k;\nend\ny = parmap(@w, 1);\n",
+                    s2p.display()
+                ),
+            ),
+            (
+                "cache enable",
+                format!(
+                    "function y = w(k)\n  cache enable \"{}\";\n  y = k;\nend\ny = parmap(@w, 1);\n",
+                    db.display()
+                ),
+            ),
+            (
+                "cache add file",
+                format!(
+                    "function y = w(k)\n  cache enable \"ok.rcache\";\n  cache add file \"{}\";\n  y = k;\nend\ny = parmap(@w, 1);\n",
+                    lib.display()
+                ),
+            ),
+        ];
+        for (label, src) in cases {
+            let err = expect_err(&src);
+            assert!(
+                err.contains("escapes notebook directory"),
+                "{label} parmap: {err}"
+            );
+        }
+        assert!(!db.exists(), "cache store was created outside the jail");
+    }
 }
 
 // ─── Phase 1 (parmap_parreduce): Evaluator Clone+Send + AST serde ───────────

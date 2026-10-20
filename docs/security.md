@@ -148,8 +148,10 @@ the repository. There is no new POST route. The picker script is a nonced
 ## H4 — Path jail
 
 While executing notebook code (and when expanding embeds), every path
-passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`
-and `![[embed]]` must resolve under the jail root after lexical
+passed to `run`, `load`, `save`, `savefig`, `saveanim`, `figure("…html")`,
+`whos`, `sparameters` (a Touchstone path), `cache enable` (including the
+default `.rustlab/cache.db`), `cache add file`, and `![[embed]]` must
+resolve under the jail root after lexical
 normalisation of `..` and canonicalisation of the existing prefix
 (symlinks pointing out are rejected). Escapes fail with
 `path escapes notebook directory`. Prose images in HTML, `notebook watch`,
@@ -173,6 +175,13 @@ process cwd at execute time, captured once), not the jail root, and
 `sub/../file` is allowed when the result stays inside. Absolute paths
 outside the root are rejected; widen with `--jail-root` rather than
 disabling the jail.
+
+`parmap` workers are rayon threads. They do not see the calling thread's
+jail on their own, so each task installs that jail (and the caller's plot
+context) and restores the worker's previous values when the task ends.
+A path rejected on the notebook thread is rejected inside `parmap`,
+including a `parmap` nested in another. After the task, the worker does
+not keep the jail.
 
 `POST /save/{slug}` (only when `--editable`), an inline cell save, and
 `POST /annotate/{slug}` (when `--annotate` or `--editable`, including
