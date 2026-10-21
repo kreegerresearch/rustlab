@@ -12,7 +12,7 @@ use crate::execute::Rendered;
 use crate::parse::CalloutKind;
 use crate::render::transform_wikilinks;
 use rustlab_plot::theme::ThemeColors;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Cross-notebook link emission style for the markdown renderer.
 ///
@@ -53,6 +53,84 @@ pub enum LinkStyle {
 ///
 /// `link_style` selects how cross-notebook links emit (see [`LinkStyle`]).
 pub fn render_markdown(
+    title: &str,
+    blocks: &[Rendered],
+    plot_dir: &Path,
+    plot_href_prefix: &str,
+    theme: &ThemeColors,
+    iframe_href: Option<&str>,
+    link_style: LinkStyle,
+    emit_header: bool,
+    current_rel_dir: &str,
+) -> String {
+    render_markdown_rebased(
+        title,
+        blocks,
+        plot_dir,
+        plot_href_prefix,
+        theme,
+        iframe_href,
+        link_style,
+        emit_header,
+        current_rel_dir,
+        None,
+    )
+}
+
+/// Where a standard-markdown render should retarget a link that points
+/// outside the notebook collection.
+///
+/// Source notebooks live under `examples/notebooks/`, so a link to the
+/// repo's `docs/` is `../../docs/...`. The gallery copy is one directory
+/// higher, and the same bytes would point at `gallery/docs/` which does
+/// not exist. [`rebase_external_links`] rewrites only those outside
+/// targets, relative to `output_dir`. Links inside the collection stay
+/// as the author wrote them (the output tree mirrors the source tree).
+pub(crate) struct LinkRebase {
+    pub source_dir: PathBuf,
+    pub collection_root: PathBuf,
+    pub output_dir: PathBuf,
+}
+
+impl LinkRebase {
+    /// `source_md` and `out_md` are the notebook file and the rendered
+    /// file. `current_rel_dir` is the collection-relative directory of
+    /// the source (`""` for a file at the collection root, `"ch1"` for
+    /// `ch1/notes.md`). Returns `None` when the render is in place.
+    pub(crate) fn from_paths(
+        source_md: &Path,
+        out_md: &Path,
+        current_rel_dir: &str,
+    ) -> Option<Self> {
+        let source_dir = source_md.parent()?.to_path_buf();
+        if source_dir.as_os_str().is_empty() {
+            return None;
+        }
+        let mut collection_root = source_dir.clone();
+        for seg in current_rel_dir.split('/') {
+            if seg.is_empty() || seg == "." {
+                continue;
+            }
+            if seg == ".." || !collection_root.pop() {
+                return None;
+            }
+        }
+        let output_dir = out_md.parent()?.to_path_buf();
+        if output_dir.as_os_str().is_empty() {
+            return None;
+        }
+        if crate::paths_equal(&source_dir, &output_dir) {
+            return None;
+        }
+        Some(Self {
+            source_dir,
+            collection_root,
+            output_dir,
+        })
+    }
+}
+
+pub(crate) fn render_markdown_rebased(
     _title: &str,
     blocks: &[Rendered],
     plot_dir: &Path,
@@ -62,6 +140,7 @@ pub fn render_markdown(
     link_style: LinkStyle,
     emit_header: bool,
     current_rel_dir: &str,
+    rebase: Option<&LinkRebase>,
 ) -> String {
     let mut body = String::new();
     let mut plot_idx = 0usize;
@@ -97,7 +176,15 @@ pub fn render_markdown(
                         // Source `[[Foo]]` / `![[img]]` → standard markdown
                         // so the committed `.md` renders correctly on
                         // GitHub (which treats `[[…]]` as literal text).
-                        transform_wikilinks(md)
+                        // Then retarget a link whose file lives outside
+                        // the notebook collection so the gallery copy,
+                        // which sits one directory higher than the
+                        // source, still resolves.
+                        let md = transform_wikilinks(md);
+                        match rebase {
+                            Some(rb) => rebase_external_links(&md, rb),
+                            None => md,
+                        }
                     }
                     LinkStyle::Wiki => {
                         // Vault mode: leave source wikilinks alone, and
@@ -527,6 +614,267 @@ fn rewrite_md_links_to_wikilinks(md: &str, current_rel_dir: &str) -> String {
     }
     out.push_str(&md[copied_to..]);
     out
+}
+
+/// Rebase prose blocks. Code, mermaid, and widgets are copied unchanged
+/// so a plot snapshot is not rebuilt.
+pub(crate) fn rebase_markdown_blocks(
+    blocks: &[crate::execute::Rendered],
+    rb: &LinkRebase,
+) -> Vec<crate::execute::Rendered> {
+    blocks
+        .iter()
+        .map(|block| match block {
+            crate::execute::Rendered::Markdown(md) => {
+                crate::execute::Rendered::Markdown(rebase_external_links(md, rb))
+            }
+            other => other.clone(),
+        })
+        .collect()
+}
+
+/// Rewrite inline links that resolve to a file or directory outside the
+/// notebook collection, so the href is relative to the rendered file.
+///
+/// Left unchanged:
+/// - links inside a fenced code block, an inline code span, or an image
+/// - links with a scheme, a title, or a query string
+/// - targets that do not exist (a broken link stays visible)
+/// - targets inside the collection (the output tree mirrors the source)
+///
+/// A fragment (`#anchor`) is kept. A trailing slash on the source href
+/// is kept when the target is a directory.
+fn rebase_external_links(md: &str, rb: &LinkRebase) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut fence: Option<(u8, usize)> = None;
+    for line in md.split_inclusive('\n') {
+        if let Some((ch, len)) = fence {
+            out.push_str(line);
+            if fence_closer(line, ch, len) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(open) = fence_opener(line) {
+            fence = Some(open);
+            out.push_str(line);
+            continue;
+        }
+        out.push_str(&rebase_line(line, rb));
+    }
+    out
+}
+
+/// A CommonMark fence opener: up to three leading spaces, then three or
+/// more backticks or tildes, then an optional info string.
+fn fence_opener(line: &str) -> Option<(u8, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && i < 3 && bytes[i] == b' ' {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let ch = bytes[i];
+    if ch != b'`' && ch != b'~' {
+        return None;
+    }
+    let start = i;
+    while i < bytes.len() && bytes[i] == ch {
+        i += 1;
+    }
+    let len = i - start;
+    if len < 3 {
+        return None;
+    }
+    let rest = line[i..].trim_end_matches(['\r', '\n']);
+    if ch == b'`' && rest.contains('`') {
+        return None;
+    }
+    Some((ch, len))
+}
+
+fn fence_closer(line: &str, ch: u8, len: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && i < 3 && bytes[i] == b' ' {
+        i += 1;
+    }
+    if i >= bytes.len() || bytes[i] != ch {
+        return false;
+    }
+    let start = i;
+    while i < bytes.len() && bytes[i] == ch {
+        i += 1;
+    }
+    if i - start < len {
+        return false;
+    }
+    line[i..].trim_end_matches(['\r', '\n']).trim().is_empty()
+}
+
+fn rebase_line(line: &str, rb: &LinkRebase) -> String {
+    let bytes = line.as_bytes();
+    let n = bytes.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0;
+    let mut copied_to = 0;
+    while i < n {
+        if bytes[i] == b'`' {
+            let run_start = i;
+            while i < n && bytes[i] == b'`' {
+                i += 1;
+            }
+            let open_len = i - run_start;
+            let mut j = i;
+            while j < n {
+                if bytes[j] == b'\n' {
+                    break;
+                }
+                if bytes[j] == b'`' {
+                    let cs = j;
+                    while j < n && bytes[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - cs == open_len {
+                        i = j;
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[i] == b'!' && i + 1 < n && bytes[i + 1] == b'[' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'[' {
+            if let Some((_, _, url_start, url_end, end)) = scan_md_link(bytes, i) {
+                let url = &line[url_start..url_end];
+                if let Some(rewritten) = rebase_one_url(url, rb) {
+                    out.push_str(&line[copied_to..url_start]);
+                    out.push_str(&rewritten);
+                    copied_to = url_end;
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&line[copied_to..]);
+    out
+}
+
+fn rebase_one_url(url: &str, rb: &LinkRebase) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty()
+        || url.starts_with('#')
+        || url.starts_with('/')
+        || url.starts_with("//")
+        || url.contains("://")
+        || url.starts_with("mailto:")
+        || url.starts_with("tel:")
+        || url.starts_with("javascript:")
+    {
+        return None;
+    }
+    if url.contains(char::is_whitespace) || url.contains('?') || url.contains('<') {
+        return None;
+    }
+    let (path, fragment) = match url.split_once('#') {
+        Some((path, fragment)) => (path, Some(fragment)),
+        None => (url, None),
+    };
+    if path.is_empty() {
+        return None;
+    }
+    let raw = path.as_bytes();
+    if raw.len() >= 2 && raw[1] == b':' {
+        return None;
+    }
+    let decoded = crate::render::percent_decode(path);
+    if decoded.is_empty() || decoded.starts_with('/') || decoded.contains('\\') {
+        return None;
+    }
+    let joined = lexical_normalize(&rb.source_dir.join(&decoded));
+    if !joined.exists() {
+        return None;
+    }
+    let target = std::fs::canonicalize(&joined).unwrap_or(joined);
+    let root = std::fs::canonicalize(&rb.collection_root)
+        .unwrap_or_else(|_| lexical_normalize(&rb.collection_root));
+    if target.starts_with(&root) {
+        return None;
+    }
+    let from = if rb.output_dir.exists() {
+        std::fs::canonicalize(&rb.output_dir).unwrap_or_else(|_| lexical_abs(&rb.output_dir))
+    } else {
+        lexical_abs(&rb.output_dir)
+    };
+    let mut href = relative_href(&from, &target)?;
+    if path.ends_with('/') && !href.ends_with('/') {
+        href.push('/');
+    }
+    if let Some(fragment) = fragment {
+        href.push('#');
+        href.push_str(fragment);
+    }
+    if href == url {
+        return None;
+    }
+    Some(href)
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn lexical_abs(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        lexical_normalize(path)
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        lexical_normalize(&cwd.join(path))
+    }
+}
+
+fn relative_href(from_dir: &Path, target: &Path) -> Option<String> {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = target.components().collect();
+    let mut i = 0;
+    while i < from.len() && i < to.len() && from[i] == to[i] {
+        i += 1;
+    }
+    let mut parts = Vec::new();
+    for _ in i..from.len() {
+        parts.push("..".to_string());
+    }
+    for c in &to[i..] {
+        let s = c.as_os_str().to_str()?;
+        if s.is_empty() || s == "/" {
+            continue;
+        }
+        parts.push(s.to_string());
+    }
+    if parts.is_empty() {
+        Some("./".to_string())
+    } else {
+        Some(parts.join("/"))
+    }
 }
 
 /// Scan `[text](url)` starting at `bytes[start] == b'['`. Returns the
@@ -1134,5 +1482,169 @@ mod tests {
         let md = render_markdown("T", &blocks, &tmp_plot_dir(), "img", theme(), None, LinkStyle::Standard, true, "");
         assert!(md.contains("[Foo](other.md)"), "MD link rewritten in Standard: {md}");
         assert!(!md.contains("[[other"), "wikilink leaked into Standard mode: {md}");
+    }
+}
+
+#[cfg(test)]
+mod link_rebase_tests {
+    use super::*;
+    use rustlab_plot::Theme;
+
+    struct Tree {
+        root: PathBuf,
+    }
+
+    impl Tree {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "rustlab-link-rebase-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            let notebooks = root.join("examples/notebooks");
+            std::fs::create_dir_all(notebooks.join("ch")).unwrap();
+            std::fs::create_dir_all(root.join("docs")).unwrap();
+            std::fs::create_dir_all(root.join("gallery")).unwrap();
+            std::fs::write(root.join("docs/quickref.md"), "# q\n").unwrap();
+            std::fs::write(root.join("docs/notebooks.md"), "# n\n").unwrap();
+            std::fs::write(notebooks.join("other.md"), "# o\n").unwrap();
+            Self { root }
+        }
+
+        fn rebase(&self) -> LinkRebase {
+            LinkRebase {
+                source_dir: self.root.join("examples/notebooks"),
+                collection_root: self.root.join("examples/notebooks"),
+                output_dir: self.root.join("gallery"),
+            }
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn outside_link_is_relative_to_the_output_dir() {
+        let tree = Tree::new("outside");
+        let src = "See [`parmap`](../../docs/quickref.md) and [sib](other.md).\n";
+        let got = rebase_external_links(src, &tree.rebase());
+        assert_eq!(
+            got,
+            "See [`parmap`](../docs/quickref.md) and [sib](other.md).\n"
+        );
+    }
+
+    #[test]
+    fn fragment_is_kept_and_a_missing_target_stays() {
+        let tree = Tree::new("fragment");
+        let src = "[t](../../docs/notebooks.md#template-interpolation)\n\
+                   [gone](../examples/audio/nope.sh)\n";
+        let got = rebase_external_links(src, &tree.rebase());
+        assert_eq!(
+            got,
+            "[t](../docs/notebooks.md#template-interpolation)\n\
+             [gone](../examples/audio/nope.sh)\n"
+        );
+    }
+
+    #[test]
+    fn directory_link_to_the_output_dir_becomes_dot() {
+        let tree = Tree::new("dir");
+        let src = "See [`gallery/`](../../gallery/).\n";
+        let got = rebase_external_links(src, &tree.rebase());
+        assert_eq!(got, "See [`gallery/`](./).\n");
+    }
+
+    #[test]
+    fn fences_images_and_inline_code_are_not_rewritten() {
+        let tree = Tree::new("fence");
+        let src = "```\n[x](../../docs/quickref.md)\n```\n\
+                   ![pic](../../docs/quickref.md)\n\
+                   `[y](../../docs/quickref.md)`\n\
+                   [real](../../docs/quickref.md)\n";
+        let got = rebase_external_links(src, &tree.rebase());
+        assert!(got.contains("```\n[x](../../docs/quickref.md)\n```\n"), "{got}");
+        assert!(got.contains("![pic](../../docs/quickref.md)\n"), "{got}");
+        assert!(got.contains("`[y](../../docs/quickref.md)`\n"), "{got}");
+        assert!(got.contains("[real](../docs/quickref.md)\n"), "{got}");
+    }
+
+    #[test]
+    fn nested_source_pops_the_collection_root() {
+        let tree = Tree::new("nested");
+        let source = tree.root.join("examples/notebooks/ch/note.md");
+        let out = tree.root.join("gallery/ch/note.md");
+        let rb = LinkRebase::from_paths(&source, &out, "ch").unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&rb.collection_root).unwrap(),
+            std::fs::canonicalize(tree.root.join("examples/notebooks")).unwrap()
+        );
+        assert!(LinkRebase::from_paths(&source, &source, "ch").is_none());
+    }
+
+    #[test]
+    fn repo_notebooks_rebase_onto_the_gallery() {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo = manifest.parent().unwrap().parent().unwrap();
+        let cases = [
+            (
+                "examples/notebooks/parallel_montecarlo.md",
+                "gallery/parallel_montecarlo.md",
+                &["../docs/quickref.md", "../dev/plans/closed/parmap_parreduce.md", "../dev/plans/closed/parmap_nonscalar_outputs.md"][..],
+            ),
+            (
+                "examples/notebooks/widgets_demo.md",
+                "gallery/widgets_demo.md",
+                &["../docs/notebooks.md#template-interpolation"][..],
+            ),
+            (
+                "examples/notebooks/README.md",
+                "gallery/README.md",
+                &["./", "../docs/notebooks.md"][..],
+            ),
+        ];
+        for (src_rel, out_rel, expect) in cases {
+            let src = repo.join(src_rel);
+            let text = std::fs::read_to_string(&src).unwrap();
+            let rb = LinkRebase::from_paths(&src, &repo.join(out_rel), "").unwrap();
+            let got = rebase_external_links(&text, &rb);
+            for href in expect {
+                assert!(
+                    got.contains(&format!("]({href})")),
+                    "{src_rel} missing ]({href}) after rebase:\n{got}"
+                );
+            }
+            assert!(
+                !got.contains("../../"),
+                "{src_rel} still has a source-relative ../../ link:\n{got}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_rewrites_prose_and_leaves_a_sibling_link() {
+        let tree = Tree::new("render");
+        let rb = tree.rebase();
+        let blocks = vec![Rendered::Markdown(
+            "See [q](../../docs/quickref.md) and [sib](other.md).\n".to_string(),
+        )];
+        let md = render_markdown_rebased(
+            "T",
+            &blocks,
+            &tree.root.join("gallery/plots"),
+            "plots",
+            Theme::Dark.colors(),
+            None,
+            LinkStyle::Standard,
+            false,
+            "",
+            Some(&rb),
+        );
+        assert!(md.contains("[q](../docs/quickref.md)"), "{md}");
+        assert!(md.contains("[sib](other.md)"), "{md}");
+        assert!(!md.contains("../../docs"), "{md}");
     }
 }

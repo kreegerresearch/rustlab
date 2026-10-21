@@ -122,9 +122,8 @@ print(laplV(21, 21))      % ≈ 4
 
 ## Visualising a gradient field
 
-Pair `gradient` with `contour` and a `quiver`-style scatter to show
-equipotentials beside the field they generate. Until `quiver` ships, a
-`scatter` of arrow tail-points conveys the same density information:
+`contour` draws the equipotentials. Arrow overlays are `quiver` — see
+[`vector_fields.md`](vector_fields.md). This cell is the contour alone:
 
 ```rustlab
 clf

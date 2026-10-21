@@ -197,13 +197,14 @@ Both are deferred to a follow-up cycle; see
 | `[V, D] = eigs(A, B, n)`                    | sparse generalized (B SPD), smallest              |
 | `[V, D] = eigs(A, B, n, "lm")`              | sparse generalized, largest                       |
 
-The sparse forms (`eigs`) require both `A` and `B` to be sparse — call
-`sparse(A)` first if you have a dense matrix. The dense form (`eig`)
-works directly on `Value::Matrix` inputs and returns *all* eigenpairs.
+`eigs` requires `A` to be sparse, and `B` as well in the generalized
+form — call `sparse` on a dense matrix first. The standard form
+`eigs(A, n)` has no `B`. The dense form (`eig`) works directly on
+`Value::Matrix` inputs and returns *all* eigenpairs.
 
 ## Background — why hand-rolled
 
-Per project policy (`AGENTS.md` Rule 9), core numerical algorithms in
+Per project policy (`AGENTS.md` Rule 10), core numerical algorithms in
 rustlab are written in pure Rust without large library dependencies.
 This implementation is:
 

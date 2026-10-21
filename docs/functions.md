@@ -3309,7 +3309,7 @@ print("mean:", mean(v), "std:", std(v))
 ```
 
 ### `disp(x)`
-Display a value followed by a newline. Similar to `print` but always appends a newline and takes exactly one argument.
+Display a value followed by a newline. Similar to `print` but always appends a newline and takes exactly one argument. An integer prints with its class and every digit — it is not rounded through `double` (`disp(uint64(0xFFFFFFFFFFFFFFFF))` is `18446744073709551615  (uint64)`).
 ```
 disp("Hello, world!")
 disp(A)
@@ -3322,7 +3322,7 @@ Specifiers: `%d` `%i` `%u` `%o` `%x` `%X` `%f` `%e` `%E` `%g` `%G` `%c` `%s` `%%
 Flags: `-` (left), `+` (always sign), space (sign or leading space), `0` (zero-pad between the sign and the digits; `-` wins, and a precision on an integer suppresses `0`), `#` (`%#o` leading 0, `%#x`/`%#X` `0x`/`0X` except for 0, `%#f`/`%#e`/`%#g` keep the decimal point and `%g` trailing zeros), `,` (rustlab extension: thousands separators).
 `*` reads the next argument as the width; `.*` reads it as the precision. A negative width means left-justify. A negative precision means "precision omitted".
 Precision: `%s` is a maximum character count, `%d`/`%u`/`%o`/`%x` is a minimum digit count (`%.0d` of 0 is empty), `%f`/`%e` is digits after the decimal, `%g` is significant digits (`0` is treated as `1`). `%g` uses fixed form when the exponent is in `[-4, precision)` and scientific form otherwise. `%e`/`%g` exponents are `e+00` style; `%E`/`%G` use `E`.
-`%d` truncates toward zero. `%u` of a negative value wraps as a 64-bit unsigned integer. `%c` is a Unicode code point (`char`); a negative or invalid code point errors.
+`%d` truncates a double toward zero. An integer (`int8` … `uint64`) is printed from its stored value, so a `uint64` above `2^53` keeps every digit (`%u` of `uint64(0xFFFFFFFFFFFFFFFF)` is `18446744073709551615`). `%u` of a negative value wraps as a 64-bit unsigned integer. `%f` still converts an integer to double. `%c` is a Unicode code point (`char`); a negative or invalid code point errors.
 Non-finite values print as MATLAB spells them: `Inf`, `-Inf`, `NaN`. `+` and the space flag apply to `Inf`, not to `NaN`. Non-finite values are space-padded, never zero-padded.
 Escapes: `\n` `\t` `\r` `\b` `\f` `\\`. An unknown `\X` is kept as a backslash plus that character.
 ```

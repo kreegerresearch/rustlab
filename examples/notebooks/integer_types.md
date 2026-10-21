@@ -93,11 +93,15 @@ Integers save to `.npy` with their native NumPy dtype and round-trip as the
 same class — including the full `uint64` range:
 
 ```rustlab
-big = uint64(0xFFFFFFFFFFFFFFFF);
 save("ints.npy", int32([1, 2, 3, -4]));
 back = load("ints.npy");
 disp(class(back))
 disp(back)
+
+save("big.npy", uint64(0xFFFFFFFFFFFFFFFF));
+big = load("big.npy");
+disp(class(big))
+disp(big)
 ```
 
 Convert back to double any time with `double`:

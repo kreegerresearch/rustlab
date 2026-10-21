@@ -42,6 +42,21 @@ pub fn path_jail() -> Option<PathJail> {
     PATH_JAIL.with(|j| j.borrow().clone())
 }
 
+/// Path to show a person. Inside a notebook jail, a file under the
+/// notebook directory is shown relative to that directory, so a rendered
+/// page does not embed the machine's absolute path. Outside a jail the
+/// path is unchanged.
+pub fn display_path(path: &Path) -> String {
+    if let Some(jail) = path_jail() {
+        if let Ok(rel) = path.strip_prefix(&jail.base) {
+            if !rel.as_os_str().is_empty() {
+                return rel.display().to_string();
+            }
+        }
+    }
+    path.display().to_string()
+}
+
 /// RAII guard that restores the previous jail when dropped.
 pub struct PathJailGuard {
     prev: Option<PathJail>,
@@ -192,6 +207,18 @@ mod tests {
     fn jailed(dir: &Path) -> PathJailGuard {
         let canon = dir.canonicalize().unwrap();
         PathJailGuard::with_base(Some(canon.clone()), Some(canon))
+    }
+
+    #[test]
+    fn display_path_is_relative_inside_the_jail() {
+        let dir = tempdir().unwrap();
+        let _g = jailed(dir.path());
+        let abs = dir.path().canonicalize().unwrap().join(".rustlab/cache.db");
+        assert_eq!(display_path(&abs), ".rustlab/cache.db");
+        // Outside a jail the absolute path is what the caller passed.
+        drop(_g);
+        let _clear = PathJailGuard::new(None);
+        assert_eq!(display_path(&abs), abs.display().to_string());
     }
 
     #[test]

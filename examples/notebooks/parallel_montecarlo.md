@@ -1,7 +1,7 @@
 # Parallel Monte Carlo with `parmap`
 
 A canonical Monte Carlo workflow that scales linearly with CPU count, using
-[`parmap`](../docs/quickref.md) — rustlab's parallel-map primitive backed
+[`parmap`](../../docs/quickref.md) — rustlab's parallel-map primitive backed
 by rayon's thread pool.
 
 The script-side surface is small:
@@ -20,12 +20,6 @@ n = nproc();
 print("running parmap on")
 print(n)
 print("logical CPUs")
-```
-
-```text
-running parmap on
-12
-logical CPUs
 ```
 
 ## π by random sampling — the hello world of Monte Carlo
@@ -53,13 +47,6 @@ print("standard error:")
 print(se)
 ```
 
-```text
-mean estimate of pi:
-3.140941666666667
-standard error:
-0.0007083998263760792
-```
-
 With 24 trials of 200 000 samples each, the mean lands on
 $\pi \approx 3.1416$ and the standard error is small enough that
 the 1.96 σ confidence interval covers the truth. Re-running the same
@@ -77,10 +64,7 @@ function price = bs_call(S0)
   K = 100; r = 0.05; sigma = 0.2; T = 1.0; N = 100000;
   Z = randn(N);
   ST = S0 * exp((r - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z);
-  % Element-wise max(x, 0) via mask: (x > 0) is a 0/1 vector,
-  % multiplied with x gives the positive-only payoff.
-  diff = ST - K;
-  payoff = diff .* (diff > 0);
+  payoff = max(ST - K, 0);
   price = exp(-r * T) * mean(payoff);
 end
 
@@ -119,15 +103,6 @@ print("output shape:", size(P));
 print("row sums:", sum(P, 2)');
 ```
 
-```text
-output shape:
-Matrix(1x2)
-  [6.000000, 6.000000]
-row sums:
-Matrix(1x6)
-  [1.000000, 1.000000, 1.000000, 1.000000, 1.000000, 1.000000]
-```
-
 ## Matrix outputs — per-head computations stack into a Tensor3
 
 If the lambda returns an `m × n` Matrix, `parmap` stacks the `N`
@@ -155,14 +130,6 @@ err = norm(heads(:, :, 2) - 2 * heads(:, :, 1));
 print("page-2 == 2 * page-1 residual:", err);
 ```
 
-```text
-output shape:
-Matrix(1x3)
-  [4.000000, 3.000000, 3.000000]
-page-2 == 2 * page-1 residual:
-0
-```
-
 The shape rule — "all trials must return the same shape" — is hard-
 enforced; mixing shapes (some trials returning a vector, some a
 matrix) errors at the first divergent trial with a message that names
@@ -172,14 +139,9 @@ the index and both shapes.
 
 `parmap` requires the lambda to be "pure": no plotting, no file writes,
 no audio, no `seed()` from inside the lambda. The contract is enforced
-at runtime — try one of those operations and you get a clear error:
-
-```rustlab
-% This errors at the first trial: 'parmap: cannot fprintf from a
-% parallel lambda — the lambda must be pure'.
-%
-% parmap(@(k) fprintf("trial %d\n", k), 1:5);
-```
+at runtime. `parmap(@(k) fprintf("trial %d\n", k), 1:5)` stops on the
+first trial with `parmap: cannot fprintf from a parallel lambda — the
+lambda must be pure`.
 
 The reason: those builtins mutate global state (the figure, the audio
 sink, the RNG master), and running them concurrently from rayon workers
@@ -187,12 +149,9 @@ would produce undefined output. The right pattern is to do the **compute**
 in parallel and the **I/O** sequentially in the main thread:
 
 ```rustlab
-% Compute in parallel:
-results = parmap(@pi_trial, 1:8);
-
-% Plot serially in main thread:
+% The trials above already ran in parallel. Plot them on the main thread.
 clf;
-plot(1:length(results), results, "MC π estimates");
+plot(1:length(estimates), estimates, "MC π estimates");
 title("Per-trial estimates of π")
 ```
 
@@ -202,11 +161,11 @@ accident.
 
 ## See also
 
-- [`dev/plans/closed/parmap_parreduce.md`](../dev/plans/closed/parmap_parreduce.md) —
+- [`dev/plans/closed/parmap_parreduce.md`](../../dev/plans/closed/parmap_parreduce.md) —
   v1 implementation plan, deferred phases (`parreduce`, cluster backend),
   open design questions.
-- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../dev/plans/closed/parmap_nonscalar_outputs.md) —
+- [`dev/plans/closed/parmap_nonscalar_outputs.md`](../../dev/plans/closed/parmap_nonscalar_outputs.md) —
   vector/matrix output extension (the "stacks into Matrix / Tensor3" rule
   used above).
-- [`docs/quickref.md`](../docs/quickref.md) — one-line reference card.
+- [`docs/quickref.md`](../../docs/quickref.md) — one-line reference card.
 - `help parmap` and `help nproc` in the REPL.

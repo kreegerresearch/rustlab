@@ -140,7 +140,7 @@ silently returning garbage.
 
 ## Background — why hand-rolled
 
-Per project policy (`AGENTS.md` Rule 9) core numerical algorithms in
+Per project policy (`AGENTS.md` Rule 10) core numerical algorithms in
 rustlab are written in pure Rust without large library dependencies.
 The factorization here follows Davis, *Direct Methods for Sparse Linear
 Systems*:

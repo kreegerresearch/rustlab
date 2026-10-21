@@ -3553,7 +3553,10 @@ impl Evaluator {
         // sugar) invisible. Now the user sees the actual file that
         // got opened.
         if let Some(p) = self.cache_registry.store_path() {
-            output::script_println(&format!("cache: active ({})", p.display()));
+            output::script_println(&format!(
+                "cache: active ({})",
+                crate::path_jail::display_path(p)
+            ));
         }
         // Scan every already-defined user function for purity. Without
         // this, a script that defines `noisy()` *before* `cache enable`
@@ -4346,6 +4349,12 @@ const INT_AWARE_BUILTINS: &[&str] = &[
     // (save writes the native NPY dtype; struct stores fields verbatim).
     "save",
     "struct",
+    // Printing. f64 cannot hold every uint64, so widening first rounds
+    // 2^64-1 to 18446744073709552000 and drops the class tag.
+    "disp",
+    "print",
+    "fprintf",
+    "sprintf",
 ];
 
 const IMPURE_BUILTINS: &[&str] = &[

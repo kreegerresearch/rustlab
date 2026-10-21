@@ -85,7 +85,7 @@ xlabel("x"); ylabel("y")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/surface_plots/plot-3-6f1996e5.svg)
+![plot 3](plots/surface_plots/plot-3-cbe7eed3.svg)
 
 <!-- rustlab:output-end -->
 

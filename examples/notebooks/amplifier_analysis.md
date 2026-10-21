@@ -178,7 +178,7 @@ returns instead the **maximum stable gain** $\text{MSG} = |S_{21}/S_{12}|$.
 ```rustlab
 gms = gammams(s);
 gml = gammaml(s);
-mag = gainmax(s);
+mag_db = gainmax(s);
 fprintf("%-6s  %16s  %16s  %7s\n", ...
         "f/GHz", "Γms", "Γml", "MAG/dB")
 for k = 1:len(f)
@@ -186,7 +186,7 @@ for k = 1:len(f)
           f(k)/1e9, ...
           abs(gms(k)), angle(gms(k))*180/pi, ...
           abs(gml(k)), angle(gml(k))*180/pi, ...
-          mag(k))
+          mag_db(k))
 end
 ```
 
@@ -326,31 +326,17 @@ $|\Gamma_{\text{opt}}|$, ∠Γopt in degrees, and the normalised equivalent
 noise resistance $R_n / Z_0$.
 
 The reader picks them up automatically when present and attaches them as
-extra fields on the sparameters struct. Build a small noise-bearing
-network inline (the repo ships
-`examples/rf/data/lna_with_noise.s2p` as a ready file you can
-load with `sparameters(path)` outside the notebook):
+extra fields on the sparameters struct. The LNA in this notebook is
+built from S only, so it has no noise block. A file that does, such as
+`examples/rf/data/lna_with_noise.s2p`, loads with `sparameters(path)`
+from `rustlab run` (a notebook jails paths to the notebook directory).
+The Touchstone writer emits S only; a noise block is not round-tripped.
 
 ```rustlab
-% Synthesize a small 2-port by writing a Touchstone file next to this
-% notebook and reading it back. The renderer jails file I/O to that
-% directory. (The same data is bundled in
-% examples/rf/data/lna_with_noise.s2p.)
-tmp = "_notebook_noise.s2p";
-% S-only network for clarity:
-S = zeros3(4, 2, 2);
-for k = 1:4
-  S(k, 2, 1) = 10^(-3/20);
-  S(k, 1, 2) = 10^(-3/20);
-end
-s_clean = sparameters(S, [1e9, 2e9, 3e9, 4e9]);
-save(tmp, s_clean)
-% (A future writer enhancement will round-trip noise data; today the
-% noise block needs to be hand-prepended to the .s2p file.)
-if has_noise(s_clean)
-  fprintf("has_noise(s_clean): yes\n")
+if has_noise(s)
+  fprintf("has_noise(s): yes\n")
 else
-  fprintf("has_noise(s_clean): no (this synthesised network has no noise block)\n")
+  fprintf("has_noise(s): no (this synthesised network has no noise block)\n")
 end
 ```
 

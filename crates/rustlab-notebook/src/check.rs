@@ -428,10 +428,9 @@ fn target_anchors(source: &str) -> std::collections::HashSet<String> {
 }
 
 pub fn check_mismatched_details(source: &str) -> Vec<Finding> {
-    // Cheap substring count; `<details>` and `</details>` are
-    // sufficiently unique that we don't need a full HTML parser.
-    let opens = source.matches("<details>").count();
-    let closes = source.matches("</details>").count();
+    // Count real tags only. A fence or a backtick span is prose about
+    // the tag (`native `<details>``), not an opening the page will emit.
+    let (opens, closes) = count_details_tags(source);
     if opens == closes {
         return Vec::new();
     }
@@ -453,6 +452,105 @@ pub fn check_mismatched_details(source: &str) -> Vec<Finding> {
         message: msg,
         auto_fixable: false,
     }]
+}
+
+/// `<details>` / `</details>` outside fenced blocks and inline code.
+fn count_details_tags(source: &str) -> (usize, usize) {
+    let b = source.as_bytes();
+    let mut i = 0;
+    let mut opens = 0usize;
+    let mut closes = 0usize;
+    let mut at_line_start = true;
+    while i < b.len() {
+        if at_line_start {
+            let trimmed = source[i..].trim_start_matches([' ', '\t']);
+            let indent = source[i..].len() - trimmed.len();
+            if trimmed.starts_with("```") {
+                i += indent;
+                i = line_end_byte(b, i);
+                while i < b.len() {
+                    let line = &source[i..line_end_byte(b, i)];
+                    let line = line.strip_suffix('\n').unwrap_or(line);
+                    let is_close = line.trim_start().starts_with("```");
+                    i = line_end_byte(b, i);
+                    if is_close {
+                        break;
+                    }
+                }
+                at_line_start = true;
+                continue;
+            }
+        }
+        if b[i] == b'`' {
+            let run = i;
+            while i < b.len() && b[i] == b'`' {
+                i += 1;
+            }
+            let open_len = i - run;
+            let mut j = i;
+            let mut close = None;
+            while j < b.len() {
+                if b[j] == b'`' {
+                    let cs = j;
+                    while j < b.len() && b[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - cs == open_len {
+                        close = Some(j);
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(ce) = close {
+                i = ce;
+                at_line_start = false;
+                continue;
+            }
+            i = run + 1;
+            at_line_start = false;
+            continue;
+        }
+        if source[i..].starts_with("</details>") {
+            closes += 1;
+            i += "</details>".len();
+            at_line_start = false;
+            continue;
+        }
+        if source[i..].starts_with("<details>") {
+            opens += 1;
+            i += "<details>".len();
+            at_line_start = false;
+            continue;
+        }
+        at_line_start = b[i] == b'\n';
+        i += utf8_width(b[i]);
+    }
+    (opens, closes)
+}
+
+/// Width of the UTF-8 sequence starting at `b`. A stray continuation
+/// byte steps one so the scan cannot stick.
+fn utf8_width(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b & 0xE0 == 0xC0 {
+        2
+    } else if b & 0xF0 == 0xE0 {
+        3
+    } else if b & 0xF8 == 0xF0 {
+        4
+    } else {
+        1
+    }
+}
+
+fn line_end_byte(b: &[u8], i: usize) -> usize {
+    match b[i..].iter().position(|&c| c == b'\n') {
+        Some(rel) => i + rel + 1,
+        None => b.len(),
+    }
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -843,6 +941,36 @@ mod tests {
     fn w002_orphan_close_fires() {
         let src = "spurious </details>\n";
         assert_codes(&check_mismatched_details(src), &["rustlab:W002"]);
+    }
+
+    #[test]
+    fn w002_backtick_mention_is_not_a_tag() {
+        let src = "In Markdown the section uses native `<details>`; in HTML it is a widget.\n";
+        assert!(
+            check_mismatched_details(src).is_empty(),
+            "{:?}",
+            check_mismatched_details(src)
+        );
+    }
+
+    #[test]
+    fn w002_unclosed_tag_inside_a_fence_is_not_a_tag() {
+        let src = "```html\n<details>\nno close\n```\n";
+        assert!(check_mismatched_details(src).is_empty());
+    }
+
+    #[test]
+    fn w002_real_tag_beside_a_mention_still_fires() {
+        let src = "see `<details>` then\n<details>\nopen\n";
+        assert_codes(&check_mismatched_details(src), &["rustlab:W002"]);
+    }
+
+    #[test]
+    fn w002_multibyte_prose_is_not_a_char_boundary_panic() {
+        let src = "A real — em dash, then native `<details>` in prose.\n";
+        assert!(check_mismatched_details(src).is_empty());
+        let balanced = "Section — one\n<details>\n<body>\n</details>\n";
+        assert!(check_mismatched_details(balanced).is_empty());
     }
 
     // ── parser ───────────────────────────────────────────────────────────

@@ -16,12 +16,11 @@ and the kind of system you can solve with it.
 | `"neumann"` | $\partial V / \partial n = 0$ at boundary | **Singular** — constants in null space |
 | `"periodic"` | grid wraps to the opposite side | **Singular** — constants in null space |
 
-Singular systems require a *pin-and-solve* idiom: zero one row of the
-matrix, set its diagonal to 1, and pin the corresponding right-hand
-side. That fixes the constant-shift ambiguity. We don't show the
-script-level pinning here (it's currently awkward without
-slice-assignment helpers); we focus on what the BC selector buys at
-the operator level.
+Singular systems need a pin: one row becomes an identity row and the
+matching right-hand side is fixed, which removes the constant-shift
+ambiguity. `pin_dirichlet(A, b, mask, value)` does that.
+`examples/pde/laplacian_bc.rlab` is a full Neumann solve. This notebook
+stays on what the BC selector changes in the operator.
 
 ## A common grid + source
 
@@ -81,9 +80,9 @@ print(norm(test_n))      % → ~3e-12 (machine precision)
 <!-- rustlab:output-end -->
 
 The residual is at floating-point noise — confirming the null space.
-A practical Neumann solve requires pin-and-solve to remove the
-constant-shift ambiguity; see the `examples/pde/laplacian_bc.rlab` script
-for the (slightly verbose) idiom.
+A practical Neumann solve pins one degree of freedom with
+`pin_dirichlet` and then calls `spsolve`. The script
+`examples/pde/laplacian_bc.rlab` is that full solve.
 
 ## Periodic — wrap-around
 

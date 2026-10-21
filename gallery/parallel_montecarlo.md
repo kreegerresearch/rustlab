@@ -85,10 +85,7 @@ function price = bs_call(S0)
   K = 100; r = 0.05; sigma = 0.2; T = 1.0; N = 100000;
   Z = randn(N);
   ST = S0 * exp((r - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z);
-  % Element-wise max(x, 0) via mask: (x > 0) is a 0/1 vector,
-  % multiplied with x gives the positive-only payoff.
-  diff = ST - K;
-  payoff = diff .* (diff > 0);
+  payoff = max(ST - K, 0);
   price = exp(-r * T) * mean(payoff);
 end
 
@@ -185,14 +182,9 @@ the index and both shapes.
 
 `parmap` requires the lambda to be "pure": no plotting, no file writes,
 no audio, no `seed()` from inside the lambda. The contract is enforced
-at runtime — try one of those operations and you get a clear error:
-
-```rustlab
-% This errors at the first trial: 'parmap: cannot fprintf from a
-% parallel lambda — the lambda must be pure'.
-%
-% parmap(@(k) fprintf("trial %d\n", k), 1:5);
-```
+at runtime. `parmap(@(k) fprintf("trial %d\n", k), 1:5)` stops on the
+first trial with `parmap: cannot fprintf from a parallel lambda — the
+lambda must be pure`.
 
 The reason: those builtins mutate global state (the figure, the audio
 sink, the RNG master), and running them concurrently from rayon workers
@@ -200,17 +192,14 @@ would produce undefined output. The right pattern is to do the **compute**
 in parallel and the **I/O** sequentially in the main thread:
 
 ```rustlab
-% Compute in parallel:
-results = parmap(@pi_trial, 1:8);
-
-% Plot serially in main thread:
+% The trials above already ran in parallel. Plot them on the main thread.
 clf;
-plot(1:length(results), results, "MC π estimates");
+plot(1:length(estimates), estimates, "MC π estimates");
 title("Per-trial estimates of π")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/parallel_montecarlo/plot-2-cc3791a6.svg)
+![plot 2](plots/parallel_montecarlo/plot-2-26f90958.svg)
 
 <!-- rustlab:output-end -->
 

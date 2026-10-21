@@ -2,7 +2,7 @@
 
 A matrix algebra and DSP toolkit written in Rust — scriptable from the command line or embedded in your own applications.
 
-**[Browse the rendered notebook gallery →](gallery/)** — 40 worked
+**[Browse the rendered notebook gallery →](gallery/)** — 43 worked
 notebooks (DSP filter design, spectral estimation, vector calculus,
 contour and surface plots, sparse direct solves with Cholesky and LU,
 multi-source electrostatics, dielectric Poisson, and more), all rendered

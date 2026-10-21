@@ -304,7 +304,7 @@ impl CacheRegistry {
             "cache: active ({})\n",
             self.store_path
                 .as_ref()
-                .map(|p| p.display().to_string())
+                .map(|p| crate::path_jail::display_path(p))
                 .unwrap_or_else(|| "<unknown>".to_string()),
         ));
         out.push_str(&format!(

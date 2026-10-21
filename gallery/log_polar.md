@@ -2,14 +2,12 @@
 
 # Log-Axis and Polar Plots
 
-The plot family includes four pre-transform shims for problems where
-linear axes obscure the structure: `loglog`, `semilogx`, `semilogy`,
-and `polar`. Each one transforms its arguments before passing them to
-the existing `plot()` machinery and labels the axes accordingly. The
-result captures the shape information the curriculum needs (straight
-lines on power-law data, closed shapes on polar data) — a future
-enhancement will swap in proper LogCoord-style axes with decade-based
-tick labels and radial gridlines.
+`loglog`, `semilogx`, `semilogy`, and `polar` cover the plots where
+linear axes obscure the structure. The three log plots keep the data
+in real units and draw a logarithmic axis with decade ticks. `polar`
+transforms to Cartesian `(r·cos θ, r·sin θ)` before `plot`. Straight
+lines on power-law data and closed shapes on polar data are the
+shapes the curriculum needs. `polar` has no radial grid.
 
 ## Power laws on loglog
 
@@ -27,8 +25,8 @@ title("y = x² — slope 2 on log-log");
 <!-- rustlab:output-end -->
 
 A power law `y = x^a` plots as a straight line of slope `a` on log-log
-axes. The shim labels the axes `log10(x)` and `log10(y)` so the
-transform is explicit; the slope-2 visual confirms the relationship.
+axes. Decade ticks are labelled with the real `x` and `y`; the slope-2
+line confirms the relationship.
 
 `loglog` requires both `x` and `y` to be **strictly positive** —
 negatives or zeros produce a clear error rather than NaN-ing through
@@ -49,21 +47,15 @@ title("Exponential decay e^{-t} on semilogy");
 
 <!-- rustlab:output-end -->
 
-`semilogy` log-transforms only the y-axis. Exponential decay shows up
-as a straight line of slope `-log10(e) ≈ -0.434` per unit `t`.
+`semilogy` draws a logarithmic y-axis. Exponential decay shows up
+as a straight line of slope `-log10(e) ≈ -0.434` per unit `t`
+(the slope is in decades).
 
 ## Bode-style frequency response
 
 `semilogx` is the canonical filter-design view: log-spaced frequencies
 on the x-axis, linear (often dB) magnitude on the y-axis. Combine it
-with `freqz` and `mag2db` to get a Bode plot.
-
-```rustlab
-% Conceptual: the actual filter design is in the DSP notebooks.
-% f = logspace(0, 4, 200);
-% H = freqz_eval(...);
-% semilogx(f, 20 * log10(abs(H)));
-```
+with `freqz` and `mag2db` — see `filter_analysis.md`.
 
 ## Polar — the three-petal rose
 
@@ -106,27 +98,21 @@ title("Hertzian dipole pattern: |sin θ|");
 
 Two lobes along the broadside direction, nulls along the dipole axis.
 
-## What's next
+## Axes
 
-The current implementation uses **pre-transform shims** that emit
-plots through the standard Cartesian backend. That gets the shapes
-right but the tick labels are the log-transformed values themselves
-(0, 1, 2, 3 instead of 1, 10, 100, 1000) and polar plots don't have
-radial gridlines. The follow-on enhancement, which integrates with the
-plotters / Plotly / ratatui backends to produce true log-scale axes
-and a polar coord system, is tracked in
-`dev/plans/em_requests_queue.md`.
-
-For visual verification of physical relationships — Bode plots,
-antenna lobes, decay curves — the pre-transform shims are sufficient.
+`loglog`, `semilogx`, and `semilogy` keep the data in real units and
+draw a logarithmic axis: decade ticks are labelled with the real
+values (`1`, `10`, `100`), not with `log10` of those values. `polar`
+is a Cartesian pre-transform, `(r·cos θ, r·sin θ)`, so the plot has
+no radial grid.
 
 ## Cheat sheet
 
-| Form                                   | Pre-transform                  | Notes                                       |
+| Form                                   | Axes                           | Notes                                       |
 |----------------------------------------|--------------------------------|---------------------------------------------|
-| `loglog(x, y [, opts])`                | `log10(x)`, `log10(y)`         | both x and y must be > 0                    |
-| `semilogx(x, y [, opts])`              | `log10(x)`                     | x must be > 0                               |
-| `semilogy(x, y [, opts])`              | `log10(y)`                     | y must be > 0                               |
+| `loglog(x, y [, opts])`                | both logarithmic               | both x and y must be > 0                    |
+| `semilogx(x, y [, opts])`              | x logarithmic, y linear        | x must be > 0                               |
+| `semilogy(x, y [, opts])`              | x linear, y logarithmic        | y must be > 0                               |
 | `polar(theta, r [, opts])`             | `(r·cos θ, r·sin θ)`           | theta in radians, both real-valued          |
 
 All four accept the same option syntax as `plot()` — color, label,
