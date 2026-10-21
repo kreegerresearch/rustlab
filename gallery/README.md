@@ -6,7 +6,7 @@ This directory holds the rustlab-notebook **sources** — markdown files with
 ` ```rustlab ` fenced code blocks that the notebook runner executes.
 
 **Looking for the rendered notebooks?** They live at the repo-root
-[`gallery/`](../../gallery/) directory and are browseable directly on
+[`gallery/`](./) directory and are browseable directly on
 GitHub with plots inline.
 
 ## Layout
@@ -67,7 +67,7 @@ position; structural edits fall back to a full refresh. Pass
 `--port <N>` to override the default port (8042 with auto-increment
 up to +10 if busy) or `--no-browser` to skip the auto-open. See
 `rustlab-notebook watch --help` and
-[`docs/notebooks.md`](../../docs/notebooks.md) § "Live preview" for
+[`docs/notebooks.md`](../docs/notebooks.md) § "Live preview" for
 the full details.
 
 ## Output formats

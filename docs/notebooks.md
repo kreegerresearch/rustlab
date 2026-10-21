@@ -1617,6 +1617,8 @@ images. The `.md` is suitable for committing to a GitHub repo — pairs
 of `notebooks/<slug>.md` (source) and `book/<slug>.md` (rendered) is
 the convention shipped in our Makefile templates.
 
+**Links that leave the notebook collection are rewritten for the output file.** A relative link whose target exists and sits outside the notebook directory — `[parmap](../../docs/quickref.md)` in `examples/notebooks/`, for example — is rewritten relative to the rendered file. The gallery copy, one level higher, becomes `../docs/quickref.md` in Markdown, HTML, LaTeX, and PDF. A link to another file in the same collection stays as written, and a target that does not exist is left unchanged so a broken link stays visible. Fenced code, inline code, and images are not rewritten. An in-place render and `--format markdown --obsidian` keep the source links.
+
 ```
 rustlab-notebook render analysis.md -f markdown
 # → analysis.md

@@ -716,7 +716,7 @@ pub fn cmd_render_cached(
         None,
         link,
         Some(&source),
-        Some(&input),
+        Some(&canon_input),
     ) {
         eprintln!("error: {}: {e}", input.display());
     }
@@ -788,7 +788,7 @@ pub fn cmd_render(
         None,
         &render::LinkMode::single_file(),
         Some(&source),
-        Some(&input),
+        Some(&canon_input),
     )?;
     print_summary(&input, &out_path, &rendered);
     Ok(())
@@ -1020,8 +1020,10 @@ pub fn cmd_render_dir(
     // HTML output, `.pdf` for LaTeX/PDF output. `index.md` is a valid
     // target only in HTML mode, which generates `index.html`
     // unconditionally; no `index.pdf` exists. Partials and dangling
-    // targets are left as written. Markdown output ignores link mode
-    // (Obsidian emission has its own wikilink path).
+    // targets are left as written. Markdown output does not rewrite
+    // in-collection links through link mode (Obsidian emission has its
+    // own wikilink path). A link that resolves outside the collection
+    // is rebased onto the output file — see `render_markdown::LinkRebase`.
     let known: Option<std::collections::HashSet<String>> = {
         let mut set: std::collections::HashSet<String> =
             pending.iter().map(|p| p.rel_md.clone()).collect();
@@ -1485,6 +1487,41 @@ fn render_output(
         kind,
         comments::requested(),
     ));
+    // A link written for the source tree (`../../docs/quickref.md` from
+    // `examples/notebooks/`) is wrong in `gallery/`, which is one
+    // directory higher. Rebase prose before every non-vault emitter.
+    // `--obsidian` keeps vault-relative links, and an in-place render
+    // is already in the source directory. The markdown emitter rebases
+    // again after wikilink expansion; a second pass leaves an
+    // already-rebased href alone because that path does not exist
+    // relative to the source directory.
+    let in_place = match (input, out_path.parent()) {
+        (Some(inp), Some(out_dir)) => inp
+            .parent()
+            .map(|src_dir| paths_equal(src_dir, out_dir))
+            .unwrap_or(false),
+        _ => false,
+    };
+    let current_rel_dir = match link {
+        render::LinkMode::Static {
+            current_rel_dir, ..
+        } => current_rel_dir.as_str(),
+        _ => "",
+    };
+    let rebase = if in_place || matches!(format, Format::Markdown { obsidian: Some(_) }) {
+        None
+    } else {
+        input.and_then(|src| {
+            render_markdown::LinkRebase::from_paths(src, out_path, current_rel_dir)
+        })
+    };
+    let rebased_blocks;
+    let rendered: &[execute::Rendered] = if let Some(rb) = rebase.as_ref() {
+        rebased_blocks = render_markdown::rebase_markdown_blocks(rendered, rb);
+        &rebased_blocks
+    } else {
+        rendered
+    };
     match format {
         Format::Html => {
             let (plot_dir, href_prefix) = plot_layout_for(out_path);
@@ -1534,14 +1571,7 @@ fn render_output(
             // trying to resolve the URL ("Cannot read properties of
             // undefined (reading 'origin')"). Two-dir users still get
             // the iframe; `--no-iframe` still works as an explicit opt-
-            // out.
-            let in_place = match (input, out_path.parent()) {
-                (Some(inp), Some(out_dir)) => inp
-                    .parent()
-                    .map(|src_dir| paths_equal(src_dir, out_dir))
-                    .unwrap_or(false),
-                _ => false,
-            };
+            // out. `in_place` is computed once above, with the link rebase.
             let iframe_href = obsidian
                 .as_ref()
                 .filter(|o| o.iframe && !in_place)
@@ -1566,13 +1596,14 @@ fn render_output(
             // Wikilink emission needs the notebook's collection-relative
             // dir to compute vault-relative targets; the Static link mode
             // already carries it (Server mode never reaches this arm).
-            let current_rel_dir = match link {
-                render::LinkMode::Static {
-                    current_rel_dir, ..
-                } => current_rel_dir.as_str(),
-                _ => "",
+            // `current_rel_dir` is computed once above. Rebase again after
+            // wikilinks are expanded to ordinary links; prose was already
+            // rebased for HTML and LaTeX above.
+            let markdown_rebase = match link_style {
+                render_markdown::LinkStyle::Standard => rebase.as_ref(),
+                render_markdown::LinkStyle::Wiki => None,
             };
-            let body = render_markdown::render_markdown(
+            let body = render_markdown::render_markdown_rebased(
                 title,
                 rendered,
                 &plot_dir,
@@ -1582,6 +1613,7 @@ fn render_output(
                 link_style,
                 !in_place,
                 current_rel_dir,
+                markdown_rebase,
             );
             let final_md = match obsidian {
                 Some(_) => {

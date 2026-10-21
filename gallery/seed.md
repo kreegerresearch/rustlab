@@ -20,7 +20,7 @@ title("randn(2000) — different every render")
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/seed/plot-1-99cca2aa.svg)
+![plot 1](plots/seed/plot-1-04df3d81.svg)
 
 <!-- rustlab:output-end -->
 

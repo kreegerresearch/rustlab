@@ -54,4 +54,4 @@ ylabel("amplitude")
 
 The current settings are **amplitude 1.0**, **3 Hz**, shape
 **sine** — the prose updates with the controls too, via
-[template interpolation](../../docs/notebooks.md#template-interpolation).
+[template interpolation](../docs/notebooks.md#template-interpolation).
