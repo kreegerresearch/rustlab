@@ -210,22 +210,33 @@ rustlab-notebook watch notebooks/ --git-diff --diff main
 ```
 
 Git comparison is off unless `--git-diff` or `[notebook] git_diff = true`.
-`--diff` alone does not enable it. The toolbar shows a `⋯` menu. Open it,
-then **Show diff** when that switch is available. That is two clicks, and
-no more. While git is off the switch is disabled and the menu says to pass
-`--git-diff` for a repository you trust. While git is on, the menu notes
-that git reads the repository config, and the same menu holds the picker.
-A dot sits on the icon while diff is on: **vs** is the other side
-(`?diff=<ref>`), **from** defaults to the working copy and can be another
-ref (`?base=<ref>`). The lists are local branches (the current branch
-first, then `main`), recent tags, and recent commits, filled by
-`GET /git/refs`. Typing filters the list. Arrow keys move through the
-matches, Enter picks one, and Esc closes the list, then the menu. A valid
-ref that matches nothing is still accepted. Changing either side reloads
-that page; other tabs keep their own query. The on/off choice is also kept
-in `sessionStorage` for this tab, so a notebook opened without `?diff=`
-follows the last choice. `?diff=off` forces it off. `[` and `]` move to
-the previous and next change when you are not typing.
+`--diff` alone does not enable it. The toolbar is `⋯` and **Source**.
+Open `⋯` for **Comments** and **Show diff**. **Comments** is the same
+on/off control as the header checkbox on a static HTML page: on shows
+the margin, off hides it. The choice stays in `sessionStorage`
+(`rl-comments-visible`) for that tab. **Show diff** is the second
+switch. While git is off that switch is disabled and the menu says to
+pass `--git-diff` for a repository you trust. While git is on, the menu
+notes that git reads the repository config, and the same menu holds the
+picker. A dot on `⋯` means a non-default choice: diff is on, or comments
+are hidden. Comments left on does not light the dot. **vs** is the other
+side (`?diff=<ref>`), **from** defaults to the working copy and can be
+another ref (`?base=<ref>`). The lists are local branches (the current
+branch first, then `main`), remote-tracking branches, recent tags, and
+recent commits, filled by `GET /git/refs`. Typing filters the list.
+Arrow keys move through the matches, Enter picks one, and Esc closes the
+list, then the menu. A valid ref that matches nothing is still accepted.
+Changing either side reloads that page; other tabs keep their own query.
+The diff on/off choice is also kept in `sessionStorage` for this tab, so
+a notebook opened without `?diff=` follows the last choice. `?diff=off`
+forces it off. `[` and `]` move to the previous and next change when you
+are not typing. A checkout or commit in the repository refreshes the
+open comparison. Line-ending-only differences are not shown as edits.
+Ignored files are not listed as added. A notebook that is missing on
+one side is a notice — `new file — not on <ref>`, or `deleted` / `not on
+<ref>` when that side is the one being shown — rather than a green or
+red bar on every block. Changing **vs** or **from** computes that
+request from scratch.
 
 Added blocks and lines are tinted green, removed ones red and struck through, and changed blocks amber, each with a side bar. A changed code cell tints whole lines and marks them `+` or `-`. Working copy against a ref keeps the live outputs and labels that cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` and `--git-diff` on the re-render-on-save watcher (`--obsidian` or `--output`) are ignored.
 
@@ -1370,11 +1381,15 @@ note is not clipped at the end of the section. Opening the
 source pane narrows that pane and shifts the page, so the pane does
 not cover the comment column. Hovering or focusing either the marker
 or the card emphasizes both. With scripting off, the cards stay in
-that column in document order, at full height. Unchecking **Comments** sets the column width to zero
+that column in document order, at full height. Turning **Comments** off sets the column width to zero
 and hides the cards, the markers, and the resize handle, so the prose
-takes the width back. The choice is stored in `sessionStorage` for
-that tab (`rl-comments-visible`). `--no-comments` on static HTML omits
-the marks, so there is no column. A viewport under 800px cannot fit
+takes the width back. On `notebook watch` that switch is in the `⋯`
+menu, next to **Show diff**, and the toolbar itself stays `⋯` and
+**Source**. On a static HTML page the same checkbox stays in the page
+header, where it still works with scripting off. The choice is stored
+in `sessionStorage` for that tab (`rl-comments-visible`). A dot on `⋯`
+appears when comments are hidden; leaving them on does not. `--no-comments`
+on static HTML omits the marks, so there is no column. A viewport under 800px cannot fit
 the column: the cards move to a Comments drawer at the bottom of the
 section, and a dragged or collapsed width is ignored. They stay out
 of the paragraph. The handle sits in the gap, so it does not cover the prose or a

@@ -4,7 +4,9 @@
 //! nothing here spawns git. When on, every invocation is a dashed plumbing
 //! binary (`git-rev-parse`, `git-cat-file`, `git-ls-tree`, `git-for-each-ref`,
 //! `git-hash-object`, `git-ls-files`) with config and environment overrides.
-//! Name-status is computed in-process from blob ids. There is no shell and
+//! Name-status is computed in-process from blob ids. The working copy is
+//! `git-ls-files` (`--exclude-standard`), not a directory walk. CRLF is
+//! folded to LF here; clean filters are not run. There is no shell and
 //! no network. Refs are character-checked before they are placed in argv.
 //!
 //! The stored notebook HTML stays the working-copy render. A request with
@@ -85,6 +87,7 @@ pub fn resolve_diff(q: &WatchQuery, cli: Option<&str>) -> Option<String> {
 
 /// Character check shared by `?diff=`, `?base=`, and the branch list.
 /// `index` is the staged blob. A range (`..`) is rejected here.
+/// `+` is allowed because git branch names may contain it.
 pub fn ref_ok(s: &str) -> bool {
     if s.is_empty() || s.len() > 256 || s.starts_with('-') || s.contains("..") {
         return false;
@@ -106,6 +109,7 @@ pub fn ref_ok(s: &str) -> bool {
                 | b'@'
                 | b'{'
                 | b'}'
+                | b'+'
                 | b'-'
         )
     })
@@ -122,16 +126,28 @@ fn ref_problem(s: &str) -> Option<&'static str> {
 }
 
 /// Repo-relative notebook path. Rejects `..`, absolute paths, and a
-/// notebook that sits outside the jail or the repository.
+/// notebook that sits outside the jail or the repository. A deleted
+/// notebook still resolves from its parent directory plus its file name,
+/// so a two-ref compare does not require the worktree file to exist.
 pub fn safe_rel(notebook: &Path, jail: Option<&Path>, repo: &Path) -> Result<String, ()> {
-    let nb = std::fs::canonicalize(notebook).map_err(|_| ())?;
-    if let Some(jail) = jail {
-        let jail = std::fs::canonicalize(jail).map_err(|_| ())?;
-        if !nb.starts_with(&jail) {
+    let repo = std::fs::canonicalize(repo).map_err(|_| ())?;
+    let jail = match jail {
+        Some(j) => Some(std::fs::canonicalize(j).map_err(|_| ())?),
+        None => None,
+    };
+    let nb = if notebook.exists() {
+        std::fs::canonicalize(notebook).map_err(|_| ())?
+    } else {
+        let name = notebook.file_name().ok_or(())?;
+        let parent = notebook.parent().filter(|p| p.exists()).ok_or(())?;
+        let parent = std::fs::canonicalize(parent).map_err(|_| ())?;
+        parent.join(name)
+    };
+    if let Some(jail) = &jail {
+        if !nb.starts_with(jail) {
             return Err(());
         }
     }
-    let repo = std::fs::canonicalize(repo).map_err(|_| ())?;
     let rel = nb.strip_prefix(&repo).map_err(|_| ())?;
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err(());
@@ -179,6 +195,7 @@ pub fn for_each_ref_args() -> Vec<String> {
         "--format=%(refname)%00%(HEAD)%00%(refname:short)%00%(committerdate:unix)".into(),
         "refs/heads".into(),
         "refs/tags".into(),
+        "refs/remotes".into(),
     ]
 }
 
@@ -299,6 +316,9 @@ fn scrub_git_env(cmd: &mut Command) {
         "GIT_COMMON_DIR",
         "GIT_INDEX_FILE",
         "GIT_EXEC_PATH",
+        // Inherited `0` hides worktrees whose git dir is on another
+        // filesystem. Discovery still starts at the notebook's `.git`.
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
     ] {
         cmd.env_remove(key);
     }
@@ -376,6 +396,38 @@ fn repo_root(start: &Path) -> Result<PathBuf, GitFail> {
     } else {
         Ok(PathBuf::from(s))
     }
+}
+
+/// Git directories to watch so a commit or checkout refreshes an open
+/// diff even when the notebook file itself did not change. Empty when
+/// `start` is not a repository. Does not execute repository config.
+pub fn git_watch_paths(start: &Path) -> Vec<PathBuf> {
+    let Ok(root) = repo_root(start) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for arg in ["--git-dir", "--git-common-dir"] {
+        let Ok(got) = run_plumbing(&root, "rev-parse", &[arg.into()]) else {
+            continue;
+        };
+        if !got.status.success() {
+            continue;
+        }
+        let s = String::from_utf8_lossy(&got.stdout).trim().to_string();
+        if s.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(&s);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+        if path.is_dir() && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
 }
 
 fn verify(root: &Path, rev: &str) -> Result<String, GitFail> {
@@ -473,45 +525,74 @@ fn index_blobs(root: &Path) -> Result<BTreeMap<String, String>, GitFail> {
     Ok(map)
 }
 
-fn walk_files(root: &Path) -> (Vec<String>, bool) {
+/// Paths from `git ls-files`, which already applies `.gitignore` and does
+/// not descend into a nested repository. Symlinks are returned separately
+/// so a tracked symlink is not reported as deleted, and they are not
+/// followed. Directories (a nested repo shows up as one path) are dropped.
+fn list_worktree(root: &Path) -> Result<(Vec<String>, Vec<String>), GitFail> {
+    let out = run_plumbing(
+        root,
+        "ls-files",
+        &[
+            "-z".into(),
+            "--cached".into(),
+            "--others".into(),
+            "--exclude-standard".into(),
+        ],
+    )?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
     let mut files = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
+    let mut links = Vec::new();
+    for rec in out.stdout.split(|b| *b == 0) {
+        if rec.is_empty() {
+            continue;
+        }
+        let path = String::from_utf8_lossy(rec).into_owned();
+        if path.contains('\n') || !rel_ok(&path) {
+            continue;
+        }
+        let full = root.join(&path);
+        let Ok(meta) = std::fs::symlink_metadata(&full) else {
             continue;
         };
-        for ent in rd.flatten() {
-            let Ok(ft) = ent.file_type() else {
-                continue;
-            };
-            if ft.is_symlink() {
-                continue;
-            }
-            if ent.file_name() == *".git" {
-                continue;
-            }
-            let path = ent.path();
-            if ft.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !ft.is_file() {
-                continue;
-            }
-            let Ok(rel) = path.strip_prefix(root) else {
-                continue;
-            };
-            let s = rel.to_string_lossy().replace('\\', "/");
-            if s.contains('\n') || !rel_ok(&s) {
-                continue;
-            }
-            if files.len() >= WALK_CAP {
-                return (files, true);
-            }
-            files.push(s);
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            links.push(path);
+        } else if ft.is_file() {
+            files.push(path);
         }
     }
-    (files, false)
+    Ok((files, links))
+}
+
+/// Fold CRLF to LF. Notebook text is compared this way so a checkout
+/// that only differs by line endings is not a change on every line.
+/// Clean/smudge filters are still not run.
+fn normalize_eol(s: &str) -> String {
+    if !s.contains('\r') {
+        return s.to_string();
+    }
+    s.replace("\r\n", "\n")
+}
+
+fn normalize_eol_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.contains(&0) || !bytes.windows(2).any(|w| w == b"\r\n") {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            out.push(b'\n');
+            i += 2;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(out)
 }
 
 fn hash_files(root: &Path, files: &[String]) -> Result<Vec<String>, GitFail> {
@@ -549,13 +630,65 @@ fn hash_files(root: &Path, files: &[String]) -> Result<Vec<String>, GitFail> {
     Ok(oids)
 }
 
-fn worktree_blobs(root: &Path) -> Result<(BTreeMap<String, String>, bool), GitFail> {
-    let (files, truncated) = walk_files(root);
-    let oids = hash_files(root, &files)?;
+fn hash_stdin(root: &Path, bytes: &[u8]) -> Result<String, GitFail> {
+    let args = vec!["--no-filters".into(), "--stdin".into()];
+    let out = run_plumbing_in(root, "hash-object", &args, Some(bytes))?;
+    if !out.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Blob id of the worktree file with CRLF folded to LF, when that
+/// changes the bytes. `None` means the raw id already stands.
+fn normalized_file_oid(root: &Path, rel: &str) -> Option<String> {
+    let bytes = std::fs::read(root.join(rel)).ok()?;
+    let norm = normalize_eol_bytes(&bytes)?;
+    let oid = hash_stdin(root, &norm).ok()?;
+    oid_ok(&oid).then_some(oid)
+}
+
+fn worktree_blobs(
+    root: &Path,
+    old: &BTreeMap<String, String>,
+) -> Result<(BTreeMap<String, String>, bool), GitFail> {
+    let (files, links) = list_worktree(root)?;
+    // Every path that exists at `old` is kept, and every notebook, so a
+    // cap on stray untracked files cannot hide the file being read or
+    // turn a real deletion into silence.
+    let mut selected = Vec::new();
+    let mut extra = Vec::new();
+    for path in files {
+        if old.contains_key(&path) || path.ends_with(".md") {
+            selected.push(path);
+        } else {
+            extra.push(path);
+        }
+    }
+    let mut truncated = false;
+    for path in extra {
+        if selected.len() >= WALK_CAP {
+            truncated = true;
+            break;
+        }
+        selected.push(path);
+    }
+    let oids = hash_files(root, &selected)?;
     let mut map = BTreeMap::new();
-    for (path, oid) in files.into_iter().zip(oids) {
-        if oid_ok(&oid) {
-            map.insert(path, oid);
+    for (path, mut oid) in selected.into_iter().zip(oids) {
+        if !oid_ok(&oid) {
+            continue;
+        }
+        if old.get(&path) != Some(&oid) {
+            if let Some(norm) = normalized_file_oid(root, &path) {
+                oid = norm;
+            }
+        }
+        map.insert(path, oid);
+    }
+    for path in links {
+        if let Some(prev) = old.get(&path) {
+            map.insert(path, prev.clone());
         }
     }
     Ok((map, truncated))
@@ -634,13 +767,135 @@ fn diff_maps(
     out
 }
 
-fn worktree_changes(root: &Path, against: Option<&str>) -> Result<Vec<NameChange>, GitFail> {
+/// What the worktree is compared with. `Empty` is an unborn `HEAD`
+/// (the branch exists and has no commit yet).
+enum RevSide {
+    Oid(String),
+    Index,
+    Empty,
+}
+
+fn worktree_changes(root: &Path, against: &RevSide) -> Result<Vec<NameChange>, GitFail> {
     let old = match against {
-        Some(oid) => commit_blobs(root, oid)?,
-        None => index_blobs(root)?,
+        RevSide::Oid(oid) => commit_blobs(root, oid)?,
+        RevSide::Index => index_blobs(root)?,
+        RevSide::Empty => BTreeMap::new(),
     };
-    let (new, truncated) = worktree_blobs(root)?;
-    Ok(diff_maps(&old, &new, !truncated))
+    let (new, _truncated) = worktree_blobs(root, &old)?;
+    // Deletions stay on. The cap only drops untracked non-notebooks,
+    // which are not in `old`, so a missing tracked path is a real delete.
+    Ok(diff_maps(&old, &new, true))
+}
+
+/// `HEAD` (and the branch it names) when that branch has no commit.
+fn unborn_branch(root: &Path) -> Result<Option<String>, GitFail> {
+    let out = run_plumbing(root, "rev-parse", &["--git-path".into(), "HEAD".into()])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let rel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if rel.is_empty() || rel.contains('\0') {
+        return Ok(None);
+    }
+    let path = PathBuf::from(&rel);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let Some(rest) = text.trim().strip_prefix("ref: ") else {
+        return Ok(None);
+    };
+    let Some(branch) = rest.trim().strip_prefix("refs/heads/") else {
+        return Ok(None);
+    };
+    if branch.is_empty() || branch.ends_with('/') {
+        return Ok(None);
+    }
+    Ok(Some(branch.to_string()))
+}
+
+fn resolve_side(root: &Path, rev: &str) -> Result<RevSide, GitFail> {
+    if rev == "index" {
+        return Ok(RevSide::Index);
+    }
+    match verify(root, rev) {
+        Ok(oid) => Ok(RevSide::Oid(oid)),
+        Err(GitFail::Missing) => Err(GitFail::Missing),
+        Err(GitFail::Dubious) => Err(GitFail::Dubious),
+        Err(_) => {
+            if let Some(branch) = unborn_branch(root)? {
+                if rev == "HEAD" || rev == branch || rev == format!("refs/heads/{branch}") {
+                    return Ok(RevSide::Empty);
+                }
+            }
+            Err(GitFail::Unknown)
+        }
+    }
+}
+
+/// A renamed notebook whose bytes also changed is an add plus a delete
+/// under exact oid matching. When one deleted notebook shares most of
+/// its lines with the file on screen, treat that pair as the rename.
+fn attach_rename(
+    changes: &mut [NameChange],
+    root: &Path,
+    rev: &str,
+    oid: Option<&str>,
+    rel: &str,
+    new_text: &str,
+) {
+    let Some(idx) = changes
+        .iter()
+        .position(|c| c.path == rel && c.status == 'A')
+    else {
+        return;
+    };
+    let deleted: Vec<String> = changes
+        .iter()
+        .filter(|c| c.status == 'D' && c.path.ends_with(".md"))
+        .take(32)
+        .map(|c| c.path.clone())
+        .collect();
+    let new_lines: std::collections::HashSet<&str> =
+        new_text.lines().filter(|l| !l.trim().is_empty()).collect();
+    if new_lines.is_empty() {
+        return;
+    }
+    let mut best_path: Option<String> = None;
+    let mut best = 0.0f64;
+    let mut second = 0.0f64;
+    for path in deleted {
+        let Ok(Some(old)) = show_blob(root, rev, &path, oid) else {
+            continue;
+        };
+        if old.contains('\0') {
+            continue;
+        }
+        let old = normalize_eol(&old);
+        let old_lines: std::collections::HashSet<&str> =
+            old.lines().filter(|l| !l.trim().is_empty()).collect();
+        if old_lines.is_empty() {
+            continue;
+        }
+        let inter = new_lines.intersection(&old_lines).count();
+        let denom = new_lines.len().max(old_lines.len());
+        let score = inter as f64 / denom as f64;
+        if score > best {
+            second = best;
+            best = score;
+            best_path = Some(path);
+        } else if score > second {
+            second = score;
+        }
+    }
+    if best >= 0.5 && best - second >= 0.15 {
+        if let Some(path) = best_path {
+            changes[idx].status = 'R';
+            changes[idx].old_path = Some(path);
+        }
+    }
 }
 
 fn ref_blobs(
@@ -681,7 +936,10 @@ fn show_blob(
     } else {
         verify(root, rev)?
     };
-    let cache_key = (spec_rev != "index").then(|| format!("{spec_rev}:{rel}"));
+    // The key is the repo plus the commit oid plus the path. A miss is
+    // not stored. A path alone must not answer a later ref, and a missing
+    // blob in one repository must not answer another.
+    let cache_key = (spec_rev != "index").then(|| blob_cache_key(root, &spec_rev, rel));
     if let Some(key) = &cache_key {
         if let Some(hit) = cache_get(key) {
             return Ok(Some(hit));
@@ -699,6 +957,19 @@ fn show_blob(
         cache_put(key, text.clone());
     }
     Ok(Some(text))
+}
+
+fn blob_cache_key(root: &Path, oid: &str, rel: &str) -> String {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    format!("{}:{oid}:{rel}", root.display())
+}
+
+#[cfg(test)]
+fn cache_keys() -> Vec<String> {
+    BLOB_CACHE
+        .lock()
+        .map(|c| c.iter().map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default()
 }
 
 fn cache_get(key: &str) -> Option<String> {
@@ -870,6 +1141,7 @@ struct Listed {
     current: bool,
     date: i64,
     tag: bool,
+    remote: bool,
 }
 
 fn collect_refs(start: &Path) -> Result<String, GitFail> {
@@ -886,6 +1158,7 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
         let short = parts.next().unwrap_or("");
         let date: i64 = parts.next().unwrap_or("0").parse().unwrap_or(0);
         let tag = full.starts_with("refs/tags/");
+        let remote = full.starts_with("refs/remotes/");
         // `?diff=off` means off, so a branch literally named off is sent
         // as its full refname, which still passes the character check.
         let name = if short == "off" { full } else { short };
@@ -897,9 +1170,14 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
             current: head.starts_with('*'),
             date,
             tag,
+            remote,
         });
     }
-    let heads: Vec<Listed> = rows.iter().filter(|r| !r.tag).cloned().collect();
+    let heads: Vec<Listed> = rows
+        .iter()
+        .filter(|r| !r.tag && !r.remote)
+        .cloned()
+        .collect();
     let mut current: Vec<Listed> = heads.iter().filter(|h| h.current).cloned().collect();
     let mut rest: Vec<Listed> = heads.into_iter().filter(|h| !h.current).collect();
     rest.sort_by(|a, b| {
@@ -916,6 +1194,9 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
             .then(a.name.cmp(&b.name))
     });
     current.append(&mut rest);
+    let mut remotes: Vec<Listed> = rows.iter().filter(|r| r.remote).cloned().collect();
+    remotes.sort_by(|a, b| b.date.cmp(&a.date).then(a.name.cmp(&b.name)));
+    current.append(&mut remotes);
     let mut tags: Vec<Listed> = rows.into_iter().filter(|r| r.tag).collect();
     tags.sort_by(|a, b| b.date.cmp(&a.date).then(a.name.cmp(&b.name)));
 
@@ -1001,43 +1282,22 @@ pub fn present(p: Present<'_>) -> String {
     }
     let rel = safe_rel(p.source_path, p.jail, &root).expect("checked");
 
-    let diff_oid = if p.diff == "index" {
-        None
-    } else {
-        match verify(&root, p.diff) {
-            Ok(oid) => Some(oid),
-            Err(GitFail::Missing) => {
-                return decorate(p.html, p.diff, base, "git not found", None);
-            }
-            Err(GitFail::Dubious) => {
-                return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None);
-            }
-            Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
-        }
+    let diff_side = match resolve_side(&root, p.diff) {
+        Ok(side) => side,
+        Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
+        Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
+        Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
     };
-    let base_oid = if let Some(b) = base.as_deref() {
-        if b == "index" {
-            None
-        } else {
-            match verify(&root, b) {
-                Ok(oid) => Some(oid),
-                Err(GitFail::Missing) => {
-                    return decorate(p.html, p.diff, base, "git not found", None);
-                }
-                Err(GitFail::Dubious) => {
-                    return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None);
-                }
-                Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
-            }
-        }
-    } else {
-        None
-    };
-
     if let Some(b) = base.as_deref() {
-        return present_two_ref(p, &root, &rel, b, diff_oid.as_deref(), base_oid.as_deref());
+        let base_side = match resolve_side(&root, b) {
+            Ok(side) => side,
+            Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
+            Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
+            Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
+        };
+        return present_two_ref(p, &root, &rel, b, &diff_side, &base_side);
     }
-    present_working(p, &root, &rel, diff_oid.as_deref())
+    present_working(p, &root, &rel, &diff_side)
 }
 
 /// `enabled == false` returns the stored HTML and does not spawn git.
@@ -1048,9 +1308,41 @@ pub fn present_if(enabled: bool, p: Present<'_>) -> String {
     present(p)
 }
 
-fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) -> String {
-    let against = if p.diff == "index" { None } else { oid };
-    let changes = match worktree_changes(root, against) {
+fn load_named(
+    root: &Path,
+    rev: &str,
+    rel: &str,
+    changes: &[NameChange],
+    side: &RevSide,
+) -> Result<Option<String>, GitFail> {
+    match side {
+        RevSide::Empty => Ok(None),
+        RevSide::Index => load_side(root, "index", rel, changes, None),
+        RevSide::Oid(oid) => load_side(root, rev, rel, changes, Some(oid)),
+    }
+}
+
+enum Loaded {
+    Text(String),
+    /// No blob at this path on this side. Not cached.
+    Missing,
+    Binary,
+    Fail(&'static str),
+}
+
+fn load_text(root: &Path, rev: &str, rel: &str, changes: &[NameChange], side: &RevSide) -> Loaded {
+    match load_named(root, rev, rel, changes, side) {
+        Ok(Some(s)) if s.contains('\0') => Loaded::Binary,
+        Ok(Some(s)) => Loaded::Text(normalize_eol(&s)),
+        Ok(None) => Loaded::Missing,
+        Err(GitFail::Missing) => Loaded::Fail("git not found"),
+        Err(GitFail::Dubious) => Loaded::Fail(OWNERSHIP_MSG),
+        Err(_) => Loaded::Fail("could not read that ref"),
+    }
+}
+
+fn present_working(p: Present<'_>, root: &Path, rel: &str, side: &RevSide) -> String {
+    let mut changes = match worktree_changes(root, side) {
         Ok(c) => c,
         Err(GitFail::Dubious) => {
             return decorate(p.html, p.diff, None, OWNERSHIP_MSG, None);
@@ -1058,17 +1350,45 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) ->
         Err(GitFail::Missing) => return decorate(p.html, p.diff, None, "git not found", None),
         Err(_) => Vec::new(),
     };
-    let dots = file_dots_json(&changes);
-    let disk = match std::fs::read(p.source_path) {
-        Ok(b) => b,
-        Err(_) => {
-            return decorate(p.html, p.diff, None, "could not read notebook", Some(&dots));
-        }
+    let disk = std::fs::read(p.source_path).ok();
+    let oid = match side {
+        RevSide::Oid(s) => Some(s.as_str()),
+        _ => None,
     };
-    if disk.contains(&0) {
-        return decorate(p.html, p.diff, None, "not a text notebook", Some(&dots));
+    let new_text = disk.as_ref().map(|b| {
+        if b.contains(&0) {
+            String::new()
+        } else {
+            normalize_eol(&String::from_utf8_lossy(b))
+        }
+    });
+    if let Some(text) = &new_text {
+        if !text.is_empty() && !matches!(side, RevSide::Empty) {
+            attach_rename(&mut changes, root, p.diff, oid, rel, text);
+        }
     }
-    let new_text = String::from_utf8_lossy(&disk).into_owned();
+    let dots = file_dots_json(&changes);
+    let fail = |msg: &str| decorate(p.html, p.diff, None, msg, Some(&dots));
+    if disk.as_ref().is_some_and(|b| b.contains(&0)) {
+        return fail("not a text notebook");
+    }
+    let Some(new_text) = new_text else {
+        return match load_text(root, p.diff, rel, &changes, side) {
+            Loaded::Fail(msg) => fail(msg),
+            Loaded::Binary => fail("not a text notebook"),
+            Loaded::Missing => fail(&format!("not on {} and not in the working copy", p.diff)),
+            Loaded::Text(old) => {
+                let banner = format!("deleted — not in the working copy (still on {})", p.diff);
+                let notice = format!(
+                    "This notebook is not in the working copy. It is still on {}.",
+                    p.diff
+                );
+                deleted_page(p.html, &old, &notice, false, p.comments_on, |page| {
+                    decorate(&page, p.diff, None, &banner, Some(&dots))
+                })
+            }
+        };
+    };
     if crate::embed::has_markdown_embeds(&new_text) {
         return decorate(
             p.html,
@@ -1078,28 +1398,56 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, oid: Option<&str>) ->
             Some(&dots),
         );
     }
-    let old_text = match load_side(root, p.diff, rel, &changes, oid) {
-        Ok(Some(s)) if s.contains('\0') => {
-            return decorate(p.html, p.diff, None, "not a text notebook", Some(&dots));
+    let old_text = match load_text(root, p.diff, rel, &changes, side) {
+        Loaded::Binary => return fail("not a text notebook"),
+        Loaded::Fail(msg) => return fail(msg),
+        Loaded::Missing => {
+            let banner = format!("new file — not on {}", p.diff);
+            let notice = format!(
+                "This notebook is not on {}. Showing the working copy.",
+                p.diff
+            );
+            let page = insert_notice(p.html, &notice);
+            return decorate(&page, p.diff, None, &banner, Some(&dots));
         }
-        Ok(Some(s)) => s,
-        Ok(None) => String::new(),
-        Err(GitFail::Missing) => {
-            return decorate(p.html, p.diff, None, "git not found", Some(&dots))
+        Loaded::Text(s) => s,
+    };
+    let banner_for = |n: usize| {
+        if n == 0 {
+            format!("no changes vs {}", p.diff)
+        } else {
+            format!("{n} changes vs {}", p.diff)
         }
-        Err(GitFail::Dubious) => return decorate(p.html, p.diff, None, OWNERSHIP_MSG, Some(&dots)),
-        Err(_) => String::new(),
     };
     match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
-        Ok((html, n)) => {
-            let banner = if n == 0 {
-                format!("no changes vs {}", p.diff)
-            } else {
-                format!("{n} changes vs {}", p.diff)
-            };
-            decorate(&html, p.diff, None, &banner, Some(&dots))
-        }
-        Err(msg) => decorate(p.html, p.diff, None, msg, Some(&dots)),
+        Ok((html, n)) => decorate(&html, p.diff, None, &banner_for(n), Some(&dots)),
+        Err(_) => match render_aligned(&old_text, &new_text, p.comments_on, false) {
+            // The stored sections don't match the file (an emptied
+            // notebook, or a render that folded blocks differently).
+            // Rebuild <main> so the added and removed blocks still show.
+            Ok((inner, n)) => {
+                let page = replace_main(p.html, &inner);
+                decorate(&page, p.diff, None, &banner_for(n), Some(&dots))
+            }
+            Err(msg) => decorate(p.html, p.diff, None, msg, Some(&dots)),
+        },
+    }
+}
+
+fn side_time(root: &Path, rev: &str, side: &RevSide) -> Result<i64, GitFail> {
+    match side {
+        // An unborn branch is older than every commit.
+        RevSide::Empty => Ok(i64::MIN),
+        RevSide::Index => commit_time(root, rev),
+        RevSide::Oid(_) => commit_time(root, rev),
+    }
+}
+
+fn blobs_for(root: &Path, rev: &str, side: &RevSide) -> Result<BTreeMap<String, String>, GitFail> {
+    match side {
+        RevSide::Empty => Ok(BTreeMap::new()),
+        RevSide::Index => ref_blobs(root, "index", None),
+        RevSide::Oid(oid) => ref_blobs(root, rev, Some(oid)),
     }
 }
 
@@ -1108,14 +1456,20 @@ fn present_two_ref(
     root: &Path,
     rel: &str,
     base: &str,
-    diff_oid: Option<&str>,
-    base_oid: Option<&str>,
+    diff_side: &RevSide,
+    base_side: &RevSide,
 ) -> String {
     // `git diff A B` lists what changes from A to B. The page shows the
     // newer commit. A tie, or either side `index`, keeps the `diff` param.
-    let show_diff = match (p.diff == "index", base == "index") {
+    let show_diff = match (
+        matches!(diff_side, RevSide::Index),
+        matches!(base_side, RevSide::Index),
+    ) {
         (true, _) | (_, true) => true,
-        _ => match (commit_time(root, p.diff), commit_time(root, base)) {
+        _ => match (
+            side_time(root, p.diff, diff_side),
+            side_time(root, base, base_side),
+        ) {
             (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
                 return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, None);
             }
@@ -1126,14 +1480,14 @@ fn present_two_ref(
             _ => true,
         },
     };
-    let (new_ref, new_oid, old_ref, old_oid) = if show_diff {
-        (p.diff, diff_oid, base, base_oid)
+    let (new_ref, new_side, old_ref, old_side) = if show_diff {
+        (p.diff, diff_side, base, base_side)
     } else {
-        (base, base_oid, p.diff, diff_oid)
+        (base, base_side, p.diff, diff_side)
     };
-    let changes = match (
-        ref_blobs(root, old_ref, old_oid),
-        ref_blobs(root, new_ref, new_oid),
+    let mut changes = match (
+        blobs_for(root, old_ref, old_side),
+        blobs_for(root, new_ref, new_side),
     ) {
         (Ok(old), Ok(new)) => diff_maps(&old, &new, true),
         (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
@@ -1144,10 +1498,37 @@ fn present_two_ref(
         }
         _ => Vec::new(),
     };
+    if let Ok(Some(preview)) = load_named(root, new_ref, rel, &changes, new_side) {
+        if !preview.contains('\0') {
+            let old_rev = if matches!(old_side, RevSide::Index) {
+                "index"
+            } else {
+                old_ref
+            };
+            let old_oid = match old_side {
+                RevSide::Oid(s) => Some(s.as_str()),
+                _ => None,
+            };
+            attach_rename(
+                &mut changes,
+                root,
+                old_rev,
+                old_oid,
+                rel,
+                &normalize_eol(&preview),
+            );
+        }
+    }
     let dots = file_dots_json(&changes);
-    let newer = match (p.diff == "index" || base == "index", show_diff) {
+    let newer = match (
+        matches!(diff_side, RevSide::Index) || matches!(base_side, RevSide::Index),
+        show_diff,
+    ) {
         (true, _) => None,
-        (false, true) => match (commit_time(root, p.diff), commit_time(root, base)) {
+        (false, true) => match (
+            side_time(root, p.diff, diff_side),
+            side_time(root, base, base_side),
+        ) {
             (Ok(d), Ok(b)) if d > b => Some(()),
             (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
                 return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, Some(&dots));
@@ -1159,45 +1540,71 @@ fn present_two_ref(
     let newer_word = if newer.is_some() { " (newer)" } else { "" };
     let fail = |msg: &str| decorate(p.html, p.diff, Some(base), msg, Some(&dots));
 
-    let new_text = match load_side(root, new_ref, rel, &changes, new_oid) {
-        Ok(Some(s)) => s,
-        Ok(None) => String::new(),
-        Err(GitFail::Missing) => return fail("git not found"),
-        Err(GitFail::Dubious) => return fail(OWNERSHIP_MSG),
-        Err(_) => String::new(),
+    let new_text = match load_text(root, new_ref, rel, &changes, new_side) {
+        Loaded::Fail(msg) => return fail(msg),
+        Loaded::Binary => return fail("not a text notebook"),
+        other => other,
     };
-    let old_text = match load_side(root, old_ref, rel, &changes, old_oid) {
-        Ok(Some(s)) => s,
-        Ok(None) => String::new(),
-        Err(GitFail::Missing) => return fail("git not found"),
-        Err(GitFail::Dubious) => return fail(OWNERSHIP_MSG),
-        Err(_) => String::new(),
+    let old_text = match load_text(root, old_ref, rel, &changes, old_side) {
+        Loaded::Fail(msg) => return fail(msg),
+        Loaded::Binary => return fail("not a text notebook"),
+        other => other,
     };
-    if new_text.contains('\0') || old_text.contains('\0') {
-        return fail("not a text notebook");
-    }
-    let banner = format!("showing {new_ref}{newer_word} vs {old_ref} — code was not run");
-    if crate::embed::has_markdown_embeds(&new_text) || crate::embed::has_markdown_embeds(&old_text)
-    {
-        let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
-        return decorate(
-            &page,
-            p.diff,
-            Some(base),
-            "embeds are not part of this diff — code was not run",
-            Some(&dots),
-        );
-    }
-    match render_aligned(&old_text, &new_text, p.comments_on, true) {
-        Ok((inner, _)) => {
+    let run_note = "code was not run";
+    match (old_text, new_text) {
+        (Loaded::Missing, Loaded::Missing) => {
+            let banner = format!("not on {new_ref} or {old_ref}");
+            let page = insert_notice(
+                p.html,
+                &format!("This notebook is not on {new_ref} or {old_ref}."),
+            );
+            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+        }
+        (Loaded::Missing, Loaded::Text(text)) => {
+            let banner = format!("new file — not on {old_ref}; {run_note}");
+            let notice = format!("This notebook is not on {old_ref}. Showing {new_ref}.");
+            let inner = format!(
+                "{}{}",
+                notice_html(&notice),
+                render_plain(&text, p.comments_on)
+            );
             let page = replace_main(p.html, &inner);
             decorate(&page, p.diff, Some(base), &banner, Some(&dots))
         }
-        Err(msg) => {
-            let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
-            let banner = format!("{msg} — code was not run");
-            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+        (Loaded::Text(text), Loaded::Missing) => {
+            let banner = format!("not on {new_ref} — removed since {old_ref}; {run_note}");
+            let notice = format!("This notebook is not on {new_ref}. It is still on {old_ref}.");
+            deleted_page(p.html, &text, &notice, true, p.comments_on, |page| {
+                decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+            })
         }
+        (Loaded::Text(old_text), Loaded::Text(new_text)) => {
+            let banner = format!("showing {new_ref}{newer_word} vs {old_ref} — {run_note}");
+            if crate::embed::has_markdown_embeds(&new_text)
+                || crate::embed::has_markdown_embeds(&old_text)
+            {
+                let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
+                return decorate(
+                    &page,
+                    p.diff,
+                    Some(base),
+                    "embeds are not part of this diff — code was not run",
+                    Some(&dots),
+                );
+            }
+            match render_aligned(&old_text, &new_text, p.comments_on, true) {
+                Ok((inner, _)) => {
+                    let page = replace_main(p.html, &inner);
+                    decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+                }
+                Err(msg) => {
+                    let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
+                    let banner = format!("{msg} — code was not run");
+                    decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+                }
+            }
+        }
+        _ => fail("not a text notebook"),
     }
 }
 
@@ -1828,8 +2235,59 @@ fn line_row(class: &str, text: &str) -> String {
     )
 }
 
+/// Index of the document's `<main>` element.
+///
+/// The watch client's head script mentions `<main>` in a comment
+/// (`inside <main>`). `str::find("<main")` hits that comment first.
+/// Splicing there eats `<body>`, the toolbar, and the real notebook,
+/// and a newline in the splice ends the comment so the script dies
+/// with `Unexpected token '<'`. A one-sided compare then has no picker
+/// left to switch refs. Skip `<script>` and `<style>`.
+fn find_real_main(html: &str) -> Option<usize> {
+    // Byte walk, not `&str` indexing: the banner sits before `<main>` and
+    // contains "—" (three bytes). Stepping one byte and then slicing the
+    // string panics inside that character.
+    let bytes = html.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"<script") || bytes[i..].starts_with(b"<style") {
+            let close: &[u8] = if bytes[i..].starts_with(b"<script") {
+                b"</script>"
+            } else {
+                b"</style>"
+            };
+            let rest = &bytes[i..];
+            let Some(end) = rest.windows(close.len()).position(|w| w == close) else {
+                return None;
+            };
+            i += end + close.len();
+            continue;
+        }
+        if bytes[i..].starts_with(b"<main>")
+            || bytes[i..].starts_with(b"<main ")
+            || bytes[i..].starts_with(b"<main\n")
+        {
+            return Some(i);
+        }
+        let b = bytes[i];
+        let step = if b < 0x80 {
+            1
+        } else if b & 0xE0 == 0xC0 {
+            2
+        } else if b & 0xF0 == 0xE0 {
+            3
+        } else if b & 0xF8 == 0xF0 {
+            4
+        } else {
+            1
+        };
+        i += step;
+    }
+    None
+}
+
 fn replace_main(html: &str, inner: &str) -> String {
-    let Some(start) = html.find("<main") else {
+    let Some(start) = find_real_main(html) else {
         return format!("{html}{inner}");
     };
     let Some(gt) = html[start..].find('>') else {
@@ -1864,11 +2322,21 @@ fn decorate(
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"false\"",
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet active\" role=\"switch\" aria-checked=\"true\"",
     );
-    out = out.replace("id=\"rl-diff-dot\" hidden", "id=\"rl-diff-dot\"");
     out = out.replace(
-        "aria-label=\"More\" title=\"More\"",
-        "aria-label=\"More, diff on\" title=\"More, diff on\"",
+        "<span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden>",
+        "<span id=\"rl-diff-dot\" class=\"rl-diff-dot\">",
     );
+    if out.contains("aria-label=\"More, comments off\"") {
+        out = out.replace(
+            "aria-label=\"More, comments off\" title=\"More, comments off\"",
+            "aria-label=\"More, diff on, comments off\" title=\"More, diff on, comments off\"",
+        );
+    } else {
+        out = out.replace(
+            "aria-label=\"More\" title=\"More\"",
+            "aria-label=\"More, diff on\" title=\"More, diff on\"",
+        );
+    }
     let banner_html = format!("<p id=\"rl-diff-banner\">{}</p>", escape_html(banner));
     if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
         out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
@@ -1895,8 +2363,33 @@ fn decorate(
     out
 }
 
+fn deleted_page(
+    html: &str,
+    old: &str,
+    notice: &str,
+    two_ref: bool,
+    comments_on: bool,
+    finish: impl FnOnce(String) -> String,
+) -> String {
+    match render_aligned(old, "", comments_on, two_ref) {
+        Ok((inner, _)) => {
+            let page = replace_main(html, &format!("{}{inner}", notice_html(notice)));
+            finish(page)
+        }
+        Err(msg) => finish(insert_notice(html, msg)),
+    }
+}
+
+fn notice_html(text: &str) -> String {
+    format!("<p class=\"rl-diff-notice\">{}</p>\n", escape_html(text))
+}
+
+fn insert_notice(html: &str, text: &str) -> String {
+    insert_after_main(html, &notice_html(text))
+}
+
 fn insert_after_main(html: &str, extra: &str) -> String {
-    let Some(i) = html.find("<main") else {
+    let Some(i) = find_real_main(html) else {
         return format!("{extra}{html}");
     };
     let Some(rel) = html[i..].find('>') else {
@@ -2125,6 +2618,24 @@ mod tests {
         assert!(out.contains("new line"), "{out}");
         assert!(out.contains("output is the working copy"), "{out}");
         assert!(out.contains(">ran<") || out.contains("ran"), "{out}");
+    }
+
+    #[test]
+    fn decorate_marks_the_menu_when_diff_is_on() {
+        let html = "<button aria-label=\"More\" title=\"More\"></button><span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden></span>";
+        let out = decorate(html, "HEAD", None, "1 change", None);
+        assert!(
+            out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\">"),
+            "{out}"
+        );
+        assert!(!out.contains("rl-diff-dot\" hidden"), "{out}");
+        assert!(out.contains("aria-label=\"More, diff on\""), "{out}");
+        let hidden = "<button aria-label=\"More, comments off\" title=\"More, comments off\"></button><span id=\"rl-diff-dot\" class=\"rl-diff-dot\"></span>";
+        let both = decorate(hidden, "HEAD", None, "1 change", None);
+        assert!(
+            both.contains("aria-label=\"More, diff on, comments off\""),
+            "{both}"
+        );
     }
 
     #[test]
@@ -2357,5 +2868,468 @@ mod tests {
             "hardened git ran a repo hook or alias: {refs}"
         );
         assert!(!refs.contains("git diff is off"), "{refs}");
+    }
+
+    fn quiet_git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn init_repo(dir: &Path) {
+        quiet_git(dir, &["init", "-b", "main"]);
+        quiet_git(dir, &["config", "user.email", "t@example.com"]);
+        quiet_git(dir, &["config", "user.name", "Test"]);
+    }
+
+    fn prose_html(body: &str) -> String {
+        format!(
+            "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>{body}</p></div></section></main></body>"
+        )
+    }
+
+    fn show(dir: &Path, path: &Path, diff: &str, base: Option<&str>) -> String {
+        present(Present {
+            html: &prose_html("x"),
+            source_path: path,
+            jail: Some(dir),
+            comments_on: true,
+            diff,
+            base,
+        })
+    }
+
+    #[test]
+    fn ref_checker_accepts_plus_in_a_branch_name() {
+        assert!(ref_ok("topic+1"));
+        assert!(ref_ok("release/1.2"));
+    }
+
+    #[test]
+    fn fixture_repos_cover_states_refs_and_file_changes() {
+        if !git_available() {
+            eprintln!("SKIP git fixtures: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+
+        // Not a repository.
+        let stray = repo.join("n.md");
+        std::fs::write(&stray, "# Hello\n").unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("not a git repository"), "{page}");
+
+        init_repo(&repo);
+
+        // Unborn branch: the notebook is a new file, not an unknown ref
+        // and not a green bar on every block.
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("new file — not on HEAD"), "{page}");
+        assert!(page.contains("rl-diff-notice"), "{page}");
+        assert!(!page.contains("rl-diff-add"), "{page}");
+        assert!(!page.contains("unknown ref"), "{page}");
+
+        quiet_git(&repo, &["add", "n.md"]);
+        quiet_git(&repo, &["commit", "-m", "one"]);
+
+        // Clean single commit, including a CRLF-only rewrite.
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("no changes vs HEAD"), "{page}");
+        std::fs::write(&stray, "# Hello\r\n").unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(
+            page.contains("no changes vs HEAD"),
+            "CRLF-only edit looked like a change: {page}"
+        );
+        assert!(!page.contains("rl-ln-del"), "{page}");
+
+        // A real edit on top of CRLF still shows that edit, not a
+        // carriage return on every line.
+        std::fs::write(&stray, "# Hello\r\n\nworld 🌍\r\n").unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(page.contains("rl-diff"), "{page}");
+        assert!(!page.contains("&#13;"), "{page}");
+
+        // Code cells expose the new line itself. CRLF must not make
+        // every line a deletion.
+        let code = repo.join("c.md");
+        std::fs::write(&code, "```rustlab\nx = 1\n```\n").unwrap();
+        quiet_git(&repo, &["add", "c.md"]);
+        quiet_git(&repo, &["commit", "-m", "code"]);
+        std::fs::write(&code, "```rustlab\nx = 1\r\ny = 2\r\n```\r\n").unwrap();
+        let code_html = "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"code-block\"><pre class=\"source\"><code>x = 1\ny = 2\n</code></pre></section></main></body>";
+        let page = present(Present {
+            html: code_html,
+            source_path: &code,
+            jail: Some(&repo),
+            comments_on: true,
+            diff: "HEAD",
+            base: None,
+        });
+        assert!(page.contains("rl-ln-add"), "{page}");
+        assert!(page.contains("y = 2"), "{page}");
+        assert!(
+            page.contains("rl-ln-ctx") || page.contains("x = 1"),
+            "{page}"
+        );
+        assert!(!page.contains("&#13;"), "{page}");
+
+        // Very long line.
+        let long = format!("# {}\n", "x".repeat(8000));
+        std::fs::write(&stray, &long).unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(!page.contains("unknown ref"), "{page}");
+
+        // Empty file: still a diff, not "could not align" alone.
+        std::fs::write(&stray, "").unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(
+            page.contains("rl-diff-del") || page.contains("changes vs HEAD"),
+            "{page}"
+        );
+        assert!(!page.contains("could not align"), "{page}");
+
+        // Binary.
+        std::fs::write(&stray, b"# no\0pe\n").unwrap();
+        let page = show(&repo, &stray, "HEAD", None);
+        assert!(page.contains("not a text notebook"), "{page}");
+
+        // Restore and commit a second revision for refs.
+        std::fs::write(&stray, "# Hello again\n").unwrap();
+        quiet_git(&repo, &["add", "n.md"]);
+        quiet_git(&repo, &["commit", "-m", "restore"]);
+        std::fs::write(&stray, "# Hello\n\nedited\n").unwrap();
+
+        // Staged-only, then both staged and unstaged.
+        quiet_git(&repo, &["add", "n.md"]);
+        let vs_head = show(&repo, &stray, "HEAD", None);
+        let vs_index = show(&repo, &stray, "index", None);
+        assert!(vs_head.contains("changes vs HEAD"), "{vs_head}");
+        assert!(vs_index.contains("no changes vs index"), "{vs_index}");
+        std::fs::write(&stray, "# Hello\n\nedited\n\nunstaged\n").unwrap();
+        let vs_index = show(&repo, &stray, "index", None);
+        assert!(vs_index.contains("changes vs index"), "{vs_index}");
+        assert!(vs_index.contains("\"status\":\"M\""), "{vs_index}");
+
+        // Slash branch, plus in the name, lightweight and annotated tags.
+        quiet_git(&repo, &["checkout", "-b", "feature/topic+1"]);
+        quiet_git(&repo, &["add", "n.md"]);
+        quiet_git(&repo, &["commit", "-m", "topic"]);
+        quiet_git(&repo, &["tag", "v1"]);
+        quiet_git(&repo, &["tag", "-a", "v2", "-m", "annotated"]);
+        quiet_git(&repo, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let refs = refs_json(&repo);
+        assert!(refs.contains("feature/topic+1"), "{refs}");
+        assert!(refs.contains("\"v1\""), "{refs}");
+        assert!(refs.contains("\"v2\""), "{refs}");
+        assert!(refs.contains("origin/main"), "{refs}");
+        let head = show(&repo, &stray, "HEAD", None);
+        assert!(head.contains("no changes vs HEAD"), "{head}");
+        let sha = {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let short: String = sha.chars().take(7).collect();
+        let page = show(&repo, &stray, &short, None);
+        assert!(!page.contains("unknown ref"), "{page}");
+        let page = show(&repo, &stray, "HEAD~1", None);
+        assert!(
+            page.contains("changes vs HEAD~1") || page.contains("no changes"),
+            "{page}"
+        );
+        let page = show(&repo, &stray, "HEAD^", None);
+        assert!(!page.contains("unknown ref"), "{page}");
+        let page = show(&repo, &stray, "v2", None);
+        assert!(!page.contains("unknown ref"), "{page}");
+        let page = show(&repo, &stray, "no-such-ref", None);
+        assert!(page.contains("unknown ref"), "{page}");
+        let page = show(&repo, &stray, "feature/topic+1", Some("feature/topic+1"));
+        assert!(
+            page.contains("no changes") || page.contains("showing"),
+            "{page}"
+        );
+        assert!(!page.contains("unknown ref"), "{page}");
+
+        // Base newer than the diff ref: the banner names the newer side.
+        let page = show(&repo, &stray, "HEAD~1", Some("HEAD"));
+        assert!(
+            page.contains("newer") || page.contains("showing HEAD"),
+            "{page}"
+        );
+        assert!(page.contains("not run"), "{page}");
+
+        // Exact rename, then rename with an edit.
+        quiet_git(&repo, &["mv", "n.md", "N.md"]);
+        let renamed = repo.join("N.md");
+        let page = show(&repo, &renamed, "HEAD", None);
+        assert!(
+            page.contains("\"status\":\"R\"") || page.contains("renamed"),
+            "{page}"
+        );
+        std::fs::write(&renamed, "# Hello\n\nedited\n\nunstaged\n\nplus\n").unwrap();
+        let page = show(&repo, &renamed, "HEAD", None);
+        assert!(
+            page.contains("\"status\":\"R\""),
+            "edited rename was not paired: {page}"
+        );
+        assert!(page.contains("rl-diff-chg"), "{page}");
+
+        // Ignored files and a nested repository must not become additions
+        // or exhaust the walk.
+        std::fs::write(repo.join(".gitignore"), "junk/\n").unwrap();
+        std::fs::create_dir_all(repo.join("junk")).unwrap();
+        for i in 0..2100 {
+            std::fs::write(repo.join("junk").join(format!("f{i}.txt")), "z").unwrap();
+        }
+        let nest = repo.join("nest");
+        std::fs::create_dir(&nest).unwrap();
+        quiet_git(&nest, &["init", "-b", "main"]);
+        std::fs::write(nest.join("secret.txt"), "nope").unwrap();
+        std::fs::write(repo.join("link.txt"), "target").unwrap();
+        std::os::unix::fs::symlink("link.txt", repo.join("sym")).unwrap();
+        let page = show(&repo, &renamed, "HEAD", None);
+        assert!(!page.contains("junk/"), "{page}");
+        assert!(!page.contains("secret.txt"), "{page}");
+        assert!(page.contains("\"status\":\"R\""), "{page}");
+
+        // Subfolder of the repo, and the repo root, both resolve.
+        let notes = repo.join("notes");
+        std::fs::create_dir(&notes).unwrap();
+        let sub = notes.join("a.md");
+        std::fs::write(&sub, "# Sub\n").unwrap();
+        quiet_git(&repo, &["add", "notes/a.md"]);
+        quiet_git(&repo, &["commit", "-m", "sub"]);
+        std::fs::write(&sub, "# Sub changed\n").unwrap();
+        let page = show(&repo, &sub, "HEAD", None);
+        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(
+            page.contains("Sub changed") || page.contains("rl-diff-chg"),
+            "{page}"
+        );
+
+        // Detached HEAD still compares.
+        quiet_git(&repo, &["checkout", "--detach"]);
+        let page = show(&repo, &sub, "HEAD", None);
+        assert!(!page.contains("unknown ref"), "{page}");
+        let refs = refs_json(&repo);
+        assert!(refs.contains("commits"), "{refs}");
+        assert!(refs.contains("\"error\":null"), "{refs}");
+
+        // Worktree whose .git is a gitdir file.
+        let wt = tmp.path().join("wt");
+        quiet_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "wt-branch",
+                wt.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        assert!(
+            wt.join(".git").is_file(),
+            "worktree .git should be a gitdir file"
+        );
+        let wt_nb = wt.join("notes").join("a.md");
+        std::fs::write(&wt_nb, "# From worktree\n").unwrap();
+        let page = show(&wt, &wt_nb, "HEAD", None);
+        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(!page.contains("not a git repository"), "{page}");
+        let watched = git_watch_paths(&wt);
+        assert!(!watched.is_empty(), "worktree git dir not found");
+
+        // Deleted path still has a repo-relative name.
+        let gone = notes.join("missing.md");
+        let rel = safe_rel(&gone, Some(&repo), &repo).unwrap();
+        assert_eq!(rel, "notes/missing.md");
+
+        // Untracked new notebook is one fact, not a green bar per block.
+        let fresh = repo.join("new.md");
+        std::fs::write(&fresh, "# Brand new\n").unwrap();
+        let page = show(&repo, &fresh, "HEAD", None);
+        assert!(page.contains("new file — not on HEAD"), "{page}");
+        assert!(page.contains("rl-diff-notice"), "{page}");
+        assert!(!page.contains("rl-diff-add"), "{page}");
+    }
+
+    /// A watch page whose head script mentions `<main>` in a comment.
+    /// `find("<main")` hits that comment. The real element comes later.
+    fn watch_html(body: &str) -> String {
+        format!(
+            "<head><script>\n  // The rendered notebook lives inside <main>; the page chrome\n  function mainEl() {{ return document.querySelector('main'); }}\n</script></head>\n<body class=\"has-files\"><div id=\"rl-toolbar\"><button id=\"rl-diff-toggle\" type=\"button\">Show diff</button><input id=\"rl-diff-ref\"></div><p id=\"rl-diff-banner\" hidden></p><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>{body}</p></div></section>\n</main></body>"
+        )
+    }
+
+    fn script_was_left_alone(page: &str) {
+        let start = page.find("<script>").expect("script");
+        let end = page[start..].find("</script>").expect("script end") + start;
+        let script = &page[start..end];
+        assert!(
+            script.contains("document.querySelector('main')"),
+            "head script was rewritten: {script}"
+        );
+        assert!(
+            !script.contains("rl-diff-notice") && !script.contains("rl-diff-del"),
+            "diff html was spliced into the head script: {script}"
+        );
+        assert!(page.contains("<body"), "body tag was deleted: {page}");
+        assert!(
+            page.contains("id=\"rl-diff-ref\""),
+            "picker was deleted: {page}"
+        );
+    }
+
+    #[test]
+    fn one_sided_notebook_recovers_and_does_not_cache_the_miss() {
+        if !git_available() {
+            eprintln!("SKIP one-sided: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        init_repo(&repo);
+        std::fs::write(repo.join("readme.md"), "# Readme\n").unwrap();
+        quiet_git(&repo, &["add", "readme.md"]);
+        quiet_git(&repo, &["commit", "-m", "readme"]);
+        quiet_git(&repo, &["branch", "ancient"]);
+        let note = repo.join("note.md");
+        std::fs::write(
+            &note,
+            "# Note\n\nShared.\n\n```rustlab\nx = 1\ny = 2\n```\n",
+        )
+        .unwrap();
+        quiet_git(&repo, &["add", "note.md"]);
+        quiet_git(&repo, &["commit", "-m", "add note"]);
+        quiet_git(&repo, &["checkout", "-b", "dropped"]);
+        quiet_git(&repo, &["rm", "note.md"]);
+        quiet_git(&repo, &["commit", "-m", "drop note"]);
+        quiet_git(&repo, &["checkout", "main"]);
+        std::fs::write(
+            &note,
+            "# Note\n\nShared.\n\n```rustlab\nx = 1\ny = 3\n```\n",
+        )
+        .unwrap();
+
+        let poison = "POISON-PATH-ONLY";
+        cache_put("note.md".into(), poison.into());
+
+        let html = watch_html("working copy");
+        let present_at = |diff: &str, base: Option<&str>| {
+            present(Present {
+                html: &html,
+                source_path: &note,
+                jail: Some(&repo),
+                comments_on: true,
+                diff,
+                base,
+            })
+        };
+
+        // Missing on the compared side: a notice, not every block green.
+        let missing = present_at("ancient", None);
+        assert!(missing.contains("new file — not on ancient"), "{missing}");
+        assert!(missing.contains("rl-diff-notice"), "{missing}");
+        assert!(missing.contains("not on ancient"), "{missing}");
+        assert!(!missing.contains("rl-diff-add"), "{missing}");
+        assert!(!missing.contains(poison), "{missing}");
+        script_was_left_alone(&missing);
+        if let Some(v) = cache_get("note.md") {
+            assert_eq!(
+                v, poison,
+                "a miss must not replace a path-only entry with an empty blob"
+            );
+        }
+
+        // The next ref, where the file exists, is a normal line diff.
+        // A cached miss would still say "new file".
+        let recovered = present_at("main", None);
+        assert!(
+            !recovered.contains("new file"),
+            "stayed on the missing-file result: {recovered}"
+        );
+        assert!(
+            recovered.contains("rl-diff-chg") || recovered.contains("y = 3"),
+            "{recovered}"
+        );
+        assert!(recovered.contains("changes vs main"), "{recovered}");
+        assert!(!recovered.contains(poison), "{recovered}");
+        script_was_left_alone(&recovered);
+        let root = std::fs::canonicalize(&repo).unwrap();
+        let root = root.display().to_string();
+        assert!(
+            cache_keys().iter().any(|k| k.starts_with(&root)
+                && k.ends_with(":note.md")
+                && k.matches(':').count() >= 2),
+            "blob cache key must include the repo and the oid, not the path alone: {:?}",
+            cache_keys()
+        );
+
+        // Two refs, shown side deleted the file. The page must keep its
+        // chrome (this used to splice into the head script and drop <body>).
+        let deleted_side = present_at("dropped", Some("main"));
+        assert!(deleted_side.contains("not on dropped"), "{deleted_side}");
+        assert!(deleted_side.contains("rl-diff-del"), "{deleted_side}");
+        assert!(!deleted_side.contains("rl-diff-add"), "{deleted_side}");
+        script_was_left_alone(&deleted_side);
+
+        // Newer side has the file, older side does not: a notice, not a
+        // green wash, and the head script is still intact.
+        let both = present_at("main", Some("ancient"));
+        assert!(both.contains("new file — not on ancient"), "{both}");
+        assert!(!both.contains("rl-diff-add"), "{both}");
+        script_was_left_alone(&both);
+        let again = present_at("HEAD", None);
+        assert!(again.contains("changes vs HEAD"), "{again}");
+        assert!(!again.contains("new file"), "{again}");
+        assert!(!again.contains("not on HEAD"), "{again}");
+
+        // Working copy deleted, ref still has it: red / deleted, then
+        // putting the file back is a normal diff again.
+        std::fs::remove_file(&note).unwrap();
+        let gone = present_at("main", None);
+        assert!(
+            gone.contains("deleted — not in the working copy (still on main)"),
+            "{gone}"
+        );
+        assert!(gone.contains("rl-diff-del"), "{gone}");
+        assert!(gone.contains("rl-diff-notice"), "{gone}");
+        script_was_left_alone(&gone);
+        std::fs::write(
+            &note,
+            "# Note\n\nShared.\n\n```rustlab\nx = 1\ny = 3\n```\n",
+        )
+        .unwrap();
+        let back = present_at("main", None);
+        assert!(!back.contains("deleted"), "{back}");
+        assert!(
+            back.contains("changes vs main") || back.contains("no changes vs main"),
+            "{back}"
+        );
+        assert!(!back.contains("rl-diff-del"), "{back}");
+
+        if let Ok(mut cache) = BLOB_CACHE.lock() {
+            cache.retain(|(k, _)| k != "note.md");
+        }
     }
 }

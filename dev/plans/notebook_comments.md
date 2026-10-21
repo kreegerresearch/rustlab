@@ -234,7 +234,7 @@ GitHub does not render `==` or `%%`. A committed markdown file with comments on 
 
 ### 3.3 The toggle in HTML and watch
 
-The control is a checkbox in `header.topbar`, with a visible label **Comments**. It is in the initial HTML, not injected later and not given a `hidden` attribute.
+Static HTML keeps a checkbox in `header.topbar`, with a visible label **Comments**. It is in the initial HTML. `notebook watch` moves that same checkbox into the `⋯` panel, styled as a switch beside **Show diff**, so the toolbar is `⋯` and **Source**. The input keeps `id="rl-comments"`. Opening the panel needs the page script. Unchecking still hides the margin through the `:has` rule below, with no further script. The saved choice is still `rl-comments-visible`. A dot on `⋯` means diff is on or comments are hidden. Comments left on does not light it.
 
 ```html
 <label class="rl-comments-toggle">
