@@ -1092,10 +1092,44 @@ fn opaque_ranges(md: &str) -> Vec<Opaque> {
             at_line_start = false;
             continue;
         }
-        if b[i] == b'\\' && i + 1 < n && (b[i + 1] == b'$' || b[i + 1] == b'`') {
+        if b[i] == b'\\' && i + 1 < n && b[i + 1] == b'$' {
+            // `\${...}` is a literal template. A printf `%%` inside it
+            // is a percent sign, not a margin-comment opener.
+            if i + 2 < n && b[i + 2] == b'{' {
+                if let Some(end) = template_span_end(b, i + 3) {
+                    out.push(Opaque {
+                        start: i,
+                        end,
+                        soft: true,
+                    });
+                    i = end;
+                    at_line_start = false;
+                    continue;
+                }
+            }
             i += 2;
             at_line_start = false;
             continue;
+        }
+        if b[i] == b'\\' && i + 1 < n && b[i + 1] == b'`' {
+            i += 2;
+            at_line_start = false;
+            continue;
+        }
+        if b[i] == b'$' && i + 1 < n && b[i + 1] == b'{' {
+            // `${expr:%.1f%%}` is interpolated before comments are
+            // rendered. The source linter sees the same bytes, so the
+            // format spec must not count as an unclosed `%%`.
+            if let Some(end) = template_span_end(b, i + 2) {
+                out.push(Opaque {
+                    start: i,
+                    end,
+                    soft: true,
+                });
+                i = end;
+                at_line_start = false;
+                continue;
+            }
         }
         if b[i] == b'$' && i + 1 < n && b[i + 1] == b'$' {
             if let Some(close) = find_display_math_close(b, i + 2) {
@@ -1128,6 +1162,29 @@ fn opaque_ranges(md: &str) -> Vec<Opaque> {
         i += 1;
     }
     merge_ranges(out)
+}
+
+/// Index just past the `}` that closes a `${` / `\${` opened before
+/// `inner`. Nested braces count. A template that runs past the line, or
+/// never closes, is left alone so a later `%%` is still a comment.
+fn template_span_end(b: &[u8], inner: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut j = inner;
+    while j < b.len() {
+        match b[j] {
+            b'\n' => return None,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j + 1);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 fn merge_ranges(mut v: Vec<Opaque>) -> Vec<Opaque> {
@@ -4508,6 +4565,38 @@ mod tests {
         assert!(!u.contains(&"rustlab:W012"), "{u:?}");
         let bare = codes("==only highlight==");
         assert!(!bare.contains(&"rustlab:W012"), "{bare:?}");
+    }
+
+    #[test]
+    fn printf_percent_in_a_template_is_not_a_comment() {
+        let md = "| Percentage | `${ratio:%.1f%%}` | ${ratio:%.1f%%} |\n";
+        assert!(codes(md).is_empty(), "{:?}", issues(md));
+        let escaped = "literal \\${ratio:%.1f%%} in prose\n";
+        assert!(codes(escaped).is_empty(), "{:?}", issues(escaped));
+    }
+
+    #[test]
+    fn unclosed_comment_still_fires_beside_a_template() {
+        let c = codes("${ratio:%.1f%%}\n%%unclosed\n");
+        assert_eq!(
+            c.iter().filter(|x| **x == "rustlab:W007").count(),
+            1,
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn comment_may_contain_a_printf_template() {
+        let md = "%%#c1: ratio ${ratio:%.1f%%} is fine%%\n";
+        assert!(codes(md).is_empty(), "{:?}", issues(md));
+    }
+
+    #[test]
+    fn unclosed_template_does_not_hide_a_comment() {
+        // The `{` never closes on its line, so the next line's `%%` is a
+        // real comment. A span that ran on to the later `}` would hide it.
+        let c = codes("${open\n%%unclosed\n}\n");
+        assert!(c.contains(&"rustlab:W007"), "{c:?}");
     }
 
     #[test]

@@ -10086,7 +10086,21 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
 
         let piece = match spec {
             'd' | 'i' => {
-                let n = fmt_take_scalar(args, &mut arg_idx, &format!("%{spec}"))? as i64;
+                let wide = fmt_take_i128(args, &mut arg_idx, &format!("%{spec}"))?;
+                // uint64 above i64::MAX: print every digit. A double cannot.
+                if wide > i64::MAX as i128 {
+                    let digits = fmt_integer_digits(wide as u64, prec_set, prec);
+                    let digits = if commas { insert_commas(&digits) } else { digits };
+                    result.push_str(&fmt_pad(
+                        fmt_sign(false, plus, space),
+                        &digits,
+                        width,
+                        left,
+                        zero && !prec_set,
+                    ));
+                    continue;
+                }
+                let n = wide as i64;
                 let digits = fmt_integer_digits(n.unsigned_abs(), prec_set, prec);
                 let digits = if commas {
                     insert_commas(&digits)
@@ -10102,8 +10116,10 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
                 )
             }
             'u' | 'o' | 'x' | 'X' => {
-                let n = fmt_take_scalar(args, &mut arg_idx, &format!("%{spec}"))? as i64;
-                let abs = n as u64;
+                let wide = fmt_take_i128(args, &mut arg_idx, &format!("%{spec}"))?;
+                // Negative values wrap like `i64 as u64`. uint64 above
+                // i64::MAX keeps the whole value.
+                let abs = if wide < 0 { wide as i64 as u64 } else { wide as u64 };
                 let digits = if spec == 'o' {
                     fmt_octal_digits(abs, prec_set, prec, hash)
                 } else if spec == 'u' {
@@ -10197,6 +10213,29 @@ pub fn apply_format(fmt: &str, args: &[Value]) -> Result<String, String> {
         result.push_str(&piece);
     }
     Ok(result)
+}
+
+/// Integer conversion for `%d` / `%u` / `%x` / `%o`.
+///
+/// An `Int` keeps its `i128` bits. A double still goes through `f64 as i64`
+/// (saturating), which is what those specifiers did before integer types.
+fn fmt_take_i128(args: &[Value], arg_idx: &mut usize, what: &str) -> Result<i128, String> {
+    let arg = args.get(*arg_idx).ok_or_else(|| {
+        format!(
+            "fprintf: not enough arguments (need arg {} for {what})",
+            *arg_idx + 1
+        )
+    })?;
+    *arg_idx += 1;
+    match arg {
+        Value::Int { data, .. } => Ok(*data),
+        other => {
+            let n = other
+                .to_scalar()
+                .map_err(|e| format!("fprintf {what}: {e}"))?;
+            Ok(n as i64 as i128)
+        }
+    }
 }
 
 fn fmt_take_scalar(args: &[Value], arg_idx: &mut usize, what: &str) -> Result<f64, String> {

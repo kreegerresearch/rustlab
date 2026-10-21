@@ -67,6 +67,9 @@ gallery/*.gif
 gallery/assets/
 !gallery/
 !gallery/**/*.svg
+# Mermaid's content-addressed SVG cache. HTML inlines the diagram and
+# markdown keeps the fence, so the cache is not a gallery asset.
+gallery/plots/**/.cache/
 
 # Test fixtures: the deliberately-broken inputs for
 # `rustlab-notebook validate`'s wrapper self-tests must be committed

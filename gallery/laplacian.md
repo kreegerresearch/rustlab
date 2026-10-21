@@ -90,7 +90,7 @@ print(rel_err)
 
 <!-- rustlab:output-start -->
 ```text
-0.0000000000000013375521106684445
+0.0000000000000014539643322384945
 ```
 
 <!-- rustlab:output-end -->

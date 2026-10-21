@@ -245,7 +245,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "layernorm", brief: "Layer normalisation  (x − mean) / std",
         detail: "layernorm(v)               — vector: zero mean, unit variance\nlayernorm(v, eps)          — vector with custom epsilon (default 1e-5)\nlayernorm(M)               — matrix: per-row by default (ML convention,\n                              rows = samples, cols = features)\nlayernorm(M, dim)          — dim=2 per-row (default), dim=1 per-column\nlayernorm(M, dim, eps)     — full form\n\n  Uses population variance (divides by N, not N-1).\n  1-D-shaped matrices (1×N or N×1) are treated as vectors regardless\n  of dim, matching how sum/mean handle the same shapes.\n\n  Note: layernorm's per-row default diverges from sum/mean/std (which\n  default to dim=1). The ML convention dominates here." },
     HelpEntry { name: "print", brief: "Print values to stdout",
-        detail: "print(a, b, ...)  — prints space-separated values followed by newline" },
+        detail: "print(a, b, ...)  — prints space-separated values followed by newline\n  Integers print with their class and every digit (not rounded through double)." },
     HelpEntry { name: "plot",  brief: "Plot a vector in the terminal",
         detail: "plot(v)  or  plot(v, \"title\")  — opens a ratatui terminal chart; press any key to close\n  plot(v, \"title\", \"color\")  — color: r, g, b, c, m, y, k, w\n  plot(x1, y1, x2, y2, ...)  — one series per (x, y) pair\n  plot(x1, y1, \"r--\", x2, y2, \"bo\")  — line spec after a pair\n    colour letter, style (- -- : -.), marker (o .). : and -. draw dashed.\n    A spec that is not a line spec, with more data after it, is an error.\n    A dangling x (plot(x1, y1, x2)) is an error. plot(y1, y2) is one pair.\n  plot(labels, y)  or  plot(labels, y, \"title\")  — categorical x-axis\n    labels is a string array, e.g. {\"Mon\",\"Tue\",\"Wed\"}; one label per y point.\n\nExample:\n  plot({\"Mon\",\"Tue\",\"Wed\",\"Thu\",\"Fri\"}, [12, 19, 14, 22, 18], \"Daily\")\n  plot(t, y1, \"r\", t, y2, \"b--\")" },
     HelpEntry { name: "stem",  brief: "Stem plot of a vector",
@@ -374,7 +374,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "tail(T)     — last 8 rows (or the whole table if it is shorter)\n  tail(T, n)  — last n rows, as a table" },
     // Output
     HelpEntry { name: "disp", brief: "Display a value (always prints newline)",
-        detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n." },
+        detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n.\n  Integers print with their class and every digit (not rounded\n  through double). uint64 max is 18446744073709551615  (uint64)." },
     HelpEntry { name: "fprintf", brief: "Formatted print (C-style)",
         detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %u %o %x %X %f %e %E %g %G %c %s %%\n  Flags:      - + <space> 0 # , (comma inserts thousands separators)\n  * width and .* precision consume the next argument.\n  Precision:  %s max chars, %d min digits, %g significant digits.\n  Escapes:    \\n \\t \\r \\b \\f \\\\\n  Non-finite: Inf, -Inf, NaN.\n  One scalar or string per specifier (no array recycling).\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
     HelpEntry { name: "sprintf", brief: "Formatted string (C-style, returns string)",

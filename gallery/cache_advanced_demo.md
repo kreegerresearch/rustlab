@@ -91,7 +91,7 @@ cache list
 <!-- rustlab:output-start -->
 ```text
 fn name                entry_id  input_hash     bytes    rl_ver  status
-expensive              a5b667f5    a8bf0bb3        19     0.3.9  loaded
+expensive              a5b667f5    a8bf0bb3        19    0.3.13  loaded
 ```
 
 <!-- rustlab:output-end -->

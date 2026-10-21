@@ -36,8 +36,8 @@ disp(isinteger(a))
 
 <!-- rustlab:output-start -->
 ```text
-127
--32768
+127  (int8)
+-32768  (int16)
 true
 ```
 
@@ -56,7 +56,7 @@ disp(class(mask))
 
 <!-- rustlab:output-start -->
 ```text
-3735928559
+3735928559  (uint32)
 uint32
 ```
 
@@ -76,7 +76,7 @@ disp(p)
 
 <!-- rustlab:output-start -->
 ```text
-255
+255  (uint8)
 7.7
 ```
 
@@ -93,7 +93,7 @@ disp(w)
 
 <!-- rustlab:output-start -->
 ```text
--106
+-106  (int8)
 ```
 
 <!-- rustlab:output-end -->
@@ -113,7 +113,7 @@ disp(sum(v))             % 60 (double)
 
 <!-- rustlab:output-start -->
 ```text
-[1×3]  15.000000  25.000000  35.000000
+[1×3] (int16)  15  25  35
 60
 ```
 
@@ -129,10 +129,10 @@ disp(m(2, 1))
 
 <!-- rustlab:output-start -->
 ```text
-Matrix(2x2)
-  [1.000000, 3.000000]
-  [2.000000, 4.000000]
-3
+IntArray(2×2) (int8)
+  [1, 3]
+  [2, 4]
+3  (int8)
 ```
 
 <!-- rustlab:output-end -->
@@ -161,17 +161,23 @@ Integers save to `.npy` with their native NumPy dtype and round-trip as the
 same class — including the full `uint64` range:
 
 ```rustlab
-big = uint64(0xFFFFFFFFFFFFFFFF);
 save("ints.npy", int32([1, 2, 3, -4]));
 back = load("ints.npy");
 disp(class(back))
 disp(back)
+
+save("big.npy", uint64(0xFFFFFFFFFFFFFFFF));
+big = load("big.npy");
+disp(class(big))
+disp(big)
 ```
 
 <!-- rustlab:output-start -->
 ```text
 int32
-[1×4]  1.000000  2.000000  3.000000  -4.000000
+[1×4] (int32)  1  2  3  -4
+uint64
+18446744073709551615  (uint64)
 ```
 
 <!-- rustlab:output-end -->

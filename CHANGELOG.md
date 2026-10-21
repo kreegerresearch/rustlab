@@ -32,6 +32,9 @@ should re-validate against those entries when upgrading.
   the page header.
 
 ### Fixed
+- **Notebook `cache status` no longer prints the machine's absolute path.** The store path is still the resolved file. Inside a notebook it is shown relative to that notebook's directory (`.rustlab/cache.db`), so a rendered page does not embed the host path. The REPL, which has no path jail, still prints the path it opened.
+- **`disp`, `print`, and integer `fprintf`/`sprintf` keep every `uint64` digit.** Those calls used to widen an integer to `double` first. `f64` cannot hold `2^64-1`, so `disp(uint64(0xFFFFFFFFFFFFFFFF))` printed `18446744073709552000` and an `int32` array printed as `1.000000`. They now see the integer: `disp`/`print` use the class tag (`18446744073709551615  (uint64)`), and `%d`/`%u`/`%o`/`%x` print that value. `%f` still converts to double.
+- **`rustlab-notebook check` no longer warns on a `<details>` mention or a printf `%%`.** W002 counts `<details>` / `</details>` only outside fenced blocks and backtick spans, so prose like `` native `<details>` `` is not an unclosed disclosure. The scan steps whole UTF-8 characters, so an em dash in the same file does not abort the check. W007 does not treat `%%` inside `${expr:format}` or `\${expr:format}` as a margin comment (that is sprintf's literal percent, including `${ratio:%.1f%%}`). A real unclosed tag or `%%`, including one after a template that never closes, still warns.
 - **Allocating elementwise fills no longer publish an uninitialised
   buffer.** The parallel `+` / `.*` / `par_map` / reshape / `parmap` row
   pack paths still write each result once (no zero-fill pass). `set_len`

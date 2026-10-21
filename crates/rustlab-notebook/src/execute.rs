@@ -1111,6 +1111,29 @@ mod tests {
         f()
     }
 
+    /// `disp` of a `uint64` must keep every digit. `f64` rounds
+    /// `2^64-1` to `18446744073709552000`.
+    #[test]
+    fn notebook_disp_of_uint64_max_is_exact() {
+        let blocks = vec![Block::Code {
+            source: "disp(uint64(0xFFFFFFFFFFFFFFFF))\ndisp(int32([1, 2, 3, -4]))".to_string(),
+            directives: crate::parse::CodeDirectives::default(),
+        }];
+        let rendered = execute_notebook(&blocks);
+        match &rendered[0] {
+            Rendered::Code { text_output, error, .. } => {
+                assert!(error.is_none(), "{error:?}");
+                assert!(text_output.contains("18446744073709551615"), "{text_output}");
+                assert!(!text_output.contains("18446744073709552000"), "{text_output}");
+                assert!(
+                    text_output.contains("(int32)") && text_output.contains("  1  2  3  -4"),
+                    "{text_output}"
+                );
+            }
+            other => panic!("expected a code block, got {other:?}"),
+        }
+    }
+
     /// Multiple `savefig()` calls in a single block produce separate snapshots.
     #[test]
     fn notebook_captures_every_savefig_in_block() {

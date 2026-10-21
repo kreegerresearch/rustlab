@@ -430,10 +430,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="379,240 383,242 387,227 383,224 379,240 "/>
 <polygon opacity="1" fill="#990000" points="543,227 547,242 551,240 547,224 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="543,227 547,242 551,240 547,224 543,227 "/>
-<polygon opacity="1" fill="#090000" points="498,309 502,299 506,306 502,312 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,309 502,299 506,306 502,312 498,309 "/>
 <polygon opacity="1" fill="#090000" points="424,306 428,299 432,309 428,312 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,306 428,299 432,309 428,312 424,306 "/>
+<polygon opacity="1" fill="#090000" points="498,309 502,299 506,306 502,312 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,309 502,299 506,306 502,312 498,309 "/>
 <polygon opacity="1" fill="#CF0000" points="440,207 445,217 449,204 445,197 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,207 445,217 449,204 445,197 440,207 "/>
 <polygon opacity="1" fill="#CF0000" points="481,204 485,217 490,207 485,197 "/>
@@ -462,10 +462,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,311 424,306 428,312 424,313 420,311 "/>
 <polygon opacity="1" fill="#040000" points="502,312 506,306 510,311 506,313 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,312 506,306 510,311 506,313 502,312 "/>
-<polygon opacity="1" fill="#050000" points="494,311 498,309 502,312 498,309 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="494,311 498,309 502,312 498,309 494,311 "/>
 <polygon opacity="1" fill="#050000" points="428,312 432,309 436,311 432,309 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="428,312 432,309 436,311 432,309 428,312 "/>
+<polygon opacity="1" fill="#050000" points="494,311 498,309 502,312 498,309 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="494,311 498,309 502,312 498,309 494,311 "/>
 <polygon opacity="1" fill="#D50000" points="449,204 453,214 457,203 453,195 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,204 453,214 457,203 453,195 449,204 "/>
 <polygon opacity="1" fill="#D50000" points="473,203 477,214 481,204 477,195 "/>
@@ -1422,10 +1422,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="346,304 351,308 355,327 351,325 346,304 "/>
 <polygon opacity="1" fill="#370000" points="575,327 579,308 584,304 579,325 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="575,327 579,308 584,304 579,325 575,327 "/>
-<polygon opacity="1" fill="#190000" points="363,339 367,335 371,322 367,329 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="363,339 367,335 371,322 367,329 363,339 "/>
 <polygon opacity="1" fill="#190000" points="559,322 563,335 567,339 563,329 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="559,322 563,335 567,339 563,329 559,322 "/>
+<polygon opacity="1" fill="#190000" points="363,339 367,335 371,322 367,329 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="363,339 367,335 371,322 367,329 363,339 "/>
 <polygon opacity="1" fill="#1B0000" points="346,322 351,325 355,339 351,338 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="346,322 351,325 355,339 351,338 346,322 "/>
 <polygon opacity="1" fill="#1B0000" points="575,339 579,325 584,322 579,338 "/>
@@ -1470,10 +1470,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="351,241 355,240 359,263 355,263 351,241 "/>
 <polygon opacity="1" fill="#B90000" points="571,263 575,240 579,241 575,263 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="571,263 575,240 579,241 575,263 571,263 "/>
-<polygon opacity="1" fill="#090000" points="567,336 571,342 575,345 571,342 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="567,336 571,342 575,345 571,342 567,336 "/>
 <polygon opacity="1" fill="#090000" points="355,345 359,342 363,336 359,342 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="355,345 359,342 363,336 359,342 355,345 "/>
+<polygon opacity="1" fill="#090000" points="567,336 571,342 575,345 571,342 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="567,336 571,342 575,345 571,342 567,336 "/>
 <polygon opacity="1" fill="#CA0000" points="461,244 465,265 469,244 465,221 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="461,244 465,265 469,244 465,221 461,244 "/>
 <polygon opacity="1" fill="#0A0000" points="346,335 351,338 355,345 351,346 "/>
@@ -1556,10 +1556,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="346,241 351,241 355,263 351,263 346,241 "/>
 <polygon opacity="1" fill="#BE0000" points="575,263 579,241 584,241 579,263 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="575,263 579,241 584,241 579,263 575,263 "/>
-<polygon opacity="1" fill="#BF0000" points="502,242 506,271 510,262 506,231 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,242 506,271 510,262 506,231 502,242 "/>
 <polygon opacity="1" fill="#BF0000" points="420,262 424,271 428,242 424,231 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,262 424,271 428,242 424,231 420,262 "/>
+<polygon opacity="1" fill="#BF0000" points="502,242 506,271 510,262 506,231 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,242 506,271 510,262 506,231 502,242 "/>
 <polygon opacity="1" fill="#710000" points="629,283 633,294 637,298 633,291 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="629,283 633,294 637,298 633,291 629,283 "/>
 <polygon opacity="1" fill="#710000" points="293,298 297,294 301,283 297,291 "/>
@@ -1808,10 +1808,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="334,253 338,256 342,279 338,275 334,253 "/>
 <polygon opacity="1" fill="#B50000" points="588,279 592,256 596,253 592,275 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="588,279 592,256 596,253 592,275 588,279 "/>
-<polygon opacity="1" fill="#170000" points="571,337 575,348 579,354 575,348 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="571,337 575,348 579,354 575,348 571,337 "/>
 <polygon opacity="1" fill="#170000" points="351,354 355,348 359,337 355,348 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="351,354 355,348 359,337 355,348 351,354 "/>
+<polygon opacity="1" fill="#170000" points="571,337 575,348 579,354 575,348 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="571,337 575,348 579,354 575,348 571,337 "/>
 <polygon opacity="1" fill="#D80000" points="334,238 338,239 342,259 338,256 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="334,238 338,239 342,259 338,256 334,238 "/>
 <polygon opacity="1" fill="#D80000" points="588,259 592,239 596,238 592,256 "/>
@@ -3804,10 +3804,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="624,291 629,296 633,312 629,304 624,291 "/>
 <polygon opacity="1" fill="#DE0000" points="297,312 301,296 306,291 301,304 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="297,312 301,296 306,291 301,304 297,312 "/>
-<polygon opacity="1" fill="#0E0000" points="383,412 387,400 391,403 387,414 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="383,412 387,400 391,403 387,414 383,412 "/>
 <polygon opacity="1" fill="#0E0000" points="539,403 543,400 547,412 543,414 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="539,403 543,400 547,412 543,414 539,403 "/>
+<polygon opacity="1" fill="#0E0000" points="383,412 387,400 391,403 387,414 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="383,412 387,400 391,403 387,414 383,412 "/>
 <polygon opacity="1" fill="#BF0000" points="551,295 555,305 559,338 555,329 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="551,295 555,305 559,338 555,329 551,295 "/>
 <polygon opacity="1" fill="#BF0000" points="371,338 375,305 379,295 375,329 "/>
@@ -3920,10 +3920,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="551,234 555,253 559,285 555,266 551,234 "/>
 <polygon opacity="1" fill="#FF3500" points="371,285 375,253 379,234 375,266 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="371,285 375,253 379,234 375,266 371,285 "/>
-<polygon opacity="1" fill="#FFFF21" points="522,119 526,147 530,154 526,126 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="522,119 526,147 530,154 526,126 522,119 "/>
 <polygon opacity="1" fill="#FFFF21" points="400,154 404,147 408,119 404,126 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="400,154 404,147 408,119 404,126 400,154 "/>
+<polygon opacity="1" fill="#FFFF21" points="522,119 526,147 530,154 526,126 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="522,119 526,147 530,154 526,126 522,119 "/>
 <polygon opacity="1" fill="#FFFF11" points="526,126 530,154 535,163 530,135 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="526,126 530,154 535,163 530,135 526,126 "/>
 <polygon opacity="1" fill="#FFFF11" points="395,163 400,154 404,126 400,135 "/>
@@ -3944,10 +3944,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="543,168 547,196 551,217 547,190 543,168 "/>
 <polygon opacity="1" fill="#FFB400" points="379,217 383,196 387,168 383,190 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="379,217 383,196 387,168 383,190 379,217 "/>
-<polygon opacity="1" fill="#0A0000" points="391,416 395,406 400,410 395,419 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="391,416 395,406 400,410 395,419 391,416 "/>
 <polygon opacity="1" fill="#0A0000" points="530,410 535,406 539,416 535,419 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="530,410 535,406 539,416 535,419 530,410 "/>
+<polygon opacity="1" fill="#0A0000" points="391,416 395,406 400,410 395,419 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="391,416 395,406 400,410 395,419 391,416 "/>
 <polygon opacity="1" fill="#6C0000" points="342,349 346,369 351,377 346,357 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="342,349 346,369 351,377 346,357 342,349 "/>
 <polygon opacity="1" fill="#6C0000" points="579,377 584,369 588,349 584,357 "/>
@@ -4146,10 +4146,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="547,258 551,270 555,305 551,295 547,258 "/>
 <polygon opacity="1" fill="#FF1500" points="375,305 379,270 383,258 379,295 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="375,305 379,270 383,258 379,295 375,305 "/>
-<polygon opacity="1" fill="#D50000" points="301,326 306,308 310,304 306,320 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="301,326 306,308 310,304 306,320 301,326 "/>
 <polygon opacity="1" fill="#D50000" points="620,304 624,308 629,326 624,320 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="620,304 624,308 629,326 624,320 620,304 "/>
+<polygon opacity="1" fill="#D50000" points="301,326 306,308 310,304 306,320 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="301,326 306,308 310,304 306,320 301,326 "/>
 <polygon opacity="1" fill="#FFFF71" points="506,90 510,113 514,113 510,90 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="506,90 510,113 514,113 510,90 506,90 "/>
 <polygon opacity="1" fill="#FFFF71" points="416,113 420,113 424,90 420,90 "/>
@@ -4158,10 +4158,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,196 457,250 461,253 457,198 453,196 "/>
 <polygon opacity="1" fill="#FF8400" points="469,253 473,250 477,196 473,198 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="469,253 473,250 477,196 473,198 469,253 "/>
-<polygon opacity="1" fill="#090000" points="510,418 514,412 518,422 514,425 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,418 514,412 518,422 514,425 510,418 "/>
 <polygon opacity="1" fill="#090000" points="412,422 416,412 420,418 416,425 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,422 416,412 420,418 416,425 412,422 "/>
+<polygon opacity="1" fill="#090000" points="510,418 514,412 518,422 514,425 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,418 514,412 518,422 514,425 510,418 "/>
 <polygon opacity="1" fill="#FFC700" points="543,165 547,190 551,214 547,189 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="543,165 547,190 551,214 547,189 543,165 "/>
 <polygon opacity="1" fill="#FFC700" points="379,214 383,190 387,165 383,189 "/>
@@ -4816,10 +4816,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="522,91 526,110 530,121 526,101 522,91 "/>
 <polygon opacity="1" fill="#FFFF87" points="400,121 404,110 408,91 404,101 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="400,121 404,110 408,91 404,101 400,121 "/>
-<polygon opacity="1" fill="#FFFFE8" points="449,57 453,61 457,54 453,52 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,57 453,61 457,54 453,52 449,57 "/>
 <polygon opacity="1" fill="#FFFFE8" points="473,54 477,61 481,57 477,52 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,54 477,61 481,57 477,52 473,54 "/>
+<polygon opacity="1" fill="#FFFFE8" points="449,57 453,61 457,54 453,52 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,57 453,61 457,54 453,52 449,57 "/>
 <polygon opacity="1" fill="#FFFF98" points="518,84 522,102 526,110 522,91 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="518,84 522,102 526,110 522,91 518,84 "/>
 <polygon opacity="1" fill="#FFFF98" points="404,110 408,102 412,84 408,91 "/>
@@ -5032,10 +5032,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,139 449,175 453,196 449,151 445,139 "/>
 <polygon opacity="1" fill="#FFFF1C" points="477,196 481,175 485,139 481,151 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,196 481,175 485,139 481,151 477,196 "/>
-<polygon opacity="1" fill="#FFFFED" points="432,61 436,62 440,55 436,56 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,61 436,62 440,55 436,56 432,61 "/>
 <polygon opacity="1" fill="#FFFFED" points="490,55 494,62 498,61 494,56 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,55 494,62 498,61 494,56 490,55 "/>
+<polygon opacity="1" fill="#FFFFED" points="432,61 436,62 440,55 436,56 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,61 436,62 440,55 436,56 432,61 "/>
 <polygon opacity="1" fill="#420000" points="436,408 440,421 445,413 440,397 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,408 440,421 445,413 440,397 436,408 "/>
 <polygon opacity="1" fill="#420000" points="485,413 490,421 494,408 490,397 "/>
@@ -5086,10 +5086,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="535,204 539,212 543,248 539,241 535,204 "/>
 <polygon opacity="1" fill="#FFA800" points="387,248 391,212 395,204 391,241 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="387,248 391,212 395,204 391,241 387,248 "/>
-<polygon opacity="1" fill="#FFFFF9" points="440,55 445,55 449,52 445,54 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,55 445,55 449,52 445,54 440,55 "/>
 <polygon opacity="1" fill="#FFFFF9" points="481,52 485,55 490,55 485,54 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,52 485,55 490,55 485,54 481,52 "/>
+<polygon opacity="1" fill="#FFFFF9" points="440,55 445,55 449,52 445,54 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,55 445,55 449,52 445,54 440,55 "/>
 <polygon opacity="1" fill="#8E0000" points="379,363 383,384 387,382 383,361 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="379,363 383,384 387,382 383,361 379,363 "/>
 <polygon opacity="1" fill="#8E0000" points="543,382 547,384 551,363 547,361 "/>
@@ -5114,10 +5114,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,52 453,52 457,52 453,54 449,52 "/>
 <polygon opacity="1" fill="#FFFFFC" points="473,52 477,52 481,52 477,54 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,52 477,52 481,52 477,54 473,52 "/>
-<polygon opacity="1" fill="#FFFFFD" points="465,52 469,51 473,52 469,55 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,52 469,51 473,52 469,55 465,52 "/>
 <polygon opacity="1" fill="#FFFFFD" points="457,52 461,51 465,52 461,55 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="457,52 461,51 465,52 461,55 457,52 "/>
+<polygon opacity="1" fill="#FFFFFD" points="465,52 469,51 473,52 469,55 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,52 469,51 473,52 469,55 465,52 "/>
 <polygon opacity="1" fill="#520000" points="428,400 432,416 436,408 432,391 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="428,400 432,416 436,408 432,391 428,400 "/>
 <polygon opacity="1" fill="#520000" points="494,408 498,416 502,400 498,391 "/>
@@ -5168,10 +5168,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="596,333 600,333 604,352 600,352 596,333 "/>
 <polygon opacity="1" fill="#CC0000" points="326,352 330,333 334,333 330,352 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="326,352 330,333 334,333 330,352 326,352 "/>
-<polygon opacity="1" fill="#FFFFB8" points="404,101 408,91 412,78 408,86 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="404,101 408,91 412,78 408,86 404,101 "/>
 <polygon opacity="1" fill="#FFFFB8" points="518,78 522,91 526,101 522,86 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="518,78 522,91 526,101 522,86 518,78 "/>
+<polygon opacity="1" fill="#FFFFB8" points="404,101 408,91 412,78 408,86 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="404,101 408,91 412,78 408,86 404,101 "/>
 <polygon opacity="1" fill="#FFFFF9" points="461,55 465,52 469,55 465,62 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="461,55 465,52 469,55 465,62 461,55 "/>
 <polygon opacity="1" fill="#FD0000" points="330,319 334,315 338,317 334,320 "/>
@@ -5194,10 +5194,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,79 449,74 453,95 449,102 445,79 "/>
 <polygon opacity="1" fill="#FFFFBB" points="477,95 481,74 485,79 481,102 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,95 481,74 485,79 481,102 477,95 "/>
-<polygon opacity="1" fill="#FFFFFB" points="436,56 440,55 445,54 440,56 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,56 440,55 445,54 440,56 436,56 "/>
 <polygon opacity="1" fill="#FFFFFB" points="485,54 490,55 494,56 490,56 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,54 490,55 494,56 490,56 485,54 "/>
+<polygon opacity="1" fill="#FFFFFB" points="436,56 440,55 445,54 440,56 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,56 440,55 445,54 440,56 436,56 "/>
 <polygon opacity="1" fill="#FFFFDB" points="453,68 457,61 461,72 457,84 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,68 457,61 461,72 457,84 453,68 "/>
 <polygon opacity="1" fill="#FFFFDB" points="469,72 473,61 477,68 473,84 "/>
@@ -5390,10 +5390,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="416,72 420,67 424,62 420,65 416,72 "/>
 <polygon opacity="1" fill="#FFFFED" points="506,62 510,67 514,72 510,65 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="506,62 510,67 514,72 510,65 506,62 "/>
-<polygon opacity="1" fill="#F40000" points="588,323 592,321 596,333 592,333 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="588,323 592,321 596,333 592,333 588,323 "/>
 <polygon opacity="1" fill="#F40000" points="334,333 338,321 342,323 338,333 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="334,333 338,321 342,323 338,333 334,333 "/>
+<polygon opacity="1" fill="#F40000" points="588,323 592,321 596,333 592,333 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="588,323 592,321 596,333 592,333 588,323 "/>
 <polygon opacity="1" fill="#E40000" points="355,328 359,341 363,343 359,330 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="355,328 359,341 363,343 359,330 355,328 "/>
 <polygon opacity="1" fill="#E40000" points="567,343 571,341 575,328 571,330 "/>
@@ -5430,14 +5430,14 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,102 440,117 445,145 440,121 436,102 "/>
 <polygon opacity="1" fill="#FFFF84" points="485,145 490,117 494,102 490,121 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,145 490,117 494,102 490,121 485,145 "/>
-<polygon opacity="1" fill="#FFFFB6" points="522,84 526,96 530,109 526,95 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="522,84 526,96 530,109 526,95 522,84 "/>
 <polygon opacity="1" fill="#FFFFB6" points="400,109 404,96 408,84 404,95 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="400,109 404,96 408,84 404,95 400,109 "/>
-<polygon opacity="1" fill="#FFFFE7" points="412,78 416,72 420,65 416,70 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,78 416,72 420,65 416,70 412,78 "/>
+<polygon opacity="1" fill="#FFFFB6" points="522,84 526,96 530,109 526,95 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="522,84 526,96 530,109 526,95 522,84 "/>
 <polygon opacity="1" fill="#FFFFE7" points="510,65 514,72 518,78 514,70 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,65 514,72 518,78 514,70 510,65 "/>
+<polygon opacity="1" fill="#FFFFE7" points="412,78 416,72 420,65 416,70 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,78 416,72 420,65 416,70 412,78 "/>
 <polygon opacity="1" fill="#FFFFF8" points="432,60 436,58 440,65 436,67 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,60 436,58 440,65 436,67 432,60 "/>
 <polygon opacity="1" fill="#FFFFF8" points="490,65 494,58 498,60 494,67 "/>
@@ -5458,10 +5458,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,62 428,59 432,60 428,62 424,62 "/>
 <polygon opacity="1" fill="#FFFFFC" points="498,60 502,59 506,62 502,62 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,60 502,59 506,62 502,62 498,60 "/>
-<polygon opacity="1" fill="#FFFFCC" points="518,76 522,86 526,96 522,84 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="518,76 522,86 526,96 522,84 518,76 "/>
 <polygon opacity="1" fill="#FFFFCC" points="404,96 408,86 412,76 408,84 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="404,96 408,86 412,76 408,84 404,96 "/>
+<polygon opacity="1" fill="#FFFFCC" points="518,76 522,86 526,96 522,84 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="518,76 522,86 526,96 522,84 518,76 "/>
 <polygon opacity="1" fill="#FFCD00" points="526,196 530,199 535,235 530,232 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="526,196 530,199 535,235 530,232 526,196 "/>
 <polygon opacity="1" fill="#FFCD00" points="395,235 400,199 404,196 400,232 "/>
@@ -5482,10 +5482,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,301 449,268 453,292 449,323 445,301 "/>
 <polygon opacity="1" fill="#FF3500" points="477,292 481,268 485,301 481,323 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,292 481,268 485,301 481,323 477,292 "/>
-<polygon opacity="1" fill="#F50000" points="584,325 588,323 592,333 588,335 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="584,325 588,323 592,333 588,335 584,325 "/>
 <polygon opacity="1" fill="#F50000" points="338,333 342,323 346,325 342,335 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="338,333 342,323 346,325 342,335 338,333 "/>
+<polygon opacity="1" fill="#F50000" points="584,325 588,323 592,333 588,335 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="584,325 588,323 592,333 588,335 584,325 "/>
 <polygon opacity="1" fill="#C50000" points="375,345 379,363 383,361 379,344 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="375,345 379,363 383,361 379,344 375,345 "/>
 <polygon opacity="1" fill="#C50000" points="547,361 551,363 555,345 551,344 "/>
@@ -5642,10 +5642,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,102 440,121 445,139 440,113 436,102 "/>
 <polygon opacity="1" fill="#FFFF95" points="485,139 490,121 494,102 490,113 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,139 490,121 494,102 490,113 485,139 "/>
-<polygon opacity="1" fill="#FF6800" points="481,268 485,247 490,280 485,301 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,268 485,247 490,280 485,301 481,268 "/>
 <polygon opacity="1" fill="#FF6800" points="440,280 445,247 449,268 445,301 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,280 445,247 449,268 445,301 440,280 "/>
+<polygon opacity="1" fill="#FF6800" points="481,268 485,247 490,280 485,301 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,268 485,247 490,280 485,301 481,268 "/>
 <polygon opacity="1" fill="#EA0000" points="367,334 371,345 375,345 371,335 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="367,334 371,345 375,345 371,335 367,334 "/>
 <polygon opacity="1" fill="#EA0000" points="555,345 559,345 563,334 559,335 "/>
@@ -5678,10 +5678,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="428,75 432,78 436,94 432,87 428,75 "/>
 <polygon opacity="1" fill="#FFFFDB" points="494,94 498,78 502,75 498,87 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="494,94 498,78 502,75 498,87 494,94 "/>
-<polygon opacity="1" fill="#FFFFFD" points="502,68 506,64 510,67 506,69 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,68 506,64 510,67 506,69 502,68 "/>
 <polygon opacity="1" fill="#FFFFFD" points="420,67 424,64 428,68 424,69 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,67 424,64 428,68 424,69 420,67 "/>
+<polygon opacity="1" fill="#FFFFFD" points="502,68 506,64 510,67 506,69 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,68 506,64 510,67 506,69 502,68 "/>
 <polygon opacity="1" fill="#A30000" points="428,372 432,391 436,380 432,364 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="428,372 432,391 436,380 432,364 428,372 "/>
 <polygon opacity="1" fill="#A30000" points="494,380 498,391 502,372 498,364 "/>
@@ -5826,10 +5826,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,74 428,75 432,87 428,81 424,74 "/>
 <polygon opacity="1" fill="#FFFFEC" points="498,87 502,75 506,74 502,81 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,87 502,75 506,74 502,81 498,87 "/>
-<polygon opacity="1" fill="#FFFFED" points="408,85 412,77 416,74 412,80 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="408,85 412,77 416,74 412,80 408,85 "/>
 <polygon opacity="1" fill="#FFFFED" points="514,74 518,77 522,85 518,80 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="514,74 518,77 522,85 518,80 514,74 "/>
+<polygon opacity="1" fill="#FFFFED" points="408,85 412,77 416,74 412,80 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="408,85 412,77 416,74 412,80 408,85 "/>
 <polygon opacity="1" fill="#E20000" points="387,343 391,356 395,353 391,342 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="387,343 391,356 395,353 391,342 387,343 "/>
 <polygon opacity="1" fill="#E20000" points="535,353 539,356 543,343 539,342 "/>
@@ -5984,10 +5984,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="391,414 395,400 400,408 395,419 391,414 "/>
 <polygon opacity="1" fill="#710000" points="530,408 535,400 539,414 535,419 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="530,408 535,400 539,414 535,419 530,408 "/>
-<polygon opacity="1" fill="#FFFFED" points="408,89 412,80 416,78 412,85 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="408,89 412,80 416,78 412,85 408,89 "/>
 <polygon opacity="1" fill="#FFFFED" points="514,78 518,80 522,89 518,85 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="514,78 518,80 522,89 518,85 514,78 "/>
+<polygon opacity="1" fill="#FFFFED" points="408,89 412,80 416,78 412,85 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="408,89 412,80 416,78 412,85 408,89 "/>
 <polygon opacity="1" fill="#FFFF2D" points="514,166 518,164 522,196 518,198 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="514,166 518,164 522,196 518,198 514,166 "/>
 <polygon opacity="1" fill="#FFFF2D" points="408,196 412,164 416,166 412,198 "/>
@@ -6096,10 +6096,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="539,363 543,356 547,375 543,383 539,363 "/>
 <polygon opacity="1" fill="#C60000" points="383,375 387,356 391,363 387,383 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="383,375 387,356 391,363 387,383 383,375 "/>
-<polygon opacity="1" fill="#FFFF11" points="420,209 424,177 428,186 424,219 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,209 424,177 428,186 424,219 420,209 "/>
 <polygon opacity="1" fill="#FFFF11" points="502,186 506,177 510,209 506,219 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,186 506,177 510,209 506,219 502,186 "/>
+<polygon opacity="1" fill="#FFFF11" points="420,209 424,177 428,186 424,219 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,209 424,177 428,186 424,219 420,209 "/>
 <polygon opacity="1" fill="#A60000" points="530,380 535,371 539,391 535,400 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="530,380 535,371 539,391 535,400 530,380 "/>
 <polygon opacity="1" fill="#A60000" points="391,391 395,371 400,380 395,400 "/>
@@ -6124,10 +6124,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,356 440,369 445,360 440,351 436,356 "/>
 <polygon opacity="1" fill="#DC0000" points="485,360 490,369 494,356 490,351 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,360 490,369 494,356 490,351 485,360 "/>
-<polygon opacity="1" fill="#FFFFF8" points="412,85 416,78 420,78 416,83 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,85 416,78 420,78 416,83 412,85 "/>
 <polygon opacity="1" fill="#FFFFF8" points="510,78 514,78 518,85 514,83 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,78 514,78 518,85 514,83 510,78 "/>
+<polygon opacity="1" fill="#FFFFF8" points="412,85 416,78 420,78 416,83 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,85 416,78 420,78 416,83 412,85 "/>
 <polygon opacity="1" fill="#FFFFE8" points="514,83 518,85 522,96 518,92 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="514,83 518,85 522,96 518,92 514,83 "/>
 <polygon opacity="1" fill="#FFFFE8" points="408,96 412,85 416,83 412,92 "/>
@@ -6304,10 +6304,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="457,424 461,414 465,424 461,428 457,424 "/>
 <polygon opacity="1" fill="#660000" points="465,424 469,414 473,424 469,428 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,424 469,414 473,424 469,428 465,424 "/>
-<polygon opacity="1" fill="#FFFFF3" points="412,92 416,83 420,83 416,90 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,92 416,83 420,83 416,90 412,92 "/>
 <polygon opacity="1" fill="#FFFFF3" points="510,83 514,83 518,92 514,90 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,83 514,83 518,92 514,90 510,83 "/>
+<polygon opacity="1" fill="#FFFFF3" points="412,92 416,83 420,83 416,90 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,92 416,83 420,83 416,90 412,92 "/>
 <polygon opacity="1" fill="#FFFFE4" points="432,88 436,97 440,102 436,92 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,88 436,97 440,102 436,92 432,88 "/>
 <polygon opacity="1" fill="#FFFFE4" points="490,102 494,97 498,88 494,92 "/>
@@ -6388,10 +6388,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,428 449,425 453,428 449,426 445,428 "/>
 <polygon opacity="1" fill="#610000" points="477,428 481,425 485,428 481,426 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,428 481,425 485,428 481,426 477,428 "/>
-<polygon opacity="1" fill="#FFFFFD" points="420,83 424,81 428,85 424,84 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,83 424,81 428,85 424,84 420,83 "/>
 <polygon opacity="1" fill="#FFFFFD" points="502,85 506,81 510,83 506,84 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,85 506,81 510,83 506,84 502,85 "/>
+<polygon opacity="1" fill="#FFFFFD" points="420,83 424,81 428,85 424,84 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,83 424,81 428,85 424,84 420,83 "/>
 <polygon opacity="1" fill="#FFFF2D" points="490,181 494,168 498,197 494,211 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,181 494,168 498,197 494,211 490,181 "/>
 <polygon opacity="1" fill="#FFFF2D" points="432,197 436,168 440,181 436,211 "/>
@@ -6492,18 +6492,18 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,157 502,149 506,177 502,186 498,157 "/>
 <polygon opacity="1" fill="#FFFF5B" points="424,177 428,149 432,157 428,186 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,177 428,149 432,157 428,186 424,177 "/>
-<polygon opacity="1" fill="#D20000" points="502,368 506,358 510,374 506,385 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,368 506,358 510,374 506,385 502,368 "/>
 <polygon opacity="1" fill="#D20000" points="420,374 424,358 428,368 424,385 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,374 424,358 428,368 424,385 420,374 "/>
+<polygon opacity="1" fill="#D20000" points="502,368 506,358 510,374 506,385 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,368 506,358 510,374 506,385 502,368 "/>
 <polygon opacity="1" fill="#720000" points="412,419 416,425 420,423 416,413 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,419 416,425 420,423 416,413 412,419 "/>
 <polygon opacity="1" fill="#720000" points="510,423 514,425 518,419 514,413 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="510,423 514,425 518,419 514,413 510,423 "/>
-<polygon opacity="1" fill="#B20000" points="445,388 449,372 453,386 449,402 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,388 449,372 453,386 449,402 445,388 "/>
 <polygon opacity="1" fill="#B20000" points="477,386 481,372 485,388 481,402 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,386 481,372 485,388 481,402 477,386 "/>
+<polygon opacity="1" fill="#B20000" points="445,388 449,372 453,386 449,402 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,388 449,372 453,386 449,402 445,388 "/>
 <polygon opacity="1" fill="#F30000" points="412,355 416,347 420,351 416,363 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="412,355 416,347 420,351 416,363 412,355 "/>
 <polygon opacity="1" fill="#F30000" points="510,351 514,347 518,355 514,363 "/>
@@ -6578,10 +6578,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,375 445,361 449,372 445,388 440,375 "/>
 <polygon opacity="1" fill="#CF0000" points="481,372 485,361 490,375 485,388 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,372 485,361 490,375 485,388 481,372 "/>
-<polygon opacity="1" fill="#FFFFFB" points="502,86 506,84 510,90 506,90 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,86 506,84 510,90 506,90 502,86 "/>
 <polygon opacity="1" fill="#FFFFFB" points="420,90 424,84 428,86 424,90 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,90 424,84 428,86 424,90 420,90 "/>
+<polygon opacity="1" fill="#FFFFFB" points="502,86 506,84 510,90 506,90 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,86 506,84 510,90 506,90 502,86 "/>
 <polygon opacity="1" fill="#FFFFDB" points="453,101 457,113 461,105 457,98 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,101 457,113 461,105 457,98 453,101 "/>
 <polygon opacity="1" fill="#FFFFDB" points="469,105 473,113 477,101 473,98 "/>
@@ -6610,10 +6610,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,170 485,155 490,181 485,197 481,170 "/>
 <polygon opacity="1" fill="#FFFF50" points="440,181 445,155 449,170 445,197 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,181 445,155 449,170 445,197 440,181 "/>
-<polygon opacity="1" fill="#D50000" points="449,372 453,359 457,370 453,386 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,372 453,359 457,370 453,386 449,372 "/>
 <polygon opacity="1" fill="#D50000" points="473,370 477,359 481,372 477,386 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,370 477,359 481,372 477,386 473,370 "/>
+<polygon opacity="1" fill="#D50000" points="449,372 453,359 457,370 453,386 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,372 453,359 457,370 453,386 449,372 "/>
 <polygon opacity="1" fill="#FFFF42" points="461,183 465,161 469,183 465,206 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="461,183 465,161 469,183 465,206 461,183 "/>
 <polygon opacity="1" fill="#F70000" points="490,353 494,349 498,355 494,363 "/>
@@ -6640,10 +6640,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,353 445,349 449,352 445,361 440,353 "/>
 <polygon opacity="1" fill="#FA0000" points="481,352 485,349 490,353 485,361 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="481,352 485,349 490,353 485,361 481,352 "/>
-<polygon opacity="1" fill="#FC0000" points="473,351 477,350 481,352 477,359 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,351 477,350 481,352 477,359 473,351 "/>
 <polygon opacity="1" fill="#FC0000" points="449,352 453,350 457,351 453,359 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,352 453,350 457,351 453,359 449,352 "/>
+<polygon opacity="1" fill="#FC0000" points="473,351 477,350 481,352 477,359 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,351 477,350 481,352 477,359 473,351 "/>
 <polygon opacity="1" fill="#FFFFF8" points="432,89 436,92 440,94 436,91 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,89 436,92 440,94 436,91 432,89 "/>
 <polygon opacity="1" fill="#FFFFF8" points="490,94 494,92 498,89 494,91 "/>
@@ -6690,18 +6690,18 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,127 502,122 506,143 502,149 498,127 "/>
 <polygon opacity="1" fill="#FFFFA4" points="424,143 428,122 432,127 428,149 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,143 428,122 432,127 428,149 424,143 "/>
-<polygon opacity="1" fill="#FFFF87" points="490,144 494,134 498,157 494,168 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,144 494,134 498,157 494,168 490,144 "/>
 <polygon opacity="1" fill="#FFFF87" points="432,157 436,134 440,144 436,168 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,157 436,134 440,144 436,168 432,157 "/>
+<polygon opacity="1" fill="#FFFF87" points="490,144 494,134 498,157 494,168 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,144 494,134 498,157 494,168 490,144 "/>
 <polygon opacity="1" fill="#FFFF67" points="449,170 453,148 457,164 453,188 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,170 453,148 457,164 453,188 449,170 "/>
 <polygon opacity="1" fill="#FFFF67" points="473,164 477,148 481,170 477,188 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,164 477,148 481,170 477,188 473,164 "/>
-<polygon opacity="1" fill="#FFFFD7" points="420,116 424,101 428,103 424,118 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,116 424,101 428,103 424,118 420,116 "/>
 <polygon opacity="1" fill="#FFFFD7" points="502,103 506,101 510,116 506,118 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,103 506,101 510,116 506,118 502,103 "/>
+<polygon opacity="1" fill="#FFFFD7" points="420,116 424,101 428,103 424,118 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,116 424,101 428,103 424,118 420,116 "/>
 <polygon opacity="1" fill="#FFFF98" points="494,134 498,127 502,149 498,157 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="494,134 498,127 502,149 498,157 494,134 "/>
 <polygon opacity="1" fill="#FFFF98" points="428,149 432,127 436,134 432,157 "/>
@@ -6744,10 +6744,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,95 453,101 457,98 453,95 449,95 "/>
 <polygon opacity="1" fill="#FFFFF3" points="473,98 477,101 481,95 477,95 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,98 477,101 481,95 477,95 473,98 "/>
-<polygon opacity="1" fill="#FFFFD6" points="498,106 502,103 506,118 502,122 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,106 502,103 506,118 502,122 498,106 "/>
 <polygon opacity="1" fill="#FFFFD6" points="424,118 428,103 432,106 428,122 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="424,118 428,103 432,106 428,122 424,118 "/>
+<polygon opacity="1" fill="#FFFFD6" points="498,106 502,103 506,118 502,122 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="498,106 502,103 506,118 502,122 498,106 "/>
 <polygon opacity="1" fill="#FFFF89" points="445,155 449,135 453,148 449,170 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,155 449,135 453,148 449,170 445,155 "/>
 <polygon opacity="1" fill="#FFFF89" points="477,148 481,135 485,155 481,170 "/>
@@ -6780,14 +6780,14 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="420,407 424,418 428,411 424,400 420,407 "/>
 <polygon opacity="1" fill="#990000" points="502,411 506,418 510,407 506,400 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="502,411 506,418 510,407 506,400 502,411 "/>
-<polygon opacity="1" fill="#FFFFC7" points="490,117 494,111 498,127 494,134 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,117 494,111 498,127 494,134 490,117 "/>
 <polygon opacity="1" fill="#FFFFC7" points="432,127 436,111 440,117 436,134 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,127 436,111 440,117 436,134 432,127 "/>
-<polygon opacity="1" fill="#FFFF98" points="453,148 457,130 461,144 457,164 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,148 457,130 461,144 457,164 453,148 "/>
+<polygon opacity="1" fill="#FFFFC7" points="490,117 494,111 498,127 494,134 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,117 494,111 498,127 494,134 490,117 "/>
 <polygon opacity="1" fill="#FFFF98" points="469,144 473,130 477,148 473,164 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="469,144 473,130 477,148 473,164 469,144 "/>
+<polygon opacity="1" fill="#FFFF98" points="453,148 457,130 461,144 457,164 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,148 457,130 461,144 457,164 453,148 "/>
 <polygon opacity="1" fill="#FFFFB8" points="436,134 440,117 445,124 440,144 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,134 440,117 445,124 440,144 436,134 "/>
 <polygon opacity="1" fill="#FFFFB8" points="485,124 490,117 494,134 490,144 "/>
@@ -6798,20 +6798,20 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,95 457,98 461,96 457,97 453,95 "/>
 <polygon opacity="1" fill="#FFFFFA" points="469,96 473,98 477,95 473,97 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="469,96 473,98 477,95 473,97 469,96 "/>
-<polygon opacity="1" fill="#FFFFFB" points="436,97 440,93 445,95 440,100 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,97 440,93 445,95 440,100 436,97 "/>
 <polygon opacity="1" fill="#FFFFFB" points="485,95 490,93 494,97 490,100 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,95 490,93 494,97 490,100 485,95 "/>
+<polygon opacity="1" fill="#FFFFFB" points="436,97 440,93 445,95 440,100 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,97 440,93 445,95 440,100 436,97 "/>
 <polygon opacity="1" fill="#FFFFFD" points="445,95 449,95 453,95 449,97 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,95 449,95 453,95 449,97 445,95 "/>
 <polygon opacity="1" fill="#FFFFFD" points="477,95 481,95 485,95 481,97 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,95 481,95 485,95 481,97 477,95 "/>
 <polygon opacity="1" fill="#FFFF9D" points="461,144 465,128 469,144 465,161 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="461,144 465,128 469,144 465,161 461,144 "/>
-<polygon opacity="1" fill="#FFFFED" points="432,106 436,97 440,100 436,111 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,106 436,97 440,100 436,111 432,106 "/>
 <polygon opacity="1" fill="#FFFFED" points="490,100 494,97 498,106 494,111 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="490,100 494,97 498,106 494,111 490,100 "/>
+<polygon opacity="1" fill="#FFFFED" points="432,106 436,97 440,100 436,111 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,106 436,97 440,100 436,111 432,106 "/>
 <polygon opacity="1" fill="#990000" points="465,412 469,421 473,411 469,402 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,412 469,421 473,411 469,402 465,412 "/>
 <polygon opacity="1" fill="#990000" points="457,411 461,421 465,412 461,402 "/>
@@ -6824,10 +6824,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,410 453,420 457,411 453,401 449,410 "/>
 <polygon opacity="1" fill="#9B0000" points="473,411 477,420 481,410 477,401 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,411 477,420 481,410 477,401 473,411 "/>
-<polygon opacity="1" fill="#FFFFE7" points="485,104 490,100 494,111 490,117 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,104 490,100 494,111 490,117 485,104 "/>
 <polygon opacity="1" fill="#FFFFE7" points="436,111 440,100 445,104 440,117 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="436,111 440,100 445,104 440,117 436,111 "/>
+<polygon opacity="1" fill="#FFFFE7" points="485,104 490,100 494,111 490,117 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="485,104 490,100 494,111 490,117 485,104 "/>
 <polygon opacity="1" fill="#FFFFF9" points="440,100 445,95 449,97 445,104 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="440,100 445,95 449,97 445,104 440,100 "/>
 <polygon opacity="1" fill="#FFFFF9" points="481,97 485,95 490,100 485,104 "/>
@@ -6844,18 +6844,18 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="449,97 453,95 457,97 453,101 449,97 "/>
 <polygon opacity="1" fill="#FFFFFC" points="473,97 477,95 481,97 477,101 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,97 477,95 481,97 477,101 473,97 "/>
-<polygon opacity="1" fill="#FFFFCC" points="445,124 449,110 453,119 449,135 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,124 449,110 453,119 449,135 445,124 "/>
 <polygon opacity="1" fill="#FFFFCC" points="477,119 481,110 485,124 481,135 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="477,119 481,110 485,124 481,135 477,119 "/>
+<polygon opacity="1" fill="#FFFFCC" points="445,124 449,110 453,119 449,135 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="445,124 449,110 453,119 449,135 445,124 "/>
 <polygon opacity="1" fill="#FFFFFD" points="457,97 461,96 465,97 461,100 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="457,97 461,96 465,97 461,100 457,97 "/>
 <polygon opacity="1" fill="#FFFFFD" points="465,97 469,96 473,97 469,100 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,97 469,96 473,97 469,100 465,97 "/>
-<polygon opacity="1" fill="#FFFFBF" points="457,130 461,116 465,128 461,144 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="457,130 461,116 465,128 461,144 457,130 "/>
 <polygon opacity="1" fill="#FFFFBF" points="465,128 469,116 473,130 469,144 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="465,128 469,116 473,130 469,144 465,128 "/>
+<polygon opacity="1" fill="#FFFFBF" points="457,130 461,116 465,128 461,144 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="457,130 461,116 465,128 461,144 457,130 "/>
 <polygon opacity="1" fill="#A60000" points="432,404 436,415 440,407 436,398 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="432,404 436,415 440,407 436,398 432,404 "/>
 <polygon opacity="1" fill="#A60000" points="490,407 494,415 498,404 494,398 "/>
@@ -6868,10 +6868,10 @@ sin(r^2) / r^2 ripples — surf hot
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="469,116 473,107 477,119 473,130 469,116 "/>
 <polygon opacity="1" fill="#FFFFD7" points="453,119 457,107 461,116 457,130 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,119 457,107 461,116 457,130 453,119 "/>
-<polygon opacity="1" fill="#FFFFF8" points="453,101 457,97 461,100 457,107 "/>
-<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,101 457,97 461,100 457,107 453,101 "/>
 <polygon opacity="1" fill="#FFFFF8" points="469,100 473,97 477,101 473,107 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="469,100 473,97 477,101 473,107 469,100 "/>
+<polygon opacity="1" fill="#FFFFF8" points="453,101 457,97 461,100 457,107 "/>
+<polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="453,101 457,97 461,100 457,107 453,101 "/>
 <polygon opacity="1" fill="#FFFFE8" points="473,107 477,101 481,110 477,119 "/>
 <polyline fill="none" opacity="1" stroke="#CDD6F4" stroke-width="1" points="473,107 477,101 481,110 477,119 473,107 "/>
 <polygon opacity="1" fill="#FFFFE8" points="449,110 453,101 457,107 453,119 "/>

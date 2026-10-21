@@ -68,7 +68,7 @@ examples:
 #   rustlab-notebook validate notebooks/ --pdf-a         # add verapdf
 #   rustlab-notebook validate notebooks/ --keep-tmp      # inspect renders
 validate-notebooks:
-	$(CARGO) build --release -q -p rustlab-notebook --bin rustlab-notebook
+	$(CARGO) build --release -q -p rustlab-notebook --bin rustlab-notebook --features mermaid
 	@./target/release/rustlab-notebook validate examples/notebooks/
 
 # One-shot installer for the external linters that `make

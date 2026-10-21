@@ -179,12 +179,8 @@ Matrix(3x3)
 <!-- rustlab:output-end -->
 
 Shape mismatches hard-error with both shapes named, so a typo doesn't
-silently corrupt the matrix:
-
-```rustlab
-% A(2, :) = [10, 20] would error: "RHS vector length 2 does not match
-% target region 1×3 (3 elements)".
-```
+silently corrupt the matrix. `A(2, :) = [10, 20]` on the 3-column `A`
+above reports that an RHS of length 2 does not match a 1×3 region.
 
 Note: the legacy `M(t) = vec` row write (rustlab 0.3.0 → 0.3.3 form)
 still works for backward compatibility. New code should prefer the

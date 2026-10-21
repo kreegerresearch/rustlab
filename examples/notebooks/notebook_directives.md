@@ -53,7 +53,7 @@ long parameter sweeps, diagnostic dumps, large plot galleries.
 <!-- details: Show all magnitude responses -->
 ```rustlab
 fs = 16000;
-figure()
+figure();
 hold("on")
 for n_taps = [16, 32, 64, 128]
     h = fir_lowpass(n_taps, 3000, fs, "hamming");
@@ -160,7 +160,7 @@ Hamming window on the same axes.
 M = 32;
 wh = window("hann", M);
 wm = window("hamming", M);
-figure()
+figure();
 hold("on")
 plot(wh, "label", "hann")
 plot(wm, "label", "hamming")

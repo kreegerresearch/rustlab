@@ -19732,6 +19732,41 @@ mod int_width_tests {
     }
 
     #[test]
+    fn uint64_max_displays_every_digit() {
+        // f64 cannot hold 2^64-1. Printing that integer must not round
+        // through a double (which shows 18446744073709552000).
+        let e = ev("a = uint64(0xFFFFFFFFFFFFFFFF)\nb = int32([1, 2, 3, -4])");
+        assert_eq!(
+            format!("{}", e.get("a").unwrap()),
+            "18446744073709551615  (uint64)"
+        );
+        assert_eq!(
+            format!("{}", e.get("b").unwrap()),
+            "[1×4] (int32)  1  2  3  -4"
+        );
+    }
+
+    #[test]
+    fn disp_print_and_fprintf_keep_every_uint64_digit() {
+        // Builtins used to widen every integer to f64 before the call, so
+        // disp/print/fprintf of uint64 max showed 18446744073709552000.
+        use crate::{start_capture, stop_capture};
+        start_capture();
+        let _e = ev(
+            "disp(uint64(0xFFFFFFFFFFFFFFFF))\n\
+             print(int32([1, 2, 3, -4]))\n\
+             fprintf(\"%u\\n\", uint64(0xFFFFFFFFFFFFFFFF))\n\
+             fprintf(\"%d\\n\", int32(-4))\n",
+        );
+        let out = stop_capture();
+        assert!(out.contains("18446744073709551615  (uint64)"), "{out}");
+        assert!(out.contains("[1×4] (int32)  1  2  3  -4"), "{out}");
+        assert!(out.contains("18446744073709551615\n"), "{out}");
+        assert!(!out.contains("18446744073709552000"), "{out}");
+        assert!(out.contains("-4\n"), "{out}");
+    }
+
+    #[test]
     fn full_uint64_range_is_representable() {
         let e = ev(
             "a = uint64(0xFFFFFFFFFFFFFFFF)\nb = intmax(\"uint64\")\n\

@@ -289,8 +289,8 @@ fprintf("Γout(Γms) - conj(Γml) at 3 GHz: %.2e\n", ...
 
 <!-- rustlab:output-start -->
 ```text
-Γin(Γml) - conj(Γms) at 3 GHz: 1.24e-16
-Γout(Γms) - conj(Γml) at 3 GHz: 1.19e-16
+Γin(Γml) - conj(Γms) at 3 GHz: 2.36e-16
+Γout(Γms) - conj(Γml) at 3 GHz: 1.76e-16
 ```
 
 <!-- rustlab:output-end -->
