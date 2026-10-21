@@ -140,10 +140,11 @@ function — the same shape you'd see from a point charge in 2-D.
 $\nabla^2 V = -\rho/\varepsilon_0$, use
 `V = spsolve(L, -rho(:)' / eps0)`.
 
-**Boundary:** homogeneous Dirichlet (`V = 0` outside the grid). Neumann
-and periodic BCs are not supported in v1 — encode non-zero Dirichlet
-values in the right-hand side, or build a custom stencil via `spdiags` /
-`sparse(I, J, V, ...)`.
+**Boundary:** homogeneous Dirichlet (`V = 0` outside the grid) is the
+default. Neumann and periodic conditions are the trailing `bc` string
+— see [`laplacian_bc.md`](laplacian_bc.md). Non-zero Dirichlet values
+belong on the right-hand side, or use `pin_dirichlet`. A custom stencil
+is `spdiags` / `sparse(I, J, V, ...)`.
 
 **Ordering:** column-major `(j-1)*ny + i` everywhere. The third argument
 of `ij2k` / `k2ij` is `ny`.

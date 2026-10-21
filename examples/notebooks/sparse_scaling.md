@@ -43,20 +43,19 @@ A log-log plot makes the asymptotic scaling obvious. Dense Gaussian
 elimination scales as $O(N^3)$ on $N = n^2$ unknowns — $O(n^6)$ in the
 grid-side parameter — and the curve climbs accordingly. The sparse
 paths scale as roughly $O(N^{1.5}) = O(n^3)$ on Laplacian patterns.
-A `loglog` builtin lands in a later phase; for now we log-transform the
-axes by hand:
+`loglog` keeps the times and the unknown-counts in real units and
+draws both axes on a logarithmic scale:
 
 ```rustlab
 clf
-log_n = log10(unknowns);
-hold on;
-plot(log_n, log10(t_dense));
-plot(log_n, log10(t_chol_id));
-plot(log_n, log10(t_chol_amd));
-plot(log_n, log10(t_lu_amd));
-title("Sparse vs dense — log10(time s) vs log10(N)");
-xlabel("log10(unknowns)");
-ylabel("log10(time s)")
+hold on
+loglog(unknowns, t_dense);
+loglog(unknowns, t_chol_id);
+loglog(unknowns, t_chol_amd);
+loglog(unknowns, t_lu_amd);
+title("Sparse vs dense — time vs unknowns")
+xlabel("Unknowns N")
+ylabel("Factor + solve time (s)")
 ```
 
 The dense curve goes vertical at the right; the sparse curves stay

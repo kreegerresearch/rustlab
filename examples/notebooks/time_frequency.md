@@ -166,7 +166,6 @@ straight into `plot_update_heatmap` for a scrolling spectrogram.
 
 ```rustlab
 state = stft_stream_init(fs, window("hann", 512), 384, 1024);
-n_freqs = 513;        % nfft/2 + 1
 n_cols_total = 0;
 % Run the whole chirp through stft_stream in 1024-sample chunks,
 % including a short final chunk so no samples are dropped.
@@ -178,11 +177,12 @@ for i = 0:n_chunks - 1
     [S_new, state] = stft_stream(x(lo:hi), state);
     n_cols_total = n_cols_total + size(S_new, 2);
 end
-n_cols_total
+print(n_cols_total)
+print(size(S, 2))   % batch stft width from the cell above
 ```
 
-The accumulated column count matches what the batch `stft` produced
-above (153). For a live display, the typical pattern is:
+The two printed counts match: streamed frames and the batch `stft`
+width (153 for this chirp). For a live display, the typical pattern is:
 
 ```rustlab
 % Pseudo-code (won't run in a notebook — see examples/audio/spectrogram_monitor.sh):
