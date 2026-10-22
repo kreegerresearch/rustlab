@@ -21,7 +21,7 @@ Keep the REPL that already ships. Add four MATLAB-shaped ways for a **script** t
 | `line = fgetl(stdin)` | a raw line, no prompt | the line, or `-1` at end of input |
 | `keyboard` | rustlab statements | nothing; `return` resumes the script |
 
-`input(..., "s")` is the chat loop. `keyboard` is the mid-script pause. `fgetl(stdin)` is the pipe-friendly reader. Expression `input` is the MATLAB command-window habit of typing `2*pi` at a prompt.
+`input(..., "s")` is the chat loop. `keyboard` is the mid-script pause. `fgetl(stdin)` is the pipe-friendly reader. Expression `input` accepts one pure math expression (`2*pi`, `sin(k)`). It does not run assignments, file or IO builtins, `run` / `eval` / `source`, or function definitions. Text from an LLM or a file uses the string form or `fgetl` (§4).
 
 Printing already exists (`disp`, `fprintf`, `print`, `sprintf`). File formats already exist (`save` / `load` for `.npy`, `.csv`, `.toml`, `.npz`). This plan does not add `fopen` or a general file-handle type.
 
@@ -102,6 +102,8 @@ end
 
 Empty input ends the loop, which matches the language's "no `break`" rule. End of a pipe ends the process cleanly (question 2).
 
+The LLM example uses string mode (`input(prompt, "s")` or `fgetl(stdin)`). The line is data. rustlab does not parse it and does not execute it. An API key, if the sibling repo reads one from the environment, stays in that variable. No IO builtin prints the environment, and the example must not `disp` or `fprintf` the key. This plan does not call a paid API. A later change that does needs Michael's explicit approval (§4).
+
 `keyboard` is the debug pause, inside their function:
 
 ```rlab
@@ -176,8 +178,8 @@ In the `StmtKind::Expr` arm, when the value is printed today (`!suppress`, not i
 
 **`input(prompt)` / `input(prompt, "s")` / `input()`.**
 
-- Zero arguments or one argument: print the prompt with `script_print` (no extra newline), read one line, strip the trailing newline, parse the line as **one expression**, evaluate it in the current evaluator, return the value. The current evaluator means function locals when `input` is called from a function, and the base workspace at the prompt. The line may use names that are in scope (`2*k` sees the local `k`).
-- A second argument that is the string `"s"`: return the line as `Value::Str`. Do not parse it. This is the chat form. A blank Enter is `""`.
+- Zero arguments or one argument: print the prompt with `script_print` (no extra newline), read one line, strip the trailing newline, and evaluate it only if the pure-expression check in §4 accepts it. Variable reads see the current scope (function locals, or the base workspace at the prompt), so `2*k` can see a local `k`. A rejected line is a runtime error and changes nothing in the workspace.
+- A second argument that is the string `"s"`: return the line as `Value::Str`. Do not parse it and do not execute it. This is the form the LLM chat loop uses. A blank Enter is `""`. Untrusted text (a pipe, a file, or a model reply) uses this form or `fgetl`.
 - Any other second argument is a type error.
 - The prompt is printed only for `input`. It goes to the same stream as `fprintf` (stdout, or the notebook capture buffer — but notebook context refuses before the prompt; see §4).
 
@@ -225,7 +227,7 @@ The nested prompt is `K>> `, then `K2>> ` if `keyboard` is entered again. Contin
 - `rustlab-script` defines `set_keyboard_handler`. The handler is `FnMut(&mut Evaluator) -> Result<KeyboardStatus, ScriptError>` in a thread-local.
 - The CLI REPL installs a handler that uses the **same** `rustyline` `Editor` (editing, history, completion). `keyboard` lines are rustlab statements, so they go into `~/.rustlab_history`. `input` lines do not.
 - When no handler is installed (`rustlab run` on a TTY), `rustlab-script` runs a small loop: print `K>> `, `read_line`, parse, `exec_stmt`. No new dependency.
-- When stdin is not a terminal and no handler is installed, `keyboard` errors immediately: `keyboard: no interactive terminal`. It does not block CI.
+- When stdin is not a terminal, `keyboard`, `dbcont`, and `dbquit` error immediately (`keyboard: no interactive terminal`), including when a handler is installed. A piped script cannot enter the debugger. The handler is not called. See §4.
 
 Assignments and expressions at `K>>` run on the same evaluator, so a pause inside `respond` sees `model`, `line`, and `tokens`, and an assignment there is still there after `return`.
 
@@ -244,7 +246,8 @@ When a jail is installed (notebooks), `run` stays as it is: `check_path`, no `ch
    Evaluator::exec_stmt
         |
         +-- input / fgetl  --> std::io line (or the test queue)
-        |                      expression input parses one expr
+        |                      expression input: one pure math expr (§4)
+        |                      "s" and fgetl: raw string, never executed
         |
         +-- keyboard -------> handler if the CLI installed one
         |                      else std::io loop on a TTY
@@ -261,30 +264,73 @@ Same commit as the builtins:
 - `docs/functions.md` — `input`, `fgetl`, `keyboard`, `ischar`, the `stdin` constant, and the chat-loop example. A sentence that `audio_read` and these readers share process stdin, so one script uses one of them.
 - `docs/quickref.md` — the same names under Language / IO.
 - `docs/agent-guide.md` §2.2 — continuation, `ans`, `input`.
-- `docs/security.md` — notebook refusal (§4).
+- `docs/security.md` — the §4 rules: pure-expression `input`, string mode for untrusted text, notebook / watch / `parmap` refusal, non-TTY `keyboard`, history file mode `0600`, and no IO builtin printing the environment.
 - `crates/rustlab-cli/src/commands/repl.rs` — `HelpEntry` for each new name, all in the existing language toolbox row that already holds `disp` / `fprintf` / `print` (one row only; `help_coverage_tests` enforces that).
 - `AGENTS.md` — the builtin table, and a line in the REPL crate notes.
 - `CHANGELOG.md` — *Added* for the builtins and continuation; *Breaking / behavior changes* only if `ans` or the `run` cwd change can affect an existing script (a script that already used the name `ans`, or a REPL `run` that depended on the old cwd). Migration: rename a variable called `ans`; pass absolute paths if a REPL `run` must keep the old directory.
 
 ---
 
-## 4. Security and contexts
+## 4. Security
 
-| Context | `input` / `fgetl` | `keyboard` | Paths |
+### 4.1 Evaluate-mode `input` is one pure expression
+
+`input(prompt)` and `input()` parse the line as a single expression and then walk that AST. The walk is an allowlist. The line runs only when every node is one of:
+
+- a literal (number, imaginary literal, string, `true` / `false`)
+- a variable read, including built-in constants (`pi`, `k` in scope)
+- unary minus, the arithmetic and comparison operators, or `'` / `.'`
+- an index read of a variable (`v(1)`, `M(i, j)`) whose subscripts are themselves pure
+- a call whose name is a **registered builtin** and is **not** on the impure list
+
+The impure list is the union of `purity.rs`'s `IMPURE_BUILTINS` and a fixed extra set of names that must fail even if they are not registered yet: `run`, `eval`, `feval`, `source`, `system`, `unix`, `getenv`, `setenv`, `input`, `keyboard`, `fgetl`, `fopen`, `fclose`, `fread`, `fwrite`, `save`, `load`. A user function, a lambda, and a function handle are rejected. User functions can close over IO, so they are not "pure" for this check.
+
+Rejected, with a runtime error and no workspace change:
+
+- an assignment, a compound assignment, or an index assignment (`x = 1`, `x += 1`, `v(1) = 2`)
+- a function definition
+- `run`, `eval`, `feval`, `source`
+- a file, system, or IO builtin (`save`, `load`, `fprintf`, `disp`, `print`, `system`, …)
+- more than one statement, or a `for` / `while` / `if` / `switch` block
+
+`2*pi` and `sin(k)` are accepted. `save("k.npy", x)` is not.
+
+Untrusted text — a line piped from a file, or text that came from an LLM — uses `input(prompt, "s")` or `fgetl(stdin)`. Both return a raw string. The evaluator does not parse that string and does not execute it. The LLM example must use string mode. The echo script in Phase 5 uses `input("you: ", "s")`.
+
+### 4.2 Notebooks, `watch`, `parmap`, and a non-TTY debugger
+
+| Context | `input` / `fgetl` | `keyboard` / `dbcont` / `dbquit` | Paths |
 |---|---|---|---|
-| REPL, and `rustlab run` on a TTY or a pipe | Read stdin. Expression `input` evaluates in the script, which is already trusted to run `.rlab`. | REPL: rustyline handler. `rustlab run` on a TTY: std loop. | Jail unset. Phase 1 cwd dance for `run` only. |
-| `rustlab run --plot none` | Still allowed. Headless means "no TUI plot", not "no stdin". `make examples` feeds `/dev/null`; `InputEof` exits 0. | Error, no block. | Same as `rustlab run`. |
+| REPL, and `rustlab run` on a TTY | Read stdin. Expression form follows §4.1. String form and `fgetl` return text. | REPL: rustyline handler. `rustlab run` on a TTY: std loop. `dbcont` and `dbquit` are resume and abort lines inside that session. | Jail unset. Phase 1 cwd dance for `run` only. |
+| `rustlab run` with stdin not a TTY, including `--plot none` and `make examples` | String form and `fgetl` still read the pipe. Evaluate-mode `input` still has to pass §4.1. `InputEof` on a closed stdin exits 0. Headless means "no TUI plot", not "no stdin". | **Error immediately.** `keyboard`, `dbcont`, and `dbquit` all fail with `keyboard: no interactive terminal` before any debug line is read. An installed handler is not called. A piped script cannot enter the debugger. | Same as `rustlab run`. |
 | Notebook `render` / `watch` (`PlotContext::Notebook`) | Hard error before any read: `input: not available while rendering a notebook`. Do not block the render. Do not read process stdin. `--stdin` on `render --format json` is the markdown source, and a cell must not consume it. | Same hard error. | Existing jail. No `chdir`. |
 | `parmap` worker | Hard error via `require_pure_context`: `parmap: cannot input from a parallel lambda`. Add `input`, `fgetl`, and `keyboard` to the **runtime** denylist in `eval/mod.rs` (`IMPURE_BUILTINS` there today lists `fprintf` and the plot commands, and does not list `input`). Add `fgetl` to the cache denylist in `purity.rs` (`input` and `keyboard` are already on it). | Same. | Workers already install the caller's jail. These builtins open no paths. |
 | Persistent function cache | A function that calls `input`, `fgetl`, or `keyboard` is impure and is not cached. The walker is name-based and already lists `input` and `keyboard`. | Same. | Unchanged. |
 
 `ischar` is pure. It is not added to either denylist.
 
-Expression `input` can call `save` and any other builtin the script could call. That is the same power as typing the line at `>> `. The notebook refusal is what keeps an untrusted notebook from reading the operator's terminal or the watch process's stdin. Widgets stay the interactive control for notebooks (`widget()`); this plan does not route `input` through the browser.
+Widgets stay the interactive control for notebooks (`widget()`). This plan does not route `input` through the browser.
 
 `audio_read` also locks stdin and reads binary frames. v1 documents that a script uses either PCM stdin or line stdin. There is no interleaving lock (question 8).
 
 No shell is spawned. No new path is accepted by `input` or `fgetl`.
+
+### 4.3 History file mode, and turning history off
+
+REPL command history is `~/.rustlab_history` (rustyline). Prompts and `keyboard` lines can contain secrets, so the file is owner-only.
+
+- After every create and every save, set the mode to `0600` (`std::fs::set_permissions`). Do this on startup as well when the file already exists, so a file left group-readable from an older build is tightened.
+- `input` and `fgetl` lines are not written to the history file (question 7). `keyboard` statements are, because they are rustlab commands.
+- History can be turned off. Either one is enough, and the environment variable wins when it asks for off:
+  - `[repl] history = false` in `~/.rustlabrc` (next to the existing `history_limit`)
+  - `RUSTLAB_NO_HISTORY=1` in the environment
+- When history is off, do not load the file and do not create or rewrite it. The in-session `history` command lists only lines from this process, and those lines are discarded on exit.
+
+### 4.4 Environment variables and paid APIs
+
+No IO builtin prints the environment. `disp`, `print`, `fprintf`, `sprintf`, `input`, and `fgetl` write only the values the script passed them. This plan does not add `getenv` / `setenv`. There is no builtin that dumps `std::env::vars`.
+
+The LLM example reads its API key from the environment inside the sibling repo's own code, and it never echoes or logs that value. The echo script in this repo does not read a key and does not make a network call. A change that makes a paid API call needs Michael's explicit approval in the request that asks for it. This plan does not grant that approval.
 
 ---
 
@@ -323,13 +369,13 @@ If the handler is unset, every new read is `std::io`. Deleting the handler still
 
 Each recommendation is the default if the review says yes to the plan as a whole. A different answer changes the phase noted on that row.
 
-1. **Expression `input(prompt)` evaluates one expression in the current scope (function locals or the base workspace).** Recommended: yes. The `"s"` form is the chat loop and does not evaluate. A line that is an assignment, a loop, or a function definition is an error telling the user to use `keyboard`. v1 does not continue `input` across multiple lines.
+1. **Expression `input(prompt)` is one pure expression (§4.1).** Decided with this update. Literals, variable reads, math operators, and pure math builtins only. Assignments, file/system/IO builtins, `run` / `eval` / `feval` / `source`, and function definitions error. Untrusted text uses `input(prompt, "s")` or `fgetl(stdin)`, which return a raw string and never execute. The LLM example uses string mode. v1 does not continue `input` across multiple lines.
 2. **EOF.** Recommended: `input` raises `ScriptError::InputEof`, and `rustlab run` exits 0 with no error line (same policy as `AudioEof`). `fgetl` returns the scalar `-1` so the script can close the loop and keep running. A blank Enter is `""` for both, and is not EOF.
 3. **`stdin` is a real value.** Recommended: `Value::Stdin`, a built-in constant named `stdin`, restored by `clear`. `fgetl` accepts only that value. A string `"stdin"` is a type error, so a typo is obvious.
 4. **`ischar`.** Recommended: yes, in the same phase as `fgetl`. It is the predicate in the `while ischar(line)` loop. `class(line) == "string"` would also work; `ischar` is what the MATLAB examples use, and it is a few lines.
-5. **`keyboard` resume words.** Recommended: `return` and `dbcont` resume and are not executed as the language `return`. `dbquit` aborts the script with a runtime error (exit 1 from `rustlab run`). `exit` at `K>>` errors and stays in `keyboard`. `exit` at `>> ` still quits the process.
+5. **`keyboard` resume words.** Recommended: on a TTY, `return` and `dbcont` resume and are not executed as the language `return`. `dbquit` aborts the script with a runtime error (exit 1 from `rustlab run`). `exit` at `K>>` errors and stays in `keyboard`. `exit` at `>> ` still quits the process. When stdin is not a TTY, `keyboard`, `dbcont`, and `dbquit` error immediately and do not open a debug session (§4.2).
 6. **Ctrl-D during `input()` while the REPL is running.** Recommended: deliver EOF to the script (question 2) and return to `>> `. Ctrl-D at `>> ` still quits. Implementing this means the REPL's `input` path must not treat that EOF as "leave the session".
-7. **History.** Recommended: `keyboard` statements are recorded in `~/.rustlab_history`. Lines read by `input` and `fgetl` are not.
+7. **History.** Decided with this update (§4.3). `keyboard` statements are recorded in `~/.rustlab_history`. Lines read by `input` and `fgetl` are not. The file mode is `0600`, tightened on load and on save. `[repl] history = false` or `RUSTLAB_NO_HISTORY=1` skips load and save. The environment variable forces history off when both are set.
 8. **`audio_read` and line input in one process.** Recommended: document the mutual exclusion, and do not add a runtime lock in v1. A script that mixes them consumes stdin bytes in whichever order it calls.
 9. **Line editing inside `input()`.** Recommended: standard input only, for v1. Revisit a `rustyline` host hook if typing long prompts without cooked-mode editing is a problem. `keyboard` still uses `rustyline` in the REPL.
 10. **Notebooks and `watch`.** Recommended: hard error, no blocking read, no browser prompt. Interactive notebook controls stay on `widget()`.
@@ -352,6 +398,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 - Add `statement_ready` and use it for every REPL line.
 - Jail-unset `run` saves, changes, and restores cwd (REPL command and `StmtKind::Run`).
 - Tests in `crates/rustlab-cli`: `while` / `for` / `if` / `switch` depth, a `for` inside a `while`, a one-line `if`, a trailing `...`, an unclosed `[`, a quote that contains a bracket, a balanced paste, a similar identifier (`whilelist`) that must not open a block. The existing `line_opens_block` tests stay.
+- History security tests (temp `HOME`, no real `~/.rustlab_history`): a new history file is mode `0600`; an existing `0644` file is tightened to `0600` on save; `RUSTLAB_NO_HISTORY=1` does not create the file and does not rewrite an existing one; `[repl] history = false` does the same; when both the rc enables history and the env var is set, the file stays untouched.
 - A script-crate test that `run` of a temp file `load`s a relative `.toml` from the script directory while the process cwd is elsewhere, and that the cwd is restored. Notebook jail test: relative `run` still cannot escape the jail, and cwd is unchanged.
 
 ### Phase 2 — `ans`
@@ -374,6 +421,12 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 - `parmap`: error naming `input` and `fgetl`.
 - Cache walker: `fgetl` is impure; a fixture function that calls it is rejected. `ischar` is accepted.
 - Tests for the behaviors in §3.3: `"s"` does not evaluate `1+2`; the expression form returns `3` for the line `1+2` and sees a local; blank line is `""`; `fgetl` EOF is the scalar `-1`; `ischar("-1")` is true and `ischar(-1)` is false; bad arity; `fgetl("stdin")` errors.
+- Security tests for §4.1, on the injected line queue, with a temp directory as cwd so a slipped `save` would leave a file:
+  - Accept `2*pi` and `sin(k)` when `k` is in scope.
+  - Reject `x = 1`, `v(1) = 2`, `function y = f(x)`, `run "t.rlab"`, `feval("save", "k.npy", x)`, `eval("1")`, `source("t.rlab")`, `save("k.npy", x)`, `load("k.npy")`, `fprintf("%s\n", "x")`, `system("true")`, and a call to a user function. Workspace is unchanged and no file appears.
+  - `input(prompt, "s")` given the text `save("k.npy", x)` returns that string and does not create `k.npy`. `fgetl(stdin)` of the same text does the same.
+  - `disp`, `print`, `fprintf`, and `sprintf` do not read or print the process environment. Feed a unique `RUSTLAB_TEST_SECRET` in the environment, run each builtin on an unrelated value, and assert the captured output does not contain the secret. There is no `getenv` registration.
+- `watch` uses the same `PlotContext::Notebook` refusal as `render`. One test sets that context, calls `input`, `fgetl`, and `keyboard`, and asserts the line reader was not called.
 - Docs, help, quickref, agent guide, security note, changelog, version rule.
 
 ### Phase 4 — `keyboard`
@@ -382,7 +435,8 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 - Handler thread-local, std fallback, non-TTY error.
 - CLI handler sharing the REPL `Editor` and `statement_ready`.
-- Tests with a fake handler: one assignment, then `return`; locals visible inside a function after resume; `dbquit` errors; `exit` at the nested prompt errors and the handler can resume; nested `keyboard` prompts `K2>>` (assert the prompt string the fallback would print); `parmap` and notebook refuse.
+- Tests with a fake handler, on a simulated TTY: one assignment, then `return`; locals visible inside a function after resume; `dbquit` errors; `exit` at the nested prompt errors and the handler can resume; nested `keyboard` prompts `K2>>` (assert the prompt string the fallback would print); `parmap` and notebook refuse.
+- Non-TTY security tests (§4.2): with the TTY flag forced off, `keyboard`, `dbcont`, and `dbquit` each return `keyboard: no interactive terminal`. Install a handler that fails the test if it is called, and assert it is not called. A piped script cannot enter the debugger.
 - A CLI unit test that the resume words are classified without executing `return` as `StmtKind::Return`. That classifier is a pure function next to `statement_ready`.
 
 ### Phase 5 — Echo chat example
@@ -392,7 +446,8 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 - `examples/language/chat_loop.rlab` as in question 14.
 - Do not register it in `crates/rustlab-cli/tests/examples.rs` (that harness has no stdin). `make examples` covers the EOF-exit path once Phase 3's `InputEof` policy is in.
 - One script-crate test runs the same loop against the line queue `["hello", ""]` and checks the captured `fprintf` text. Capture is `eval/output.rs`.
-- Comment in the example points at `respond(model, line)` and at this plan. No weights, no network.
+- Comment in the example points at `respond(model, line)` and at this plan. No weights, no network, no API key, no paid call.
+- Security tests for the example source: every `input(` call is the string form (`"s"`); the file does not call `getenv` and does not mention printing an API key. A script-crate test runs the loop in string mode against the queue `["save(\"k.npy\", x)", ""]` and asserts the reply text is that line and that no `k.npy` was written. The LLM example, when it exists in the sibling repo, follows the same rule: string mode, key read from the environment, key never echoed. A paid API call is out of this plan until Michael approves it in a later request.
 
 ---
 
@@ -400,7 +455,8 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 | File | Phase | Change |
 |---|---|---|
-| `crates/rustlab-cli/src/commands/repl.rs` | 1, 4 | `statement_ready`, continuation gate, `keyboard` handler, help entries |
+| `crates/rustlab-cli/src/commands/repl.rs` | 1, 4 | `statement_ready`, continuation gate, history mode `0600` and the off switch, `keyboard` handler, help entries |
+| `crates/rustlab-config/src/lib.rs`, `docs/rustlabrc.example.toml` | 1 | `[repl] history` boolean |
 | `crates/rustlab-cli/src/commands/run.rs` | 3 | `InputEof` → exit 0 |
 | `crates/rustlab-script/src/eval/mod.rs` | 2, 3, 4 | `ans`, call intercept, runtime denylist, `run` cwd |
 | `crates/rustlab-script/src/eval/value.rs` | 3 | `Value::Stdin` |
@@ -413,3 +469,29 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 | `examples/language/chat_loop.rlab` | 5 | echo loop |
 
 `crates/rustlab-core` and `crates/rustlab-dsp` are not on this list.
+
+History mode and the off switch also touch `crates/rustlab-cli/src/commands/repl.rs` (save path) and `crates/rustlab-config` (`[repl] history`). `docs/rustlabrc.example.toml` documents the key. Those land in Phase 1.
+
+### Security tests (index)
+
+The cases live in the phase that builds the feature. This list is the checklist.
+
+| Rule | Phase | Test |
+|---|---|---|
+| Evaluate-mode allowlist; reject assignment, `run` / `eval` / `feval` / `source`, function defs, file/system/IO builtins | 3 | Script tests on the line queue; no file created |
+| `input(..., "s")` and `fgetl` return raw text and never execute it | 3 and 5 | Queue contains `save("k.npy", x)`; workspace unchanged; no file |
+| LLM / echo example uses string mode only | 5 | Source check plus the queue test above |
+| Notebook `render` and `watch` refuse stdin reads; reader not called | 3 | `PlotContext::Notebook` |
+| `parmap` refuses `input`, `fgetl`, `keyboard` | 3 and 4 | `require_pure_context` error |
+| `keyboard`, `dbcont`, `dbquit` error when stdin is not a TTY; handler not called | 4 | Forced non-TTY |
+| History file mode `0600`, including tightening an existing looser file | 1 | Temp `HOME` |
+| `RUSTLAB_NO_HISTORY=1` and `[repl] history = false` skip load and save | 1 | Temp `HOME` |
+| No IO builtin prints the environment | 3 | `RUSTLAB_TEST_SECRET` absent from captured output; no `getenv` builtin |
+
+---
+
+## 9. Future work / Non-goals
+
+Callbacks were considered and deliberately deferred. An `oninput(@fn)` hook, or a timer whose events are pumped with `waitfor`, would turn the REPL into an event loop shared with notebooks and `parmap`. v1 stays a blocking line read (`input`, `fgetl`) and a blocking pause (`keyboard`). That is enough for the chat loop. Do not add the callback or the pump in these phases.
+
+Also out of scope, as decided above: `fopen` and file handles (question 15), `dbstop`, a `rustyline` reader inside `input()` (question 9), notebook prompts in the browser, and any paid API call. The echo example does not read an API key. Wiring `rustlab_llm` to a paid endpoint waits for Michael's explicit approval.
