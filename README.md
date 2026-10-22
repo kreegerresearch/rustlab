@@ -406,7 +406,7 @@ bar(labels, [10, 20, 30])  # categorical bar chart
 
 ### Builtin Functions (highlights)
 
-rustlab ships with 349 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
+rustlab ships with 369 builtins. Here are the most commonly used; see [`docs/quickref.md`](docs/quickref.md) for the complete list and [`docs/functions.md`](docs/functions.md) for full signatures and examples.
 
 | Category | Key functions |
 |----------|--------------|
@@ -534,7 +534,7 @@ toolbox.
 
 The `--json` form prints a JSON array of
 `{name, toolbox, subcategory, brief, detail}` records, one per builtin
-(349 entries). `detail` holds the signature and a usage example. Useful
+(369 entries). `detail` holds the signature and a usage example. Useful
 for editor extensions, autocomplete plugins, and AI tooling that wants a
 single authoritative index.
 

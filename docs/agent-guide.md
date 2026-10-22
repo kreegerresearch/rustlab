@@ -10,7 +10,7 @@ This guide teaches an AI agent (or any new power user) how to **use** rustlab ef
 2. [`docs/quickref.md`](quickref.md) — the canonical capability index. If a function is not listed there, it is not implemented.
 3. [`docs/functions.md`](functions.md) — full signatures and per-function examples (consult on demand).
 4. [`docs/notebooks.md`](notebooks.md) — complete notebook authoring and rendering reference.
-5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 82 runnable scripts and 40 rendered notebooks to copy patterns from.
+5. [`docs/examples.md`](examples.md) + [`examples/`](../examples/) + [`gallery/`](../gallery/) — 84 runnable scripts and 40 rendered notebooks to copy patterns from.
 
 ---
 
@@ -41,14 +41,18 @@ rustlab run --profile=ops script.rlab  # also time operators and indexing ([+], 
 
 Facts an agent must know (all verified against the current binary):
 
-- **A failing script exits 1.** Lex errors, parse errors, and runtime errors halt the script and the process exits 1, with or without `--profile`. Without `--profile` the diagnostic is a stderr line `error: ...` (runtime: `error: line N: ...`). `--profile` reports the same failure through the process error and also exits 1. A successful script exits 0. Two signals are clean exits (code 0, no error line): `audio_read` hitting EOF, and an interrupt (Ctrl-C or `q` on a live figure). A missing file exits nonzero before the script runs. Every run also prints a `rustlab … — interpreting …` banner on stderr; that banner is not a failure.
+- **A failing script exits 1.** Lex errors, parse errors, and runtime errors halt the script and the process exits 1, with or without `--profile`. Without `--profile` the diagnostic is a stderr line `error: ...` (runtime: `error: line N: ...`). `--profile` reports the same failure through the process error and also exits 1. A successful script exits 0. Three signals are clean exits (code 0, no error line): `audio_read` hitting EOF, `input` hitting EOF, and an interrupt (Ctrl-C or `q` on a live figure). `fgetl` at EOF returns `-1` and the script keeps running. `dbquit` inside `keyboard` exits 1. A missing file exits nonzero before the script runs. Every run also prints a `rustlab … — interpreting …` banner on stderr; that banner is not a failure.
 - **Plots do not block in non-TTY runs.** The interactive TUI pager is skipped automatically when stdout is not a terminal, and `--plot none` suppresses it explicitly. `savefig()` still writes files in both cases. An agent piping output can safely run scripts containing `plot(...)`.
 - **Relative paths in `savefig`, `save`, and `load` resolve against the script's directory**, not the process working directory.
 - A bare expression or assignment without `;` echoes its value to stdout; a trailing `;` suppresses the echo.
 
 ### 2.2 REPL
 
-`rustlab` with no arguments starts the REPL. Inside it: `help` lists builtins by category, `help <name>` shows detail, `whos` lists variables, `run file.rlab` executes a script into the current scope, `clear` resets. The REPL is for humans; agents should prefer `rustlab run` on a temp file so output is reproducible.
+`rustlab` with no arguments starts the REPL. Inside it: `help` lists builtins by category, `help <name>` shows detail, `whos` lists variables, `run file.rlab` executes a script into the current scope, `clear` resets. An unclosed `while`, `if`, `for`, or `switch` continues at `.. ` until `end`. A printed top-level expression is also stored in `ans`. `run` with no path jail uses the script's directory as the working directory for that run and restores the previous directory afterwards.
+
+`input(prompt, "s")` and `fgetl(stdin)` read a line as text and do not execute it. `input(prompt)` evaluates one pure expression. End of stdin on `input` is a clean exit. Notebooks, `notebook watch`, and `parmap` refuse these reads. `keyboard` pauses at `K>> ` only when stdin is a terminal.
+
+History is `~/.rustlab_history`, mode 0600. `[repl] history = false` or `RUSTLAB_NO_HISTORY=1` skips load and save. The REPL is for humans; agents should prefer `rustlab run` on a temp file so output is reproducible.
 
 Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustlab/config.toml` (TOML, not a startup script). A missing file is fine. Agents running scripts should pass `--plot none` so an rc `[viewer] auto_connect` cannot open a viewer. See [`docs/rustlabrc.example.toml`](rustlabrc.example.toml) and `help rustlabrc`.
 
@@ -63,7 +67,7 @@ Optional user-global defaults live in `~/.rustlabrc` or `$XDG_CONFIG_HOME/rustla
 The authoritative, machine-readable source is the binary itself:
 
 ```sh
-rustlab docs                  # all 349 builtins grouped by toolbox
+rustlab docs                  # all 369 builtins grouped by toolbox
 rustlab docs eig              # full detail for one builtin (signature + example)
 rustlab docs dsp              # one toolbox
 rustlab docs --search welch   # substring match over names and briefs
@@ -72,7 +76,7 @@ rustlab docs --json           # complete JSON index — best single call for an 
 
 Toolbox names are `language`, `math`, `linalg`, `stats`, `sparse`, `dsp`, `spectral`, `controls`, `rf`, `pde`, `plot`, `audio`. There is no `Plotting` toolbox. A builtin name wins over a toolbox spelled the same way, so `rustlab docs plot` and `rustlab docs sparse` show those functions; `rustlab docs Plot` lists the plot toolbox.
 
-`rustlab docs --json` returns an array of 349 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
+`rustlab docs --json` returns an array of 369 `{name, toolbox, subcategory, brief, detail}` objects. The `detail` field contains the signature and a usage example. Parse this once and you know the entire callable surface.
 
 `rustlab --help` lists this binary's subcommands only. Notebooks, themes, and rendering are `rustlab-notebook --help` (detail for a render is `rustlab-notebook render --help`).
 

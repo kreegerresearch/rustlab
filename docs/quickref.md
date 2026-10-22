@@ -19,6 +19,8 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `pi`, `e` | Built-in constants |
 | `Inf`, `NaN` | IEEE infinity and Not-a-Number |
 | `true`, `false` | Boolean constants — usable in `if` and `while` conditions |
+| `stdin` | Handle passed to `fgetl`. `clear` restores it |
+| `ans` | Last printed top-level expression. An assignment, a trailing `;`, and a print inside a function leave it unchanged. `clear` removes it |
 | `v(1)`, `v(end)`, `v(2:4)`, `M(end, end)` | 1-based indexing; vector `end` = last element; matrix `M(end)` is the last element and `M(end, end)` is the corner (read and write); slice returns Vector |
 | `M(k)`, `M(I)` | 1-arg matrix indexing is column-major linear: `M(k)` returns the k-th element of `M(:)`, `M([k1,k2,...])` returns a vector of picks. Use `M(i, :)` for the i-th row and `M(:, j)` for the j-th column. Round-trips with `find(M)`. |
 | `s(3)`, `s(1:5)`, `s(:)` | String indexing — 1-based; returns string |
@@ -41,11 +43,12 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `1_000_000` | Underscore digit separators in numeric literals (ignored by parser) |
 | `format commas` | Enable thousands-separator commas in all numeric output |
 | `format default` | Restore normal numeric display |
-| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` / `code`, `[repl] history_limit`, `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. |
+| `~/.rustlabrc` | Optional user-global TOML settings (`$XDG_CONFIG_HOME/rustlab/config.toml` wins if present). Sections: `[display] format`, `[plot] theme` / `default_axis`, `[notebook] theme` / `code`, `[repl] history_limit` / `history` (bool; `false` or `RUSTLAB_NO_HISTORY=1` skips the history file), `[viewer] auto_connect` / `name`. Not a startup script. See `docs/rustlabrc.example.toml` and `help rustlabrc`. |
+| REPL `while` / `if` / `for` / `switch` | At `>> `, an unclosed block continues at `.. ` until `end`. `...` continues a line. Ctrl-C or Ctrl-D on a continuation abandons the buffer and stays in the REPL |
 | `;` | Suppress output on a statement |
 | `#` / `%` | Comment |
 | `...` | Line continuation — rest of line ignored, statement continues on next line |
-| `run file.rlab` | Execute a script file; merges variables and functions into current scope |
+| `run file.rlab` | Execute a script file; merges variables and functions into current scope. With no path jail, the working directory is the script directory for that run, then restored |
 | `error('msg')` | Halt execution with an error message |
 | `clear` | Remove all user variables and functions; keeps built-in constants |
 | `clf` | Clear current figure (reset subplots, series, labels) |
@@ -553,6 +556,11 @@ Mixed sparse+dense pairs auto-promote to dense.
 |---|---|
 | `print(x, ...)` | Print to stdout, space-separated |
 | `disp(x)` | Display a value (always appends newline) |
+| `input(prompt)` / `input(prompt, "s")` | Read one line. `"s"` returns the text and does not execute it. The other form evaluates one pure expression. End of stdin exits 0. Refused in a notebook, in `notebook watch`, and inside `parmap` |
+| `fgetl(stdin)` | One raw line, or the scalar `-1` at EOF. Never executed. Same notebook / `parmap` refusal as `input` |
+| `ischar(x)` | True for a string. `ischar` of `fgetl`'s `-1` is false |
+| `keyboard` | On a terminal, pause at `K>> `. `return` or `dbcont` resumes. `dbquit` aborts (exit 1). Errors when stdin is not a terminal |
+| `dbcont` / `dbquit` | Resume or abort a `keyboard` session. Error outside a session, and when stdin is not a terminal |
 | `fprintf(fmt, args...)` | Formatted print. Specifiers: `%d %i %u %o %x %X %f %e %E %g %G %c %s %%`. Flags: `- +` space `0 # ,` (`*` width, `.*` precision). Escapes: `\n \t \r \b \f \\`. One scalar or string per specifier. `Inf`/`-Inf`/`NaN`. |
 | `sprintf(fmt, args...)` | Same as `fprintf` but returns a string instead of printing |
 | `commas(x)` / `commas(x, prec)` | Format number with thousands separators; returns string |
@@ -683,7 +691,7 @@ Raw f32 LE stdin/stdout PCM. Use bridge programs (sox, arecord/aplay) to connect
 |---|---|
 | `audio_in(sr, frame)` | Create AudioIn descriptor (sample_rate, frame_size) |
 | `audio_out(sr, frame)` | Create AudioOut descriptor (sample_rate, frame_size) |
-| `audio_read(src)` | Read one frame from stdin; exits cleanly on EOF |
+| `audio_read(src)` | Read one frame from stdin; exits cleanly on EOF. Shares stdin with `input` / `fgetl` — use one reader |
 | `audio_write(dst, y)` | Write one frame (real parts) to stdout; flushes after each frame |
 
 ---

@@ -6,6 +6,21 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.14
+
+### Added
+- **`input`, `fgetl`, `keyboard`, and `ischar`.** `input(prompt, "s")` returns one line as a string and does not execute it. `input(prompt)` evaluates one pure expression (literals, variables, arithmetic, and pure builtins). `fgetl(stdin)` returns the line, or the scalar `-1` at end of input. `ischar` distinguishes those two. `keyboard` pauses at `K>> ` on a terminal; `return` or `dbcont` resumes, and `dbquit` aborts the script (exit 1). `exit` at `K>> ` stays in the session. A nested pause prompts `K2>> `.
+- **REPL continuation for `while`, `if`, `for`, and `switch`.** An unclosed block at `>> ` continues at `.. ` until `end`. Ctrl-C or Ctrl-D during the continuation abandons the buffer and stays in the REPL.
+- **`ans`.** A printed top-level expression is stored in `ans`.
+- **`stdin`.** The handle `fgetl` reads. `clear` restores it.
+- **History can be turned off.** `~/.rustlab_history` is mode 0600. `[repl] history = false` or `RUSTLAB_NO_HISTORY=1` skips the load and the save. The environment variable forces history off when the rc key is true. `input` and `fgetl` lines are not recorded. `keyboard` lines are.
+- **Echo chat example.** `examples/language/chat_loop.rlab` reads with `input(prompt, "s")` and prints the line back. An empty line or end of stdin ends it. It does not call the network.
+
+### Breaking / behavior changes
+- **A top-level expression now binds `ans`.** A script or REPL session that already used the name `ans` for its own variable will see that name overwritten by the next printed expression. An assignment, a trailing `;`, and a value printed inside a function do not write `ans`. `clear` removes it. Rename an existing `ans` if a later bare expression must not replace it.
+- **`run` follows the script directory when no path jail is set.** The REPL `run` command and the `run` statement change the process directory to the script's directory for that run, then restore the previous directory. Relative `load` and `save` in the script therefore resolve next to the script, matching `rustlab run`. Inside a notebook the path jail is set, the directory is left unchanged, and the jail still rejects a path that escapes the notebook root.
+- **`keyboard`, `dbcont`, and `dbquit` error when stdin is not a terminal.** A piped script cannot enter the debugger. Notebook render, `notebook watch`, and `parmap` refuse `input`, `fgetl`, and `keyboard` before any read.
+
 ## 0.3.13
 
 ### Breaking / behavior changes

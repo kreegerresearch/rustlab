@@ -267,6 +267,9 @@ pub enum Value {
     /// consumed by `solve(F, b)`. Reusing a factor across many RHS is
     /// the canonical fast path for parameter sweeps and animations.
     SparseFactor(SparseFactor),
+    /// The standard-input handle. `fgetl(stdin)` reads one line.
+    /// Not a file id — there is no `fopen`.
+    Stdin,
 }
 
 impl Value {
@@ -405,6 +408,7 @@ impl Value {
             Value::StringArray(_) => "string_array",
             Value::Table(_) => "table",
             Value::SparseFactor(_) => "sparse_factor",
+            Value::Stdin => "stdin",
         }
     }
 
@@ -3019,6 +3023,7 @@ impl fmt::Display for Value {
                 sf.nnz()
             ),
             Value::Table(t) => write!(f, "{t}"),
+            Value::Stdin => write!(f, "stdin"),
         }
     }
 }

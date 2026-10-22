@@ -44,6 +44,15 @@ pub enum ScriptError {
     /// Treated as a clean exit by the CLI (exit code 0, no error message).
     #[error("stdin closed")]
     AudioEof,
+    /// `input` reached end of stdin. The CLI treats this as a clean exit
+    /// (exit code 0, no error line). `fgetl` does not use this variant —
+    /// it returns the scalar `-1`.
+    #[error("stdin closed")]
+    InputEof,
+    /// `dbquit` at a `keyboard` prompt. Ends the script. `rustlab run`
+    /// exits 1. The REPL exits 1 as well.
+    #[error("keyboard: dbquit")]
+    DbQuit,
     /// User pressed Ctrl-C or 'q' while a live figure was active.
     /// Treated as a clean exit by the CLI (exit code 0, no error message).
     #[error("interrupted")]

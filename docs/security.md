@@ -279,6 +279,14 @@ remote root can reach the local viewer for the life of the session. The
 socket name is fresh per session and the remote script removes it when
 the command exits. Nothing listens on a network port.
 
+## H6 — Line input, history, and the debugger
+
+`input(prompt)` evaluates one pure expression: literals, variables, arithmetic, and pure builtins. It rejects assignments, function definitions, and file, system, or IO calls (`run`, `eval`, `source`, `save`, `load`, and the same class of name). Untrusted text — a pipe, a file, or a model reply — uses `input(prompt, "s")` or `fgetl(stdin)`. Those return the characters and never execute them. The echo example `examples/language/chat_loop.rlab` uses the string form.
+
+Notebook render, `notebook watch`, and `parmap` refuse `input`, `fgetl`, and `keyboard` before any read. `keyboard`, `dbcont`, and `dbquit` also error when stdin is not a terminal, so a piped script cannot enter the debugger.
+
+`~/.rustlab_history` is mode 0600, tightened on load and on save. `[repl] history = false` or `RUSTLAB_NO_HISTORY=1` skips both. The environment variable forces history off when the rc key is true. `input` and `fgetl` lines are not recorded. No line-input builtin prints environment variables. A script that needs a secret reads it itself and does not echo it.
+
 ## Reporting
 
 Please open a private security report or GitHub security advisory against

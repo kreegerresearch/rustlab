@@ -1,10 +1,10 @@
 # Plan: line input for the rustlab REPL
 
-**Status:** plan only. No code has landed. Do not start a phase until this plan is approved.
-**Current phase:** none (awaiting approval)
+**Status:** approved and implemented in 0.3.14 (2026-10-22). Michael approved every recommended answer to the open questions, the Security section, and no callbacks.
+**Current phase:** complete
 **Created:** 2026-10-21
 **Request:** Michael — a REPL for `.rlab` scripts, with a small, easy IO surface so the LLM example can run as an interactive chat. Look at MATLAB and other languages, then present a plan.
-**Workspace at plan time:** `0.3.13` (`a124c01`). Line numbers below are anchors; re-check before editing.
+**Workspace at plan time:** `0.3.13` (`a124c01`). Shipped as `0.3.14`. Line numbers below are anchors from the plan; the code has moved.
 
 This document is the design. Implementation follows Workflow Rules 2, 3, 5, 6, 7, and 12 in the same commits as the code: tests, `docs/functions.md`, `docs/quickref.md`, REPL `HelpEntry` + one toolbox row, `AGENTS.md`, and `CHANGELOG.md`. A behavior change bumps the workspace version if `0.3.13` has already shipped.
 
@@ -393,7 +393,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 ### Phase 1 — Continuation and `run` cwd
 
-**Status:** not started
+**Status:** complete
 
 - Add `statement_ready` and use it for every REPL line.
 - Jail-unset `run` saves, changes, and restores cwd (REPL command and `StmtKind::Run`).
@@ -403,7 +403,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 ### Phase 2 — `ans`
 
-**Status:** not started
+**Status:** complete
 
 - Bind `ans` as in §3.2.
 - Tests: bare expression sets `ans`; assignment does not; `;` does not; a later bare expression replaces it; inside a function the outer `ans` is unchanged.
@@ -411,7 +411,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 ### Phase 3 — `stdin`, `input`, `fgetl`, `ischar`
 
-**Status:** not started
+**Status:** complete
 
 - `Value::Stdin`, constant, Display, arithmetic error.
 - Call-arm intercept plus registry entries.
@@ -431,7 +431,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 ### Phase 4 — `keyboard`
 
-**Status:** not started
+**Status:** complete
 
 - Handler thread-local, std fallback, non-TTY error.
 - CLI handler sharing the REPL `Editor` and `statement_ready`.
@@ -441,7 +441,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 ### Phase 5 — Echo chat example
 
-**Status:** not started
+**Status:** complete
 
 - `examples/language/chat_loop.rlab` as in question 14.
 - Do not register it in `crates/rustlab-cli/tests/examples.rs` (that harness has no stdin). `make examples` covers the EOF-exit path once Phase 3's `InputEof` policy is in.

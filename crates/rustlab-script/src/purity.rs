@@ -39,7 +39,7 @@ use std::collections::BTreeSet;
 ///
 /// - RNG: `rand`, `randi`, `randn`, `randperm`
 /// - Wall clock: `clock`, `now`, `tic`, `toc`
-/// - User input: `input`, `keyboard`
+/// - User input: `input`, `fgetl`, `keyboard`, `dbcont`, `dbquit`
 /// - File I/O: `audio_play/read/write`, `fclose`/`fopen`/`fread`/`fwrite`,
 ///   `load`, `readmatrix`, `save`
 /// - TTY side effects: `disp`, `fprintf`, `print`, `printf`
@@ -53,8 +53,11 @@ pub const IMPURE_BUILTINS: &[&str] = &[
     "audio_write",
     "bar",
     "clock",
+    "dbcont",
+    "dbquit",
     "disp",
     "fclose",
+    "fgetl",
     "figure",
     "fopen",
     "fprintf",
@@ -817,6 +820,15 @@ mod tests {
         );
         let report = check_impurity(&body);
         assert!(report.is_clean(), "{:?}", report);
+    }
+
+    #[test]
+    fn fgetl_call_is_impure_and_ischar_is_not() {
+        let (_, body) = parse_one_fn("function y = f()\n  y = fgetl(stdin)\nend\n");
+        let report = check_impurity(&body);
+        assert_eq!(report.impure_calls, vec!["fgetl".to_string()]);
+        let (_, body) = parse_one_fn("function y = f(x)\n  y = ischar(x)\nend\n");
+        assert!(check_impurity(&body).is_clean());
     }
 
     #[test]

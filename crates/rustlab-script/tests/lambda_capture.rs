@@ -33,7 +33,7 @@ use std::time::Instant;
 
 use rustlab_script::{Evaluator, Value};
 
-const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
+const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false", "stdin"];
 
 fn eval(src: &str) -> Result<Evaluator, rustlab_script::ScriptError> {
     let mut ev = Evaluator::new();
@@ -444,11 +444,11 @@ fn lambda_made_inside_a_function_keeps_the_local_not_the_temp() {
     assert!((scalar(&ev, "y") - 8.0).abs() < 1e-12);
     let f = lambda(&ev, "f");
     assert_eq!(user_keys(f), BTreeSet::from(["a".to_string()]));
-    // A user function seeds i/j/pi/e/Inf/NaN from its caller and does
-    // not seed true/false. The lambda snapshots that environment, so
-    // those six are present and true/false are not — same as a full
-    // clone of the function workspace.
-    for c in ["i", "j", "pi", "e", "Inf", "NaN"] {
+    // A user function seeds i/j/pi/e/Inf/NaN/stdin from its caller and
+    // does not seed true/false. The lambda snapshots that environment,
+    // so those seven are present and true/false are not — same as a
+    // full clone of the function workspace.
+    for c in ["i", "j", "pi", "e", "Inf", "NaN", "stdin"] {
         assert!(capture_keys(f).contains(c), "{c} missing");
     }
     assert!(!capture_keys(f).contains("true"));

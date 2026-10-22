@@ -182,6 +182,10 @@ pub struct NotebookSettings {
 pub struct ReplSettings {
     /// rustyline history cap. Built-in default is 1000.
     pub history_limit: Option<usize>,
+    /// `[repl] history`. Missing key means history is on.
+    /// `false` skips loading and saving `~/.rustlab_history`.
+    /// `RUSTLAB_NO_HISTORY=1` forces this off even when the key is true.
+    pub history: Option<bool>,
 }
 
 /// Built-in REPL history cap used when `[repl] history_limit` is omitted.
@@ -231,6 +235,12 @@ impl UserSettings {
     /// Effective REPL history cap.
     pub fn history_limit(&self) -> usize {
         self.repl.history_limit.unwrap_or(DEFAULT_HISTORY_LIMIT)
+    }
+
+    /// `[repl] history`, default on. Does not read `RUSTLAB_NO_HISTORY`;
+    /// the REPL applies that override itself.
+    pub fn repl_history_enabled(&self) -> bool {
+        self.repl.history.unwrap_or(true)
     }
 
     /// Effective viewer auto-connect flag.
@@ -612,6 +622,9 @@ fn parse_repl_section(
                 }
                 settings.repl.history_limit = Some(n);
             }
+            "history" => {
+                settings.repl.history = Some(expect_bool(v, path, "repl.history")?);
+            }
             other => unknown.push(format!("repl.{other}")),
         }
     }
@@ -837,6 +850,32 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("display.format"));
         assert!(msg.contains("string"));
+    }
+
+    #[test]
+    fn repl_history_flag_parses_and_rejects_a_string() {
+        let off = parse_toml(
+            "[repl]\nhistory = false\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert_eq!(off.settings.repl.history, Some(false));
+        assert!(!off.settings.repl_history_enabled());
+        let on = parse_toml(
+            "[repl]\nhistory = true\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap();
+        assert!(on.settings.repl_history_enabled());
+        let err = parse_toml(
+            "[repl]\nhistory = \"no\"\n",
+            Path::new("rc"),
+            ConfigSource::Defaults,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("repl.history"));
     }
 
     #[test]
