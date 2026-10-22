@@ -78,4 +78,9 @@ theme = "dark"            # mocha | macchiato | frappe | latte (aliases: dark, l
 [repl]
 # rustyline history cap (most recent N lines written back to
 # ~/.rustlab_history on a clean exit). Built-in default is 1000.
+# The file is owner-only (mode 0600).
 history_limit = 1000
+# Prompts can contain secrets. false skips both the load and the save.
+# RUSTLAB_NO_HISTORY=1 forces history off even when this key is true.
+# input and fgetl lines are never recorded. keyboard lines are.
+# history = true

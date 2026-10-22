@@ -1,0 +1,12 @@
+# Echo chat loop. A model reply would be respond(model, line).
+# See dev/plans/repl_io.md. String mode: the line is never executed.
+# No network call.
+#
+# End the conversation with an empty line. End of stdin (a pipe
+# that closes, or /dev/null) ends the script cleanly.
+
+line = input("you: ", "s")
+while length(line) > 0
+  fprintf("echo: %s\n", line)
+  line = input("you: ", "s")
+end

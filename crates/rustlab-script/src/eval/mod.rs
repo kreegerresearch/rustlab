@@ -1,5 +1,6 @@
 pub mod builtins;
 pub(crate) mod elementwise;
+pub mod line_io;
 pub mod output;
 pub mod table;
 pub mod parmap;
@@ -156,6 +157,7 @@ impl Evaluator {
         // Boolean literals
         env.insert("true".to_string(), Value::Bool(true));
         env.insert("false".to_string(), Value::Bool(false));
+        env.insert("stdin".to_string(), Value::Stdin);
 
         Self {
             env,
@@ -268,9 +270,13 @@ impl Evaluator {
 
     /// Remove all user-defined variables and functions, keeping built-in constants (j, pi, e).
     pub fn clear_vars(&mut self) {
-        const BUILTIN_CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
-        self.env.retain(|k, _| BUILTIN_CONSTS.contains(&k.as_str()));
+        self.env
+            .retain(|k, _| line_io::BUILTIN_CONSTS.contains(&k.as_str()));
         self.user_fns.clear();
+        // `stdin` is a handle, not a number a script is likely to
+        // overwrite on purpose. Put the handle back so `fgetl(stdin)`
+        // still works after `clear` or after `stdin = 1`.
+        self.env.insert("stdin".to_string(), Value::Stdin);
     }
 
     /// Return names of all user-defined functions, sorted.
@@ -283,11 +289,10 @@ impl Evaluator {
     /// Return all user-defined variables, sorted by name.
     /// Excludes built-in constants (j, pi, e).
     pub fn vars(&self) -> Vec<(&str, &Value)> {
-        const BUILTIN_CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
         let mut entries: Vec<(&str, &Value)> = self
             .env
             .iter()
-            .filter(|(k, _)| !BUILTIN_CONSTS.contains(&k.as_str()))
+            .filter(|(k, _)| !line_io::BUILTIN_CONSTS.contains(&k.as_str()))
             .map(|(k, v)| (k.as_str(), v))
             .collect();
         entries.sort_by_key(|(k, _)| *k);
@@ -1258,14 +1263,7 @@ impl Evaluator {
                 }
             }
             StmtKind::Run { path } => {
-                let safe = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
-                let source = std::fs::read_to_string(&safe)
-                    .map_err(|e| ScriptError::runtime(format!("run: {}: {}", path, e)))?;
-                let tokens = crate::lexer::tokenize(&source)?;
-                let stmts = crate::parser::parse(tokens)?;
-                for s in &stmts {
-                    self.exec_stmt(s)?;
-                }
+                self.exec_run_path(path)?;
             }
             StmtKind::MultiAssign {
                 names,
@@ -1450,6 +1448,10 @@ impl Evaluator {
                 let val = self.eval_expr_stmt(expr)?;
                 if !suppress && !self.in_function && !matches!(val, Value::None) {
                     output::script_println(&val.format_display(self.number_format));
+                    // `ans` is an ordinary variable. Assignments and `;`
+                    // do not update it. A bare expression inside a
+                    // function stays silent and leaves the caller's ans.
+                    self.set_env("ans", val);
                 }
             }
             StmtKind::Cache(c) => {
@@ -1766,13 +1768,17 @@ impl Evaluator {
                 })
             }
             Expr::Str(s) => Ok(Value::Str(s.clone())),
+            Expr::Var(name) if name == "dbcont" || name == "dbquit" => self.debugger_word(name),
             Expr::Var(name) => match self.env.get(name) {
                 Some(v) => Ok(v.clone()),
                 // Bare `tic` / `toc` (no parens) are the canonical timing
-                // idiom, so fall through to the zero-arg builtin on an env
-                // miss — a user variable named tic/toc still shadows it.
+                // idiom, and bare `keyboard` is the debugger entry, so
+                // fall through to the zero-arg builtin on an env miss.
+                // A user variable of the same name still shadows it.
                 // (Same spirit as the bare `clear` / `clf` statements.)
-                None if name == "tic" || name == "toc" => self.call_builtin_tracked(name, vec![]),
+                None if name == "tic" || name == "toc" || name == "keyboard" => {
+                    self.call_builtin_tracked(name, vec![])
+                }
                 None => Err(ScriptError::undefined(name.clone())),
             },
             Expr::UnaryMinus(inner) => {
@@ -2838,12 +2844,13 @@ impl Evaluator {
             return self.env.clone();
         }
         let names = analysis.names;
-        // Same set `clear` preserves. User functions copy `i`, `j`,
-        // `pi`, `e`, `Inf`, and `NaN` from the caller, which is this
-        // snapshot, so a shadowed `pi` still reaches `addpi` called
-        // from the lambda. `true` / `false` ride along; they are the
-        // same kind of constant and cost nothing next to a matrix.
-        const CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
+        // Same set `clear` preserves, including `stdin`. User functions
+        // copy `i`, `j`, `pi`, `e`, `Inf`, `NaN`, and `stdin` from the
+        // caller, which is this snapshot, so a shadowed `pi` still
+        // reaches `addpi` called from the lambda. `true` / `false` ride
+        // along; they are the same kind of constant and cost nothing
+        // next to a matrix.
+        const CONSTS: &[&str] = line_io::BUILTIN_CONSTS;
         let mut captured = fast_hash::FxHashMap::with_capacity_and_hasher(names.len() + CONSTS.len(), Default::default());
         for name in names {
             if let Some(v) = self.env.get(&name) {
@@ -3030,7 +3037,7 @@ impl Evaluator {
         let saved_in_fn = self.in_function;
         self.in_function = true;
         // Seed with built-in constants
-        for name in &["i", "j", "pi", "e", "Inf", "NaN"] {
+        for name in &["i", "j", "pi", "e", "Inf", "NaN", "stdin"] {
             if let Some(v) = saved_env.get(*name) {
                 self.env.insert((*name).to_string(), v.clone());
             }
@@ -3144,6 +3151,13 @@ impl Evaluator {
         // streaming, live figures) hard-error with a clear message.
         // See `eval/parmap.rs` for the contract and the IMPURE_BUILTINS
         // list this guards against.
+        // Line input checks the notebook first, then the parallel-lambda
+        // denylist, then the terminal. Doing it inside the dispatcher
+        // keeps that order. A worker therefore reports `parmap: cannot …`
+        // rather than the "no interactive terminal" error.
+        if Self::is_line_io(name) {
+            return self.dispatch_line_io(name, vals);
+        }
         if IMPURE_BUILTINS.contains(&name) {
             parmap::require_pure_context(name)?;
         }
@@ -3462,14 +3476,13 @@ impl Evaluator {
     /// (it can name a lambda held in a variable), so for it the full
     /// environment is kept.
     pub(crate) fn clone_for_parallel_lambda(&self, func: &Value) -> Evaluator {
-        const BUILTIN_CONSTS: &[&str] = &["i", "j", "pi", "e", "Inf", "NaN", "true", "false"];
         let keep_env = matches!(func, Value::FuncHandle(name) if name == "feval");
         let env = if keep_env {
             self.env.clone()
         } else {
             self.env
                 .iter()
-                .filter(|(k, _)| BUILTIN_CONSTS.contains(&k.as_str()))
+                .filter(|(k, _)| line_io::BUILTIN_CONSTS.contains(&k.as_str()))
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect()
         };
@@ -4361,6 +4374,9 @@ const IMPURE_BUILTINS: &[&str] = &[
     "clf",
     "contour",
     "contourf",
+    "dbcont",
+    "dbquit",
+    "fgetl",
     "figure",
     "figure_close",
     "figure_draw",
@@ -4370,6 +4386,8 @@ const IMPURE_BUILTINS: &[&str] = &[
     "grid",
     "hold",
     "imagesc",
+    "input",
+    "keyboard",
     "legend",
     "loglog",
     "plot",

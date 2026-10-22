@@ -3315,6 +3315,54 @@ disp("Hello, world!")
 disp(A)
 ```
 
+### `input(prompt)` / `input(prompt, "s")`
+Read one line from standard input.
+
+`input(prompt, "s")` returns the line as a string. The characters are never parsed or executed. A blank Enter is `""`. This is the form for untrusted text (a pipe, a file, or a model reply).
+
+`input(prompt)` evaluates the line as one pure expression: literals, variables, arithmetic, and pure builtins such as `sin`. It rejects assignments, indexed writes, function definitions, `run` / `eval` / `source` / `feval`, file or system calls, and calls to user functions. A blank or whitespace-only line is returned as that string.
+
+End of stdin is a clean exit (code 0, no error line), the same policy as `audio_read` hitting EOF. The prompt is printed with no extra newline. The line is not stored in REPL history.
+
+`input` is refused in a notebook, in `notebook watch`, and inside `parmap`. It does not read the environment, and no line-input builtin prints environment variables.
+
+```
+name = input("you: ", "s")
+k = input("k = ")          % the user types  2*pi
+```
+
+### `fgetl(stdin)`
+Read one raw line from the `stdin` handle. The newline is stripped. The characters are never executed. At end of input the result is the scalar `-1` (not an error). `ischar(line)` is true for a line and false for that `-1`.
+
+`fgetl("stdin")` is a type error: pass the `stdin` handle. There is no `fopen`. The line is not stored in REPL history. Notebooks, `notebook watch`, and `parmap` refuse the read.
+
+```
+line = fgetl(stdin)
+while ischar(line)
+  disp(line)
+  line = fgetl(stdin)
+end
+```
+
+`audio_read` also consumes process stdin, as binary frames. A script uses either line input or `audio_read`, not both on the same stream.
+
+### `ischar(x)`
+True when `x` is a string. False for a number, including the `-1` that `fgetl` returns at end of input. A string array is not a string.
+
+```
+ischar("hi")    % true
+ischar(-1)      % false
+```
+
+### `keyboard` / `dbcont` / `dbquit`
+`keyboard` pauses on a terminal at `K>> ` and runs what you type in the current workspace. `return` or `dbcont` resumes the script. `dbquit` aborts it (`rustlab run` and the REPL both exit 1). `exit` and `quit` at `K>> ` stay in the session. A nested `keyboard` prompts `K2>> `.
+
+When stdin is not a terminal, `keyboard`, `dbcont`, and `dbquit` error immediately (`keyboard: no interactive terminal`) and do not enter the session. The same refusal applies in a notebook, in `notebook watch`, and inside `parmap`. Lines typed at `K>> ` are stored in REPL history.
+
+```
+keyboard          % type commands, then:  return
+```
+
 ### `fprintf(fmt, args...)`
 Formatted print. One scalar or string per specifier — a vector or matrix is an error (values are not recycled across elements). Extra arguments are ignored. A missing argument, a trailing `%`, or an unknown specifier is an error.
 
@@ -4129,6 +4177,7 @@ frame = audio_read(src)   # returns a complex Vector of length FRAME
 
 - Returns a complex `Vector` (imaginary parts are 0.0).
 - When stdin closes cleanly mid-frame (source finished), raises `AudioEof` which `rustlab run` maps to exit code 0, no error message. This is the normal "pipeline finished" signal.
+- `audio_read` shares process stdin with `input` and `fgetl`. A script uses one of those readers, not both, on the same stream.
 
 ### `audio_write(dst, frame)`
 Write one frame of complex samples to stdout as f32 LE. Flushes after every frame.
@@ -4397,10 +4446,12 @@ three checkpoints:
   `toc`), plotting (`plot`, `figure`, `hold`, `subplot`, `title`,
   `xlabel`, `ylabel`, `legend`, `bar`, `scatter`, `stem`), file I/O
   (`load`, `save`, `audio_read`, `audio_write`), TTY output (`disp`,
-  `fprintf`, `sprintf`). The denylist also reserves names not
+  `fprintf`, `sprintf`), and line input (`input`, `fgetl`, `keyboard`,
+  `dbcont`, `dbquit`). The denylist also reserves names not
   currently shipped as builtins — `now`, `clock`, `fopen`, `fclose`,
-  `fread`, `fwrite`, `input`, `keyboard`, `printf`, `randperm`,
+  `fread`, `fwrite`, `printf`, `randperm`,
   `audio_play` — so that if/when those land they're already excluded.
+  `ischar` is pure.
   Same in-file / explicit / inline policy as for free vars.
 
 NaN arguments bypass the cache on a per-call basis (a NaN-bearing

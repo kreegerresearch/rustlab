@@ -201,6 +201,14 @@ impl BuiltinRegistry {
         r.register("tail", builtin_tail);
         // I/O
         r.register("print", builtin_print);
+        r.register("ischar", builtin_ischar);
+        // The evaluator intercepts these before the stub runs. The stub
+        // exists so the name is a real builtin (help, purity, feval).
+        r.register("input", builtin_line_io_unreachable);
+        r.register("fgetl", builtin_line_io_unreachable);
+        r.register("keyboard", builtin_line_io_unreachable);
+        r.register("dbcont", builtin_line_io_unreachable);
+        r.register("dbquit", builtin_line_io_unreachable);
         r.register("plot", builtin_plot);
         r.register("stem", builtin_stem);
         r.register("plotdb", builtin_plotdb);
@@ -4818,6 +4826,17 @@ fn builtin_snr(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 // ─── I/O builtins ──────────────────────────────────────────────────────────
+
+fn builtin_ischar(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("ischar", &args, 1)?;
+    Ok(Value::Bool(matches!(args[0], Value::Str(_))))
+}
+
+fn builtin_line_io_unreachable(_args: Vec<Value>) -> Result<Value, ScriptError> {
+    Err(ScriptError::runtime(
+        "internal dispatch missed the evaluator".to_string(),
+    ))
+}
 
 fn builtin_print(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("print", &args, 0, 16)?;

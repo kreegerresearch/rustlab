@@ -4,9 +4,11 @@ use rustlab_script::{lexer, parser, Evaluator};
 use rustyline::completion::{Completer, FilenameCompleter, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::HistoryHinter;
+use rustyline::history::DefaultHistory;
 use rustyline::history::{History, SearchDirection};
 use rustyline::{error::ReadlineError, Helper, Hinter, Validator};
 use rustyline::{CompletionType, Config, Context, Editor};
+use std::cell::RefCell;
 
 use crate::color;
 
@@ -375,6 +377,20 @@ pub const HELP: &[HelpEntry] = &[
     // Output
     HelpEntry { name: "disp", brief: "Display a value (always prints newline)",
         detail: "disp(x)  — prints x followed by a newline\n  Equivalent to print(x) but guaranteed to end with \\n.\n  Integers print with their class and every digit (not rounded\n  through double). uint64 max is 18446744073709551615  (uint64)." },
+    HelpEntry { name: "input", brief: "Read one line from stdin",
+        detail: "input(prompt)        — one pure expression (literals, variables, math)\n  input(prompt, \"s\")  — the line as a string; never executed\n  input()             — same, with an empty prompt\n\n  A blank line is \"\". End of stdin is a clean exit (exit 0).\n  Assignments, function definitions, and file or system calls are\n  rejected in expression mode. Untrusted text (a pipe, a file, a\n  model reply) belongs in the \"s\" form or in fgetl(stdin).\n\n  Not available in a notebook, in notebook watch, or inside parmap.\n  The line is not added to REPL history.\n\nExample:\n  name = input(\"name: \", \"s\")\n  k = input(\"k = \")     % user types  2*pi" },
+    HelpEntry { name: "fgetl", brief: "Read one line from stdin, or -1 at EOF",
+        detail: "line = fgetl(stdin)\n\n  Returns the line without the newline, or the scalar -1 at end of\n  stdin. The characters are never executed. fgetl(\"stdin\") is a type\n  error — pass the stdin handle. There is no fopen.\n\n  Not available in a notebook, in notebook watch, or inside parmap.\n  The line is not added to REPL history.\n\nExample:\n  line = fgetl(stdin)\n  while ischar(line)\n    disp(line)\n    line = fgetl(stdin)\n  end" },
+    HelpEntry { name: "keyboard", brief: "Pause in a nested prompt on a terminal",
+        detail: "keyboard\n\n  On a terminal, stops at K>> and runs what you type in the current\n  workspace. return or dbcont resumes. dbquit aborts the script\n  (rustlab run exits 1; the REPL exits 1). exit and quit at K>> stay\n  in the session — type return. A nested keyboard prompt is K2>>.\n\n  When stdin is not a terminal, keyboard, dbcont, and dbquit error\n  immediately, so a pipe cannot enter the debugger. The same error\n  is raised in a notebook and inside parmap.\n\n  Lines typed at K>> are stored in REPL history. input and fgetl\n  lines are not." },
+    HelpEntry { name: "dbcont", brief: "Resume from a keyboard prompt",
+        detail: "dbcont\n\n  Typed alone at K>> , resumes the paused script (same as return).\n  As a call, or when no keyboard session is active, it is an error.\n  Errors immediately when stdin is not a terminal." },
+    HelpEntry { name: "dbquit", brief: "Abort a keyboard session",
+        detail: "dbquit\n\n  Typed alone at K>> , ends the script. rustlab run exits 1 and\n  the REPL exits 1. Errors immediately when stdin is not a terminal." },
+    HelpEntry { name: "ischar", brief: "True when the value is a string",
+        detail: "ischar(x)  — true for a string, false otherwise\n  ischar(\"hi\")  → true\n  ischar(-1)    → false\n\n  fgetl returns a string for a line and the scalar -1 at end of\n  stdin, so ischar(line) is the loop test." },
+    HelpEntry { name: "stdin", brief: "Standard-input handle for fgetl",
+        detail: "stdin\n\n  The handle fgetl reads. clear restores it. It is not a file id\n  and not a numeric constant. fgetl(stdin) reads one line." },
     HelpEntry { name: "fprintf", brief: "Formatted print (C-style)",
         detail: "fprintf(fmt, arg1, arg2, ...)\n  Specifiers: %d %i %u %o %x %X %f %e %E %g %G %c %s %%\n  Flags:      - + <space> 0 # , (comma inserts thousands separators)\n  * width and .* precision consume the next argument.\n  Precision:  %s max chars, %d min digits, %g significant digits.\n  Escapes:    \\n \\t \\r \\b \\f \\\\\n  Non-finite: Inf, -Inf, NaN.\n  One scalar or string per specifier (no array recycling).\n  Comma flag: fprintf(\"%,d\\n\", 1234567)  →  1,234,567\n              fprintf(\"%,.2f\\n\", 1234567.89)  →  1,234,567.89\n  Example: fprintf(\"x = %.3f\\n\", 3.14159)" },
     HelpEntry { name: "sprintf", brief: "Formatted string (C-style, returns string)",
@@ -543,7 +559,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "function y = foo(x)\n  y = x * 2\nend\n\nfunction bar(a, b)\n  print(a + b)\nend\n\nSyntax:\n  function retvar = name(param1, param2, ...)\n    body\n  end\n  function name(param, ...)   % no return value\n    body\n  end\n\nuse 'return' to exit early." },
     // Filesystem / script loading
     HelpEntry { name: "run", brief: "Run a .rlab script file in the current session",
-        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .rlab scripts (for sourcing shared functions).\n  Example: run calculate_helpers.rlab" },
+        detail: "run <file>  — execute a script file; its variables and functions merge into the current scope\n  Works in both the REPL and inside .rlab scripts (for sourcing shared functions).\n  Outside a notebook path jail, the working directory is the script's\n  folder for the duration of the call, then restored. Inside a jail,\n  run checks the path and does not change directory.\n  Example: run calculate_helpers.rlab" },
     HelpEntry { name: "ls",  brief: "List directory contents",
         detail: "ls          — list current directory\nls <path>   — list the given directory" },
     HelpEntry { name: "cd",  brief: "Change working directory",
@@ -551,9 +567,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "pwd", brief: "Print working directory",
         detail: "pwd  — show the current working directory" },
     HelpEntry { name: "history", brief: "Show previously entered commands",
-        detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines (override with `[repl] history_limit` in ~/.rustlabrc).\n  After `history clear` that saved file is emptied too, on the\n  next clean exit.\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
+        detail: "history        — list every remembered command, oldest first\nhistory <n>    — list only the last n commands\nhistory clear  — forget the whole history\n\n  Lines are numbered 1..N over what is currently remembered. The list\n  spans earlier sessions: the REPL loads ~/.rustlab_history on start\n  and writes it back on a clean exit, keeping the most recent 1000\n  lines (override with `[repl] history_limit` in ~/.rustlabrc).\n  The file is owner-only (mode 0600). Prompts can contain secrets, so\n  `[repl] history = false` or RUSTLAB_NO_HISTORY=1 skips both the load\n  and the save; `history` then lists only this process. The environment\n  variable forces history off even when the rc key is true.\n  input and fgetl lines are not recorded. keyboard lines are.\n  After `history clear` that saved file is emptied too, on the\n  next clean exit (when history is on).\n\n  To recall a line rather than just read it, use the up/down arrows or\n  Ctrl+R (reverse search) — both draw on the same history.\n\nExample:\n  history 5      % the last five lines" },
     HelpEntry { name: "rustlabrc", brief: "User-global settings file (~/.rustlabrc or XDG)",
-        detail: "Optional TOML config — not a startup script. First existing file wins:\n\n  1. $XDG_CONFIG_HOME/rustlab/config.toml   (XDG home defaults to ~/.config)\n  2. ~/.rustlabrc\n  3. built-in defaults (missing file is OK)\n\n  Do not confuse this with ~/.rustlab_history (REPL command history) or\n  the project cache at .rustlab/cache.db. v1 is user-global only; there\n  is no project .rustlab/config.toml, and the file is never executed.\n\n  Precedence (high → low): CLI flags > in-script / REPL commands > rc >\n  built-in defaults. Unknown keys warn once and are ignored; invalid\n  values abort with the file path and key, except [notebook] code,\n  which warns once and falls back to open.\n\nExample ~/.rustlabrc:\n  [display]\n  format = \"commas\"          % short | long | hex | commas\n\n  [plot]\n  theme = \"dark\"             % mocha | macchiato | frappe | latte (dark, light)\n  default_axis = \"ij\"        % ij | xy\n\n  [notebook]\n  theme = \"dark\"             % rustlab-notebook -t default\n  code = \"open\"              % open | collapsed (source disclosure)\n\n  [repl]\n  history_limit = 1000\n\n  [viewer]\n  auto_connect = false       % REPL / rustlab run without --plot\n  name = \"work\"              % rustlab-viewer --name\n\n  Full example: docs/rustlabrc.example.toml" },
+        detail: "Optional TOML config — not a startup script. First existing file wins:\n\n  1. $XDG_CONFIG_HOME/rustlab/config.toml   (XDG home defaults to ~/.config)\n  2. ~/.rustlabrc\n  3. built-in defaults (missing file is OK)\n\n  Do not confuse this with ~/.rustlab_history (REPL command history) or\n  the project cache at .rustlab/cache.db. v1 is user-global only; there\n  is no project .rustlab/config.toml, and the file is never executed.\n\n  Precedence (high → low): CLI flags > in-script / REPL commands > rc >\n  built-in defaults. Unknown keys warn once and are ignored; invalid\n  values abort with the file path and key, except [notebook] code,\n  which warns once and falls back to open.\n\nExample ~/.rustlabrc:\n  [display]\n  format = \"commas\"          % short | long | hex | commas\n\n  [plot]\n  theme = \"dark\"             % mocha | macchiato | frappe | latte (dark, light)\n  default_axis = \"ij\"        % ij | xy\n\n  [notebook]\n  theme = \"dark\"             % rustlab-notebook -t default\n  code = \"open\"              % open | collapsed (source disclosure)\n\n  [repl]\n  history_limit = 1000\n  history = true             % false skips ~/.rustlab_history\n\n  [viewer]\n  auto_connect = false       % REPL / rustlab run without --plot\n  name = \"work\"              % rustlab-viewer --name\n\n  Full example: docs/rustlabrc.example.toml" },
     // Math (additional)
     HelpEntry { name: "atan2", brief: "Two-argument inverse tangent  atan2(y, x)",
         detail: "atan2(y, x)  — angle in radians in the range (-π, π]\n  Element-wise; accepts scalars, vectors, or matrices.\n  atan2(1, 1)   →  π/4\n  atan2(0, -1)  →  π" },
@@ -830,6 +846,7 @@ fn whos_type(v: &rustlab_script::Value) -> &'static str {
         Value::StringArray(_) => "string_array",
         Value::Table(_) => "table",
         Value::SparseFactor(_) => "sparse_factor",
+        Value::Stdin => "stdin",
     }
 }
 
@@ -974,6 +991,7 @@ fn whos_preview(v: &rustlab_script::Value) -> String {
         }
         Value::SparseFactor(_) => format!("{}", v),
         Value::Table(t) => format!("{}×{} table", t.height(), t.width()),
+        Value::Stdin => "stdin".to_string(),
     }
 }
 
@@ -1178,7 +1196,12 @@ pub(crate) fn run_script_source(src: &str, ev: &mut Evaluator) -> bool {
                     // them as exit-0; mirror that here so a finished sox /
                     // chirp pipe doesn't surface as "error: stdin closed".
                     return match e {
-                        ScriptError::AudioEof | ScriptError::Interrupted => true,
+                        // InputEof is the line-input twin of AudioEof: a
+                        // script that reads with `input` and hits end of
+                        // stdin finished cleanly (exit 0, no error line).
+                        ScriptError::AudioEof
+                        | ScriptError::Interrupted
+                        | ScriptError::InputEof => true,
                         _ => {
                             eprintln!("error: {e}");
                             false
@@ -1236,7 +1259,8 @@ pub static CATEGORIES: &[CategoryRow] = &[
     CategoryRow { toolbox: "language", subcategory: "Indexing",
         names: &["range", "index", "index_assign", "chained_index", "compound_assign", "str_index"] },
     CategoryRow { toolbox: "language", subcategory: "Output",
-        names: &["disp", "fprintf", "sprintf", "print", "commas", "format", "underscores"] },
+        names: &["disp", "fprintf", "sprintf", "print", "commas", "format", "underscores",
+                 "input", "fgetl", "keyboard", "dbcont", "dbquit", "ischar", "stdin"] },
     CategoryRow { toolbox: "language", subcategory: "Data I/O",
         names: &["save", "load"] },
     CategoryRow { toolbox: "language", subcategory: "Timing",
@@ -1908,6 +1932,109 @@ pub struct ReplArgs {
     pub viewer_name: Option<String>,
 }
 
+
+type ReplEditor = Editor<ReplHelper, DefaultHistory>;
+
+thread_local! {
+    static REPL_EDITOR: RefCell<Option<ReplEditor>> = RefCell::new(None);
+}
+
+fn with_repl_editor<R>(f: impl FnOnce(&mut ReplEditor) -> R) -> R {
+    REPL_EDITOR.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        f(guard.as_mut().expect("REPL editor is installed"))
+    })
+}
+
+/// `true` when history should be loaded and saved.
+///
+/// The rc key defaults to on. `RUSTLAB_NO_HISTORY` forces off when it is
+/// `1`, `true`, `yes`, or `on` (any case). The environment wins, so a
+/// secret-bearing shell can disable the file even if the rc key is true.
+pub(crate) fn history_enabled_from(rc: Option<bool>, env: Option<&str>) -> bool {
+    if env_forces_history_off(env) {
+        false
+    } else {
+        rc.unwrap_or(true)
+    }
+}
+
+fn env_forces_history_off(env: Option<&str>) -> bool {
+    match env.map(str::trim) {
+        Some("1") => true,
+        Some(s)
+            if s.eq_ignore_ascii_case("true")
+                || s.eq_ignore_ascii_case("yes")
+                || s.eq_ignore_ascii_case("on") =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Owner-only mode on an existing history file. A disabled history does
+/// not create, rewrite, or chmod the file.
+pub(crate) fn restrict_history_permissions(
+    path: &std::path::Path,
+    enabled: bool,
+) -> std::io::Result<()> {
+    if !enabled || !path.exists() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+fn install_keyboard_hooks() {
+    rustlab_script::set_keyboard_line_reader(|prompt| {
+        with_repl_editor(|rl| match rl.readline(prompt) {
+            Ok(line) => {
+                if !line.trim().is_empty() {
+                    rl.add_history_entry(line.trim()).ok();
+                }
+                Ok(Some(line))
+            }
+            Err(ReadlineError::Eof) => Ok(None),
+            Err(ReadlineError::Interrupted) => Ok(Some(String::new())),
+            Err(e) => Err(rustlab_script::ScriptError::runtime(format!(
+                "readline: {e}"
+            ))),
+        })
+    });
+    rustlab_script::set_keyboard_handler(|ev| ev.keyboard_session());
+}
+
+fn clear_keyboard_hooks() {
+    rustlab_script::clear_keyboard_handler();
+    rustlab_script::clear_keyboard_line_reader();
+}
+
+/// Saves history (when enabled) and drops the editor, including on early return.
+struct HistoryFlush {
+    path: std::path::PathBuf,
+    enabled: bool,
+}
+
+impl Drop for HistoryFlush {
+    fn drop(&mut self) {
+        clear_keyboard_hooks();
+        let Some(mut rl) = REPL_EDITOR.with(|slot| slot.borrow_mut().take()) else {
+            return;
+        };
+        if self.enabled {
+            let _ = rl.save_history(&self.path);
+            let _ = restrict_history_permissions(&self.path, true);
+        }
+    }
+}
+
 pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Result<()> {
     println!(
         "rustlab {} — type {} or {} for help, {} or Ctrl+D to quit",
@@ -1939,13 +2066,27 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
     let hist_path = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".rustlab_history"))
         .unwrap_or_else(|| std::path::PathBuf::from(".rustlab_history"));
-    let _ = rl.load_history(&hist_path);
+    let record_history = history_enabled_from(
+        settings.repl.history,
+        std::env::var("RUSTLAB_NO_HISTORY").ok().as_deref(),
+    );
+    if record_history {
+        // Tighten a file left behind by an older build before reading it.
+        let _ = restrict_history_permissions(&hist_path, true);
+        let _ = rl.load_history(&hist_path);
+    }
+    REPL_EDITOR.with(|slot| *slot.borrow_mut() = Some(rl));
+    install_keyboard_hooks();
+    let _flush = HistoryFlush {
+        path: hist_path,
+        enabled: record_history,
+    };
 
     let prompt = ">> ";
     let cont_prompt = ".. ";
 
     loop {
-        match rl.readline(&prompt) {
+        match with_repl_editor(|rl| rl.readline(prompt)) {
             Ok(line) => {
                 let trimmed = line.trim();
 
@@ -1953,7 +2094,9 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
                     continue;
                 }
 
-                rl.add_history_entry(trimmed).ok();
+                with_repl_editor(|rl| {
+                    rl.add_history_entry(trimmed).ok();
+                });
 
                 if trimmed == "exit" || trimmed == "quit" {
                     break;
@@ -1981,24 +2124,27 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
                 // clear
                 if trimmed == "clear" {
                     ev.clear_vars();
-                    if let Some(h) = rl.helper_mut() {
-                        h.sync(&ev);
-                    }
+                    with_repl_editor(|rl| {
+                        if let Some(h) = rl.helper_mut() {
+                            h.sync(&ev);
+                        }
+                    });
                     continue;
                 }
 
                 // run <file>
+                // Outside a path jail the evaluator moves to the script
+                // directory for the call and restores the previous one.
                 if let Some(path) = trimmed.strip_prefix("run ") {
                     let path = path.trim();
-                    match std::fs::read_to_string(path) {
-                        Err(e) => eprintln!("run: {path}: {e}"),
-                        Ok(src) => {
-                            run_script_source(&src, &mut ev);
+                    if let Err(e) = ev.exec_run_path(path) {
+                        report_repl_stop(e);
+                    }
+                    with_repl_editor(|rl| {
+                        if let Some(h) = rl.helper_mut() {
+                            h.sync(&ev);
                         }
-                    }
-                    if let Some(h) = rl.helper_mut() {
-                        h.sync(&ev);
-                    }
+                    });
                     continue;
                 }
 
@@ -2027,13 +2173,13 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
                 // history [n | clear]
                 if trimmed == "history" || trimmed.starts_with("history ") {
                     let arg = trimmed.strip_prefix("history").unwrap_or("");
-                    match parse_history_arg(arg) {
+                    with_repl_editor(|rl| match parse_history_arg(arg) {
                         HistoryArg::All => cmd_history(rl.history(), None),
                         HistoryArg::Last(n) => cmd_history(rl.history(), Some(n)),
                         HistoryArg::Clear => {
                             // Clears the in-memory list; the emptied list is
                             // what gets written back to ~/.rustlab_history on
-                            // exit, so the saved file follows.
+                            // exit when history is enabled.
                             if let Err(e) = rl.clear_history() {
                                 eprintln!("history: clear: {e}");
                             } else {
@@ -2043,80 +2189,65 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
                         HistoryArg::Bad(a) => eprintln!(
                             "history: {a}: expected a positive count or 'clear'"
                         ),
-                    }
+                    });
                     continue;
                 }
 
-                // Multi-line input for function definitions. We enter
-                // this branch when the first non-empty line starts with
-                // `function`. Depth tracks open block-introducing keywords
-                // (`function`, `if`, `for`, `while`, `switch`) minus
-                // matching `end`s, so a `for ... end` inside a function
-                // body doesn't trick us into early exit at the inner
-                // `end` — every block opener bumps depth and any `end`
-                // decrements it.
-                //
-                // We also handle bracketed paste, where the terminal
-                // delivers the whole multi-line block as a single
-                // `readline` result. In that case we process each of
-                // its lines through the depth tracker before deciding
-                // whether to keep prompting for continuation.
-                let source = if trimmed.starts_with("function ") || trimmed == "function" {
-                    let mut buf = String::new();
-                    let mut depth: i32 = 0;
-                    let process = |line: &str, buf: &mut String, depth: &mut i32| {
-                        let ct = line.trim();
-                        if line_opens_block(ct) {
-                            *depth += 1;
-                        }
-                        buf.push_str(line);
-                        buf.push('\n');
-                        if ct == "end" || ct == "end;" {
-                            *depth -= 1;
-                        }
-                    };
-                    // Feed every line of the initial input (the prompt
-                    // line OR a single-shot pasted block) through the
-                    // tracker. Most of the time this is just one line —
-                    // the user typed `function y = ...` and hit Enter.
-                    for ln in line.lines() {
-                        process(ln, &mut buf, &mut depth);
-                    }
-                    while depth > 0 {
-                        match rl.readline(&cont_prompt) {
-                            Ok(cont) => {
-                                rl.add_history_entry(cont.trim()).ok();
-                                // A continuation read can itself be a
-                                // multi-line bracketed paste; iterate.
-                                for ln in cont.lines() {
-                                    process(ln, &mut buf, &mut depth);
-                                    if depth <= 0 {
-                                        break;
-                                    }
-                                }
+                // Top-level while / if / for / switch / function, an open
+                // bracket, an unterminated string, or a trailing `...`
+                // keep the prompt at `.. ` until `statement_ready`. A
+                // one-line `if cond, body; end` is ready immediately.
+                // Bracketed paste arrives as one readline result and is
+                // judged as a whole. Ctrl-C abandons the buffer.
+                let mut source = line;
+                if !source.ends_with('\n') {
+                    source.push('\n');
+                }
+                let mut abandoned = false;
+                while !rustlab_script::statement_ready(&source) {
+                    match with_repl_editor(|rl| rl.readline(cont_prompt)) {
+                        Ok(cont) => {
+                            if !cont.trim().is_empty() {
+                                with_repl_editor(|rl| {
+                                    rl.add_history_entry(cont.trim()).ok();
+                                });
                             }
-                            Err(ReadlineError::Interrupted) => {
-                                println!("(interrupted)");
-                                break;
-                            }
-                            Err(_) => break,
+                            source.push_str(&cont);
+                            source.push('\n');
+                        }
+                        Err(ReadlineError::Interrupted) => {
+                            println!("(interrupted)");
+                            abandoned = true;
+                            break;
+                        }
+                        Err(ReadlineError::Eof) => {
+                            println!("(eof)");
+                            abandoned = true;
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("readline error: {e}");
+                            abandoned = true;
+                            break;
                         }
                     }
-                    buf
-                } else {
-                    format!("{}\n", trimmed)
-                };
+                }
+                if abandoned {
+                    continue;
+                }
 
                 match lexer::tokenize(&source).and_then(|tokens| parser::parse(tokens)) {
                     Ok(stmts) => {
                         for stmt in &stmts {
                             if let Err(e) = ev.exec_stmt(stmt) {
-                                eprintln!("{} {}", color::bold_red("error:"), e);
+                                report_repl_stop(e);
                             }
                         }
-                        if let Some(h) = rl.helper_mut() {
-                            h.sync(&ev);
-                        }
+                        with_repl_editor(|rl| {
+                            if let Some(h) = rl.helper_mut() {
+                                h.sync(&ev);
+                            }
+                        });
                     }
                     Err(e) => eprintln!("{} {}", color::bold_red("error:"), e),
                 }
@@ -2141,9 +2272,22 @@ pub fn execute(args: ReplArgs, settings: &rustlab_config::UserSettings) -> Resul
         }
     }
 
-    let _ = rl.save_history(&hist_path);
     println!("{}", color::dim("bye"));
     Ok(())
+}
+
+/// `input` at EOF stays at `>> ` and prints `(eof)`. `dbquit` leaves
+/// the process with status 1. Other errors are printed and the REPL stays.
+fn report_repl_stop(e: rustlab_script::ScriptError) {
+    match e {
+        rustlab_script::ScriptError::InputEof => println!("(eof)"),
+        rustlab_script::ScriptError::DbQuit => {
+            eprintln!("{} keyboard: dbquit", color::bold_red("error:"));
+            std::process::exit(1);
+        }
+        rustlab_script::ScriptError::AudioEof | rustlab_script::ScriptError::Interrupted => {}
+        other => eprintln!("{} {}", color::bold_red("error:"), other),
+    }
 }
 
 /// Which viewer to connect to at REPL startup, if any: `--viewer` /
@@ -2213,5 +2357,79 @@ mod viewer_startup_tests {
             viewer_startup_choice(&named, &rc(true, Some("work"))),
             Some(Some("lab"))
         );
+    }
+}
+
+#[cfg(test)]
+mod line_io_tests {
+    use super::*;
+    use rustlab_script::{classify_keyboard_line, KeyboardLine};
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn keyboard_return_is_resume_and_parses_as_return() {
+        assert_eq!(classify_keyboard_line("return"), KeyboardLine::Resume);
+        let stmts = parser::parse(lexer::tokenize("return\n").unwrap()).unwrap();
+        assert!(matches!(
+            stmts[0].kind,
+            rustlab_script::ast::StmtKind::Return
+        ));
+    }
+
+    #[test]
+    fn input_eof_is_a_clean_script_exit() {
+        let _io = rustlab_script::IoGuard::queue(vec![None]);
+        let mut ev = Evaluator::new();
+        assert!(run_script_source("x = input(\"p\", \"s\")\n", &mut ev));
+        assert!(ev.get("x").is_none());
+    }
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn history_file_is_owner_only_when_enabled_and_untouched_when_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hist");
+        assert!(restrict_history_permissions(&path, true).is_ok());
+        assert!(!path.exists());
+
+        std::fs::write(&path, "old\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&path, perms).unwrap();
+        restrict_history_permissions(&path, false).unwrap();
+        assert_eq!(mode(&path), 0o644);
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "old\n");
+
+        restrict_history_permissions(&path, true).unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        let created = dir.path().join("new");
+        {
+            let mut f = std::fs::File::create(&created).unwrap();
+            writeln!(f, "line").unwrap();
+        }
+        let mut perms = std::fs::metadata(&created).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&created, perms).unwrap();
+        restrict_history_permissions(&created, true).unwrap();
+        assert_eq!(mode(&created), 0o600);
+    }
+
+    #[test]
+    fn history_switch_lets_the_environment_force_off() {
+        assert!(history_enabled_from(None, None));
+        assert!(history_enabled_from(Some(true), None));
+        assert!(!history_enabled_from(Some(false), None));
+        assert!(!history_enabled_from(Some(true), Some("1")));
+        assert!(!history_enabled_from(Some(true), Some("true")));
+        assert!(!history_enabled_from(Some(true), Some("TRUE")));
+        assert!(!history_enabled_from(Some(true), Some("yes")));
+        assert!(!history_enabled_from(Some(true), Some("on")));
+        assert!(history_enabled_from(Some(true), Some("0")));
     }
 }

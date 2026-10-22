@@ -91,6 +91,7 @@ pub fn execute(args: RunArgs, settings: &rustlab_config::UserSettings) -> Result
             Ok(()) => Ok(()),
             Err(rustlab_script::ScriptError::AudioEof) => Ok(()),
             Err(rustlab_script::ScriptError::Interrupted) => Ok(()),
+            Err(rustlab_script::ScriptError::InputEof) => Ok(()),
             Err(e) => Err(anyhow::anyhow!("{}", e)),
         };
         rustlab_plot::emit_pending_terminal_skips();
