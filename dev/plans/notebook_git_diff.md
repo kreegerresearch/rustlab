@@ -361,6 +361,8 @@ Watch with no `--git-diff` and no `[notebook] git_diff` is the same HTML as toda
 
 ### Phase 2 — finer text
 
+Superseded by [`notebook_git_diff_ux.md`](notebook_git_diff_ux.md) (proposed 2026-10-22): presets instead of free-text refs, paragraph-level units, word-level marks, gutter bars, and the source view. The bullets below are kept for history.
+
 - Word-level paint inside a changed markdown block, under the structure rule in §2.2. Math spans stay one token.
 - Source pane: a read-only unified diff (`+` / `-` lines) when Diff is on, fetched from a `GET` the server already authorizes. Not CodeMirror merge view.
 - The 512 KiB fallback uses that source view.
