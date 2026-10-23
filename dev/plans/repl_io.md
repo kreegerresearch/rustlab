@@ -44,7 +44,7 @@ The session lives in `crates/rustlab-cli/src/commands/repl.rs` (`execute`). One 
 | Tab completion | `ReplHelper`: workspace names, builtins, `help` topics, and file paths after `run` / `ls` / `cd` or inside an open quote. |
 | Workspace commands | `help` / `?`, `whos`, `clear` (keeps built-in constants), `pwd`, `cd`, `ls`. |
 | `run script.rlab` | The REPL command reads the file and `exec_stmt`s it on the **same** evaluator, so definitions and variables land in the live workspace. The language statement `run "file.rlab"` does the same (`StmtKind::Run` in `eval/mod.rs`). |
-| Multi-line | **Typed** line-by-line continuation runs only when the first line starts with `function` (`execute`, the `trimmed.starts_with("function ")` gate). `line_opens_block` already recognises `if`, `for`, `while`, and `switch`, and the depth counter balances inner `end`s, but that path is only entered for `function`. A one-line `if cond, body; end` parses as a normal statement. A **bracketed paste** of a whole block arrives as one `readline` string (internal newlines kept) and is parsed in one go, so paste of a `while` loop can already succeed. Typing `while` and pressing Enter does not prompt for the body. |
+| Multi-line | **At plan time:** typed continuation ran only when the first line started with `function`. A keyword helper, `line_opens_block`, recognised `if` / `for` / `while` / `switch` but the REPL did not call it except from its own tests. That helper was removed after `statement_ready` became the continuation check. |
 | `ans` | Bare expressions print their value (`StmtKind::Expr` in `eval/mod.rs`). Nothing binds `ans`. Roadmap item B5 (`dev/plans/roadmap.md`). |
 | `run` and the script directory | `rustlab run file.rlab` `chdir`s to the script's parent for the process (`commands/run.rs`). The REPL `run` command does not, and the `run` statement does not. Relative `load` / `save` then follow the REPL's current directory. The path jail is unset in the REPL and in `rustlab run` (`path_jail.rs`), so those paths are not sandboxed there. |
 | Plots | `--viewer` / `[viewer] auto_connect` at startup. Pending terminal-skip warnings drain after each statement. |
@@ -147,11 +147,11 @@ What to copy, and what to leave:
 
 Change the gate in `repl.rs` so **every** submitted line runs through one completion check, not only lines that start with `function`.
 
-`fn statement_ready(buf: &str) -> bool` in `repl.rs` (unit-tested, no TTY):
+`fn statement_ready(buf: &str) -> bool` in `rustlab-script` (unit-tested, no TTY). The shipped check tokenizes the buffer (block keywords, `...`, and `[]` / `()` / `{}`, with strings left to the lexer). It does not call `line_opens_block`; that helper was removed because nothing in the REPL consulted it.
 
-1. Walk lines with the existing `line_opens_block` / `end` depth. Depth greater than 0 means keep reading.
+1. An open `function` / `if` / `for` / `while` / `switch` (depth greater than 0) means keep reading.
 2. A line whose trimmed text ends in `...` means keep reading (the lexer already treats `...` as continuation inside a file).
-3. A string-aware scan of `[]`, `()`, and `{}` with unclosed delimiters means keep reading. Quotes are honored so a `"` inside a string does not flip the count.
+3. Unclosed `[]`, `()`, or `{}` means keep reading. A string is lexed, so a bracket inside quotes does not flip the count.
 
 When the check says the buffer is unfinished, prompt with `.. ` and append. Bracketed paste still works: the whole paste is fed to the same check before any continuation read.
 
@@ -397,7 +397,7 @@ Each phase is shippable on its own. Tests are headless (`cargo test --workspace`
 
 - Add `statement_ready` and use it for every REPL line.
 - Jail-unset `run` saves, changes, and restores cwd (REPL command and `StmtKind::Run`).
-- Tests in `crates/rustlab-cli`: `while` / `for` / `if` / `switch` depth, a `for` inside a `while`, a one-line `if`, a trailing `...`, an unclosed `[`, a quote that contains a bracket, a balanced paste, a similar identifier (`whilelist`) that must not open a block. The existing `line_opens_block` tests stay.
+- Tests in `crates/rustlab-script`: `while` / `for` / `if` / `switch` depth, a `for` inside a `while`, a one-line `if`, a trailing `...`, an unclosed `[`, a quote that contains a bracket, a balanced paste, a similar identifier (`whilelist`) that must not open a block. The old `line_opens_block` helper was not used once `statement_ready` owned continuation, and it was removed (the helper and the tests that only called it).
 - History security tests (temp `HOME`, no real `~/.rustlab_history`): a new history file is mode `0600`; an existing `0644` file is tightened to `0600` on save; `RUSTLAB_NO_HISTORY=1` does not create the file and does not rewrite an existing one; `[repl] history = false` does the same; when both the rc enables history and the env var is set, the file stays untouched.
 - A script-crate test that `run` of a temp file `load`s a relative `.toml` from the script directory while the process cwd is elsewhere, and that the cwd is restored. Notebook jail test: relative `run` still cannot escape the jail, and cwd is unchanged.
 

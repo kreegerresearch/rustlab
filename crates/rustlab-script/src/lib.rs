@@ -47,9 +47,8 @@ mod tests;
 
 pub use error::ScriptError;
 pub use eval::line_io::{
-    classify_keyboard_line, clear_keyboard_handler, clear_keyboard_line_reader, keyboard_prompt,
-    line_read_count, set_keyboard_handler, set_keyboard_line_reader, statement_ready, IoGuard,
-    KeyboardLine, KeyboardStatus,
+    classify_keyboard_line, clear_keyboard_handler, clear_keyboard_line_reader,
+    set_keyboard_handler, set_keyboard_line_reader, statement_ready, IoGuard, KeyboardLine,
 };
 pub use eval::output::{capturing, start_capture, stop_capture};
 pub use eval::value::{default_number_format, set_default_number_format, NumberFormat};
