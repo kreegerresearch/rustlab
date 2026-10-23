@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.15
+
+### Added
+- **Compare presets in `notebook watch --git-diff`.** The `⋯` menu's **Compare** list offers **Uncommitted changes** (working copy vs `HEAD`, the default), **This branch vs main** (working copy vs the merge base, like a pull request; hidden on the default branch), **Last commit** (`HEAD~1` vs `HEAD`; disabled on a root commit) and **Other…** (any **base** and **compare** refs). Each shows its change count, from the new read-only `GET /git/changes`. The ref lists are grouped into branches, tags and recent commits with relative times.
+- **Status chip and change list.** A chip under the toolbar says what is shown, for example *Showing uncommitted changes · vs last commit 5f01f1f · 4 changes*; clicking it opens the menu. The menu lists every change with its kind and place (`Frequency response ¶1`, `Code cell 2`); click one to jump there. `[` and `]` still step.
+- **`git-merge-base`** joins the allowed plumbing binaries. It only receives two commit ids that `rev-parse --verify` already returned.
+
+### Breaking / behavior changes
+- **New diff URL scheme.** Pages use `?changes=uncommitted|branch|last|custom|off`, with `base` (before) and `compare` (after; absent is the working copy) for `custom`. Old links still resolve: without `changes`, `?diff=<ref>` is the before side and `?base=<ref>` the after side, and `?diff=HEAD` alone is **Uncommitted changes**. In the new scheme `base` means the before side, the opposite of the 0.3.12 `base`. Update bookmarks or scripts that build `?diff=…&base=…` links if they also add `changes`.
+- **Two refs no longer swap by commit date.** `base` is always the before side and `compare` the after side, and the page shows the `compare` side's text. In 0.3.12–0.3.14 the newer commit was shown whichever field it was in.
+- **The diff looks different.** Changes are a 4 px bar beside the text (green added, blue modified, red removed) with no background wash and no amber. Prose is compared per heading, paragraph, list, table or quote instead of per run of prose between code cells, so a removed section now appears, and one edit no longer marks the whole run. Removed text collapses to one line that opens on click. A changed code cell shows its source once, as the diff, with syntax colors, instead of the listing plus a second line diff. **Show diff** is now **Show changes**, and `index` is no longer a list entry (it still works typed as a ref). The `--rl-diff-*` theme variables are replaced by `--rl-dx-add-bar`, `--rl-dx-mod-bar`, `--rl-dx-del-bar`, `--rl-dx-add-line` and `--rl-dx-del-line`; a stylesheet that used the old names needs the new ones.
+
 ## 0.3.14
 
 ### Added

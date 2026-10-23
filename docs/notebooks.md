@@ -204,41 +204,81 @@ rustlab-notebook watch analysis.md --port 9000           # custom port (fails lo
 rustlab-notebook watch analysis.md --no-browser          # don't auto-open the browser
 rustlab-notebook watch analysis.md --editable            # edit the .md in the browser (writes back)
 rustlab-notebook watch notebooks/ --jail-root ..         # widen the file-I/O jail to the parent (must contain the notebooks)
-rustlab-notebook watch notebooks/ --git-diff            # enable git; Show diff starts off
-rustlab-notebook watch notebooks/ --git-diff --diff   # the same, defaulting each page to HEAD
-rustlab-notebook watch notebooks/ --git-diff --diff main
+rustlab-notebook watch notebooks/ --git-diff            # enable git; Show changes starts off
+rustlab-notebook watch notebooks/ --git-diff --diff   # the same, each page showing uncommitted changes
+rustlab-notebook watch notebooks/ --git-diff --diff main   # each page compared with main
 ```
 
 Git comparison is off unless `--git-diff` or `[notebook] git_diff = true`.
 `--diff` alone does not enable it. The toolbar is `⋯` and **Source**.
-Open `⋯` for **Comments** and **Show diff**. **Comments** is the same
+Open `⋯` for **Comments** and **Show changes**. **Comments** is the same
 on/off control as the header checkbox on a static HTML page: on shows
 the margin, off hides it. The choice stays in `sessionStorage`
-(`rl-comments-visible`) for that tab. **Show diff** is the second
+(`rl-comments-visible`) for that tab. **Show changes** is the second
 switch. While git is off that switch is disabled and the menu says to
 pass `--git-diff` for a repository you trust. While git is on, the menu
-notes that git reads the repository config, and the same menu holds the
-picker. A dot on `⋯` means a non-default choice: diff is on, or comments
-are hidden. Comments left on does not light the dot. **vs** is the other
-side (`?diff=<ref>`), **from** defaults to the working copy and can be
-another ref (`?base=<ref>`). The lists are local branches (the current
-branch first, then `main`), remote-tracking branches, recent tags, and
-recent commits, filled by `GET /git/refs`. Typing filters the list.
-Arrow keys move through the matches, Enter picks one, and Esc closes the
-list, then the menu. A valid ref that matches nothing is still accepted.
-Changing either side reloads that page; other tabs keep their own query.
-The diff on/off choice is also kept in `sessionStorage` for this tab, so
-a notebook opened without `?diff=` follows the last choice. `?diff=off`
-forces it off. `[` and `]` move to the previous and next change when you
-are not typing. A checkout or commit in the repository refreshes the
-open comparison. Line-ending-only differences are not shown as edits.
-Ignored files are not listed as added. A notebook that is missing on
-one side is a notice — `new file — not on <ref>`, or `deleted` / `not on
-<ref>` when that side is the one being shown — rather than a green or
-red bar on every block. Changing **vs** or **from** computes that
-request from scratch.
+notes that git reads the repository config. A dot on `⋯` means a
+non-default choice: changes are shown, or comments are hidden.
 
-Added blocks and lines are tinted green, removed ones red and struck through, and changed blocks amber, each with a side bar. A changed code cell tints whole lines and marks them `+` or `-`. Working copy against a ref keeps the live outputs and labels that cell "output is the working copy". The old notebook is not executed. Two refs (`?diff=main&base=feature-x`) show the newer commit's text and label it as not run. `?diff=off` turns the comparison off. `--diff` and `--git-diff` on the re-render-on-save watcher (`--obsidian` or `--output`) are ignored.
+Under **Compare**, pick what the page is compared with. Each choice shows
+its change count:
+
+| Choice | URL | Before | After |
+|---|---|---|---|
+| **Uncommitted changes** (the default) | `?changes=uncommitted` | `HEAD` | your files |
+| **This branch vs main** | `?changes=branch` | where this branch left `main` (the merge base) | your files |
+| **Last commit** | `?changes=last` | `HEAD~1` | `HEAD` |
+| **Other…** | `?changes=custom&base=<ref>&compare=<ref>` | `base` | `compare`, or your files when absent |
+
+**This branch vs main** is like a pull request: commits that landed on
+`main` after the branch left it are not shown as removals. The default
+branch is `main`, else `master`, else the branch `origin/HEAD` points at.
+The choice is hidden while that branch is checked out. **Last commit** is
+disabled when `HEAD` has no parent. **Other…** has two fields, **base**
+(before) and **compare** (after), with the words GitHub uses. Their lists
+are grouped into branches, tags and recent commits with relative times,
+filled by `GET /git/refs`. Typing filters the list. Arrow keys move
+through the matches, Enter picks one, and Esc closes the list, then the
+menu. A valid ref that matches nothing (a sha, `HEAD~3`) is still
+accepted. `GET /git/changes?slug=<page>` supplies the counts. It is
+read-only and runs no notebook.
+
+A status chip under the toolbar says what is shown, for example
+*Showing uncommitted changes · vs last commit 5f01f1f · 4 changes*.
+Clicking it opens the menu. The menu also lists the changes on the page,
+each with its kind and place (`Frequency response ¶1`, `Code cell 2`).
+Click a row to jump to it, or press `[` and `]` when you are not typing.
+
+Changing the choice reloads that page; other tabs keep their own query.
+The choice is also kept in `sessionStorage` for this tab, so a notebook
+opened without a query follows the last choice. `?changes=off` forces it
+off. A checkout or commit in the repository refreshes the open
+comparison. Line-ending-only differences are not shown as edits. Ignored
+files are not listed as added. A notebook that is missing on one side is
+a notice (`new file, not on <ref>`, `deleted from the working copy`, or
+`not on <ref>`) rather than a bar on every block.
+
+Links from 0.3.12 still work. Without `changes`, `?diff=<ref>` is the
+before side and `?base=<ref>` the after side, so `?diff=main&base=topic`
+is `?changes=custom&base=main&compare=topic`. `?diff=HEAD` alone is
+**Uncommitted changes**. `?diff=off` turns the comparison off.
+
+Changes are a 4 px bar left of the text: green added, blue modified, red
+removed. Text keeps its own colors. Prose is compared one heading,
+paragraph, list, table or quote at a time, so editing one sentence marks
+that paragraph, not the whole run of text between two code cells. A run
+that contains raw HTML or footnotes, where the rendered elements do not
+line up with the source, is marked as a whole. Removed text collapses to
+one line, such as *Removed · “Old notes” heading and 1 paragraph*, at its
+old place; click it to read it struck through. The open or closed state
+survives the reload a live edit triggers. A changed code cell shows its
+source once, as the diff: unchanged lines, then removed lines (`−`, red,
+struck through) and added lines (`+`, green), with syntax colors kept.
+Working copy against a ref keeps the live outputs, labelled *Output is
+from your current file.* The old notebook is not executed. Two refs show
+the `compare` side's text and say the code was not run. `--diff` and
+`--git-diff` on the re-render-on-save watcher (`--obsidian` or `--output`)
+are ignored.
 
 Behaviour:
 
@@ -1384,7 +1424,7 @@ or the card emphasizes both. With scripting off, the cards stay in
 that column in document order, at full height. Turning **Comments** off sets the column width to zero
 and hides the cards, the markers, and the resize handle, so the prose
 takes the width back. On `notebook watch` that switch is in the `⋯`
-menu, next to **Show diff**, and the toolbar itself stays `⋯` and
+menu, next to **Show changes**, and the toolbar itself stays `⋯` and
 **Source**. On a static HTML page the same checkbox stays in the page
 header, where it still works with scripting off. The choice is stored
 in `sessionStorage` for that tab (`rl-comments-visible`). A dot on `⋯`

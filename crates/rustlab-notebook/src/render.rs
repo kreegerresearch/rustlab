@@ -2768,12 +2768,53 @@ pub(crate) fn add_nonce_to_scripts(fragment: &str, nonce: Option<&str>) -> Strin
 
 // ── Syntax highlighting ─────────────────────────────────────────────────────
 
+/// Top-level markdown blocks of a prose run, in source order: a kind word
+/// (`heading`, `paragraph`, `list`, …) and that block's source text. The
+/// parse matches the HTML path (math stashed first, same options), so
+/// each entry is normally one top-level element of the rendered prose.
+/// Link reference definitions produce no entry. The git diff compares
+/// these instead of the whole run between two code cells.
+pub(crate) fn prose_parts(md: &str) -> Vec<(&'static str, String)> {
+    let (protected, math) = protect_math(md);
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    for (event, range) in Parser::new_ext(&protected, notebook_md_options()).into_offset_iter() {
+        match event {
+            Event::Start(tag) => {
+                if depth == 0 {
+                    let kind = match tag {
+                        Tag::Heading { .. } => "heading",
+                        Tag::Paragraph => "paragraph",
+                        Tag::List(_) => "list",
+                        Tag::Table(_) => "table",
+                        Tag::BlockQuote(_) => "quote",
+                        Tag::CodeBlock(_) => "code block",
+                        Tag::HtmlBlock => "html",
+                        Tag::FootnoteDefinition(_) => "footnote",
+                        _ => "block",
+                    };
+                    let mut text = protected[range].trim_end().to_string();
+                    for (idx, original) in math.iter().enumerate() {
+                        text = text.replace(&math_placeholder(idx), original);
+                    }
+                    out.push((kind, text));
+                }
+                depth += 1;
+            }
+            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::Rule if depth == 0 => out.push(("rule", protected[range].trim_end().to_string())),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Produce syntax-highlighted HTML for a rustlab code snippet.
 ///
 /// Token classes come from [`rustlab_script::highlight`] (the same rules as
 /// the lexer). Token text is HTML-escaped before it is wrapped, so source
 /// cannot break out of a span.
-fn highlight_rustlab(source: &str) -> String {
+pub(crate) fn highlight_rustlab(source: &str) -> String {
     spans_to_html(source, &rustlab_script::highlight::highlight(source))
 }
 

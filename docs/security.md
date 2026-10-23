@@ -84,16 +84,17 @@ loopback `Origin`.
 Git comparison is off unless `watch --git-diff` or `[notebook] git_diff = true`.
 `--diff` only chooses the default ref and does not enable git. While git
 is off the server does not spawn it: no `for-each-ref`, no file-tree dots,
-and a `?diff=` query is ignored. **Show diff** in the `⋯` menu is disabled,
+and a `?changes=` or `?diff=` query is ignored. **Show changes** in the `⋯` menu is disabled,
 with a hint to pass `--git-diff`. Enabling git prints a terminal warning
 and a one-line menu note that git reads the repository config and should
 be used only on a repository you trust.
 
-When git is on, comparison (`?diff=`, `?base=`, `GET /git/refs`) is
-read-only. The server execs dashed plumbing binaries from `git --exec-path`
+When git is on, comparison (`?changes=`, `?base=`, `?compare=`, the
+0.3.12 `?diff=`, `GET /git/refs`, `GET /git/changes`) is read-only. The server execs dashed plumbing binaries from `git --exec-path`
 (probed outside the notebook directory) and never a shell: `git-rev-parse`,
 `git-cat-file` (blob bytes only), `git-ls-tree`, `git-for-each-ref`,
-`git-hash-object --no-filters`, and `git-ls-files`. Name-status is computed
+`git-hash-object --no-filters`, `git-ls-files`, and `git-merge-base`
+(given two commit ids that `rev-parse --verify` already returned). Name-status is computed
 in-process, so `git diff` and `git show` are not run and a `diff.external`
 or `textconv` driver has no command to attach to. Every child sets
 `GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`,
@@ -106,7 +107,7 @@ refused; the server does not add a `safe.directory` exception. A ref is
 character-checked (no `..`, no leading `-`, no `:`) and then
 `rev-parse --verify --end-of-options`. The path is the notebook the server
 already has, and it must stay inside the jail and the repository. There is
-no new POST route. The picker script is a nonced `<script>` with no inline
+no new POST route. The menu script is a nonced `<script>` with no inline
 event handlers.
 
 The operator's `~/.gitconfig` is still read. The overrides above win for

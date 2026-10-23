@@ -171,10 +171,11 @@ enum Command {
         /// repository you trust.
         #[arg(long)]
         git_diff: bool,
-        /// Default ref once git diff is enabled. Bare `--diff` uses HEAD.
-        /// Does not enable git by itself. The toolbar can change the ref
-        /// (`?diff=<ref>`, optional `?base=<ref>`). Ignored by the
-        /// re-render-on-save watcher.
+        /// Default before side once git diff is enabled: each page opens
+        /// compared with REF. Bare `--diff` uses HEAD (uncommitted changes).
+        /// Does not enable git by itself. The menu can change it per page
+        /// (`?changes=uncommitted|branch|last|custom&base=<ref>&compare=<ref>`).
+        /// Ignored by the re-render-on-save watcher.
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD", value_name = "REF")]
         diff: Option<String>,
     },

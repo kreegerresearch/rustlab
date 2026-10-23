@@ -155,7 +155,7 @@ fn cell_script(cell_edit: bool) -> String {
       run.title = 'Run from this block (downstream blocks re-run too)';
       run.textContent = '▶ Run';
       bar.appendChild(run);
-      if (CELL_EDIT && sec.querySelector('pre.source')) {{
+      if (CELL_EDIT && sec.querySelector('pre.source:not(.rl-dx-code)')) {{
         const edit = document.createElement('button');
         edit.className = 'rl-cell-edit';
         edit.title = 'Edit this block (Shift+Enter saves and runs, Esc cancels)';
@@ -257,7 +257,7 @@ fn cell_script(cell_edit: bool) -> String {
       if (isDirty()) {{ setErr(sec, 'another cell has unsaved changes'); return; }}
       closeEditor();
     }}
-    const pre = sec.querySelector('pre.source');
+    const pre = sec.querySelector('pre.source:not(.rl-dx-code)');
     if (!pre) return;
     // The editor is inserted inside the source disclosure. Open it first
     // so CodeMirror measures a visible box; collapsing and expanding

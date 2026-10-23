@@ -25,7 +25,7 @@ use crate::render::{escape_html, markdown_to_html};
 use crate::server::diff::split_blocks;
 
 const MAX_BYTES: usize = 512 * 1024;
-const MAX_BLOCKS: usize = 400;
+const MAX_UNITS: usize = 1500;
 const MAX_LINES: usize = 400;
 
 static DIFF_DEFAULT: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
@@ -48,17 +48,23 @@ pub fn diff_default() -> Option<String> {
 }
 
 /// Query string of a watch page. Absent keys stay `None`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `changes` picks a preset (`uncommitted`, `branch`, `last`, `custom`,
+/// `off`). With `custom`, `base` is the before side and `compare` the
+/// after side (absent = working copy), GitHub's words. Without
+/// `changes`, the 0.3.12 names apply: `diff` is the before side and
+/// `base` the after side.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WatchQuery {
+    pub changes: Option<String>,
     pub diff: Option<String>,
     pub base: Option<String>,
+    pub compare: Option<String>,
     pub cm: Option<bool>,
 }
 
 pub fn parse_query(q: &str) -> WatchQuery {
-    let mut diff = None;
-    let mut base = None;
-    let mut cm = None;
+    let mut out = WatchQuery::default();
     for pair in q.split('&') {
         if pair.is_empty() {
             continue;
@@ -67,21 +73,81 @@ pub fn parse_query(q: &str) -> WatchQuery {
         let key = it.next().unwrap_or("");
         let val = percent_decode(it.next().unwrap_or(""));
         match key {
-            "diff" => diff = Some(val),
-            "base" => base = Some(val),
-            "cm" => cm = Some(matches!(val.as_str(), "1" | "on" | "true")),
+            "changes" => out.changes = Some(val),
+            "diff" => out.diff = Some(val),
+            "base" => out.base = Some(val),
+            "compare" => out.compare = Some(val),
+            "cm" => out.cm = Some(matches!(val.as_str(), "1" | "on" | "true")),
             _ => {}
         }
     }
-    WatchQuery { diff, base, cm }
+    out
 }
 
-/// `?diff=off` forces off. A missing `diff` uses the CLI default.
-pub fn resolve_diff(q: &WatchQuery, cli: Option<&str>) -> Option<String> {
+/// What a diff page compares. The before side is a commit (or `index`);
+/// the after side is the working copy unless `compare` names a ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Compare {
+    /// Working copy vs `HEAD`.
+    Uncommitted,
+    /// Working copy vs the merge base of `HEAD` and the default branch.
+    Branch,
+    /// `HEAD~1` vs `HEAD`.
+    Last,
+    Custom {
+        base: String,
+        compare: Option<String>,
+    },
+    /// A `?changes=` value this version does not know.
+    Unknown(String),
+}
+
+impl Compare {
+    /// The `?changes=` value, also stamped on `<body>` for the menu.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Compare::Uncommitted => "uncommitted",
+            Compare::Branch => "branch",
+            Compare::Last => "last",
+            Compare::Custom { .. } | Compare::Unknown(_) => "custom",
+        }
+    }
+}
+
+fn non_empty(s: Option<&String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// Before side `base`, after side `compare`. `HEAD` against the working
+/// copy is the Uncommitted preset, so old `?diff=HEAD` links light it.
+fn custom(base: String, compare: Option<String>) -> Compare {
+    if base == "HEAD" && compare.is_none() {
+        Compare::Uncommitted
+    } else {
+        Compare::Custom { base, compare }
+    }
+}
+
+/// `None` means the plain page. `?changes=off` (or the old `?diff=off`)
+/// forces that. With no diff keys the CLI `--diff` ref is the before side.
+pub fn resolve_compare(q: &WatchQuery, cli: Option<&str>) -> Option<Compare> {
+    if let Some(c) = q.changes.as_deref() {
+        return match c {
+            "off" => None,
+            "uncommitted" => Some(Compare::Uncommitted),
+            "branch" => Some(Compare::Branch),
+            "last" => Some(Compare::Last),
+            "custom" => Some(custom(
+                non_empty(q.base.as_ref()).unwrap_or_else(|| "HEAD".into()),
+                non_empty(q.compare.as_ref()),
+            )),
+            other => Some(Compare::Unknown(other.to_string())),
+        };
+    }
     match q.diff.as_deref() {
         Some("off") => None,
-        Some(s) => Some(s.to_string()),
-        None => cli.map(str::to_string),
+        Some(d) => Some(custom(d.trim().to_string(), non_empty(q.base.as_ref()))),
+        None => cli.map(|d| custom(d.to_string(), None)),
     }
 }
 
@@ -223,6 +289,7 @@ pub fn plumbing_tools() -> &'static [&'static str] {
         "for-each-ref",
         "hash-object",
         "ls-files",
+        "merge-base",
     ]
 }
 
@@ -440,6 +507,81 @@ fn verify(root: &Path, rev: &str) -> Result<String, GitFail> {
         Ok(oid)
     } else {
         Err(GitFail::Unknown)
+    }
+}
+
+fn short(oid: &str) -> String {
+    oid.chars().take(7).collect()
+}
+
+/// Merge base of two verified commit ids. `git-merge-base` gets only
+/// the two hex ids, so nothing in argv can read as an option.
+fn merge_base(root: &Path, a: &str, b: &str) -> Result<String, GitFail> {
+    if !oid_ok(a) || !oid_ok(b) {
+        return Err(GitFail::Unknown);
+    }
+    let out = run_plumbing(root, "merge-base", &[a.to_string(), b.to_string()])?;
+    if !out.status.success() {
+        return Err(GitFail::Unknown);
+    }
+    let oid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if oid_ok(&oid) {
+        Ok(oid)
+    } else {
+        Err(GitFail::Unknown)
+    }
+}
+
+/// `main`, else `master`, else the branch `origin/HEAD` points at.
+fn default_branch(root: &Path) -> Result<Option<String>, GitFail> {
+    for name in ["main", "master"] {
+        match verify(root, &format!("refs/heads/{name}")) {
+            Ok(_) => return Ok(Some(name.to_string())),
+            Err(GitFail::Missing) => return Err(GitFail::Missing),
+            Err(GitFail::Dubious) => return Err(GitFail::Dubious),
+            Err(_) => {}
+        }
+    }
+    let out = run_plumbing(
+        root,
+        "rev-parse",
+        // A fixed refname, so no `--end-of-options` (rev-parse would echo it).
+        &["--abbrev-ref".into(), "refs/remotes/origin/HEAD".into()],
+    )?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() || name == "refs/remotes/origin/HEAD" || !ref_ok(&name) {
+        return Ok(None);
+    }
+    Ok(Some(name))
+}
+
+/// The checked-out branch, `None` when `HEAD` is detached.
+fn current_branch(root: &Path) -> Result<Option<String>, GitFail> {
+    let out = run_plumbing(
+        root,
+        "rev-parse",
+        &["--abbrev-ref".into(), "HEAD".into()],
+    )?;
+    if !out.status.success() {
+        return unborn_branch(root);
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() || name == "HEAD" || !ref_ok(&name) {
+        Ok(None)
+    } else {
+        Ok(Some(name))
+    }
+}
+
+/// Is `branch` the default branch, or the remote-tracking default it
+/// follows (`origin/main` while on `main`)?
+fn on_default(current: Option<&str>, default: &str) -> bool {
+    match current {
+        Some(cur) => cur == default || default.strip_prefix("origin/") == Some(cur),
+        None => false,
     }
 }
 
@@ -1069,17 +1211,6 @@ fn read_commit(root: &Path, oid: &str) -> Result<CommitInfo, GitFail> {
     })
 }
 
-fn commit_time(root: &Path, rev: &str) -> Result<i64, GitFail> {
-    let owned;
-    let oid = if oid_ok(rev) {
-        rev
-    } else {
-        owned = verify(root, rev)?;
-        owned.as_str()
-    };
-    Ok(read_commit(root, oid)?.time)
-}
-
 fn file_dots_json(changes: &[NameChange]) -> String {
     let mut files: Vec<serde_json::Value> = Vec::new();
     for c in changes {
@@ -1216,6 +1347,7 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
                 commits.push(serde_json::json!({
                     "rev": oid,
                     "label": format!("{short} {subject}"),
+                    "date": info.time,
                 }));
             }
             match info.parent {
@@ -1227,11 +1359,11 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
 
     let branches: Vec<_> = current
         .iter()
-        .map(|h| serde_json::json!({"name": h.name, "current": h.current}))
+        .map(|h| serde_json::json!({"name": h.name, "current": h.current, "date": h.date}))
         .collect();
     let tag_json: Vec<_> = tags
         .iter()
-        .map(|t| serde_json::json!({"name": t.name}))
+        .map(|t| serde_json::json!({"name": t.name, "date": t.date}))
         .collect();
     Ok(serde_json::json!({
         "error": null,
@@ -1243,61 +1375,196 @@ fn collect_refs(start: &Path) -> Result<String, GitFail> {
     .replace('<', "\\u003c"))
 }
 
-/// Inputs for one page view. `diff` is the "vs" side. `base` set means
-/// both sides are refs and neither notebook is executed.
+/// Inputs for one page view.
 pub struct Present<'a> {
     pub html: &'a str,
     pub source_path: &'a Path,
     pub jail: Option<&'a Path>,
     pub comments_on: bool,
-    pub diff: &'a str,
-    pub base: Option<&'a str>,
+    pub compare: &'a Compare,
+}
+
+/// What the status chip and `<body>` say about the comparison.
+struct View {
+    key: &'static str,
+    /// Before ref for the menu's base field (custom only).
+    base: String,
+    /// After ref for the compare field. Empty is the working copy.
+    compare: String,
+    /// `uncommitted changes`, `this branch vs main`, `main → topic`.
+    title: String,
+    /// `vs last commit 5f01f1f`, filled in once the sides are known.
+    against: String,
+    /// The before side in messages: `HEAD`, `main`, `the merge base`.
+    before_name: String,
+}
+
+impl View {
+    fn new(c: &Compare) -> View {
+        let (title, base, compare, before_name) = match c {
+            Compare::Uncommitted => (
+                "uncommitted changes".to_string(),
+                String::new(),
+                String::new(),
+                "HEAD".to_string(),
+            ),
+            Compare::Branch => (
+                "this branch".to_string(),
+                String::new(),
+                String::new(),
+                "the merge base".to_string(),
+            ),
+            Compare::Last => (
+                "last commit".to_string(),
+                String::new(),
+                String::new(),
+                "HEAD~1".to_string(),
+            ),
+            Compare::Custom { base, compare } => (
+                format!(
+                    "{base} → {}",
+                    compare.as_deref().unwrap_or("working copy")
+                ),
+                base.clone(),
+                compare.clone().unwrap_or_default(),
+                base.clone(),
+            ),
+            Compare::Unknown(v) => (format!("“{v}”"), String::new(), String::new(), String::new()),
+        };
+        View {
+            key: c.key(),
+            base,
+            compare,
+            title,
+            against: String::new(),
+            before_name,
+        }
+    }
+}
+
+fn count_text(n: usize) -> String {
+    match n {
+        0 => "no changes".into(),
+        1 => "1 change".into(),
+        n => format!("{n} changes"),
+    }
+}
+
+fn fail_msg(e: &GitFail, other: &str) -> String {
+    match e {
+        GitFail::Missing => "git not found".into(),
+        GitFail::Dubious => OWNERSHIP_MSG.into(),
+        _ => other.into(),
+    }
+}
+
+/// Before and after revisions. `after == None` is the working copy.
+struct Sides {
+    before: String,
+    after: Option<String>,
+}
+
+fn sides_for(root: &Path, c: &Compare, view: &mut View) -> Result<Sides, String> {
+    match c {
+        Compare::Uncommitted => {
+            match verify(root, "HEAD") {
+                Ok(oid) => view.against = format!("vs last commit {}", short(&oid)),
+                Err(e @ (GitFail::Missing | GitFail::Dubious)) => return Err(fail_msg(&e, "")),
+                Err(_) => view.against = "no commits yet".into(),
+            }
+            Ok(Sides {
+                before: "HEAD".into(),
+                after: None,
+            })
+        }
+        Compare::Last => {
+            let head = verify(root, "HEAD").map_err(|e| fail_msg(&e, "no commits yet"))?;
+            let info = read_commit(root, &head).map_err(|e| fail_msg(&e, "could not read HEAD"))?;
+            let Some(parent) = info.parent else {
+                return Err("no earlier commit to compare with".into());
+            };
+            view.against = format!("{} → {}", short(&parent), short(&head));
+            Ok(Sides {
+                before: parent,
+                after: Some(head),
+            })
+        }
+        Compare::Branch => {
+            let default = default_branch(root)
+                .map_err(|e| fail_msg(&e, "no main branch"))?
+                .ok_or_else(|| "no main or master branch to compare with".to_string())?;
+            view.title = format!("this branch vs {default}");
+            let current = current_branch(root).map_err(|e| fail_msg(&e, "unknown branch"))?;
+            if on_default(current.as_deref(), &default) {
+                return Err(format!("already on {default}, nothing to compare"));
+            }
+            let head = verify(root, "HEAD").map_err(|e| fail_msg(&e, "no commits yet"))?;
+            let tip = verify(root, &default).map_err(|e| fail_msg(&e, "unknown ref"))?;
+            let base = merge_base(root, &head, &tip)
+                .map_err(|e| fail_msg(&e, &format!("no common history with {default}")))?;
+            view.against = format!("from {}", short(&base));
+            view.before_name = format!("the merge base with {default}");
+            Ok(Sides {
+                before: base,
+                after: None,
+            })
+        }
+        Compare::Custom { base, compare } => {
+            if let Some(msg) = ref_problem(base) {
+                return Err(msg.into());
+            }
+            if let Some(c) = compare {
+                if let Some(msg) = ref_problem(c) {
+                    return Err(msg.into());
+                }
+            }
+            Ok(Sides {
+                before: base.clone(),
+                after: compare.clone(),
+            })
+        }
+        Compare::Unknown(_) => Err("unknown comparison".into()),
+    }
 }
 
 pub fn present(p: Present<'_>) -> String {
-    let base = p.base.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(msg) = ref_problem(p.diff) {
-        return decorate(p.html, p.diff, base, msg, None);
-    }
-    if let Some(b) = base.as_deref() {
-        if let Some(msg) = ref_problem(b) {
-            return decorate(p.html, p.diff, base, msg, None);
-        }
+    let mut view = View::new(p.compare);
+    if let Compare::Unknown(_) = p.compare {
+        return decorate(p.html, &view, "unknown comparison", None);
     }
     let start = p.source_path.parent().unwrap_or(p.source_path);
     let root = match repo_root(start) {
         Ok(r) => r,
-        Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
-        Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
-        Err(_) => return decorate(p.html, p.diff, base, "not a git repository", None),
+        Err(e) => return decorate(p.html, &view, &fail_msg(&e, "not a git repository"), None),
     };
-    if safe_rel(p.source_path, p.jail, &root).is_err() {
-        return decorate(
-            p.html,
-            p.diff,
-            base,
-            "path escapes notebook directory",
-            None,
-        );
-    }
-    let rel = safe_rel(p.source_path, p.jail, &root).expect("checked");
-
-    let diff_side = match resolve_side(&root, p.diff) {
+    let Ok(rel) = safe_rel(p.source_path, p.jail, &root) else {
+        return decorate(p.html, &view, "path escapes notebook directory", None);
+    };
+    let sides = match sides_for(&root, p.compare, &mut view) {
+        Ok(s) => s,
+        Err(msg) => return decorate(p.html, &view, &msg, None),
+    };
+    let before_side = match resolve_side(&root, &sides.before) {
         Ok(side) => side,
-        Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
-        Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
-        Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
+        Err(e) => return decorate(p.html, &view, &fail_msg(&e, "unknown ref"), None),
     };
-    if let Some(b) = base.as_deref() {
-        let base_side = match resolve_side(&root, b) {
-            Ok(side) => side,
-            Err(GitFail::Missing) => return decorate(p.html, p.diff, base, "git not found", None),
-            Err(GitFail::Dubious) => return decorate(p.html, p.diff, base, OWNERSHIP_MSG, None),
-            Err(_) => return decorate(p.html, p.diff, base, "unknown ref", None),
-        };
-        return present_two_ref(p, &root, &rel, b, &diff_side, &base_side);
+    match &sides.after {
+        None => present_working(&p, &view, &root, &rel, &sides.before, &before_side),
+        Some(after) => {
+            let after_side = match resolve_side(&root, after) {
+                Ok(side) => side,
+                Err(e) => return decorate(p.html, &view, &fail_msg(&e, "unknown ref"), None),
+            };
+            present_two_ref(
+                &p,
+                &view,
+                &root,
+                &rel,
+                (&sides.before, &before_side),
+                (after, &after_side),
+            )
+        }
     }
-    present_working(p, &root, &rel, &diff_side)
 }
 
 /// `enabled == false` returns the stored HTML and does not spawn git.
@@ -1341,13 +1608,20 @@ fn load_text(root: &Path, rev: &str, rel: &str, changes: &[NameChange], side: &R
     }
 }
 
-fn present_working(p: Present<'_>, root: &Path, rel: &str, side: &RevSide) -> String {
+fn present_working(
+    p: &Present<'_>,
+    view: &View,
+    root: &Path,
+    rel: &str,
+    before: &str,
+    side: &RevSide,
+) -> String {
+    let named = view.before_name.as_str();
     let mut changes = match worktree_changes(root, side) {
         Ok(c) => c,
-        Err(GitFail::Dubious) => {
-            return decorate(p.html, p.diff, None, OWNERSHIP_MSG, None);
+        Err(e @ (GitFail::Dubious | GitFail::Missing)) => {
+            return decorate(p.html, view, &fail_msg(&e, ""), None);
         }
-        Err(GitFail::Missing) => return decorate(p.html, p.diff, None, "git not found", None),
         Err(_) => Vec::new(),
     };
     let disk = std::fs::read(p.source_path).ok();
@@ -1364,82 +1638,54 @@ fn present_working(p: Present<'_>, root: &Path, rel: &str, side: &RevSide) -> St
     });
     if let Some(text) = &new_text {
         if !text.is_empty() && !matches!(side, RevSide::Empty) {
-            attach_rename(&mut changes, root, p.diff, oid, rel, text);
+            attach_rename(&mut changes, root, before, oid, rel, text);
         }
     }
     let dots = file_dots_json(&changes);
-    let fail = |msg: &str| decorate(p.html, p.diff, None, msg, Some(&dots));
+    let fail = |msg: &str| decorate(p.html, view, msg, Some(&dots));
     if disk.as_ref().is_some_and(|b| b.contains(&0)) {
         return fail("not a text notebook");
     }
     let Some(new_text) = new_text else {
-        return match load_text(root, p.diff, rel, &changes, side) {
+        return match load_text(root, before, rel, &changes, side) {
             Loaded::Fail(msg) => fail(msg),
             Loaded::Binary => fail("not a text notebook"),
-            Loaded::Missing => fail(&format!("not on {} and not in the working copy", p.diff)),
+            Loaded::Missing => fail(&format!("not on {named} and not in the working copy")),
             Loaded::Text(old) => {
-                let banner = format!("deleted — not in the working copy (still on {})", p.diff);
                 let notice = format!(
-                    "This notebook is not in the working copy. It is still on {}.",
-                    p.diff
+                    "This notebook is not in the working copy. It is still on {named}."
                 );
                 deleted_page(p.html, &old, &notice, false, p.comments_on, |page| {
-                    decorate(&page, p.diff, None, &banner, Some(&dots))
+                    decorate(&page, view, "deleted from the working copy", Some(&dots))
                 })
             }
         };
     };
     if crate::embed::has_markdown_embeds(&new_text) {
-        return decorate(
-            p.html,
-            p.diff,
-            None,
-            "embeds are not part of this diff",
-            Some(&dots),
-        );
+        return fail("embeds are not part of this diff");
     }
-    let old_text = match load_text(root, p.diff, rel, &changes, side) {
+    let old_text = match load_text(root, before, rel, &changes, side) {
         Loaded::Binary => return fail("not a text notebook"),
         Loaded::Fail(msg) => return fail(msg),
         Loaded::Missing => {
-            let banner = format!("new file — not on {}", p.diff);
-            let notice = format!(
-                "This notebook is not on {}. Showing the working copy.",
-                p.diff
-            );
+            let notice = format!("This notebook is not on {named}. Showing the working copy.");
             let page = insert_notice(p.html, &notice);
-            return decorate(&page, p.diff, None, &banner, Some(&dots));
+            return decorate(&page, view, &format!("new file, not on {named}"), Some(&dots));
         }
         Loaded::Text(s) => s,
     };
-    let banner_for = |n: usize| {
-        if n == 0 {
-            format!("no changes vs {}", p.diff)
-        } else {
-            format!("{n} changes vs {}", p.diff)
-        }
-    };
     match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
-        Ok((html, n)) => decorate(&html, p.diff, None, &banner_for(n), Some(&dots)),
+        Ok((html, n)) => decorate(&html, view, &count_text(n), Some(&dots)),
         Err(_) => match render_aligned(&old_text, &new_text, p.comments_on, false) {
             // The stored sections don't match the file (an emptied
             // notebook, or a render that folded blocks differently).
             // Rebuild <main> so the added and removed blocks still show.
             Ok((inner, n)) => {
                 let page = replace_main(p.html, &inner);
-                decorate(&page, p.diff, None, &banner_for(n), Some(&dots))
+                decorate(&page, view, &count_text(n), Some(&dots))
             }
-            Err(msg) => decorate(p.html, p.diff, None, msg, Some(&dots)),
+            Err(msg) => decorate(p.html, view, msg, Some(&dots)),
         },
-    }
-}
-
-fn side_time(root: &Path, rev: &str, side: &RevSide) -> Result<i64, GitFail> {
-    match side {
-        // An unborn branch is older than every commit.
-        RevSide::Empty => Ok(i64::MIN),
-        RevSide::Index => commit_time(root, rev),
-        RevSide::Oid(_) => commit_time(root, rev),
     }
 }
 
@@ -1451,61 +1697,35 @@ fn blobs_for(root: &Path, rev: &str, side: &RevSide) -> Result<BTreeMap<String, 
     }
 }
 
+/// Both sides are refs: changes from `before` (base) to `after`
+/// (compare), as `git diff base compare` reads. Neither side runs.
 fn present_two_ref(
-    p: Present<'_>,
+    p: &Present<'_>,
+    view: &View,
     root: &Path,
     rel: &str,
-    base: &str,
-    diff_side: &RevSide,
-    base_side: &RevSide,
+    (before, before_side): (&str, &RevSide),
+    (after, after_side): (&str, &RevSide),
 ) -> String {
-    // `git diff A B` lists what changes from A to B. The page shows the
-    // newer commit. A tie, or either side `index`, keeps the `diff` param.
-    let show_diff = match (
-        matches!(diff_side, RevSide::Index),
-        matches!(base_side, RevSide::Index),
-    ) {
-        (true, _) | (_, true) => true,
-        _ => match (
-            side_time(root, p.diff, diff_side),
-            side_time(root, base, base_side),
-        ) {
-            (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
-                return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, None);
-            }
-            (Err(GitFail::Missing), _) | (_, Err(GitFail::Missing)) => {
-                return decorate(p.html, p.diff, Some(base), "git not found", None);
-            }
-            (Ok(d), Ok(b)) if b > d => false,
-            _ => true,
-        },
-    };
-    let (new_ref, new_side, old_ref, old_side) = if show_diff {
-        (p.diff, diff_side, base, base_side)
-    } else {
-        (base, base_side, p.diff, diff_side)
-    };
     let mut changes = match (
-        blobs_for(root, old_ref, old_side),
-        blobs_for(root, new_ref, new_side),
+        blobs_for(root, before, before_side),
+        blobs_for(root, after, after_side),
     ) {
         (Ok(old), Ok(new)) => diff_maps(&old, &new, true),
-        (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
-            return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, None);
-        }
-        (Err(GitFail::Missing), _) | (_, Err(GitFail::Missing)) => {
-            return decorate(p.html, p.diff, Some(base), "git not found", None);
+        (Err(e @ (GitFail::Dubious | GitFail::Missing)), _)
+        | (_, Err(e @ (GitFail::Dubious | GitFail::Missing))) => {
+            return decorate(p.html, view, &fail_msg(&e, ""), None);
         }
         _ => Vec::new(),
     };
-    if let Ok(Some(preview)) = load_named(root, new_ref, rel, &changes, new_side) {
+    if let Ok(Some(preview)) = load_named(root, after, rel, &changes, after_side) {
         if !preview.contains('\0') {
-            let old_rev = if matches!(old_side, RevSide::Index) {
+            let old_rev = if matches!(before_side, RevSide::Index) {
                 "index"
             } else {
-                old_ref
+                before
             };
-            let old_oid = match old_side {
+            let old_oid = match before_side {
                 RevSide::Oid(s) => Some(s.as_str()),
                 _ => None,
             };
@@ -1520,92 +1740,186 @@ fn present_two_ref(
         }
     }
     let dots = file_dots_json(&changes);
-    let newer = match (
-        matches!(diff_side, RevSide::Index) || matches!(base_side, RevSide::Index),
-        show_diff,
-    ) {
-        (true, _) => None,
-        (false, true) => match (
-            side_time(root, p.diff, diff_side),
-            side_time(root, base, base_side),
-        ) {
-            (Ok(d), Ok(b)) if d > b => Some(()),
-            (Err(GitFail::Dubious), _) | (_, Err(GitFail::Dubious)) => {
-                return decorate(p.html, p.diff, Some(base), OWNERSHIP_MSG, Some(&dots));
-            }
-            _ => None,
-        },
-        (false, false) => Some(()),
+    let fail = |msg: &str| decorate(p.html, view, msg, Some(&dots));
+    let before_name = view.before_name.as_str();
+    let after_name = if view.compare.is_empty() {
+        after
+    } else {
+        view.compare.as_str()
     };
-    let newer_word = if newer.is_some() { " (newer)" } else { "" };
-    let fail = |msg: &str| decorate(p.html, p.diff, Some(base), msg, Some(&dots));
 
-    let new_text = match load_text(root, new_ref, rel, &changes, new_side) {
+    let new_text = match load_text(root, after, rel, &changes, after_side) {
         Loaded::Fail(msg) => return fail(msg),
         Loaded::Binary => return fail("not a text notebook"),
         other => other,
     };
-    let old_text = match load_text(root, old_ref, rel, &changes, old_side) {
+    let old_text = match load_text(root, before, rel, &changes, before_side) {
         Loaded::Fail(msg) => return fail(msg),
         Loaded::Binary => return fail("not a text notebook"),
         other => other,
     };
-    let run_note = "code was not run";
     match (old_text, new_text) {
         (Loaded::Missing, Loaded::Missing) => {
-            let banner = format!("not on {new_ref} or {old_ref}");
             let page = insert_notice(
                 p.html,
-                &format!("This notebook is not on {new_ref} or {old_ref}."),
+                &format!("This notebook is not on {after_name} or {before_name}."),
             );
-            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+            decorate(
+                &page,
+                view,
+                &format!("not on {after_name} or {before_name}"),
+                Some(&dots),
+            )
         }
         (Loaded::Missing, Loaded::Text(text)) => {
-            let banner = format!("new file — not on {old_ref}; {run_note}");
-            let notice = format!("This notebook is not on {old_ref}. Showing {new_ref}.");
+            let notice =
+                format!("This notebook is not on {before_name}. Showing {after_name}.");
             let inner = format!(
                 "{}{}",
                 notice_html(&notice),
                 render_plain(&text, p.comments_on)
             );
             let page = replace_main(p.html, &inner);
-            decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+            decorate(
+                &page,
+                view,
+                &format!("new file, not on {before_name} · code was not run"),
+                Some(&dots),
+            )
         }
         (Loaded::Text(text), Loaded::Missing) => {
-            let banner = format!("not on {new_ref} — removed since {old_ref}; {run_note}");
-            let notice = format!("This notebook is not on {new_ref}. It is still on {old_ref}.");
+            let notice =
+                format!("This notebook is not on {after_name}. It is still on {before_name}.");
             deleted_page(p.html, &text, &notice, true, p.comments_on, |page| {
-                decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+                decorate(
+                    &page,
+                    view,
+                    &format!("not on {after_name} · code was not run"),
+                    Some(&dots),
+                )
             })
         }
         (Loaded::Text(old_text), Loaded::Text(new_text)) => {
-            let banner = format!("showing {new_ref}{newer_word} vs {old_ref} — {run_note}");
             if crate::embed::has_markdown_embeds(&new_text)
                 || crate::embed::has_markdown_embeds(&old_text)
             {
                 let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
                 return decorate(
                     &page,
-                    p.diff,
-                    Some(base),
-                    "embeds are not part of this diff — code was not run",
+                    view,
+                    "embeds are not part of this diff · code was not run",
                     Some(&dots),
                 );
             }
             match render_aligned(&old_text, &new_text, p.comments_on, true) {
-                Ok((inner, _)) => {
+                Ok((inner, n)) => {
                     let page = replace_main(p.html, &inner);
-                    decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+                    let status = format!("{} · code was not run", count_text(n));
+                    decorate(&page, view, &status, Some(&dots))
                 }
                 Err(msg) => {
                     let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
-                    let banner = format!("{msg} — code was not run");
-                    decorate(&page, p.diff, Some(base), &banner, Some(&dots))
+                    let status = format!("{msg} · code was not run");
+                    decorate(&page, view, &status, Some(&dots))
                 }
             }
         }
         _ => fail("not a text notebook"),
     }
+}
+
+/// `GET /git/changes` body: a change count for each preset, so the menu
+/// shows `4 changes` before one is picked. Reads blobs and the file on
+/// disk; never runs a notebook. `enabled == false` does not spawn git.
+pub fn changes_json_if(
+    enabled: bool,
+    source_path: &Path,
+    jail: Option<&Path>,
+    comments_on: bool,
+) -> String {
+    if !enabled {
+        return serde_json::json!({ "error": "git diff is off" }).to_string();
+    }
+    match changes_json(source_path, jail, comments_on) {
+        Ok(body) => body,
+        Err(msg) => serde_json::json!({ "error": msg }).to_string(),
+    }
+}
+
+fn changes_json(source_path: &Path, jail: Option<&Path>, comments_on: bool) -> Result<String, String> {
+    use serde_json::json;
+    let start = source_path.parent().unwrap_or(source_path);
+    let root = repo_root(start).map_err(|e| fail_msg(&e, "not a git repository"))?;
+    let rel = safe_rel(source_path, jail, &root)
+        .map_err(|_| "path escapes notebook directory".to_string())?;
+    let disk: Option<String> = std::fs::read(source_path)
+        .ok()
+        .filter(|b| !b.contains(&0))
+        .map(|b| normalize_eol(&String::from_utf8_lossy(&b)));
+    let head = match verify(&root, "HEAD") {
+        Ok(oid) => Some(oid),
+        Err(e @ (GitFail::Missing | GitFail::Dubious)) => return Err(fail_msg(&e, "")),
+        Err(_) => None,
+    };
+    let current = current_branch(&root).map_err(|e| fail_msg(&e, "unknown branch"))?;
+    let default = default_branch(&root).map_err(|e| fail_msg(&e, "no default branch"))?;
+    let at = |oid: &str| -> Option<String> {
+        match load_text(&root, oid, &rel, &[], &RevSide::Oid(oid.to_string())) {
+            Loaded::Text(t) => Some(t),
+            _ => None,
+        }
+    };
+    let count = |old: Option<String>, new: Option<String>| -> serde_json::Value {
+        match (old, new) {
+            (Some(o), Some(n)) => {
+                if crate::embed::has_markdown_embeds(&o) || crate::embed::has_markdown_embeds(&n) {
+                    return json!({ "count": null, "note": "embeds are not part of this diff" });
+                }
+                match align(&o, &n, comments_on) {
+                    Ok((marks, removed, _)) => json!({ "count": count_changes(&marks, &removed) }),
+                    Err(msg) => json!({ "count": null, "note": msg }),
+                }
+            }
+            (None, Some(_)) => json!({ "count": null, "note": "new file" }),
+            (Some(_), None) => json!({ "count": null, "note": "deleted" }),
+            (None, None) => json!({ "count": null, "note": "not in this commit" }),
+        }
+    };
+    let uncommitted = match &head {
+        Some(h) => count(at(h), disk.clone()),
+        None => count(None, disk.clone()),
+    };
+    let last = match &head {
+        None => json!({ "count": null, "disabled": "No commits yet" }),
+        Some(h) => match read_commit(&root, h).ok().and_then(|info| info.parent) {
+            None => json!({ "count": null, "disabled": "No earlier commit to compare with" }),
+            Some(parent) => count(at(&parent), at(h)),
+        },
+    };
+    let branch = match (&default, &head) {
+        (None, _) => json!({ "hidden": true }),
+        (Some(d), _) if on_default(current.as_deref(), d) => json!({ "hidden": true }),
+        (Some(_), None) => json!({ "hidden": true }),
+        (Some(d), Some(h)) => match verify(&root, d).and_then(|tip| merge_base(&root, h, &tip)) {
+            Ok(base) => {
+                let mut v = count(at(&base), disk.clone());
+                v["base"] = json!(short(&base));
+                v
+            }
+            Err(_) => json!({ "count": null, "disabled": format!("No common history with {d}") }),
+        },
+    };
+    Ok(json!({
+        "error": null,
+        "current": current,
+        "default": default,
+        "head": head.as_deref().map(short),
+        "uncommitted": uncommitted,
+        "branch": branch,
+        "last": last,
+    })
+    .to_string()
+    .replace('<', "\\u003c"))
 }
 
 fn stamp_working(
@@ -1616,7 +1930,8 @@ fn stamp_working(
 ) -> Result<(String, usize), &'static str> {
     let (marks, removed, units) = align(old, new_src, comments_on)?;
     let sections = split_blocks(html);
-    if sections.len() != units.len() {
+    let blocks = units.last().map_or(0, |u| u.block + 1);
+    if sections.len() != blocks {
         return Err("could not align");
     }
     let n = count_changes(&marks, &removed);
@@ -1634,30 +1949,389 @@ fn stamp_working(
         ranges.push((start, end));
         cursor = end;
     }
-    let mut out = String::with_capacity(html.len() + 1024);
+    let groups = group_removed(&removed);
+    let mut out = String::with_capacity(html.len() + 2048);
     cursor = 0;
+    let mut lo = 0usize;
     for (idx, (start, end)) in ranges.iter().enumerate() {
-        out.push_str(&html[cursor..*start]);
-        for (at, unit) in &removed {
-            if *at == idx {
-                out.push_str(&removed_section(unit));
-            }
+        let mut hi = lo;
+        while hi < units.len() && units[hi].block == idx {
+            hi += 1;
         }
-        out.push_str(&stamp_section(
+        out.push_str(&html[cursor..*start]);
+        if let Some(g) = groups.get(&lo) {
+            out.push_str(&removed_html(g, true));
+        }
+        out.push_str(&stamp_block(
             &sections[idx].html,
-            &marks[idx],
-            &units[idx],
-            false,
+            &units[lo..hi],
+            &marks[lo..hi],
+            lo,
+            &groups,
         ));
         cursor = *end;
+        lo = hi;
     }
-    for (at, unit) in &removed {
-        if *at == units.len() {
-            out.push_str(&removed_section(unit));
-        }
+    if let Some(g) = groups.get(&units.len()) {
+        out.push_str(&removed_html(g, true));
     }
     out.push_str(&html[cursor..]);
     Ok((out, n))
+}
+
+/// Stamp one rendered section. Prose marks each top-level element; when
+/// the elements do not line up with the source parts (raw HTML, a
+/// footnote), the whole section is marked instead.
+fn stamp_block(
+    section: &str,
+    units: &[Unit],
+    marks: &[Mark],
+    lo: usize,
+    groups: &BTreeMap<usize, Vec<&Unit>>,
+) -> String {
+    let inner: BTreeMap<usize, Vec<&Unit>> = groups
+        .range(lo + 1..lo + units.len())
+        .map(|(k, v)| (k - lo, v.clone()))
+        .collect();
+    let all_same = marks.iter().all(|m| matches!(m, Mark::Same));
+    if all_same && inner.is_empty() {
+        return section.to_string();
+    }
+    if units.len() == 1 && units[0].part.is_none() {
+        return stamp_whole(section, &marks[0], &units[0]);
+    }
+    if units[0].kind == Kind::Prose && units[0].part.is_some() {
+        if let Some(s) = stamp_prose(section, units, marks, &inner) {
+            return s;
+        }
+    }
+    let mut out = String::new();
+    for g in inner.values() {
+        out.push_str(&removed_html(g, true));
+    }
+    match marks.iter().position(|m| !matches!(m, Mark::Same)) {
+        None => out.push_str(section),
+        Some(k) => {
+            let added = marks.iter().all(|m| matches!(m, Mark::Added));
+            let (class, state) = if added {
+                (ADD_CLASS, "added")
+            } else {
+                (MOD_CLASS, "modified")
+            };
+            out.push_str(&mark_open_tag(section, class, &dx_attrs(state, &units[k].place)));
+        }
+    }
+    out
+}
+
+const ADD_CLASS: &str = "rl-dx rl-dx-add";
+const MOD_CLASS: &str = "rl-dx rl-dx-mod";
+
+fn stamp_whole(section: &str, mark: &Mark, unit: &Unit) -> String {
+    match mark {
+        Mark::Same => section.to_string(),
+        Mark::Added => mark_open_tag(section, ADD_CLASS, &dx_attrs("added", &unit.place)),
+        Mark::Changed { old_text } => {
+            let s = mark_open_tag(section, MOD_CLASS, &dx_attrs("modified", &unit.place));
+            match unit.kind {
+                Kind::Code | Kind::Mermaid | Kind::Widget => {
+                    let listing = code_listing(old_text, &unit.text, unit.kind);
+                    let s = replace_source_pre(&s, &listing);
+                    if unit.kind == Kind::Code {
+                        insert_before_close(
+                            &s,
+                            "<p class=\"rl-dx-note\">Output is from your current file.</p>\n",
+                        )
+                    } else {
+                        s
+                    }
+                }
+                Kind::Prose | Kind::Callout => s,
+            }
+        }
+    }
+}
+
+/// Mark the top-level elements of one prose section. `None` when the
+/// rendered elements do not line up with the source parts.
+fn stamp_prose(
+    section: &str,
+    units: &[Unit],
+    marks: &[Mark],
+    inner: &BTreeMap<usize, Vec<&Unit>>,
+) -> Option<String> {
+    const OPEN: &str = "<div class=\"prose\">";
+    let start = section.find(OPEN)? + OPEN.len();
+    let (elems, _) = top_elements(&section[start..])?;
+    if elems.len() != units.len() {
+        return None;
+    }
+    let mut out = String::with_capacity(section.len() + 1024);
+    out.push_str(&section[..start]);
+    let mut cursor = 0usize;
+    for (k, r) in elems.iter().enumerate() {
+        out.push_str(&section[start + cursor..start + r.start]);
+        if let Some(g) = inner.get(&k) {
+            out.push_str(&removed_html(g, false));
+        }
+        let el = &section[start + r.start..start + r.end];
+        out.push_str(&match &marks[k] {
+            Mark::Same => el.to_string(),
+            Mark::Added => mark_open_tag(el, ADD_CLASS, &dx_attrs("added", &units[k].place)),
+            Mark::Changed { .. } => {
+                mark_open_tag(el, MOD_CLASS, &dx_attrs("modified", &units[k].place))
+            }
+        });
+        cursor = r.end;
+    }
+    out.push_str(&section[start + cursor..]);
+    Some(out)
+}
+
+const VOID_TAGS: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+    "track", "wbr",
+];
+
+/// Byte ranges of the top-level elements in `s`, up to the first closing
+/// tag at depth zero (the end of the enclosing `<div>`), plus where that
+/// tag starts. `None` for top-level text or unbalanced markup.
+fn top_elements(s: &str) -> Option<(Vec<std::ops::Range<usize>>, usize)> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    loop {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= b.len() || b[i] != b'<' {
+            return None;
+        }
+        if s[i..].starts_with("<!--") {
+            i += s[i..].find("-->")? + 3;
+            continue;
+        }
+        if s[i..].starts_with("</") {
+            return Some((out, i));
+        }
+        let start = i;
+        let mut depth = 0usize;
+        loop {
+            let lt = i + s[i..].find('<')?;
+            if s[lt..].starts_with("<!--") {
+                i = lt + s[lt..].find("-->")? + 3;
+                continue;
+            }
+            let gt = lt + s[lt..].find('>')?;
+            let tag = &s[lt + 1..gt];
+            if tag.starts_with('/') {
+                depth = depth.checked_sub(1)?;
+            } else {
+                let name: String = tag
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if !(tag.ends_with('/') || VOID_TAGS.contains(&name.as_str())) {
+                    depth += 1;
+                }
+            }
+            i = gt + 1;
+            if depth == 0 {
+                break;
+            }
+        }
+        out.push(start..i);
+    }
+}
+
+/// Add `class` and `attrs` to the first opening tag of `elem`.
+fn mark_open_tag(elem: &str, class: &str, attrs: &str) -> String {
+    let Some(gt) = elem.find('>') else {
+        return elem.to_string();
+    };
+    let (tag, close) = match elem[..gt].strip_suffix('/') {
+        Some(t) => (t, "/"),
+        None => (&elem[..gt], ""),
+    };
+    let tag = if let Some(c) = tag.find(" class=\"") {
+        let at = c + " class=\"".len();
+        format!("{}{class} {}", &tag[..at], &tag[at..])
+    } else {
+        format!("{tag} class=\"{class}\"")
+    };
+    format!("{tag}{attrs}{close}{}", &elem[gt..])
+}
+
+fn dx_attrs(state: &str, place: &str) -> String {
+    format!(
+        " data-rl-dx=\"{state}\" data-rl-where=\"{}\"",
+        escape_html(place)
+    )
+}
+
+fn insert_before_close(section: &str, extra: &str) -> String {
+    match section.rfind("</section>") {
+        Some(end) => {
+            let mut s = section.to_string();
+            s.insert_str(end, extra);
+            s
+        }
+        None => format!("{section}{extra}"),
+    }
+}
+
+/// Swap the cell's source listing for the diff listing, so the source
+/// shows once. A section without a source `<pre>` (a widget, a hidden
+/// cell) gets the listing in its own disclosure.
+fn replace_source_pre(section: &str, listing: &str) -> String {
+    const OPEN: &str = "<pre class=\"source\"><code>";
+    const CLOSE: &str = "</code></pre>";
+    if let Some(start) = section.find(OPEN) {
+        if let Some(rel) = section[start..].find(CLOSE) {
+            let end = start + rel + CLOSE.len();
+            return format!("{}{listing}{}", &section[..start], &section[end..]);
+        }
+    }
+    insert_before_close(
+        section,
+        &format!(
+            "<details class=\"rl-dx-src\" open><summary>Source changes</summary>{listing}</details>\n"
+        ),
+    )
+}
+
+/// One listing that is the diff: unchanged lines, then removed and added
+/// lines marked in the gutter. Rustlab lines keep their syntax colors.
+fn code_listing(old: &str, new_src: &str, kind: Kind) -> String {
+    let hl = |s: &str| {
+        if kind == Kind::Code {
+            crate::render::highlight_rustlab(s)
+        } else {
+            escape_html(s)
+        }
+    };
+    let old = old.trim_end_matches('\n');
+    let new_src = new_src.trim_end_matches('\n');
+    let a: Vec<&str> = old.split('\n').collect();
+    let b: Vec<&str> = new_src.split('\n').collect();
+    if a.len() > MAX_LINES || b.len() > MAX_LINES {
+        return format!(
+            "<pre class=\"source rl-dx-code\"><code>{}</code></pre><p class=\"rl-dx-note\">Line diff omitted (too long).</p>",
+            hl(new_src)
+        );
+    }
+    let ops = diff_ops(a.len(), b.len(), |i, j| a[i] == b[j]);
+    let mut html = String::from("<pre class=\"source rl-dx-code\"><code>");
+    let (mut i, mut j) = (0usize, 0usize);
+    for op in &ops {
+        let (class, sign, text) = match op {
+            Op::Eq(_) => {
+                let t = b[j];
+                i += 1;
+                j += 1;
+                ("rl-ln", "", t)
+            }
+            Op::Del(_) => {
+                let t = a[i];
+                i += 1;
+                ("rl-ln rl-ln-del", "−", t)
+            }
+            Op::Ins(_) => {
+                let t = b[j];
+                j += 1;
+                ("rl-ln rl-ln-add", "+", t)
+            }
+        };
+        html.push_str(&format!(
+            "<span class=\"{class}\"><span class=\"rl-ln-g\" aria-hidden=\"true\">{sign}</span>{}</span>",
+            hl(text)
+        ));
+    }
+    html.push_str("</code></pre>");
+    html
+}
+
+/// Removed units by the new-side unit they sit before.
+fn group_removed(removed: &[(usize, Unit)]) -> BTreeMap<usize, Vec<&Unit>> {
+    let mut out: BTreeMap<usize, Vec<&Unit>> = BTreeMap::new();
+    for (at, unit) in removed {
+        out.entry(*at).or_default().push(unit);
+    }
+    out
+}
+
+/// A run of removed units, collapsed to one summary line.
+fn removed_html(group: &[&Unit], wrap_section: bool) -> String {
+    let place = group.first().map(|u| u.place.as_str()).unwrap_or("");
+    let mut body = String::new();
+    for u in group {
+        body.push_str(&match u.kind {
+            Kind::Prose | Kind::Callout => {
+                format!("<div class=\"prose\">\n{}</div>\n", markdown_to_html(&u.text))
+            }
+            Kind::Code => format!(
+                "<pre class=\"source\"><code>{}</code></pre>\n",
+                crate::render::highlight_rustlab(&u.text)
+            ),
+            Kind::Mermaid | Kind::Widget => format!(
+                "<pre class=\"source\"><code>{}</code></pre>\n",
+                escape_html(&u.text)
+            ),
+        });
+    }
+    let fp: Vec<&str> = group.iter().map(|u| u.fp.as_str()).collect();
+    let id = blake_id(&fp.join("\0"));
+    let details = format!(
+        "<details class=\"rl-dx rl-dx-del rl-dx-removed\" id=\"dx-del-{id:08x}\"{}><summary><b>Removed</b> · {}</summary><div class=\"rl-dx-gone\">\n{body}</div></details>\n",
+        dx_attrs("removed", place),
+        escape_html(&removed_summary(group)),
+    );
+    if wrap_section {
+        format!("<section class=\"rl-block\" id=\"b-gitdel-{id:08x}\">\n{details}</section>\n")
+    } else {
+        details
+    }
+}
+
+/// `“Old notes” heading and 1 paragraph`, `2 code cells`.
+fn removed_summary(group: &[&Unit]) -> String {
+    let mut bits: Vec<String> = Vec::new();
+    let mut counts: Vec<(&'static str, usize)> = Vec::new();
+    let mut named = false;
+    for u in group {
+        if u.kind == Kind::Prose && u.sub == "heading" && !named && !u.place.is_empty() {
+            bits.push(format!("“{}” heading", u.place));
+            named = true;
+            continue;
+        }
+        let noun = match u.kind {
+            Kind::Prose => match u.sub {
+                "heading" | "paragraph" | "list" | "table" | "quote" | "code block" => u.sub,
+                _ => "block",
+            },
+            Kind::Code => "code cell",
+            Kind::Mermaid => "diagram",
+            Kind::Widget => "widget",
+            Kind::Callout => "callout",
+        };
+        match counts.iter_mut().find(|(n, _)| *n == noun) {
+            Some(c) => c.1 += 1,
+            None => counts.push((noun, 1)),
+        }
+    }
+    for (noun, n) in counts {
+        bits.push(if n == 1 {
+            format!("1 {noun}")
+        } else {
+            format!("{n} {noun}s")
+        });
+    }
+    match bits.len() {
+        0 => String::new(),
+        1 => bits.remove(0),
+        n => format!("{} and {}", bits[..n - 1].join(", "), bits[n - 1]),
+    }
 }
 
 fn render_aligned(
@@ -1668,22 +2342,19 @@ fn render_aligned(
 ) -> Result<(String, usize), &'static str> {
     let (marks, removed, units) = align(old, new_src, comments_on)?;
     let n = count_changes(&marks, &removed);
+    let groups = group_removed(&removed);
     let mut body = String::new();
     if two_ref {
-        body.push_str("<p class=\"rl-diff-note\">code was not run</p>\n");
+        body.push_str("<p class=\"rl-dx-note\">Code was not run.</p>\n");
     }
     for (idx, unit) in units.iter().enumerate() {
-        for (at, gone) in &removed {
-            if *at == idx {
-                body.push_str(&removed_section(gone));
-            }
+        if let Some(g) = groups.get(&idx) {
+            body.push_str(&removed_html(g, true));
         }
-        body.push_str(&fresh_section(unit, &marks[idx], idx, two_ref));
+        body.push_str(&fresh_section(unit, &marks[idx], idx));
     }
-    for (at, gone) in &removed {
-        if *at == units.len() {
-            body.push_str(&removed_section(gone));
-        }
+    if let Some(g) = groups.get(&units.len()) {
+        body.push_str(&removed_html(g, true));
     }
     Ok((body, n))
 }
@@ -1691,15 +2362,62 @@ fn render_aligned(
 fn render_plain(src: &str, comments_on: bool) -> String {
     let prepared = prepare(src, comments_on);
     let units = units_of(&prepared);
-    let mut body = String::from("<p class=\"rl-diff-note\">code was not run</p>\n");
+    let mut body = String::from("<p class=\"rl-dx-note\">Code was not run.</p>\n");
     for (idx, unit) in units.iter().enumerate() {
-        body.push_str(&fresh_section(unit, &Mark::Same, idx, true));
+        body.push_str(&fresh_section(unit, &Mark::Same, idx));
     }
     body
 }
 
+/// A section built from source, for pages that are not the stored
+/// render: two refs, a deleted notebook, or a render that did not line
+/// up. Each prose part is its own section.
+fn fresh_section(unit: &Unit, mark: &Mark, idx: usize) -> String {
+    let body = match unit.kind {
+        Kind::Code | Kind::Mermaid | Kind::Widget => {
+            let listing = match mark {
+                Mark::Changed { old_text } => code_listing(old_text, &unit.text, unit.kind),
+                _ if unit.kind == Kind::Code => format!(
+                    "<pre class=\"source\"><code>{}</code></pre>",
+                    crate::render::highlight_rustlab(&unit.text)
+                ),
+                _ => format!(
+                    "<pre class=\"source\"><code>{}</code></pre>",
+                    escape_html(&unit.text)
+                ),
+            };
+            let lang = match unit.kind {
+                Kind::Code => "rustlab",
+                Kind::Mermaid => "mermaid",
+                _ => "widget",
+            };
+            format!(
+                "<div class=\"code-block\"><div class=\"rl-cell\">\
+<details class=\"rl-src\" open><summary class=\"rl-lang\">{lang}</summary>{listing}</details>\
+</div></div>\n"
+            )
+        }
+        Kind::Prose | Kind::Callout => {
+            format!(
+                "<div class=\"prose\">\n{}\n</div>\n",
+                markdown_to_html(&unit.text)
+            )
+        }
+    };
+    let section = format!("<section class=\"rl-block\" id=\"b-git-{idx}\">\n{body}</section>\n");
+    match mark {
+        Mark::Same => section,
+        Mark::Added => mark_open_tag(&section, ADD_CLASS, &dx_attrs("added", &unit.place)),
+        Mark::Changed { .. } => {
+            mark_open_tag(&section, MOD_CLASS, &dx_attrs("modified", &unit.place))
+        }
+    }
+}
+
+/// Changed and added units, plus one per run of removed units.
 fn count_changes(marks: &[Mark], removed: &[(usize, Unit)]) -> usize {
-    marks.iter().filter(|m| !matches!(m, Mark::Same)).count() + removed.len()
+    let runs: std::collections::BTreeSet<usize> = removed.iter().map(|(at, _)| *at).collect();
+    marks.iter().filter(|m| !matches!(m, Mark::Same)).count() + runs.len()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1714,8 +2432,17 @@ enum Kind {
 #[derive(Clone, Debug)]
 struct Unit {
     kind: Kind,
+    /// Top-level markdown kind for prose (`heading`, `paragraph`, …).
+    /// Only units with the same kind and `sub` pair up as modified.
+    sub: &'static str,
     fp: String,
     text: String,
+    /// The rendered `<section>` this unit sits in.
+    block: usize,
+    /// Position among that section's top-level prose elements.
+    part: Option<usize>,
+    /// Where it is, for the change list: `Results ¶2`, `Code cell 3`.
+    place: String,
 }
 
 #[derive(Debug)]
@@ -1746,7 +2473,7 @@ fn align(
     }
     let old_u = units_of(&prepare(old, comments_on));
     let new_u = units_of(&prepare(new_src, comments_on));
-    if old_u.len() > MAX_BLOCKS || new_u.len() > MAX_BLOCKS {
+    if old_u.len() > MAX_UNITS || new_u.len() > MAX_UNITS {
         return Err("diff was too large");
     }
     let ops = diff_ops(old_u.len(), new_u.len(), |i, j| old_u[i].fp == new_u[j].fp);
@@ -1754,7 +2481,8 @@ fn align(
     Ok((marks, removed, new_u))
 }
 
-/// Document-order labels: `same`, `added`, `changed`, `removed`.
+/// Document-order labels: `same`, `added`, `changed`, `removed`, one per
+/// unit (a prose unit is a heading, paragraph, list, …).
 pub fn align_sides(
     old: &str,
     new_src: &str,
@@ -1894,9 +2622,11 @@ fn apply_hunk(
             del_used[di] = true;
             ins_used[ii] = true;
             marks[ins[ii]] = Mark::Added;
-            removed.push((anchor, clone_unit(&old[oi])));
+            removed.push((anchor, old[oi].clone()));
         }
     }
+    // A removal that follows a kept or edited unit is shown after it.
+    let mut at = anchor;
     let mut di = 0;
     let mut ii = 0;
     loop {
@@ -1909,33 +2639,47 @@ fn apply_hunk(
         if di >= dels.len() && ii >= ins.len() {
             break;
         }
-        if di < dels.len() && ii < ins.len() && old[dels[di]].kind == new_u[ins[ii]].kind {
+        let pair = di < dels.len()
+            && ii < ins.len()
+            && old[dels[di]].kind == new_u[ins[ii]].kind
+            && old[dels[di]].sub == new_u[ins[ii]].sub;
+        if pair {
             marks[ins[ii]] = Mark::Changed {
                 old_text: old[dels[di]].text.clone(),
             };
+            at = ins[ii] + 1;
             di += 1;
             ii += 1;
         } else if di < dels.len() {
-            removed.push((anchor, clone_unit(&old[dels[di]])));
+            removed.push((at, old[dels[di]].clone()));
             di += 1;
         } else {
             marks[ins[ii]] = Mark::Added;
+            at = ins[ii] + 1;
             ii += 1;
         }
     }
 }
 
-fn clone_unit(u: &Unit) -> Unit {
+fn unit(kind: Kind, sub: &'static str, fp: String, text: String, block: usize) -> Unit {
     Unit {
-        kind: u.kind,
-        fp: u.fp.clone(),
-        text: u.text.clone(),
+        kind,
+        sub,
+        fp,
+        text,
+        block,
+        part: None,
+        place: String::new(),
     }
 }
 
+/// Comparison units: one per code, mermaid, widget, or callout block, and
+/// one per top-level markdown element (heading, paragraph, list, …)
+/// inside a prose run.
 fn units_of(src: &str) -> Vec<Unit> {
     let blocks = crate::parse::parse_notebook(src);
     let mut out = Vec::new();
+    let mut block = 0usize;
     let mut i = 0;
     while i < blocks.len() {
         match &blocks[i] {
@@ -1952,22 +2696,89 @@ fn units_of(src: &str) -> Vec<Unit> {
                 }
                 if let Some(Block::Code { source, directives }) = blocks.get(i) {
                     parts.push(code_fp(source, directives));
-                    let text = source.clone();
-                    out.push(Unit {
-                        kind: Kind::Code,
-                        fp: format!("panel\0{}", parts.join("\0")),
-                        text,
-                    });
+                    let fp = format!("panel\0{}", parts.join("\0"));
+                    out.push(unit(Kind::Code, "", fp, source.clone(), block));
+                    block += 1;
                     i += 1;
                 }
             }
+            Block::Markdown(s) => {
+                let md = crate::render::transform_wikilinks(s);
+                let parts = crate::render::prose_parts(&md);
+                if parts.is_empty() {
+                    out.push(unit(Kind::Prose, "prose", format!("md\0{s}"), s.clone(), block));
+                } else {
+                    for (n, (sub, text)) in parts.into_iter().enumerate() {
+                        let mut u = unit(Kind::Prose, sub, format!("md\0{sub}\0{text}"), text, block);
+                        u.part = Some(n);
+                        out.push(u);
+                    }
+                }
+                block += 1;
+                i += 1;
+            }
             other => {
-                if let Some(unit) = unit_of(other) {
-                    out.push(unit);
+                if let Some(u) = unit_of(other, block) {
+                    out.push(u);
+                    block += 1;
                 }
                 i += 1;
             }
         }
+    }
+    label_places(&mut out);
+    out
+}
+
+/// `Results ¶2` for prose (nearest heading above, then the count of
+/// non-heading parts since it), `Code cell 3` for code.
+fn label_places(units: &mut [Unit]) {
+    let mut heading = String::new();
+    let mut para = 0usize;
+    let mut code = 0usize;
+    let mut diagram = 0usize;
+    for u in units.iter_mut() {
+        u.place = match u.kind {
+            Kind::Prose if u.sub == "heading" => {
+                heading = heading_title(&u.text);
+                para = 0;
+                heading.clone()
+            }
+            Kind::Prose => {
+                para += 1;
+                if heading.is_empty() {
+                    format!("¶{para}")
+                } else {
+                    format!("{heading} ¶{para}")
+                }
+            }
+            Kind::Code => {
+                code += 1;
+                format!("Code cell {code}")
+            }
+            Kind::Mermaid => {
+                diagram += 1;
+                format!("Diagram {diagram}")
+            }
+            Kind::Widget => "Widget".into(),
+            Kind::Callout if heading.is_empty() => "Callout".into(),
+            Kind::Callout => format!("{heading} callout"),
+        };
+    }
+}
+
+/// Heading text without `#`, a trailing `{#id}`, or closing hashes.
+fn heading_title(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("").trim();
+    let t = line.trim_start_matches('#').trim();
+    let t = match t.rfind(" {#") {
+        Some(i) if t.ends_with('}') => &t[..i],
+        _ => t,
+    };
+    let t = t.trim_end_matches('#').trim();
+    let mut out: String = t.chars().take(60).collect();
+    if t.chars().count() > 60 {
+        out.push('…');
     }
     out
 }
@@ -1983,41 +2794,45 @@ fn panel_at(blocks: &[Block], idx: usize) -> bool {
     matches!(blocks.get(i), Some(Block::Code { .. }))
 }
 
-fn unit_of(block: &Block) -> Option<Unit> {
+fn unit_of(block: &Block, idx: usize) -> Option<Unit> {
     match block {
-        Block::Markdown(s) => Some(Unit {
-            kind: Kind::Prose,
-            fp: format!("md\0{s}"),
-            text: s.clone(),
-        }),
-        Block::Code { source, directives } => Some(Unit {
-            kind: Kind::Code,
-            fp: code_fp(source, directives),
-            text: source.clone(),
-        }),
-        Block::Mermaid { source, directives } => Some(Unit {
-            kind: Kind::Mermaid,
-            fp: mermaid_fp(source, directives),
-            text: source.clone(),
-        }),
-        Block::Widget { source, .. } => Some(Unit {
-            kind: Kind::Widget,
-            fp: format!("w\0{source}"),
-            text: source.clone(),
-        }),
+        Block::Markdown(s) => Some(unit(Kind::Prose, "prose", format!("md\0{s}"), s.clone(), idx)),
+        Block::Code { source, directives } => Some(unit(
+            Kind::Code,
+            "",
+            code_fp(source, directives),
+            source.clone(),
+            idx,
+        )),
+        Block::Mermaid { source, directives } => Some(unit(
+            Kind::Mermaid,
+            "",
+            mermaid_fp(source, directives),
+            source.clone(),
+            idx,
+        )),
+        Block::Widget { source, .. } => Some(unit(
+            Kind::Widget,
+            "",
+            format!("w\0{source}"),
+            source.clone(),
+            idx,
+        )),
         Block::Callout {
             kind,
             title,
             content,
-        } => Some(Unit {
-            kind: Kind::Callout,
-            fp: format!(
+        } => Some(unit(
+            Kind::Callout,
+            "",
+            format!(
                 "c\0{}\0{}\0{content}",
                 callout_tag(*kind),
                 title.as_deref().unwrap_or("")
             ),
-            text: content.clone(),
-        }),
+            content.clone(),
+            idx,
+        )),
         Block::ExerciseStart | Block::SolutionStart => None,
     }
 }
@@ -2054,97 +2869,6 @@ fn callout_tag(k: CalloutKind) -> &'static str {
     }
 }
 
-fn stamp_section(section: &str, mark: &Mark, unit: &Unit, _two: bool) -> String {
-    match mark {
-        Mark::Same => section.to_string(),
-        Mark::Added => {
-            let s = with_class(section, "rl-diff rl-diff-add");
-            insert_after_open(&s, "<span class=\"rl-diff-tag\">added</span>")
-        }
-        Mark::Changed { old_text } => {
-            let mut s = with_class(section, "rl-diff rl-diff-chg");
-            s = insert_after_open(&s, "<span class=\"rl-diff-tag\">changed</span>");
-            if matches!(unit.kind, Kind::Code | Kind::Mermaid) {
-                let lines = line_diff_html(old_text, &unit.text);
-                let note = "<p class=\"rl-diff-note\">output is the working copy</p>";
-                s = inject_after_source(&s, &lines, note);
-            }
-            s
-        }
-    }
-}
-
-fn fresh_section(unit: &Unit, mark: &Mark, idx: usize, two_ref: bool) -> String {
-    let (class, tag, old) = match mark {
-        Mark::Same => ("", "", None),
-        Mark::Added => (" rl-diff rl-diff-add", "added", None),
-        Mark::Changed { old_text } => (" rl-diff rl-diff-chg", "changed", Some(old_text.as_str())),
-    };
-    let tag_html = if tag.is_empty() {
-        String::new()
-    } else {
-        format!("<span class=\"rl-diff-tag\">{tag}</span>")
-    };
-    let note = if two_ref && matches!(unit.kind, Kind::Code | Kind::Mermaid) {
-        "<p class=\"rl-diff-note\">code was not run</p>\n"
-    } else if !two_ref && old.is_some() && matches!(unit.kind, Kind::Code | Kind::Mermaid) {
-        "<p class=\"rl-diff-note\">output is the working copy</p>\n"
-    } else {
-        ""
-    };
-    let body = match unit.kind {
-        Kind::Code | Kind::Mermaid => {
-            let lines = old
-                .map(|o| line_diff_html(o, &unit.text))
-                .unwrap_or_default();
-            let lang = if unit.kind == Kind::Code {
-                "rustlab"
-            } else {
-                "mermaid"
-            };
-            format!(
-                "<div class=\"code-block\"><div class=\"rl-cell\">\
-<details class=\"rl-src\" open><summary class=\"rl-lang\">{lang}</summary>\
-<pre class=\"source\"><code>{}</code></pre>{lines}</details>\
-{note}</div></div>\n",
-                escape_html(&unit.text)
-            )
-        }
-        Kind::Prose | Kind::Callout => {
-            format!(
-                "<div class=\"prose\">\n{}\n</div>\n{note}",
-                markdown_to_html(&unit.text)
-            )
-        }
-        Kind::Widget => format!(
-            "<pre class=\"source\"><code>{}</code></pre>\n{note}",
-            escape_html(&unit.text)
-        ),
-    };
-    format!("<section class=\"rl-block{class}\" id=\"b-git-{idx}\">\n{tag_html}{body}</section>\n")
-}
-
-fn removed_section(unit: &Unit) -> String {
-    let body = match unit.kind {
-        Kind::Code | Kind::Mermaid | Kind::Widget => {
-            format!(
-                "<pre class=\"source\"><code>{}</code></pre>\n<p class=\"rl-diff-note\">removed</p>\n",
-                escape_html(&unit.text)
-            )
-        }
-        Kind::Prose | Kind::Callout => {
-            format!(
-                "<div class=\"prose\">\n{}\n</div>\n<p class=\"rl-diff-note\">removed</p>\n",
-                markdown_to_html(&unit.text)
-            )
-        }
-    };
-    format!(
-        "<section class=\"rl-block rl-diff rl-diff-del\" id=\"b-gitdel-{}\">\n{body}</section>\n",
-        blake_id(&unit.fp)
-    )
-}
-
 fn blake_id(s: &str) -> u32 {
     // A short stable id. Not a hash crate — a multiply-xor of the bytes.
     let mut h: u32 = 2166136261;
@@ -2153,86 +2877,6 @@ fn blake_id(s: &str) -> u32 {
         h = h.wrapping_mul(16777619);
     }
     h
-}
-
-fn with_class(section: &str, class: &str) -> String {
-    section.replacen(
-        "<section class=\"rl-block\"",
-        &format!("<section class=\"rl-block {class}\""),
-        1,
-    )
-}
-
-fn insert_after_open(section: &str, extra: &str) -> String {
-    match section.find('>') {
-        Some(i) => {
-            let mut s = String::with_capacity(section.len() + extra.len());
-            s.push_str(&section[..=i]);
-            s.push_str(extra);
-            s.push_str(&section[i + 1..]);
-            s
-        }
-        None => section.to_string(),
-    }
-}
-
-fn inject_after_source(section: &str, lines: &str, note: &str) -> String {
-    let mut s = section.to_string();
-    if let Some(src) = s.find("class=\"source\"") {
-        if let Some(rel) = s[src..].find("</pre>") {
-            let at = src + rel + "</pre>".len();
-            s.insert_str(at, lines);
-        }
-    }
-    if let Some(end) = s.rfind("</section>") {
-        s.insert_str(end, note);
-    }
-    s
-}
-
-fn line_diff_html(old: &str, new_src: &str) -> String {
-    let a: Vec<&str> = old.split('\n').collect();
-    let b: Vec<&str> = new_src.split('\n').collect();
-    if a.len() > MAX_LINES || b.len() > MAX_LINES {
-        return "<p class=\"rl-diff-note\">line diff omitted</p>".into();
-    }
-    let ops = diff_ops(a.len(), b.len(), |i, j| a[i] == b[j]);
-    let mut html = String::from("<div class=\"rl-diff-lines\">");
-    let mut i = 0usize;
-    let mut j = 0usize;
-    for op in &ops {
-        match op {
-            Op::Eq(_) => {
-                html.push_str(&line_row("rl-ln-ctx", a.get(i).copied().unwrap_or("")));
-                i += 1;
-                j += 1;
-            }
-            Op::Del(_) => {
-                html.push_str(&line_row("rl-ln-del", a.get(i).copied().unwrap_or("")));
-                i += 1;
-            }
-            Op::Ins(_) => {
-                html.push_str(&line_row("rl-ln-add", b.get(j).copied().unwrap_or("")));
-                j += 1;
-            }
-        }
-    }
-    html.push_str("</div>");
-    html
-}
-
-fn line_row(class: &str, text: &str) -> String {
-    let mark = if class.ends_with("add") {
-        "+"
-    } else if class.ends_with("del") {
-        "-"
-    } else {
-        ""
-    };
-    format!(
-        "<div class=\"rl-ln {class}\"><span class=\"rl-ln-gutter\" aria-hidden=\"true\">{mark}</span><code>{}</code></div>",
-        escape_html(text)
-    )
 }
 
 /// Index of the document's `<main>` element.
@@ -2304,15 +2948,11 @@ fn replace_main(html: &str, inner: &str) -> String {
     out
 }
 
-fn decorate(
-    html: &str,
-    diff: &str,
-    base: Option<&str>,
-    banner: &str,
-    files: Option<&str>,
-) -> String {
-    let base = base.unwrap_or("");
-    let mut out = patch_body(html, diff, base);
+/// The chrome placeholder for the status chip (see `server/page.rs`).
+const CHIP_SLOT: &str = "<button id=\"rl-diff-banner\" type=\"button\" hidden></button>";
+
+fn decorate(html: &str, view: &View, status: &str, files: Option<&str>) -> String {
+    let mut out = patch_body(html, view);
     out = out.replace("id=\"rl-diff\" hidden", "id=\"rl-diff\"");
     out = out.replace(
         "id=\"rl-diff-toggle\" type=\"button\" class=\"rl-quiet\"",
@@ -2329,38 +2969,46 @@ fn decorate(
     if out.contains("aria-label=\"More, comments off\"") {
         out = out.replace(
             "aria-label=\"More, comments off\" title=\"More, comments off\"",
-            "aria-label=\"More, diff on, comments off\" title=\"More, diff on, comments off\"",
+            "aria-label=\"More, changes on, comments off\" title=\"More, changes on, comments off\"",
         );
     } else {
         out = out.replace(
             "aria-label=\"More\" title=\"More\"",
-            "aria-label=\"More, diff on\" title=\"More, diff on\"",
+            "aria-label=\"More, changes on\" title=\"More, changes on\"",
         );
     }
-    let banner_html = format!("<p id=\"rl-diff-banner\">{}</p>", escape_html(banner));
-    if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
-        out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
-    } else if out.contains("<p id=\"rl-diff-banner\" hidden>") {
-        // already filled; leave the chrome copy and also put one in main
-    }
+    let chip = chip_html(view, status);
     let mut extra = String::new();
-    if !out.contains("id=\"rl-diff-banner\"")
-        || out.contains("<p id=\"rl-diff-banner\" hidden></p>")
-    {
-        extra.push_str(&banner_html);
+    if out.contains(CHIP_SLOT) {
+        out = out.replacen(CHIP_SLOT, &chip, 1);
+    } else {
+        extra.push_str(&chip);
     }
     if let Some(files) = files {
-        extra.push_str(&format!("<div id=\"rl-git-files\" hidden>{}</div>", files));
+        extra.push_str(&format!("<div id=\"rl-git-files\" hidden>{files}</div>"));
     }
     if !extra.is_empty() {
         out = insert_after_main(&out, &extra);
     }
-    // The chrome placeholder was replaced above. If it was missing, the
-    // banner inserted into main is the one the page shows.
-    if out.contains("<p id=\"rl-diff-banner\" hidden></p>") {
-        out = out.replace("<p id=\"rl-diff-banner\" hidden></p>", &banner_html);
-    }
     out
+}
+
+/// `Showing uncommitted changes · vs last commit 5f01f1f · 4 changes`.
+/// A button: clicking it opens the menu where the comparison is chosen.
+fn chip_html(view: &View, status: &str) -> String {
+    let against = if view.against.is_empty() {
+        " <span class=\"rl-k\">·</span>".to_string()
+    } else {
+        format!(
+            " <span class=\"rl-k\">· {} ·</span>",
+            escape_html(&view.against)
+        )
+    };
+    format!(
+        "<button id=\"rl-diff-banner\" type=\"button\" title=\"Change what is compared\"><span class=\"rl-k\">Showing</span> {}{against} <span class=\"rl-n\">{}</span></button>",
+        escape_html(&view.title),
+        escape_html(status),
+    )
 }
 
 fn deleted_page(
@@ -2403,7 +3051,8 @@ fn insert_after_main(html: &str, extra: &str) -> String {
     out
 }
 
-fn patch_body(html: &str, diff: &str, base: &str) -> String {
+/// `rl-diff-on` plus the comparison, so the menu can show what is picked.
+fn patch_body(html: &str, view: &View) -> String {
     let Some(i) = html.find("<body") else {
         return html.to_string();
     };
@@ -2412,9 +3061,10 @@ fn patch_body(html: &str, diff: &str, base: &str) -> String {
     };
     let tag = &html[i..i + rel];
     let attrs = format!(
-        " data-rl-diff=\"{}\" data-rl-base=\"{}\"",
-        escape_html(diff),
-        escape_html(base)
+        " data-rl-changes=\"{}\" data-rl-base=\"{}\" data-rl-compare=\"{}\"",
+        view.key,
+        escape_html(&view.base),
+        escape_html(&view.compare)
     );
     let new_tag = if let Some(c) = tag.find("class=\"") {
         let at = c + "class=\"".len();
@@ -2422,14 +3072,14 @@ fn patch_body(html: &str, diff: &str, base: &str) -> String {
     } else {
         format!("{tag} class=\"rl-diff-on\"{attrs}")
     };
-    let mut out = String::with_capacity(html.len() + 64);
+    let mut out = String::with_capacity(html.len() + 96);
     out.push_str(&html[..i]);
     out.push_str(&new_tag);
     out.push_str(&html[i + rel..]);
     out
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let s = s.replace('+', " ");
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -2588,19 +3238,15 @@ mod tests {
     fn stamp_marks_added_changed_and_removed_without_plots_on_removed() {
         let old = "# A\n\n```rustlab\nplot(\"old\")\n```\n";
         let new_src = "# A changed\n";
-        let html = "<body><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><p>A changed</p></div></section>\n</main></body>";
+        let html = "<body><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><h1>A changed</h1></div></section>\n</main></body>";
         let (out, n) = stamp_working(html, old, new_src, true).unwrap();
-        assert!(n >= 1, "{out}");
-        assert!(
-            out.contains("rl-diff-chg") || out.contains("rl-diff-del"),
-            "{out}"
-        );
-        assert!(
-            out.contains("plot(&quot;old&quot;)") || out.contains("plot(\"old\")"),
-            "{out}"
-        );
-        let del = out.split("rl-diff-del").nth(1).unwrap_or("");
+        assert_eq!(n, 2, "{out}");
+        assert!(out.contains("<h1 class=\"rl-dx rl-dx-mod\""), "{out}");
+        assert!(out.contains("rl-dx-removed"), "{out}");
+        assert!(text_of(&out).contains("plot(\"old\")"), "{out}");
+        let del = out.split("rl-dx-removed").nth(1).unwrap_or("");
         assert!(!del.contains("plot-container"), "{out}");
+        assert!(del.contains("1 code cell"), "{out}");
     }
 
     #[test]
@@ -2609,31 +3255,36 @@ mod tests {
         let new_src = "```rustlab\nnew line\n```\n";
         let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"code-block\"><pre class=\"source\"><code>new line</code></pre><pre class=\"output\">ran</pre></section></main></body>";
         let (out, _) = stamp_working(html, old, new_src, true).unwrap();
-        assert!(out.contains("rl-diff-chg"), "{out}");
+        assert!(out.contains("rl-dx rl-dx-mod"), "{out}");
         assert!(out.contains("rl-ln-del"), "{out}");
         assert!(out.contains("rl-ln-add"), "{out}");
-        assert!(out.contains(">-<"), "{out}");
+        assert!(out.contains(">−<"), "{out}");
         assert!(out.contains(">+<"), "{out}");
-        assert!(out.contains("old line"), "{out}");
-        assert!(out.contains("new line"), "{out}");
-        assert!(out.contains("output is the working copy"), "{out}");
-        assert!(out.contains(">ran<") || out.contains("ran"), "{out}");
+        let text = text_of(&out);
+        assert!(text.contains("old line"), "{out}");
+        assert_eq!(text.matches("new line").count(), 1, "source shows once: {out}");
+        assert_eq!(out.matches("<pre class=\"source").count(), 1, "{out}");
+        assert!(out.contains("Output is from your current file."), "{out}");
+        assert!(out.contains(">ran<"), "{out}");
     }
 
     #[test]
     fn decorate_marks_the_menu_when_diff_is_on() {
         let html = "<button aria-label=\"More\" title=\"More\"></button><span id=\"rl-diff-dot\" class=\"rl-diff-dot\" hidden></span>";
-        let out = decorate(html, "HEAD", None, "1 change", None);
+        let view = View::new(&Compare::Uncommitted);
+        let out = decorate(html, &view, "1 change", None);
         assert!(
             out.contains("<span id=\"rl-diff-dot\" class=\"rl-diff-dot\">"),
             "{out}"
         );
         assert!(!out.contains("rl-diff-dot\" hidden"), "{out}");
-        assert!(out.contains("aria-label=\"More, diff on\""), "{out}");
+        assert!(out.contains("aria-label=\"More, changes on\""), "{out}");
+        assert!(chip(&out).contains("Showing uncommitted changes"), "{out}");
+        assert!(chip(&out).contains("1 change"), "{out}");
         let hidden = "<button aria-label=\"More, comments off\" title=\"More, comments off\"></button><span id=\"rl-diff-dot\" class=\"rl-diff-dot\"></span>";
-        let both = decorate(hidden, "HEAD", None, "1 change", None);
+        let both = decorate(hidden, &view, "1 change", None);
         assert!(
-            both.contains("aria-label=\"More, diff on, comments off\""),
+            both.contains("aria-label=\"More, changes on, comments off\""),
             "{both}"
         );
     }
@@ -2645,8 +3296,8 @@ mod tests {
         assert_eq!(err, "diff was too large");
         let html =
             "<body><main><section class=\"rl-block\" id=\"b-1\"><p>y</p></section></main></body>";
-        let out = decorate(html, "HEAD", None, "diff was too large", None);
-        assert!(!out.contains("rl-diff-add"), "{out}");
+        let out = decorate(html, &View::new(&Compare::Uncommitted), "diff was too large", None);
+        assert!(!out.contains("rl-dx-add"), "{out}");
         assert!(out.contains("diff was too large"), "{out}");
     }
 
@@ -2660,7 +3311,7 @@ mod tests {
         assert!(page.contains("not run"), "{page}");
         assert!(!page.contains("EXECUTED"), "{page}");
         assert!(!page.contains("plot-container"), "{page}");
-        assert!(page.contains("x = 2"), "{page}");
+        assert!(text_of(&page).contains("x = 2"), "{page}");
     }
 
     fn git_available() -> bool {
@@ -2735,8 +3386,7 @@ mod tests {
             source_path: &path,
             jail: Some(dir),
             comments_on: true,
-            diff: "main",
-            base: Some("topic"),
+            compare: &custom("main".into(), Some("topic".into())),
         });
         assert!(page.contains("not run"), "{page}");
         assert!(!page.contains("EXECUTED"), "{page}");
@@ -2749,14 +3399,11 @@ mod tests {
             source_path: &path,
             jail: Some(dir),
             comments_on: true,
-            diff: "main",
-            base: None,
+            compare: &custom("main".into(), None),
         });
         assert!(live.contains("EXECUTED"), "{live}");
-        assert!(
-            live.contains("rl-diff-chg") || live.contains("changes vs main"),
-            "{live}"
-        );
+        assert!(live.contains("rl-dx-mod"), "{live}");
+        assert!(chip(&live).contains("main → working copy"), "{live}");
     }
 
     #[test]
@@ -2804,6 +3451,7 @@ mod tests {
             "for-each-ref",
             "hash-object",
             "ls-files",
+            "merge-base",
         ] {
             git(
                 dir,
@@ -2844,8 +3492,7 @@ mod tests {
                 source_path: &path,
                 jail: Some(dir),
                 comments_on: true,
-                diff: "HEAD",
-                base: None,
+                compare: &Compare::Uncommitted,
             },
         );
         let refs_off = refs_json_if(false, dir);
@@ -2859,9 +3506,9 @@ mod tests {
             source_path: &path,
             jail: Some(dir),
             comments_on: true,
-            diff: "HEAD",
-            base: None,
+            compare: &Compare::Uncommitted,
         });
+        let _counts = changes_json_if(true, &path, Some(dir), true);
         let refs = refs_json(dir);
         assert!(
             !marker.exists(),
@@ -2897,15 +3544,44 @@ mod tests {
         )
     }
 
+    /// The 0.3.12 query: `diff` is the before side, `base` the after side.
     fn show(dir: &Path, path: &Path, diff: &str, base: Option<&str>) -> String {
         present(Present {
             html: &prose_html("x"),
             source_path: path,
             jail: Some(dir),
             comments_on: true,
-            diff,
-            base,
+            compare: &custom(diff.into(), base.map(String::from)),
         })
+    }
+
+    /// The status chip's text, tags stripped.
+    fn chip(page: &str) -> String {
+        let Some(i) = page.find("<button id=\"rl-diff-banner\"") else {
+            return String::new();
+        };
+        let end = page[i..].find("</button>").map_or(page.len(), |e| i + e);
+        text_of(&page[i..end])
+    }
+
+    /// Visible text of an HTML fragment: tags dropped, the few entities
+    /// the renderer writes decoded.
+    fn text_of(html: &str) -> String {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for c in html.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                _ if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
     }
 
     #[test]
@@ -2935,9 +3611,10 @@ mod tests {
         // Unborn branch: the notebook is a new file, not an unknown ref
         // and not a green bar on every block.
         let page = show(&repo, &stray, "HEAD", None);
-        assert!(page.contains("new file — not on HEAD"), "{page}");
+        assert!(chip(&page).contains("new file, not on HEAD"), "{page}");
+        assert!(chip(&page).contains("no commits yet"), "{page}");
         assert!(page.contains("rl-diff-notice"), "{page}");
-        assert!(!page.contains("rl-diff-add"), "{page}");
+        assert!(!page.contains("rl-dx-add"), "{page}");
         assert!(!page.contains("unknown ref"), "{page}");
 
         quiet_git(&repo, &["add", "n.md"]);
@@ -2945,11 +3622,12 @@ mod tests {
 
         // Clean single commit, including a CRLF-only rewrite.
         let page = show(&repo, &stray, "HEAD", None);
-        assert!(page.contains("no changes vs HEAD"), "{page}");
+        assert!(chip(&page).contains("Showing uncommitted changes · vs last commit"), "{page}");
+        assert!(chip(&page).contains("no changes"), "{page}");
         std::fs::write(&stray, "# Hello\r\n").unwrap();
         let page = show(&repo, &stray, "HEAD", None);
         assert!(
-            page.contains("no changes vs HEAD"),
+            chip(&page).contains("no changes"),
             "CRLF-only edit looked like a change: {page}"
         );
         assert!(!page.contains("rl-ln-del"), "{page}");
@@ -2958,8 +3636,10 @@ mod tests {
         // carriage return on every line.
         std::fs::write(&stray, "# Hello\r\n\nworld 🌍\r\n").unwrap();
         let page = show(&repo, &stray, "HEAD", None);
-        assert!(page.contains("changes vs HEAD"), "{page}");
-        assert!(page.contains("rl-diff"), "{page}");
+        assert!(chip(&page).contains("1 change"), "{page}");
+        // The stub page has one <p> for two source parts, so the whole
+        // section is marked instead of one element.
+        assert!(page.contains("rl-dx rl-dx-mod"), "{page}");
         assert!(!page.contains("&#13;"), "{page}");
 
         // Code cells expose the new line itself. CRLF must not make
@@ -2975,31 +3655,26 @@ mod tests {
             source_path: &code,
             jail: Some(&repo),
             comments_on: true,
-            diff: "HEAD",
-            base: None,
+            compare: &Compare::Uncommitted,
         });
         assert!(page.contains("rl-ln-add"), "{page}");
-        assert!(page.contains("y = 2"), "{page}");
-        assert!(
-            page.contains("rl-ln-ctx") || page.contains("x = 1"),
-            "{page}"
-        );
+        assert!(text_of(&page).contains("y = 2"), "{page}");
+        assert!(text_of(&page).contains("x = 1"), "{page}");
+        assert!(!page.contains("rl-ln-del"), "{page}");
         assert!(!page.contains("&#13;"), "{page}");
 
         // Very long line.
         let long = format!("# {}\n", "x".repeat(8000));
         std::fs::write(&stray, &long).unwrap();
         let page = show(&repo, &stray, "HEAD", None);
-        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(chip(&page).contains("change"), "{page}");
         assert!(!page.contains("unknown ref"), "{page}");
 
         // Empty file: still a diff, not "could not align" alone.
         std::fs::write(&stray, "").unwrap();
         let page = show(&repo, &stray, "HEAD", None);
-        assert!(
-            page.contains("rl-diff-del") || page.contains("changes vs HEAD"),
-            "{page}"
-        );
+        assert!(page.contains("rl-dx-removed"), "{page}");
+        assert!(chip(&page).contains("change"), "{page}");
         assert!(!page.contains("could not align"), "{page}");
 
         // Binary.
@@ -3017,11 +3692,13 @@ mod tests {
         quiet_git(&repo, &["add", "n.md"]);
         let vs_head = show(&repo, &stray, "HEAD", None);
         let vs_index = show(&repo, &stray, "index", None);
-        assert!(vs_head.contains("changes vs HEAD"), "{vs_head}");
-        assert!(vs_index.contains("no changes vs index"), "{vs_index}");
+        assert!(chip(&vs_head).contains("change"), "{vs_head}");
+        assert!(!chip(&vs_head).contains("no changes"), "{vs_head}");
+        assert!(chip(&vs_index).contains("no changes"), "{vs_index}");
+        assert!(chip(&vs_index).contains("index → working copy"), "{vs_index}");
         std::fs::write(&stray, "# Hello\n\nedited\n\nunstaged\n").unwrap();
         let vs_index = show(&repo, &stray, "index", None);
-        assert!(vs_index.contains("changes vs index"), "{vs_index}");
+        assert!(chip(&vs_index).contains("1 change"), "{vs_index}");
         assert!(vs_index.contains("\"status\":\"M\""), "{vs_index}");
 
         // Slash branch, plus in the name, lightweight and annotated tags.
@@ -3037,7 +3714,7 @@ mod tests {
         assert!(refs.contains("\"v2\""), "{refs}");
         assert!(refs.contains("origin/main"), "{refs}");
         let head = show(&repo, &stray, "HEAD", None);
-        assert!(head.contains("no changes vs HEAD"), "{head}");
+        assert!(chip(&head).contains("no changes"), "{head}");
         let sha = {
             let out = Command::new("git")
                 .arg("-C")
@@ -3051,10 +3728,7 @@ mod tests {
         let page = show(&repo, &stray, &short, None);
         assert!(!page.contains("unknown ref"), "{page}");
         let page = show(&repo, &stray, "HEAD~1", None);
-        assert!(
-            page.contains("changes vs HEAD~1") || page.contains("no changes"),
-            "{page}"
-        );
+        assert!(chip(&page).contains("HEAD~1 → working copy"), "{page}");
         let page = show(&repo, &stray, "HEAD^", None);
         assert!(!page.contains("unknown ref"), "{page}");
         let page = show(&repo, &stray, "v2", None);
@@ -3062,19 +3736,13 @@ mod tests {
         let page = show(&repo, &stray, "no-such-ref", None);
         assert!(page.contains("unknown ref"), "{page}");
         let page = show(&repo, &stray, "feature/topic+1", Some("feature/topic+1"));
-        assert!(
-            page.contains("no changes") || page.contains("showing"),
-            "{page}"
-        );
+        assert!(chip(&page).contains("no changes"), "{page}");
         assert!(!page.contains("unknown ref"), "{page}");
 
-        // Base newer than the diff ref: the banner names the newer side.
+        // Two refs read from base to compare; nothing runs.
         let page = show(&repo, &stray, "HEAD~1", Some("HEAD"));
-        assert!(
-            page.contains("newer") || page.contains("showing HEAD"),
-            "{page}"
-        );
-        assert!(page.contains("not run"), "{page}");
+        assert!(chip(&page).contains("HEAD~1 → HEAD"), "{page}");
+        assert!(chip(&page).contains("code was not run"), "{page}");
 
         // Exact rename, then rename with an edit.
         quiet_git(&repo, &["mv", "n.md", "N.md"]);
@@ -3090,7 +3758,7 @@ mod tests {
             page.contains("\"status\":\"R\""),
             "edited rename was not paired: {page}"
         );
-        assert!(page.contains("rl-diff-chg"), "{page}");
+        assert!(page.contains("rl-dx rl-dx-"), "{page}");
 
         // Ignored files and a nested repository must not become additions
         // or exhaust the walk.
@@ -3119,11 +3787,8 @@ mod tests {
         quiet_git(&repo, &["commit", "-m", "sub"]);
         std::fs::write(&sub, "# Sub changed\n").unwrap();
         let page = show(&repo, &sub, "HEAD", None);
-        assert!(page.contains("changes vs HEAD"), "{page}");
-        assert!(
-            page.contains("Sub changed") || page.contains("rl-diff-chg"),
-            "{page}"
-        );
+        assert!(chip(&page).contains("1 change"), "{page}");
+        assert!(page.contains("rl-dx-mod"), "{page}");
 
         // Detached HEAD still compares.
         quiet_git(&repo, &["checkout", "--detach"]);
@@ -3153,7 +3818,7 @@ mod tests {
         let wt_nb = wt.join("notes").join("a.md");
         std::fs::write(&wt_nb, "# From worktree\n").unwrap();
         let page = show(&wt, &wt_nb, "HEAD", None);
-        assert!(page.contains("changes vs HEAD"), "{page}");
+        assert!(chip(&page).contains("1 change"), "{page}");
         assert!(!page.contains("not a git repository"), "{page}");
         let watched = git_watch_paths(&wt);
         assert!(!watched.is_empty(), "worktree git dir not found");
@@ -3167,9 +3832,9 @@ mod tests {
         let fresh = repo.join("new.md");
         std::fs::write(&fresh, "# Brand new\n").unwrap();
         let page = show(&repo, &fresh, "HEAD", None);
-        assert!(page.contains("new file — not on HEAD"), "{page}");
+        assert!(chip(&page).contains("new file, not on HEAD"), "{page}");
         assert!(page.contains("rl-diff-notice"), "{page}");
-        assert!(!page.contains("rl-diff-add"), "{page}");
+        assert!(!page.contains("rl-dx-add"), "{page}");
     }
 
     /// A watch page whose head script mentions `<main>` in a comment.
@@ -3189,7 +3854,7 @@ mod tests {
             "head script was rewritten: {script}"
         );
         assert!(
-            !script.contains("rl-diff-notice") && !script.contains("rl-diff-del"),
+            !script.contains("rl-diff-notice") && !script.contains("rl-dx-"),
             "diff html was spliced into the head script: {script}"
         );
         assert!(page.contains("<body"), "body tag was deleted: {page}");
@@ -3235,23 +3900,23 @@ mod tests {
         cache_put("note.md".into(), poison.into());
 
         let html = watch_html("working copy");
-        let present_at = |diff: &str, base: Option<&str>| {
+        // `base` before, `compare` after (working copy when None).
+        let present_at = |base: &str, compare: Option<&str>| {
             present(Present {
                 html: &html,
                 source_path: &note,
                 jail: Some(&repo),
                 comments_on: true,
-                diff,
-                base,
+                compare: &custom(base.into(), compare.map(String::from)),
             })
         };
 
         // Missing on the compared side: a notice, not every block green.
         let missing = present_at("ancient", None);
-        assert!(missing.contains("new file — not on ancient"), "{missing}");
+        assert!(chip(&missing).contains("new file, not on ancient"), "{missing}");
         assert!(missing.contains("rl-diff-notice"), "{missing}");
         assert!(missing.contains("not on ancient"), "{missing}");
-        assert!(!missing.contains("rl-diff-add"), "{missing}");
+        assert!(!missing.contains("rl-dx-add"), "{missing}");
         assert!(!missing.contains(poison), "{missing}");
         script_was_left_alone(&missing);
         if let Some(v) = cache_get("note.md") {
@@ -3268,11 +3933,9 @@ mod tests {
             !recovered.contains("new file"),
             "stayed on the missing-file result: {recovered}"
         );
-        assert!(
-            recovered.contains("rl-diff-chg") || recovered.contains("y = 3"),
-            "{recovered}"
-        );
-        assert!(recovered.contains("changes vs main"), "{recovered}");
+        assert!(recovered.contains("rl-dx-mod"), "{recovered}");
+        assert!(text_of(&recovered).contains("y = 3"), "{recovered}");
+        assert!(chip(&recovered).contains("main → working copy · 1 change"), "{recovered}");
         assert!(!recovered.contains(poison), "{recovered}");
         script_was_left_alone(&recovered);
         let root = std::fs::canonicalize(&repo).unwrap();
@@ -3287,20 +3950,20 @@ mod tests {
 
         // Two refs, shown side deleted the file. The page must keep its
         // chrome (this used to splice into the head script and drop <body>).
-        let deleted_side = present_at("dropped", Some("main"));
-        assert!(deleted_side.contains("not on dropped"), "{deleted_side}");
-        assert!(deleted_side.contains("rl-diff-del"), "{deleted_side}");
-        assert!(!deleted_side.contains("rl-diff-add"), "{deleted_side}");
+        let deleted_side = present_at("main", Some("dropped"));
+        assert!(chip(&deleted_side).contains("not on dropped"), "{deleted_side}");
+        assert!(deleted_side.contains("rl-dx-removed"), "{deleted_side}");
+        assert!(!deleted_side.contains("rl-dx-add"), "{deleted_side}");
         script_was_left_alone(&deleted_side);
 
         // Newer side has the file, older side does not: a notice, not a
         // green wash, and the head script is still intact.
-        let both = present_at("main", Some("ancient"));
-        assert!(both.contains("new file — not on ancient"), "{both}");
-        assert!(!both.contains("rl-diff-add"), "{both}");
+        let both = present_at("ancient", Some("main"));
+        assert!(chip(&both).contains("new file, not on ancient"), "{both}");
+        assert!(!both.contains("rl-dx-add"), "{both}");
         script_was_left_alone(&both);
         let again = present_at("HEAD", None);
-        assert!(again.contains("changes vs HEAD"), "{again}");
+        assert!(chip(&again).contains("1 change"), "{again}");
         assert!(!again.contains("new file"), "{again}");
         assert!(!again.contains("not on HEAD"), "{again}");
 
@@ -3308,11 +3971,9 @@ mod tests {
         // putting the file back is a normal diff again.
         std::fs::remove_file(&note).unwrap();
         let gone = present_at("main", None);
-        assert!(
-            gone.contains("deleted — not in the working copy (still on main)"),
-            "{gone}"
-        );
-        assert!(gone.contains("rl-diff-del"), "{gone}");
+        assert!(chip(&gone).contains("deleted from the working copy"), "{gone}");
+        assert!(gone.contains("It is still on main."), "{gone}");
+        assert!(gone.contains("rl-dx-removed"), "{gone}");
         assert!(gone.contains("rl-diff-notice"), "{gone}");
         script_was_left_alone(&gone);
         std::fs::write(
@@ -3322,14 +3983,307 @@ mod tests {
         .unwrap();
         let back = present_at("main", None);
         assert!(!back.contains("deleted"), "{back}");
-        assert!(
-            back.contains("changes vs main") || back.contains("no changes vs main"),
-            "{back}"
-        );
-        assert!(!back.contains("rl-diff-del"), "{back}");
+        assert!(chip(&back).contains("1 change"), "{back}");
+        assert!(!back.contains("rl-dx-removed"), "{back}");
 
         if let Ok(mut cache) = BLOB_CACHE.lock() {
             cache.retain(|(k, _)| k != "note.md");
         }
+    }
+
+    #[test]
+    fn presets_map_to_before_and_after_and_old_links_still_resolve() {
+        let q = |s: &str| resolve_compare(&parse_query(s), None);
+        assert_eq!(q("changes=uncommitted"), Some(Compare::Uncommitted));
+        assert_eq!(q("changes=branch"), Some(Compare::Branch));
+        assert_eq!(q("changes=last"), Some(Compare::Last));
+        assert_eq!(q("changes=off"), None);
+        assert_eq!(
+            q("changes=custom&base=v0.3&compare=topic"),
+            Some(Compare::Custom {
+                base: "v0.3".into(),
+                compare: Some("topic".into())
+            })
+        );
+        assert_eq!(
+            q("changes=custom&base=main"),
+            Some(Compare::Custom {
+                base: "main".into(),
+                compare: None
+            })
+        );
+        // base defaults to HEAD, which against the working copy is the
+        // uncommitted preset.
+        assert_eq!(q("changes=custom"), Some(Compare::Uncommitted));
+        assert_eq!(q("changes=wat"), Some(Compare::Unknown("wat".into())));
+        // 0.3.12 links: `diff` is the before side, `base` the after side.
+        assert_eq!(q("diff=HEAD"), Some(Compare::Uncommitted));
+        assert_eq!(q("diff=off"), None);
+        assert_eq!(
+            q("diff=main&base=topic"),
+            Some(Compare::Custom {
+                base: "main".into(),
+                compare: Some("topic".into())
+            })
+        );
+        // With `changes` present, `base` is the new before side.
+        assert_eq!(
+            q("changes=custom&diff=ignored&base=main"),
+            Some(Compare::Custom {
+                base: "main".into(),
+                compare: None
+            })
+        );
+        // `?changes=off` wins over an old key.
+        assert_eq!(q("changes=off&diff=main"), None);
+        // No keys: the `--diff` default is the before side.
+        assert_eq!(resolve_compare(&parse_query(""), None), None);
+        assert_eq!(
+            resolve_compare(&parse_query(""), Some("main")),
+            Some(Compare::Custom {
+                base: "main".into(),
+                compare: None
+            })
+        );
+        assert_eq!(
+            resolve_compare(&parse_query(""), Some("HEAD")),
+            Some(Compare::Uncommitted)
+        );
+        assert_eq!(Compare::Branch.key(), "branch");
+    }
+
+    const DEMO_OLD: &str = "# Filters\n\nA lowpass filter.\n\n```rustlab\nh = 31;\nw = \"hann\";\ndisp(h)\n```\n\n## Frequency response\n\nAbout 40 dB of attenuation for 31 taps.\n\n## Old notes\n\nThis section described an earlier design.\n\n## Summary\n\nLonger filters give a sharper transition band.\n";
+    const DEMO_NEW: &str = "# Filters\n\nA lowpass filter.\n\n```rustlab\nh = 63;\nw = \"hamming\";\ndisp(h)\n```\n\n## Frequency response\n\nAbout 53 dB of attenuation for 63 taps.\n\n## Summary\n\nDoubling the taps doubles the cost.\n\nLonger filters give a sharper transition band.\n";
+
+    /// The real HTML render of `src`, as the watch server stores it.
+    fn rendered(src: &str) -> String {
+        let blocks = crate::parse::parse_notebook(src);
+        let out = crate::execute::execute_notebook(&blocks);
+        crate::render::render_html(
+            "Demo",
+            &out,
+            &std::env::temp_dir().join("rustlab_gitdiff_demo_plots"),
+            "plots",
+            rustlab_plot::theme_colors("mocha").unwrap(),
+            None,
+            &crate::render::LinkMode::single_file(),
+        )
+    }
+
+    #[test]
+    fn paragraph_units_mark_only_what_changed_on_a_real_render() {
+        let html = rendered(DEMO_NEW);
+        let (out, n) = stamp_working(&html, DEMO_OLD, DEMO_NEW, true).unwrap();
+        assert_eq!(n, 4, "code, one paragraph, one removed run, one added: {out}");
+        let marked: Vec<(&str, String)> = out
+            .match_indices("data-rl-dx=\"")
+            .map(|(i, _)| {
+                let rest = &out[i + 12..];
+                let state = &rest[..rest.find('"').unwrap()];
+                let w = rest.find("data-rl-where=\"").unwrap() + 15;
+                let place = &rest[w..w + rest[w..].find('"').unwrap()];
+                (state, place.to_string())
+            })
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                ("modified", "Code cell 1".to_string()),
+                ("modified", "Frequency response ¶1".to_string()),
+                ("removed", "Old notes".to_string()),
+                ("added", "Summary ¶1".to_string()),
+            ],
+            "{out}"
+        );
+        // The modified paragraph is its own <p>, not the whole prose run.
+        assert!(
+            out.contains("<p class=\"rl-dx rl-dx-mod\" data-rl-dx=\"modified\" data-rl-where=\"Frequency response ¶1\">About 53 dB"),
+            "{out}"
+        );
+        // Summary's heading and old paragraph are not marked.
+        let summary = out.find(">Summary</h2>").expect("summary heading");
+        let open = out[..summary].rfind("<h2").unwrap();
+        assert!(!out[open..summary].contains("rl-dx"), "{out}");
+        let longer = out.find("Longer filters").unwrap();
+        let p = out[..longer].rfind("<p").unwrap();
+        assert_eq!(&out[p..longer], "<p>", "{out}");
+        // The removed section is collapsed at its old place, between the
+        // edited paragraph and Summary.
+        let removed = out.find("<details class=\"rl-dx rl-dx-del rl-dx-removed\"").unwrap();
+        assert!(removed > out.find("About 53 dB").unwrap() && removed < summary, "{out}");
+        assert!(!out[removed..removed + 200].contains(" open"), "{out}");
+        assert!(
+            out.contains("<b>Removed</b> · “Old notes” heading and 1 paragraph"),
+            "{out}"
+        );
+        assert!(out[removed..].contains("This section described an earlier design."));
+        // The code cell shows its source once, as the diff.
+        let text = text_of(&out);
+        assert_eq!(text.matches("h = 63;").count(), 1, "{out}");
+        assert_eq!(text.matches("h = 31;").count(), 1, "{out}");
+        assert_eq!(text.matches("disp(h)").count(), 1, "{out}");
+        assert!(out.contains("Output is from your current file."), "{out}");
+        // Syntax colors stay on the listing.
+        let listing = &out[out.find("rl-dx-code").unwrap()..];
+        assert!(listing[..listing.find("</pre>").unwrap()].contains("syn-num"), "{out}");
+        // Same source, no marks.
+        let (same, n0) = stamp_working(&html, DEMO_NEW, DEMO_NEW, true).unwrap();
+        assert_eq!(n0, 0);
+        assert_eq!(same, html);
+    }
+
+    #[test]
+    fn raw_html_in_a_prose_run_marks_that_run_whole() {
+        let old = "Intro.\n\n<details><summary>More</summary>\n\nhidden text\n\n</details>\n\nOutro.\n";
+        let new_src = "Intro.\n\n<details><summary>More</summary>\n\nshown text\n\n</details>\n\nOutro.\n";
+        let html = rendered(new_src);
+        let (out, n) = stamp_working(&html, old, new_src, true).unwrap();
+        assert_eq!(n, 1, "{out}");
+        let at = out.find("data-rl-dx=\"modified\"").expect("marked");
+        let tag = &out[out[..at].rfind('<').unwrap()..at];
+        assert!(tag.starts_with("<section"), "whole section: {tag}");
+        assert!(!out.contains("<p class=\"rl-dx"), "{out}");
+    }
+
+    #[test]
+    fn a_paragraph_does_not_pair_with_a_heading() {
+        let sides = align_sides("Alpha.\n", "## Alpha\n", true).unwrap();
+        assert_eq!(sides, vec!["removed", "added"]);
+        let sides = align_sides("Alpha.\n\nBeta.\n", "Alpha.\n\nBeta!\n", true).unwrap();
+        assert_eq!(sides, vec!["same", "changed"]);
+    }
+
+    fn rev(dir: &Path, spec: &str) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", spec])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn branch_preset_uses_the_merge_base_and_counts_every_preset() {
+        if !git_available() {
+            eprintln!("SKIP branch preset: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo(dir);
+        let nb = dir.join("nb.md");
+        std::fs::write(&nb, "# A\n\nOne.\n").unwrap();
+        quiet_git(dir, &["add", "nb.md"]);
+        quiet_git(dir, &["commit", "-m", "one"]);
+        let fork = rev(dir, "HEAD");
+        quiet_git(dir, &["checkout", "-b", "topic"]);
+        std::fs::write(&nb, "# A\n\nOne edited.\n").unwrap();
+        quiet_git(dir, &["commit", "-am", "topic edit"]);
+        // main moves ahead after topic left it.
+        quiet_git(dir, &["checkout", "main"]);
+        std::fs::write(&nb, "# A\n\nOne.\n\nMain only.\n").unwrap();
+        quiet_git(dir, &["commit", "-am", "main ahead"]);
+        quiet_git(dir, &["checkout", "topic"]);
+        std::fs::write(&nb, "# A\n\nOne edited.\n\nUncommitted.\n").unwrap();
+
+        let page = |c: &Compare| {
+            present(Present {
+                html: &rendered("# A\n\nOne edited.\n\nUncommitted.\n"),
+                source_path: &nb,
+                jail: Some(dir),
+                comments_on: true,
+                compare: c,
+            })
+        };
+        let branch = page(&Compare::Branch);
+        let c = chip(&branch);
+        assert!(c.contains("this branch vs main"), "{c}");
+        assert!(c.contains(&format!("from {}", short(&fork))), "{c}");
+        assert!(c.contains("2 changes"), "{c}");
+        assert!(!branch.contains("rl-dx-removed"), "main's newer commit is not a removal: {branch}");
+        assert!(!text_of(&branch).contains("Main only"), "{branch}");
+        assert!(branch.contains("data-rl-changes=\"branch\""), "{branch}");
+
+        let unc = page(&Compare::Uncommitted);
+        assert!(chip(&unc).contains("Showing uncommitted changes"), "{unc}");
+        assert!(chip(&unc).contains("1 change"), "{unc}");
+
+        let last = page(&Compare::Last);
+        assert!(chip(&last).contains("last commit"), "{last}");
+        assert!(chip(&last).contains("code was not run"), "{last}");
+
+        let counts: serde_json::Value =
+            serde_json::from_str(&changes_json_if(true, &nb, Some(dir), true)).unwrap();
+        assert!(counts["error"].is_null(), "{counts}");
+        assert_eq!(counts["current"], "topic", "{counts}");
+        assert_eq!(counts["default"], "main", "{counts}");
+        assert_eq!(counts["uncommitted"]["count"], 1, "{counts}");
+        assert_eq!(counts["branch"]["count"], 2, "{counts}");
+        assert_eq!(counts["branch"]["base"], short(&fork), "{counts}");
+        assert_eq!(counts["last"]["count"], 1, "{counts}");
+
+        // On the default branch the preset is hidden, and asking for it
+        // anyway explains why there is nothing to show.
+        quiet_git(dir, &["checkout", "--", "nb.md"]);
+        quiet_git(dir, &["checkout", "main"]);
+        let counts: serde_json::Value =
+            serde_json::from_str(&changes_json_if(true, &nb, Some(dir), true)).unwrap();
+        assert_eq!(counts["branch"]["hidden"], true, "{counts}");
+        let on_main = page(&Compare::Branch);
+        assert!(chip(&on_main).contains("already on main"), "{on_main}");
+    }
+
+    #[test]
+    fn last_commit_needs_a_parent_and_default_branch_falls_back() {
+        if !git_available() {
+            eprintln!("SKIP last commit: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        quiet_git(dir, &["init", "-b", "master"]);
+        quiet_git(dir, &["config", "user.email", "t@example.com"]);
+        quiet_git(dir, &["config", "user.name", "Test"]);
+        let nb = dir.join("nb.md");
+        std::fs::write(&nb, "# A\n").unwrap();
+        quiet_git(dir, &["add", "nb.md"]);
+        quiet_git(dir, &["commit", "-m", "root"]);
+        let counts: serde_json::Value =
+            serde_json::from_str(&changes_json_if(true, &nb, Some(dir), true)).unwrap();
+        assert_eq!(
+            counts["last"]["disabled"], "No earlier commit to compare with",
+            "{counts}"
+        );
+        assert_eq!(counts["default"], "master", "{counts}");
+        let page = present(Present {
+            html: &prose_html("A"),
+            source_path: &nb,
+            jail: Some(dir),
+            comments_on: true,
+            compare: &Compare::Last,
+        });
+        assert!(chip(&page).contains("no earlier commit to compare with"), "{page}");
+
+        // Neither main nor master: the branch origin/HEAD points at.
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        quiet_git(&other, &["init", "-b", "trunk"]);
+        quiet_git(&other, &["config", "user.email", "t@example.com"]);
+        quiet_git(&other, &["config", "user.name", "Test"]);
+        std::fs::write(other.join("nb.md"), "# A\n").unwrap();
+        quiet_git(&other, &["add", "nb.md"]);
+        quiet_git(&other, &["commit", "-m", "root"]);
+        let root = repo_root(&other).unwrap();
+        assert_eq!(default_branch(&root).unwrap(), None);
+        quiet_git(&other, &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        quiet_git(
+            &other,
+            &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"],
+        );
+        assert_eq!(default_branch(&root).unwrap().as_deref(), Some("origin/trunk"));
+        assert!(on_default(Some("trunk"), "origin/trunk"));
+        assert!(!on_default(Some("topic"), "origin/trunk"));
+        assert!(!on_default(None, "main"));
     }
 }

@@ -80,7 +80,7 @@ pub(super) struct PageCtx<'a> {
     pub jail_root: Option<&'a Path>,
     pub comments_on: bool,
     pub annotate: bool,
-    /// When false the ⋯ menu shows Show diff as unavailable.
+    /// When false the ⋯ menu shows Show changes as unavailable.
     pub git_diff: bool,
 }
 
