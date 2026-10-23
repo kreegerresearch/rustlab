@@ -159,19 +159,17 @@ pub struct ThemeColors {
     pub cm_mark_bg: &'static str,
     pub cm_note_bg: &'static str,
     pub cm_note_border: &'static str,
-    // Git-diff tints on `notebook watch`. Body text stays `text` and must
-    // clear 4.5:1 on every wash. Bars clear 3:1 on the page and on their
-    // wash. Dark washes are a translucent green/red/amber over `bg`;
-    // `*_line` is that same mix flattened, so a line does not tint twice.
-    // Latte washes are opaque pastels. Changed blocks use the amber pair.
-    pub diff_add_bg: &'static str,
-    pub diff_add_bar: &'static str,
-    pub diff_del_bg: &'static str,
-    pub diff_del_bar: &'static str,
-    pub diff_chg_bg: &'static str,
-    pub diff_chg_bar: &'static str,
-    pub diff_add_line: &'static str,
-    pub diff_del_line: &'static str,
+    // Git diff on `notebook watch`. Changes are a 4 px bar beside the
+    // text (no wash): green added, blue modified, red removed, each at
+    // least 3:1 on the page. `*_line` tints a changed line in a code
+    // listing: the code panel's luminance is kept (darker on dark themes,
+    // lighter on Latte) so every syntax color and the body text keep
+    // their 4.5:1 on it.
+    pub dx_add_bar: &'static str,
+    pub dx_mod_bar: &'static str,
+    pub dx_del_bar: &'static str,
+    pub dx_add_line: &'static str,
+    pub dx_del_line: &'static str,
 }
 
 impl ThemeColors {
@@ -198,7 +196,7 @@ impl ThemeColors {
     /// Names are kebab-case of the [`ThemeColors`] fields (`bg_secondary`
     /// → `--rl-bg-secondary`). Order is the struct field order so HTML
     /// tests and future theme files can pin a contract.
-    pub fn css_tokens(&self) -> [(&'static str, &'static str); 34] {
+    pub fn css_tokens(&self) -> [(&'static str, &'static str); 31] {
         [
             ("--rl-bg", self.bg),
             ("--rl-bg-secondary", self.bg_secondary),
@@ -226,14 +224,11 @@ impl ThemeColors {
             ("--rl-cm-mark-bg", self.cm_mark_bg),
             ("--rl-cm-note-bg", self.cm_note_bg),
             ("--rl-cm-note-border", self.cm_note_border),
-            ("--rl-diff-add-bg", self.diff_add_bg),
-            ("--rl-diff-add-bar", self.diff_add_bar),
-            ("--rl-diff-del-bg", self.diff_del_bg),
-            ("--rl-diff-del-bar", self.diff_del_bar),
-            ("--rl-diff-chg-bg", self.diff_chg_bg),
-            ("--rl-diff-chg-bar", self.diff_chg_bar),
-            ("--rl-diff-add-line", self.diff_add_line),
-            ("--rl-diff-del-line", self.diff_del_line),
+            ("--rl-dx-add-bar", self.dx_add_bar),
+            ("--rl-dx-mod-bar", self.dx_mod_bar),
+            ("--rl-dx-del-bar", self.dx_del_bar),
+            ("--rl-dx-add-line", self.dx_add_line),
+            ("--rl-dx-del-line", self.dx_del_line),
         ]
     }
 
@@ -342,14 +337,11 @@ static MOCHA: ThemeColors = ThemeColors {
     cm_note_bg: "#181825",
     cm_note_border: "#89b4fa",
     // Green 32%, red 40%, amber 28% over base. Flattened line colors match.
-    diff_add_bg: "rgba(166, 227, 161, 0.32)",
-    diff_add_bar: "#a6e3a1",
-    diff_del_bg: "rgba(243, 139, 168, 0.40)",
-    diff_del_bar: "#f38ba8",
-    diff_chg_bg: "rgba(249, 226, 175, 0.28)",
-    diff_chg_bar: "#f9e2af",
-    diff_add_line: "#4a5d53",
-    diff_del_line: "#734a5f",
+    dx_add_bar: "#a6e3a1",
+    dx_mod_bar: "#89b4fa",
+    dx_del_bar: "#f38ba8",
+    dx_add_line: "#0f1211",
+    dx_del_line: "#161015",
 };
 
 /// Catppuccin Macchiato (dark).
@@ -384,14 +376,11 @@ static MACCHIATO: ThemeColors = ThemeColors {
     cm_note_border: "#8aadf4",
     // Green 30%, red 38%, amber 26% over base. The red bar is the stock
     // red nudged toward white so it still clears 3:1 on that wash.
-    diff_add_bg: "rgba(166, 218, 149, 0.30)",
-    diff_add_bar: "#a6da95",
-    diff_del_bg: "rgba(237, 135, 150, 0.38)",
-    diff_del_bar: "#f19fab",
-    diff_chg_bg: "rgba(238, 212, 159, 0.26)",
-    diff_chg_bar: "#eed49f",
-    diff_add_line: "#4b5d55",
-    diff_del_line: "#704b5d",
+    dx_add_bar: "#a6da95",
+    dx_mod_bar: "#8aadf4",
+    dx_del_bar: "#f19fab",
+    dx_add_line: "#161a1a",
+    dx_del_line: "#1e181e",
 };
 
 /// Catppuccin Frappé (dark).
@@ -429,14 +418,11 @@ static FRAPPE: ThemeColors = ThemeColors {
     cm_note_border: "#98b3f0",
     // Green 22%, red 32%, amber 22% over base. Frappé's base is lighter,
     // so a smaller mix still reads as a tint. Red bar nudged like Macchiato.
-    diff_add_bg: "rgba(166, 209, 137, 0.22)",
-    diff_add_bar: "#a6d189",
-    diff_del_bg: "rgba(231, 130, 132, 0.32)",
-    diff_del_bar: "#ec9b9d",
-    diff_chg_bg: "rgba(229, 200, 144, 0.22)",
-    diff_chg_bar: "#e5c890",
-    diff_add_line: "#4a5755",
-    diff_del_line: "#6b4d5a",
+    dx_add_bar: "#a6d189",
+    dx_mod_bar: "#8caaee",
+    dx_del_bar: "#ec9b9d",
+    dx_add_line: "#222728",
+    dx_del_line: "#2b242c",
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -481,14 +467,11 @@ static LATTE: ThemeColors = ThemeColors {
     cm_note_border: "#094dd3",
     // Opaque pastels: green 38%, red 22%, amber 42% over base. Stock green
     // and yellow are under 3:1 on base, so those bars are darker.
-    diff_add_bg: "#add2a8",
-    diff_add_bar: "#307820",
-    diff_del_bg: "#e9bfcc",
-    diff_del_bar: "#d20f39",
-    diff_chg_bg: "#e8c79a",
-    diff_chg_bar: "#8f5200",
-    diff_add_line: "#add2a8",
-    diff_del_line: "#e9bfcc",
+    dx_add_bar: "#307820",
+    dx_mod_bar: "#094dd3",
+    dx_del_bar: "#d20f39",
+    dx_add_line: "#d7e4db",
+    dx_del_line: "#ebdce3",
 };
 
 #[cfg(test)]
@@ -548,24 +531,12 @@ mod tests {
     #[test]
     fn mocha_css_tokens_match_palette_fields() {
         let tokens = MOCHA.css_tokens();
-        assert_eq!(tokens.len(), 34);
-        assert_eq!(
-            tokens[26],
-            ("--rl-diff-add-bg", "rgba(166, 227, 161, 0.32)")
-        );
-        assert_eq!(tokens[27], ("--rl-diff-add-bar", "#a6e3a1"));
-        assert_eq!(
-            tokens[28],
-            ("--rl-diff-del-bg", "rgba(243, 139, 168, 0.40)")
-        );
-        assert_eq!(tokens[29], ("--rl-diff-del-bar", "#f38ba8"));
-        assert_eq!(
-            tokens[30],
-            ("--rl-diff-chg-bg", "rgba(249, 226, 175, 0.28)")
-        );
-        assert_eq!(tokens[31], ("--rl-diff-chg-bar", "#f9e2af"));
-        assert_eq!(tokens[32], ("--rl-diff-add-line", "#4a5d53"));
-        assert_eq!(tokens[33], ("--rl-diff-del-line", "#734a5f"));
+        assert_eq!(tokens.len(), 31);
+        assert_eq!(tokens[26], ("--rl-dx-add-bar", "#a6e3a1"));
+        assert_eq!(tokens[27], ("--rl-dx-mod-bar", "#89b4fa"));
+        assert_eq!(tokens[28], ("--rl-dx-del-bar", "#f38ba8"));
+        assert_eq!(tokens[29], ("--rl-dx-add-line", "#0f1211"));
+        assert_eq!(tokens[30], ("--rl-dx-del-line", "#161015"));
         assert_eq!(tokens[0], ("--rl-bg", "#1e1e2e"));
         assert_eq!(tokens[2], ("--rl-text", "#cdd6f4"));
         assert_eq!(tokens[6], ("--rl-accent-primary", "#cba6f7"));
@@ -760,83 +731,47 @@ mod tests {
         assert_eq!(LATTE.error_bg, "#fce4e4");
     }
 
-    /// Body text stays the theme text color and clears 4.5:1 on every
-    /// wash, including a translucent dark tint flattened over the page.
-    /// Bars clear 3:1 on the page and on that wash. Line fills are the
-    /// flattened wash, so a second translucent layer cannot stack.
+    /// Diff bars are non-text marks beside the text: 3:1 on the page.
+    /// A tinted line in a code listing must keep body text and every
+    /// syntax color at 4.5:1, which is why the tint keeps the code
+    /// panel's luminance instead of being a translucent wash.
     #[test]
-    fn diff_washes_and_bars_meet_contrast() {
+    fn diff_bars_and_line_tints_meet_contrast() {
         for (name, c) in [
             ("mocha", &MOCHA),
             ("macchiato", &MACCHIATO),
             ("frappe", &FRAPPE),
             ("latte", &LATTE),
         ] {
-            let add = flatten_over(c.diff_add_bg, c.bg);
-            let del = flatten_over(c.diff_del_bg, c.bg);
-            let chg = flatten_over(c.diff_chg_bg, c.bg);
-            assert_eq!(
-                add, c.diff_add_line,
-                "{name} add line fill should be the wash flattened over the page"
-            );
-            assert_eq!(del, c.diff_del_line, "{name} del line fill");
-            for (label, wash) in [
-                ("add", add.as_str()),
-                ("del", del.as_str()),
-                ("changed", chg.as_str()),
+            for (label, bar) in [
+                ("add", c.dx_add_bar),
+                ("mod", c.dx_mod_bar),
+                ("del", c.dx_del_bar),
             ] {
-                let ratio = contrast_ratio(c.text, &wash).unwrap();
-                assert!(
-                    ratio >= 4.5,
-                    "{name} text on {label} wash {wash} is {ratio:.2} < 4.5"
-                );
+                let ratio = contrast_ratio(bar, c.bg).unwrap();
+                assert!(ratio >= 3.0, "{name} {label} bar on page {ratio:.2} < 3");
             }
-            for (label, bar, wash) in [
-                ("add", c.diff_add_bar, add),
-                ("del", c.diff_del_bar, del),
-                ("changed", c.diff_chg_bar, chg),
-            ] {
-                let on_page = contrast_ratio(bar, c.bg).unwrap();
-                let on_wash = contrast_ratio(bar, &wash).unwrap();
-                assert!(
-                    on_page >= 3.0,
-                    "{name} {label} bar on page {on_page:.2} < 3"
-                );
-                assert!(
-                    on_wash >= 3.0,
-                    "{name} {label} bar on wash {on_wash:.2} < 3"
-                );
+            for (label, line) in [("add", c.dx_add_line), ("del", c.dx_del_line)] {
+                assert_ne!(line, c.code_bg, "{name} {label} line must be a visible tint");
+                for (role, fg) in [
+                    ("text", c.text),
+                    ("syn_keyword", c.syn_keyword),
+                    ("syn_function", c.syn_function),
+                    ("syn_number", c.syn_number),
+                    ("syn_string", c.syn_string),
+                    ("syn_comment", c.syn_comment),
+                    ("syn_operator", c.syn_operator),
+                ] {
+                    let ratio = contrast_ratio(fg, line).unwrap();
+                    assert!(
+                        ratio >= 4.5,
+                        "{name} {role} on {label} line {line} is {ratio:.2} < 4.5"
+                    );
+                }
             }
-            if c.is_dark() {
-                assert!(
-                    c.diff_add_bg.starts_with("rgba(") && c.diff_del_bg.starts_with("rgba("),
-                    "{name} dark washes should be translucent"
-                );
-            }
+            // The three bars must be told apart.
+            assert_ne!(c.dx_add_bar, c.dx_mod_bar, "{name}");
+            assert_ne!(c.dx_mod_bar, c.dx_del_bar, "{name}");
         }
-    }
-
-    /// `rgba(r, g, b, a)` over a `#RRGGBB` page, or a hex wash unchanged.
-    fn flatten_over(color: &str, page: &str) -> String {
-        if let Some(hex) = color.strip_prefix('#') {
-            assert_eq!(hex.len(), 6, "{color}");
-            return color.to_string();
-        }
-        let rest = color
-            .strip_prefix("rgba(")
-            .and_then(|s| s.strip_suffix(')'))
-            .unwrap_or_else(|| panic!("not a wash color: {color}"));
-        let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
-        assert_eq!(parts.len(), 4, "{color}");
-        let ink = [
-            parts[0].parse::<f64>().unwrap(),
-            parts[1].parse::<f64>().unwrap(),
-            parts[2].parse::<f64>().unwrap(),
-        ];
-        let alpha = parts[3].parse::<f64>().unwrap();
-        let (pr, pg, pb) = parse_hex_rgb(page).unwrap();
-        let page = [f64::from(pr), f64::from(pg), f64::from(pb)];
-        let ch = |i: usize| (ink[i] * alpha + page[i] * (1.0 - alpha)).round() as u8;
-        format!("#{:02x}{:02x}{:02x}", ch(0), ch(1), ch(2))
     }
 }

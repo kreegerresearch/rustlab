@@ -1,9 +1,10 @@
 //! Browser recovery for a notebook that exists on only one side.
 //!
 //! Spawns the real `watch --git-diff` server and drives headless Chrome:
-//! missing on the compared ref, then a ref that has the file, Show diff
-//! off/on, an edit, a reload with `?diff=` and `sessionStorage`, and the
-//! reverse (missing in the working copy). Skips when git or Chrome is
+//! missing on the compared ref (an old `?diff=` link), then a base that
+//! has the file, the presets, Show changes off/on, an edit, a reload with
+//! `sessionStorage`, two refs, the per-preset counts and change list, and
+//! the reverse (missing in the working copy). Skips when git or Chrome is
 //! absent, or when the binary cannot open a debug port, so `cargo test`
 //! still passes on a machine whose Chrome cannot be driven.
 //! The diff computation itself is pinned in `gitdiff::tests`.
@@ -147,6 +148,9 @@ fn oneside_watch_recovers_in_the_browser() {
         eprintln!("SKIP oneside browser: chrome debug port did not open\n{stderr}");
         return;
     }
+    if std::env::var_os("ONESIDE_VERBOSE").is_some() {
+        eprintln!("{stdout}");
+    }
     if !out.status.success() || !stdout.contains("ONESIDE_OK") {
         panic!("browser flow failed\nstdout:\n{stdout}\nstderr:\n{stderr}\nserver:\n{logged}");
     }
@@ -221,7 +225,7 @@ async function goto(url) {
   await send('Page.navigate', { url });
   for (let i = 0; i < 40; i++) {
     const state = await evalJs('document.readyState');
-    const banner = await evalJs('!!document.getElementById("rl-diff-banner") || !!document.querySelector("main")');
+    const banner = await evalJs('!!document.querySelector("main")');
     if (state === 'complete' && banner) break;
     await sleep(100);
   }
@@ -230,17 +234,16 @@ async function goto(url) {
 function state() {
   return evalJs(`(() => {
     const banner = document.getElementById('rl-diff-banner');
-    const secs = [...document.querySelectorAll('main section')].map(s => s.className);
     const notice = document.querySelector('main .rl-diff-notice');
     return {
       href: location.href,
-      banner: banner ? banner.textContent : '',
-      sections: secs,
+      banner: banner && !banner.hidden ? banner.textContent : '',
+      marks: [...document.querySelectorAll('main [data-rl-dx]')].map(e => e.getAttribute('data-rl-dx')),
       notice: notice ? notice.textContent : '',
       errors: window.__errs || [],
-      picker: !!document.getElementById('rl-diff-ref'),
+      picker: !!document.getElementById('rl-dx-presets'),
       body: document.body ? document.body.className : '',
-      text: (document.querySelector('main') && document.querySelector('main').innerText || '').slice(0, 240),
+      text: (document.querySelector('main') && document.querySelector('main').innerText || '').slice(0, 400),
       pref: sessionStorage.getItem('rl-diff-pref'),
     };
   })()`);
@@ -258,22 +261,31 @@ await send('Page.addScriptToEvaluateOnNewDocument', {
   source: 'window.__errs=[]; addEventListener("error", e => window.__errs.push(String(e.message)));'
 });
 
+// An old 0.3.12 link: `diff` is the before side.
 await goto(base + '?diff=ancient');
 let s = await state();
-check('missing-on-ancient', s.banner.includes('new file') && s.banner.includes('not on ancient') && s.notice.includes('not on ancient') && !s.sections.some(c => c.includes('rl-diff-add')) && s.errors.length === 0 && s.picker, s);
+check('missing-on-ancient', s.banner.includes('ancient → working copy') && s.banner.includes('new file, not on ancient') && s.notice.includes('not on ancient') && !s.marks.length && s.errors.length === 0 && s.picker, s);
 
+async function openMenu() {
+  return evalJs(`(() => {
+    var panel = document.getElementById('rl-more-panel');
+    if (panel && panel.hidden) document.getElementById('rl-more-btn').click();
+    return !document.getElementById('rl-more-panel').hidden;
+  })()`);
+}
 async function pick(which, typed) {
-  const list = which === 'from' ? '#rl-diff-base-list li' : '#rl-diff-ref-list li';
-  const id = which === 'from' ? 'rl-diff-base' : 'rl-diff-ref';
+  const id = which === 'compare' ? 'rl-diff-compare' : 'rl-diff-base';
+  const list = '#' + id + '-list li';
+  await openMenu();
   return evalJs(`(async () => {
-    var btn = document.getElementById('rl-more-btn');
-    if (btn) btn.click();
+    var other = document.querySelector('.rl-dx-opt[data-preset="custom"]');
+    if (document.getElementById('rl-dx-other').hidden) other.click();
     var input = document.getElementById(${JSON.stringify(id)});
     input.focus();
-    input.value = ${JSON.stringify(typed)};
-    input.dispatchEvent(new Event('input', { bubbles: true }));
     var hit = null;
-    for (var i = 0; i < 40; i++) {
+    for (var i = 0; i < 60; i++) {
+      input.value = ${JSON.stringify(typed)};
+      input.dispatchEvent(new Event('input', { bubbles: true }));
       var lis = [...document.querySelectorAll(${JSON.stringify(list)})];
       hit = lis.find(li => li.getAttribute('role') === 'option' && (li.textContent || '').toLowerCase().indexOf(${JSON.stringify(typed)}) !== -1);
       if (hit) break;
@@ -306,61 +318,89 @@ async function clickPick(which, typed) {
     done(1);
   }
 }
-async function clickToggle() {
-  try { await evalJs(`document.getElementById('rl-diff-toggle').click()`); } catch (e) {}
+async function clickJs(js) {
+  try { await evalJs(js); } catch (e) {}
 }
-await clickPick('vs', 'main');
-s = await settle(s => s.href.includes('diff=main') && !s.href.includes('base=') && s.banner.includes('changes vs main'));
-check('switch-vs-main', s.href.includes('diff=main') && s.banner.includes('changes vs main') && !s.banner.includes('new file') && s.sections.some(c => c.includes('rl-diff-chg')) && s.text.includes('y = 3') && s.errors.length === 0, s);
-check('pref-follows-main', s.pref && s.pref.includes('"diff":"main"'), s);
+async function clickToggle() {
+  await clickJs(`document.getElementById('rl-diff-toggle').click()`);
+}
+async function clickPreset(key) {
+  await openMenu();
+  await clickJs(`document.querySelector('.rl-dx-opt[data-preset="${key}"]').click()`);
+}
+const qs = (s) => new URL(s.href).searchParams;
+
+await clickPick('base', 'main');
+s = await settle(s => qs(s).get('changes') === 'custom' && qs(s).get('base') === 'main' && s.banner.includes('1 change'));
+check('base-main', !qs(s).get('diff') && s.banner.includes('main → working copy') && s.marks.includes('modified') && s.text.includes('y = 3') && s.errors.length === 0, s);
+check('pref-follows-main', s.pref && s.pref.includes('"base":"main"') && s.pref.includes('"changes":"custom"'), s);
+
+await clickPreset('uncommitted');
+s = await settle(s => qs(s).get('changes') === 'uncommitted');
+check('preset-uncommitted', s.banner.includes('Showing uncommitted changes') && s.banner.includes('vs last commit') && !qs(s).get('base') && s.errors.length === 0, s);
 
 await clickToggle();
-s = await settle(s => s.href.includes('diff=off') && !s.body.includes('rl-diff-on'));
-check('toggle-off', s.href.includes('diff=off') && !s.sections.some(c => c.includes('rl-diff')) && s.errors.length === 0, s);
+s = await settle(s => qs(s).get('changes') === 'off' && !s.body.includes('rl-diff-on'));
+check('toggle-off', !s.marks.length && !s.banner && s.errors.length === 0, s);
 await clickToggle();
-s = await settle(s => s.href.includes('diff=HEAD') && s.banner.includes('changes vs HEAD'));
-check('toggle-on-head', s.href.includes('diff=HEAD') && s.banner.includes('changes vs HEAD') && !s.banner.includes('new file') && s.errors.length === 0, s);
+s = await settle(s => qs(s).get('changes') === 'uncommitted' && s.banner.includes('Showing uncommitted changes'));
+check('toggle-on-uncommitted', !s.banner.includes('new file') && s.errors.length === 0, s);
 
+// A 0.3.12 saved choice still restores.
 await evalJs(`sessionStorage.setItem('rl-diff-pref', JSON.stringify({on:true, diff:'ancient', base:''}))`);
 await goto(base);
-s = await settle(s => s.href.includes('diff=ancient') && s.banner.includes('new file'));
-check('pref-restores-ancient-as-notice', s.href.includes('diff=ancient') && s.banner.includes('new file') && s.notice.includes('not on ancient') && !s.sections.some(c => c.includes('rl-diff-add')), s);
-await goto(base + '?diff=main');
-s = await settle(s => s.href.includes('diff=main') && s.banner.includes('changes vs main'));
-check('query-beats-pref', s.href.includes('diff=main') && !s.banner.includes('new file') && s.banner.includes('changes vs main') && (s.pref || '').includes('"diff":"main"'), s);
+s = await settle(s => qs(s).get('base') === 'ancient' && s.banner.includes('new file'));
+check('pref-restores-ancient-as-notice', qs(s).get('changes') === 'custom' && s.notice.includes('not on ancient') && !s.marks.length, s);
+await goto(base + '?changes=custom&base=main');
+s = await settle(s => qs(s).get('base') === 'main' && s.banner.includes('main → working copy'));
+check('query-beats-pref', !s.banner.includes('new file') && (s.pref || '').includes('"base":"main"'), s);
 
 writeFileSync(repo + '/note.md', '# Note\n\nShared.\n\n```rustlab\nx = 1\ny = 9\n```\n');
 let saw = false;
 for (let i = 0; i < 40; i++) {
   s = await state();
-  if (s.text.includes('y = 9') && s.banner.includes('changes vs main')) { saw = true; break; }
+  if (s.text.includes('y = 9') && s.banner.includes('main → working copy')) { saw = true; break; }
   await sleep(150);
 }
 if (!saw) {
-  await goto(base + '?diff=main');
+  await goto(base + '?changes=custom&base=main');
   s = await state();
 }
-check('edit-then-reload', s.text.includes('y = 9') && s.banner.includes('changes vs main') && !s.banner.includes('new file'), s);
+check('edit-then-reload', s.text.includes('y = 9') && s.banner.includes('1 change') && !s.banner.includes('new file'), s);
 
-await goto(base + '?diff=dropped&base=main');
-s = await settle(s => s.href.includes('diff=dropped') && s.href.includes('base=main') && s.banner.includes('not on dropped'));
-check('two-ref-deleted-keeps-chrome', s.banner.includes('not on dropped') && s.picker && s.body.includes('rl-diff-on') && s.errors.length === 0 && (s.sections.some(c => c.includes('rl-diff-del')) || s.notice.includes('not on dropped')) && s.text.length > 0, s);
-await clickPick('from', 'working');
-s = await settle(s => s.href.includes('diff=dropped') && !s.href.includes('base=') && s.banner.includes('new file'));
-check('clear-from-is-a-notice', !s.href.includes('base=') && s.href.includes('diff=dropped') && s.banner.includes('new file') && s.banner.includes('not on dropped') && s.picker && s.errors.length === 0 && !s.sections.some(c => c.includes('rl-diff-add')), s);
-await clickPick('vs', 'main');
-s = await settle(s => s.href.includes('diff=main') && !s.href.includes('base=') && s.banner.includes('changes vs main'));
-check('after-deleted-side-vs-main', s.href.includes('diff=main') && s.banner.includes('changes vs main') && !s.banner.includes('new file') && s.errors.length === 0 && s.picker, s);
+// Counts and the change list in the menu.
+await openMenu();
+let menu = null;
+for (let i = 0; i < 40; i++) {
+  menu = await evalJs(`(() => ({
+    unc: document.querySelector('.rl-dx-opt[data-preset="uncommitted"] .rl-dx-c').textContent,
+    last: document.querySelector('.rl-dx-opt[data-preset="last"] .rl-dx-c').textContent,
+    lastOff: document.querySelector('.rl-dx-opt[data-preset="last"]').disabled,
+    branchHidden: document.querySelector('.rl-dx-opt[data-preset="branch"]').hidden,
+    rows: [...document.querySelectorAll('#rl-dx-list li')].map(li => li.textContent),
+  }))()`);
+  if (menu.unc) break;
+  await sleep(100);
+}
+check('menu-counts', menu.unc === '1 change' && menu.last === 'new file' && !menu.lastOff && menu.branchHidden, menu);
+check('change-list', menu.rows.length === 1 && menu.rows[0].includes('modified') && menu.rows[0].includes('Code cell 1'), menu);
+
+await goto(base + '?changes=custom&base=main&compare=dropped');
+s = await settle(s => qs(s).get('compare') === 'dropped' && s.banner.includes('not on dropped'));
+check('two-ref-deleted-keeps-chrome', s.banner.includes('main → dropped') && s.banner.includes('code was not run') && s.picker && s.body.includes('rl-diff-on') && s.errors.length === 0 && s.marks.includes('removed') && s.text.length > 0, s);
+await clickPick('compare', 'working');
+s = await settle(s => qs(s).get('base') === 'main' && !qs(s).get('compare') && s.banner.includes('main → working copy'));
+check('compare-back-to-working-copy', s.banner.includes('1 change') && s.errors.length === 0 && s.picker, s);
 
 const fs = await import('node:fs');
 fs.renameSync(repo + '/note.md', repo + '/note.md.bak');
-await goto(base + '?diff=main');
-s = await settle(s => s.banner.includes('deleted') && s.banner.includes('still on main'));
-check('deleted-worktree', s.banner.includes('deleted') && s.banner.includes('still on main') && s.sections.some(c => c.includes('rl-diff-del')) && s.picker && s.errors.length === 0, s);
+await goto(base + '?changes=custom&base=main');
+s = await settle(s => s.banner.includes('deleted'));
+check('deleted-worktree', s.banner.includes('deleted from the working copy') && s.notice.includes('still on main') && s.marks.includes('removed') && s.picker && s.errors.length === 0, s);
 fs.renameSync(repo + '/note.md.bak', repo + '/note.md');
-await goto(base + '?diff=main');
-s = await settle(s => !s.banner.includes('deleted') && (s.banner.includes('changes vs main') || s.banner.includes('no changes vs main')));
-check('restored-worktree', !s.banner.includes('deleted') && (s.banner.includes('changes vs main') || s.banner.includes('no changes vs main')) && s.errors.length === 0 && s.picker, s);
+await goto(base + '?changes=custom&base=main');
+s = await settle(s => !s.banner.includes('deleted') && s.banner.includes('1 change'));
+check('restored-worktree', s.errors.length === 0 && s.picker, s);
 
 console.log('ONESIDE_OK');
 done(0);

@@ -288,7 +288,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/raw/{*slug}", get(raw_source))
         .route("/assets/{*path}", get(asset))
         .route("/plots/{*path}", get(plot))
-        .route("/git/refs", get(git_refs));
+        .route("/git/refs", get(git_refs))
+        .route("/git/changes", get(git_changes));
 
     // The write-back route exists only under `--editable`. The wildcard
     // is required because a directory identity contains `/`.
@@ -527,6 +528,48 @@ async fn git_refs(State(state): State<Arc<ServerState>>) -> Response {
         .into_response()
 }
 
+/// Change counts for the menu's presets: `GET /git/changes?slug=<id>`.
+/// Read-only like `/git/refs`, and "git diff is off" without spawning git
+/// when git is off. `cm=0` counts with comments hidden, as the page does.
+async fn git_changes(State(state): State<Arc<ServerState>>, req: Request) -> Response {
+    let query = req.uri().query().unwrap_or("").to_string();
+    let mut slug = None;
+    let mut cm = None;
+    for pair in query.split('&') {
+        let mut it = pair.splitn(2, '=');
+        match (it.next(), it.next()) {
+            (Some("slug"), Some(v)) => slug = Some(crate::gitdiff::percent_decode(v)),
+            (Some("cm"), Some(v)) => cm = Some(matches!(v, "1" | "on" | "true")),
+            _ => {}
+        }
+    }
+    let nb = slug.as_deref().and_then(|s| state.notebook(s));
+    let body = match nb {
+        _ if !state.git_enabled => crate::gitdiff::changes_json_if(
+            false,
+            std::path::Path::new("."),
+            None,
+            false,
+        ),
+        None => serde_json::json!({ "error": "notebook not found" }).to_string(),
+        Some(nb) => {
+            let comments_on = cm.unwrap_or(state.comments_on);
+            let path = nb.source_path.clone();
+            let jail = state.jail_root.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::gitdiff::changes_json_if(true, &path, jail.as_deref(), comments_on)
+            })
+            .await
+            .unwrap_or_else(|_| serde_json::json!({ "error": "count failed" }).to_string())
+        }
+    };
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
 async fn notebook_page(
     State(state): State<Arc<ServerState>>,
     AxPath(path): AxPath<String>,
@@ -585,15 +628,15 @@ pub(super) async fn serve_notebook_path(
                 let parsed = crate::gitdiff::parse_query(query);
                 let cli = crate::gitdiff::diff_default();
                 let html = if state.git_enabled {
-                    if let Some(diff) = crate::gitdiff::resolve_diff(&parsed, cli.as_deref()) {
+                    if let Some(compare) = crate::gitdiff::resolve_compare(&parsed, cli.as_deref())
+                    {
                         let comments_on = parsed.cm.unwrap_or(state.comments_on);
                         crate::gitdiff::present(crate::gitdiff::Present {
                             html: &html,
                             source_path: &nb.source_path,
                             jail: state.jail_root.as_deref(),
                             comments_on,
-                            diff: &diff,
-                            base: parsed.base.as_deref(),
+                            compare: &compare,
                         })
                     } else {
                         html
@@ -2458,6 +2501,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn git_changes_is_get_only_and_off_without_git() {
+        let app = router(single_state("<h1>hello</h1>"));
+        let res = app
+            .clone()
+            .oneshot(
+                host(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/git/changes?slug=nb"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let before = crate::gitdiff::git_spawns();
+        let res = app
+            .oneshot(
+                host(axum::http::Request::builder().uri("/git/changes?slug=nb"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("git diff is off"), "{body}");
+        assert_eq!(crate::gitdiff::git_spawns(), before, "git ran while off");
     }
 
     #[tokio::test]

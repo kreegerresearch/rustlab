@@ -11,24 +11,32 @@ Optional `--diff` (default `HEAD`) or `--diff main` picks the default
 ref once git is on. The terminal warns that git reads the repository
 config; use this only on a repository you trust.
 
-Open the `⋯` menu in the toolbar and turn on **Show diff**. While git is
-off that switch is unavailable. The picker stays in that menu. A dot on
-the icon means diff is on.
+Open the `⋯` menu in the toolbar and turn on **Show changes**. While git
+is off that switch is unavailable. A dot on the icon means changes are
+shown. Under **Compare**, pick one; each shows how many changes it has:
 
-- **vs** sets `?diff=<ref>`. The list is local branches (current branch
-  first, then `main`), then recent tags and commits. Typing filters that
-  list. Enter picks a match, or a valid ref that is not in the list. Esc
-  closes the list.
-- **from** defaults to the working copy. Pick another ref and the URL
-  becomes `?diff=main&base=feature-x`.
-- `[` and `]` move to the previous and next change.
+- **Uncommitted changes**: your edits since the last commit
+  (`?changes=uncommitted`). This is the default.
+- **This branch vs main**: everything on this branch since it left
+  `main`, like a pull request (`?changes=branch`). Commits that landed on
+  `main` later do not show up as removals.
+- **Last commit**: what the most recent commit changed (`?changes=last`).
+- **Other…**: any two refs. **base** is the before side and **compare**
+  the after side, which defaults to your files:
+  `?changes=custom&base=v0.3&compare=topic`.
 
-Added blocks are tinted green, removed blocks red and struck through,
-and changed blocks amber. A changed code cell tints whole lines and
-marks them `+` or `-`. Working copy against a ref keeps the live
-outputs. The old notebook is not run.
+The chip under the toolbar says what you are looking at, for example
+*Showing uncommitted changes · vs last commit 5f01f1f · 4 changes*.
+The menu lists each change with where it is; click one to jump there, or
+press `[` and `]`.
 
-Two branches, with no working copy on the page, show the newer side's
+A bar left of the text marks each change: green added, blue modified,
+red removed. Prose is compared paragraph by paragraph. Removed text
+collapses to one line you can open. A changed code cell shows its
+source once, as the diff, with `−` and `+` lines. Working copy against a
+ref keeps the live outputs. The old notebook is not run.
+
+Two refs, with no working copy on the page, show the **compare** side's
 text and say the code was not run.
 
 ```rustlab

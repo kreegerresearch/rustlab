@@ -25,7 +25,7 @@ pub struct PageOpts {
     /// from `/assets/codemirror/…`. When false it is a read-only view
     /// of the on-disk `.md` and no editor assets are referenced.
     pub editable: bool,
-    /// `watch --git-diff`. When false Show diff is disabled and the
+    /// `watch --git-diff`. When false Show changes is disabled and the
     /// page never asks for `/git/refs`.
     pub git_diff: bool,
 }
@@ -160,7 +160,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-more-btn {{ min-width: 2rem; letter-spacing: 0.08em; }}
   .rl-diff-dot {{
     position: absolute; top: -1px; right: -1px; width: 7px; height: 7px;
-    border-radius: 50%; background: var(--rl-diff-add-bar, {accent}); pointer-events: none;
+    border-radius: 50%; background: var(--rl-dx-mod-bar, {accent}); pointer-events: none;
   }}
   .rl-more-panel {{
     position: absolute; top: calc(100% + 6px); right: 0; z-index: 100002;
@@ -186,7 +186,7 @@ fn chrome_style(c: &ThemeColors) -> String {
   #rl-diff-toggle[aria-checked="true"] .rl-switch {{ background: {accent}; border-color: {accent}; }}
   #rl-diff-toggle[aria-checked="true"] .rl-switch::after {{ left: 13px; background: {bg}; }}
   #rl-toolbar #rl-diff-toggle:disabled {{ opacity: 0.45; cursor: not-allowed; }}
-  /* In-panel switches stay full contrast. A disabled Show diff stays dim,
+  /* In-panel switches stay full contrast. A disabled Show changes stays dim,
      and the ⋯ button keeps .rl-quiet. */
   #rl-toolbar #rl-more-panel .rl-quiet:not(:disabled),
   #rl-toolbar .rl-menu-switch {{ opacity: 1; }}
@@ -217,37 +217,84 @@ fn chrome_style(c: &ThemeColors) -> String {
     font: 12px/1.35 system-ui, sans-serif;
   }}
   p.rl-git-note {{ margin: 0; font: 11px/1.35 system-ui, sans-serif; color: {text_dim}; }}
-  #rl-diff {{ display: flex; flex-direction: column; gap: 6px; align-items: stretch; }}
-  .rl-diff-nav {{ display: flex; gap: 4px; align-items: center; }}
-  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden],
-  .rl-more-panel[hidden], #rl-diff-dot[hidden] {{ display: none !important; }}
+  body.rl-diff-on .rl-more-panel {{ width: 22rem; max-height: calc(100vh - 64px); overflow: auto; }}
+  #rl-diff {{ display: flex; flex-direction: column; gap: 4px; align-items: stretch; }}
+  #rl-diff[hidden], #rl-diff-banner[hidden], .rl-diff-menu[hidden], #rl-dx-other[hidden],
+  .rl-dx-opt[hidden], .rl-more-panel[hidden], #rl-diff-dot[hidden] {{ display: none !important; }}
+  .rl-dx-hd {{
+    margin: 8px 0 2px; font: 600 11px/1.2 system-ui, sans-serif; color: {text_dim};
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }}
+  #rl-toolbar .rl-dx-opt {{
+    display: grid; grid-template-columns: 14px 1fr auto; gap: 2px 8px; align-items: start;
+    width: 100%; text-align: left; padding: 6px 8px; border-radius: 6px;
+    background: transparent; color: {text}; border: 1px solid transparent;
+    font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }}
+  #rl-toolbar .rl-dx-opt:hover {{ border-color: {border}; }}
+  #rl-toolbar .rl-dx-opt[aria-checked="true"] {{ border-color: {accent}; }}
+  #rl-toolbar .rl-dx-opt:disabled {{ opacity: 0.55; cursor: not-allowed; }}
+  .rl-dx-dot {{
+    width: 10px; height: 10px; margin-top: 3px; border-radius: 50%;
+    border: 1.5px solid {text_dim}; box-sizing: border-box;
+  }}
+  .rl-dx-opt[aria-checked="true"] .rl-dx-dot {{ border-color: {accent}; background: {accent}; box-shadow: inset 0 0 0 2px {bg_secondary}; }}
+  .rl-dx-t {{ font-weight: 600; }}
+  .rl-dx-c {{ color: {text_dim}; font-size: 12px; white-space: nowrap; }}
+  .rl-dx-d {{ grid-column: 2 / 4; color: {text_dim}; font-size: 12px; }}
+  #rl-dx-other {{ display: flex; flex-direction: column; gap: 4px; margin: 2px 0 4px 22px; }}
   #rl-diff input {{
     font: 12px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     background: {bg}; color: {text};
     border: 1px solid {border}; border-radius: 6px;
-    padding: 3px 6px; width: 100%; box-sizing: border-box;
+    padding: 4px 6px; width: 100%; box-sizing: border-box;
   }}
-  .rl-diff-lab {{ font: 12px/1 system-ui, sans-serif; color: {text_dim}; display: flex; gap: 4px; align-items: center; }}
+  #rl-diff input:focus {{ border-color: {accent}; outline: none; }}
+  .rl-diff-lab {{ font: 12px/1 system-ui, sans-serif; color: {text_dim}; display: flex; gap: 6px; align-items: center; }}
+  .rl-dx-lab {{ width: 3.8rem; flex: none; }}
   .rl-diff-combo {{ position: relative; display: flex; flex: 1; min-width: 0; }}
+  .rl-dx-arrow, .rl-dx-hint, .rl-dx-keys {{ margin: 0; font: 11px/1.35 system-ui, sans-serif; color: {text_dim}; }}
+  .rl-dx-arrow {{ text-align: center; }}
   .rl-diff-menu {{
-    position: absolute; top: calc(100% + 2px); left: 0; z-index: 100001;
     margin: 0; padding: 2px; list-style: none;
-    min-width: 100%; width: max-content; max-width: 16rem; max-height: 11rem; overflow: auto;
-    background: {bg_secondary}; color: {text};
+    max-height: 14rem; overflow: auto;
+    background: {bg}; color: {text};
     border: 1px solid {border}; border-radius: 6px;
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
-  .rl-diff-menu li {{ padding: 2px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+  .rl-diff-menu li {{ padding: 3px 6px; border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }}
+  .rl-diff-menu li span {{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .rl-diff-menu li .rl-m {{ color: {text_dim}; flex: none; }}
   .rl-diff-menu li[aria-selected="true"] {{ background: {accent}; color: {bg}; }}
+  .rl-diff-menu li[aria-selected="true"] .rl-m {{ color: {bg}; }}
   .rl-diff-menu li.rl-diff-hint {{ color: {text_dim}; cursor: default; }}
-  #rl-diff-pos {{ font: 11px/1 ui-monospace, monospace; color: {text_dim}; min-width: 2.2rem; text-align: center; }}
+  .rl-diff-menu li.rl-dx-group {{
+    cursor: default; padding-top: 6px; color: {text_dim};
+    font: 600 10px/1.2 system-ui, sans-serif; text-transform: uppercase; letter-spacing: 0.05em;
+  }}
+  #rl-dx-list {{ list-style: none; margin: 0; padding: 0; font: 12px/1.35 system-ui, sans-serif; }}
+  #rl-dx-list li {{
+    display: grid; grid-template-columns: 4px 5.2rem 1fr; gap: 8px; align-items: center;
+    padding: 3px 6px; border-radius: 5px; cursor: pointer;
+  }}
+  #rl-dx-list li:hover, #rl-dx-list li.rl-cur {{ background: {bg}; }}
+  #rl-dx-list li:focus-visible {{ outline: 2px solid {accent}; outline-offset: -2px; }}
+  #rl-dx-list li i {{ display: block; width: 4px; height: 14px; border-radius: 2px; }}
+  #rl-dx-list li .rl-k {{ color: {text_dim}; }}
+  #rl-dx-list li.rl-empty {{ display: block; color: {text_dim}; cursor: default; }}
+  .rl-dx-keys kbd {{
+    font: 11px ui-monospace, monospace; border: 1px solid {border}; border-radius: 3px; padding: 0 4px;
+  }}
   #rl-diff-banner {{
-    position: fixed; top: 46px; right: 14px; z-index: 100000; margin: 0;
-    padding: 4px 8px; max-width: 28rem;
-    background: {bg_secondary}; color: {text_dim};
-    border: 1px solid {border}; border-radius: 6px;
+    position: fixed; top: 46px; right: 14px; z-index: 99999; margin: 0;
+    padding: 6px 10px; max-width: 30rem; text-align: left; cursor: pointer;
+    background: {bg_secondary}; color: {text};
+    border: 1px solid {border}; border-radius: 8px;
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
+  #rl-diff-banner:hover {{ border-color: {accent}; }}
+  #rl-diff-banner .rl-k {{ color: {text_dim}; }}
+  #rl-diff-banner .rl-n {{ color: var(--rl-dx-mod-bar, {accent}); font-weight: 600; }}
   .rl-diff-notice {{
     margin: 0 0 1rem; padding: 0.6rem 0.85rem;
     background: {bg_secondary}; color: {text};
@@ -255,48 +302,46 @@ fn chrome_style(c: &ThemeColors) -> String {
     border-radius: 6px;
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
-  section.rl-diff-add {{
-    background: var(--rl-diff-add-bg, transparent);
-    box-shadow: inset 4px 0 0 var(--rl-diff-add-bar, transparent);
+  /* Changes are a bar in the gutter left of the text. No wash, so body
+     text keeps its own colors. A code cell's accent rule is on its left
+     edge, so the bar sits a gutter further out. */
+  main .rl-dx {{ position: relative; }}
+  main .rl-dx::before {{
+    content: ""; position: absolute; left: -16px; top: 2px; bottom: 2px;
+    width: 4px; border-radius: 2px; pointer-events: none;
   }}
-  section.rl-diff-del {{
-    background: var(--rl-diff-del-bg, transparent);
-    box-shadow: inset 4px 0 0 var(--rl-diff-del-bar, transparent);
+  main section.rl-dx::before {{ left: -22px; }}
+  main .rl-dx-add::before {{ background: var(--rl-dx-add-bar); }}
+  main .rl-dx-mod::before {{ background: var(--rl-dx-mod-bar); }}
+  main .rl-dx-del::before {{ background: var(--rl-dx-del-bar); }}
+  main details.rl-dx-removed {{ margin: 0.6rem 0; }}
+  main details.rl-dx-removed > summary {{
+    cursor: pointer; list-style: none; color: {text_dim};
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }}
-  section.rl-diff-del .prose,
-  section.rl-diff-del pre {{
-    text-decoration: line-through;
-    text-decoration-color: var(--rl-diff-del-bar, currentColor);
+  main details.rl-dx-removed > summary::-webkit-details-marker {{ display: none; }}
+  main details.rl-dx-removed > summary::before {{ content: "▸ "; color: var(--rl-dx-del-bar); }}
+  main details.rl-dx-removed[open] > summary::before {{ content: "▾ "; }}
+  main details.rl-dx-removed > summary b {{ color: {text}; font-weight: 600; }}
+  main .rl-dx-gone {{
+    text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar);
   }}
-  section.rl-diff-chg {{
-    background: var(--rl-diff-chg-bg, transparent);
-    box-shadow: inset 4px 0 0 var(--rl-diff-chg-bar, transparent);
+  main .rl-dx-gone pre {{ text-decoration: inherit; }}
+  .rl-dx-note {{ margin: 4px 0 0; font: 12px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim}; }}
+  main pre.rl-dx-code code {{ display: block; }}
+  main pre.rl-dx-code .rl-ln {{ display: block; white-space: pre-wrap; padding-right: 0.6em; }}
+  main pre.rl-dx-code .rl-ln-g {{
+    display: inline-block; width: 1.8em; text-align: center; color: {text_dim}; user-select: none;
   }}
-  .rl-diff-tag, .rl-diff-note {{
-    font: 11px/1.3 -apple-system, system-ui, sans-serif; color: {text_dim}; margin: 4px 8px;
-  }}
-  .rl-diff-lines {{ margin: 4px 0 8px; }}
-  .rl-ln {{
-    display: flex; align-items: stretch;
-    background: var(--rl-code-bg, {code_bg}); color: {text};
-    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  }}
-  .rl-ln-gutter {{
-    width: 1.4em; flex: none; text-align: center; color: inherit; user-select: none;
-  }}
-  .rl-ln-add {{
-    background: var(--rl-diff-add-line, var(--rl-diff-add-bg));
-    box-shadow: inset 4px 0 0 var(--rl-diff-add-bar, transparent);
-  }}
-  .rl-ln-del {{
-    background: var(--rl-diff-del-line, var(--rl-diff-del-bg));
-    box-shadow: inset 4px 0 0 var(--rl-diff-del-bar, transparent);
-  }}
-  .rl-ln-del code {{ text-decoration: line-through; text-decoration-color: var(--rl-diff-del-bar, currentColor); }}
-  .rl-ln code {{ white-space: pre-wrap; flex: 1; }}
+  main pre.rl-dx-code .rl-ln-add {{ background: var(--rl-dx-add-line); box-shadow: inset 2px 0 0 var(--rl-dx-add-bar); }}
+  main pre.rl-dx-code .rl-ln-del {{ background: var(--rl-dx-del-line); box-shadow: inset 2px 0 0 var(--rl-dx-del-bar); }}
+  main pre.rl-dx-code .rl-ln-add .rl-ln-g {{ color: var(--rl-dx-add-bar); }}
+  main pre.rl-dx-code .rl-ln-del .rl-ln-g {{ color: var(--rl-dx-del-bar); }}
+  main pre.rl-dx-code .rl-ln-del {{ text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar); }}
+  main details.rl-dx-src > summary {{ cursor: pointer; color: {text_dim}; font: 12px/1.3 system-ui, sans-serif; }}
   .fb-git {{
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-    margin-left: 6px; background: var(--rl-diff-add-bar, currentColor); vertical-align: middle;
+    margin-left: 6px; background: var(--rl-dx-mod-bar, currentColor); vertical-align: middle;
   }}
   body {{ --rl-pane-w: min(760px, max(360px, 42vw)); }}
   /* A comment column needs the pane narrower, or the fixed pane paints
@@ -434,7 +479,7 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     let editable_js = if opts.editable { "true" } else { "false" };
 
     // The toolbar shows ⋯ and Source until ⋯ is opened. Comments and
-    // Show diff live in that panel. The picker stays hidden until diff
+    // Show changes live in that panel. The presets stay hidden until changes
     // is on. A dot on the icon means a non-default choice (diff on, or
     // comments hidden). Comments on does not light it.
     let git_flag = if opts.git_diff { "on" } else { "off" };
@@ -448,23 +493,16 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     } else {
         "Git diff is off. Pass --git-diff to compare a repository you trust."
     };
-    let diff_chrome = r#"<div id="rl-more" class="rl-more"><button id="rl-more-btn" type="button" class="rl-quiet" aria-expanded="false" aria-haspopup="true" aria-controls="rl-more-panel" aria-label="More" title="More">⋯</button><span id="rl-diff-dot" class="rl-diff-dot" hidden></span><div id="rl-more-panel" class="rl-more-panel" hidden role="region" aria-label="More"><button id="rl-diff-toggle" type="button" class="rl-quiet" role="switch" aria-checked="false"><span class="rl-switch" aria-hidden="true"></span>Show diff</button><div id="rl-diff" hidden><div class="rl-diff-nav"><button id="rl-diff-prev" type="button" title="Previous change ([)">‹</button><span id="rl-diff-pos"></span><button id="rl-diff-next" type="button" title="Next change (])">›</button></div><label class="rl-diff-lab">vs <span class="rl-diff-combo"><input id="rl-diff-ref" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare against" aria-expanded="false" aria-controls="rl-diff-ref-list"><ul id="rl-diff-ref-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label><label class="rl-diff-lab">from <span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare from" aria-expanded="false" aria-controls="rl-diff-base-list"><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox"></ul></span></label></div></div></div><p id="rl-diff-banner" hidden></p>"#;
-    let diff_chrome = diff_chrome
-        .replace(
-            "aria-checked=\"false\"",
-            &format!("aria-checked=\"false\"{git_extra}"),
-        )
-        .replace(
-            "Show diff</button>",
-            &format!("Show diff</button><p class=\"rl-git-note\">{git_note}</p>"),
-        );
+    let diff_chrome = format!(
+        r#"<div id="rl-more" class="rl-more"><button id="rl-more-btn" type="button" class="rl-quiet" aria-expanded="false" aria-haspopup="true" aria-controls="rl-more-panel" aria-label="More" title="More">⋯</button><span id="rl-diff-dot" class="rl-diff-dot" hidden></span><div id="rl-more-panel" class="rl-more-panel" hidden role="region" aria-label="More"><button id="rl-diff-toggle" type="button" class="rl-quiet" role="switch" aria-checked="false"{git_extra}><span class="rl-switch" aria-hidden="true"></span>Show changes</button><p class="rl-git-note">{git_note}</p>{DIFF_PANEL}</div></div>"#
+    );
     let toolbar = if opts.editable {
         format!(
-            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-save\" hidden title=\"Save (Ctrl/Cmd-S)\">Save</button><button id=\"rl-source-toggle\" title=\"Edit notebook source\">Edit</button></div>"
+            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-save\" hidden title=\"Save (Ctrl/Cmd-S)\">Save</button><button id=\"rl-source-toggle\" title=\"Edit notebook source\">Edit</button></div>{CHIP_SLOT}"
         )
     } else {
         format!(
-            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-toggle\" title=\"Show notebook source\">Source</button></div>"
+            "<div id=\"rl-toolbar\">{diff_chrome}<button id=\"rl-source-toggle\" title=\"Show notebook source\">Source</button></div>{CHIP_SLOT}"
         )
     };
 
@@ -619,11 +657,20 @@ fn body_extra(opts: PageOpts, nonce: Option<&str>) -> String {
     out
 }
 
-/// Picker, keyboard prev/next, and branch list. A raw string so the
+/// Where the status chip goes; `gitdiff::decorate` fills it on a diff page.
+const CHIP_SLOT: &str = "<button id=\"rl-diff-banner\" type=\"button\" hidden></button>";
+
+/// The comparison controls under Show changes: presets with counts,
+/// Other… (base and compare), and the list of changes on this page.
+const DIFF_PANEL: &str = r#"<div id="rl-diff" hidden><p class="rl-dx-hd" id="rl-dx-cmp-hd">Compare</p><div id="rl-dx-presets" role="radiogroup" aria-labelledby="rl-dx-cmp-hd"><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="uncommitted"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Uncommitted changes</span><span class="rl-dx-c"></span><span class="rl-dx-d">Your edits since the last commit</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="branch" hidden><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">This branch vs main</span><span class="rl-dx-c"></span><span class="rl-dx-d">Everything on this branch since it left main, like a pull request</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="last"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Last commit</span><span class="rl-dx-c"></span><span class="rl-dx-d">What the most recent commit changed</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="custom"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Other…</span><span class="rl-dx-c"></span><span class="rl-dx-d">Pick any two branches, tags or commits</span></button></div><div id="rl-dx-other" hidden><label class="rl-diff-lab"><span class="rl-dx-lab">base</span><span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Base: compare from" aria-expanded="false" aria-controls="rl-diff-base-list"></span></label><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox" aria-label="Base"></ul><p class="rl-dx-arrow">↓ changes from base to compare ↓</p><label class="rl-diff-lab"><span class="rl-dx-lab">compare</span><span class="rl-diff-combo"><input id="rl-diff-compare" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare: compare to" aria-expanded="false" aria-controls="rl-diff-compare-list"></span></label><ul id="rl-diff-compare-list" class="rl-diff-menu" hidden role="listbox" aria-label="Compare"></ul><p class="rl-dx-hint">Typing filters the list. A sha or <code>HEAD~3</code> works too.</p></div><p class="rl-dx-hd" id="rl-dx-list-hd">Changes</p><ul id="rl-dx-list" aria-labelledby="rl-dx-list-hd"></ul><p class="rl-dx-keys"><kbd>[</kbd> <kbd>]</kbd> previous / next change</p></div>"#;
+
+/// Presets, change list, keyboard prev/next, and the ref lists. A raw string so the
 /// braces are not doubled by the chrome `format!`.
 ///
-/// `rlDiffFilter` / `rlDiffRefOk` / `rlDiffChoose` stay at the top so a
-/// node test can load this file. `rlDiffRefOk` matches `gitdiff::ref_ok`.
+/// The pure helpers (`rlDiffFilter`, `rlDiffRefOk`, `rlDiffChoose`,
+/// `rlDiffNorm`, `rlDiffPrefApply`, `rlDiffUrl`, `rlRelTime`) stay at the
+/// top so a node test can load this file. `rlDiffRefOk` matches
+/// `gitdiff::ref_ok`.
 pub(crate) const DIFF_CLIENT_SCRIPT: &str = r#"function rlDiffFilter(items, query) {
   var q = String(query || '').toLowerCase();
   var out = [];
@@ -650,24 +697,83 @@ function rlDiffChoose(matches, query, highlight, armed) {
 }
 function rlMoreMark(diffOn, commentsOff) {
   var bits = [];
-  if (diffOn) bits.push('diff on');
+  if (diffOn) bits.push('changes on');
   if (commentsOff) bits.push('comments off');
   return {
     dot: bits.length > 0,
     label: bits.length ? ('More, ' + bits.join(', ')) : 'More'
   };
 }
-function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
-  if (queryDiff === 'off') return { action: 'store-off', diff: '', base: '' };
-  if (queryDiff) return { action: 'store-on', diff: queryDiff, base: queryBase || '' };
-  if (bodyOn) return { action: 'keep', diff: '', base: '' };
-  if (saved && saved.on) {
-    var diff = saved.diff || 'HEAD';
-    var base = saved.base || '';
-    if (!rlDiffRefOk(diff) || (base && !rlDiffRefOk(base))) return { action: 'none', diff: '', base: '' };
-    return { action: 'navigate', diff: diff, base: base };
+var RL_PRESETS = ['uncommitted', 'branch', 'last', 'custom'];
+// A saved or body choice in one shape: {changes, base, compare}. The
+// 0.3.12 shape {diff, base} meant before/after and still restores.
+function rlDiffNorm(p) {
+  if (!p) return null;
+  if (p.changes) {
+    if (RL_PRESETS.indexOf(p.changes) === -1) return null;
+    if (p.changes !== 'custom') return { changes: p.changes, base: '', compare: '' };
+    var b = p.base || 'HEAD';
+    var c = p.compare || '';
+    if (!rlDiffRefOk(b) || (c && !rlDiffRefOk(c))) return null;
+    return { changes: 'custom', base: b, compare: c };
   }
-  return { action: 'none', diff: '', base: '' };
+  if (p.diff) {
+    if (!rlDiffRefOk(p.diff) || (p.base && !rlDiffRefOk(p.base))) return null;
+    if (p.diff === 'HEAD' && !p.base) return { changes: 'uncommitted', base: '', compare: '' };
+    return { changes: 'custom', base: p.diff, compare: p.base || '' };
+  }
+  return null;
+}
+// What to do on load. `query` is the page's own diff keys; `body` is the
+// comparison the server rendered (null when the page is plain).
+function rlDiffPrefApply(query, body, saved) {
+  var q = query || {};
+  if (q.changes === 'off' || (!q.changes && q.diff === 'off')) return { action: 'store-off' };
+  if (q.changes || q.diff) return { action: 'store-on', pref: rlDiffNorm(body) };
+  if (body) return { action: 'keep', pref: rlDiffNorm(body) };
+  if (saved && saved.on) {
+    var pref = rlDiffNorm(saved);
+    if (!pref) return { action: 'none' };
+    return { action: 'navigate', pref: pref };
+  }
+  return { action: 'none' };
+}
+// The page URL for a choice. `null` turns changes off. Old keys go, so
+// a link only ever carries one scheme.
+function rlDiffUrl(href, pref) {
+  var u = new URL(href);
+  u.searchParams.delete('diff');
+  u.searchParams.delete('base');
+  u.searchParams.delete('compare');
+  if (!pref) {
+    u.searchParams.set('changes', 'off');
+    return u.toString();
+  }
+  u.searchParams.set('changes', pref.changes);
+  if (pref.changes === 'custom') {
+    u.searchParams.set('base', pref.base || 'HEAD');
+    if (pref.compare) u.searchParams.set('compare', pref.compare);
+  }
+  return u.toString();
+}
+function rlRelTime(then, now) {
+  var s = Math.max(0, (now | 0) - (then | 0));
+  if (!then) return '';
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+  var d = Math.floor(s / 86400);
+  if (d < 60) return d === 1 ? '1 day ago' : d + ' days ago';
+  var m = Math.floor(d / 30);
+  if (m < 24) return m + ' months ago';
+  return Math.floor(d / 365) + ' years ago';
+}
+function rlDxCount(entry) {
+  if (!entry) return '';
+  if (typeof entry.count === 'number') {
+    return entry.count === 0 ? 'no changes' : entry.count === 1 ? '1 change' : entry.count + ' changes';
+  }
+  return entry.note || '';
 }
 (function () {
   if (typeof document === 'undefined') return;
@@ -677,74 +783,67 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
   var moreBtn = document.getElementById('rl-more-btn');
   var panel = document.getElementById('rl-more-panel');
   var dot = document.getElementById('rl-diff-dot');
-  var vs = document.getElementById('rl-diff-ref');
-  var from = document.getElementById('rl-diff-base');
-  var vsList = document.getElementById('rl-diff-ref-list');
-  var fromList = document.getElementById('rl-diff-base-list');
-  var pos = document.getElementById('rl-diff-pos');
+  var chip = document.getElementById('rl-diff-banner');
+  var other = document.getElementById('rl-dx-other');
+  var baseIn = document.getElementById('rl-diff-base');
+  var cmpIn = document.getElementById('rl-diff-compare');
+  var baseList = document.getElementById('rl-diff-base-list');
+  var cmpList = document.getElementById('rl-diff-compare-list');
+  var listEl = document.getElementById('rl-dx-list');
+  var listHd = document.getElementById('rl-dx-list-hd');
   var PREF = 'rl-diff-pref';
+  var OPEN = 'rl-dx-open';
+  function slug() {
+    var meta = document.querySelector('meta[name="rl-slug"]');
+    if (meta && meta.content) return meta.content;
+    var m = location.pathname.match(/^\/n\/(.+?)\/?$/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
   function readPref() {
     try {
       var raw = sessionStorage.getItem(PREF);
       return raw ? JSON.parse(raw) : null;
     } catch (err) { return null; }
   }
-  function store(onFlag, diff, base) {
+  function store(pref) {
     try {
-      sessionStorage.setItem(PREF, JSON.stringify({
-        on: !!onFlag, diff: diff || 'HEAD', base: base || ''
-      }));
+      sessionStorage.setItem(PREF, JSON.stringify(pref ? {
+        on: true, changes: pref.changes, base: pref.base || '', compare: pref.compare || ''
+      } : { on: false }));
     } catch (err) {}
-  }
-
-  function params() {
-    var cur = new URLSearchParams(location.search);
-    if (!cur.get('diff') && document.body.dataset.rlDiff) {
-      cur.set('diff', document.body.dataset.rlDiff);
-    }
-    if (!cur.get('base') && document.body.dataset.rlBase) {
-      cur.set('base', document.body.dataset.rlBase);
-    }
-    return cur;
-  }
-  function go(diff, base) {
-    var u = new URL(location.href);
-    var cur = params();
-    if (!diff || diff === 'off') {
-      store(false, '', '');
-      u.searchParams.set('diff', 'off');
-      u.searchParams.delete('base');
-    } else {
-      store(true, diff, base || '');
-      u.searchParams.set('diff', diff);
-      if (base) u.searchParams.set('base', base);
-      else u.searchParams.delete('base');
-    }
-    if (cur.get('cm')) u.searchParams.set('cm', cur.get('cm'));
-    location.assign(u.toString());
   }
   function on() {
     return document.body.classList.contains('rl-diff-on');
   }
+  function bodyPref() {
+    if (!on()) return null;
+    var d = document.body.dataset;
+    return { changes: d.rlChanges || 'uncommitted', base: d.rlBase || '', compare: d.rlCompare || '' };
+  }
+  function go(pref) {
+    store(pref);
+    location.assign(rlDiffUrl(location.href, pref));
+  }
   (function restore() {
     if (!gitOn) return;
     var q = new URLSearchParams(location.search);
-    var decision = rlDiffPrefApply(q.get('diff'), q.get('base') || '', on(), readPref());
-    if (decision.action === 'store-off') store(false, '', '');
-    else if (decision.action === 'store-on') store(true, decision.diff, decision.base);
-    else if (decision.action === 'keep') {
-      store(true, document.body.dataset.rlDiff || 'HEAD', document.body.dataset.rlBase || '');
-    } else if (decision.action === 'navigate') go(decision.diff, decision.base);
+    var decision = rlDiffPrefApply(
+      { changes: q.get('changes'), diff: q.get('diff') }, bodyPref(), readPref());
+    if (decision.action === 'store-off') store(null);
+    else if (decision.action === 'store-on' || decision.action === 'keep') {
+      if (decision.pref) store(decision.pref);
+    } else if (decision.action === 'navigate') go(decision.pref);
   })();
+
   function menuOpen() { return !!(panel && !panel.hidden); }
   function setMenu(open) {
     if (!panel || !moreBtn) return;
     panel.hidden = !open;
     moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
-      var first = panel.querySelector('button, input, a, select, textarea');
-      if (first) first.focus();
-      else toggle.focus();
+      loadCounts();
+      var first = panel.querySelector('[aria-checked="true"].rl-dx-opt') || toggle;
+      if (first && first.focus) first.focus();
     }
   }
   if (moreBtn && panel) {
@@ -760,7 +859,14 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     document.addEventListener('click', function (ev) {
       if (!menuOpen()) return;
       if (panel.contains(ev.target) || moreBtn.contains(ev.target)) return;
+      if (chip && chip.contains(ev.target)) return;
       setMenu(false);
+    });
+  }
+  if (chip) {
+    chip.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setMenu(!menuOpen());
     });
   }
   function syncMoreMark() {
@@ -775,16 +881,69 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
   syncMoreMark();
   toggle.addEventListener('click', function () {
     if (!gitOn) return;
-    if (on()) go('off', '');
-    else go('HEAD', '');
+    if (on()) { go(null); return; }
+    var saved = rlDiffNorm(readPref());
+    go(saved || { changes: 'uncommitted', base: '', compare: '' });
   });
 
-  function labelOf(items, value) {
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].value === value) return items[i].label;
-    }
-    return value;
+  // ── Presets ────────────────────────────────────────────────────────
+  var current = bodyPref();
+  var opts = Array.prototype.slice.call(document.querySelectorAll('.rl-dx-opt'));
+  function optFor(key) {
+    for (var i = 0; i < opts.length; i++) if (opts[i].getAttribute('data-preset') === key) return opts[i];
+    return null;
   }
+  opts.forEach(function (b) {
+    var key = b.getAttribute('data-preset');
+    b.setAttribute('aria-checked', current && current.changes === key ? 'true' : 'false');
+    b.addEventListener('click', function () {
+      if (key === 'custom') {
+        opts.forEach(function (o) { o.setAttribute('aria-checked', o === b ? 'true' : 'false'); });
+        showOther();
+        if (baseIn) baseIn.focus();
+        return;
+      }
+      if (current && current.changes === key) return;
+      go({ changes: key, base: '', compare: '' });
+    });
+  });
+  var counted = false;
+  function loadCounts() {
+    if (counted || !gitOn || !on()) return;
+    counted = true;
+    var box = document.getElementById('rl-comments');
+    var url = '/git/changes?slug=' + encodeURIComponent(slug()) + (box && !box.checked ? '&cm=0' : '');
+    fetch(url).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data || data.error) return;
+      var u = optFor('uncommitted');
+      if (u) u.querySelector('.rl-dx-c').textContent = rlDxCount(data.uncommitted);
+      var br = optFor('branch');
+      if (br && data.branch && !data.branch.hidden && data.default) {
+        br.hidden = false;
+        br.querySelector('.rl-dx-t').textContent = 'This branch vs ' + data.default;
+        br.querySelector('.rl-dx-d').textContent = 'Everything on ' + (data.current || 'this branch') +
+          ' since it left ' + data.default + ', like a pull request';
+        br.querySelector('.rl-dx-c').textContent = data.branch.disabled ? '' : rlDxCount(data.branch);
+        if (data.branch.disabled) {
+          br.disabled = true;
+          br.querySelector('.rl-dx-d').textContent = data.branch.disabled;
+        }
+      }
+      var last = optFor('last');
+      if (last && data.last) {
+        if (data.last.disabled) {
+          last.disabled = true;
+          last.querySelector('.rl-dx-c').textContent = '—';
+          last.querySelector('.rl-dx-d').textContent = data.last.disabled;
+        } else {
+          last.querySelector('.rl-dx-c').textContent = rlDxCount(data.last);
+        }
+      }
+    }).catch(function () {});
+  }
+  if (current && current.changes === 'branch') { var b0 = optFor('branch'); if (b0) b0.hidden = false; }
+
+  // ── Other…: base and compare ───────────────────────────────────────
   function mount(input, list, which) {
     if (!input || !list) return { setItems: function () {}, value: function () { return ''; } };
     var items = [];
@@ -792,12 +951,16 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     var highlight = 0;
     var armed = false;
     function committed() { return input.getAttribute('data-value') || ''; }
+    function labelOf(value) {
+      for (var i = 0; i < items.length; i++) if (items[i].value === value) return items[i].label;
+      return value;
+    }
     function query() { return filtering ? input.value : ''; }
     function rows() { return rlDiffFilter(items, query()); }
     function close(restore) {
       list.hidden = true;
       input.setAttribute('aria-expanded', 'false');
-      if (restore) input.value = labelOf(items, committed());
+      if (restore) input.value = labelOf(committed());
       filtering = false;
       armed = false;
     }
@@ -813,10 +976,27 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       } else {
         if (highlight >= found.length) highlight = found.length - 1;
         if (highlight < 0) highlight = 0;
+        var group = null;
         found.forEach(function (it, i) {
+          if (it.group && it.group !== group) {
+            group = it.group;
+            var g = document.createElement('li');
+            g.className = 'rl-dx-group';
+            g.setAttribute('role', 'presentation');
+            g.textContent = group;
+            list.appendChild(g);
+          }
           var li = document.createElement('li');
-          li.textContent = it.label;
           li.setAttribute('role', 'option');
+          var name = document.createElement('span');
+          name.textContent = it.label;
+          li.appendChild(name);
+          if (it.meta) {
+            var meta = document.createElement('span');
+            meta.className = 'rl-m';
+            meta.textContent = it.meta;
+            li.appendChild(meta);
+          }
           if (i === highlight) li.setAttribute('aria-selected', 'true');
           li.addEventListener('mousedown', function (ev) {
             ev.preventDefault();
@@ -831,16 +1011,16 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       input.setAttribute('aria-expanded', 'true');
     }
     function pick(value) {
-      var diff = which === 'diff' ? value : (vs ? (vs.getAttribute('data-value') || 'HEAD') : 'HEAD');
-      var base = which === 'base' ? value : (from ? (from.getAttribute('data-value') || '') : '');
-      if (value === committed()) { close(true); return; }
-      go(diff, base);
+      var base = which === 'base' ? value : (baseCombo.value() || 'HEAD');
+      var cmp = which === 'compare' ? value : cmpCombo.value();
+      if (current && current.changes === 'custom' && value === committed()) { close(true); return; }
+      go({ changes: 'custom', base: base || 'HEAD', compare: cmp || '' });
     }
     input.addEventListener('focus', function () {
       filtering = false;
       armed = false;
-      var all = rlDiffFilter(items, '');
       highlight = 0;
+      var all = rlDiffFilter(items, '');
       for (var i = 0; i < all.length; i++) {
         if (all[i].value === committed()) { highlight = i; break; }
       }
@@ -857,8 +1037,7 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
         var n = rows().length;
-        if (!n) { render(); return; }
-        if (list.hidden) { render(); return; }
+        if (!n || list.hidden) { render(); return; }
         highlight += e.key === 'ArrowDown' ? 1 : -1;
         if (highlight < 0) highlight = 0;
         if (highlight >= n) highlight = n - 1;
@@ -889,68 +1068,112 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       setItems: function (next, value) {
         items = next;
         input.setAttribute('data-value', value);
-        input.value = labelOf(items, value);
+        // The list can arrive after the field took focus; show it then.
+        if (document.activeElement === input && !filtering) {
+          input.value = labelOf(value);
+          render();
+          input.select();
+          return;
+        }
         close(false);
-        input.value = labelOf(items, value);
+        input.value = labelOf(value);
       }
     };
   }
-  var vsCombo = mount(vs, vsList, 'diff');
-  var fromCombo = mount(from, fromList, 'base');
-  if (vs && document.body.dataset.rlDiff) {
-    vs.setAttribute('data-value', document.body.dataset.rlDiff);
-    vs.value = document.body.dataset.rlDiff;
-  }
-  if (from) {
-    var initialBase = document.body.dataset.rlBase || '';
-    from.setAttribute('data-value', initialBase);
-    from.value = initialBase || 'working copy';
-  }
+  var baseCombo = mount(baseIn, baseList, 'base');
+  var cmpCombo = mount(cmpIn, cmpList, 'compare');
+  var refsLoaded = false;
   function fill(data) {
-    var branches = (data && data.branches) || [];
+    var now = Math.floor(Date.now() / 1000);
     var shared = [];
-    branches.forEach(function (b) {
-      shared.push({ value: b.name, label: b.current ? b.name + ' (current)' : b.name });
+    ((data && data.branches) || []).forEach(function (b) {
+      shared.push({ value: b.name, label: b.name, group: 'Branches', meta: b.current ? 'current' : rlRelTime(b.date, now) });
     });
-    shared.push({ value: 'HEAD', label: 'HEAD' });
-    shared.push({ value: 'index', label: 'index' });
+    shared.push({ value: 'HEAD', label: 'HEAD', group: 'Branches', meta: 'last commit' });
     ((data && data.tags) || []).forEach(function (t) {
-      shared.push({ value: t.name, label: t.name });
+      shared.push({ value: t.name, label: t.name, group: 'Tags', meta: rlRelTime(t.date, now) });
     });
     ((data && data.commits) || []).forEach(function (c) {
-      shared.push({ value: c.rev, label: c.label });
+      shared.push({ value: c.rev, label: c.label, group: 'Recent commits', meta: rlRelTime(c.date, now) });
     });
-    var want = document.body.dataset.rlDiff || 'HEAD';
-    var base = document.body.dataset.rlBase || '';
-    var vsItems = shared.slice();
-    if (!vsItems.some(function (it) { return it.value === want; })) {
-      vsItems.push({ value: want, label: want });
-    }
-    var fromItems = [{ value: '', label: 'working copy' }].concat(shared);
-    if (base && !fromItems.some(function (it) { return it.value === base; })) {
-      fromItems.push({ value: base, label: base });
-    }
-    vsCombo.setItems(vsItems, want);
-    fromCombo.setItems(fromItems, base);
-    if (data && data.error) {
-      var banner = document.getElementById('rl-diff-banner');
-      if (banner && !banner.textContent) banner.textContent = data.error;
-    }
+    var base = (current && current.changes === 'custom' && current.base) || 'HEAD';
+    var cmp = (current && current.changes === 'custom' && current.compare) || '';
+    var baseItems = shared.slice();
+    if (!baseItems.some(function (it) { return it.value === base; })) baseItems.push({ value: base, label: base, group: '' });
+    var cmpItems = [{ value: '', label: 'Working copy (your files)', group: '' }].concat(shared);
+    if (cmp && !cmpItems.some(function (it) { return it.value === cmp; })) cmpItems.push({ value: cmp, label: cmp, group: '' });
+    baseCombo.setItems(baseItems, base);
+    cmpCombo.setItems(cmpItems, cmp);
   }
-  if (gitOn && on() && vs) {
+  function showOther() {
+    if (!other) return;
+    other.hidden = false;
+    if (refsLoaded || !gitOn) return;
+    refsLoaded = true;
+    var base = (current && current.changes === 'custom' && current.base) || 'HEAD';
+    var cmp = (current && current.changes === 'custom' && current.compare) || '';
+    if (baseIn) { baseIn.setAttribute('data-value', base); baseIn.value = base; }
+    if (cmpIn) { cmpIn.setAttribute('data-value', cmp); cmpIn.value = cmp || 'Working copy (your files)'; }
     fetch('/git/refs').then(function (r) { return r.json(); }).then(fill).catch(function () {});
   }
+  if (current && current.changes === 'custom') showOther();
 
+  // ── The changes on this page ───────────────────────────────────────
+  var BAR = { added: 'var(--rl-dx-add-bar)', modified: 'var(--rl-dx-mod-bar)', removed: 'var(--rl-dx-del-bar)' };
   function changes() {
-    return Array.prototype.slice.call(document.querySelectorAll('main section.rl-diff'));
+    return Array.prototype.slice.call(document.querySelectorAll('main [data-rl-dx]'));
   }
+  function mark(i) {
+    if (!listEl) return;
+    Array.prototype.forEach.call(listEl.children, function (li, k) {
+      li.classList.toggle('rl-cur', k === i);
+    });
+  }
+  function jump(el, i) {
+    el.scrollIntoView({ block: 'center' });
+    mark(i);
+  }
+  function buildList() {
+    if (!listEl) return;
+    var list = changes();
+    listEl.textContent = '';
+    if (listHd) listHd.textContent = list.length === 1 ? '1 change' : list.length ? list.length + ' changes' : 'Changes';
+    if (!list.length) {
+      var none = document.createElement('li');
+      none.className = 'rl-empty';
+      none.textContent = on() ? 'Nothing changed on this page.' : '';
+      listEl.appendChild(none);
+      return;
+    }
+    list.forEach(function (el, i) {
+      var kind = el.getAttribute('data-rl-dx');
+      var li = document.createElement('li');
+      li.tabIndex = 0;
+      var bar = document.createElement('i');
+      bar.style.background = BAR[kind] || 'currentColor';
+      var k = document.createElement('span');
+      k.className = 'rl-k';
+      k.textContent = kind;
+      var w = document.createElement('span');
+      w.textContent = el.getAttribute('data-rl-where') || '';
+      li.appendChild(bar);
+      li.appendChild(k);
+      li.appendChild(w);
+      li.addEventListener('click', function () { jump(el, i); });
+      li.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); jump(el, i); }
+      });
+      listEl.appendChild(li);
+    });
+  }
+  if (on()) buildList();
   function fullyVisible(el) {
     var r = el.getBoundingClientRect();
     return r.top >= 0 && r.bottom <= window.innerHeight;
   }
   function step(dir) {
     var list = changes();
-    if (!list.length) { if (pos) pos.textContent = '0'; return; }
+    if (!list.length) return;
     var cur = -1;
     list.forEach(function (el, i) {
       if (el.getBoundingClientRect().top < 80) cur = i;
@@ -960,24 +1183,8 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     else { while (i >= 0 && fullyVisible(list[i])) i--; }
     if (i < 0) i = 0;
     if (i >= list.length) i = list.length - 1;
-    list[i].scrollIntoView({ block: 'center' });
-    if (pos) pos.textContent = (i + 1) + '/' + list.length;
+    jump(list[i], i);
   }
-  function showPos() {
-    if (!pos) return;
-    var list = changes();
-    if (!list.length) { pos.textContent = '0/0'; return; }
-    var cur = 0;
-    list.forEach(function (el, i) {
-      if (el.getBoundingClientRect().top < 80) cur = i;
-    });
-    pos.textContent = (cur + 1) + '/' + list.length;
-  }
-  if (on()) showPos();
-  var prev = document.getElementById('rl-diff-prev');
-  var next = document.getElementById('rl-diff-next');
-  if (prev) prev.addEventListener('click', function () { step(-1); });
-  if (next) next.addEventListener('click', function () { step(1); });
   document.addEventListener('keydown', function (e) {
     if (!on()) return;
     if (e.key !== '[' && e.key !== ']') return;
@@ -989,6 +1196,24 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     step(e.key === ']' ? 1 : -1);
   });
 
+  // Removed blocks stay open or closed across the reload a live edit does.
+  function openSet() {
+    try { return JSON.parse(sessionStorage.getItem(OPEN) || '[]'); } catch (err) { return []; }
+  }
+  function keepOpen() {
+    var ids = openSet();
+    Array.prototype.forEach.call(document.querySelectorAll('main details.rl-dx-removed'), function (d) {
+      if (ids.indexOf(d.id) !== -1) d.open = true;
+      d.addEventListener('toggle', function () {
+        var now = openSet().filter(function (x) { return x !== d.id; });
+        if (d.open) now.push(d.id);
+        try { sessionStorage.setItem(OPEN, JSON.stringify(now.slice(-64))); } catch (err) {}
+      });
+    });
+  }
+  if (on()) keepOpen();
+
+  var KEYS = ['changes', 'diff', 'base', 'compare', 'cm'];
   document.addEventListener('click', function (ev) {
     if (!on()) return;
     var a = ev.target && ev.target.closest && ev.target.closest('a');
@@ -999,8 +1224,8 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
     try { url = new URL(a.href, location.href); } catch (err) { return; }
     if (url.origin !== location.origin) return;
     if (!(url.pathname === '/' || url.pathname.indexOf('/n/') === 0)) return;
-    var cur = params();
-    ['diff', 'base', 'cm'].forEach(function (k) {
+    var cur = new URLSearchParams(location.search);
+    KEYS.forEach(function (k) {
       if (cur.get(k) && !url.searchParams.get(k)) url.searchParams.set(k, cur.get(k));
     });
     if (url.toString() !== a.href) {
@@ -1015,9 +1240,6 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       syncMoreMark();
       if (!on()) return;
       var u = new URL(location.href);
-      var cur = params();
-      if (cur.get('diff')) u.searchParams.set('diff', cur.get('diff'));
-      if (cur.get('base')) u.searchParams.set('base', cur.get('base'));
       u.searchParams.set('cm', box.checked ? '1' : '0');
       location.assign(u.toString());
     });
@@ -1040,10 +1262,10 @@ function rlDiffPrefApply(queryDiff, queryBase, bodyOn, saved) {
       var old = a.querySelector('.fb-git');
       if (old) old.remove();
       if (!hit) return;
-      var dot = document.createElement('span');
-      dot.className = 'fb-git';
-      dot.title = hit.label || hit.status || 'changed';
-      a.appendChild(dot);
+      var d = document.createElement('span');
+      d.className = 'fb-git';
+      d.title = hit.label || hit.status || 'changed';
+      a.appendChild(d);
     });
   }
   paint();
@@ -1112,26 +1334,56 @@ assert.strictEqual(rlDiffChoose([], 'refs/heads/off', 0, false), 'refs/heads/off
 assert.strictEqual(rlDiffChoose([], 'main..HEAD', 0, false), null);
 assert.strictEqual(rlDiffChoose([], 'not a ref', 0, false), null);
 assert.strictEqual(rlDiffChoose([], '-rf', 0, false), null);
-assert.strictEqual(rlDiffPrefApply('off', '', false, {on:true, diff:'HEAD'}).action, 'store-off');
-assert.strictEqual(rlDiffPrefApply('main', 'topic', false, null).action, 'store-on');
-assert.strictEqual(rlDiffPrefApply('main', 'topic', false, null).base, 'topic');
-assert.strictEqual(rlDiffPrefApply(null, '', true, null).action, 'keep');
-assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:''}).action, 'navigate');
-assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'HEAD', base:''}).diff, 'HEAD');
-assert.strictEqual(rlDiffPrefApply(null, '', false, {on:true, diff:'main..HEAD'}).action, 'none');
-assert.strictEqual(rlDiffPrefApply(null, '', false, null).action, 'none');
+var P = function (changes, diff) { return { changes: changes, diff: diff }; };
+var unc = { changes: 'uncommitted', base: '', compare: '' };
+assert.strictEqual(rlDiffPrefApply(P('off', null), null, {on:true, changes:'last'}).action, 'store-off');
+assert.strictEqual(rlDiffPrefApply(P(null, 'off'), null, {on:true}).action, 'store-off');
+var d = rlDiffPrefApply(P('custom', null), {changes:'custom', base:'main', compare:'topic'}, null);
+assert.strictEqual(d.action, 'store-on');
+assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic'});
+assert.strictEqual(rlDiffPrefApply(P(null, null), unc, null).action, 'keep');
+d = rlDiffPrefApply(P(null, null), null, {on:true, changes:'branch'});
+assert.strictEqual(d.action, 'navigate');
+assert.strictEqual(d.pref.changes, 'branch');
+// The 0.3.12 saved shape still restores: diff was before, base after.
+d = rlDiffPrefApply(P(null, null), null, {on:true, diff:'HEAD', base:''});
+assert.deepStrictEqual(d.pref, unc);
+d = rlDiffPrefApply(P(null, null), null, {on:true, diff:'main', base:'topic'});
+assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic'});
+assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, diff:'main..HEAD'}).action, 'none');
+assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, changes:'custom', base:'-x'}).action, 'none');
+assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, changes:'nope'}).action, 'none');
+assert.strictEqual(rlDiffPrefApply(P(null, null), null, null).action, 'none');
+var u = new URL(rlDiffUrl('http://h/n/nb?diff=main&base=topic&cm=0', {changes:'branch'}));
+assert.strictEqual(u.searchParams.get('changes'), 'branch');
+assert.strictEqual(u.searchParams.get('diff'), null);
+assert.strictEqual(u.searchParams.get('base'), null);
+assert.strictEqual(u.searchParams.get('cm'), '0');
+u = new URL(rlDiffUrl('http://h/n/nb', {changes:'custom', base:'v0.3', compare:''}));
+assert.strictEqual(u.searchParams.get('base'), 'v0.3');
+assert.strictEqual(u.searchParams.get('compare'), null);
+u = new URL(rlDiffUrl('http://h/n/nb?changes=last', null));
+assert.strictEqual(u.searchParams.get('changes'), 'off');
+assert.strictEqual(rlRelTime(1000, 1030), 'just now');
+assert.strictEqual(rlRelTime(1000, 1000 + 7200), '2 h ago');
+assert.strictEqual(rlRelTime(1000, 1000 + 3 * 86400), '3 days ago');
+assert.strictEqual(rlRelTime(0, 5000), '');
+assert.strictEqual(rlDxCount({count: 0}), 'no changes');
+assert.strictEqual(rlDxCount({count: 1}), '1 change');
+assert.strictEqual(rlDxCount({count: 4}), '4 changes');
+assert.strictEqual(rlDxCount({count: null, note: 'new file'}), 'new file');
 var mark = rlMoreMark(false, false);
 assert.strictEqual(mark.dot, false);
 assert.strictEqual(mark.label, 'More');
 mark = rlMoreMark(true, false);
 assert.strictEqual(mark.dot, true);
-assert.strictEqual(mark.label, 'More, diff on');
+assert.strictEqual(mark.label, 'More, changes on');
 mark = rlMoreMark(false, true);
 assert.strictEqual(mark.dot, true);
 assert.strictEqual(mark.label, 'More, comments off');
 mark = rlMoreMark(true, true);
 assert.strictEqual(mark.dot, true);
-assert.strictEqual(mark.label, 'More, diff on, comments off');
+assert.strictEqual(mark.label, 'More, changes on, comments off');
 "#,
         );
         std::fs::write(&path, harness).unwrap();
@@ -1175,8 +1427,21 @@ assert.strictEqual(mark.label, 'More, diff on, comments off');
             "menu starts closed"
         );
         assert!(out.contains("id=\"rl-more-panel\" class=\"rl-more-panel\" hidden"));
-        assert!(out.contains(">Show diff<") || out.contains("Show diff</button>"));
-        assert!(out.contains("role=\"switch\""), "diff is a switch");
+        assert!(out.contains("Show changes</button>"));
+        assert!(out.contains("role=\"switch\""), "show changes is a switch");
+        assert!(
+            out.contains("<button id=\"rl-diff-banner\" type=\"button\" hidden></button>"),
+            "the status chip slot sits outside the toolbar"
+        );
+        for preset in ["uncommitted", "branch", "last", "custom"] {
+            assert!(
+                out.contains(&format!("data-preset=\"{preset}\"")),
+                "{preset} preset"
+            );
+        }
+        assert!(out.contains("id=\"rl-diff-compare\""), "compare field");
+        assert!(out.contains("id=\"rl-dx-list\""), "change list");
+        assert!(!out.contains("value: 'index'"), "index is not a list entry");
         assert!(out.contains("aria-checked=\"false\""));
         assert!(
             out.contains("data-rl-git=\"off\""),
@@ -1249,7 +1514,7 @@ assert.strictEqual(mark.label, 'More, diff on, comments off');
         assert!(menu.contains(">Comments</label>"), "{menu}");
         assert!(menu.contains(" checked"), "default is on");
         assert!(
-            menu.contains("Show diff</button>"),
+            menu.contains("Show changes</button>"),
             "both switches share the menu"
         );
         assert!(
