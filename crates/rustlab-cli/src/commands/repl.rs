@@ -1476,31 +1476,6 @@ pub fn subcategory_of(entry_name: &str) -> &'static str {
     ""
 }
 
-/// `true` for a trimmed source line that opens a block needing a
-/// matching `end`. Used by the REPL's multi-line capture loop so
-/// inner `for`/`if`/`while`/`switch` blocks inside a function body
-/// don't false-trigger the function's exit at their own `end`.
-///
-/// We match on the leading keyword token rather than calling the
-/// real lexer — this is a small heuristic that has to be cheap and
-/// stable; a line like `for i = 1:n` is identified by its `for `
-/// prefix regardless of what follows. A bare keyword on its own
-/// line (`function`, `for`, etc.) also counts.
-fn line_opens_block(line: &str) -> bool {
-    const OPENERS: &[&str] = &["function", "if", "for", "while", "switch"];
-    for kw in OPENERS {
-        if line == *kw {
-            return true;
-        }
-        if let Some(rest) = line.strip_prefix(kw) {
-            if rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('(') {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 pub fn print_help_list() {
     println!();
     println!(
@@ -1605,76 +1580,6 @@ pub fn print_help_detail(topic: &str) -> bool {
         color::bold("'help'")
     );
     false
-}
-
-#[cfg(test)]
-mod block_opener_tests {
-    use super::*;
-
-    #[test]
-    fn keywords_followed_by_space_or_paren_count_as_openers() {
-        assert!(line_opens_block("function y = f(x)"));
-        assert!(line_opens_block("function [a, b] = stats(x)"));
-        assert!(line_opens_block("if x > 0"));
-        assert!(line_opens_block("for i = 1:n"));
-        assert!(line_opens_block("while cond"));
-        assert!(line_opens_block("switch expr"));
-    }
-
-    #[test]
-    fn bare_keywords_count_as_openers() {
-        assert!(line_opens_block("function"));
-        assert!(line_opens_block("if"));
-        assert!(line_opens_block("for"));
-        assert!(line_opens_block("while"));
-        assert!(line_opens_block("switch"));
-    }
-
-    #[test]
-    fn end_and_other_lines_do_not_open_blocks() {
-        assert!(!line_opens_block("end"));
-        assert!(!line_opens_block("end;"));
-        assert!(!line_opens_block("y = 0"));
-        assert!(!line_opens_block("disp(\"x\")"));
-        assert!(!line_opens_block(""));
-    }
-
-    #[test]
-    fn similar_identifiers_are_not_openers() {
-        // Don't false-trigger on names that start with a keyword
-        // (function_value, ifelse, foreman, whilet, switcheroo).
-        assert!(!line_opens_block("functional = 1"));
-        assert!(!line_opens_block("ifelse(c, a, b)"));
-        assert!(!line_opens_block("foreman = x"));
-        assert!(!line_opens_block("whilelist = y"));
-        assert!(!line_opens_block("switchback = z"));
-    }
-
-    /// End-to-end sanity check: a function body containing a
-    /// `for ... end` block should net out to depth 0 after both
-    /// `end`s, modelling the multi-line capture loop's logic.
-    #[test]
-    fn for_loop_inside_function_balances_to_zero() {
-        let lines = [
-            "function y = expensive(n)",
-            "  y = 0",
-            "  for i = 1:n",
-            "    y = y + sqrt(i)",
-            "  end",
-            "end",
-        ];
-        let mut depth: i32 = 0;
-        for ln in lines {
-            let ct = ln.trim();
-            if line_opens_block(ct) {
-                depth += 1;
-            }
-            if ct == "end" || ct == "end;" {
-                depth -= 1;
-            }
-        }
-        assert_eq!(depth, 0, "function with inner for should net to depth 0");
-    }
 }
 
 #[cfg(test)]

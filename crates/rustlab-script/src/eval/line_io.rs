@@ -35,7 +35,10 @@ pub enum KeyboardLine {
     Resume,
     Quit,
     RejectExit,
-    Code(String),
+    /// Any other line. The text itself is not stored: the session
+    /// appends the original line, and this variant only says "not a
+    /// debugger word".
+    Code,
 }
 
 type Handler = Box<dyn FnMut(&mut Evaluator) -> Result<KeyboardStatus, ScriptError>>;
@@ -49,11 +52,17 @@ enum LineSource {
 
 thread_local! {
     static LINE_SOURCE: RefCell<LineSource> = RefCell::new(LineSource::Stdin);
-    static LINE_READS: Cell<u32> = const { Cell::new(0) };
     static FORCE_TTY: Cell<Option<bool>> = const { Cell::new(None) };
     static KEYBOARD_DEPTH: Cell<u32> = const { Cell::new(0) };
     static HANDLER: RefCell<Option<Handler>> = RefCell::new(None);
     static LINE_READER: RefCell<Option<LineReader>> = RefCell::new(None);
+}
+
+/// Test-only count of lines pulled since the current [`IoGuard`].
+/// Production builds do not keep the counter.
+#[cfg(test)]
+thread_local! {
+    static LINE_READS: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Restores the line source, TTY override, keyboard handler, and depth.
@@ -94,6 +103,7 @@ impl Drop for IoGuard {
 
 fn reset_line_io() {
     LINE_SOURCE.with(|s| *s.borrow_mut() = LineSource::Stdin);
+    #[cfg(test)]
     LINE_READS.with(|c| c.set(0));
     FORCE_TTY.with(|c| c.set(None));
     KEYBOARD_DEPTH.with(|c| c.set(0));
@@ -102,7 +112,8 @@ fn reset_line_io() {
 }
 
 /// How many lines have been pulled since the current [`IoGuard`].
-pub fn line_read_count() -> u32 {
+#[cfg(test)]
+fn line_read_count() -> u32 {
     LINE_READS.with(|c| c.get())
 }
 
@@ -135,19 +146,19 @@ where
 }
 
 /// `true` when stdin is a terminal, unless a test forced the flag.
-pub fn stdin_is_tty() -> bool {
+fn stdin_is_tty() -> bool {
     FORCE_TTY.with(|c| match c.get() {
         Some(v) => v,
         None => std::io::IsTerminal::is_terminal(&std::io::stdin()),
     })
 }
 
-pub fn keyboard_depth() -> u32 {
+fn keyboard_depth() -> u32 {
     KEYBOARD_DEPTH.with(|c| c.get())
 }
 
 /// Prompt for a keyboard session. Depth 1 is `K>> `; deeper is `K2>> `.
-pub fn keyboard_prompt(depth: u32) -> String {
+fn keyboard_prompt(depth: u32) -> String {
     if depth <= 1 {
         "K>> ".to_string()
     } else {
@@ -161,7 +172,7 @@ pub fn classify_keyboard_line(line: &str) -> KeyboardLine {
         "return" | "dbcont" => KeyboardLine::Resume,
         "dbquit" => KeyboardLine::Quit,
         "exit" | "quit" => KeyboardLine::RejectExit,
-        other => KeyboardLine::Code(other.to_string()),
+        _ => KeyboardLine::Code,
     }
 }
 
@@ -263,6 +274,7 @@ fn read_raw_line() -> Result<Option<String>, ScriptError> {
 }
 
 fn counted(line: Option<String>) -> Result<Option<String>, ScriptError> {
+    #[cfg(test)]
     LINE_READS.with(|c| c.set(c.get().saturating_add(1)));
     Ok(line)
 }
@@ -485,11 +497,8 @@ impl Evaluator {
     }
 
     fn eval_pure_input(&mut self, line: &str) -> Result<Value, ScriptError> {
-        let src = if line.ends_with('\n') {
-            line.to_string()
-        } else {
-            format!("{line}\n")
-        };
+        // `input_call` has already stripped the trailing newline.
+        let src = format!("{line}\n");
         let tokens = crate::lexer::tokenize(&src)?;
         let stmts = crate::parser::parse(tokens)?;
         if stmts.len() != 1 {
@@ -583,7 +592,7 @@ impl Evaluator {
                         );
                         continue;
                     }
-                    KeyboardLine::Code(_) => {}
+                    KeyboardLine::Code => {}
                 }
             }
             buf.push_str(&line);
@@ -608,20 +617,16 @@ impl Evaluator {
     }
 
     fn read_keyboard_line(&mut self, prompt: &str) -> Result<Option<String>, ScriptError> {
-        let hooked = LINE_READER.with(|r| r.borrow().is_some());
-        if hooked {
-            let mut reader = LINE_READER.with(|r| r.borrow_mut().take());
-            let result = match reader.as_mut() {
-                Some(f) => f(prompt),
-                None => Ok(None),
-            };
-            if let Some(f) = reader {
-                LINE_READER.with(|r| {
-                    if r.borrow().is_none() {
-                        *r.borrow_mut() = Some(f);
-                    }
-                });
-            }
+        // Take the reader out before calling it. A nested `keyboard`
+        // must not see this closure still installed, and the slot is
+        // empty only when no host reader was set.
+        if let Some(mut reader) = LINE_READER.with(|r| r.borrow_mut().take()) {
+            let result = reader(prompt);
+            LINE_READER.with(|r| {
+                if r.borrow().is_none() {
+                    *r.borrow_mut() = Some(reader);
+                }
+            });
             return result;
         }
         output::script_print(prompt);
