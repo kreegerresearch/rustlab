@@ -273,6 +273,21 @@ pub enum Value {
 }
 
 impl Value {
+    /// A real-stored vector (complex-stored when real storage is off).
+    pub fn real_vector(a: Array1<f64>) -> Value {
+        Value::Vector(Shared::real_or_widened(a))
+    }
+
+    /// A real-stored matrix (complex-stored when real storage is off).
+    pub fn real_matrix(a: Array2<f64>) -> Value {
+        Value::Matrix(Shared::real_or_widened(a))
+    }
+
+    /// A real-stored rank-3 tensor (complex-stored when real storage is off).
+    pub fn real_tensor3(a: ndarray::Array3<f64>) -> Value {
+        Value::Tensor3(Shared::real_or_widened(a))
+    }
+
     /// Build an `IntArray`, range-enforcing every element to `class` under
     /// `overflow`. A 1×1 collapses to a scalar `Int` (mirrors how a 1×1
     /// `Matrix` acts like a scalar elsewhere).
@@ -448,6 +463,16 @@ impl Value {
 
     fn matrix_all_real(m: &CMatrix) -> bool {
         m.iter().all(|c| c.im.abs() < f64::EPSILON)
+    }
+
+    /// The real-output rule for array ∘ scalar: with `+ - * .* / ./` and a
+    /// real scalar, real array elements give real results, so `[1 Inf] * 2`
+    /// is `[2 Inf]` and not `Inf + NaN·i` from `0·Inf` in the complex
+    /// product. Powers are excluded: a negative base with a non-integer
+    /// exponent is genuinely complex. Same test as the array ∘ array rule.
+    pub(crate) fn scalar_rule_applies(op: BinOp, scalar: C64) -> bool {
+        use BinOp::*;
+        matches!(op, Add | Sub | Mul | ElemMul | Div | ElemDiv) && scalar.im.abs() < f64::EPSILON
     }
 
     fn vector_zero_imag(mut v: CVector) -> CVector {
@@ -736,6 +761,22 @@ impl Value {
 
     fn transpose_impl<const CONJ: bool>(&self) -> Result<Value, String> {
         let f = |c: C64| if CONJ { c.conj() } else { c };
+        // Real storage: conjugation does nothing; the result stays real.
+        match self {
+            Value::Vector(v) => {
+                if let Some(d) = Shared::real_slice(v) {
+                    return Ok(Value::real_matrix(Array2::from_shape_vec((d.len(), 1), d.to_vec()).expect("n × 1")));
+                }
+            }
+            Value::Matrix(m) => {
+                if let Some(d) = Shared::real_slice(m) {
+                    let s = Shared::shape(m);
+                    let out = super::real_ops::transpose_f64(d, s[0], s[1]);
+                    return Ok(Value::real_matrix(Array2::from_shape_vec((s[1], s[0]), out).expect("c × r")));
+                }
+            }
+            _ => {}
+        }
         match self {
             Value::Vector(v) => {
                 // Row vector (1×n) → column vector (n×1)
@@ -775,6 +816,10 @@ impl Value {
     /// Convert a 1-based index to 0-based, returning an error if the index is
     /// not a finite positive integer (non-integers are rejected rather than
     /// silently truncated).
+    pub(crate) fn one_based_to_zero_pub(n: f64) -> Result<usize, String> {
+        Self::one_based_to_zero(n)
+    }
+
     fn one_based_to_zero(n: f64) -> Result<usize, String> {
         if !n.is_finite() {
             return Err(format!("index {} is invalid (must be a positive integer)", n));
@@ -864,6 +909,18 @@ impl Value {
                 Ok(vec![i])
             }
             Value::Vector(v) => {
+                // Read the index as stored (a real-stored index is not
+                // widened); same rules, and the same error on a bad entry.
+                if let Some(e) = super::real_index::Elems::of_vector(v) {
+                    return match e.positions(dim_len) {
+                        Some(p) => Ok(p),
+                        None => {
+                            let bad = e.list(dim_len).err().unwrap_or(f64::NAN);
+                            Self::one_based_to_zero(bad)?;
+                            Err(format!("index {} out of bounds (size {})", bad as usize, dim_len))
+                        }
+                    };
+                }
                 // A range `a:b` inside the dimension: no per-element checks.
                 // (Only `[1]` on a length-1 dimension is also a logical mask,
                 // and it resolves to the same position.)
@@ -925,6 +982,9 @@ impl Value {
         {
             let selected = Self::widen_int(self.clone()).index(indices)?;
             return Ok(Self::retag_as_int(selected, *class, *overflow));
+        }
+        if let Some(v) = self.real_index(&indices) {
+            return Ok(v);
         }
         match indices.len() {
             1 => self.index_1d(indices.into_iter().next().unwrap()),
@@ -2009,6 +2069,11 @@ impl Value {
                     }
                     _ => unreachable!(),
                 };
+                let result = if Self::scalar_rule_applies(op, scalar) && Self::vector_all_real(&vec) {
+                    Self::vector_zero_imag(result)
+                } else {
+                    result
+                };
                 Ok(Value::Vector(result.into()))
             }
 
@@ -2028,6 +2093,11 @@ impl Value {
                         Array1::from_iter(vec.iter().map(|&x| Self::pow_c64(x, scalar)))
                     }
                     _ => unreachable!(),
+                };
+                let result = if Self::scalar_rule_applies(op, scalar) && Self::vector_all_real(&vec) {
+                    Self::vector_zero_imag(result)
+                } else {
+                    result
                 };
                 Ok(Value::Vector(result.into()))
             }
@@ -2068,12 +2138,16 @@ impl Value {
                                 m.nrows(), m.ncols(), v.len(), v.len()
                             ));
                         }
-                        // Matrix(m×1) * row(1×n) = outer product Matrix(m×n)
+                        // Matrix(m×1) * row(1×n) = outer product Matrix(m×n).
+                        // Real inputs give a real result (no `0·Inf` NaN
+                        // in the imaginary part), as for `.*`.
                         let (nrows, ncols) = (m.nrows(), v.len());
+                        let real = Self::matrix_all_real(m) && Self::vector_all_real(v);
                         let mut data: Vec<C64> = Vec::with_capacity(nrows * ncols);
                         for r in 0..nrows {
                             for c in 0..ncols {
-                                data.push(m[[r, 0]] * v[c]);
+                                let z = m[[r, 0]] * v[c];
+                                data.push(if real { C64::new(z.re, 0.0) } else { z });
                             }
                         }
                         Ok(Value::Matrix(Array2::from_shape_vec((nrows, ncols), data)
@@ -2148,9 +2222,13 @@ impl Value {
                         _ => unreachable!(),
                     })
                     .collect();
-                Ok(Value::Matrix(
-                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?.into(),
-                ))
+                let result = Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?;
+                let result = if Self::scalar_rule_applies(op, scalar) && Self::matrix_all_real(&mat) {
+                    Self::matrix_zero_imag(result)
+                } else {
+                    result
+                };
+                Ok(Value::Matrix(result.into()))
             }
 
             // ── Matrix broadcast with Scalar/Complex ──────────────────────────
@@ -2173,9 +2251,13 @@ impl Value {
                         _ => unreachable!(),
                     })
                     .collect();
-                Ok(Value::Matrix(
-                    Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?.into(),
-                ))
+                let result = Array2::from_shape_vec((rows, cols), data).map_err(|e| e.to_string())?;
+                let result = if Self::scalar_rule_applies(op, scalar) && Self::matrix_all_real(&mat) {
+                    Self::matrix_zero_imag(result)
+                } else {
+                    result
+                };
+                Ok(Value::Matrix(result.into()))
             }
 
             // ── Tensor3 element-wise arithmetic ───────────────────────────────
@@ -2582,6 +2664,9 @@ impl Value {
         if let [Value::Vector(_)] = row {
             return Some(row[0].clone());
         }
+        if let Some(v) = Self::concat_one_row_real(row) {
+            return Some(v);
+        }
         enum Piece<'a> {
             One(C64),
             Run(&'a [C64]),
@@ -2635,6 +2720,93 @@ impl Value {
             }
         });
         Some(Value::Vector(Array1::from_vec(out).into()))
+    }
+
+    /// [`concat_one_row`](Self::concat_one_row) when every piece is a real
+    /// scalar or a real-stored vector / 1 × n matrix: a real vector.
+    ///
+    /// An empty vector or 1 × 0 matrix adds nothing whatever its storage
+    /// (`[v, tail]` with `tail = []`, a complex-stored empty literal).
+    fn concat_one_row_real(row: &[Value]) -> Option<Value> {
+        let mut total = 0usize;
+        for val in row {
+            total += match val {
+                Value::Scalar(_) => 1,
+                Value::Vector(v) if Shared::len(v) == 0 => 0,
+                Value::Matrix(m) if Shared::shape(m) == [1, 0] => 0,
+                Value::Vector(v) => Shared::real_slice(v)?.len(),
+                Value::Matrix(m) if Shared::shape(m)[0] == 1 => Shared::real_slice(m)?.len(),
+                _ => return None,
+            };
+        }
+        enum Piece<'a> {
+            One(f64),
+            Run(&'a [f64]),
+        }
+        let pieces: Vec<Piece> = row
+            .iter()
+            .filter_map(|val| match val {
+                Value::Scalar(x) => Some(Piece::One(*x)),
+                Value::Vector(v) if Shared::len(v) == 0 => None,
+                Value::Matrix(m) if Shared::len(m) == 0 => None,
+                Value::Vector(v) => Some(Piece::Run(Shared::real_slice(v).expect("checked"))),
+                Value::Matrix(m) => Some(Piece::Run(Shared::real_slice(m).expect("checked"))),
+                _ => unreachable!("checked above"),
+            })
+            .collect();
+        let mut starts = Vec::with_capacity(pieces.len());
+        let mut at = 0usize;
+        for p in &pieces {
+            starts.push(at);
+            at += match p {
+                Piece::One(_) => 1,
+                Piece::Run(r) => r.len(),
+            };
+        }
+        // Output positions `o..o + dst.len()`: the pieces that cover them,
+        // in order, written once each into spare capacity (no zero-fill of
+        // a buffer that is overwritten anyway). Returns the slots written.
+        // Long outputs fill even chunks in parallel (a copy, so the split
+        // never changes a value).
+        let fill = |o: usize, dst: &mut [std::mem::MaybeUninit<f64>]| -> usize {
+            let mut k = starts.partition_point(|&s| s <= o) - 1;
+            let mut pos = o;
+            let end = o + dst.len();
+            let mut written = 0;
+            while pos < end {
+                let next = starts.get(k + 1).copied().unwrap_or(total).min(end);
+                let out = &mut dst[pos - o..next - o];
+                let src: &[f64] = match &pieces[k] {
+                    Piece::One(x) => std::slice::from_ref(x),
+                    Piece::Run(r) => &r[pos - starts[k]..next - starts[k]],
+                };
+                for (d, &x) in out.iter_mut().zip(src) {
+                    d.write(x);
+                }
+                written += out.len().min(src.len());
+                pos = next;
+                k += 1;
+            }
+            written
+        };
+        let mut out: Vec<f64> = Vec::with_capacity(total);
+        let dst = &mut out.spare_capacity_mut()[..total];
+        let check = |n: usize, want: usize| assert_eq!(n, want, "concatenation filled {n} of {want} slots");
+        if total >= super::elementwise::PAR_MIN_LEN {
+            use rayon::prelude::*;
+            let chunk = super::elementwise::PAR_CHUNK;
+            dst.par_chunks_mut(chunk).enumerate().for_each(|(i, d)| {
+                let want = d.len();
+                check(fill(i * chunk, d), want);
+            });
+        } else if total > 0 {
+            check(fill(0, dst), total);
+        }
+        // SAFETY: the chunks partition `0..total`, and each one asserted
+        // that every slot was written (a zip of equal lengths per piece)
+        // before this point. `f64` is `Copy`, so a panic drops a len-0 Vec.
+        unsafe { out.set_len(total) };
+        Some(Value::real_vector(Array1::from_vec(out)))
     }
 
     /// Convert to CVector (for passing to DSP functions).

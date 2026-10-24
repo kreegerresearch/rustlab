@@ -69,24 +69,30 @@ impl Operand<'_> {
 /// `l op r`, taking the fast path when one applies.
 pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> {
     use BinOp::*;
+    let (l, r) = match super::real_ops::binop(op, l, r) {
+        Ok(v) => return Ok(v),
+        Err(lr) => lr,
+    };
     match (l.get(), r.get()) {
         // Array ∘ scalar and scalar ∘ array.
         (Value::Vector(_) | Value::Matrix(_), Value::Scalar(_) | Value::Complex(_))
             if is_scalar_op(op) && is_contiguous(l.get()) =>
         {
             let s = scalar_of(r.get());
-            Ok(with_op!(op, scalar, f => map_array(l, move |a| f(a, s))))
+            let rule = Value::scalar_rule_applies(op, s);
+            Ok(with_op!(op, scalar, f => map_array(l, rule, move |a| f(a, s))))
         }
         (Value::Scalar(_) | Value::Complex(_), Value::Vector(_) | Value::Matrix(_))
             if is_scalar_op(op) && is_contiguous(r.get()) =>
         {
             let s = scalar_of(l.get());
-            Ok(with_op!(op, scalar, f => map_array(r, move |a| f(s, a))))
+            let rule = Value::scalar_rule_applies(op, s);
+            Ok(with_op!(op, scalar, f => map_array(r, rule, move |a| f(s, a))))
         }
         // Two vectors of the same length. `binop` zeroes the imaginary part
         // of real inputs for `.*`, `./`, `.^` only.
         (Value::Vector(a), Value::Vector(b))
-            if a.len() == b.len()
+            if Shared::len(a) == Shared::len(b)
                 && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow)
                 && is_contiguous(l.get())
                 && is_contiguous(r.get()) =>
@@ -98,7 +104,7 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // through `elementwise_with_broadcast`, which zeroes the imaginary
         // part of real inputs for every elementwise op.
         (Value::Matrix(a), Value::Matrix(b))
-            if a.dim() == b.dim()
+            if Shared::shape(a) == Shared::shape(b)
                 && matches!(op, Add | Sub | ElemMul | ElemDiv | ElemPow)
                 && is_contiguous(l.get())
                 && is_contiguous(r.get()) =>
@@ -108,7 +114,7 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // Matrix product: same check and kernel as `binop`, without copying
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
-        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && a.ncols() == b.nrows() => Ok(
+        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => Ok(
             Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()),
         ),
         _ => Value::binop(op, l.into_owned(), r.into_owned()),
@@ -501,28 +507,52 @@ fn drive_new_rand(n: usize, k: &RandChunkFn<'_>) -> Vec<C64> {
 // ── Kernels ─────────────────────────────────────────────────────────────────
 
 /// Apply `f` to every element of an array operand, in place when it is an
-/// owned temporary.
-fn map_array(a: Operand, f: impl Fn(C64) -> C64 + Sync) -> Value {
-    match a {
+/// owned temporary. With `real_rule` (array ∘ real scalar, see
+/// `Value::scalar_rule_applies`), zeroes the imaginary parts of the result
+/// when every input element was real.
+fn map_array(a: Operand, real_rule: bool, f: impl Fn(C64) -> C64 + Sync) -> Value {
+    #[inline(always)]
+    fn track1(fl: &mut RealFlags, x: C64, z: C64) {
+        fl.inputs_real &= x.im.abs() < f64::EPSILON;
+        fl.output_needs_zeroing |= z.im.to_bits() != 0;
+    }
+    let (mut out, flags) = match a {
         Operand::Owned(mut v) if unique(&v) => {
-            drive(data_mut(&mut v), &|_, c: &mut [C64]| {
+            let flags = drive(data_mut(&mut v), &|_, c: &mut [C64]| {
+                let mut fl = NO_FLAGS;
                 for x in c {
-                    *x = f(*x);
+                    let z = f(*x);
+                    track1(&mut fl, *x, z);
+                    *x = z;
                 }
-                NO_FLAGS
+                fl
             });
-            v
+            (v, flags)
         }
         a => {
             let v = a.get();
             let src = data(v);
-            let (out, _) = drive_new(src.len(), &|o, c: &mut SeqChunk<'_>| {
-                c.fill_map(&src[o..], &f);
-                NO_FLAGS
+            let (out, flags) = drive_new(src.len(), &|o, c: &mut SeqChunk<'_>| {
+                let mut fl = NO_FLAGS;
+                c.fill_map(&src[o..], |x| {
+                    let z = f(x);
+                    track1(&mut fl, x, z);
+                    z
+                });
+                fl
             });
-            shaped_like(v, out)
+            (shaped_like(v, out), flags)
         }
+    };
+    if real_rule && flags.inputs_real && flags.output_needs_zeroing {
+        drive(data_mut(&mut out), &|_, c: &mut [C64]| {
+            for z in c {
+                z.im = 0.0;
+            }
+            NO_FLAGS
+        });
     }
+    out
 }
 
 /// Combine two same-shape arrays elementwise. Writes into whichever operand
@@ -865,6 +895,96 @@ pub(crate) fn par_column_sums(m: &rustlab_core::CMatrix) -> Option<rustlab_core:
     Some(ndarray::Array1::from_vec(acc))
 }
 
+/// Elements per partial sum in [`sum_c64`]. Fixed, so the partials (and
+/// the result) do not depend on how many threads computed them.
+const SUM_CHUNK: usize = 4096;
+
+/// The sum of `xs`, in a fixed order.
+///
+/// Each 4,096-element chunk is summed in 16 `f64` lanes over the
+/// interleaved re/im words (8 complex lanes, so the loop vectorizes), the
+/// lanes are combined pairwise, and the chunk partials are added in chunk
+/// order. From `PAR_MIN_LEN` elements the chunks run on rayon; the chunk
+/// boundaries and the combination order are the same either way, so the
+/// result is bit-identical across runs and thread counts. It rounds
+/// differently from a left-to-right sum once there are more than two
+/// elements.
+pub(crate) fn sum_c64(xs: &[C64]) -> C64 {
+    let partials: Vec<C64> = if xs.len() >= PAR_MIN_LEN {
+        xs.par_chunks(SUM_CHUNK).map(sum_chunk).collect()
+    } else {
+        xs.chunks(SUM_CHUNK).map(sum_chunk).collect()
+    };
+    let mut acc = C64::new(0.0, 0.0);
+    for p in partials {
+        acc += p;
+    }
+    acc
+}
+
+/// The real twin of [`sum_c64`]: bit for bit the real part of `sum_c64`
+/// over the same values widened. Element `i` of a chunk goes to lane
+/// `i mod 8` (the even word lanes of `sum_chunk`), and the lanes combine in
+/// the same pairs.
+pub(crate) fn sum_f64(xs: &[f64]) -> f64 {
+    let partials: Vec<f64> = if xs.len() >= PAR_MIN_LEN {
+        xs.par_chunks(SUM_CHUNK).map(sum_chunk_f64).collect()
+    } else {
+        xs.chunks(SUM_CHUNK).map(sum_chunk_f64).collect()
+    };
+    let mut acc = 0.0;
+    for p in partials {
+        acc += p;
+    }
+    acc
+}
+
+fn sum_chunk_f64(xs: &[f64]) -> f64 {
+    let mut lanes = [0.0f64; 8];
+    let mut blocks = xs.chunks_exact(8);
+    for b in &mut blocks {
+        for (l, &w) in lanes.iter_mut().zip(b) {
+            *l += w;
+        }
+    }
+    for (l, &w) in lanes.iter_mut().zip(blocks.remainder()) {
+        *l += w;
+    }
+    let mut width = 8;
+    while width > 1 {
+        width /= 2;
+        for k in 0..width {
+            lanes[k] += lanes[k + width];
+        }
+    }
+    lanes[0]
+}
+
+fn sum_chunk(xs: &[C64]) -> C64 {
+    // SAFETY: `Complex<f64>` is `#[repr(C)]` with fields `re, im`, so a
+    // slice of n complex values is 2n contiguous `f64`, re first.
+    let words: &[f64] = unsafe { std::slice::from_raw_parts(xs.as_ptr().cast::<f64>(), xs.len() * 2) };
+    let mut lanes = [0.0f64; 16];
+    let mut blocks = words.chunks_exact(16);
+    for b in &mut blocks {
+        for (l, &w) in lanes.iter_mut().zip(b) {
+            *l += w;
+        }
+    }
+    for (l, &w) in lanes.iter_mut().zip(blocks.remainder()) {
+        *l += w;
+    }
+    // Pairwise across lanes of the same parity: even lanes are re, odd im.
+    let mut width = 16;
+    while width > 2 {
+        width /= 2;
+        for k in 0..width {
+            lanes[k] += lanes[k + width];
+        }
+    }
+    C64::new(lanes[0], lanes[1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1130,5 +1250,76 @@ mod tests {
             out,
             vec![C64::new(2.0, 0.0), C64::new(3.0, 0.0), C64::new(4.0, 0.0)]
         );
+    }
+
+    /// A deterministic pseudo-random sequence (no RNG dependency in tests).
+    fn noise(n: usize, seed: u64) -> Vec<C64> {
+        let mut x = seed;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        (0..n).map(|_| C64::new(next() * 1e3, next())).collect()
+    }
+
+    #[test]
+    fn sum_is_exact_on_integers_and_matches_edge_cases() {
+        let ints: Vec<C64> = (1..=1_000_003).map(|k| C64::new(k as f64, -(k % 7) as f64)).collect();
+        let want_re = 1_000_003.0 * 1_000_004.0 / 2.0;
+        let want_im: f64 = -(1..=1_000_003u64).map(|k| (k % 7) as f64).sum::<f64>();
+        assert_eq!(sum_c64(&ints), C64::new(want_re, want_im));
+        assert_eq!(sum_c64(&[]), C64::new(0.0, 0.0));
+        assert_eq!(sum_c64(&[C64::new(2.5, -1.0)]), C64::new(2.5, -1.0));
+        let inf = sum_c64(&[C64::new(1.0, 0.0), C64::new(f64::INFINITY, 0.0)]);
+        assert_eq!(inf.re, f64::INFINITY);
+        assert!(sum_c64(&[C64::new(f64::INFINITY, 0.0), C64::new(f64::NEG_INFINITY, 0.0)]).re.is_nan());
+        let mut v = noise(300_001, 3);
+        v[123_456] = C64::new(f64::NAN, 0.0);
+        assert!(sum_c64(&v).re.is_nan());
+    }
+
+    #[test]
+    fn sum_is_the_same_on_any_thread_count() {
+        for n in [5, 4095, 4096, 4097, PAR_MIN_LEN - 1, PAR_MIN_LEN, 811_008] {
+            let v = noise(n, n as u64);
+            let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+            let many = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+            let a = one.install(|| sum_c64(&v));
+            let b = many.install(|| sum_c64(&v));
+            assert_eq!((a.re.to_bits(), a.im.to_bits()), (b.re.to_bits(), b.im.to_bits()), "n = {n}");
+            assert_eq!(sum_c64(&v), a, "n = {n}, repeat");
+        }
+    }
+
+    #[test]
+    fn real_sum_is_the_real_part_of_the_complex_sum() {
+        for n in [0, 1, 3, 7, 8, 9, 15, 16, 17, 4095, 4096, 4097, 100_003, PAR_MIN_LEN + 5] {
+            let v = noise(n, 11 + n as u64);
+            let re: Vec<f64> = v.iter().map(|z| z.re).collect();
+            let widened: Vec<C64> = re.iter().map(|&x| C64::new(x, 0.0)).collect();
+            assert_eq!(sum_f64(&re).to_bits(), sum_c64(&widened).re.to_bits(), "n = {n}");
+        }
+    }
+
+    #[test]
+    fn sum_error_is_within_the_pairwise_bound() {
+        // Against a compensated (Kahan) sum: the blocked order's error is
+        // bounded by n·eps·Σ|x|, and in practice is far below it.
+        for n in [17, 10_000, 811_008] {
+            let v = noise(n, 7 + n as u64);
+            let (mut s, mut c) = (0.0f64, 0.0f64);
+            for z in &v {
+                let y = z.re - c;
+                let t = s + y;
+                c = (t - s) - y;
+                s = t;
+            }
+            let abs: f64 = v.iter().map(|z| z.re.abs()).sum();
+            let err = (sum_c64(&v).re - s).abs();
+            assert!(err <= n as f64 * f64::EPSILON * abs, "n = {n}: {err}");
+            assert!(err <= 64.0 * f64::EPSILON * abs, "n = {n}: {err} (blocked order should be near pairwise)");
+        }
     }
 }

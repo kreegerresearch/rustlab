@@ -6,6 +6,23 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.17
+
+### Added
+- **Matrix products on the Apple M4 matrix unit.** On a CPU with the Arm Scalable Matrix Extension and `f64` outer products (Apple M4), a real matrix product of about 25³ multiply-adds or more runs on the matrix unit instead of the vector units: 512 × 512 × 512 at about 390 GFLOP/s instead of 50, and the products of a small transformer layer 2–4× faster. Other CPUs, complex products and small products are unchanged. The kernel is in-tree Rust (`rustlab-core/src/matmul/sme.rs`), detected at run time; `RUSTLAB_NO_SME=1` turns it off.
+- **Real numbers are stored as real numbers.** An array whose elements are all real now holds 8 bytes per element instead of 16. The script sees no difference: values, printing, `save` output, comparisons and `parmap` results are the same as with complex storage (an example-by-example comparison is part of the test suite). Operators, `*`, indexing reads and writes, `reshape`, transpose, `[…]` of one row, `sum`, `mean`, `softmax`, `outer`, the elementwise math functions (`exp`, `tanh`, `sqrt`, `gelu`, …), `zeros` / `ones` / `rand` / `randn` and `parmap` results keep real data real. Code that only handles complex arrays still works, through a complex copy. On the `rustlab_llm` GPT training step (8 windows, M4 Max) the step went from about 56 ms to about 29 ms (35,000 tok/s) together with the matrix-unit products.
+- **`[widen]` and `[promote]` profile rows** count those complex copies and the real arrays converted to complex by a write, with their time and bytes.
+- **`RUSTLAB_COMPLEX_STORAGE=1`** stores every array as complex, as before, for comparing results.
+
+### Breaking / behavior changes
+- **Real array ∘ real scalar, and outer products of real vectors, give real results.** `[1 Inf] * 2` is `[2 Inf]` (it was `2, Inf + NaN·i`, from `0 · Inf` in the complex product), `[1 2] / 0` has zero imaginary parts, and the imaginary part of such a product is never `-0`. This is the rule `.*` and `./` between two arrays already followed. Powers are unchanged: `[-8 8] .^ (1/3)` is still complex.
+- **Real matrix products on an M4 round differently.** Each element is a fused multiply-add chain in order along the inner dimension, so results can differ from 0.3.16 in the last digits; the `rustlab_llm` training trajectory moved by 1.4e-15 relative. `RUSTLAB_NO_SME=1` gives the 0.3.16 results.
+- **Profile byte columns count storage.** `In (KB)` / `Out (KB)` are 8 bytes per element of a real array and 16 per complex element, so real data shows half the bytes it did.
+- **`sum` and `mean` of a vector add in a different order, and are much faster.** They add in fixed blocks of 4,096 elements, 8 complex lanes at a time, and use several cores from 131,072 elements. `sum` of 811,008 numbers takes about 0.09 ms instead of 1.7 ms. The result is the same on every run and on any number of threads. It can differ from 0.3.16 in the last digits once a vector has more than two elements, because the old order was left to right. Integer-valued sums are exact either way. Re-validate scripts that compare a floating-point `sum` or `mean` for exact equality. `sum(M)` / `sum(M, 2)` on a full matrix are unchanged.
+
+### Fixed
+- **`run` with a relative path that has a folder in it.** Since 0.3.14, `run "sub/x.rlab"`, `run "../../lib/x.rlab"` and similar paths failed with *No such file or directory*: `run` changed into the script's folder and then opened the relative path again from there. `run "../lib/x.rlab"` only worked by coincidence. The path is now resolved against the calling directory before the change, so every relative form works as it did in 0.3.13, and `load` inside the script still sees the script's own folder.
+
 ## 0.3.15
 
 ### Added

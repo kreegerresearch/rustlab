@@ -1,5 +1,7 @@
 pub mod builtins;
 pub(crate) mod elementwise;
+pub(crate) mod real_index;
+pub(crate) mod real_ops;
 pub mod line_io;
 pub mod output;
 pub mod table;
@@ -397,8 +399,8 @@ impl Evaluator {
         // Vector form `v(idx) = []` is supported; matrix row/column
         // deletion (`M(i, :) = []`) is a follow-up.
         let rhs_is_empty = match &val {
-            Value::Vector(v) => v.is_empty(),
-            Value::Matrix(m) => m.is_empty(),
+            Value::Vector(v) => Shared::len(v) == 0,
+            Value::Matrix(m) => Shared::len(m) == 0,
             _ => false,
         };
         if rhs_is_empty {
@@ -429,7 +431,10 @@ impl Evaluator {
             vec![iv, jv, kv]
         } else if indices.len() == 2 {
             let dims = match self.env.get(name.as_str()) {
-                Some(Value::Matrix(m)) => Some((m.nrows(), m.ncols())),
+                Some(Value::Matrix(m)) => {
+                    let s = Shared::shape(m);
+                    Some((s[0], s[1]))
+                }
                 Some(Value::SparseMatrix(sm)) => Some((sm.rows, sm.cols)),
                 _ => None,
             };
@@ -444,7 +449,7 @@ impl Evaluator {
                 vec![row_val, col_val]
             } else {
                 let container_len = match self.env.get(name.as_str()) {
-                    Some(Value::Vector(v)) => v.len(),
+                    Some(Value::Vector(v)) => Shared::len(v),
                     Some(Value::SparseVector(sv)) => sv.len,
                     _ => 0,
                 };
@@ -459,8 +464,8 @@ impl Evaluator {
             }
         } else {
             let container_len = match self.env.get(name.as_str()) {
-                Some(Value::Vector(v)) => v.len(),
-                Some(Value::Matrix(m)) if indices.len() == 1 => m.nrows() * m.ncols(),
+                Some(Value::Vector(v)) => Shared::len(v),
+                Some(Value::Matrix(m)) if indices.len() == 1 => Shared::len(m),
                 Some(Value::SparseVector(sv)) => sv.len,
                 Some(Value::SparseMatrix(sm)) if indices.len() == 1 => sm.rows * sm.cols,
                 _ => 0,
@@ -474,6 +479,12 @@ impl Evaluator {
             self.env.remove("end");
             vals
         };
+
+        if (*suppress || !self.echo_enabled())
+            && self.try_real_index_assign(name, &idx_vals, &val).is_some()
+        {
+            return Ok(());
+        }
 
         if idx_vals.len() == 1 {
             // `g(idx) = c` where `g` is a matrix (including the row or
@@ -821,7 +832,10 @@ impl Evaluator {
             } else {
                 // Region write: A(rows, cols) = ...
                 let (nr, nc) = match self.env.get(name.as_str()) {
-                    Some(Value::Matrix(m)) => (m.nrows(), m.ncols()),
+                    Some(Value::Matrix(m)) => {
+                        let s = Shared::shape(m);
+                        (s[0], s[1])
+                    }
                     _ => {
                         return Err(ScriptError::runtime(format!(
                             "index assignment: '{}' is not a matrix \
@@ -941,6 +955,172 @@ impl Evaluator {
         }
     }
 
+    /// Index writes that keep a real-stored target real: the target is a
+    /// real-stored matrix or vector and the right-hand side is a real
+    /// scalar or a real-stored array. Covers `M(rows, cols) = …` (any index
+    /// forms, the right-hand side shapes of the general path), `M(idx) = …`
+    /// (linear, column-major, in bounds) and `v(idx) = …` (in bounds).
+    /// Returns `None` without writing for everything else, including
+    /// out-of-range indices and growth, so the complex paths below keep
+    /// their behavior and error messages. The caller skips it when the
+    /// assignment echoes.
+    fn try_real_index_assign(&mut self, name: &str, idx: &[Value], val: &Value) -> Option<()> {
+        #[derive(Clone, Copy)]
+        enum Src<'a> {
+            Fill(f64),
+            Data(&'a [f64]),
+            /// Complex-stored, every imaginary part exactly `+0.0`: the
+            /// real parts are the values, so writing them leaves the
+            /// target real with nothing observable changed.
+            Re(&'a [C64]),
+        }
+        impl Src<'_> {
+            #[inline]
+            fn at(self, k: usize) -> f64 {
+                match self {
+                    Src::Fill(x) => x,
+                    Src::Data(d) => d[k],
+                    Src::Re(d) => d[k].re,
+                }
+            }
+            fn len(self) -> usize {
+                match self {
+                    Src::Fill(_) => 0,
+                    Src::Data(d) => d.len(),
+                    Src::Re(d) => d.len(),
+                }
+            }
+        }
+        fn zero_im(d: &[C64]) -> bool {
+            d.iter().all(|z| z.im.to_bits() == 0)
+        }
+        let src = match val {
+            Value::Scalar(x) => Src::Fill(*x),
+            Value::Vector(v) => match Shared::real_slice(v) {
+                Some(d) => Src::Data(d),
+                None if !Shared::is_real(v) => Src::Re(v.as_slice().filter(|d| zero_im(d))?),
+                None => return None,
+            },
+            Value::Matrix(m) => match Shared::real_slice(m) {
+                Some(d) => Src::Data(d),
+                None if !Shared::is_real(m) => Src::Re(m.as_slice().filter(|d| zero_im(d))?),
+                None => return None,
+            },
+            _ => return None,
+        };
+        let target = self.env.get(name)?;
+        let real_target = match target {
+            Value::Matrix(m) => Shared::is_real(m),
+            Value::Vector(v) => Shared::is_real(v),
+            _ => false,
+        };
+        if !real_target {
+            return None;
+        }
+        match (target, idx) {
+            (Value::Matrix(m), [ri, ci]) => {
+                let s = Shared::shape(m);
+                let (nr, nc) = (s[0], s[1]);
+                let rows = Value::resolve_index_dim(ri, nr).ok()?;
+                let cols = Value::resolve_index_dim(ci, nc).ok()?;
+                let n = rows.len() * cols.len();
+                // The right-hand side shapes the general path accepts.
+                match (src, val) {
+                    (Src::Fill(_), _) => {}
+                    (_, Value::Vector(_)) => {
+                        let len = src.len();
+                        let ok = (rows.len() == 1 && len == cols.len())
+                            || (cols.len() == 1 && len == rows.len())
+                            || len == n;
+                        if !ok {
+                            return None;
+                        }
+                    }
+                    (_, Value::Matrix(rhs)) => {
+                        if Shared::shape(rhs) != [rows.len(), cols.len()] {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                }
+                let Some(Value::Matrix(m)) = self.env.get_mut(name) else { unreachable!() };
+                let dst = Shared::make_mut_real(m)?.as_slice_mut()?;
+                let run = Value::run_of(&cols);
+                let mut k = 0;
+                for &r in &rows {
+                    let row = &mut dst[r * nc..(r + 1) * nc];
+                    match (run, src) {
+                        (Some((c0, w)), Src::Fill(x)) => row[c0..c0 + w].fill(x),
+                        (Some((c0, w)), Src::Data(d)) => row[c0..c0 + w].copy_from_slice(&d[k..k + w]),
+                        (Some((c0, w)), Src::Re(d)) => {
+                            for (t, z) in row[c0..c0 + w].iter_mut().zip(&d[k..k + w]) {
+                                *t = z.re;
+                            }
+                        }
+                        (None, _) => {
+                            for (j, &c) in cols.iter().enumerate() {
+                                row[c] = src.at(k + j);
+                            }
+                        }
+                    }
+                    k += cols.len();
+                }
+                Some(())
+            }
+            (Value::Matrix(m), [i]) => {
+                let s = Shared::shape(m);
+                let (nr, nc) = (s[0], s[1]);
+                let positions = match i {
+                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => Value::resolve_index_dim(i, nr * nc).ok()?,
+                    Value::All | Value::Vector(_) | Value::Matrix(_) => matrix_linear_positions(i, nr, nc).ok()?,
+                    _ => return None,
+                };
+                if positions.iter().any(|&p| p >= nr * nc) {
+                    return None;
+                }
+                // A matrix right-hand side is read column-major, like the
+                // target positions; vectors and scalars in order.
+                let col_major: Vec<f64>;
+                let src = match (src, val) {
+                    (Src::Data(_) | Src::Re(_), Value::Matrix(rhs)) => {
+                        let rs = Shared::shape(rhs);
+                        col_major = (0..rs[1]).flat_map(|c| (0..rs[0]).map(move |r| src.at(r * rs[1] + c))).collect();
+                        Src::Data(&col_major)
+                    }
+                    (src, _) => src,
+                };
+                if !matches!(src, Src::Fill(_)) && src.len() != positions.len() {
+                    return None;
+                }
+                let Some(Value::Matrix(m)) = self.env.get_mut(name) else { unreachable!() };
+                let dst = Shared::make_mut_real(m)?.as_slice_mut()?;
+                for (k, &p) in positions.iter().enumerate() {
+                    let (row, col) = (p % nr, p / nr);
+                    dst[row * nc + col] = src.at(k);
+                }
+                Some(())
+            }
+            (Value::Vector(v), [i]) => {
+                let len = Shared::len(v);
+                let positions = match i {
+                    Value::Scalar(_) if matches!(val, Value::Scalar(_)) => Value::resolve_index_dim(i, len).ok()?,
+                    Value::All | Value::Vector(_) => Value::resolve_index_dim_public(i, len).ok()?,
+                    _ => return None,
+                };
+                if !matches!(src, Src::Fill(_)) && (!matches!(val, Value::Vector(_)) || src.len() != positions.len()) {
+                    return None;
+                }
+                let Some(Value::Vector(v)) = self.env.get_mut(name) else { unreachable!() };
+                let dst = Shared::make_mut_real(v)?.as_slice_mut()?;
+                for (k, &p) in positions.iter().enumerate() {
+                    dst[p] = src.at(k);
+                }
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
     /// `M(rows, cols) = val` when `cols` is one consecutive run, `M` is
     /// row-major and `val` already has the region's shape (a scalar, or a
     /// vector / row-major matrix of `rows.len() × cols.len()` elements in
@@ -953,15 +1133,15 @@ impl Evaluator {
         let (fill, src) = match val {
             Value::Scalar(x) => (Some(Complex::new(*x, 0.0)), None),
             Value::Complex(c) => (Some(*c), None),
-            Value::Vector(v) if v.len() == n => (None, v.as_slice()),
-            Value::Matrix(m) if m.dim() == (rows.len(), nc) => (None, m.as_slice()),
+            Value::Vector(v) if Shared::len(v) == n => (None, v.as_slice()),
+            Value::Matrix(m) if Shared::shape(m) == [rows.len(), nc] => (None, m.as_slice()),
             _ => return false,
         };
         if fill.is_none() && src.is_none() {
             return false;
         }
         let Some(Value::Matrix(m)) = self.env.get_mut(name) else { return false };
-        let stride = m.ncols();
+        let stride = Shared::shape(m)[1];
         let Some(dst) = Shared::make_mut(m).as_slice_mut() else { return false };
         for (i, &r) in rows.iter().enumerate() {
             let row = &mut dst[r * stride + c0..r * stride + c0 + nc];
@@ -2393,7 +2573,10 @@ impl Evaluator {
         suppress: bool,
     ) -> Result<(), ScriptError> {
         let (nr0, nc0) = match self.env.get(name) {
-            Some(Value::Matrix(m)) => (m.nrows(), m.ncols()),
+            Some(Value::Matrix(m)) => {
+                let s = Shared::shape(m);
+                (s[0], s[1])
+            }
             _ => {
                 return Err(ScriptError::runtime(
                     "index assignment: expected a matrix".to_string(),
@@ -3374,6 +3557,17 @@ impl Evaluator {
     fn eval_transposed_matmul(&mut self, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
         let l = self.matmul_side(lhs)?;
         let r = self.matmul_side(rhs)?;
+        if let (Some(a), Some(b)) = (l.real_view(&self.env), r.real_view(&self.env)) {
+            if a.ncols() == b.nrows() {
+                // Real-stored: conjugation does nothing, and the product
+                // stays real (the same kernel as the complex path's real
+                // case, so the same bits).
+                let frame = self.profiler.enter_op("[matmul]");
+                let m = rustlab_core::matmul::matmul_real(&a, &b);
+                self.profiler.exit_op(frame);
+                return Ok(Value::real_matrix(m));
+            }
+        }
         if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
             if a.ncols() == b.nrows() {
                 let frame = self.profiler.enter_op("[matmul]");
@@ -3510,8 +3704,8 @@ impl Evaluator {
         match v {
             Value::Scalar(_) => 8,
             Value::Complex(_) => 16,
-            Value::Vector(v) => (v.len() * 16) as u64,
-            Value::Matrix(m) => (m.nrows() * m.ncols() * 16) as u64,
+            Value::Vector(v) => Shared::stored_bytes(v) as u64,
+            Value::Matrix(m) => Shared::stored_bytes(m) as u64,
             _ => 0,
         }
     }
@@ -4482,18 +4676,21 @@ impl IndexShape {
             _ => None,
         };
         let rows_cols = match v {
-            Value::Matrix(m) => Some((m.nrows(), m.ncols())),
+            Value::Matrix(m) => {
+                let s = Shared::shape(m);
+                Some((s[0], s[1]))
+            }
             Value::SparseMatrix(sm) => Some((sm.rows, sm.cols)),
-            Value::Vector(v) => Some((1, v.len())),
+            Value::Vector(v) => Some((1, Shared::len(v))),
             Value::SparseVector(sv) => Some((1, sv.len)),
             Value::IntArray { rows, cols, .. } => Some((*rows, *cols)),
             _ => None,
         };
         let len = match v {
-            Value::Vector(v) => Some(v.len()),
+            Value::Vector(v) => Some(Shared::len(v)),
             // Linear index: `end` is the element count, matching the write
             // path (`IndexAssign`) and MATLAB.
-            Value::Matrix(m) => Some(m.nrows() * m.ncols()),
+            Value::Matrix(m) => Some(Shared::len(m)),
             Value::SparseVector(sv) => Some(sv.len),
             Value::SparseMatrix(sm) => Some(sm.rows * sm.cols),
             // Single-index tensor access is linear over the column-major flat
@@ -4529,6 +4726,25 @@ enum MatmulSide<'e> {
 }
 
 impl MatmulSide<'_> {
+    /// The real matrix this operand stands for, transposed or not, when it
+    /// is a real-stored matrix.
+    fn real_view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<ndarray::ArrayView2<'a, f64>> {
+        let get = |p: &'a PreOperand| match p {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &env[*name],
+        };
+        match self {
+            MatmulSide::Plain(p) => match get(p) {
+                Value::Matrix(m) => Shared::as_real(m).map(|r| r.view()),
+                _ => None,
+            },
+            MatmulSide::T { inner, .. } => match get(inner) {
+                Value::Matrix(m) => Shared::as_real(m).map(|r| r.t()),
+                _ => None,
+            },
+        }
+    }
+
     /// The matrix this operand stands for, as a view plus whether its
     /// elements are to be conjugated, when it is a matrix.
     fn view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<(ndarray::ArrayView2<'a, C64>, bool)> {

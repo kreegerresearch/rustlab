@@ -275,8 +275,8 @@ pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
     }
     let shape = match &results[0] {
         Value::Scalar(_) | Value::Complex(_) | Value::Bool(_) => Shape::ScalarLike,
-        Value::Vector(v) => Shape::Vector(v.len()),
-        Value::Matrix(m) => Shape::Matrix(m.nrows(), m.ncols()),
+        Value::Vector(v) => Shape::Vector(Shared::len(v)),
+        Value::Matrix(m) => Shape::Matrix(Shared::shape(m)[0], Shared::shape(m)[1]),
         other => {
             return Err(ScriptError::type_err(format!(
                 "parmap: lambda return type {} is not supported \
@@ -293,6 +293,18 @@ pub fn pack_results(results: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn pack_scalar_like(results: Vec<Value>) -> Result<Value, ScriptError> {
+    // Real scalars and bools only: a real vector of the same values.
+    if results.iter().all(|v| matches!(v, Value::Scalar(_) | Value::Bool(_))) {
+        let out = results
+            .iter()
+            .map(|v| match v {
+                Value::Scalar(x) => *x,
+                Value::Bool(b) => if *b { 1.0 } else { 0.0 },
+                _ => unreachable!("checked above"),
+            })
+            .collect();
+        return Ok(Value::real_vector(ndarray::Array1::from_vec(out)));
+    }
     let mut out: Vec<num_complex::Complex<f64>> = Vec::with_capacity(results.len());
     for (idx, v) in results.into_iter().enumerate() {
         match v {
@@ -316,13 +328,13 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
     // Validate every row first, so the parallel copy below cannot fail.
     for (idx, v) in results.iter().enumerate() {
         match v {
-            Value::Vector(vec) if vec.len() == row_len => {}
+            Value::Vector(vec) if Shared::len(vec) == row_len => {}
             Value::Vector(vec) => {
                 return Err(ScriptError::type_err(format!(
                     "parmap: trial {} returned vector of length {} but trial 1 \
                      returned vector of length {}; all trials must return the same shape",
                     idx + 1,
-                    vec.len(),
+                    Shared::len(vec),
                     row_len
                 )));
             }
@@ -336,6 +348,9 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
                 )))
             }
         }
+    }
+    if let Some(m) = pack_real_rows(&results, row_len) {
+        return Ok(m);
     }
     // One write per element, in parallel, into spare capacity. A row that
     // is not a vector of `row_len` panics before `set_len`, so a missed
@@ -371,6 +386,38 @@ fn pack_vectors_as_matrix(results: Vec<Value>, row_len: usize) -> Result<Value, 
     let m =
         ndarray::Array2::from_shape_vec((nrows, row_len), flat).expect("nrows × row_len elements");
     Ok(Value::Matrix(m.into()))
+}
+
+/// [`pack_vectors_as_matrix`] when every row is real-stored: an
+/// `nrows × row_len` real matrix, written once per element in parallel.
+/// Rows are already validated to be vectors of `row_len`.
+fn pack_real_rows(results: &[Value], row_len: usize) -> Option<Value> {
+    let rows: Vec<&[f64]> = results
+        .iter()
+        .map(|v| match v {
+            Value::Vector(vec) => Shared::real_slice(vec),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let nrows = rows.len();
+    let n = nrows * row_len;
+    let mut flat: Vec<f64> = Vec::with_capacity(n);
+    if n > 0 {
+        let dst = &mut flat.spare_capacity_mut()[..n];
+        dst.par_chunks_mut(row_len).zip(rows.par_iter()).for_each(|(chunk, row)| {
+            assert_eq!(row.len(), chunk.len(), "parmap: row fill stopped short of {} elements", chunk.len());
+            for (d, &x) in chunk.iter_mut().zip(row.iter()) {
+                d.write(x);
+            }
+        });
+        // SAFETY: each chunk has length `row_len` and was zipped with a row
+        // of that length (asserted first), so every slot was written. The
+        // chunks partition `0..n`, and `f64` is `Copy`, so a panic before
+        // here drops a len-0 `Vec`.
+        unsafe { flat.set_len(n) };
+    }
+    let m = ndarray::Array2::from_shape_vec((nrows, row_len), flat).expect("nrows × row_len elements");
+    Some(Value::real_matrix(m))
 }
 
 fn pack_matrices_as_tensor3(
