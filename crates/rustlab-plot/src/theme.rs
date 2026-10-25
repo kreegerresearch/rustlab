@@ -170,6 +170,13 @@ pub struct ThemeColors {
     pub dx_del_bar: &'static str,
     pub dx_add_line: &'static str,
     pub dx_del_line: &'static str,
+    // Word marks inside prose: the bar hue at about a fifth over the
+    // page, so body text keeps 4.5:1. Links inside a mark take the body
+    // text color (accents miss 4.5:1 on some of these); code words use
+    // an underline in the bar color instead, for the same reason as the
+    // line tints.
+    pub dx_add_word: &'static str,
+    pub dx_del_word: &'static str,
 }
 
 impl ThemeColors {
@@ -196,7 +203,7 @@ impl ThemeColors {
     /// Names are kebab-case of the [`ThemeColors`] fields (`bg_secondary`
     /// → `--rl-bg-secondary`). Order is the struct field order so HTML
     /// tests and future theme files can pin a contract.
-    pub fn css_tokens(&self) -> [(&'static str, &'static str); 31] {
+    pub fn css_tokens(&self) -> [(&'static str, &'static str); 33] {
         [
             ("--rl-bg", self.bg),
             ("--rl-bg-secondary", self.bg_secondary),
@@ -229,6 +236,8 @@ impl ThemeColors {
             ("--rl-dx-del-bar", self.dx_del_bar),
             ("--rl-dx-add-line", self.dx_add_line),
             ("--rl-dx-del-line", self.dx_del_line),
+            ("--rl-dx-add-word", self.dx_add_word),
+            ("--rl-dx-del-word", self.dx_del_word),
         ]
     }
 
@@ -342,6 +351,8 @@ static MOCHA: ThemeColors = ThemeColors {
     dx_del_bar: "#f38ba8",
     dx_add_line: "#0f1211",
     dx_del_line: "#161015",
+    dx_add_word: "#3c4947",
+    dx_del_word: "#4d3649",
 };
 
 /// Catppuccin Macchiato (dark).
@@ -381,6 +392,8 @@ static MACCHIATO: ThemeColors = ThemeColors {
     dx_del_bar: "#f19fab",
     dx_add_line: "#161a1a",
     dx_del_line: "#1e181e",
+    dx_add_word: "#414e4e",
+    dx_del_word: "#514153",
 };
 
 /// Catppuccin Frappé (dark).
@@ -423,6 +436,8 @@ static FRAPPE: ThemeColors = ThemeColors {
     dx_del_bar: "#ec9b9d",
     dx_add_line: "#222728",
     dx_del_line: "#2b242c",
+    dx_add_word: "#4a5755",
+    dx_del_word: "#594b59",
 };
 
 /// Catppuccin Latte (light) — also the `light` alias.
@@ -472,6 +487,8 @@ static LATTE: ThemeColors = ThemeColors {
     dx_del_bar: "#d20f39",
     dx_add_line: "#d7e4db",
     dx_del_line: "#ebdce3",
+    dx_add_word: "#c9dfc9",
+    dx_del_word: "#eac8d3",
 };
 
 #[cfg(test)]
@@ -531,7 +548,9 @@ mod tests {
     #[test]
     fn mocha_css_tokens_match_palette_fields() {
         let tokens = MOCHA.css_tokens();
-        assert_eq!(tokens.len(), 31);
+        assert_eq!(tokens.len(), 33);
+        assert_eq!(tokens[31], ("--rl-dx-add-word", "#3c4947"));
+        assert_eq!(tokens[32], ("--rl-dx-del-word", "#4d3649"));
         assert_eq!(tokens[26], ("--rl-dx-add-bar", "#a6e3a1"));
         assert_eq!(tokens[27], ("--rl-dx-mod-bar", "#89b4fa"));
         assert_eq!(tokens[28], ("--rl-dx-del-bar", "#f38ba8"));
@@ -768,6 +787,19 @@ mod tests {
                         "{name} {role} on {label} line {line} is {ratio:.2} < 4.5"
                     );
                 }
+            }
+            for (label, word) in [("add", c.dx_add_word), ("del", c.dx_del_word)] {
+                let ratio = contrast_ratio(c.text, word).unwrap();
+                assert!(ratio >= 4.5, "{name} text on {label} word {word} is {ratio:.2} < 4.5");
+                assert_ne!(word, c.bg, "{name} {label} word mark must be visible");
+            }
+            // Code words are underlined in the bar color, on the line tint.
+            for (label, bar, line) in [
+                ("add", c.dx_add_bar, c.dx_add_line),
+                ("del", c.dx_del_bar, c.dx_del_line),
+            ] {
+                let ratio = contrast_ratio(bar, line).unwrap();
+                assert!(ratio >= 3.0, "{name} {label} underline on line {ratio:.2} < 3");
             }
             // The three bars must be told apart.
             assert_ne!(c.dx_add_bar, c.dx_mod_bar, "{name}");
