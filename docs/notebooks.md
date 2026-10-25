@@ -266,14 +266,31 @@ is `?changes=custom&base=main&compare=topic`. `?diff=HEAD` alone is
 Changes are a 4 px bar left of the text: green added, blue modified, red
 removed. Text keeps its own colors. Prose is compared one heading,
 paragraph, list, table or quote at a time, so editing one sentence marks
-that paragraph, not the whole run of text between two code cells. A run
+that paragraph, not the whole run of text between two code cells. Inside
+a modified paragraph, heading, list or quote the changed words are marked
+the way GitHub marks a prose diff: removed words struck through on a red
+tint, added words on a green tint. Math, inline code and links change as
+a whole, so `$x$` → `$y$` shows two complete formulas. When fewer than
+half the words survive, the old text is shown removed and the new text
+added instead. An added paragraph reads as all new text. A unit whose
+emphasis or structure changed, or that holds an image, footnote, comment
+or highlight, keeps the bar only. A run
 that contains raw HTML or footnotes, where the rendered elements do not
 line up with the source, is marked as a whole. Removed text collapses to
 one line, such as *Removed · “Old notes” heading and 1 paragraph*, at its
 old place; click it to read it struck through. The open or closed state
 survives the reload a live edit triggers. A changed code cell shows its
 source once, as the diff: unchanged lines, then removed lines (`−`, red,
-struck through) and added lines (`+`, green), with syntax colors kept.
+struck through) and added lines (`+`, green), with syntax colors kept and
+the changed tokens underlined (`31` → `63`).
+
+**View** switches between **Rendered** (the page) and **Source**
+(`?view=source`): a read-only unified diff of the `.md` with old and new
+line numbers, the changed words marked inside changed lines, and each
+hunk named after the nearest heading above it. Lines that occur once on
+each side anchor the match (as `git diff --patience` does), so a removed
+section reads as one removed block. A notebook too large for the rendered
+diff (over 1500 comparison units or 512 KiB) opens in the Source view.
 Working copy against a ref keeps the live outputs, labelled *Output is
 from your current file.* The old notebook is not executed. Two refs show
 the `compare` side's text and say the code was not run. `--diff` and

@@ -26,5 +26,8 @@ await p.evaluate(() => { const d = document.querySelector('details.rl-dx-removed
 await new Promise(r => setTimeout(r, 300));
 const r = await p.evaluate(() => { const d = document.querySelector('details.rl-dx-removed'); if (!d) return null; const e = d.closest('section'); const b = e.getBoundingClientRect(); return {x: Math.max(0, b.x - 40), y: b.y + window.scrollY, w: b.width + 60, h: b.height}; });
 if (r) await p.screenshot({path: `${out}/${theme}-removed-open.png`, clip: {x: r.x, y: r.y, width: r.w, height: r.h}, captureBeyondViewport: true});
+await p.goto(base + '?changes=uncommitted&view=source', {waitUntil:'networkidle0'});
+await new Promise(r => setTimeout(r, 300));
+await p.screenshot({path: `${out}/${theme}-source.png`, fullPage: true});
 console.log(theme, 'errors:', JSON.stringify(errs));
 await b.close();

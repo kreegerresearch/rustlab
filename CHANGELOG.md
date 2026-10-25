@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.16
+
+### Added
+- **Word-level marks in the `notebook watch` diff.** Inside a modified paragraph, heading, list or quote, removed words are struck through on a red tint and added words sit on a green tint. Math, inline code and links change as a whole. When fewer than half the words survive, the pair is shown as removed plus added. An added paragraph reads as all new text. Changed tokens in a code cell's diff listing are underlined, with syntax colors kept.
+- **Rendered / Source view.** **View → Source** (`?view=source`) shows a read-only unified diff of the notebook's `.md`: old and new line numbers, word marks inside changed lines, and hunks named after the nearest heading. Lines unique to both sides anchor the match, so a removed section reads as one block. Each hunk is in the change list and `[` / `]` step through them.
+- **Theme tokens `--rl-dx-add-word` and `--rl-dx-del-word`** for the prose word tints, tested so body text stays at 4.5:1.
+
+### Breaking / behavior changes
+- **A modified paragraph with little left in common now counts as two changes** (one removed, one added) instead of one modified, so the counts in the chip and the menu can go up. A heading or paragraph rewritten with fewer than half its words kept shows the old text collapsed as removed.
+- **A notebook too large for the rendered diff** (over 1500 units or 512 KiB) now opens in the Source view, where 0.3.15 showed the page unmarked with "diff was too large".
+
 ## 0.3.15
 
 ### Added

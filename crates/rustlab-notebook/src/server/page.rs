@@ -339,6 +339,64 @@ fn chrome_style(c: &ThemeColors) -> String {
   main pre.rl-dx-code .rl-ln-del .rl-ln-g {{ color: var(--rl-dx-del-bar); }}
   main pre.rl-dx-code .rl-ln-del {{ text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar); }}
   main details.rl-dx-src > summary {{ cursor: pointer; color: {text_dim}; font: 12px/1.3 system-ui, sans-serif; }}
+  /* Word marks. Prose words get a tint that keeps body text at 4.5:1, and
+     take the body text color so a link inside stays readable. Headings
+     and code keep their own colors and get a 2px line instead. */
+  main ins.rl-w, main del.rl-w {{
+    color: {text}; border-radius: 3px; padding: 0 1px;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }}
+  main ins.rl-w {{ background: var(--rl-dx-add-word); text-decoration: none; }}
+  main del.rl-w {{
+    background: var(--rl-dx-del-word);
+    text-decoration: line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }}
+  main ins.rl-w a, main del.rl-w a {{ color: inherit; }}
+  main ins.rl-w-all {{ padding: 1px 2px; }}
+  main :is(h1, h2, h3, h4, h5, h6) :is(ins, del).rl-w,
+  main pre.rl-dx-code :is(ins, del).rl-w,
+  main .rl-dx-srcview :is(ins, del).rl-w {{
+    background: none; color: inherit; padding: 0; border-radius: 0;
+    text-decoration-thickness: 2px; text-underline-offset: 3px;
+  }}
+  main :is(h1, h2, h3, h4, h5, h6) ins.rl-w,
+  main pre.rl-dx-code ins.rl-w,
+  main .rl-dx-srcview ins.rl-w {{
+    text-decoration-line: underline; text-decoration-color: var(--rl-dx-add-bar);
+  }}
+  main :is(h1, h2, h3, h4, h5, h6) del.rl-w {{
+    text-decoration-line: line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }}
+  main pre.rl-dx-code del.rl-w, main .rl-dx-srcview del.rl-w {{
+    text-decoration-line: underline line-through; text-decoration-color: var(--rl-dx-del-bar);
+  }}
+  /* Source view: the unified diff of the .md. */
+  main .rl-dx-srcview {{
+    margin: 3rem 0 1rem; overflow: hidden;
+    background: var(--rl-code-bg, {code_bg}); color: {text};
+    border: 1px solid {border}; border-radius: 8px;
+    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }}
+  main .rl-dx-srcview .rl-dx::before {{ display: none; }}
+  main .rl-dx-fh {{
+    padding: 8px 12px; border-bottom: 1px solid {border}; background: {bg_secondary}; color: {text_dim};
+    font: 13px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }}
+  main .rl-dx-hunk {{ padding: 3px 12px; background: {bg_secondary}; color: {text_dim}; font-size: 12px; }}
+  main .rl-dx-l {{ display: grid; grid-template-columns: 3.4em 3.4em 1.8em 1fr; }}
+  main .rl-dx-n {{ color: {text_dim}; text-align: right; padding-right: 6px; user-select: none; }}
+  main .rl-dx-s {{ text-align: center; color: {text_dim}; user-select: none; }}
+  main .rl-dx-x {{ white-space: pre-wrap; word-break: break-word; padding-right: 12px; }}
+  main .rl-dx-l-add {{ background: var(--rl-dx-add-line); box-shadow: inset 2px 0 0 var(--rl-dx-add-bar); }}
+  main .rl-dx-l-del {{ background: var(--rl-dx-del-line); box-shadow: inset 2px 0 0 var(--rl-dx-del-bar); }}
+  main .rl-dx-l-add .rl-dx-s {{ color: var(--rl-dx-add-bar); }}
+  main .rl-dx-l-del .rl-dx-s {{ color: var(--rl-dx-del-bar); }}
+  main .rl-dx-none {{ padding: 8px 12px; }}
+  .rl-dx-seg {{ display: inline-flex; align-self: flex-start; border: 1px solid {border}; border-radius: 6px; overflow: hidden; }}
+  #rl-toolbar .rl-dx-seg button {{
+    border: 0; border-radius: 0; background: transparent; color: {text}; padding: 4px 12px;
+  }}
+  #rl-toolbar .rl-dx-seg button[aria-checked="true"] {{ background: {accent}; color: {bg}; font-weight: 600; }}
   .fb-git {{
     display: inline-block; width: 7px; height: 7px; border-radius: 50%;
     margin-left: 6px; background: var(--rl-dx-mod-bar, currentColor); vertical-align: middle;
@@ -662,7 +720,7 @@ const CHIP_SLOT: &str = "<button id=\"rl-diff-banner\" type=\"button\" hidden></
 
 /// The comparison controls under Show changes: presets with counts,
 /// Other… (base and compare), and the list of changes on this page.
-const DIFF_PANEL: &str = r#"<div id="rl-diff" hidden><p class="rl-dx-hd" id="rl-dx-cmp-hd">Compare</p><div id="rl-dx-presets" role="radiogroup" aria-labelledby="rl-dx-cmp-hd"><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="uncommitted"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Uncommitted changes</span><span class="rl-dx-c"></span><span class="rl-dx-d">Your edits since the last commit</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="branch" hidden><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">This branch vs main</span><span class="rl-dx-c"></span><span class="rl-dx-d">Everything on this branch since it left main, like a pull request</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="last"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Last commit</span><span class="rl-dx-c"></span><span class="rl-dx-d">What the most recent commit changed</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="custom"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Other…</span><span class="rl-dx-c"></span><span class="rl-dx-d">Pick any two branches, tags or commits</span></button></div><div id="rl-dx-other" hidden><label class="rl-diff-lab"><span class="rl-dx-lab">base</span><span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Base: compare from" aria-expanded="false" aria-controls="rl-diff-base-list"></span></label><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox" aria-label="Base"></ul><p class="rl-dx-arrow">↓ changes from base to compare ↓</p><label class="rl-diff-lab"><span class="rl-dx-lab">compare</span><span class="rl-diff-combo"><input id="rl-diff-compare" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare: compare to" aria-expanded="false" aria-controls="rl-diff-compare-list"></span></label><ul id="rl-diff-compare-list" class="rl-diff-menu" hidden role="listbox" aria-label="Compare"></ul><p class="rl-dx-hint">Typing filters the list. A sha or <code>HEAD~3</code> works too.</p></div><p class="rl-dx-hd" id="rl-dx-list-hd">Changes</p><ul id="rl-dx-list" aria-labelledby="rl-dx-list-hd"></ul><p class="rl-dx-keys"><kbd>[</kbd> <kbd>]</kbd> previous / next change</p></div>"#;
+const DIFF_PANEL: &str = r#"<div id="rl-diff" hidden><p class="rl-dx-hd" id="rl-dx-cmp-hd">Compare</p><div id="rl-dx-presets" role="radiogroup" aria-labelledby="rl-dx-cmp-hd"><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="uncommitted"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Uncommitted changes</span><span class="rl-dx-c"></span><span class="rl-dx-d">Your edits since the last commit</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="branch" hidden><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">This branch vs main</span><span class="rl-dx-c"></span><span class="rl-dx-d">Everything on this branch since it left main, like a pull request</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="last"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Last commit</span><span class="rl-dx-c"></span><span class="rl-dx-d">What the most recent commit changed</span></button><button type="button" class="rl-dx-opt" role="radio" aria-checked="false" data-preset="custom"><span class="rl-dx-dot" aria-hidden="true"></span><span class="rl-dx-t">Other…</span><span class="rl-dx-c"></span><span class="rl-dx-d">Pick any two branches, tags or commits</span></button></div><div id="rl-dx-other" hidden><label class="rl-diff-lab"><span class="rl-dx-lab">base</span><span class="rl-diff-combo"><input id="rl-diff-base" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Base: compare from" aria-expanded="false" aria-controls="rl-diff-base-list"></span></label><ul id="rl-diff-base-list" class="rl-diff-menu" hidden role="listbox" aria-label="Base"></ul><p class="rl-dx-arrow">↓ changes from base to compare ↓</p><label class="rl-diff-lab"><span class="rl-dx-lab">compare</span><span class="rl-diff-combo"><input id="rl-diff-compare" class="rl-diff-filter" type="text" autocomplete="off" spellcheck="false" aria-label="Compare: compare to" aria-expanded="false" aria-controls="rl-diff-compare-list"></span></label><ul id="rl-diff-compare-list" class="rl-diff-menu" hidden role="listbox" aria-label="Compare"></ul><p class="rl-dx-hint">Typing filters the list. A sha or <code>HEAD~3</code> works too.</p></div><p class="rl-dx-hd" id="rl-dx-view-hd">View</p><div class="rl-dx-seg" role="radiogroup" aria-labelledby="rl-dx-view-hd"><button type="button" role="radio" aria-checked="true" data-view="rendered">Rendered</button><button type="button" role="radio" aria-checked="false" data-view="source">Source</button></div><p class="rl-dx-hd" id="rl-dx-list-hd">Changes</p><ul id="rl-dx-list" aria-labelledby="rl-dx-list-hd"></ul><p class="rl-dx-keys"><kbd>[</kbd> <kbd>]</kbd> previous / next change</p></div>"#;
 
 /// Presets, change list, keyboard prev/next, and the ref lists. A raw string so the
 /// braces are not doubled by the chrome `format!`.
@@ -709,18 +767,19 @@ var RL_PRESETS = ['uncommitted', 'branch', 'last', 'custom'];
 // 0.3.12 shape {diff, base} meant before/after and still restores.
 function rlDiffNorm(p) {
   if (!p) return null;
+  var view = p.view === 'source' ? 'source' : '';
   if (p.changes) {
     if (RL_PRESETS.indexOf(p.changes) === -1) return null;
-    if (p.changes !== 'custom') return { changes: p.changes, base: '', compare: '' };
+    if (p.changes !== 'custom') return { changes: p.changes, base: '', compare: '', view: view };
     var b = p.base || 'HEAD';
     var c = p.compare || '';
     if (!rlDiffRefOk(b) || (c && !rlDiffRefOk(c))) return null;
-    return { changes: 'custom', base: b, compare: c };
+    return { changes: 'custom', base: b, compare: c, view: view };
   }
   if (p.diff) {
     if (!rlDiffRefOk(p.diff) || (p.base && !rlDiffRefOk(p.base))) return null;
-    if (p.diff === 'HEAD' && !p.base) return { changes: 'uncommitted', base: '', compare: '' };
-    return { changes: 'custom', base: p.diff, compare: p.base || '' };
+    if (p.diff === 'HEAD' && !p.base) return { changes: 'uncommitted', base: '', compare: '', view: view };
+    return { changes: 'custom', base: p.diff, compare: p.base || '', view: view };
   }
   return null;
 }
@@ -745,6 +804,7 @@ function rlDiffUrl(href, pref) {
   u.searchParams.delete('diff');
   u.searchParams.delete('base');
   u.searchParams.delete('compare');
+  u.searchParams.delete('view');
   if (!pref) {
     u.searchParams.set('changes', 'off');
     return u.toString();
@@ -754,6 +814,7 @@ function rlDiffUrl(href, pref) {
     u.searchParams.set('base', pref.base || 'HEAD');
     if (pref.compare) u.searchParams.set('compare', pref.compare);
   }
+  if (pref.view === 'source') u.searchParams.set('view', 'source');
   return u.toString();
 }
 function rlRelTime(then, now) {
@@ -808,7 +869,8 @@ function rlDxCount(entry) {
   function store(pref) {
     try {
       sessionStorage.setItem(PREF, JSON.stringify(pref ? {
-        on: true, changes: pref.changes, base: pref.base || '', compare: pref.compare || ''
+        on: true, changes: pref.changes, base: pref.base || '', compare: pref.compare || '',
+        view: pref.view || ''
       } : { on: false }));
     } catch (err) {}
   }
@@ -818,7 +880,10 @@ function rlDxCount(entry) {
   function bodyPref() {
     if (!on()) return null;
     var d = document.body.dataset;
-    return { changes: d.rlChanges || 'uncommitted', base: d.rlBase || '', compare: d.rlCompare || '' };
+    return {
+      changes: d.rlChanges || 'uncommitted', base: d.rlBase || '', compare: d.rlCompare || '',
+      view: d.rlView === 'source' ? 'source' : ''
+    };
   }
   function go(pref) {
     store(pref);
@@ -883,7 +948,7 @@ function rlDxCount(entry) {
     if (!gitOn) return;
     if (on()) { go(null); return; }
     var saved = rlDiffNorm(readPref());
-    go(saved || { changes: 'uncommitted', base: '', compare: '' });
+    go(saved || { changes: 'uncommitted', base: '', compare: '', view: '' });
   });
 
   // ── Presets ────────────────────────────────────────────────────────
@@ -904,7 +969,7 @@ function rlDxCount(entry) {
         return;
       }
       if (current && current.changes === key) return;
-      go({ changes: key, base: '', compare: '' });
+      go({ changes: key, base: '', compare: '', view: current ? current.view : '' });
     });
   });
   var counted = false;
@@ -942,6 +1007,14 @@ function rlDxCount(entry) {
     }).catch(function () {});
   }
   if (current && current.changes === 'branch') { var b0 = optFor('branch'); if (b0) b0.hidden = false; }
+  Array.prototype.forEach.call(document.querySelectorAll('.rl-dx-seg [data-view]'), function (b) {
+    var v = b.getAttribute('data-view') === 'source' ? 'source' : '';
+    b.setAttribute('aria-checked', (current ? current.view : '') === v ? 'true' : 'false');
+    b.addEventListener('click', function () {
+      if (!current || current.view === v) return;
+      go({ changes: current.changes, base: current.base, compare: current.compare, view: v });
+    });
+  });
 
   // ── Other…: base and compare ───────────────────────────────────────
   function mount(input, list, which) {
@@ -1014,7 +1087,7 @@ function rlDxCount(entry) {
       var base = which === 'base' ? value : (baseCombo.value() || 'HEAD');
       var cmp = which === 'compare' ? value : cmpCombo.value();
       if (current && current.changes === 'custom' && value === committed()) { close(true); return; }
-      go({ changes: 'custom', base: base || 'HEAD', compare: cmp || '' });
+      go({ changes: 'custom', base: base || 'HEAD', compare: cmp || '', view: current ? current.view : '' });
     }
     input.addEventListener('focus', function () {
       filtering = false;
@@ -1213,7 +1286,7 @@ function rlDxCount(entry) {
   }
   if (on()) keepOpen();
 
-  var KEYS = ['changes', 'diff', 'base', 'compare', 'cm'];
+  var KEYS = ['changes', 'diff', 'base', 'compare', 'view', 'cm'];
   document.addEventListener('click', function (ev) {
     if (!on()) return;
     var a = ev.target && ev.target.closest && ev.target.closest('a');
@@ -1335,13 +1408,15 @@ assert.strictEqual(rlDiffChoose([], 'main..HEAD', 0, false), null);
 assert.strictEqual(rlDiffChoose([], 'not a ref', 0, false), null);
 assert.strictEqual(rlDiffChoose([], '-rf', 0, false), null);
 var P = function (changes, diff) { return { changes: changes, diff: diff }; };
-var unc = { changes: 'uncommitted', base: '', compare: '' };
+var unc = { changes: 'uncommitted', base: '', compare: '', view: '' };
 assert.strictEqual(rlDiffPrefApply(P('off', null), null, {on:true, changes:'last'}).action, 'store-off');
 assert.strictEqual(rlDiffPrefApply(P(null, 'off'), null, {on:true}).action, 'store-off');
 var d = rlDiffPrefApply(P('custom', null), {changes:'custom', base:'main', compare:'topic'}, null);
 assert.strictEqual(d.action, 'store-on');
-assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic'});
+assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic', view:''});
 assert.strictEqual(rlDiffPrefApply(P(null, null), unc, null).action, 'keep');
+d = rlDiffPrefApply(P('last', null), {changes:'last', view:'source'}, null);
+assert.strictEqual(d.pref.view, 'source');
 d = rlDiffPrefApply(P(null, null), null, {on:true, changes:'branch'});
 assert.strictEqual(d.action, 'navigate');
 assert.strictEqual(d.pref.changes, 'branch');
@@ -1349,7 +1424,7 @@ assert.strictEqual(d.pref.changes, 'branch');
 d = rlDiffPrefApply(P(null, null), null, {on:true, diff:'HEAD', base:''});
 assert.deepStrictEqual(d.pref, unc);
 d = rlDiffPrefApply(P(null, null), null, {on:true, diff:'main', base:'topic'});
-assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic'});
+assert.deepStrictEqual(d.pref, {changes:'custom', base:'main', compare:'topic', view:''});
 assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, diff:'main..HEAD'}).action, 'none');
 assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, changes:'custom', base:'-x'}).action, 'none');
 assert.strictEqual(rlDiffPrefApply(P(null, null), null, {on:true, changes:'nope'}).action, 'none');
@@ -1362,6 +1437,10 @@ assert.strictEqual(u.searchParams.get('cm'), '0');
 u = new URL(rlDiffUrl('http://h/n/nb', {changes:'custom', base:'v0.3', compare:''}));
 assert.strictEqual(u.searchParams.get('base'), 'v0.3');
 assert.strictEqual(u.searchParams.get('compare'), null);
+u = new URL(rlDiffUrl('http://h/n/nb?view=source', {changes:'last', view:'source'}));
+assert.strictEqual(u.searchParams.get('view'), 'source');
+u = new URL(rlDiffUrl('http://h/n/nb?view=source', {changes:'last', view:''}));
+assert.strictEqual(u.searchParams.get('view'), null);
 u = new URL(rlDiffUrl('http://h/n/nb?changes=last', null));
 assert.strictEqual(u.searchParams.get('changes'), 'off');
 assert.strictEqual(rlRelTime(1000, 1030), 'just now');
