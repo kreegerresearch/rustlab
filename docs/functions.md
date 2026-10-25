@@ -4015,12 +4015,13 @@ Every call is recorded where it happens, including calls nested inside user func
 | Total (ms) | Inclusive time: the call and everything it called. A recursive function counts its outermost call only. |
 | Self (ms) | Time in the call itself, excluding the profiled calls it made |
 | Avg (µs) | Total ÷ Calls |
-| In / Out (KB), Mbit/s | Bytes of numeric arguments and results, and their throughput |
+| In / Out (KB), Mbit/s | Bytes of numeric arguments and results as stored (8 per element of a real array, 16 per complex element), and their throughput |
 
 Rows in brackets are not functions:
 
 - `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
 - `[matmul]` — matrix products `A * B`, always recorded.
+- `[widen]` and `[promote]` — storage conversions, always recorded when they happen. An array of real numbers is stored as real numbers; `[widen]` counts the times an operation that only handles complex arrays had to build a complex copy of one, and `[promote]` the times a write of complex values (or an operation that only writes complex arrays) converted one in place. Calls, time in the Total column (that time is already inside the caller's Self time, so Self is 0), the real bytes read (In) and the complex bytes built (Out). Results are the same either way; these rows show where time goes to conversions.
 - With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.

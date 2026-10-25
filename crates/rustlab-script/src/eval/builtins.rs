@@ -1,3 +1,4 @@
+use super::shared::Shared;
 use crate::error::ScriptError;
 use crate::eval::value::{insert_commas, DspStreamKind, SparseFactor, Value, WaterfallStreamState};
 use ndarray::{Array1, Array2, Array3};
@@ -813,6 +814,18 @@ fn apply_scalar_fn_promoting(
         // A `-0.0` imaginary part is read as `+0.0`, so the branch cut of
         // `sqrt` / `log` puts `-4 - 0i` with `-4`.
         Value::Complex(c) => Ok(Value::Complex(fc(Value::unsigned_zero_im(*c)))),
+        // Real-stored input with no element that needs the complex branch
+        // maps in `f64` and stays real-stored.
+        Value::Vector(v) if Shared::real_slice(v).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) => {
+            let d = Shared::real_slice(v).expect("checked");
+            Ok(Value::real_vector(Array1::from(super::real_ops::map_with(d, super::elementwise::PAR_MAP_MIN_LEN, &f))))
+        }
+        Value::Matrix(m) if Shared::real_slice(m).is_some_and(|d| !d.iter().any(|&x| needs_complex(x))) => {
+            let d = Shared::real_slice(m).expect("checked");
+            let s = Shared::shape(m);
+            let out = super::real_ops::map_with(d, super::elementwise::PAR_MAP_MIN_LEN, &f);
+            Ok(Value::real_matrix(Array2::from_shape_vec((s[0], s[1]), out).expect("same shape")))
+        }
         // Real input avoids the complex formula. Contiguous arrays map in
         // parallel when long (`par_map`); the values are the same either way.
         Value::Vector(v) => {
@@ -1457,9 +1470,9 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     if let Some(m) = m {
-        Ok(Value::Matrix(Array2::zeros((m, n)).into()))
+        Ok(Value::real_matrix(Array2::zeros((m, n))))
     } else {
-        Ok(Value::Vector(Array1::zeros(n).into()))
+        Ok(Value::real_vector(Array1::zeros(n)))
     }
 }
 
@@ -1478,12 +1491,9 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     if let Some(m) = m {
-        Ok(Value::Matrix(Array2::from_elem(
-            (m, n),
-            Complex::new(1.0, 0.0),
-        ).into()))
+        Ok(Value::real_matrix(Array2::from_elem((m, n), 1.0)))
     } else {
-        Ok(Value::Vector(Array1::from_elem(n, Complex::new(1.0, 0.0)).into()))
+        Ok(Value::real_vector(Array1::from_elem(n, 1.0)))
     }
 }
 
@@ -1518,14 +1528,10 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (m, n) = unpack_size_args(&args, "rand")?;
     crate::eval::rng::with_rng(|rng| {
         if let Some(m) = m {
-            let data: Vec<C64> = (0..m * n)
-                .map(|_| Complex::new(dist.sample(rng), 0.0))
-                .collect();
-            Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap().into()))
+            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
+            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
         } else {
-            Ok(Value::Vector(Array1::from_iter(
-                (0..n).map(|_| Complex::new(dist.sample(rng), 0.0)),
-            ).into()))
+            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
         }
     })
 }
@@ -1541,14 +1547,10 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (m, n) = unpack_size_args(&args, "randn")?;
     crate::eval::rng::with_rng(|rng| {
         if let Some(m) = m {
-            let data: Vec<C64> = (0..m * n)
-                .map(|_| Complex::new(dist.sample(rng), 0.0))
-                .collect();
-            Ok(Value::Matrix(Array2::from_shape_vec((m, n), data).unwrap().into()))
+            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
+            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
         } else {
-            Ok(Value::Vector(Array1::from_iter(
-                (0..n).map(|_| Complex::new(dist.sample(rng), 0.0)),
-            ).into()))
+            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
         }
     })
 }
@@ -2256,6 +2258,9 @@ fn builtin_error(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// mean(M) — average along dim 1 (columns) → row matrix `1×ncols`.
 /// mean(M, 1) / mean(M, 2) — explicit axis.
 fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(v) = real_sum_mean(&args, true) {
+        return Ok(v);
+    }
     dispatch_matrix_reduction(
         "mean",
         &args,
@@ -2265,7 +2270,7 @@ fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
                     "mean: argument must be a non-empty vector, matrix, or scalar".to_string(),
                 ));
             }
-            let s: C64 = elems.iter().copied().sum();
+            let s = crate::eval::elementwise::sum_c64(elems);
             Ok(complex_to_value(s / elems.len() as f64))
         },
         |m, dim| {
@@ -2452,10 +2457,10 @@ where
     match &args[0] {
         Value::Vector(v) => match dim_arg {
             Some(1) => Ok(args[0].clone()),
-            _ => {
-                let elements: Vec<C64> = v.iter().copied().collect();
-                flat_reduce(&elements)
-            }
+            _ => match v.as_slice() {
+                Some(elements) => flat_reduce(elements),
+                None => flat_reduce(&v.iter().copied().collect::<Vec<C64>>()),
+            },
         },
         Value::Matrix(m) => {
             let nrows = m.nrows();
@@ -2467,8 +2472,12 @@ where
                 if dim_arg.is_some_and(|d| reduction_along_singleton(nrows, ncols, d)) {
                     return Ok(args[0].clone());
                 }
-                let elements: Vec<C64> = m.iter().copied().collect();
-                return flat_reduce(&elements);
+                // A one-row or one-column matrix in standard layout is
+                // already in iteration order; reduce it in place.
+                return match m.as_slice() {
+                    Some(elements) => flat_reduce(elements),
+                    None => flat_reduce(&m.iter().copied().collect::<Vec<C64>>()),
+                };
             }
             let dim = dim_arg.unwrap_or(1);
             Ok(Value::Matrix(axis_reduce(m, dim).into()))
@@ -2506,11 +2515,97 @@ where
 /// sum(M) — sum along dim 1 (columns) → row matrix `1×ncols` (octave default).
 /// sum(M, 1) — explicit column sums.
 /// sum(M, 2) — row sums → column matrix `nrows×1`.
+/// `sum` / `mean` of a real-stored vector or matrix, with the same shapes,
+/// orders and bits as [`dispatch_matrix_reduction`] on the widened value;
+/// `None` for anything else (including argument errors, which the general
+/// path reports).
+fn real_sum_mean(args: &[Value], mean: bool) -> Option<Value> {
+    use super::elementwise::sum_f64;
+    if args.is_empty() || args.len() > 2 {
+        return None;
+    }
+    let dim_arg = parse_reduction_dim("sum", args).ok()?;
+    let flat = |d: &[f64]| -> Option<Value> {
+        if mean && d.is_empty() {
+            return None;
+        }
+        let s = sum_f64(d);
+        Some(Value::Scalar(if mean { s / d.len() as f64 } else { s }))
+    };
+    match &args[0] {
+        Value::Vector(v) => {
+            let d = Shared::real_slice(v)?;
+            match dim_arg {
+                Some(1) => Some(args[0].clone()),
+                _ => flat(d),
+            }
+        }
+        Value::Matrix(m) => {
+            let d = Shared::real_slice(m)?;
+            let s = Shared::shape(m);
+            let (nr, nc) = (s[0], s[1]);
+            if nr == 0 || nc == 0 {
+                return Some(Value::Scalar(0.0));
+            }
+            if nr == 1 || nc == 1 {
+                if dim_arg.is_some_and(|dd| reduction_along_singleton(nr, nc, dd)) {
+                    return Some(args[0].clone());
+                }
+                return flat(d);
+            }
+            match dim_arg.unwrap_or(1) {
+                1 => {
+                    // Each column top to bottom from zero, read row by row;
+                    // large matrices split the columns across threads, which
+                    // leaves every column's order unchanged.
+                    let mut acc = vec![0.0; nc];
+                    let add_rows = |c0: usize, acc: &mut [f64]| {
+                        let w = acc.len();
+                        for row in d.chunks_exact(nc) {
+                            for (a, &x) in acc.iter_mut().zip(&row[c0..c0 + w]) {
+                                *a += x;
+                            }
+                        }
+                    };
+                    if d.len() >= super::elementwise::PAR_MIN_LEN {
+                        use rayon::prelude::*;
+                        let chunk = super::elementwise::PAR_CHUNK;
+                        acc.par_chunks_mut(chunk).enumerate().for_each(|(k, a)| add_rows(k * chunk, a));
+                    } else {
+                        add_rows(0, &mut acc);
+                    }
+                    if mean {
+                        for a in &mut acc {
+                            *a /= nr as f64;
+                        }
+                    }
+                    Some(Value::real_matrix(Array2::from_shape_vec((1, nc), acc).ok()?))
+                }
+                _ => {
+                    // Each row left to right from zero.
+                    let out: Vec<f64> = d
+                        .chunks_exact(nc)
+                        .map(|row| {
+                            let s = row.iter().fold(0.0, |a, &x| a + x);
+                            if mean { s / nc as f64 } else { s }
+                        })
+                        .collect();
+                    Some(Value::real_matrix(Array2::from_shape_vec((nr, 1), out).ok()?))
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 fn builtin_sum(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if let Some(v) = real_sum_mean(&args, false) {
+        return Ok(v);
+    }
     dispatch_matrix_reduction(
         "sum",
         &args,
-        |elems| Ok(complex_to_value(elems.iter().copied().sum())),
+        |elems| Ok(complex_to_value(crate::eval::elementwise::sum_c64(elems))),
         |m, dim| {
             if dim == 1 {
                 sum_rows(m)
@@ -3268,12 +3363,12 @@ fn nextpow2_scalar(abs_x: f64) -> f64 {
 fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("len", &args, 1)?;
     match &args[0] {
-        Value::Vector(v) => Ok(Value::Scalar(v.len() as f64)),
+        Value::Vector(v) => Ok(Value::Scalar(Shared::len(v) as f64)),
         // Octave/matlab convention: length(M) = max(size(M)). For column or
         // row vectors this gives the natural length; for general matrices
         // it gives the longest dimension. Use numel(M) for total element
         // count and size(M) for full shape information.
-        Value::Matrix(m) => Ok(Value::Scalar(m.nrows().max(m.ncols()) as f64)),
+        Value::Matrix(m) => Ok(Value::Scalar(Shared::shape(m)[0].max(Shared::shape(m)[1]) as f64)),
         Value::IntArray { rows, cols, .. } => Ok(Value::Scalar((*rows).max(*cols) as f64)),
         Value::Tensor3(t) => Ok(Value::Scalar(*t.shape().iter().max().unwrap_or(&0) as f64)),
         // Scalar / complex / bool are all 1-element values; matlab's
@@ -3297,8 +3392,8 @@ fn builtin_len(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_numel(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("numel", &args, 1)?;
     let n = match &args[0] {
-        Value::Vector(v) => v.len(),
-        Value::Matrix(m) => m.nrows() * m.ncols(),
+        Value::Vector(v) => Shared::len(v),
+        Value::Matrix(m) => Shared::len(m),
         Value::Tensor3(t) => t.shape().iter().product::<usize>(),
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => 1,
         Value::IntArray { data, .. } => data.len(),
@@ -3339,8 +3434,8 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
         ]).into()));
     }
     let (nrows, ncols) = match &args[0] {
-        Value::Vector(v) => (1usize, v.len()),
-        Value::Matrix(m) => (m.nrows(), m.ncols()),
+        Value::Vector(v) => (1usize, Shared::len(v)),
+        Value::Matrix(m) => (Shared::shape(m)[0], Shared::shape(m)[1]),
         Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => (1, 1),
         Value::IntArray { rows, cols, .. } => (*rows, *cols),
         Value::SparseVector(sv) => (1, sv.len),
@@ -8117,8 +8212,51 @@ fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// a matrix's column-major order is its transpose: one tiled pass
 /// (`par_transpose`) each way, and none when the order does not change (a
 /// vector or a 1×N / N×1 matrix in and out, or the same shape).
+/// [`reshape_2d`] for a real-stored source: the same walk, `f64` storage.
+fn reshape_2d_real(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptError> {
+    use super::real_ops::transpose_f64;
+    let (data, nr, nc) = match src {
+        Value::Vector(v) => match Shared::real_slice(v) {
+            Some(d) => (d, d.len(), 1),
+            None => return Ok(None),
+        },
+        Value::Matrix(a) => match Shared::real_slice(a) {
+            Some(d) => (d, Shared::shape(a)[0], Shared::shape(a)[1]),
+            None => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let len = data.len();
+    if len != m * n {
+        return Err(ScriptError::type_err(format!(
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
+            m * n
+        )));
+    }
+    let in_order = nr == 1 || nc == 1;
+    if m == 1 || n == 1 {
+        return Ok(Some(match src {
+            Value::Vector(_) => src.clone(),
+            _ if in_order => Value::real_vector(Array1::from(data.to_vec())),
+            _ => Value::real_vector(Array1::from(transpose_f64(data, nr, nc))),
+        }));
+    }
+    if (m, n) == (nr, nc) {
+        return Ok(Some(src.clone()));
+    }
+    let out = if in_order {
+        transpose_f64(data, n, m)
+    } else {
+        transpose_f64(&transpose_f64(data, nr, nc), n, m)
+    };
+    Ok(Some(Value::real_matrix(Array2::from_shape_vec((m, n), out).expect("m × n elements"))))
+}
+
 fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptError> {
     use super::elementwise::par_transpose;
+    if let Some(v) = reshape_2d_real(src, m, n)? {
+        return Ok(Some(v));
+    }
     let (len, data, nr, nc) = match src {
         Value::Vector(v) => (v.len(), v.as_slice(), v.len(), 1),
         Value::Matrix(a) => (a.len(), a.as_slice(), a.nrows(), a.ncols()),
@@ -8525,13 +8663,34 @@ fn builtin_cross(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// outer(a, b)[i, j] = a[i] * b[j]
 fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("outer", &args, 2)?;
+    // Real-stored vectors (or 1-D matrices): a real product.
+    fn real_1d(v: &Value) -> Option<&[f64]> {
+        match v {
+            Value::Vector(a) => Shared::real_slice(a),
+            Value::Matrix(m) if Shared::shape(m).contains(&1) => Shared::real_slice(m),
+            _ => None,
+        }
+    }
+    if let (Some(a), Some(b)) = (real_1d(&args[0]), real_1d(&args[1])) {
+        let mut out = Vec::with_capacity(a.len() * b.len());
+        for &x in a {
+            out.extend(b.iter().map(|&y| x * y));
+        }
+        return Ok(Value::real_matrix(Array2::from_shape_vec((a.len(), b.len()), out).expect("a × b")));
+    }
     let a = args[0]
         .to_cvector()
         .map_err(|e| ScriptError::type_err(format!("outer: a: {}", e)))?;
     let b = args[1]
         .to_cvector()
         .map_err(|e| ScriptError::type_err(format!("outer: b: {}", e)))?;
-    let m = Array2::from_shape_fn((a.len(), b.len()), |(i, j)| a[i] * b[j]);
+    // Real inputs give a real result (no `0·Inf` NaN in the imaginary
+    // part), as for `.*` and `*`.
+    let real = a.iter().chain(b.iter()).all(|c| c.im.abs() < f64::EPSILON);
+    let m = Array2::from_shape_fn((a.len(), b.len()), |(i, j)| {
+        let z = a[i] * b[j];
+        if real { C64::new(z.re, 0.0) } else { z }
+    });
     Ok(Value::Matrix(m.into()))
 }
 
@@ -12101,6 +12260,40 @@ fn builtin_margin(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// max before exponentiating, then divide by the sum. Single owner of the
 /// formula, used by both the vector and matrix forms of `softmax`.
 /// Operates on the real parts and clears any imaginary component.
+/// [`softmax_slice_inplace`] on real numbers: the same operations in the
+/// same order, so the same bits.
+fn softmax_slice_f64(slice: &mut [f64]) {
+    let max_re = slice.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mut sum = 0.0_f64;
+    for x in slice.iter_mut() {
+        let e = (*x - max_re).exp();
+        *x = e;
+        sum += e;
+    }
+    for x in slice.iter_mut() {
+        *x /= sum;
+    }
+}
+
+/// The real parts of a vector or matrix, row-major, without widening
+/// real storage.
+fn real_parts_of(v: &Value) -> Option<Vec<f64>> {
+    match v {
+        Value::Vector(a) => Some(match Shared::real_slice(a) {
+            Some(d) => d.to_vec(),
+            None => a.iter().map(|c| c.re).collect(),
+        }),
+        Value::Matrix(m) => Some(match Shared::real_slice(m) {
+            Some(d) => d.to_vec(),
+            None => m.iter().map(|c| c.re).collect(),
+        }),
+        _ => None,
+    }
+}
+
+/// The complex-storage softmax kernel this module used before real
+/// storage; kept as the reference [`softmax_slice_f64`] is tested against.
+#[cfg(test)]
 fn softmax_slice_inplace(slice: &mut [C64]) {
     let max_re = slice.iter().map(|c| c.re).fold(f64::NEG_INFINITY, f64::max);
     let mut sum = 0.0_f64;
@@ -12126,6 +12319,8 @@ fn softmax_slice_inplace(slice: &mut [C64]) {
 /// - 1-D-shaped matrices (1×N or N×1) are treated as vectors regardless of
 ///   `dim`, matching how `sum`/`mean`/`layernorm` handle the same shapes.
 fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
+    // Softmax reads only real parts and its results have zero imaginary
+    // parts, so every array result is real-stored.
     check_args_range("softmax", &args, 1, 2)?;
     match &args[0] {
         Value::Scalar(_) => {
@@ -12136,19 +12331,19 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
             }
             Ok(Value::Scalar(1.0))
         }
-        Value::Vector(v) if !v.is_empty() => {
+        Value::Vector(v) if Shared::len(v) > 0 => {
             if args.len() > 1 {
                 return Err(ScriptError::type_err(
                     "softmax: vector form takes one argument".to_string(),
                 ));
             }
-            let mut data: Vec<C64> = v.iter().copied().collect();
-            softmax_slice_inplace(&mut data);
-            Ok(Value::Vector(Array1::from_vec(data).into()))
+            let mut data = real_parts_of(&args[0]).expect("a vector");
+            softmax_slice_f64(&mut data);
+            Ok(Value::real_vector(Array1::from_vec(data)))
         }
         Value::Matrix(m) => {
-            let nrows = m.nrows();
-            let ncols = m.ncols();
+            let s = Shared::shape(m);
+            let (nrows, ncols) = (s[0], s[1]);
             if nrows == 0 || ncols == 0 {
                 return Err(ScriptError::type_err(
                     "softmax: matrix must be non-empty".to_string(),
@@ -12162,11 +12357,10 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
                         "softmax: 1-D-shaped matrix takes one argument".to_string(),
                     ));
                 }
-                let mut data: Vec<C64> = m.iter().copied().collect();
-                softmax_slice_inplace(&mut data);
-                return Ok(Value::Matrix(
-                    Array2::from_shape_vec((nrows, ncols), data)
-                        .expect("preserves 1-D matrix shape").into(),
+                let mut data = real_parts_of(&args[0]).expect("a matrix");
+                softmax_slice_f64(&mut data);
+                return Ok(Value::real_matrix(
+                    Array2::from_shape_vec((nrows, ncols), data).expect("preserves 1-D matrix shape"),
                 ));
             }
             // 2-D matrix: optional dim (default 2 = per-row, ML convention).
@@ -12185,29 +12379,28 @@ fn builtin_softmax(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else {
                 2
             };
-            let mut out: CMatrix = (**m).clone();
+            let mut out = real_parts_of(&args[0]).expect("a matrix");
             match dim {
                 2 => {
-                    for i in 0..nrows {
-                        let mut row: Vec<C64> = (0..ncols).map(|j| out[[i, j]]).collect();
-                        softmax_slice_inplace(&mut row);
-                        for j in 0..ncols {
-                            out[[i, j]] = row[j];
-                        }
+                    for row in out.chunks_exact_mut(ncols) {
+                        softmax_slice_f64(row);
                     }
                 }
                 1 => {
+                    let mut col = vec![0.0; nrows];
                     for j in 0..ncols {
-                        let mut col: Vec<C64> = (0..nrows).map(|i| out[[i, j]]).collect();
-                        softmax_slice_inplace(&mut col);
                         for i in 0..nrows {
-                            out[[i, j]] = col[i];
+                            col[i] = out[i * ncols + j];
+                        }
+                        softmax_slice_f64(&mut col);
+                        for i in 0..nrows {
+                            out[i * ncols + j] = col[i];
                         }
                     }
                 }
                 _ => unreachable!(),
             }
-            Ok(Value::Matrix(out.into()))
+            Ok(Value::real_matrix(Array2::from_shape_vec((nrows, ncols), out).expect("same shape")))
         }
         other => Err(ScriptError::type_err(format!(
             "softmax: argument must be a non-empty vector, matrix, or scalar (got {})",
@@ -16842,4 +17035,22 @@ fn builtin_marker(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::None)
 }
 
+#[cfg(test)]
+mod real_builtin_tests {
+    use super::*;
 
+    #[test]
+    fn real_softmax_matches_the_complex_kernel_bit_for_bit() {
+        for n in [1usize, 2, 7, 129, 1000] {
+            let xs: Vec<f64> = (0..n).map(|i| ((i * 37 % 101) as f64 - 50.0) * 0.37).collect();
+            let mut r = xs.clone();
+            softmax_slice_f64(&mut r);
+            let mut c: Vec<C64> = xs.iter().map(|&x| C64::new(x, 0.0)).collect();
+            softmax_slice_inplace(&mut c);
+            for (a, b) in r.iter().zip(&c) {
+                assert_eq!(a.to_bits(), b.re.to_bits());
+                assert_eq!(b.im, 0.0);
+            }
+        }
+    }
+}

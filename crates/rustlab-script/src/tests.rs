@@ -6853,15 +6853,14 @@ mod profiling_tests {
 
     #[test]
     fn vector_io_bytes_correct() {
-        // fft(v) where v is length 16 → input 16*16=256 bytes, output 256 bytes
+        // fft(v) where v is length 16: `ones` is real-stored, 8 bytes per
+        // element in; the spectrum is complex, 16 bytes per element out.
+        crate::eval::shared::set_real_storage(Some(true));
         let (_, report) = run_profiled("fft(ones(16));", Some(vec!["fft"]));
+        crate::eval::shared::set_real_storage(None);
         let s = find(&report, "fft").expect("fft tracked");
-        assert_eq!(
-            s.input_bytes,
-            16 * 16,
-            "16-element complex vector = 256 bytes"
-        );
-        assert_eq!(s.output_bytes, 16 * 16);
+        assert_eq!(s.input_bytes, 16 * 8, "16-element real vector = 128 bytes");
+        assert_eq!(s.output_bytes, 16 * 16, "16-element complex vector = 256 bytes");
     }
 }
 
@@ -21384,6 +21383,29 @@ mod real_value_semantics {
             Value::Scalar(s) => vec![C::new(*s, 0.0)],
             other => panic!("{name}: {other:?}"),
         }
+    }
+
+    /// Array ∘ real scalar and outer products of real inputs are real in
+    /// both storage modes: no `0 · Inf` NaN and no `-0` imaginary parts.
+    #[test]
+    fn real_array_times_real_scalar_is_real_in_both_storages() {
+        for real_storage in [true, false] {
+            crate::eval::shared::set_real_storage(Some(real_storage));
+            let mut ev = Evaluator::new();
+            run(&mut ev, "a = [1 Inf -2] * 2; b = 2 * [1 Inf]; c = [1 2] / 0; d = [-1 -2] * -3; \
+                          M = [1 Inf; 2 3] * 2; o = outer([1 Inf], [0 2]); p = [1; Inf] * [0 2];").unwrap();
+            for name in ["a", "b", "c", "d", "M", "o", "p"] {
+                for z in elems(&ev, name) {
+                    assert_eq!(z.im.to_bits(), 0, "{name} (real storage {real_storage}): {z}");
+                }
+            }
+            assert_eq!(elems(&ev, "a")[1].re, f64::INFINITY);
+            assert!(elems(&ev, "o")[2].re.is_nan(), "Inf * 0 is still NaN in the real part");
+            // Powers keep their complex results.
+            run(&mut ev, "q = [-8 8] .^ (1/3);").unwrap();
+            assert!(elems(&ev, "q")[0].im > 1.7);
+        }
+        crate::eval::shared::set_real_storage(None);
     }
 
     #[test]

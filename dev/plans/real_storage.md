@@ -1,7 +1,11 @@
 # Real-valued array storage
 
-**Status:** design only (perf flywheel iteration 02, item 5). No code has
-landed. The first slice is planned for iteration 03 and needs an explicit go.
+**Status:** first slice shipped in 0.3.17 (perf flywheel iteration 03,
+`dev/plans/perf_flywheel_iter03.md` phase 3). As built, the storage lives in
+`Shared<T>` itself (the name and call sites stay; `Store<D>` below is the
+design name). Not yet converted: Tensor3 kernels, the less common builtins,
+NPY `save` choosing `<f8` by storage (it still checks the values, with the
+same result).
 **Source request:** `../rustlab_llm/perf/iterations/02-requests.md` § R4.
 **Builds on:** copy-on-write arrays (`eval/shared.rs`, iteration 02 item 2).
 

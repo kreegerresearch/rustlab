@@ -7,11 +7,19 @@
 //! GEMM (ndarray's `f64` `dot`, which is `matrixmultiply::dgemm`) and widened
 //! back. The check and the copies are O(n²) against O(n³) work.
 //!
+//! On a CPU with the Arm Scalable Matrix Extension and `f64` outer products
+//! (Apple M4), a real product of at least [`SME_MIN_MACS`] multiply-adds
+//! runs on the matrix unit instead (`sme.rs`), reading the real parts
+//! straight from the complex storage. Each element is then a fused
+//! multiply-add chain in k order. `RUSTLAB_NO_SME=1` turns that path off.
+//!
 //! The real path sums in a different order from the complex kernel, so
 //! results can differ in the last digits. It also differs where the complex
 //! kernel manufactured NaN: `(Inf + 0i)·(1 + 0i)` has imaginary part
 //! `Inf·0 = NaN` there, while the real product is `Inf` with a zero
 //! imaginary part.
+
+mod sme;
 
 use crate::types::{CMatrix, C64};
 use ndarray::linalg::general_mat_mul;
@@ -40,6 +48,11 @@ pub fn matmul(a: &ArrayView2<C64>, b: &ArrayView2<C64>) -> CMatrix {
 pub fn matmul_conj(a: &ArrayView2<C64>, conj_a: bool, b: &ArrayView2<C64>, conj_b: bool) -> CMatrix {
     debug_assert_eq!(a.ncols(), b.nrows());
     let dim = (a.nrows(), b.ncols());
+    if use_sme(dim.0, a.ncols(), dim.1) {
+        if let Some(c) = sme::gemm_real_c64(a, b) {
+            return c;
+        }
+    }
     if let Some(ar) = real_parts(a) {
         if let Some(br) = real_parts(b) {
             let mut c = Array2::<f64>::zeros(dim);
@@ -54,6 +67,32 @@ pub fn matmul_conj(a: &ArrayView2<C64>, conj_a: bool, b: &ArrayView2<C64>, conj_
     let mut c = Array2::<C64>::zeros(dim);
     general_mat_mul(C64::new(1.0, 0.0), &a, &b, C64::new(0.0, 0.0), &mut c);
     c
+}
+
+/// `a · b` for real matrices, with the kernel `matmul_conj` uses for real
+/// operands (SME when available and large enough, else `matrixmultiply`),
+/// so a real-stored product equals a complex-stored one bit for bit. The
+/// result is row-major.
+pub fn matmul_real(a: &ArrayView2<f64>, b: &ArrayView2<f64>) -> Array2<f64> {
+    debug_assert_eq!(a.ncols(), b.nrows());
+    let dim = (a.nrows(), b.ncols());
+    if use_sme(dim.0, a.ncols(), dim.1) {
+        return sme::gemm(a, b);
+    }
+    let mut c = Array2::<f64>::zeros(dim);
+    general_mat_mul(1.0, a, b, 0.0, &mut c);
+    c
+}
+
+/// Products with fewer multiply-adds (`m·k·n`) than this stay on
+/// `matrixmultiply`: below it, entering and leaving streaming mode and
+/// packing cost more than the matrix unit saves. On an Apple M4 Max the two
+/// paths cross near 24³; 16³ is 13 % slower on SME and 32³ 28 % faster.
+const SME_MIN_MACS: usize = 1 << 14;
+
+/// Whether a real `m × k` by `k × n` product runs on the SME kernel.
+fn use_sme(m: usize, k: usize, n: usize) -> bool {
+    m.saturating_mul(k).saturating_mul(n) >= SME_MIN_MACS && sme::available()
 }
 
 /// The real parts of `a` when every imaginary part is zero (the same test

@@ -12,6 +12,11 @@
 //! - `[matmul]` — matrix products (`A * B`), always on while profiling.
 //! - With op profiling (`--profile=ops`): one row per operator (`[+]`,
 //!   `[.*]`, …), `[transpose]`, `[index]` and `[index-assign]`.
+//! - `[widen]` and `[promote]` — complex views built from real storage, and
+//!   real buffers converted to complex by a write (`eval/shared.rs`). Calls,
+//!   time (in the total column; it is already inside the caller's self
+//!   time, so self is 0) and KB: in is the real bytes read, out the complex
+//!   bytes built. These rank the code paths still to convert.
 //!
 //! `parmap` workers profile into their own copies; their rows are merged
 //! back as `parmap:<name>`. Those rows are CPU time summed across threads,
@@ -20,6 +25,7 @@
 //! Zero overhead when disabled: every entry point short-circuits on
 //! `enabled`.
 
+use super::shared::{conversion_counts, set_timing, Conversions};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -66,6 +72,9 @@ pub struct Profiler {
     /// `None` for a parmap worker, whose root is the parent's parmap call.
     root: Option<Frame>,
     stats: HashMap<String, FnStats>,
+    /// Conversion counters on this profiler's thread when they were last
+    /// read; `None` until the first profiled call on that thread.
+    conv_base: Option<(Conversions, Conversions)>,
 }
 
 impl Profiler {
@@ -112,6 +121,10 @@ impl Profiler {
     pub fn enter(&mut self, name: &str) -> bool {
         if !self.enabled {
             return false;
+        }
+        if self.conv_base.is_none() {
+            set_timing(true);
+            self.conv_base = Some(conversion_counts());
         }
         self.stack.push(Frame { start: Instant::now(), child_ns: 0 });
         match self.active.get_mut(name) {
@@ -178,8 +191,26 @@ impl Profiler {
         self.stats.get_mut(name).expect("inserted above")
     }
 
+    /// Add the conversions since the last read to `[widen]` / `[promote]`.
+    fn flush_conversions(&mut self) {
+        let Some(base) = self.conv_base else { return };
+        let now = conversion_counts();
+        self.conv_base = Some(now);
+        for (name, d) in [("[widen]", now.0 - base.0), ("[promote]", now.1 - base.1)] {
+            if d.calls == 0 || !self.reports(name) {
+                continue;
+            }
+            let s = self.row(name);
+            s.call_count += d.calls;
+            s.total_ns += d.ns.max(1);
+            s.input_bytes += d.elements * 8;
+            s.output_bytes += d.elements * 16;
+        }
+    }
+
     /// Drain a worker's rows (used per `parmap` task).
     pub fn take_stats(&mut self) -> HashMap<String, FnStats> {
+        self.flush_conversions();
         std::mem::take(&mut self.stats)
     }
 
@@ -204,6 +235,7 @@ impl Profiler {
     /// Closes the `[top-level]` row up to now and restarts it, so a
     /// mid-script `profile_report()` and the final report do not overlap.
     pub fn take_report(&mut self) -> Vec<(String, FnStats)> {
+        self.flush_conversions();
         if self.whitelist.is_none() {
             if let Some(root) = self.root.as_mut() {
                 let elapsed = root.start.elapsed().as_nanos() as u64;

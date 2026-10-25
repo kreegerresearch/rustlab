@@ -88,7 +88,7 @@ In source form, [`docs/quickref.md`](quickref.md) is the canonical capability in
 
 These rules cover ~95% of what you need to write correct `.rlab` code. Full grammar: `docs/functions.md` § Language.
 
-1. **Everything numeric is `Complex<f64>` underneath.** `j` and `i` are the imaginary unit: `z = 3.0 + j*4.0`. Element-wise ops on purely real inputs return exactly-real results. `real(v)`, `imag(v)`, `conj(v)`, `abs(v)`, `angle(v)` decompose complex values.
+1. **Every number is complex to the script.** `j` and `i` are the imaginary unit: `z = 3.0 + j*4.0`. Element-wise ops, `*`, and the outer product on purely real inputs return exactly-real results (`[1 Inf] * 2` is `[2 Inf]`). Arrays of real numbers are stored as real numbers (8 bytes each), which is invisible to a script; `RUSTLAB_COMPLEX_STORAGE=1` stores every array as complex, for comparing results when something looks wrong. `real(v)`, `imag(v)`, `conj(v)`, `abs(v)`, `angle(v)` decompose complex values.
 2. **Indexing is 1-based, with `end` for the last element:** `v(1)`, `v(end)`, `v(2:4)`, `M(i, j)`, `M(i, :)`, `M(:, j)`. Slices return new values.
 3. **Single-index matrix access is column-major linear:** `M(k)` is the k-th element of `M(:)`; it round-trips with `find(M)`. `reshape` also walks column-major.
 4. **Ranges:** `1:5`, `0:0.5:2`, `10:-1:1` (`start:stop` or `start:step:stop`).

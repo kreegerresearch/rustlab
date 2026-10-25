@@ -652,6 +652,11 @@ impl Evaluator {
     /// restored afterwards, including on error.
     pub fn exec_run_path(&mut self, path: &str) -> Result<(), ScriptError> {
         let safe = crate::path_jail::check_path(path).map_err(ScriptError::runtime)?;
+        // Absolute before the directory change below: a relative path read
+        // after moving into its own parent would resolve twice
+        // (`../../lib/x.rlab` from inside `../../lib`).
+        let safe = std::path::absolute(&safe)
+            .map_err(|e| ScriptError::runtime(format!("run: {path}: {e}")))?;
         let _cwd = if crate::path_jail::path_jail().is_none() {
             let prev = std::env::current_dir().ok();
             if let Some(dir) = safe.parent() {
@@ -1081,6 +1086,53 @@ mod tests {
         assert!(err.to_string().contains("escapes"), "{err}");
         assert_eq!(std::env::current_dir().unwrap(), root);
         assert!(ev.get("leaked").is_none());
+    }
+
+    #[test]
+    fn run_resolves_relative_paths_from_the_calling_directory() {
+        let _lock = CWD_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let caller = root.join("rt/a/b");
+        let lib = root.join("rt/lib");
+        std::fs::create_dir_all(&caller).unwrap();
+        std::fs::create_dir_all(caller.join("sub")).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(caller.join("y.rlab"), "got = 1\n").unwrap();
+        std::fs::write(caller.join("sub/x.rlab"), "got = 2\n").unwrap();
+        std::fs::write(root.join("rt/a/lib.rlab"), "got = 3\n").unwrap();
+        std::fs::write(lib.join("x.rlab"), "got = 4\n").unwrap();
+        // A nested run resolves against the directory of the script that
+        // contains it, and loads a file next to itself.
+        std::fs::write(lib.join("w.toml"), "answer = 6\n").unwrap();
+        std::fs::write(lib.join("outer.rlab"), "run inner.rlab\n").unwrap();
+        std::fs::write(
+            lib.join("inner.rlab"),
+            "cfg = load(\"w.toml\")\ngot = cfg.answer\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("abs.rlab"), "got = 5\n").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&caller).unwrap();
+        let _restore = CwdRestore(orig);
+        let abs = root.join("abs.rlab");
+        let cases: [(&str, f64); 7] = [
+            ("y.rlab", 1.0),
+            ("sub/x.rlab", 2.0),
+            ("../lib.rlab", 3.0),
+            ("../../lib/x.rlab", 4.0),
+            ("sub/../../../lib/x.rlab", 4.0),
+            ("../../lib/outer.rlab", 6.0),
+            (abs.to_str().unwrap(), 5.0),
+        ];
+        for (path, want) in cases {
+            let mut ev = Evaluator::new();
+            ev.exec_run_path(path)
+                .unwrap_or_else(|e| panic!("run {path}: {e}"));
+            assert_eq!(scalar(&ev, "got"), want, "run {path}");
+            assert_eq!(std::env::current_dir().unwrap(), caller, "after {path}");
+        }
     }
 
     #[test]
