@@ -1,7 +1,7 @@
 # Plan: familiar git diff view in `notebook watch`
 
-**Status:** approved 2026-10-22
-**Current phase:** none started
+**Status:** complete
+**Current phase:** complete (A, B and C shipped); static `render --diff` is the remaining follow-up in `notebook_git_diff.md`
 **Created:** 2026-10-22
 **Replaces:** phase 2 of [`notebook_git_diff.md`](notebook_git_diff.md) (word-level prose and the source diff move here). Phase 1 there shipped in 0.3.12–0.3.13; its git plumbing, security model, ref checker and per-page refs stay as they are.
 **Mockups:** `assets/notebook_git_diff_ux/`. Built from a real `watch --git-diff` page on a demo repo; `mockup.mjs` repaints that page (puppeteer-core with the local Chrome) and is not product code.
@@ -134,19 +134,39 @@ Each phase ships alone and bumps the version (rule 12).
 
 ### Phase A: presets, status, list, styling
 
-- Presets, the `?changes=` scheme with the compatibility mapping, and `git-merge-base`.
-- Status chip, change list, *Show changes* rename, *Other…* with base/compare and the grouped list.
-- Gutter bars instead of washes, collapsed removed blocks, a single listing in code cells (the line diff becomes the listing).
-- Paragraph-level alignment units, which fixes the invisible removal and the whole-run marks.
+**Status:** complete (0.3.15, PR #88). Screenshots of the shipped view: `assets/notebook_git_diff_ux/phase-a-*.png`.
+
+- Presets, the `?changes=` scheme with the compatibility mapping, and `git-merge-base`. **done**
+- Status chip, change list, *Show changes* rename, *Other…* with base/compare and the grouped list. **done**
+- Gutter bars instead of washes, collapsed removed blocks, a single listing in code cells (the line diff becomes the listing). **done**
+- Paragraph-level alignment units, which fixes the invisible removal and the whole-run marks. **done**
+
+Notes from the build:
+- Two refs no longer swap by commit date; `base` is always the before side (CHANGELOG 0.3.15).
+- The code-line tints keep the code panel's luminance, because the comment color sits at 4.5:1 on that panel and any lighter wash fails. On dark themes the tint is faint; the `−` / `+` gutter and a 2 px line bar carry the change. Phase B's word backgrounds face the same limit.
+- The unit cap is 1500 (was 400 blocks), since prose now splits per paragraph.
 
 ### Phase B: word level
 
-- Word marks in prose and in code lines, as above, with the survival threshold.
+**Status:** complete (0.3.16).
+
+- Word marks in prose and in code lines, as above, with the survival threshold. **done**
+
+Notes from the build:
+- `worddiff.rs` tokenizes and compares; prose marks are private-use markers in the merged source, rendered with the notebook's own link mode and then turned into `<del class="rl-w">` / `<ins class="rl-w">`. The re-render must come back as one element of the same tag with balanced markers, or the unit keeps its bar only.
+- Word marks apply to paragraphs, headings, lists and quotes. A changed `*`, `_`, `~`, `` ` ``, `#` or `|` (and, outside paragraphs, a list or quote marker or a line break) keeps the bar only, as does a unit with an image, footnote, `%%` comment or `==` highlight (the full render rewrites those).
+- Prose word tints keep body text at 4.5:1, but accent colors miss it on some themes, so a link inside a mark takes the body text color. Headings and code use a 2 px underline (added) or strike (removed) in the bar color instead of a tint.
 
 ### Phase C: source view
 
-- Rendered / Source toggle and the unified `.md` diff with word emphasis and named hunks.
-- The phase 1 size cap (512 KiB, 400 blocks) falls back to this view instead of no marks.
+**Status:** complete (0.3.16).
+
+- Rendered / Source toggle and the unified `.md` diff with word emphasis and named hunks. **done**
+- The size cap (512 KiB, 1500 units) falls back to this view instead of no marks. **done**
+
+Notes from the build:
+- `srcdiff.rs`: lines unique to both sides anchor first (patience), then Myers fills the gaps. Plain minimal Myers matched blank lines and paired `## Old notes` with `## Summary` in the demo; the anchors make the removed section one block, like `git diff --patience`. Myers keeps only the reachable frontier per step (O(D²) memory) and gives up past D = 2000, treating the rest as a block replace.
+- Hunks carry `data-rl-dx`, so the change list and `[` / `]` work in the Source view too.
 
 Static `render --diff` (phase 3 of the first plan) is unchanged and comes after these.
 

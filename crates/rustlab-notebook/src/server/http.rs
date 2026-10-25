@@ -637,6 +637,8 @@ pub(super) async fn serve_notebook_path(
                             jail: state.jail_root.as_deref(),
                             comments_on,
                             compare: &compare,
+                            source: parsed.source_view(),
+                            link: Some(&state.link_mode_for(&slug)),
                         })
                     } else {
                         html

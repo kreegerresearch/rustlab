@@ -4,6 +4,8 @@ pub mod comments;
 pub mod embed;
 pub mod execute;
 pub mod gitdiff;
+mod srcdiff;
+mod worddiff;
 pub mod fence_hl;
 mod file_browser;
 #[cfg(feature = "mermaid")]

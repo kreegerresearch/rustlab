@@ -31,10 +31,15 @@ The menu lists each change with where it is; click one to jump there, or
 press `[` and `]`.
 
 A bar left of the text marks each change: green added, blue modified,
-red removed. Prose is compared paragraph by paragraph. Removed text
-collapses to one line you can open. A changed code cell shows its
-source once, as the diff, with `−` and `+` lines. Working copy against a
-ref keeps the live outputs. The old notebook is not run.
+red removed. Prose is compared paragraph by paragraph, and inside a
+changed paragraph the removed words are struck through and the added
+words tinted green. Removed text collapses to one line you can open. A
+changed code cell shows its source once, as the diff, with `−` and `+`
+lines and the changed tokens underlined. Working copy against a ref
+keeps the live outputs. The old notebook is not run.
+
+**View → Source** shows the change as a diff of the `.md` file itself,
+with line numbers and each hunk named after the heading above it.
 
 Two refs, with no working copy on the page, show the **compare** side's
 text and say the code was not run.

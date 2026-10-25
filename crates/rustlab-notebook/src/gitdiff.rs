@@ -61,6 +61,8 @@ pub struct WatchQuery {
     pub base: Option<String>,
     pub compare: Option<String>,
     pub cm: Option<bool>,
+    /// `source` for the unified `.md` diff; anything else is the page.
+    pub view: Option<String>,
 }
 
 pub fn parse_query(q: &str) -> WatchQuery {
@@ -77,6 +79,7 @@ pub fn parse_query(q: &str) -> WatchQuery {
             "diff" => out.diff = Some(val),
             "base" => out.base = Some(val),
             "compare" => out.compare = Some(val),
+            "view" => out.view = Some(val),
             "cm" => out.cm = Some(matches!(val.as_str(), "1" | "on" | "true")),
             _ => {}
         }
@@ -125,6 +128,13 @@ fn custom(base: String, compare: Option<String>) -> Compare {
         Compare::Uncommitted
     } else {
         Compare::Custom { base, compare }
+    }
+}
+
+impl WatchQuery {
+    /// `?view=source`.
+    pub fn source_view(&self) -> bool {
+        self.view.as_deref() == Some("source")
     }
 }
 
@@ -1382,6 +1392,11 @@ pub struct Present<'a> {
     pub jail: Option<&'a Path>,
     pub comments_on: bool,
     pub compare: &'a Compare,
+    /// `?view=source`: the unified diff of the `.md` instead of the page.
+    pub source: bool,
+    /// How the notebook's own render resolves links, so a re-rendered
+    /// paragraph links the same way.
+    pub link: Option<&'a crate::render::LinkMode>,
 }
 
 /// What the status chip and `<body>` say about the comparison.
@@ -1397,6 +1412,8 @@ struct View {
     against: String,
     /// The before side in messages: `HEAD`, `main`, `the merge base`.
     before_name: String,
+    /// The Source view is showing.
+    source: bool,
 }
 
 impl View {
@@ -1438,6 +1455,7 @@ impl View {
             title,
             against: String::new(),
             before_name,
+            source: false,
         }
     }
 }
@@ -1529,6 +1547,7 @@ fn sides_for(root: &Path, c: &Compare, view: &mut View) -> Result<Sides, String>
 
 pub fn present(p: Present<'_>) -> String {
     let mut view = View::new(p.compare);
+    view.source = p.source;
     if let Compare::Unknown(_) = p.compare {
         return decorate(p.html, &view, "unknown comparison", None);
     }
@@ -1651,6 +1670,9 @@ fn present_working(
             Loaded::Fail(msg) => fail(msg),
             Loaded::Binary => fail("not a text notebook"),
             Loaded::Missing => fail(&format!("not on {named} and not in the working copy")),
+            Loaded::Text(old) if p.source => {
+                source_page(p, view, rel, &old, "", "deleted from the working copy", &dots)
+            }
             Loaded::Text(old) => {
                 let notice = format!(
                     "This notebook is not in the working copy. It is still on {named}."
@@ -1661,12 +1683,13 @@ fn present_working(
             }
         };
     };
-    if crate::embed::has_markdown_embeds(&new_text) {
-        return fail("embeds are not part of this diff");
-    }
     let old_text = match load_text(root, before, rel, &changes, side) {
         Loaded::Binary => return fail("not a text notebook"),
         Loaded::Fail(msg) => return fail(msg),
+        Loaded::Missing if p.source => {
+            let status = format!("new file, not on {named}");
+            return source_page(p, view, rel, "", &new_text, &status, &dots);
+        }
         Loaded::Missing => {
             let notice = format!("This notebook is not on {named}. Showing the working copy.");
             let page = insert_notice(p.html, &notice);
@@ -1674,9 +1697,16 @@ fn present_working(
         }
         Loaded::Text(s) => s,
     };
-    match stamp_working(p.html, &old_text, &new_text, p.comments_on) {
+    if p.source {
+        let status = source_status(&old_text, &new_text, p.comments_on);
+        return source_page(p, view, rel, &old_text, &new_text, &status, &dots);
+    }
+    if crate::embed::has_markdown_embeds(&new_text) {
+        return fail("embeds are not part of this diff");
+    }
+    match stamp_working(p.html, &old_text, &new_text, p.comments_on, p.link) {
         Ok((html, n)) => decorate(&html, view, &count_text(n), Some(&dots)),
-        Err(_) => match render_aligned(&old_text, &new_text, p.comments_on, false) {
+        Err(_) => match render_aligned(&old_text, &new_text, p.comments_on, false, p.link) {
             // The stored sections don't match the file (an emptied
             // notebook, or a render that folded blocks differently).
             // Rebuild <main> so the added and removed blocks still show.
@@ -1684,9 +1714,52 @@ fn present_working(
                 let page = replace_main(p.html, &inner);
                 decorate(&page, view, &count_text(n), Some(&dots))
             }
+            Err(msg) if msg == TOO_LARGE => {
+                let status = format!("{msg}, showing the source");
+                source_page(p, view, rel, &old_text, &new_text, &status, &dots)
+            }
             Err(msg) => decorate(p.html, view, msg, Some(&dots)),
         },
     }
+}
+
+const TOO_LARGE: &str = "diff was too large";
+
+/// The chip's count on the Source view: the same unit count as the page
+/// when that can be computed, else a line count.
+fn source_status(old: &str, new_src: &str, comments_on: bool) -> String {
+    match align(old, new_src, comments_on) {
+        Ok((marks, removed, _)) => count_text(count_changes(&marks, &removed)),
+        Err(_) => {
+            let a: Vec<&str> = old.lines().collect();
+            let b: Vec<&str> = new_src.lines().collect();
+            let n = crate::srcdiff::line_diff(&a, &b)
+                .iter()
+                .filter(|l| !matches!(l, crate::srcdiff::Line::Same(..)))
+                .count();
+            match n {
+                0 => "no changes".into(),
+                1 => "1 line changed".into(),
+                n => format!("{n} lines changed"),
+            }
+        }
+    }
+}
+
+/// `<main>` replaced by the unified `.md` diff.
+fn source_page(
+    p: &Present<'_>,
+    view: &View,
+    rel: &str,
+    old: &str,
+    new_src: &str,
+    status: &str,
+    dots: &str,
+) -> String {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let label = format!("{name} · {} · {status}", view.title);
+    let page = replace_main(p.html, &crate::srcdiff::source_view(old, new_src, &label));
+    decorate(&page, view, status, Some(dots))
 }
 
 fn blobs_for(root: &Path, rev: &str, side: &RevSide) -> Result<BTreeMap<String, String>, GitFail> {
@@ -1758,6 +1831,22 @@ fn present_two_ref(
         Loaded::Binary => return fail("not a text notebook"),
         other => other,
     };
+    if p.source {
+        let text = |l: &Loaded| match l {
+            Loaded::Text(t) => Some(t.clone()),
+            _ => None,
+        };
+        let (o, n) = (text(&old_text), text(&new_text));
+        if o.is_some() || n.is_some() {
+            let status = match (&o, &n) {
+                (Some(o), Some(n)) => source_status(o, n, p.comments_on),
+                (None, _) => format!("new file, not on {before_name}"),
+                (_, None) => format!("not on {after_name}"),
+            };
+            let (o, n) = (o.unwrap_or_default(), n.unwrap_or_default());
+            return source_page(p, view, rel, &o, &n, &status, &dots);
+        }
+    }
     match (old_text, new_text) {
         (Loaded::Missing, Loaded::Missing) => {
             let page = insert_notice(
@@ -1811,11 +1900,15 @@ fn present_two_ref(
                     Some(&dots),
                 );
             }
-            match render_aligned(&old_text, &new_text, p.comments_on, true) {
+            match render_aligned(&old_text, &new_text, p.comments_on, true, p.link) {
                 Ok((inner, n)) => {
                     let page = replace_main(p.html, &inner);
                     let status = format!("{} · code was not run", count_text(n));
                     decorate(&page, view, &status, Some(&dots))
+                }
+                Err(msg) if msg == TOO_LARGE => {
+                    let status = format!("{msg}, showing the source");
+                    source_page(p, view, rel, &old_text, &new_text, &status, &dots)
                 }
                 Err(msg) => {
                     let page = replace_main(p.html, &render_plain(&new_text, p.comments_on));
@@ -1927,6 +2020,7 @@ fn stamp_working(
     old: &str,
     new_src: &str,
     comments_on: bool,
+    link: Option<&crate::render::LinkMode>,
 ) -> Result<(String, usize), &'static str> {
     let (marks, removed, units) = align(old, new_src, comments_on)?;
     let sections = split_blocks(html);
@@ -1968,6 +2062,7 @@ fn stamp_working(
             &marks[lo..hi],
             lo,
             &groups,
+            link,
         ));
         cursor = *end;
         lo = hi;
@@ -1988,6 +2083,7 @@ fn stamp_block(
     marks: &[Mark],
     lo: usize,
     groups: &BTreeMap<usize, Vec<&Unit>>,
+    link: Option<&crate::render::LinkMode>,
 ) -> String {
     let inner: BTreeMap<usize, Vec<&Unit>> = groups
         .range(lo + 1..lo + units.len())
@@ -2001,7 +2097,7 @@ fn stamp_block(
         return stamp_whole(section, &marks[0], &units[0]);
     }
     if units[0].kind == Kind::Prose && units[0].part.is_some() {
-        if let Some(s) = stamp_prose(section, units, marks, &inner) {
+        if let Some(s) = stamp_prose(section, units, marks, &inner, link) {
             return s;
         }
     }
@@ -2031,11 +2127,11 @@ fn stamp_whole(section: &str, mark: &Mark, unit: &Unit) -> String {
     match mark {
         Mark::Same => section.to_string(),
         Mark::Added => mark_open_tag(section, ADD_CLASS, &dx_attrs("added", &unit.place)),
-        Mark::Changed { old_text } => {
+        Mark::Changed { old, .. } => {
             let s = mark_open_tag(section, MOD_CLASS, &dx_attrs("modified", &unit.place));
             match unit.kind {
                 Kind::Code | Kind::Mermaid | Kind::Widget => {
-                    let listing = code_listing(old_text, &unit.text, unit.kind);
+                    let listing = code_listing(&old.text, &unit.text, unit.kind);
                     let s = replace_source_pre(&s, &listing);
                     if unit.kind == Kind::Code {
                         insert_before_close(
@@ -2059,6 +2155,7 @@ fn stamp_prose(
     units: &[Unit],
     marks: &[Mark],
     inner: &BTreeMap<usize, Vec<&Unit>>,
+    link: Option<&crate::render::LinkMode>,
 ) -> Option<String> {
     const OPEN: &str = "<div class=\"prose\">";
     let start = section.find(OPEN)? + OPEN.len();
@@ -2077,9 +2174,15 @@ fn stamp_prose(
         let el = &section[start + r.start..start + r.end];
         out.push_str(&match &marks[k] {
             Mark::Same => el.to_string(),
-            Mark::Added => mark_open_tag(el, ADD_CLASS, &dx_attrs("added", &units[k].place)),
-            Mark::Changed { .. } => {
-                mark_open_tag(el, MOD_CLASS, &dx_attrs("modified", &units[k].place))
+            Mark::Added => {
+                mark_open_tag(&all_added(el), ADD_CLASS, &dx_attrs("added", &units[k].place))
+            }
+            Mark::Changed { words, .. } => {
+                let el = words
+                    .as_deref()
+                    .and_then(|w| with_words(el, w, link))
+                    .unwrap_or_else(|| el.to_string());
+                mark_open_tag(&el, MOD_CLASS, &dx_attrs("modified", &units[k].place))
             }
         });
         cursor = r.end;
@@ -2203,50 +2306,71 @@ fn replace_source_pre(section: &str, listing: &str) -> String {
 
 /// One listing that is the diff: unchanged lines, then removed and added
 /// lines marked in the gutter. Rustlab lines keep their syntax colors.
+/// Within a removed / added line pair the changed tokens are marked too,
+/// unless too little of the line survived.
 fn code_listing(old: &str, new_src: &str, kind: Kind) -> String {
-    let hl = |s: &str| {
-        if kind == Kind::Code {
-            crate::render::highlight_rustlab(s)
-        } else {
-            escape_html(s)
-        }
-    };
+    use crate::worddiff::{diff, Mode, MIN_SURVIVAL};
+    let rustlab = kind == Kind::Code;
     let old = old.trim_end_matches('\n');
     let new_src = new_src.trim_end_matches('\n');
     let a: Vec<&str> = old.split('\n').collect();
     let b: Vec<&str> = new_src.split('\n').collect();
     if a.len() > MAX_LINES || b.len() > MAX_LINES {
+        let hl = crate::render::highlight_marked(new_src, rustlab, &[], "ins");
         return format!(
-            "<pre class=\"source rl-dx-code\"><code>{}</code></pre><p class=\"rl-dx-note\">Line diff omitted (too long).</p>",
-            hl(new_src)
+            "<pre class=\"source rl-dx-code\"><code>{hl}</code></pre><p class=\"rl-dx-note\">Line diff omitted (too long).</p>"
         );
     }
     let ops = diff_ops(a.len(), b.len(), |i, j| a[i] == b[j]);
+    let line = |class: &str, sign: &str, body: String| {
+        format!(
+            "<span class=\"{class}\"><span class=\"rl-ln-g\" aria-hidden=\"true\">{sign}</span>{body}</span>"
+        )
+    };
     let mut html = String::from("<pre class=\"source rl-dx-code\"><code>");
     let (mut i, mut j) = (0usize, 0usize);
-    for op in &ops {
-        let (class, sign, text) = match op {
-            Op::Eq(_) => {
-                let t = b[j];
-                i += 1;
-                j += 1;
-                ("rl-ln", "", t)
+    let mut k = 0usize;
+    while k < ops.len() {
+        if let Op::Eq(_) = ops[k] {
+            html.push_str(&line("rl-ln", "", crate::render::highlight_marked(b[j], rustlab, &[], "ins")));
+            i += 1;
+            j += 1;
+            k += 1;
+            continue;
+        }
+        let mut dels = Vec::new();
+        let mut ins = Vec::new();
+        while k < ops.len() && !matches!(ops[k], Op::Eq(_)) {
+            match ops[k] {
+                Op::Del(_) => {
+                    dels.push(i);
+                    i += 1;
+                }
+                _ => {
+                    ins.push(j);
+                    j += 1;
+                }
             }
-            Op::Del(_) => {
-                let t = a[i];
-                i += 1;
-                ("rl-ln rl-ln-del", "−", t)
+            k += 1;
+        }
+        let mut old_marks = vec![Vec::new(); dels.len()];
+        let mut new_marks = vec![Vec::new(); ins.len()];
+        for p in 0..dels.len().min(ins.len()) {
+            if let Some(d) = diff(a[dels[p]], b[ins[p]], Mode::Code) {
+                if d.survival >= MIN_SURVIVAL {
+                    old_marks[p] = d.old_marks;
+                    new_marks[p] = d.new_marks;
+                }
             }
-            Op::Ins(_) => {
-                let t = b[j];
-                j += 1;
-                ("rl-ln rl-ln-add", "+", t)
-            }
-        };
-        html.push_str(&format!(
-            "<span class=\"{class}\"><span class=\"rl-ln-g\" aria-hidden=\"true\">{sign}</span>{}</span>",
-            hl(text)
-        ));
+        }
+        for (p, &d) in dels.iter().enumerate() {
+            let body = crate::render::highlight_marked(a[d], rustlab, &old_marks[p], "del");
+            html.push_str(&line("rl-ln rl-ln-del", "−", body));
+        }
+        for (p, &n) in ins.iter().enumerate() {
+            let body = crate::render::highlight_marked(b[n], rustlab, &new_marks[p], "ins");
+            html.push_str(&line("rl-ln rl-ln-add", "+", body));
+        }
     }
     html.push_str("</code></pre>");
     html
@@ -2339,6 +2463,7 @@ fn render_aligned(
     new_src: &str,
     comments_on: bool,
     two_ref: bool,
+    link: Option<&crate::render::LinkMode>,
 ) -> Result<(String, usize), &'static str> {
     let (marks, removed, units) = align(old, new_src, comments_on)?;
     let n = count_changes(&marks, &removed);
@@ -2351,7 +2476,7 @@ fn render_aligned(
         if let Some(g) = groups.get(&idx) {
             body.push_str(&removed_html(g, true));
         }
-        body.push_str(&fresh_section(unit, &marks[idx], idx));
+        body.push_str(&fresh_section(unit, &marks[idx], idx, link));
     }
     if let Some(g) = groups.get(&units.len()) {
         body.push_str(&removed_html(g, true));
@@ -2364,7 +2489,7 @@ fn render_plain(src: &str, comments_on: bool) -> String {
     let units = units_of(&prepared);
     let mut body = String::from("<p class=\"rl-dx-note\">Code was not run.</p>\n");
     for (idx, unit) in units.iter().enumerate() {
-        body.push_str(&fresh_section(unit, &Mark::Same, idx));
+        body.push_str(&fresh_section(unit, &Mark::Same, idx, None));
     }
     body
 }
@@ -2372,11 +2497,16 @@ fn render_plain(src: &str, comments_on: bool) -> String {
 /// A section built from source, for pages that are not the stored
 /// render: two refs, a deleted notebook, or a render that did not line
 /// up. Each prose part is its own section.
-fn fresh_section(unit: &Unit, mark: &Mark, idx: usize) -> String {
+fn fresh_section(
+    unit: &Unit,
+    mark: &Mark,
+    idx: usize,
+    link: Option<&crate::render::LinkMode>,
+) -> String {
     let body = match unit.kind {
         Kind::Code | Kind::Mermaid | Kind::Widget => {
             let listing = match mark {
-                Mark::Changed { old_text } => code_listing(old_text, &unit.text, unit.kind),
+                Mark::Changed { old, .. } => code_listing(&old.text, &unit.text, unit.kind),
                 _ if unit.kind == Kind::Code => format!(
                     "<pre class=\"source\"><code>{}</code></pre>",
                     crate::render::highlight_rustlab(&unit.text)
@@ -2398,10 +2528,15 @@ fn fresh_section(unit: &Unit, mark: &Mark, idx: usize) -> String {
             )
         }
         Kind::Prose | Kind::Callout => {
-            format!(
-                "<div class=\"prose\">\n{}\n</div>\n",
-                markdown_to_html(&unit.text)
-            )
+            let html = crate::render::markdown_to_html_linked(&unit.text, link, None);
+            let html = match mark {
+                Mark::Changed {
+                    words: Some(w), ..
+                } => with_words(html.trim(), w, link).unwrap_or(html),
+                Mark::Added if unit.kind == Kind::Prose => all_added(html.trim()),
+                _ => html,
+            };
+            format!("<div class=\"prose\">\n{html}\n</div>\n")
         }
     };
     let section = format!("<section class=\"rl-block\" id=\"b-git-{idx}\">\n{body}</section>\n");
@@ -2449,7 +2584,121 @@ struct Unit {
 enum Mark {
     Same,
     Added,
-    Changed { old_text: String },
+    /// `words`: the new source with word markers (see `worddiff`), when
+    /// this pair is marked word by word.
+    Changed { old: Box<Unit>, words: Option<String> },
+}
+
+/// What a modified prose pair shows inside the element.
+enum WordPlan {
+    /// Mark removed and added words; the new source with markers.
+    Words(String),
+    /// Too little survived: show the old one removed and the new added.
+    Split,
+    /// Keep the element-level mark only.
+    Whole,
+}
+
+fn word_plan(old: &str, new_src: &str, sub: &str) -> WordPlan {
+    use crate::worddiff::{diff, Mode, MIN_SURVIVAL};
+    if !matches!(sub, "paragraph" | "heading" | "list" | "quote") {
+        return WordPlan::Whole;
+    }
+    // Images, footnotes, comments and highlights are rewritten by the
+    // full render (copied files, margin notes); marks would not survive.
+    for s in [old, new_src] {
+        if ["![", "<img", "[^", "%%", "=="].iter().any(|p| s.contains(p)) {
+            return WordPlan::Whole;
+        }
+    }
+    let Some(d) = diff(old, new_src, Mode::Prose) else {
+        return WordPlan::Whole;
+    };
+    if d.survival < MIN_SURVIVAL {
+        return WordPlan::Split;
+    }
+    // A changed emphasis or structure character would leave both the old
+    // and the new syntax in the merged source.
+    let structural = |t: &str| {
+        matches!(t, "*" | "_" | "~" | "`" | "#" | "|")
+            || (sub != "paragraph" && (matches!(t, ">" | "+" | "-") || t.contains('\n')))
+    };
+    if d.changed.iter().any(|t| structural(t)) {
+        return WordPlan::Whole;
+    }
+    WordPlan::Words(d.merged)
+}
+
+/// Word marks for modified prose pairs, and the low-survival ones turned
+/// into a removal plus an addition.
+fn refine_words(marks: &mut [Mark], removed: &mut Vec<(usize, Unit)>, new_u: &[Unit]) {
+    for (idx, mark) in marks.iter_mut().enumerate() {
+        let Mark::Changed { old, words } = mark else {
+            continue;
+        };
+        if new_u[idx].kind != Kind::Prose {
+            continue;
+        }
+        match word_plan(&old.text, &new_u[idx].text, new_u[idx].sub) {
+            WordPlan::Words(w) => *words = Some(w),
+            WordPlan::Whole => {}
+            WordPlan::Split => {
+                removed.push((idx, (**old).clone()));
+                *mark = Mark::Added;
+            }
+        }
+    }
+}
+
+/// The element `el` with its content replaced by `words` rendered with
+/// `<del>` / `<ins>` marks. `None` when the render does not come back as
+/// one element of the same tag, or the marks do not pair up.
+fn with_words(el: &str, words: &str, link: Option<&crate::render::LinkMode>) -> Option<String> {
+    let html = crate::render::markdown_to_html_linked(words, link, None);
+    let wrapped = format!("{html}</div>");
+    let (elems, _) = top_elements(&wrapped)?;
+    if elems.len() != 1 {
+        return None;
+    }
+    let fresh = crate::worddiff::markers_to_html(&wrapped[elems[0].clone()])?;
+    let tag = |h: &str| -> String {
+        h.trim_start_matches('<')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect()
+    };
+    if tag(&fresh) != tag(el) {
+        return None;
+    }
+    let inner_start = fresh.find('>')? + 1;
+    let inner_end = fresh.rfind("</")?;
+    let el_open = el.find('>')? + 1;
+    let el_close = el.rfind("</")?;
+    Some(format!(
+        "{}{}{}",
+        &el[..el_open],
+        &fresh[inner_start..inner_end],
+        &el[el_close..]
+    ))
+}
+
+/// An added paragraph or heading reads as all new text.
+fn all_added(el: &str) -> String {
+    let t: String = el
+        .trim_start_matches('<')
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let inline = t == "p" || (t.len() == 2 && t.starts_with('h'));
+    match (inline, el.find('>'), el.rfind("</")) {
+        (true, Some(o), Some(c)) if o < c => format!(
+            "{}<ins class=\"rl-w rl-w-all\">{}</ins>{}",
+            &el[..=o],
+            &el[o + 1..c],
+            &el[c..]
+        ),
+        _ => el.to_string(),
+    }
 }
 
 fn prepare(src: &str, comments_on: bool) -> String {
@@ -2469,15 +2718,16 @@ fn align(
         return Err("not a text notebook");
     }
     if old.len() > MAX_BYTES || new_src.len() > MAX_BYTES {
-        return Err("diff was too large");
+        return Err(TOO_LARGE);
     }
     let old_u = units_of(&prepare(old, comments_on));
     let new_u = units_of(&prepare(new_src, comments_on));
     if old_u.len() > MAX_UNITS || new_u.len() > MAX_UNITS {
-        return Err("diff was too large");
+        return Err(TOO_LARGE);
     }
     let ops = diff_ops(old_u.len(), new_u.len(), |i, j| old_u[i].fp == new_u[j].fp);
-    let (marks, removed) = coalesce(&old_u, &new_u, &ops);
+    let (mut marks, mut removed) = coalesce(&old_u, &new_u, &ops);
+    refine_words(&mut marks, &mut removed, &new_u);
     Ok((marks, removed, new_u))
 }
 
@@ -2645,7 +2895,8 @@ fn apply_hunk(
             && old[dels[di]].sub == new_u[ins[ii]].sub;
         if pair {
             marks[ins[ii]] = Mark::Changed {
-                old_text: old[dels[di]].text.clone(),
+                old: Box::new(old[dels[di]].clone()),
+                words: None,
             };
             at = ins[ii] + 1;
             di += 1;
@@ -3019,7 +3270,7 @@ fn deleted_page(
     comments_on: bool,
     finish: impl FnOnce(String) -> String,
 ) -> String {
-    match render_aligned(old, "", comments_on, two_ref) {
+    match render_aligned(old, "", comments_on, two_ref, None) {
         Ok((inner, _)) => {
             let page = replace_main(html, &format!("{}{inner}", notice_html(notice)));
             finish(page)
@@ -3061,8 +3312,9 @@ fn patch_body(html: &str, view: &View) -> String {
     };
     let tag = &html[i..i + rel];
     let attrs = format!(
-        " data-rl-changes=\"{}\" data-rl-base=\"{}\" data-rl-compare=\"{}\"",
+        " data-rl-changes=\"{}\" data-rl-view=\"{}\" data-rl-base=\"{}\" data-rl-compare=\"{}\"",
         view.key,
+        if view.source { "source" } else { "rendered" },
         escape_html(&view.base),
         escape_html(&view.compare)
     );
@@ -3239,7 +3491,7 @@ mod tests {
         let old = "# A\n\n```rustlab\nplot(\"old\")\n```\n";
         let new_src = "# A changed\n";
         let html = "<body><main>\n<section class=\"rl-block\" id=\"b-1\"><div class=\"prose\"><h1>A changed</h1></div></section>\n</main></body>";
-        let (out, n) = stamp_working(html, old, new_src, true).unwrap();
+        let (out, n) = stamp_working(html, old, new_src, true, None).unwrap();
         assert_eq!(n, 2, "{out}");
         assert!(out.contains("<h1 class=\"rl-dx rl-dx-mod\""), "{out}");
         assert!(out.contains("rl-dx-removed"), "{out}");
@@ -3254,7 +3506,7 @@ mod tests {
         let old = "```rustlab\nold line\n```\n";
         let new_src = "```rustlab\nnew line\n```\n";
         let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><div class=\"code-block\"><pre class=\"source\"><code>new line</code></pre><pre class=\"output\">ran</pre></section></main></body>";
-        let (out, _) = stamp_working(html, old, new_src, true).unwrap();
+        let (out, _) = stamp_working(html, old, new_src, true, None).unwrap();
         assert!(out.contains("rl-dx rl-dx-mod"), "{out}");
         assert!(out.contains("rl-ln-del"), "{out}");
         assert!(out.contains("rl-ln-add"), "{out}");
@@ -3306,7 +3558,7 @@ mod tests {
         let old = "# Old\n\n```rustlab\nx = 1\n```\n";
         let new_src = "# New\n\n```rustlab\nx = 2\n```\n";
         let html = "<body><main><section class=\"rl-block\" id=\"b-1\"><pre class=\"output\">EXECUTED</pre><div class=\"plot-container\"></div></section></main></body>";
-        let (inner, _) = render_aligned(old, new_src, true, true).unwrap();
+        let (inner, _) = render_aligned(old, new_src, true, true, None).unwrap();
         let page = replace_main(html, &inner);
         assert!(page.contains("not run"), "{page}");
         assert!(!page.contains("EXECUTED"), "{page}");
@@ -3387,6 +3639,8 @@ mod tests {
             jail: Some(dir),
             comments_on: true,
             compare: &custom("main".into(), Some("topic".into())),
+            source: false,
+            link: None,
         });
         assert!(page.contains("not run"), "{page}");
         assert!(!page.contains("EXECUTED"), "{page}");
@@ -3400,6 +3654,8 @@ mod tests {
             jail: Some(dir),
             comments_on: true,
             compare: &custom("main".into(), None),
+            source: false,
+            link: None,
         });
         assert!(live.contains("EXECUTED"), "{live}");
         assert!(live.contains("rl-dx-mod"), "{live}");
@@ -3493,6 +3749,8 @@ mod tests {
                 jail: Some(dir),
                 comments_on: true,
                 compare: &Compare::Uncommitted,
+                source: false,
+                link: None,
             },
         );
         let refs_off = refs_json_if(false, dir);
@@ -3507,6 +3765,8 @@ mod tests {
             jail: Some(dir),
             comments_on: true,
             compare: &Compare::Uncommitted,
+            source: false,
+            link: None,
         });
         let _counts = changes_json_if(true, &path, Some(dir), true);
         let refs = refs_json(dir);
@@ -3552,6 +3812,8 @@ mod tests {
             jail: Some(dir),
             comments_on: true,
             compare: &custom(diff.into(), base.map(String::from)),
+            source: false,
+            link: None,
         })
     }
 
@@ -3656,6 +3918,8 @@ mod tests {
             jail: Some(&repo),
             comments_on: true,
             compare: &Compare::Uncommitted,
+            source: false,
+            link: None,
         });
         assert!(page.contains("rl-ln-add"), "{page}");
         assert!(text_of(&page).contains("y = 2"), "{page}");
@@ -3818,7 +4082,9 @@ mod tests {
         let wt_nb = wt.join("notes").join("a.md");
         std::fs::write(&wt_nb, "# From worktree\n").unwrap();
         let page = show(&wt, &wt_nb, "HEAD", None);
-        assert!(chip(&page).contains("1 change"), "{page}");
+        // No word in common: shown as the old heading removed and the new
+        // one added, not a struck-through modify.
+        assert!(chip(&page).contains("2 changes"), "{page}");
         assert!(!page.contains("not a git repository"), "{page}");
         let watched = git_watch_paths(&wt);
         assert!(!watched.is_empty(), "worktree git dir not found");
@@ -3908,6 +4174,8 @@ mod tests {
                 jail: Some(&repo),
                 comments_on: true,
                 compare: &custom(base.into(), compare.map(String::from)),
+                source: false,
+                link: None,
             })
         };
 
@@ -4073,7 +4341,7 @@ mod tests {
     #[test]
     fn paragraph_units_mark_only_what_changed_on_a_real_render() {
         let html = rendered(DEMO_NEW);
-        let (out, n) = stamp_working(&html, DEMO_OLD, DEMO_NEW, true).unwrap();
+        let (out, n) = stamp_working(&html, DEMO_OLD, DEMO_NEW, true, None).unwrap();
         assert_eq!(n, 4, "code, one paragraph, one removed run, one added: {out}");
         let marked: Vec<(&str, String)> = out
             .match_indices("data-rl-dx=\"")
@@ -4095,9 +4363,24 @@ mod tests {
             ],
             "{out}"
         );
-        // The modified paragraph is its own <p>, not the whole prose run.
+        // The modified paragraph is its own <p>, not the whole prose run,
+        // and only the changed words are marked inside it.
         assert!(
-            out.contains("<p class=\"rl-dx rl-dx-mod\" data-rl-dx=\"modified\" data-rl-where=\"Frequency response ¶1\">About 53 dB"),
+            out.contains("<p class=\"rl-dx rl-dx-mod\" data-rl-dx=\"modified\" data-rl-where=\"Frequency response ¶1\">About <del class=\"rl-w\">40</del><ins class=\"rl-w\">53</ins> dB of attenuation for <del class=\"rl-w\">31</del><ins class=\"rl-w\">63</ins> taps.</p>"),
+            "{out}"
+        );
+        // The added paragraph reads as all new text.
+        assert!(
+            out.contains("<ins class=\"rl-w rl-w-all\">Doubling the taps doubles the cost.</ins>"),
+            "{out}"
+        );
+        // Code lines mark the changed tokens and keep their colors.
+        assert!(
+            out.contains("<ins class=\"rl-w\"><span class=\"syn-num\">63</span></ins>"),
+            "{out}"
+        );
+        assert!(
+            out.contains("<ins class=\"rl-w\"><span class=\"syn-str\">&quot;hamming&quot;</span></ins>"),
             "{out}"
         );
         // Summary's heading and old paragraph are not marked.
@@ -4110,7 +4393,7 @@ mod tests {
         // The removed section is collapsed at its old place, between the
         // edited paragraph and Summary.
         let removed = out.find("<details class=\"rl-dx rl-dx-del rl-dx-removed\"").unwrap();
-        assert!(removed > out.find("About 53 dB").unwrap() && removed < summary, "{out}");
+        assert!(removed > out.find("63</ins> taps.").unwrap() && removed < summary, "{out}");
         assert!(!out[removed..removed + 200].contains(" open"), "{out}");
         assert!(
             out.contains("<b>Removed</b> · “Old notes” heading and 1 paragraph"),
@@ -4127,7 +4410,7 @@ mod tests {
         let listing = &out[out.find("rl-dx-code").unwrap()..];
         assert!(listing[..listing.find("</pre>").unwrap()].contains("syn-num"), "{out}");
         // Same source, no marks.
-        let (same, n0) = stamp_working(&html, DEMO_NEW, DEMO_NEW, true).unwrap();
+        let (same, n0) = stamp_working(&html, DEMO_NEW, DEMO_NEW, true, None).unwrap();
         assert_eq!(n0, 0);
         assert_eq!(same, html);
     }
@@ -4137,7 +4420,7 @@ mod tests {
         let old = "Intro.\n\n<details><summary>More</summary>\n\nhidden text\n\n</details>\n\nOutro.\n";
         let new_src = "Intro.\n\n<details><summary>More</summary>\n\nshown text\n\n</details>\n\nOutro.\n";
         let html = rendered(new_src);
-        let (out, n) = stamp_working(&html, old, new_src, true).unwrap();
+        let (out, n) = stamp_working(&html, old, new_src, true, None).unwrap();
         assert_eq!(n, 1, "{out}");
         let at = out.find("data-rl-dx=\"modified\"").expect("marked");
         let tag = &out[out[..at].rfind('<').unwrap()..at];
@@ -4194,6 +4477,8 @@ mod tests {
                 jail: Some(dir),
                 comments_on: true,
                 compare: c,
+                source: false,
+                link: None,
             })
         };
         let branch = page(&Compare::Branch);
@@ -4262,6 +4547,8 @@ mod tests {
             jail: Some(dir),
             comments_on: true,
             compare: &Compare::Last,
+            source: false,
+            link: None,
         });
         assert!(chip(&page).contains("no earlier commit to compare with"), "{page}");
 
@@ -4285,5 +4572,102 @@ mod tests {
         assert!(on_default(Some("trunk"), "origin/trunk"));
         assert!(!on_default(Some("topic"), "origin/trunk"));
         assert!(!on_default(None, "main"));
+    }
+
+    #[test]
+    fn word_marks_keep_math_whole_and_split_rewrites() {
+        let stamp = |old: &str, new_src: &str| {
+            let html = rendered(new_src);
+            stamp_working(&html, old, new_src, true, None).unwrap()
+        };
+        let (out, n) = stamp("Let $x$ be small.\n", "Let $y$ be small.\n");
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.contains("<del class=\"rl-w\">\\(x\\)</del><ins class=\"rl-w\">\\(y\\)</ins>"),
+            "each side is one whole math span: {out}"
+        );
+        // Under half the words survive: removed plus added, not confetti.
+        let (out, n) = stamp("Intro.\n\nThe old sentence here.\n", "Intro.\n\nSomething else entirely now.\n");
+        assert_eq!(n, 2, "{out}");
+        assert!(out.contains("data-rl-dx=\"removed\""), "{out}");
+        assert!(out.contains("<ins class=\"rl-w rl-w-all\">Something else entirely now.</ins>"), "{out}");
+        assert!(!out.contains("<del class=\"rl-w\">"), "{out}");
+        // A changed emphasis marker keeps the element mark only.
+        let (out, n) = stamp("Some *bold* words here.\n", "Some **bold** words here.\n");
+        assert_eq!(n, 1, "{out}");
+        assert!(out.contains("rl-dx rl-dx-mod"), "{out}");
+        assert!(!out.contains("class=\"rl-w\""), "{out}");
+        // A link keeps rendering as a link inside a marked paragraph.
+        let (out, _) = stamp(
+            "See [the guide](https://example.com) for 3 steps.\n",
+            "See [the guide](https://example.com) for 4 steps.\n",
+        );
+        assert!(out.contains("<a href=\"https://example.com\">the guide</a>"), "{out}");
+        assert!(out.contains("<ins class=\"rl-w\">4</ins>"), "{out}");
+        // A list item edit is marked word by word inside the list.
+        let (out, _) = stamp("- one apple\n- two pears\n", "- one apple\n- three pears\n");
+        assert!(out.contains("<li><del class=\"rl-w\">two</del><ins class=\"rl-w\">three</ins> pears</li>"), "{out}");
+    }
+
+    #[test]
+    fn source_view_replaces_main_with_the_md_diff() {
+        if !git_available() {
+            eprintln!("SKIP source view: git not found");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo(dir);
+        let nb = dir.join("nb.md");
+        std::fs::write(&nb, DEMO_OLD).unwrap();
+        quiet_git(dir, &["add", "nb.md"]);
+        quiet_git(dir, &["commit", "-m", "one"]);
+        std::fs::write(&nb, DEMO_NEW).unwrap();
+        let html = rendered(DEMO_NEW);
+        let page = |c: &Compare, source: bool| {
+            present(Present {
+                html: &html,
+                source_path: &nb,
+                jail: Some(dir),
+                comments_on: true,
+                compare: c,
+                source,
+                link: None,
+            })
+        };
+        let src = page(&Compare::Uncommitted, true);
+        assert!(src.contains("data-rl-view=\"source\""), "{src}");
+        assert!(src.contains("class=\"rl-dx-srcview\""), "{src}");
+        assert!(src.contains("nb.md · uncommitted changes · 4 changes"), "{src}");
+        // The edits are close together, so their context merges into one
+        // hunk, named after the heading above the first change.
+        assert!(src.contains("@@ Filters @@"), "code hunk names its heading: {src}");
+        assert_eq!(src.matches("class=\"rl-dx-hunk").count(), 1, "{src}");
+        assert!(src.contains("<del class=\"rl-w\">40</del>"), "{src}");
+        assert!(chip(&src).contains("4 changes"), "{src}");
+        // The rendered notebook is gone from <main>; the source lines are there.
+        assert!(!src.contains("Output is from your current file."), "{src}");
+        assert!(text_of(&src).contains("## Old notes"), "{src}");
+        let rendered_view = page(&Compare::Uncommitted, false);
+        assert!(rendered_view.contains("data-rl-view=\"rendered\""));
+        assert!(!rendered_view.contains("rl-dx-srcview"));
+        // A notebook too big for the rendered diff falls back to the source.
+        let big_old: String = (0..1600).map(|i| format!("Line {i}.\n\n")).collect();
+        let big_new = big_old.replace("Line 7.", "Line seven.");
+        std::fs::write(&nb, &big_old).unwrap();
+        quiet_git(dir, &["commit", "-qam", "big"]);
+        std::fs::write(&nb, &big_new).unwrap();
+        let big = present(Present {
+            html: &prose_html("x"),
+            source_path: &nb,
+            jail: Some(dir),
+            comments_on: true,
+            compare: &Compare::Uncommitted,
+            source: false,
+            link: None,
+        });
+        assert!(big.contains("rl-dx-srcview"), "{}", chip(&big));
+        assert!(chip(&big).contains("diff was too large, showing the source"), "{}", chip(&big));
+        assert!(big.contains("<ins class=\"rl-w\">seven</ins>"), "{}", chip(&big));
     }
 }

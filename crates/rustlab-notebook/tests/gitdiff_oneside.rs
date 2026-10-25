@@ -245,6 +245,8 @@ function state() {
       body: document.body ? document.body.className : '',
       text: (document.querySelector('main') && document.querySelector('main').innerText || '').slice(0, 400),
       pref: sessionStorage.getItem('rl-diff-pref'),
+      words: document.querySelectorAll('main ins.rl-w, main del.rl-w').length,
+      source: !!document.querySelector('main .rl-dx-srcview'),
     };
   })()`);
 }
@@ -367,6 +369,17 @@ if (!saw) {
   s = await state();
 }
 check('edit-then-reload', s.text.includes('y = 9') && s.banner.includes('1 change') && !s.banner.includes('new file'), s);
+check('word-marks', s.words >= 2, s);
+
+// Rendered | Source.
+await openMenu();
+await clickJs(`document.querySelector('.rl-dx-seg [data-view="source"]').click()`);
+s = await settle(s => qs(s).get('view') === 'source' && s.source);
+check('source-view', qs(s).get('base') === 'main' && s.text.includes('y = 9') && s.text.includes('y = 2') && s.marks.includes('modified') && s.words >= 2 && s.errors.length === 0, s);
+await openMenu();
+await clickJs(`document.querySelector('.rl-dx-seg [data-view="rendered"]').click()`);
+s = await settle(s => !qs(s).get('view') && !s.source);
+check('rendered-view', qs(s).get('base') === 'main' && s.marks.includes('modified'), s);
 
 // Counts and the change list in the menu.
 await openMenu();

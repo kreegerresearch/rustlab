@@ -2818,6 +2818,84 @@ pub(crate) fn highlight_rustlab(source: &str) -> String {
     spans_to_html(source, &rustlab_script::highlight::highlight(source))
 }
 
+/// One line of a diff listing: highlighted when `rustlab`, otherwise
+/// escaped, with each byte range in `marks` wrapped in
+/// `<{tag} class="rl-w">`. Syntax spans are split at the mark edges, so a
+/// changed token keeps its color and the tags nest. `marks` must be
+/// sorted, disjoint, and on char boundaries.
+pub(crate) fn highlight_marked(
+    source: &str,
+    rustlab: bool,
+    marks: &[std::ops::Range<usize>],
+    tag: &str,
+) -> String {
+    use rustlab_script::highlight::{HlKind, HlSpan};
+    let whole = || {
+        vec![HlSpan {
+            start: 0,
+            end: source.len(),
+            kind: HlKind::Text,
+        }]
+    };
+    let spans = if rustlab {
+        let s = rustlab_script::highlight::highlight(source);
+        if spans_cover(source, &s) {
+            s
+        } else {
+            whole()
+        }
+    } else {
+        whole()
+    };
+    let open = format!("<{tag} class=\"rl-w\">");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(source.len() * 2);
+    let mut in_mark = false;
+    let mut mi = 0usize;
+    for span in &spans {
+        let class = match span.kind {
+            HlKind::Keyword => Some("syn-kw"),
+            HlKind::Function => Some("syn-fn"),
+            HlKind::Number => Some("syn-num"),
+            HlKind::String => Some("syn-str"),
+            HlKind::Comment => Some("syn-com"),
+            HlKind::Operator => Some("syn-op"),
+            HlKind::Text => None,
+        };
+        let mut pos = span.start;
+        while pos < span.end {
+            while mi < marks.len() && marks[mi].end <= pos {
+                mi += 1;
+            }
+            let (inside, next) = match marks.get(mi) {
+                Some(m) if m.start <= pos => (true, m.end.min(span.end)),
+                Some(m) => (false, m.start.min(span.end)),
+                None => (false, span.end),
+            };
+            if inside != in_mark {
+                out.push_str(if inside { &open } else { &close });
+                in_mark = inside;
+            }
+            let text = escape_html(&source[pos..next]);
+            match class {
+                Some(c) => {
+                    out.push_str("<span class=\"");
+                    out.push_str(c);
+                    out.push_str("\">");
+                    out.push_str(&text);
+                    out.push_str("</span>");
+                }
+                None => out.push_str(&text),
+            }
+            pos = next;
+        }
+    }
+    if in_mark {
+        out.push_str(&close);
+    }
+    out
+}
+
 /// Escape each span and wrap colored tokens in the rustlab `syn-*` classes.
 /// A span list that does not cover `source` falls back to a plain escape
 /// so a highlighter bug cannot drop source text.
