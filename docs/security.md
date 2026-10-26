@@ -272,9 +272,14 @@ long `plot` cannot push a truncated length onto the socket. Line,
 scatter, and stem series are reduced to a min/max envelope before that
 encode (see `docs/functions.md`, viewer). Before that work, rustlab
 estimates the time and the extra memory and prints one stderr warning
-when the estimate is about 0.25 s or more, or the extra memory is at
-least an eighth of available memory. The 32 MiB cap is unchanged and is
-not a warning threshold. Notebook renders do not print the warning.
+when the estimate is about 1 s or more, or the extra memory is at
+least an eighth of available memory. The estimate starts from fixed
+rates and then follows the scan, encode, and transfer just measured.
+Transfer rate and a fixed per-send latency are kept per viewer
+connection, so a remote link's round trip counts on the next warning.
+The connect ping is that first sample. Nothing is written to disk.
+The warning says the figures are estimates. The 32 MiB cap is unchanged
+and is not a warning threshold. Notebook renders do not print the warning.
 
 On platforms that use TCP `127.0.0.1` instead of a Unix socket, traffic
 remains loopback-only with **no application-level auth** — local-user

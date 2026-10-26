@@ -186,13 +186,11 @@ pub struct WireSurface {
 
 // ─── Framing helpers ────────────────────────────────────────────────────────
 
-/// Write a length-prefixed msgpack message.
+/// Encode `msg` to msgpack.
 ///
-/// Returns [`std::io::ErrorKind::InvalidData`] and writes nothing when the
-/// encoded payload is longer than [`MAX_MSG_LEN`]. The length prefix is a
-/// `u32`, so an unchecked cast would also wrap a multi-gigabyte payload
-/// and make the peer allocate the wrong buffer.
-pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<()> {
+/// Returns [`std::io::ErrorKind::InvalidData`] when the payload is longer
+/// than [`MAX_MSG_LEN`]. Nothing is written.
+pub fn encoded_payload<T: Serialize>(msg: &T) -> std::io::Result<Vec<u8>> {
     let payload = rmp_serde::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     if payload.len() > MAX_MSG_LEN as usize {
@@ -204,10 +202,38 @@ pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<
             ),
         ));
     }
+    Ok(payload)
+}
+
+/// Write an already-encoded payload as a length-prefixed frame.
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] and writes nothing when
+/// `payload` is longer than [`MAX_MSG_LEN`]. The length prefix is a
+/// `u32`, so an unchecked cast would also wrap a multi-gigabyte payload
+/// and make the peer allocate the wrong buffer.
+pub fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
+    if payload.len() > MAX_MSG_LEN as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "IPC frame length {} exceeds maximum {MAX_MSG_LEN} bytes",
+                payload.len()
+            ),
+        ));
+    }
     let len = payload.len() as u32;
     w.write_all(&len.to_be_bytes())?;
-    w.write_all(&payload)?;
+    w.write_all(payload)?;
     w.flush()
+}
+
+/// Write a length-prefixed msgpack message.
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] and writes nothing when the
+/// encoded payload is longer than [`MAX_MSG_LEN`].
+pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<()> {
+    let payload = encoded_payload(msg)?;
+    write_frame(w, &payload)
 }
 
 /// Read a length-prefixed msgpack message.  Returns `None` on clean EOF.

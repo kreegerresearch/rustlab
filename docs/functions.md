@@ -2112,13 +2112,13 @@ same limits.
 
 **Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples (at most 8192 points; shared endpoints are not repeated). Bar charts are sent whole.
 
-Before that work, rustlab estimates the wall time and the extra memory of the reduction, encode, and send (a few nanoseconds per sample or per byte; the arrays the script already holds are not counted again). It prints one line on stderr when the estimate is at least about 0.25 s, or the extra memory is at least an eighth of available memory (64 MiB when that figure cannot be read). A 1e8-point line prints:
+Before that work, rustlab estimates the wall time and the extra memory of the reduction, encode, and send. The first guess is a few nanoseconds per sample or per byte. Each real send measures the scan, the encode, and the socket write (including the reply, when there is one) and blends that measurement in, half and half, so the next warning uses this machine and this connection. A send under 64 KiB, and a scan under 100,000 samples, updates a fixed per-send latency and not the rate, so a remote viewer's round trip is not mistaken for bandwidth. Scan and encode are one estimate for the process. Transfer rate and latency belong to that viewer connection. The connect ping is the first transfer sample. Nothing is saved to disk, and there is no extra startup probe. The arrays the script already holds are not counted again. The warning says the figures are estimates. It prints one line on stderr when the estimate is at least about 1 s, or the extra memory is at least an eighth of available memory (64 MiB when that figure cannot be read). With the initial rates a 1e8-point line estimates about 0.4 s and stays quiet. A line of about 2.5×10^8 samples estimates 1.0 s and prints:
 
 ```
-viewer: warning: plotting 100000000 samples will take about 0.4 s and about 272 KiB extra memory; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending.
+viewer: warning: plotting 250000000 samples will take an estimated 1.0 s and an estimated 272 KiB extra memory; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending.
 ```
 
-The extra memory there is the envelope plus the message, not the input arrays. A 1e7-point line estimates about 40 ms and stays quiet. Several lines in one plot are summed into that one line.
+The extra memory there is the envelope plus the message, not the input arrays. A 1e7-point line estimates about 40 ms and stays quiet. After a slow link is measured, a smaller plot can warn on the next send: one 800 ms round trip makes the following 1e8-point line estimate about 1.2 s. Several lines in one plot are summed into that one line.
 
 **Large frames.** A bar chart, heatmap, or surface is not reduced. Under the 32 MiB viewer limit those frames stay quiet unless the time or extra-memory estimate trips. The limit itself is a protocol cap, not a warning threshold. Over it, that figure is drawn in the terminal and the viewer stays connected:
 

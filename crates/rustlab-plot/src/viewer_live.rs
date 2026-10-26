@@ -8,7 +8,8 @@ use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS, VIEWER_ENVELOP
 use crate::figure::{FigureState, LineStyle, PlotKind, Series, SeriesColor, FIGURE};
 use crate::viewer_client::ViewerClient;
 use crate::viewer_warn::{
-    bulk_warning, envelope_warning, print_warning, take_warning, RASTER_NANOS_PER_PIXEL,
+    bulk_warning, envelope_warning, print_warning, record_scan, take_warning, CostRates,
+    RASTER_NANOS_PER_PIXEL,
 };
 use crate::{LivePlot, PlotError};
 use rustlab_proto::{
@@ -65,7 +66,8 @@ impl LivePlot for ViewerFigure {
         // is actually printed, so a small first frame does not hide a later
         // large one, and a streaming update does not repeat it.
         let n = x.len().min(y.len());
-        if let Some(line) = live_line_warning(n) {
+        let rates = self.client.cost_rates();
+        if let Some(line) = live_line_warning(n, &rates) {
             print_warning(&line);
         }
         let prepared = match prepare_series_for_viewer(&PlotKind::Line, &x, &y) {
@@ -139,7 +141,8 @@ impl LivePlot for ViewerFigure {
             .saturating_mul(ncols)
             .saturating_mul(4)
             .saturating_add(64);
-        if let Some(line) = live_heatmap_warning(ncols, nrows, bytes) {
+        let rates = self.client.cost_rates();
+        if let Some(line) = live_heatmap_warning(ncols, nrows, bytes, &rates) {
             print_warning(&line);
         }
         if bytes > MAX_MSG_LEN as usize {
@@ -470,7 +473,9 @@ fn compute_figure_title(fig: &FigureState) -> String {
 /// Serialize a full FigureState to the viewer via protocol messages.
 fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), PlotError> {
     // Before any envelope scan, heatmap raster, or surface flatten.
-    refuse_oversized_plot(fig)?;
+    // Rates are the measurements from earlier sends, not this one.
+    let rates = conn.client.cost_rates();
+    refuse_oversized_plot(fig, &rates)?;
     let rows = fig.subplot_rows;
     let cols = fig.subplot_cols;
     let n_panels = rows * cols;
@@ -700,7 +705,11 @@ fn prepare_series_for_viewer(
             output_len: n,
         });
     }
+    let started = std::time::Instant::now();
     let (dx, dy) = envelope_decimate(x, y, VIEWER_ENVELOPE_COLUMNS);
+    if n > VIEWER_ENVELOPE_MAX_POINTS {
+        record_scan(n as u128, started.elapsed().as_nanos());
+    }
     Ok(PreparedSeries {
         output_len: dx.len(),
         input_len: n,
@@ -854,7 +863,7 @@ fn heatmap_frame_bytes(hm: &crate::figure::HeatmapData) -> Option<(usize, usize,
 /// the samples. A panel that will be pre-rendered (contour, quiver,
 /// streamline) is skipped: that frame is a fixed bitmap, and its series
 /// are not sent as lines.
-fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
+fn plot_size_warning(fig: &FigureState, rates: &CostRates) -> PlotSizeWarning {
     let n_panels = fig.subplot_rows.saturating_mul(fig.subplot_cols);
     let mut samples = 0usize;
     let mut scan_samples = 0usize;
@@ -886,6 +895,7 @@ fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
                         extra,
                         0,
                         true,
+                        rates,
                     ),
                     over,
                 );
@@ -903,6 +913,7 @@ fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
                         extra,
                         work,
                         true,
+                        rates,
                     ),
                     over,
                 );
@@ -916,7 +927,14 @@ fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
                 let over = payload > MAX_MSG_LEN as usize;
                 note_bulk(
                     &mut bulk,
-                    bulk_warning(&format!("bar series of {n} bars"), payload, extra, 0, true),
+                    bulk_warning(
+                        &format!("bar series of {n} bars"),
+                        payload,
+                        extra,
+                        0,
+                        true,
+                        rates,
+                    ),
                     over,
                 );
                 continue;
@@ -932,7 +950,7 @@ fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
     }
 
     let envelope = if samples > 0 {
-        envelope_warning(samples, scan_samples, sent_points, sent_bytes)
+        envelope_warning(samples, scan_samples, sent_points, sent_bytes, rates)
     } else {
         None
     };
@@ -995,8 +1013,8 @@ fn lines_to_print(warning: PlotSizeWarning) -> (Option<String>, Option<String>, 
 /// Print at most one line warning and one bulk warning, then refuse the
 /// whole figure when a non-decimated frame is over the IPC cap. The
 /// refusal happens before the envelope scan and before any raster.
-fn refuse_oversized_plot(fig: &FigureState) -> Result<(), PlotError> {
-    let (envelope, bulk, over_cap) = lines_to_print(plot_size_warning(fig));
+fn refuse_oversized_plot(fig: &FigureState, rates: &CostRates) -> Result<(), PlotError> {
+    let (envelope, bulk, over_cap) = lines_to_print(plot_size_warning(fig, rates));
     ENVELOPE_SLOT.with(|slot| emit_slot(slot, envelope));
     BULK_SLOT.with(|slot| emit_slot(slot, bulk));
     if over_cap {
@@ -1008,7 +1026,7 @@ fn refuse_oversized_plot(fig: &FigureState) -> Result<(), PlotError> {
     Ok(())
 }
 
-fn live_line_warning(n: usize) -> Option<String> {
+fn live_line_warning(n: usize, rates: &CostRates) -> Option<String> {
     if n <= VIEWER_ENVELOPE_MAX_POINTS {
         return None;
     }
@@ -1016,12 +1034,17 @@ fn live_line_warning(n: usize) -> Option<String> {
     LIVE_ENVELOPE_SLOT.with(|slot| {
         take_warning(
             slot,
-            envelope_warning(n, n, VIEWER_ENVELOPE_MAX_POINTS, sent),
+            envelope_warning(n, n, VIEWER_ENVELOPE_MAX_POINTS, sent, rates),
         )
     })
 }
 
-fn live_heatmap_warning(ncols: usize, nrows: usize, bytes: usize) -> Option<String> {
+fn live_heatmap_warning(
+    ncols: usize,
+    nrows: usize,
+    bytes: usize,
+    rates: &CostRates,
+) -> Option<String> {
     let pixels = ncols.saturating_mul(nrows);
     let rgba = pixels.saturating_mul(4);
     let work = (pixels as u128).saturating_mul(RASTER_NANOS_PER_PIXEL);
@@ -1035,6 +1058,7 @@ fn live_heatmap_warning(ncols: usize, nrows: usize, bytes: usize) -> Option<Stri
                 extra,
                 work,
                 false,
+                rates,
             ),
         )
     })
@@ -1043,6 +1067,10 @@ fn live_heatmap_warning(ncols: usize, nrows: usize, bytes: usize) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prior() -> CostRates {
+        CostRates::prior()
+    }
 
     #[test]
     fn next_fig_id_is_unique() {
@@ -1261,7 +1289,8 @@ mod tests {
         fig.current_mut()
             .series
             .push(sine_series(9_000, PlotKind::Line));
-        let w = plot_size_warning(&fig);
+        let rates = prior();
+        let w = plot_size_warning(&fig, &rates);
         assert!(w.envelope.is_none(), "a short reduction stays quiet");
         assert_eq!(w.scan_samples, 9_000);
         assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS);
@@ -1276,13 +1305,20 @@ mod tests {
         fig.current_mut()
             .series
             .push(sine_series(n, PlotKind::Line));
-        let w = plot_size_warning(&fig);
+        let rates = prior();
+        let w = plot_size_warning(&fig, &rates);
         assert_eq!(w.samples, n);
         assert_eq!(w.scan_samples, n);
         assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS);
         assert_eq!(
             w.envelope,
-            envelope_warning(w.samples, w.scan_samples, w.sent_points, w.sent_bytes)
+            envelope_warning(
+                w.samples,
+                w.scan_samples,
+                w.sent_points,
+                w.sent_bytes,
+                &rates
+            )
         );
         assert!(w.envelope.is_none(), "0.5e6 estimates a few milliseconds");
         assert!(!w.over_cap);
@@ -1298,7 +1334,8 @@ mod tests {
         fig.current_mut()
             .series
             .push(sine_series(100, PlotKind::Line));
-        let w = plot_size_warning(&fig);
+        let rates = prior();
+        let w = plot_size_warning(&fig, &rates);
         assert_eq!(w.samples, 500_100);
         assert_eq!(w.scan_samples, 500_000);
         assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS + 100);
@@ -1307,7 +1344,14 @@ mod tests {
         assert_eq!(w.sent_bytes, kept + short);
         assert_eq!(
             w.envelope.as_deref(),
-            envelope_warning(w.samples, w.scan_samples, w.sent_points, w.sent_bytes).as_deref()
+            envelope_warning(
+                w.samples,
+                w.scan_samples,
+                w.sent_points,
+                w.sent_bytes,
+                &rates
+            )
+            .as_deref()
         );
     }
 
@@ -1323,12 +1367,21 @@ mod tests {
             style: LineStyle::Solid,
             kind: PlotKind::Bar,
         });
-        let w = plot_size_warning(&fig);
+        let rates = prior();
+        let w = plot_size_warning(&fig, &rates);
         let bytes = estimated_xy_bytes(n, n);
         let extra = n.saturating_mul(16).saturating_add(bytes);
         assert_eq!(
             w.bulk.as_deref(),
-            bulk_warning(&format!("bar series of {n} bars"), bytes, extra, 0, true).as_deref()
+            bulk_warning(
+                &format!("bar series of {n} bars"),
+                bytes,
+                extra,
+                0,
+                true,
+                &rates
+            )
+            .as_deref()
         );
         assert!(w.over_cap);
         assert!(w.envelope.is_none());
@@ -1410,17 +1463,28 @@ mod tests {
     #[test]
     fn live_line_warning_latches_only_after_a_large_frame() {
         LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
-        assert!(live_line_warning(1_000).is_none());
+        let rates = prior();
+        assert!(live_line_warning(1_000, &rates).is_none());
         assert!(
-            live_line_warning(1_000_000).is_none(),
+            live_line_warning(1_000_000, &rates).is_none(),
             "1e6 estimates about 4 ms"
         );
-        let first = live_line_warning(100_000_000).unwrap();
         assert!(
-            first.starts_with("viewer: warning: plotting 100000000 samples will take about 0.4 s"),
+            live_line_warning(100_000_000, &rates).is_none(),
+            "1e8 estimates 0.4 s"
+        );
+        assert!(
+            live_line_warning(125_000_000, &rates).is_none(),
+            "1.25e8 estimates 0.5 s"
+        );
+        let first = live_line_warning(250_000_000, &rates).unwrap();
+        assert!(
+            first.starts_with(
+                "viewer: warning: plotting 250000000 samples will take an estimated 1.0 s"
+            ),
             "{first}"
         );
-        assert!(live_line_warning(100_000_000).is_none());
+        assert!(live_line_warning(250_000_000, &rates).is_none());
         LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
     }
 
@@ -1428,12 +1492,13 @@ mod tests {
     fn live_heatmap_over_the_cap_names_no_terminal_fallback() {
         LIVE_BULK_SLOT.with(|slot| slot.set(false));
         let bytes = 4096usize * 2048 * 4 + 64;
-        let line = live_heatmap_warning(4096, 2048, bytes).unwrap();
+        let rates = prior();
+        let line = live_heatmap_warning(4096, 2048, bytes, &rates).unwrap();
         assert_eq!(
             line,
             "viewer: warning: heatmap 4096 by 2048 is about 32.0 MiB, over the 32 MiB viewer limit — not sending."
         );
-        assert!(live_heatmap_warning(4096, 2048, bytes).is_none());
+        assert!(live_heatmap_warning(4096, 2048, bytes, &rates).is_none());
         LIVE_BULK_SLOT.with(|slot| slot.set(false));
     }
 }
