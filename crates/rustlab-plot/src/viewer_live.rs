@@ -4,11 +4,13 @@
 //! Also provides `connect_viewer()` / `disconnect_viewer()` / `viewer_active()`
 //! / `sync_viewer()` for routing regular (non-live) plot commands to the viewer.
 
-use crate::figure::{FigureState, LineStyle, PlotKind, SeriesColor, FIGURE};
+use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS};
+use crate::figure::{FigureState, LineStyle, PlotKind, Series, SeriesColor, FIGURE};
 use crate::viewer_client::ViewerClient;
 use crate::{LivePlot, PlotError};
 use rustlab_proto::{
     ViewerMsg, WireColor, WireHeatmap, WireLineStyle, WirePlotKind, WireSeries, WireSurface,
+    MAX_MSG_LEN,
 };
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -56,20 +58,32 @@ impl ViewerFigure {
 
 impl LivePlot for ViewerFigure {
     fn update_panel(&mut self, idx: usize, x: Vec<f64>, y: Vec<f64>) {
+        let prepared = match prepare_series_for_viewer(&PlotKind::Line, &x, &y) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                eprintln!("viewer: {e} — live panel not sent");
+                return;
+            }
+        };
+        if prepared.output_len < prepared.input_len {
+            note_envelope(prepared.input_len, prepared.output_len);
+        }
         let msg = ViewerMsg::PanelUpdate {
             fig_id: self.fig_id,
             panel: idx as u16,
             series: vec![WireSeries {
                 label: String::new(),
-                x,
-                y,
+                x: prepared.x,
+                y: prepared.y,
                 color: WireColor::Named("cyan".into()),
                 style: WireLineStyle::Solid,
                 kind: WirePlotKind::Line,
                 x_labels: None,
             }],
         };
-        let _ = self.client.send_nowait(&msg);
+        if let Err(e @ PlotError::ViewerPayloadTooLarge(_)) = self.client.send_nowait(&msg) {
+            eprintln!("viewer: {e} — live panel not sent");
+        }
     }
 
     fn set_panel_labels(&mut self, idx: usize, title: &str, xlabel: &str, ylabel: &str) {
@@ -143,6 +157,13 @@ impl LivePlot for ViewerFigure {
         };
         let rgba = crate::file::render_heatmap_cells_to_rgba(&hm);
         if rgba.is_empty() {
+            return;
+        }
+        let bytes = rgba.len().saturating_add(64);
+        if bytes > MAX_MSG_LEN as usize {
+            eprintln!(
+                "viewer: heatmap is {ncols} by {nrows} ({bytes} bytes), over the {MAX_MSG_LEN}-byte viewer IPC limit — not sent"
+            );
             return;
         }
         let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
@@ -361,35 +382,49 @@ pub fn allocate_viewer_fig_id() -> u32 {
 
 /// Send the current FIGURE state to the viewer. No-op if not connected.
 ///
-/// If the send fails (e.g. the viewer window was closed), tears down the
-/// viewer connection, switches the current figure back to terminal output,
-/// emits a warning, and renders the pending figure to the TUI so the plot
-/// is not silently lost.
+/// A line that would not fit in one IPC frame is reduced to a min/max
+/// envelope first (see [`envelope_decimate`]). If a payload is still over
+/// [`MAX_MSG_LEN`], the socket is left open, the reason is printed, and
+/// this figure is drawn in the terminal. A real I/O failure (the viewer
+/// window was closed) tears the connection down, prints that the
+/// connection was lost, and renders the pending figure in the terminal
+/// so the plot is not silently lost.
 pub fn sync_viewer() {
     let send_err = VIEWER_CONN.with(|c| {
         let mut guard = c.borrow_mut();
-        let Some(ref mut conn) = *guard else {
-            return None;
-        };
+        let conn = guard.as_mut()?;
         FIGURE.with(|fig| {
             let fig = fig.borrow();
             send_figure_state(conn, &fig).err()
         })
     });
 
-    if let Some(err) = send_err {
-        // Drop the dead connection.
-        VIEWER_CONN.with(|c| *c.borrow_mut() = None);
-        VIEWER_SESSION.with(|s| *s.borrow_mut() = None);
-        // Route the current (and future) figure output back to the terminal.
-        crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
+    let Some(err) = send_err else {
+        return;
+    };
+    if matches!(err, PlotError::ViewerPayloadTooLarge(_)) {
+        // Nothing was written for the rejected frame, so the socket is
+        // still usable. Draw this figure in the terminal, then put the
+        // figure back on the viewer for the next plot.
         eprintln!(
-            "viewer: connection lost ({}) — falling back to terminal rendering",
-            err
+            "viewer: {err} — drawing this figure in the terminal. The viewer stays connected."
         );
-        // Best-effort TUI render so the user actually sees their plot.
+        let previous = crate::figure::current_figure_output();
+        crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
         let _ = crate::ascii::render_figure_terminal();
+        if viewer_active() {
+            crate::figure::set_current_figure_output(previous);
+        }
+        return;
     }
+    // Drop the dead connection.
+    VIEWER_CONN.with(|c| *c.borrow_mut() = None);
+    VIEWER_SESSION.with(|s| *s.borrow_mut() = None);
+    // Route the current (and future) figure output back to the terminal.
+    crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
+    eprintln!("viewer: connection lost ({err}) — falling back to terminal rendering");
+    // Best-effort TUI render so the user actually sees their plot.
+    let _ = crate::ascii::render_figure_terminal();
 }
 
 /// Compute the figure-level (window) title from the FigureState. If the
@@ -438,8 +473,9 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
         // entire panel (heatmap + series + overlays) into an RGBA bitmap via
         // plotters and ship it as a heatmap. Empty PanelUpdate clears any
         // stale series so the viewer doesn't double-draw.
-        let needs_prerender =
-            !panel.contours.is_empty() || !panel.quivers.is_empty() || !panel.streamlines.is_empty();
+        let needs_prerender = !panel.contours.is_empty()
+            || !panel.quivers.is_empty()
+            || !panel.streamlines.is_empty();
         if needs_prerender {
             let theme = crate::theme::default_theme();
             // High-resolution pre-render so quiver/streamline/contour panels
@@ -447,9 +483,11 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
             // with `smooth: true` so egui samples the texture with linear
             // filtering instead of showing blocky pixels on magnification.
             let (w, h) = (2400u32, 1600u32);
-            if let Ok(rgba) =
-                crate::file::render_panel_to_rgba(panel, theme.colors(), w, h)
-            {
+            if let Ok(rgba) = crate::file::render_panel_to_rgba(panel, theme.colors(), w, h) {
+                ensure_frame_budget(
+                    rgba.len().saturating_add(64),
+                    &format!("pre-rendered panel is {w} by {h}"),
+                )?;
                 conn.client.send_nowait(&ViewerMsg::PanelHeatmap {
                     fig_id,
                     panel: idx as u16,
@@ -490,7 +528,10 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
             let nrows = sf.z.len();
             let ncols = if nrows > 0 { sf.z[0].len() } else { 0 };
             if nrows > 0 && ncols > 0 {
-                let mut z_flat = Vec::with_capacity(nrows * ncols);
+                let z_len = nrows * ncols;
+                let bytes = 80 + (5 + 9 * sf.x.len()) + (5 + 9 * sf.y.len()) + (5 + 9 * z_len);
+                ensure_frame_budget(bytes, &format!("surface is {nrows} by {ncols}"))?;
+                let mut z_flat = Vec::with_capacity(z_len);
                 for row in &sf.z {
                     z_flat.extend_from_slice(row);
                 }
@@ -537,6 +578,10 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
                 }
             };
             if width > 0 && height > 0 {
+                ensure_frame_budget(
+                    rgba.len().saturating_add(64),
+                    &format!("heatmap is {width} by {height}"),
+                )?;
                 conn.client.send_nowait(&ViewerMsg::PanelHeatmap {
                     fig_id,
                     panel: idx as u16,
@@ -560,24 +605,16 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
             }
         }
 
-        // Convert series
-        let wire_series: Vec<WireSeries> = panel
-            .series
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                WireSeries {
-                    label: s.label.clone(),
-                    x: s.x_data.clone(),
-                    y: s.y_data.clone(),
-                    color: color_to_wire(&s.color),
-                    style: style_to_wire(&s.style),
-                    kind: kind_to_wire(&s.kind),
-                    // Attach categorical labels to the first series
-                    x_labels: if i == 0 { panel.x_labels.clone() } else { None },
-                }
-            })
-            .collect();
+        // Line / scatter / stem series longer than a wide panel are reduced
+        // to a min/max envelope here, before msgpack, so a 1e8-point plot
+        // never becomes a multi-gigabyte frame the viewer has to reject.
+        let (wire_series, input_points, output_points) =
+            series_to_wire(&panel.series, &panel.x_labels)?;
+        if output_points < input_points {
+            eprintln!(
+                "viewer: showing {output_points} of {input_points} samples as a min/max envelope ({VIEWER_ENVELOPE_COLUMNS} columns). Zooming in shows that envelope; peaks stay at their original x."
+            );
+        }
 
         conn.client.send_nowait(&ViewerMsg::PanelUpdate {
             fig_id,
@@ -609,6 +646,125 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
 
     conn.client.send(&ViewerMsg::Redraw { fig_id })?;
     Ok(())
+}
+
+struct PreparedSeries {
+    x: Vec<f64>,
+    y: Vec<f64>,
+    input_len: usize,
+    output_len: usize,
+}
+
+/// Reduce a waveform to the viewer envelope. Bar charts stay whole and
+/// fail with [`PlotError::ViewerPayloadTooLarge`] when one series cannot
+/// fit in an IPC frame — merging bars into an envelope would change the chart.
+fn prepare_series_for_viewer(
+    kind: &PlotKind,
+    x: &[f64],
+    y: &[f64],
+) -> Result<PreparedSeries, PlotError> {
+    let n = x.len().min(y.len());
+    let x = &x[..n];
+    let y = &y[..n];
+    if matches!(kind, PlotKind::Bar) {
+        let bytes = estimated_xy_bytes(n, n);
+        if bytes > MAX_MSG_LEN as usize {
+            return Err(PlotError::ViewerPayloadTooLarge(format!(
+                "bar series has {n} bars (about {bytes} bytes), over the {MAX_MSG_LEN}-byte viewer IPC limit"
+            )));
+        }
+        return Ok(PreparedSeries {
+            x: x.to_vec(),
+            y: y.to_vec(),
+            input_len: n,
+            output_len: n,
+        });
+    }
+    let (dx, dy) = envelope_decimate(x, y, VIEWER_ENVELOPE_COLUMNS);
+    Ok(PreparedSeries {
+        output_len: dx.len(),
+        input_len: n,
+        x: dx,
+        y: dy,
+    })
+}
+
+fn series_to_wire(
+    series: &[Series],
+    x_labels: &Option<Vec<String>>,
+) -> Result<(Vec<WireSeries>, usize, usize), PlotError> {
+    let mut wire = Vec::with_capacity(series.len());
+    let mut input_points = 0usize;
+    let mut output_points = 0usize;
+    for (i, s) in series.iter().enumerate() {
+        let prepared = prepare_series_for_viewer(&s.kind, &s.x_data, &s.y_data)?;
+        input_points += prepared.input_len;
+        output_points += prepared.output_len;
+        // Categorical labels index the original samples. After a reduction
+        // those indices no longer match, so the labels are left off.
+        let keep_labels = i == 0 && prepared.output_len == prepared.input_len;
+        wire.push(WireSeries {
+            label: s.label.clone(),
+            x: prepared.x,
+            y: prepared.y,
+            color: color_to_wire(&s.color),
+            style: style_to_wire(&s.style),
+            kind: kind_to_wire(&s.kind),
+            x_labels: if keep_labels { x_labels.clone() } else { None },
+        });
+    }
+    let bytes = panel_update_bytes(&wire);
+    if bytes > MAX_MSG_LEN as usize {
+        return Err(PlotError::ViewerPayloadTooLarge(format!(
+            "plot message is about {bytes} bytes ({output_points} points), over the {MAX_MSG_LEN}-byte viewer IPC limit"
+        )));
+    }
+    Ok((wire, input_points, output_points))
+}
+
+/// msgpack array32 header plus one 9-byte float64 per element, plus slack
+/// for the series struct. High enough that a passing estimate still encodes
+/// under [`MAX_MSG_LEN`].
+fn estimated_xy_bytes(nx: usize, ny: usize) -> usize {
+    96 + (5 + 9 * nx) + (5 + 9 * ny)
+}
+
+fn panel_update_bytes(series: &[WireSeries]) -> usize {
+    let mut n = 64usize;
+    for s in series {
+        n += estimated_xy_bytes(s.x.len(), s.y.len());
+        n += s.label.len();
+        if let Some(labels) = &s.x_labels {
+            for lab in labels {
+                n += lab.len() + 8;
+            }
+        }
+    }
+    n
+}
+
+fn ensure_frame_budget(bytes: usize, what: &str) -> Result<(), PlotError> {
+    if bytes > MAX_MSG_LEN as usize {
+        Err(PlotError::ViewerPayloadTooLarge(format!(
+            "{what} ({bytes} bytes), over the {MAX_MSG_LEN}-byte viewer IPC limit"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// One note per thread for live updates, which can fire many times a second.
+fn note_envelope(input_points: usize, output_points: usize) {
+    use std::cell::Cell;
+    thread_local! {
+        static NOTED: Cell<bool> = const { Cell::new(false) };
+    }
+    if NOTED.with(|n| n.replace(true)) {
+        return;
+    }
+    eprintln!(
+        "viewer: showing {output_points} of {input_points} samples as a min/max envelope ({VIEWER_ENVELOPE_COLUMNS} columns). Zooming in shows that envelope; peaks stay at their original x."
+    );
 }
 
 #[cfg(test)]
@@ -717,5 +873,112 @@ mod tests {
         fig.set_subplot(2, 2, 1);
         fig.current_mut().title = "Top-left only".to_string();
         assert_eq!(compute_figure_title(&fig), "");
+    }
+
+    fn sine_series(n: usize, kind: PlotKind) -> Series {
+        Series {
+            label: "s".into(),
+            x_data: (0..n).map(|i| i as f64 / (n.max(2) - 1) as f64).collect(),
+            y_data: (0..n).map(|i| (i as f64 * 0.02).sin()).collect(),
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind,
+        }
+    }
+
+    #[test]
+    fn raw_line_of_1e8_exceeds_ipc_limit() {
+        let n = 100_000_000usize;
+        let bytes = estimated_xy_bytes(n, n);
+        assert!(
+            bytes > MAX_MSG_LEN as usize,
+            "{bytes} should exceed {MAX_MSG_LEN}"
+        );
+        // Two msgpack float64 arrays: 9 bytes each, plus a 5-byte header.
+        assert!(
+            bytes > 1_700_000_000,
+            "1e8 pairs are about 1.7 GiB, got {bytes}"
+        );
+    }
+
+    #[test]
+    fn long_line_is_enveloped_and_roundtrips_under_the_limit() {
+        let n = 50_000usize;
+        let series = sine_series(n, PlotKind::Line);
+        let (wire, input, output) = series_to_wire(&[series], &None).unwrap();
+        assert_eq!(input, n);
+        assert!(output < n);
+        assert!(output <= crate::decimate::VIEWER_ENVELOPE_MAX_POINTS);
+        assert!(wire[0].y.iter().copied().fold(f64::NEG_INFINITY, f64::max) > 0.99);
+        assert!(wire[0].y.iter().copied().fold(f64::INFINITY, f64::min) < -0.99);
+        assert_eq!(wire[0].x[0], 0.0);
+        let msg = ViewerMsg::PanelUpdate {
+            fig_id: 1,
+            panel: 0,
+            series: wire,
+        };
+        let mut buf = Vec::new();
+        rustlab_proto::write_msg(&mut buf, &msg).unwrap();
+        assert!(buf.len() < MAX_MSG_LEN as usize, "frame {}", buf.len());
+        let mut cur = std::io::Cursor::new(buf);
+        let decoded: ViewerMsg = rustlab_proto::read_msg(&mut cur).unwrap().unwrap();
+        match decoded {
+            ViewerMsg::PanelUpdate { series, .. } => {
+                assert_eq!(series.len(), 1);
+                assert_eq!(series[0].x.len(), output);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn short_line_is_not_reduced_and_keeps_category_labels() {
+        let series = sine_series(100, PlotKind::Line);
+        let labels = Some(vec!["a".into(), "b".into()]);
+        let (wire, input, output) = series_to_wire(&[series], &labels).unwrap();
+        assert_eq!(input, output);
+        assert_eq!(wire[0].x_labels, labels);
+    }
+
+    #[test]
+    fn reduced_line_drops_category_labels() {
+        let series = sine_series(20_000, PlotKind::Line);
+        let labels = Some(vec!["a".into()]);
+        let (wire, _, _) = series_to_wire(&[series], &labels).unwrap();
+        assert!(wire[0].x_labels.is_none());
+        assert!(wire[0].x.len() <= crate::decimate::VIEWER_ENVELOPE_MAX_POINTS);
+    }
+
+    #[test]
+    fn scatter_and_stem_use_the_envelope() {
+        for kind in [PlotKind::Scatter, PlotKind::Stem] {
+            let series = sine_series(20_000, kind);
+            let (_, input, output) = series_to_wire(&[series], &None).unwrap();
+            assert_eq!(input, 20_000);
+            assert!(output < input);
+        }
+    }
+
+    #[test]
+    fn oversized_bar_series_reports_the_limit() {
+        let n = 2_000_000usize;
+        let series = Series {
+            label: String::new(),
+            x_data: vec![0.0; n],
+            y_data: vec![1.0; n],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Bar,
+        };
+        let err = series_to_wire(&[series], &None).unwrap_err();
+        let PlotError::ViewerPayloadTooLarge(msg) = err else {
+            panic!("expected a size error, got {err}");
+        };
+        assert!(msg.contains("bar series"), "{msg}");
+        assert!(
+            msg.contains("33554432") || msg.contains(&MAX_MSG_LEN.to_string()),
+            "{msg}"
+        );
+        assert!(msg.contains(&n.to_string()), "{msg}");
     }
 }

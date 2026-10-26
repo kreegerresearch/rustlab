@@ -47,8 +47,7 @@ impl ViewerClient {
 
     /// Send a message and wait for the reply.
     pub fn send(&mut self, msg: &ViewerMsg) -> Result<ViewerReply, crate::PlotError> {
-        write_msg(&mut BufWriter::new(&mut self.stream), msg)
-            .map_err(|e| crate::PlotError::ViewerConnection(e.to_string()))?;
+        write_msg(&mut BufWriter::new(&mut self.stream), msg).map_err(map_write_err)?;
         let reply: Option<ViewerReply> = read_msg(&mut self.stream)
             .map_err(|e| crate::PlotError::ViewerConnection(e.to_string()))?;
         reply.ok_or_else(|| crate::PlotError::ViewerConnection("viewer closed connection".into()))
@@ -56,7 +55,17 @@ impl ViewerClient {
 
     /// Send a message without waiting for a reply (fire-and-forget).
     pub fn send_nowait(&mut self, msg: &ViewerMsg) -> Result<(), crate::PlotError> {
-        write_msg(&mut BufWriter::new(&mut self.stream), msg)
-            .map_err(|e| crate::PlotError::ViewerConnection(e.to_string()))
+        write_msg(&mut BufWriter::new(&mut self.stream), msg).map_err(map_write_err)
+    }
+}
+
+/// A frame the peer would reject is not a dead connection: `write_msg`
+/// returns before any byte is written, and the caller can keep the socket.
+fn map_write_err(err: std::io::Error) -> crate::PlotError {
+    let msg = err.to_string();
+    if err.kind() == std::io::ErrorKind::InvalidData && msg.contains("exceeds maximum") {
+        crate::PlotError::ViewerPayloadTooLarge(msg)
+    } else {
+        crate::PlotError::ViewerConnection(msg)
     }
 }

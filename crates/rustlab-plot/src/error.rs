@@ -20,4 +20,8 @@ pub enum PlotError {
     Interrupted,
     #[error("viewer connection error: {0}")]
     ViewerConnection(String),
+    /// The plot was not sent. The socket is still open; the caller draws
+    /// this figure in the terminal and leaves later plots on the viewer.
+    #[error("{0}")]
+    ViewerPayloadTooLarge(String),
 }

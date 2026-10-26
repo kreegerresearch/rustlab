@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.19
+
+### Fixed
+- **Large line plots reach the viewer.** `plot` of a long series (for example `linspace` of 1e8 points) was packed into one IPC frame. Two million samples already encode to about 36 MiB, and the viewer rejects anything over 32 MiB (`MAX_MSG_LEN`), closes the socket, and rustlab only saw a broken pipe — so it printed `connection lost` and drew the figure in the terminal. A line, scatter, or stem longer than 8192 samples is now reduced to a min/max envelope of about 4096 columns before it is sent: each column keeps the original samples at the lowest and highest y, so peaks stay at their real x. The initial view matches the full data. Zooming in shows that envelope. rustlab prints how many samples were kept. A payload that still does not fit (a huge bar series, heatmap, or surface) is not written; rustlab prints the size and the 32 MiB limit and draws that figure in the terminal, and the viewer stays connected. A viewer that actually exited still prints `connection lost` and stays on the terminal until `viewer on`.
+
 ## 0.3.18
 
 ### Fixed

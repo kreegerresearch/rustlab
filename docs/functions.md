@@ -2110,7 +2110,9 @@ Those limits are applied when the panel first appears and whenever the script
 sends *changed* limits — a zoom is not undone by a live plot redrawing with the
 same limits.
 
-**Automatic fallback.** If the viewer is closed or crashes while still connected, the next plot command detects the broken connection, prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders the current figure in the TUI. Subsequent plots continue to render in the terminal until you run `viewer on` again.
+**Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples. rustlab prints how many samples were kept, for example `viewer: showing 8190 of 100000000 samples as a min/max envelope (4096 columns). ...` (at most 8192; shared endpoints are not repeated). Bar charts are sent whole.
+
+**Automatic fallback.** A plot that still does not fit in one 32 MiB message (a very large bar chart, heatmap, or surface) is not written to the socket. rustlab prints the size and the limit — `viewer: ... over the 33554432-byte viewer IPC limit — drawing this figure in the terminal. The viewer stays connected.` — and draws that figure in the terminal. The next plot still goes to the viewer. If the viewer is closed or crashes while connected, the next plot prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders in the terminal. Subsequent plots stay in the terminal until you run `viewer on` again.
 
 **Named sessions** allow multiple viewers to run simultaneously, each receiving plots from different rustlab instances:
 ```
