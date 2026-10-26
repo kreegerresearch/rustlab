@@ -2110,9 +2110,37 @@ Those limits are applied when the panel first appears and whenever the script
 sends *changed* limits — a zoom is not undone by a live plot redrawing with the
 same limits.
 
-**Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples. rustlab prints how many samples were kept, for example `viewer: showing 8190 of 100000000 samples as a min/max envelope (4096 columns). ...` (at most 8192; shared endpoints are not repeated). Bar charts are sent whole.
+**Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples (at most 8192 points; shared endpoints are not repeated). Bar charts are sent whole.
 
-**Automatic fallback.** A plot that still does not fit in one 32 MiB message (a very large bar chart, heatmap, or surface) is not written to the socket. rustlab prints the size and the limit — `viewer: ... over the 33554432-byte viewer IPC limit — drawing this figure in the terminal. The viewer stays connected.` — and draws that figure in the terminal. The next plot still goes to the viewer. If the viewer is closed or crashes while connected, the next plot prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders in the terminal. Subsequent plots stay in the terminal until you run `viewer on` again.
+A reduction whose unreduced payload is under 8 MiB is quiet. At or above 8 MiB, rustlab prints one line on stderr *before* the scan, once per plot. A 1e8-point line prints:
+
+```
+viewer: warning: 100000000 samples would be about 1.68 GiB; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending. One pass over the samples, about 400 ms.
+```
+
+The time clause is included when the scan is expected to take at least 100 ms. Several lines in one plot are summed into that one line.
+
+**Large frames.** A bar chart, heatmap, or surface is not reduced. At or above 16 MiB (half of the 32 MiB viewer limit) rustlab prints one stderr line before the frame is built or sent. Close to the limit:
+
+```
+viewer: warning: bar series of 1000000 bars is about 17.2 MiB (32 MiB limit) — sending it whole, not reduced to an envelope.
+```
+
+Over the limit, that figure is drawn in the terminal and the viewer stays connected:
+
+```
+viewer: warning: bar series of 2000000 bars is about 34.3 MiB, over the 32 MiB viewer limit — not sending; drawing this figure in the terminal. The viewer stays connected.
+```
+
+A live heatmap that does not fit is not sent and is not drawn in the terminal:
+
+```
+viewer: warning: heatmap 4096 by 2048 is about 32.0 MiB, over the 32 MiB viewer limit — not sending.
+```
+
+Each `plot` warns at most once for lines and once for a bar, heatmap, or surface. When a frame is over the limit, only the fallback line is printed, because the figure is not scanned. A live update warns once per thread, and a small first frame does not suppress a later large one. Notebook renders do not print these lines.
+
+**Automatic fallback.** A plot that still does not fit in one 32 MiB message is not written to the socket. The warning above is the notice; if it was not printed, rustlab prints `viewer: <reason> — drawing this figure in the terminal. The viewer stays connected.` The next plot still goes to the viewer. If the viewer is closed or crashes while connected, the next plot prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders in the terminal. Subsequent plots stay in the terminal until you run `viewer on` again.
 
 **Named sessions** allow multiple viewers to run simultaneously, each receiving plots from different rustlab instances:
 ```

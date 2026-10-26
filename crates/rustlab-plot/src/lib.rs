@@ -17,6 +17,8 @@ pub mod vendor;
 pub mod viewer_client;
 #[cfg(feature = "viewer")]
 pub mod viewer_live;
+#[cfg(feature = "viewer")]
+pub(crate) mod viewer_warn;
 
 pub use animation::{
     clear_figure_traces, clear_frames, clear_notebook_animations, frames_len, push_frame,

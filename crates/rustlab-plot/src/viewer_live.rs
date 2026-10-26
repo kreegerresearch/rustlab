@@ -4,15 +4,16 @@
 //! Also provides `connect_viewer()` / `disconnect_viewer()` / `viewer_active()`
 //! / `sync_viewer()` for routing regular (non-live) plot commands to the viewer.
 
-use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS};
+use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS, VIEWER_ENVELOPE_MAX_POINTS};
 use crate::figure::{FigureState, LineStyle, PlotKind, Series, SeriesColor, FIGURE};
 use crate::viewer_client::ViewerClient;
+use crate::viewer_warn::{bulk_warning, envelope_warning, print_warning, take_warning};
 use crate::{LivePlot, PlotError};
 use rustlab_proto::{
     ViewerMsg, WireColor, WireHeatmap, WireLineStyle, WirePlotKind, WireSeries, WireSurface,
     MAX_MSG_LEN,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT_FIG_ID: AtomicU32 = AtomicU32::new(0);
@@ -58,6 +59,13 @@ impl ViewerFigure {
 
 impl LivePlot for ViewerFigure {
     fn update_panel(&mut self, idx: usize, x: Vec<f64>, y: Vec<f64>) {
+        // Warn before the envelope scan. The slot latches only when a line
+        // is actually printed, so a small first frame does not hide a later
+        // large one, and a streaming update does not repeat it.
+        let n = x.len().min(y.len());
+        if let Some(line) = live_line_warning(n) {
+            print_warning(&line);
+        }
         let prepared = match prepare_series_for_viewer(&PlotKind::Line, &x, &y) {
             Ok(prepared) => prepared,
             Err(e) => {
@@ -65,9 +73,6 @@ impl LivePlot for ViewerFigure {
                 return;
             }
         };
-        if prepared.output_len < prepared.input_len {
-            note_envelope(prepared.input_len, prepared.output_len);
-        }
         let msg = ViewerMsg::PanelUpdate {
             fig_id: self.fig_id,
             panel: idx as u16,
@@ -125,6 +130,19 @@ impl LivePlot for ViewerFigure {
         if nrows == 0 || ncols == 0 {
             return;
         }
+        // Estimate the RGBA frame before allocating `z` or rasterizing.
+        // A live heatmap that does not fit is dropped; it is not drawn in
+        // the terminal (there is no figure fallback on this path).
+        let bytes = nrows
+            .saturating_mul(ncols)
+            .saturating_mul(4)
+            .saturating_add(64);
+        if let Some(line) = live_heatmap_warning(ncols, nrows, bytes) {
+            print_warning(&line);
+        }
+        if bytes > MAX_MSG_LEN as usize {
+            return;
+        }
         // Send the heatmap to the viewer as a tight one-pixel-per-cell
         // RGBA buffer with no axes / title / labels baked in. The viewer
         // wraps this in `egui_plot::PlotImage` and draws its own axes at
@@ -159,11 +177,7 @@ impl LivePlot for ViewerFigure {
         if rgba.is_empty() {
             return;
         }
-        let bytes = rgba.len().saturating_add(64);
-        if bytes > MAX_MSG_LEN as usize {
-            eprintln!(
-                "viewer: heatmap is {ncols} by {nrows} ({bytes} bytes), over the {MAX_MSG_LEN}-byte viewer IPC limit — not sent"
-            );
+        if rgba.len().saturating_add(64) > MAX_MSG_LEN as usize {
             return;
         }
         let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
@@ -390,6 +404,9 @@ pub fn allocate_viewer_fig_id() -> u32 {
 /// connection was lost, and renders the pending figure in the terminal
 /// so the plot is not silently lost.
 pub fn sync_viewer() {
+    // One envelope line and one bulk line per plot call. Live updates use
+    // their own slots and are not cleared here.
+    reset_static_warning_slots();
     let send_err = VIEWER_CONN.with(|c| {
         let mut guard = c.borrow_mut();
         let conn = guard.as_mut()?;
@@ -405,10 +422,14 @@ pub fn sync_viewer() {
     if matches!(err, PlotError::ViewerPayloadTooLarge(_)) {
         // Nothing was written for the rejected frame, so the socket is
         // still usable. Draw this figure in the terminal, then put the
-        // figure back on the viewer for the next plot.
-        eprintln!(
-            "viewer: {err} — drawing this figure in the terminal. The viewer stays connected."
-        );
+        // figure back on the viewer for the next plot. The up-front
+        // over-cap warning already names this fallback; print a line
+        // here only when that warning did not.
+        if !FALLBACK_WARNED.with(|c| c.get()) {
+            eprintln!(
+                "viewer: {err} — drawing this figure in the terminal. The viewer stays connected."
+            );
+        }
         let previous = crate::figure::current_figure_output();
         crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
         let _ = crate::ascii::render_figure_terminal();
@@ -446,6 +467,8 @@ fn compute_figure_title(fig: &FigureState) -> String {
 
 /// Serialize a full FigureState to the viewer via protocol messages.
 fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), PlotError> {
+    // Before any envelope scan, heatmap raster, or surface flatten.
+    refuse_oversized_plot(fig)?;
     let rows = fig.subplot_rows;
     let cols = fig.subplot_cols;
     let n_panels = rows * cols;
@@ -608,13 +631,8 @@ fn send_figure_state(conn: &mut ViewerConn, fig: &FigureState) -> Result<(), Plo
         // Line / scatter / stem series longer than a wide panel are reduced
         // to a min/max envelope here, before msgpack, so a 1e8-point plot
         // never becomes a multi-gigabyte frame the viewer has to reject.
-        let (wire_series, input_points, output_points) =
-            series_to_wire(&panel.series, &panel.x_labels)?;
-        if output_points < input_points {
-            eprintln!(
-                "viewer: showing {output_points} of {input_points} samples as a min/max envelope ({VIEWER_ENVELOPE_COLUMNS} columns). Zooming in shows that envelope; peaks stay at their original x."
-            );
-        }
+        // The size warning, when there is one, was printed above.
+        let (wire_series, _, _) = series_to_wire(&panel.series, &panel.x_labels)?;
 
         conn.client.send_nowait(&ViewerMsg::PanelUpdate {
             fig_id,
@@ -753,18 +771,191 @@ fn ensure_frame_budget(bytes: usize, what: &str) -> Result<(), PlotError> {
     }
 }
 
-/// One note per thread for live updates, which can fire many times a second.
-fn note_envelope(input_points: usize, output_points: usize) {
-    use std::cell::Cell;
-    thread_local! {
-        static NOTED: Cell<bool> = const { Cell::new(false) };
-    }
-    if NOTED.with(|n| n.replace(true)) {
+// One envelope line and one bar/heatmap/surface line per `sync_viewer`
+// call. Live updates latch separately, and only after a line is printed.
+thread_local! {
+    static ENVELOPE_SLOT: Cell<bool> = const { Cell::new(false) };
+    static BULK_SLOT: Cell<bool> = const { Cell::new(false) };
+    static FALLBACK_WARNED: Cell<bool> = const { Cell::new(false) };
+    static LIVE_ENVELOPE_SLOT: Cell<bool> = const { Cell::new(false) };
+    static LIVE_BULK_SLOT: Cell<bool> = const { Cell::new(false) };
+}
+
+fn reset_static_warning_slots() {
+    ENVELOPE_SLOT.with(|c| c.set(false));
+    BULK_SLOT.with(|c| c.set(false));
+    FALLBACK_WARNED.with(|c| c.set(false));
+}
+
+struct PlotSizeWarning {
+    envelope: Option<String>,
+    bulk: Option<String>,
+    over_cap: bool,
+}
+
+struct BulkNote {
+    what: String,
+    bytes: usize,
+    over: bool,
+}
+
+fn note_bulk(best: &mut Option<BulkNote>, what: String, bytes: usize) {
+    if bulk_warning(&what, bytes, true).is_none() {
         return;
     }
-    eprintln!(
-        "viewer: showing {output_points} of {input_points} samples as a min/max envelope ({VIEWER_ENVELOPE_COLUMNS} columns). Zooming in shows that envelope; peaks stay at their original x."
-    );
+    let over = bytes > MAX_MSG_LEN as usize;
+    match best {
+        Some(cur) if cur.over => {}
+        Some(_) if !over => {}
+        _ => *best = Some(BulkNote { what, bytes, over }),
+    }
+}
+
+/// RGBA payload of a heatmap that has not been rasterized yet.
+fn heatmap_frame_bytes(hm: &crate::figure::HeatmapData) -> Option<(usize, usize, usize)> {
+    match hm.kind {
+        crate::figure::HeatmapKind::ImageRgba => {
+            let buf = hm.rgba.as_ref()?;
+            let width = hm.rgba_width as usize;
+            let height = hm.rgba_height as usize;
+            if width == 0 || height == 0 {
+                return None;
+            }
+            Some((width, height, buf.len().saturating_add(64)))
+        }
+        _ => {
+            let nrows = hm.z.len();
+            let ncols = if nrows > 0 { hm.z[0].len() } else { 0 };
+            if nrows == 0 || ncols == 0 {
+                return None;
+            }
+            let bytes = nrows
+                .saturating_mul(ncols)
+                .saturating_mul(4)
+                .saturating_add(64);
+            Some((ncols, nrows, bytes))
+        }
+    }
+}
+
+/// Sizes for the stderr warning. Does not allocate pixel buffers or scan
+/// the samples. A panel that will be pre-rendered (contour, quiver,
+/// streamline) is skipped: that frame is a fixed bitmap under the
+/// near-cap threshold, and its series are not sent as lines.
+fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
+    let n_panels = fig.subplot_rows.saturating_mul(fig.subplot_cols);
+    let mut samples = 0usize;
+    let mut raw_bytes = 0usize;
+    let mut sent_bytes = 0usize;
+    let mut will_reduce = false;
+    let mut bulk: Option<BulkNote> = None;
+
+    for panel in fig.subplots.iter().take(n_panels) {
+        let prerender = !panel.contours.is_empty()
+            || !panel.quivers.is_empty()
+            || !panel.streamlines.is_empty();
+        if prerender {
+            continue;
+        }
+        if let Some(sf) = &panel.surface {
+            let nrows = sf.z.len();
+            let ncols = if nrows > 0 { sf.z[0].len() } else { 0 };
+            if nrows > 0 && ncols > 0 {
+                let z_len = nrows.saturating_mul(ncols);
+                let bytes = 80 + (5 + 9 * sf.x.len()) + (5 + 9 * sf.y.len()) + (5 + 9 * z_len);
+                note_bulk(&mut bulk, format!("surface {nrows} by {ncols}"), bytes);
+            }
+        }
+        if let Some(hm) = &panel.heatmap {
+            if let Some((ncols, nrows, bytes)) = heatmap_frame_bytes(hm) {
+                note_bulk(&mut bulk, format!("heatmap {ncols} by {nrows}"), bytes);
+            }
+        }
+        for s in &panel.series {
+            let n = s.x_data.len().min(s.y_data.len());
+            if matches!(s.kind, PlotKind::Bar) {
+                note_bulk(
+                    &mut bulk,
+                    format!("bar series of {n} bars"),
+                    estimated_xy_bytes(n, n),
+                );
+                continue;
+            }
+            samples = samples.saturating_add(n);
+            raw_bytes = raw_bytes.saturating_add(estimated_xy_bytes(n, n));
+            let kept = n.min(VIEWER_ENVELOPE_MAX_POINTS);
+            sent_bytes = sent_bytes.saturating_add(estimated_xy_bytes(kept, kept));
+            if n > VIEWER_ENVELOPE_MAX_POINTS {
+                will_reduce = true;
+            }
+        }
+    }
+
+    let envelope = if will_reduce {
+        envelope_warning(samples, raw_bytes, sent_bytes)
+    } else {
+        None
+    };
+    let (bulk_line, over_cap) = match bulk {
+        Some(b) => (bulk_warning(&b.what, b.bytes, true), b.over),
+        None => (None, false),
+    };
+    PlotSizeWarning {
+        envelope,
+        bulk: bulk_line,
+        over_cap,
+    }
+}
+
+fn emit_slot(slot: &Cell<bool>, line: Option<String>) {
+    if let Some(line) = take_warning(slot, line) {
+        print_warning(&line);
+    }
+}
+
+/// Which lines to print. An over-cap figure is not scanned or rasterized,
+/// so the envelope line (which quotes a scan time) is left off. The bulk
+/// line already says the figure goes to the terminal.
+fn lines_to_print(warning: PlotSizeWarning) -> (Option<String>, Option<String>, bool) {
+    if warning.over_cap {
+        (None, warning.bulk, true)
+    } else {
+        (warning.envelope, warning.bulk, false)
+    }
+}
+
+/// Print at most one line warning and one bulk warning, then refuse the
+/// whole figure when a non-decimated frame is over the IPC cap. The
+/// refusal happens before the envelope scan and before any raster.
+fn refuse_oversized_plot(fig: &FigureState) -> Result<(), PlotError> {
+    let (envelope, bulk, over_cap) = lines_to_print(plot_size_warning(fig));
+    ENVELOPE_SLOT.with(|slot| emit_slot(slot, envelope));
+    BULK_SLOT.with(|slot| emit_slot(slot, bulk));
+    if over_cap {
+        FALLBACK_WARNED.with(|c| c.set(true));
+        return Err(PlotError::ViewerPayloadTooLarge(
+            "plot is over the 32 MiB viewer IPC limit".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn live_line_warning(n: usize) -> Option<String> {
+    if n <= VIEWER_ENVELOPE_MAX_POINTS {
+        return None;
+    }
+    let raw = estimated_xy_bytes(n, n);
+    let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS);
+    LIVE_ENVELOPE_SLOT.with(|slot| take_warning(slot, envelope_warning(n, raw, sent)))
+}
+
+fn live_heatmap_warning(ncols: usize, nrows: usize, bytes: usize) -> Option<String> {
+    LIVE_BULK_SLOT.with(|slot| {
+        take_warning(
+            slot,
+            bulk_warning(&format!("heatmap {ncols} by {nrows}"), bytes, false),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -980,5 +1171,165 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains(&n.to_string()), "{msg}");
+    }
+
+    #[test]
+    fn modest_reduction_is_quiet() {
+        let mut fig = FigureState::new();
+        fig.current_mut()
+            .series
+            .push(sine_series(9_000, PlotKind::Line));
+        let w = plot_size_warning(&fig);
+        assert!(w.envelope.is_none(), "under 8 MiB a reduction stays quiet");
+        assert!(w.bulk.is_none());
+        assert!(!w.over_cap);
+    }
+
+    #[test]
+    fn large_line_warning_matches_the_envelope_text() {
+        let n = 500_000usize;
+        let mut fig = FigureState::new();
+        fig.current_mut()
+            .series
+            .push(sine_series(n, PlotKind::Line));
+        let w = plot_size_warning(&fig);
+        let raw = estimated_xy_bytes(n, n);
+        let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS);
+        assert_eq!(w.envelope, envelope_warning(n, raw, sent));
+        let line = w.envelope.unwrap();
+        assert!(line.contains("500000 samples"), "{line}");
+        assert!(line.contains("before sending"), "{line}");
+        assert!(!line.contains("One pass"), "{line}");
+        assert!(!w.over_cap);
+        assert!(w.bulk.is_none());
+    }
+
+    #[test]
+    fn line_warning_sums_every_series() {
+        let mut fig = FigureState::new();
+        fig.current_mut()
+            .series
+            .push(sine_series(500_000, PlotKind::Line));
+        fig.current_mut()
+            .series
+            .push(sine_series(100, PlotKind::Line));
+        let w = plot_size_warning(&fig);
+        let samples = 500_100usize;
+        let raw = estimated_xy_bytes(500_000, 500_000) + estimated_xy_bytes(100, 100);
+        let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS)
+            + estimated_xy_bytes(100, 100);
+        assert_eq!(
+            w.envelope.as_deref(),
+            envelope_warning(samples, raw, sent).as_deref()
+        );
+    }
+
+    #[test]
+    fn oversized_bar_warning_is_the_terminal_fallback_line() {
+        let n = 2_000_000usize;
+        let mut fig = FigureState::new();
+        fig.current_mut().series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0; n],
+            y_data: vec![1.0; n],
+            color: SeriesColor::Blue,
+            style: LineStyle::Solid,
+            kind: PlotKind::Bar,
+        });
+        let w = plot_size_warning(&fig);
+        let bytes = estimated_xy_bytes(n, n);
+        assert_eq!(
+            w.bulk.as_deref(),
+            bulk_warning(&format!("bar series of {n} bars"), bytes, true).as_deref()
+        );
+        assert!(w.over_cap);
+        assert!(w.envelope.is_none());
+    }
+
+    #[test]
+    fn over_cap_plot_warns_with_the_fallback_line_only() {
+        let (envelope, bulk, over) = lines_to_print(PlotSizeWarning {
+            envelope: Some("line scan".into()),
+            bulk: Some("terminal fallback".into()),
+            over_cap: true,
+        });
+        assert!(envelope.is_none());
+        assert_eq!(bulk.as_deref(), Some("terminal fallback"));
+        assert!(over);
+        let (envelope, bulk, over) = lines_to_print(PlotSizeWarning {
+            envelope: Some("line scan".into()),
+            bulk: Some("sent whole".into()),
+            over_cap: false,
+        });
+        assert_eq!(envelope.as_deref(), Some("line scan"));
+        assert_eq!(bulk.as_deref(), Some("sent whole"));
+        assert!(!over);
+    }
+
+    #[test]
+    fn bulk_note_keeps_the_first_over_cap_item() {
+        let mut best = None;
+        note_bulk(&mut best, "small".into(), 1_000);
+        assert!(best.is_none());
+        note_bulk(
+            &mut best,
+            "near".into(),
+            crate::viewer_warn::VIEWER_NEAR_CAP_BYTES,
+        );
+        note_bulk(&mut best, "over".into(), MAX_MSG_LEN as usize + 1);
+        note_bulk(&mut best, "later".into(), MAX_MSG_LEN as usize + 100);
+        assert_eq!(best.unwrap().what, "over");
+    }
+
+    #[test]
+    fn static_warning_slot_resets_each_plot_and_notebooks_do_not_consume_it() {
+        reset_static_warning_slots();
+        let line = Some("viewer: warning: example".to_string());
+        ENVELOPE_SLOT.with(|slot| {
+            assert_eq!(
+                take_warning(slot, line.clone()).as_deref(),
+                Some("viewer: warning: example")
+            );
+            assert!(take_warning(slot, line.clone()).is_none());
+        });
+        reset_static_warning_slots();
+        let prev = crate::figure::plot_context();
+        crate::figure::set_plot_context(crate::figure::PlotContext::Notebook);
+        ENVELOPE_SLOT.with(|slot| {
+            assert!(take_warning(slot, line.clone()).is_none());
+            assert!(!slot.get());
+        });
+        crate::figure::set_plot_context(crate::figure::PlotContext::Terminal);
+        ENVELOPE_SLOT.with(|slot| {
+            assert_eq!(
+                take_warning(slot, line).as_deref(),
+                Some("viewer: warning: example")
+            );
+        });
+        crate::figure::set_plot_context(prev);
+        reset_static_warning_slots();
+    }
+
+    #[test]
+    fn live_line_warning_latches_only_after_a_large_frame() {
+        LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
+        assert!(live_line_warning(1_000).is_none());
+        let first = live_line_warning(500_000).unwrap();
+        assert!(first.contains("500000 samples"), "{first}");
+        assert!(live_line_warning(500_000).is_none());
+        LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
+    }
+
+    #[test]
+    fn live_heatmap_over_the_cap_names_no_terminal_fallback() {
+        LIVE_BULK_SLOT.with(|slot| slot.set(false));
+        let bytes = 4096usize * 2048 * 4 + 64;
+        let line = live_heatmap_warning(4096, 2048, bytes).unwrap();
+        assert_eq!(
+            line,
+            "viewer: warning: heatmap 4096 by 2048 is about 32.0 MiB, over the 32 MiB viewer limit — not sending."
+        );
+        assert!(live_heatmap_warning(4096, 2048, bytes).is_none());
+        LIVE_BULK_SLOT.with(|slot| slot.set(false));
     }
 }

@@ -270,7 +270,10 @@ prefix and does not allocate that payload. The writer encodes first,
 then refuses to send a frame over the limit and writes nothing, so a
 long `plot` cannot push a truncated length onto the socket. Line,
 scatter, and stem series are reduced to a min/max envelope before that
-encode (see `docs/functions.md`, viewer).
+encode (see `docs/functions.md`, viewer). A plot at or above 8 MiB
+(lines) or 16 MiB (bar, heatmap, surface) prints one stderr warning
+first, with the original size and what will actually be sent. Notebook
+renders do not print it.
 
 On platforms that use TCP `127.0.0.1` instead of a Unix socket, traffic
 remains loopback-only with **no application-level auth** — local-user
