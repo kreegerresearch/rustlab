@@ -2112,21 +2112,15 @@ same limits.
 
 **Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples (at most 8192 points; shared endpoints are not repeated). Bar charts are sent whole.
 
-A reduction whose unreduced payload is under 8 MiB is quiet. At or above 8 MiB, rustlab prints one line on stderr *before* the scan, once per plot. A 1e8-point line prints:
+Before that work, rustlab estimates the wall time and the extra memory of the reduction, encode, and send (a few nanoseconds per sample or per byte; the arrays the script already holds are not counted again). It prints one line on stderr when the estimate is at least about 0.25 s, or the extra memory is at least an eighth of available memory (64 MiB when that figure cannot be read). A 1e8-point line prints:
 
 ```
-viewer: warning: 100000000 samples would be about 1.68 GiB; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending. One pass over the samples, about 400 ms.
+viewer: warning: plotting 100000000 samples will take about 0.4 s and about 272 KiB extra memory; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending.
 ```
 
-The time clause is included when the scan is expected to take at least 100 ms. Several lines in one plot are summed into that one line.
+The extra memory there is the envelope plus the message, not the input arrays. A 1e7-point line estimates about 40 ms and stays quiet. Several lines in one plot are summed into that one line.
 
-**Large frames.** A bar chart, heatmap, or surface is not reduced. At or above 16 MiB (half of the 32 MiB viewer limit) rustlab prints one stderr line before the frame is built or sent. Close to the limit:
-
-```
-viewer: warning: bar series of 1000000 bars is about 17.2 MiB (32 MiB limit) — sending it whole, not reduced to an envelope.
-```
-
-Over the limit, that figure is drawn in the terminal and the viewer stays connected:
+**Large frames.** A bar chart, heatmap, or surface is not reduced. Under the 32 MiB viewer limit those frames stay quiet unless the time or extra-memory estimate trips. The limit itself is a protocol cap, not a warning threshold. Over it, that figure is drawn in the terminal and the viewer stays connected:
 
 ```
 viewer: warning: bar series of 2000000 bars is about 34.3 MiB, over the 32 MiB viewer limit — not sending; drawing this figure in the terminal. The viewer stays connected.

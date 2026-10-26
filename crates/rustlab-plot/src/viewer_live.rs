@@ -7,7 +7,9 @@
 use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS, VIEWER_ENVELOPE_MAX_POINTS};
 use crate::figure::{FigureState, LineStyle, PlotKind, Series, SeriesColor, FIGURE};
 use crate::viewer_client::ViewerClient;
-use crate::viewer_warn::{bulk_warning, envelope_warning, print_warning, take_warning};
+use crate::viewer_warn::{
+    bulk_warning, envelope_warning, print_warning, take_warning, RASTER_NANOS_PER_PIXEL,
+};
 use crate::{LivePlot, PlotError};
 use rustlab_proto::{
     ViewerMsg, WireColor, WireHeatmap, WireLineStyle, WirePlotKind, WireSeries, WireSurface,
@@ -791,23 +793,33 @@ struct PlotSizeWarning {
     envelope: Option<String>,
     bulk: Option<String>,
     over_cap: bool,
+    /// Totals the warning was built from. Tests assert the sum; the
+    /// warning text is what production reads.
+    #[cfg(test)]
+    samples: usize,
+    #[cfg(test)]
+    scan_samples: usize,
+    #[cfg(test)]
+    sent_points: usize,
+    #[cfg(test)]
+    sent_bytes: usize,
 }
 
 struct BulkNote {
-    what: String,
-    bytes: usize,
+    line: String,
     over: bool,
 }
 
-fn note_bulk(best: &mut Option<BulkNote>, what: String, bytes: usize) {
-    if bulk_warning(&what, bytes, true).is_none() {
+/// Keep the first cost warning, and replace it with the first frame that
+/// is over the IPC cap. A `None` line is under both gates.
+fn note_bulk(best: &mut Option<BulkNote>, line: Option<String>, over: bool) {
+    let Some(line) = line else {
         return;
-    }
-    let over = bytes > MAX_MSG_LEN as usize;
+    };
     match best {
         Some(cur) if cur.over => {}
         Some(_) if !over => {}
-        _ => *best = Some(BulkNote { what, bytes, over }),
+        _ => *best = Some(BulkNote { line, over }),
     }
 }
 
@@ -840,14 +852,14 @@ fn heatmap_frame_bytes(hm: &crate::figure::HeatmapData) -> Option<(usize, usize,
 
 /// Sizes for the stderr warning. Does not allocate pixel buffers or scan
 /// the samples. A panel that will be pre-rendered (contour, quiver,
-/// streamline) is skipped: that frame is a fixed bitmap under the
-/// near-cap threshold, and its series are not sent as lines.
+/// streamline) is skipped: that frame is a fixed bitmap, and its series
+/// are not sent as lines.
 fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
     let n_panels = fig.subplot_rows.saturating_mul(fig.subplot_cols);
     let mut samples = 0usize;
-    let mut raw_bytes = 0usize;
+    let mut scan_samples = 0usize;
+    let mut sent_points = 0usize;
     let mut sent_bytes = 0usize;
-    let mut will_reduce = false;
     let mut bulk: Option<BulkNote> = None;
 
     for panel in fig.subplots.iter().take(n_panels) {
@@ -863,47 +875,103 @@ fn plot_size_warning(fig: &FigureState) -> PlotSizeWarning {
             if nrows > 0 && ncols > 0 {
                 let z_len = nrows.saturating_mul(ncols);
                 let bytes = 80 + (5 + 9 * sf.x.len()) + (5 + 9 * sf.y.len()) + (5 + 9 * z_len);
-                note_bulk(&mut bulk, format!("surface {nrows} by {ncols}"), bytes);
+                let copies = sf.x.len().saturating_add(sf.y.len()).saturating_add(z_len);
+                let extra = copies.saturating_mul(8).saturating_add(bytes);
+                let over = bytes > MAX_MSG_LEN as usize;
+                note_bulk(
+                    &mut bulk,
+                    bulk_warning(
+                        &format!("surface {nrows} by {ncols}"),
+                        bytes,
+                        extra,
+                        0,
+                        true,
+                    ),
+                    over,
+                );
             }
         }
         if let Some(hm) = &panel.heatmap {
             if let Some((ncols, nrows, bytes)) = heatmap_frame_bytes(hm) {
-                note_bulk(&mut bulk, format!("heatmap {ncols} by {nrows}"), bytes);
+                let (extra, work) = heatmap_extra(hm, ncols, nrows, bytes);
+                let over = bytes > MAX_MSG_LEN as usize;
+                note_bulk(
+                    &mut bulk,
+                    bulk_warning(
+                        &format!("heatmap {ncols} by {nrows}"),
+                        bytes,
+                        extra,
+                        work,
+                        true,
+                    ),
+                    over,
+                );
             }
         }
         for s in &panel.series {
             let n = s.x_data.len().min(s.y_data.len());
             if matches!(s.kind, PlotKind::Bar) {
+                let payload = estimated_xy_bytes(n, n);
+                let extra = n.saturating_mul(16).saturating_add(payload);
+                let over = payload > MAX_MSG_LEN as usize;
                 note_bulk(
                     &mut bulk,
-                    format!("bar series of {n} bars"),
-                    estimated_xy_bytes(n, n),
+                    bulk_warning(&format!("bar series of {n} bars"), payload, extra, 0, true),
+                    over,
                 );
                 continue;
             }
             samples = samples.saturating_add(n);
-            raw_bytes = raw_bytes.saturating_add(estimated_xy_bytes(n, n));
             let kept = n.min(VIEWER_ENVELOPE_MAX_POINTS);
+            sent_points = sent_points.saturating_add(kept);
             sent_bytes = sent_bytes.saturating_add(estimated_xy_bytes(kept, kept));
             if n > VIEWER_ENVELOPE_MAX_POINTS {
-                will_reduce = true;
+                scan_samples = scan_samples.saturating_add(n);
             }
         }
     }
 
-    let envelope = if will_reduce {
-        envelope_warning(samples, raw_bytes, sent_bytes)
+    let envelope = if samples > 0 {
+        envelope_warning(samples, scan_samples, sent_points, sent_bytes)
     } else {
         None
     };
     let (bulk_line, over_cap) = match bulk {
-        Some(b) => (bulk_warning(&b.what, b.bytes, true), b.over),
+        Some(b) => (Some(b.line), b.over),
         None => (None, false),
     };
     PlotSizeWarning {
         envelope,
         bulk: bulk_line,
         over_cap,
+        #[cfg(test)]
+        samples,
+        #[cfg(test)]
+        scan_samples,
+        #[cfg(test)]
+        sent_points,
+        #[cfg(test)]
+        sent_bytes,
+    }
+}
+
+/// Extra bytes and raster work for a heatmap frame.
+/// `ImageRgba` already holds the pixels, so the extra cost is the msgpack
+/// copy. A value grid is rasterized first (12 ns/pixel) into an RGBA
+/// buffer that stays live next to that copy.
+fn heatmap_extra(
+    hm: &crate::figure::HeatmapData,
+    ncols: usize,
+    nrows: usize,
+    payload: usize,
+) -> (usize, u128) {
+    let pixels = ncols.saturating_mul(nrows);
+    let rgba = pixels.saturating_mul(4);
+    if matches!(hm.kind, crate::figure::HeatmapKind::ImageRgba) {
+        (payload, 0)
+    } else {
+        let work = (pixels as u128).saturating_mul(RASTER_NANOS_PER_PIXEL);
+        (rgba.saturating_add(payload), work)
     }
 }
 
@@ -944,16 +1012,30 @@ fn live_line_warning(n: usize) -> Option<String> {
     if n <= VIEWER_ENVELOPE_MAX_POINTS {
         return None;
     }
-    let raw = estimated_xy_bytes(n, n);
     let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS);
-    LIVE_ENVELOPE_SLOT.with(|slot| take_warning(slot, envelope_warning(n, raw, sent)))
+    LIVE_ENVELOPE_SLOT.with(|slot| {
+        take_warning(
+            slot,
+            envelope_warning(n, n, VIEWER_ENVELOPE_MAX_POINTS, sent),
+        )
+    })
 }
 
 fn live_heatmap_warning(ncols: usize, nrows: usize, bytes: usize) -> Option<String> {
+    let pixels = ncols.saturating_mul(nrows);
+    let rgba = pixels.saturating_mul(4);
+    let work = (pixels as u128).saturating_mul(RASTER_NANOS_PER_PIXEL);
+    let extra = rgba.saturating_add(bytes);
     LIVE_BULK_SLOT.with(|slot| {
         take_warning(
             slot,
-            bulk_warning(&format!("heatmap {ncols} by {nrows}"), bytes, false),
+            bulk_warning(
+                &format!("heatmap {ncols} by {nrows}"),
+                bytes,
+                extra,
+                work,
+                false,
+            ),
         )
     })
 }
@@ -1180,26 +1262,29 @@ mod tests {
             .series
             .push(sine_series(9_000, PlotKind::Line));
         let w = plot_size_warning(&fig);
-        assert!(w.envelope.is_none(), "under 8 MiB a reduction stays quiet");
+        assert!(w.envelope.is_none(), "a short reduction stays quiet");
+        assert_eq!(w.scan_samples, 9_000);
+        assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS);
         assert!(w.bulk.is_none());
         assert!(!w.over_cap);
     }
 
     #[test]
-    fn large_line_warning_matches_the_envelope_text() {
+    fn half_million_line_is_under_both_gates() {
         let n = 500_000usize;
         let mut fig = FigureState::new();
         fig.current_mut()
             .series
             .push(sine_series(n, PlotKind::Line));
         let w = plot_size_warning(&fig);
-        let raw = estimated_xy_bytes(n, n);
-        let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS);
-        assert_eq!(w.envelope, envelope_warning(n, raw, sent));
-        let line = w.envelope.unwrap();
-        assert!(line.contains("500000 samples"), "{line}");
-        assert!(line.contains("before sending"), "{line}");
-        assert!(!line.contains("One pass"), "{line}");
+        assert_eq!(w.samples, n);
+        assert_eq!(w.scan_samples, n);
+        assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS);
+        assert_eq!(
+            w.envelope,
+            envelope_warning(w.samples, w.scan_samples, w.sent_points, w.sent_bytes)
+        );
+        assert!(w.envelope.is_none(), "0.5e6 estimates a few milliseconds");
         assert!(!w.over_cap);
         assert!(w.bulk.is_none());
     }
@@ -1214,13 +1299,15 @@ mod tests {
             .series
             .push(sine_series(100, PlotKind::Line));
         let w = plot_size_warning(&fig);
-        let samples = 500_100usize;
-        let raw = estimated_xy_bytes(500_000, 500_000) + estimated_xy_bytes(100, 100);
-        let sent = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS)
-            + estimated_xy_bytes(100, 100);
+        assert_eq!(w.samples, 500_100);
+        assert_eq!(w.scan_samples, 500_000);
+        assert_eq!(w.sent_points, VIEWER_ENVELOPE_MAX_POINTS + 100);
+        let short = estimated_xy_bytes(100, 100);
+        let kept = estimated_xy_bytes(VIEWER_ENVELOPE_MAX_POINTS, VIEWER_ENVELOPE_MAX_POINTS);
+        assert_eq!(w.sent_bytes, kept + short);
         assert_eq!(
             w.envelope.as_deref(),
-            envelope_warning(samples, raw, sent).as_deref()
+            envelope_warning(w.samples, w.scan_samples, w.sent_points, w.sent_bytes).as_deref()
         );
     }
 
@@ -1238,9 +1325,10 @@ mod tests {
         });
         let w = plot_size_warning(&fig);
         let bytes = estimated_xy_bytes(n, n);
+        let extra = n.saturating_mul(16).saturating_add(bytes);
         assert_eq!(
             w.bulk.as_deref(),
-            bulk_warning(&format!("bar series of {n} bars"), bytes, true).as_deref()
+            bulk_warning(&format!("bar series of {n} bars"), bytes, extra, 0, true).as_deref()
         );
         assert!(w.over_cap);
         assert!(w.envelope.is_none());
@@ -1252,6 +1340,10 @@ mod tests {
             envelope: Some("line scan".into()),
             bulk: Some("terminal fallback".into()),
             over_cap: true,
+            samples: 0,
+            scan_samples: 0,
+            sent_points: 0,
+            sent_bytes: 0,
         });
         assert!(envelope.is_none());
         assert_eq!(bulk.as_deref(), Some("terminal fallback"));
@@ -1260,6 +1352,10 @@ mod tests {
             envelope: Some("line scan".into()),
             bulk: Some("sent whole".into()),
             over_cap: false,
+            samples: 0,
+            scan_samples: 0,
+            sent_points: 0,
+            sent_bytes: 0,
         });
         assert_eq!(envelope.as_deref(), Some("line scan"));
         assert_eq!(bulk.as_deref(), Some("sent whole"));
@@ -1269,16 +1365,17 @@ mod tests {
     #[test]
     fn bulk_note_keeps_the_first_over_cap_item() {
         let mut best = None;
-        note_bulk(&mut best, "small".into(), 1_000);
+        note_bulk(&mut best, None, false);
         assert!(best.is_none());
-        note_bulk(
-            &mut best,
-            "near".into(),
-            crate::viewer_warn::VIEWER_NEAR_CAP_BYTES,
-        );
-        note_bulk(&mut best, "over".into(), MAX_MSG_LEN as usize + 1);
-        note_bulk(&mut best, "later".into(), MAX_MSG_LEN as usize + 100);
-        assert_eq!(best.unwrap().what, "over");
+        note_bulk(&mut best, Some("near".into()), false);
+        note_bulk(&mut best, Some("over".into()), true);
+        note_bulk(&mut best, Some("later".into()), true);
+        assert_eq!(best.unwrap().line, "over");
+
+        let mut best = None;
+        note_bulk(&mut best, Some("first".into()), false);
+        note_bulk(&mut best, Some("second".into()), false);
+        assert_eq!(best.unwrap().line, "first");
     }
 
     #[test]
@@ -1314,9 +1411,16 @@ mod tests {
     fn live_line_warning_latches_only_after_a_large_frame() {
         LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
         assert!(live_line_warning(1_000).is_none());
-        let first = live_line_warning(500_000).unwrap();
-        assert!(first.contains("500000 samples"), "{first}");
-        assert!(live_line_warning(500_000).is_none());
+        assert!(
+            live_line_warning(1_000_000).is_none(),
+            "1e6 estimates about 4 ms"
+        );
+        let first = live_line_warning(100_000_000).unwrap();
+        assert!(
+            first.starts_with("viewer: warning: plotting 100000000 samples will take about 0.4 s"),
+            "{first}"
+        );
+        assert!(live_line_warning(100_000_000).is_none());
         LIVE_ENVELOPE_SLOT.with(|slot| slot.set(false));
     }
 
