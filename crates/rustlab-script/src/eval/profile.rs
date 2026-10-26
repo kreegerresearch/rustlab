@@ -9,9 +9,12 @@
 //! - `[top-level]` — script time outside any profiled call (statements,
 //!   loops, assignments at the top level). With it, the self times of all
 //!   main-thread rows add up to the wall time since profiling started.
-//! - `[matmul]` — matrix products (`A * B`), always on while profiling.
+//! - `[matmul]` — matrix products (`A * B`, including `A' * B`), always on
+//!   while profiling. In/Out are the stored bytes of the two operands and
+//!   of the product, so Mbit/s is the throughput of the multiply.
 //! - With op profiling (`--profile=ops`): one row per operator (`[+]`,
-//!   `[.*]`, …), `[transpose]`, `[index]` and `[index-assign]`.
+//!   `[.*]`, …) and `[transpose]`, with the same operand/result bytes.
+//!   `[index]` and `[index-assign]` time the subscript and leave In/Out at 0.
 //! - `[widen]` and `[promote]` — complex views built from real storage, and
 //!   real buffers converted to complex by a write (`eval/shared.rs`). Calls,
 //!   time (in the total column; it is already inside the caller's self
@@ -178,9 +181,15 @@ impl Profiler {
         Some(name)
     }
 
-    pub fn exit_op(&mut self, frame: OpFrame) {
+    /// Finish the operator row started by [`enter_op`].
+    ///
+    /// `in_bytes` and `out_bytes` are the stored sizes of the operands and
+    /// the result, the same accounting as a function call. They are ignored
+    /// when `frame` is `None`. `[index]` and `[index-assign]` pass 0: a
+    /// subscript is not a bulk copy of the whole container.
+    pub fn exit_op(&mut self, frame: OpFrame, in_bytes: u64, out_bytes: u64) {
         if let Some(name) = frame {
-            self.exit(name, 0, 0);
+            self.exit(name, in_bytes, out_bytes);
         }
     }
 

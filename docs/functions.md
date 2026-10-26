@@ -4015,14 +4015,14 @@ Every call is recorded where it happens, including calls nested inside user func
 | Total (ms) | Inclusive time: the call and everything it called. A recursive function counts its outermost call only. |
 | Self (ms) | Time in the call itself, excluding the profiled calls it made |
 | Avg (µs) | Total ÷ Calls |
-| In / Out (KB), Mbit/s | Bytes of numeric arguments and results as stored (8 per element of a real array, 16 per complex element), and their throughput |
+| In / Out (KB), Mbit/s | Bytes of numeric arguments and results as stored (8 per element of a real array, 16 per complex element), and their throughput. A function row counts its arguments and its return value. `[matmul]` and, with `--profile=ops`, each operator row and `[transpose]` count the operands and the result the same way. `[index]` and `[index-assign]` time the subscript and leave In/Out at 0 |
 
 Rows in brackets are not functions:
 
 - `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
-- `[matmul]` — matrix products `A * B`, always recorded.
+- `[matmul]` — matrix products `A * B`, always recorded, including `A' * B` where the transpose is read in place and not written out. In/Out are the stored bytes of the two operands and of the product, so Mbit/s is the throughput of that multiply.
 - `[widen]` and `[promote]` — storage conversions, always recorded when they happen. An array of real numbers is stored as real numbers; `[widen]` counts the times an operation that only handles complex arrays had to build a complex copy of one, and `[promote]` the times a write of complex values (or an operation that only writes complex arrays) converted one in place. Calls, time in the Total column (that time is already inside the caller's Self time, so Self is 0), the real bytes read (In) and the complex bytes built (Out). Results are the same either way; these rows show where time goes to conversions.
-- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
+- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
 
