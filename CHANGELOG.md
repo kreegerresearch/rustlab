@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.18
+
+### Fixed
+- **`profile()` reports throughput for matrix products.** `[matmul]` (and, with `rustlab run --profile=ops`, each operator row and `[transpose]`) left In, Out, and Mbit/s at 0: the timer was recorded but the operand and result sizes were not. Those columns now use the same stored-byte rule as a function call (8 bytes per real element, 16 per complex element), so `C = A * B` and `C = A' * B` show the multiply's throughput. `[index]` and `[index-assign]` still time the subscript only.
+
 ## 0.3.17
 
 ### Added

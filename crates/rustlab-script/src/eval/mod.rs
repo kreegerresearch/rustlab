@@ -1583,7 +1583,7 @@ impl Evaluator {
                 let val = self.eval_expr(expr)?;
                 let frame = self.profiler.enter_op("[index-assign]");
                 let result = self.exec_index_assign(name, indices, val, suppress);
-                self.profiler.exit_op(frame);
+                self.profiler.exit_op(frame, 0, 0);
                 result?;
             }
             StmtKind::Expr(expr, suppress) => {
@@ -2322,7 +2322,7 @@ impl Evaluator {
                 };
                 let frame = self.profiler.enter_op("[index]");
                 let result = container.index(idx_vals).map_err(|e| ScriptError::runtime(e));
-                self.profiler.exit_op(frame);
+                self.profiler.exit_op(frame, 0, 0);
                 result
             }
             Expr::Lambda { params, body } => Ok(Value::Lambda {
@@ -3464,7 +3464,7 @@ impl Evaluator {
             None => &self.env[name],
         };
         let result = container.index_ref(idx_vals).map_err(|e| ScriptError::runtime(e));
-        self.profiler.exit_op(frame);
+        self.profiler.exit_op(frame, 0, 0);
         result
     }
 
@@ -3520,8 +3520,9 @@ impl Evaluator {
                 } else {
                     None
                 };
+                let in_bytes = if frame.is_some() { Self::value_bytes(&l) + Self::value_bytes(&r) } else { 0 };
                 let result = Value::binop(op, l, r).map_err(ScriptError::type_err);
-                self.profiler.exit_op(frame);
+                self.exit_op_result(frame, in_bytes, &result);
                 return result;
             }
             (l, r) => {
@@ -3538,8 +3539,13 @@ impl Evaluator {
                 } else {
                     None
                 };
+                let in_bytes = if frame.is_some() {
+                    Self::value_bytes(l.get()) + Self::value_bytes(r.get())
+                } else {
+                    0
+                };
                 let result = elementwise::binop(op, l, r).map_err(ScriptError::type_err);
-                self.profiler.exit_op(frame);
+                self.exit_op_result(frame, in_bytes, &result);
                 result
             }
         };
@@ -3557,23 +3563,32 @@ impl Evaluator {
     fn eval_transposed_matmul(&mut self, lhs: &Expr, rhs: &Expr) -> Result<Value, ScriptError> {
         let l = self.matmul_side(lhs)?;
         let r = self.matmul_side(rhs)?;
+        // Count stored bytes before the views exist. A real operand that
+        // the complex path widens is still 8 bytes per element here.
+        let in_bytes = if self.profiler.is_enabled() {
+            l.stored_bytes(&self.env) + r.stored_bytes(&self.env)
+        } else {
+            0
+        };
         if let (Some(a), Some(b)) = (l.real_view(&self.env), r.real_view(&self.env)) {
             if a.ncols() == b.nrows() {
                 // Real-stored: conjugation does nothing, and the product
                 // stays real (the same kernel as the complex path's real
                 // case, so the same bits).
                 let frame = self.profiler.enter_op("[matmul]");
-                let m = rustlab_core::matmul::matmul_real(&a, &b);
-                self.profiler.exit_op(frame);
-                return Ok(Value::real_matrix(m));
+                let result = Value::real_matrix(rustlab_core::matmul::matmul_real(&a, &b));
+                let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
+                self.profiler.exit_op(frame, in_bytes, out_bytes);
+                return Ok(result);
             }
         }
         if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
             if a.ncols() == b.nrows() {
                 let frame = self.profiler.enter_op("[matmul]");
-                let m = rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b);
-                self.profiler.exit_op(frame);
-                return Ok(Value::Matrix(m.into()));
+                let result = Value::Matrix(rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b).into());
+                let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
+                self.profiler.exit_op(frame, in_bytes, out_bytes);
+                return Ok(result);
             }
         }
         let l = self.materialize_side(l)?;
@@ -3598,12 +3613,17 @@ impl Evaluator {
             MatmulSide::T { inner, conj } => (inner, conj),
         };
         let frame = self.profiler.enter_op("[transpose]");
-        let v = match &inner {
-            PreOperand::Owned(v) => v,
-            PreOperand::Var(name) => &self.env[*name],
+        let (in_bytes, out_bytes, result) = {
+            let v = match &inner {
+                PreOperand::Owned(v) => v,
+                PreOperand::Var(name) => &self.env[*name],
+            };
+            let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
+            let in_bytes = if frame.is_some() { Self::value_bytes(v) } else { 0 };
+            let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+            (in_bytes, out_bytes, result)
         };
-        let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
-        self.profiler.exit_op(frame);
+        self.profiler.exit_op(frame, in_bytes, out_bytes);
         Ok(PreOperand::Owned(result.map_err(ScriptError::runtime)?))
     }
 
@@ -3630,13 +3650,20 @@ impl Evaluator {
             _ => Some(self.eval_expr(inner)?),
         };
         let frame = self.profiler.enter_op("[transpose]");
-        let v = match (&owned, inner) {
-            (Some(v), _) => v,
-            (None, Expr::Var(name)) => &self.env[name],
-            (None, _) => unreachable!("only a variable is borrowed"),
+        // The borrow of a workspace variable ends before `exit_op` mutably
+        // uses the profiler.
+        let (in_bytes, out_bytes, result) = {
+            let v = match (&owned, inner) {
+                (Some(v), _) => v,
+                (None, Expr::Var(name)) => &self.env[name],
+                (None, _) => unreachable!("only a variable is borrowed"),
+            };
+            let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
+            let in_bytes = if frame.is_some() { Self::value_bytes(v) } else { 0 };
+            let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+            (in_bytes, out_bytes, result)
         };
-        let result = if conj { v.transpose_ref() } else { v.non_conj_transpose_ref() };
-        self.profiler.exit_op(frame);
+        self.profiler.exit_op(frame, in_bytes, out_bytes);
         result.map_err(ScriptError::runtime)
     }
 
@@ -3696,6 +3723,12 @@ impl Evaluator {
             widget_values: self.widget_values.clone(),
             widget_reads: BTreeSet::new(),
         }
+    }
+
+    /// Close an operator frame with `in_bytes` and the stored size of `result`.
+    fn exit_op_result(&mut self, frame: profile::OpFrame, in_bytes: u64, result: &Result<Value, ScriptError>) {
+        let out_bytes = if frame.is_some() { result.as_ref().map_or(0, Self::value_bytes) } else { 0 };
+        self.profiler.exit_op(frame, in_bytes, out_bytes);
     }
 
     /// Approximate byte size of a Value for IO throughput accounting.
@@ -4726,6 +4759,19 @@ enum MatmulSide<'e> {
 }
 
 impl MatmulSide<'_> {
+    /// Stored bytes of the matrix this operand reads. A transpose does not
+    /// change the element count, so `A'` counts the same as `A`.
+    fn stored_bytes(&self, env: &fast_hash::FxHashMap<String, Value>) -> u64 {
+        let p = match self {
+            MatmulSide::Plain(p) | MatmulSide::T { inner: p, .. } => p,
+        };
+        let v = match p {
+            PreOperand::Owned(v) => v,
+            PreOperand::Var(name) => &env[*name],
+        };
+        Evaluator::value_bytes(v)
+    }
+
     /// The real matrix this operand stands for, transposed or not, when it
     /// is a real-stored matrix.
     fn real_view<'a>(&'a self, env: &'a fast_hash::FxHashMap<String, Value>) -> Option<ndarray::ArrayView2<'a, f64>> {

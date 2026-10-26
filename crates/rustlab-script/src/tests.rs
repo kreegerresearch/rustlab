@@ -6803,6 +6803,110 @@ mod profiling_tests {
         assert!(find(&r2, "[matmul]").is_none());
     }
 
+    /// `[matmul]` used to record time with 0 bytes, so Mbit/s was always 0.
+    /// In/Out follow the same stored-size rule as a function call.
+    #[test]
+    fn matmul_row_counts_stored_bytes() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::eval::shared::set_real_storage(None);
+            }
+        }
+        let _reset = Reset;
+        crate::eval::shared::set_real_storage(Some(true));
+
+        let bytes = |src: &str, row: &str| {
+            let (_, report) = run_profiled(src, None);
+            let s = find(&report, row).unwrap_or_else(|| panic!("missing {row}"));
+            (s.call_count, s.input_bytes, s.output_bytes)
+        };
+
+        // Two real 4×4 inputs, one real 4×4 product.
+        assert_eq!(
+            bytes("A = rand(4, 4); B = rand(4, 4); C = A * B;", "[matmul]"),
+            (1, 2 * 16 * 8, 16 * 8)
+        );
+        // Transposed operand is read in place; the element count is unchanged.
+        assert_eq!(
+            bytes("A = rand(4, 4); B = rand(4, 4); C = A' * B;", "[matmul]"),
+            (1, 2 * 16 * 8, 16 * 8)
+        );
+        // Row vector × matrix, and an m×1 matrix times a vector (outer product).
+        assert_eq!(
+            bytes("v = rand(1, 4); A = rand(4, 3); c = v * A;", "[matmul]"),
+            (1, (4 + 12) * 8, 3 * 8)
+        );
+        assert_eq!(
+            bytes("M = rand(3, 1); v = rand(4); C = M * v;", "[matmul]"),
+            (1, (3 + 4) * 8, 12 * 8)
+        );
+        // Real × complex: the real operand stays 8 bytes per element.
+        assert_eq!(
+            bytes("A = rand(4, 4); B = A * 1j; C = A * B;", "[matmul]"),
+            (1, 16 * 8 + 16 * 16, 16 * 16)
+        );
+
+        crate::eval::shared::set_real_storage(Some(false));
+        assert_eq!(
+            bytes("A = rand(4, 4); B = rand(4, 4); C = A * B;", "[matmul]"),
+            (1, 2 * 16 * 16, 16 * 16)
+        );
+
+        // Worker rows keep the same byte counts.
+        let (_, report) = run_profiled(
+            "A = rand(4, 4); B = rand(4, 4); C = parmap(@(k) A * B, 1:2);",
+            None,
+        );
+        let w = find(&report, "parmap:[matmul]").expect("parmap:[matmul]");
+        assert_eq!(w.call_count, 2);
+        assert_eq!(w.input_bytes, 2 * (2 * 16 * 16));
+        assert_eq!(w.output_bytes, 2 * (16 * 16));
+        assert!(w.parallel);
+    }
+
+    #[test]
+    fn operator_rows_count_stored_bytes_index_does_not() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::eval::shared::set_real_storage(None);
+            }
+        }
+        let _reset = Reset;
+        crate::eval::shared::set_real_storage(Some(true));
+        let src = "A = rand(4, 4); B = rand(4, 4); C = A + B; T = A'; v = A(2, 3); A(1, 1) = 0;";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        let add = find(&report, "[+]").expect("[+]");
+        assert_eq!(add.input_bytes, 2 * 16 * 8);
+        assert_eq!(add.output_bytes, 16 * 8);
+        let t = find(&report, "[transpose]").expect("[transpose]");
+        assert_eq!(t.input_bytes, 16 * 8);
+        assert_eq!(t.output_bytes, 16 * 8);
+        assert_eq!(find(&report, "[index]").expect("[index]").input_bytes, 0);
+        assert_eq!(find(&report, "[index]").unwrap().output_bytes, 0);
+        assert_eq!(find(&report, "[index-assign]").expect("[index-assign]").input_bytes, 0);
+
+        let src = "x = 2 * 3;";
+        let tokens = lexer::tokenize(src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.enable_profiling(None);
+        ev.enable_op_profiling();
+        ev.run(&stmts).unwrap();
+        let report = ev.take_profile();
+        assert!(find(&report, "[matmul]").is_none());
+        let mul = find(&report, "[*]").expect("[*]");
+        assert_eq!(mul.input_bytes, 16);
+        assert_eq!(mul.output_bytes, 8);
+    }
+
     #[test]
     fn index_rows_with_ops() {
         let src = "v = 1:10; w = v(3); v(4) = 7;";

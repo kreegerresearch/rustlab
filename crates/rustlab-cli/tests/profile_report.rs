@@ -55,6 +55,22 @@ fn profile_ops_adds_operator_rows() {
 }
 
 #[test]
+fn matmul_row_prints_throughput() {
+    // 32×32 real matrices: two inputs are 16.00 KB, the product is 8.00 KB.
+    let err = stderr_of(&[], "profile()\nA = rand(32, 32);\nB = rand(32, 32);\nC = A * B;\n");
+    let line = err
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some("[matmul]"))
+        .unwrap_or_else(|| panic!("missing [matmul]:\n{err}"));
+    let cols: Vec<_> = line.split_whitespace().collect();
+    assert_eq!(cols.len(), 8, "{line}");
+    assert_eq!(cols[5], "16.00", "In (KB): {line}");
+    assert_eq!(cols[6], "8.00", "Out (KB): {line}");
+    let mbit: f64 = cols[7].parse().expect(line);
+    assert!(mbit > 0.0, "Mbit/s was 0: {line}");
+}
+
+#[test]
 fn no_report_without_profiling() {
     let err = stderr_of(&[], "z = outer(ones(4, 4));\n");
     assert!(!err.contains("Self (ms)"), "unexpected report:\n{err}");
