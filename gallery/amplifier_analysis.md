@@ -36,13 +36,12 @@ ang_deg = [ 150  -45   90  170;
             120  -90   75  155;
             110 -105   70  150;
             100 -120   65  145];
+Sc = mag .* exp(j * ang_deg * pi/180);   % columns: S11, S21, S12, S22
 S = zeros3(6, 2, 2);
-for k = 1:6
-  S(k, 1, 1) = mag(k, 1) * exp(j * ang_deg(k, 1) * pi/180);
-  S(k, 2, 1) = mag(k, 2) * exp(j * ang_deg(k, 2) * pi/180);
-  S(k, 1, 2) = mag(k, 3) * exp(j * ang_deg(k, 3) * pi/180);
-  S(k, 2, 2) = mag(k, 4) * exp(j * ang_deg(k, 4) * pi/180);
-end
+S(:, 1, 1) = Sc(:, 1);
+S(:, 2, 1) = Sc(:, 2);
+S(:, 1, 2) = Sc(:, 3);
+S(:, 2, 2) = Sc(:, 4);
 s = sparameters(S, f);
 disp(s)
 ```
@@ -67,7 +66,7 @@ rfplot(s)
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/amplifier_analysis/plot-1-98800323.svg)
+![plot 1](plots/amplifier_analysis/plot-1-d021e799.svg)
 
 <!-- rustlab:output-end -->
 
@@ -92,7 +91,7 @@ title("Forward gain |S21| in dB")
 ```
 
 <!-- rustlab:output-start -->
-![plot 2](plots/amplifier_analysis/plot-2-32043776.svg)
+![plot 2](plots/amplifier_analysis/plot-2-53c0ca9c.svg)
 
 <!-- rustlab:output-end -->
 
@@ -103,7 +102,7 @@ title("S21 phase (wrapped, degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 3](plots/amplifier_analysis/plot-3-17224531.svg)
+![plot 3](plots/amplifier_analysis/plot-3-ccdf945f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -117,7 +116,7 @@ title("S21 unwrapped phase (degrees)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 4](plots/amplifier_analysis/plot-4-6ccd8e49.svg)
+![plot 4](plots/amplifier_analysis/plot-4-4dc99b8f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -131,7 +130,7 @@ title("S21 group delay (s)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 5](plots/amplifier_analysis/plot-5-39046543.svg)
+![plot 5](plots/amplifier_analysis/plot-5-02df3555.svg)
 
 <!-- rustlab:output-end -->
 
@@ -320,7 +319,7 @@ title("S11, S22 with input stability circles overlaid")
 ```
 
 <!-- rustlab:output-start -->
-![plot 6](plots/amplifier_analysis/plot-6-84da185f.svg)
+![plot 6](plots/amplifier_analysis/plot-6-a0363a0a.svg)
 
 <!-- rustlab:output-end -->
 
@@ -356,7 +355,7 @@ title("Gain circles at 3 GHz (MAG ≈ 11.7 dB)")
 ```
 
 <!-- rustlab:output-start -->
-![plot 7](plots/amplifier_analysis/plot-7-440fae19.svg)
+![plot 7](plots/amplifier_analysis/plot-7-7a169d6f.svg)
 
 <!-- rustlab:output-end -->
 
@@ -482,14 +481,14 @@ order `[d1, d2, c1, c2]`.
 ```rustlab
 % Build a near-ideal 4-port differential pair: strong within-pair
 % transmission, small cross-coupling, small return loss.
-S4 = zeros3(2, 4, 4);
-for k = 1:2
-  for i = 1:4; S4(k, i, i) = 0.10; end
-  S4(k, 2, 1) = 0.70; S4(k, 1, 2) = 0.70;
-  S4(k, 4, 3) = 0.70; S4(k, 3, 4) = 0.70;
-  S4(k, 4, 1) = -0.05; S4(k, 1, 4) = -0.05;
-  S4(k, 2, 3) = -0.05; S4(k, 3, 2) = -0.05;
-end
+P = 0.10 * eye(4);                      % small return loss every port
+P(2, 1) = 0.70; P(1, 2) = 0.70;          % within-pair main path
+P(4, 3) = 0.70; P(3, 4) = 0.70;
+P(4, 1) = -0.05; P(1, 4) = -0.05;        % small cross-coupling
+P(2, 3) = -0.05; P(3, 2) = -0.05;
+% The same 4×4 matrix at both frequencies: one row of 16 per frequency,
+% then reshape to [n_freqs, 4, 4] (column-major, so S4(k, :, :) = P).
+S4 = reshape(repmat(reshape(P, 1, 16), 2, 1), 2, 4, 4);
 s4 = sparameters(S4, [1e9, 2e9]);
 smm = s2smm(s4);
 fprintf("Single-ended tag: %s   Mixed-mode tag: %s\n", ...

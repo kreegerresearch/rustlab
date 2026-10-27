@@ -114,7 +114,8 @@ boundary handling, same defaults. Axis 0 is `y` (rows), axis 1 is `x`
 
 We need coordinate tensors. Without broadcasting between `Matrix` and
 `Tensor3`, the most direct construction is to build per-page coordinate
-matrices with `meshgrid` and stack them with `cat(3, ...)`:
+matrices with `meshgrid` and stack copies of them into pages with
+`repmat` and `reshape`:
 
 ```rustlab
 nx3 = 5; ny3 = 5; nz3 = 5;
@@ -125,14 +126,11 @@ zs3 = (0:nz3-1) * dz3;
 
 [Xp, Yp] = meshgrid(xs3, ys3);
 
-X3 = Xp;
-Y3 = Yp;
-Z3 = zs3(1) * ones(ny3, nx3);
-for k = 2:nz3
-  X3 = cat(3, X3, Xp);
-  Y3 = cat(3, Y3, Yp);
-  Z3 = cat(3, Z3, zs3(k) * ones(ny3, nx3));
-end
+% Stack nz3 copies of each page: repmat lays them side by side, and
+% reshape (column-major) turns each ny3×nx3 block into one page.
+X3 = reshape(repmat(Xp, 1, nz3), ny3, nx3, nz3);
+Y3 = reshape(repmat(Yp, 1, nz3), ny3, nx3, nz3);
+Z3 = reshape(repmat(zs3, ny3 * nx3, 1), ny3, nx3, nz3);   % page k is all zs3(k)
 print(size(X3))                            % → [5, 5, 5]
 ```
 

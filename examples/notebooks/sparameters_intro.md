@@ -40,13 +40,12 @@ ang_deg = [ 150  -45   90  170;
             110 -105   70  150;
             100 -120   65  145];
 
+Sc = mag .* exp(j * ang_deg * pi/180);   % one column per parameter
 S = zeros3(6, 2, 2);
-for k = 1:6
-  S(k, 1, 1) = mag(k, 1) * exp(j * ang_deg(k, 1) * pi/180);   % S11
-  S(k, 2, 1) = mag(k, 2) * exp(j * ang_deg(k, 2) * pi/180);   % S21
-  S(k, 1, 2) = mag(k, 3) * exp(j * ang_deg(k, 3) * pi/180);   % S12
-  S(k, 2, 2) = mag(k, 4) * exp(j * ang_deg(k, 4) * pi/180);   % S22
-end
+S(:, 1, 1) = Sc(:, 1);   % S11
+S(:, 2, 1) = Sc(:, 2);   % S21
+S(:, 1, 2) = Sc(:, 3);   % S12
+S(:, 2, 2) = Sc(:, 4);   % S22
 s = sparameters(S, f);
 disp(s)
 ```
@@ -98,10 +97,8 @@ Tensor3 plus a real frequency vector:
 % A matched 10 dB attenuator, hand-built — useful as an analytic anchor.
 mag = 10 ^ (-10/20);     % |S21| = |S12| = 0.31623
 S = zeros3(3, 2, 2);
-for k = 1:3
-  S(k, 1, 2) = mag;
-  S(k, 2, 1) = mag;
-end
+S(:, 1, 2) = mag;        % every frequency at once
+S(:, 2, 1) = mag;
 att = sparameters(S, [1e9, 2e9, 3e9]);
 disp(att)
 ```

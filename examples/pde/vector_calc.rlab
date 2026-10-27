@@ -70,20 +70,17 @@ dx3 = 0.25;
 dy3 = 0.25;
 dz3 = 0.25;
 
-# Build the per-page X, Y matrices once with meshgrid, then stack pages with cat(3, ...).
+# Build the per-page X, Y matrices once with meshgrid, then stack the pages:
+# repmat lays nz3 copies side by side and reshape (column-major) turns each
+# ny3×nx3 block into one page.
 xs3 = (0:nx3-1) * dx3;
 ys3 = (0:ny3-1) * dy3;
 zs3 = (0:nz3-1) * dz3;
 [Xp, Yp] = meshgrid(xs3, ys3);     # both ny3×nx3
 
-X3 = Xp;
-Y3 = Yp;
-Z3 = zs3(1) * ones(ny3, nx3);
-for k = 2:nz3
-  X3 = cat(3, X3, Xp);
-  Y3 = cat(3, Y3, Yp);
-  Z3 = cat(3, Z3, zs3(k) * ones(ny3, nx3));
-end
+X3 = reshape(repmat(Xp, 1, nz3), ny3, nx3, nz3);
+Y3 = reshape(repmat(Yp, 1, nz3), ny3, nx3, nz3);
+Z3 = reshape(repmat(zs3, ny3 * nx3, 1), ny3, nx3, nz3);   # page k is all zs3(k)
 
 # F = x² + y² + z²  →  ∇F = (2x, 2y, 2z),  ∇²F = 6
 F3 = X3 .^ 2 + Y3 .^ 2 + Z3 .^ 2;

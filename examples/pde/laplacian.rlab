@@ -28,12 +28,8 @@ print(rj)                 # → 4
 # solve. This is the cleanest self-consistency check.
 Lx = (nx + 1) * dx;
 Ly = (ny + 1) * dy;
-V_exact = zeros(ny, nx);
-for jj = 1:nx
-  for ii = 1:ny
-    V_exact(ii, jj) = sin(pi*ii*dx/Lx) * sin(pi*jj*dy/Ly);
-  end
-end
+# A column (one value per row ii) times a row (one per column jj).
+V_exact = sin(pi*(1:ny)'*dx/Lx) * sin(pi*(1:nx)*dy/Ly);
 
 # V(:) in rustlab gives a ROW vector in column-major order; transpose to
 # get a column vector suitable for L * v and spsolve.
