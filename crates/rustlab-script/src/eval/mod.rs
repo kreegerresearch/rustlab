@@ -3220,7 +3220,7 @@ impl Evaluator {
         let saved_in_fn = self.in_function;
         self.in_function = true;
         // Seed with built-in constants
-        for name in &["i", "j", "pi", "e", "Inf", "NaN", "stdin"] {
+        for name in line_io::BUILTIN_CONSTS {
             if let Some(v) = saved_env.get(*name) {
                 self.env.insert((*name).to_string(), v.clone());
             }

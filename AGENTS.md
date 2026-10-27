@@ -67,6 +67,7 @@ rustlab/
 │   │   ├── tcp.sh            # socat/nc TCP streaming (cross-platform)
 │   │   └── test_filter.sh    # CI-friendly end-to-end test (no mic/speakers)
 │   └── notebooks/          # source `.md` notebooks rendered by `rustlab-notebook`
+│       └── comm/           # communications notebooks (convolutional codes + Viterbi FEC)
 └── docs/
     ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows
     ├── examples.md         # annotated walkthroughs of each example script

@@ -444,15 +444,13 @@ fn lambda_made_inside_a_function_keeps_the_local_not_the_temp() {
     assert!((scalar(&ev, "y") - 8.0).abs() < 1e-12);
     let f = lambda(&ev, "f");
     assert_eq!(user_keys(f), BTreeSet::from(["a".to_string()]));
-    // A user function seeds i/j/pi/e/Inf/NaN/stdin from its caller and
-    // does not seed true/false. The lambda snapshots that environment,
-    // so those seven are present and true/false are not — same as a
-    // full clone of the function workspace.
-    for c in ["i", "j", "pi", "e", "Inf", "NaN", "stdin"] {
+    // A user function seeds every built-in constant from its caller (it
+    // left out true/false before 0.3.19). The lambda snapshots that
+    // environment, so all nine are present — same as a full clone of the
+    // function workspace.
+    for c in ["i", "j", "pi", "e", "Inf", "NaN", "true", "false", "stdin"] {
         assert!(capture_keys(f).contains(c), "{c} missing");
     }
-    assert!(!capture_keys(f).contains("true"));
-    assert!(!capture_keys(f).contains("false"));
     assert_eq!(matrix_copies(f), 0);
 }
 

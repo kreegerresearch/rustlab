@@ -5279,6 +5279,10 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
     }
     let mut i = 0;
     let mut pairs: Vec<PlotPair> = Vec::new();
+    // A single pair whose spec names a line style or a marker (`"r--"`,
+    // `"ko"`) is drawn here too: the one-series path below only knows a bare
+    // colour and took anything longer for the title.
+    let mut styled = false;
     while i < args.len() && is_plot_xy_data(&args[i]) {
         if i + 1 < args.len() && is_plot_xy_data(&args[i + 1]) {
             let x = plot_real_samples(&args[i])?;
@@ -5301,6 +5305,7 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
             if i < args.len() {
                 if let Ok(s) = args[i].to_str() {
                     if let Some(spec) = parse_line_spec(&s) {
+                        styled |= spec.style.is_some() || spec.marker;
                         pair.color = spec.color;
                         pair.style = spec.style;
                         pair.marker = spec.marker;
@@ -5318,7 +5323,7 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
             ));
         }
     }
-    if pairs.len() < 2 {
+    if pairs.len() < 2 && !styled {
         // One series plus options. A numeric option value (`"linewidth", 3`)
         // is not another series. A vector after a non-spec string is: that
         // used to be dropped after a warning.

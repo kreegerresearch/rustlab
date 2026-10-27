@@ -835,6 +835,7 @@ list with descriptions, or jump straight to a notebook:
 | [string_arrays.md](examples/notebooks/string_arrays.md) | [view](gallery/string_arrays.md) | String arrays, categorical bar charts, `iscell()` |
 | [template_interpolation.md](examples/notebooks/template_interpolation.md) | [view](gallery/template_interpolation.md) | `${expr}` interpolation with format specs |
 | [multi_notebook.md](examples/notebooks/multi_notebook.md) | [view](gallery/multi_notebook.md) | Directory rendering and cross-notebook links |
+| [comm/viterbi_fec.md](examples/notebooks/comm/viterbi_fec.md) | [view](gallery/comm/viterbi_fec.md) | Convolutional code + soft-decision Viterbi decoder: BER vs. Eb/N0 at four coding rates, coding gain, hard vs. soft |
 
 Render everything locally:
 
