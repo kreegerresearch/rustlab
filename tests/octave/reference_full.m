@@ -119,6 +119,22 @@ csvwrite('ref2_outer.csv', reshape(O, 1, 6));
 K = kron(eye(2), [1.0, 2.0; 3.0, 4.0]);
 csvwrite('ref2_kron.csv', reshape(K, 1, 16));
 
+% kron / diag with vector operands: shape first, then values column-major
+X = kron([1.0, 2.0, 3.0], [4.0; 5.0]);
+csvwrite('ref2_kron_row_col.csv', [size(X), reshape(X, 1, numel(X))]);
+X = kron([1.0; 2.0], [3.0, 4.0, 5.0]);
+csvwrite('ref2_kron_col_row.csv', [size(X), reshape(X, 1, numel(X))]);
+X = kron([1.0, 2.0], [3.0, 4.0, 5.0]);
+csvwrite('ref2_kron_row_row.csv', [size(X), reshape(X, 1, numel(X))]);
+X = kron([1.0, 2.0; 3.0, 4.0], [1.0, -1.0]);
+csvwrite('ref2_kron_mat_row.csv', [size(X), reshape(X, 1, numel(X))]);
+X = kron(2.0, [1.0, 2.0, 3.0]);
+csvwrite('ref2_kron_scalar_row.csv', [size(X), reshape(X, 1, numel(X))]);
+X = diag([1.0; 2.0; 3.0]);
+csvwrite('ref2_diag_col.csv', [size(X), reshape(X, 1, numel(X))]);
+X = diag([1.0; 2.0], -1);
+csvwrite('ref2_diag_col_k.csv', [size(X), reshape(X, 1, numel(X))]);
+
 % norm (vector L2)
 csvwrite('ref2_norm_vec.csv', norm([3.0, 4.0]));
 
@@ -377,6 +393,24 @@ csvwrite('ref2_det_diag2.csv', det(diag([3 7])));
 csvwrite('ref2_inv_diag2.csv', reshape(inv(diag([3 7])), 1, 4));
 
 csvwrite('ref2_eig_eye3.csv', sort(eig(eye(3)))');
+
+% eig: block-diagonal, scaling, symmetric order, repeated eigenvectors
+E = eig([0.62, -0.41, 0.15, 0, 0, 0; 0.33, 0.27, -0.88, 0, 0, 0; -0.19, 0.74, 0.05, 0, 0, 0; 0, 0, 0, -0.52, 0.91, 0.36; 0, 0, 0, 0.08, -0.13, 0.67; 0, 0, 0, 0.44, -0.29, 0.71]);
+csvwrite('ref2_eig_blockdiag.csv', [sort(reshape(real(E), 1, numel(E))), sort(reshape(imag(E), 1, numel(E)))]);
+E = eig([0.62, -0.41, 0.15, 0, 0, 0; 0.33, 0.27, -0.88, 0, 0, 0; -0.19, 0.74, 0.05, 0, 0, 0; 0, 0, 0, 0.62, -0.41, 0.15; 0, 0, 0, 0.33, 0.27, -0.88; 0, 0, 0, -0.19, 0.74, 0.05]);
+csvwrite('ref2_eig_block_twice.csv', [sort(reshape(real(E), 1, numel(E))), sort(reshape(imag(E), 1, numel(E)))]);
+E = eig(1e200 * [1, 2; 3, 4]) / 1e200;
+csvwrite('ref2_eig_huge.csv', [sort(reshape(real(E), 1, numel(E))), sort(reshape(imag(E), 1, numel(E)))]);
+E = eig(1e-200 * [1, 2; 3, 4]) * 1e200;
+csvwrite('ref2_eig_tiny.csv', [sort(reshape(real(E), 1, numel(E))), sort(reshape(imag(E), 1, numel(E)))]);
+E = eig([4, 1, 0; 1, 3, 1; 0, 1, 2]);
+csvwrite('ref2_eig_sym_order.csv', reshape(E, 1, 3));
+E = eig([2, 1 - 1i, 0; 1 + 1i, 3, 0.5i; 0, -0.5i, 1]);
+csvwrite('ref2_eig_herm_real.csv', [reshape(real(E), 1, 3), reshape(imag(E), 1, 3)]);
+[V, D] = eig([2, 1, 1; 1, 2, 1; 1, 1, 2]);
+csvwrite('ref2_eig_repeat_VtV.csv', reshape(V' * V, 1, 9));
+A = [0.62, -0.41, 0.15, 0, 0, 0; 0.33, 0.27, -0.88, 0, 0, 0; -0.19, 0.74, 0.05, 0, 0, 0; 0, 0, 0, -0.52, 0.91, 0.36; 0, 0, 0, 0.08, -0.13, 0.67; 0, 0, 0, 0.44, -0.29, 0.71]; [V, D] = eig(A); R = A * V - V * D;
+csvwrite('ref2_eig_blockdiag_res.csv', sqrt(sum(sum(abs(R).^2))));
 
 csvwrite('ref2_norm_zero.csv', norm([0 0 0]));
 

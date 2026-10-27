@@ -8053,30 +8053,39 @@ fn builtin_transpose(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// diag(v)    — create diagonal matrix from vector v
 /// diag(M)    — extract main diagonal of matrix M as a vector
 /// diag(M, k) — extract k-th diagonal (k>0 superdiagonal, k<0 subdiagonal)
+/// A scalar result: real when the imaginary part is exactly zero.
+fn exact_scalar_value(c: C64) -> Value {
+    if c.im == 0.0 {
+        Value::Scalar(c.re)
+    } else {
+        Value::Complex(c)
+    }
+}
+
 fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("diag", &args, 1, 2)?;
     let k: i64 = if args.len() == 2 {
-        args[1].to_scalar().map_err(|e| ScriptError::type_err(e))? as i64
+        let k = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        if k.fract() != 0.0 || !k.is_finite() {
+            return Err(ScriptError::type_err(format!(
+                "diag: k must be an integer, got {k}"
+            )));
+        }
+        k as i64
     } else {
         0
     };
 
-    match &args[0] {
-        Value::Vector(v) => {
-            // Create diagonal matrix
-            let n = v.len();
-            let size = n + k.unsigned_abs() as usize;
-            let mut m: CMatrix = Array2::zeros((size, size));
-            for (i, &val) in v.iter().enumerate() {
-                let (r, c) = if k >= 0 {
-                    (i, i + k as usize)
-                } else {
-                    (i + (-k) as usize, i)
-                };
-                m[[r, c]] = val;
-            }
-            Ok(Value::Matrix(m.into()))
+    // A scalar, a row and an n×1 or 1×n matrix are all vectors: they build
+    // a diagonal matrix. Only a matrix with two or more rows and columns has
+    // its diagonal read out.
+    let v: CVector = match &args[0] {
+        Value::Vector(v) => (**v).clone(),
+        Value::Scalar(_) | Value::Complex(_) | Value::Int { .. } => {
+            let c = to_cmatrix_arg(&args[0], "diag", "v")?;
+            Array1::from_elem(1, c[[0, 0]])
         }
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => Array1::from_iter(m.iter().copied()),
         Value::Matrix(m) => {
             // Extract diagonal
             let nrows = m.nrows() as i64;
@@ -8094,13 +8103,31 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
                 };
                 m[[r, c]]
             }));
-            Ok(Value::Vector(diag.into()))
+            return Ok(Value::Vector(diag.into()));
         }
-        other => Err(ScriptError::type_err(format!(
-            "diag: expected vector or matrix, got {}",
-            other.type_name()
-        ))),
+        other => {
+            return Err(ScriptError::type_err(format!(
+                "diag: expected vector or matrix, got {}",
+                other.type_name()
+            )))
+        }
+    };
+    if v.len() == 1 && k == 0 {
+        return Ok(exact_scalar_value(v[0]));
     }
+    // Create diagonal matrix
+    let n = v.len();
+    let size = n + k.unsigned_abs() as usize;
+    let mut m: CMatrix = Array2::zeros((size, size));
+    for (i, &val) in v.iter().enumerate() {
+        let (r, c) = if k >= 0 {
+            (i, i + k as usize)
+        } else {
+            (i + (-k) as usize, i)
+        };
+        m[[r, c]] = val;
+    }
+    Ok(Value::Matrix(m.into()))
 }
 
 /// trace(M) — sum of main diagonal
@@ -8698,15 +8725,21 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// For A (m×n) and B (p×q), returns an mp×nq matrix where block (i,j) = A[i,j]*B.
 fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("kron", &args, 2)?;
-    // Accept matrix or scalar (treat scalar as 1×1)
-    let a = to_cmatrix_arg(&args[0], "kron", "A")?;
-    let b = to_cmatrix_arg(&args[1], "kron", "B")?;
+    // A vector is a 1×n row (as `size` reports it), a scalar 1×1.
+    let a = to_cmatrix_arg_row(&args[0], "kron", "A")?;
+    let b = to_cmatrix_arg_row(&args[1], "kron", "B")?;
     let (ma, na) = (a.nrows(), a.ncols());
     let (mb, nb) = (b.nrows(), b.ncols());
     let result = Array2::from_shape_fn((ma * mb, na * nb), |(r, c)| {
         a[[r / mb, c / nb]] * b[[r % mb, c % nb]]
     });
-    Ok(Value::Matrix(result.into()))
+    // 1×1 is a scalar and 1×n a row vector, like every other builtin result.
+    Ok(match result.dim() {
+        (1, 1) => exact_scalar_value(result[[0, 0]]),
+        // One row in standard layout: move the buffer, no copy.
+        (1, n) => Value::Vector(result.into_shape_with_order(n).unwrap().into()),
+        _ => Value::Matrix(result.into()),
+    })
 }
 
 /// norm(v)    — Euclidean (L2) norm of a vector, or Frobenius norm of a matrix
@@ -9479,233 +9512,9 @@ fn builtin_factor(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── eig(M) ───────────────────────────────────────────────────────────────────
 
-/// Reduce a square matrix to upper Hessenberg form via Householder reflectors.
-/// Returns H such that H has the same eigenvalues as the input.
-fn hessenberg_reduce(a: &CMatrix) -> CMatrix {
-    let n = a.nrows();
-    let mut h = a.to_owned();
-    for k in 0..n.saturating_sub(2) {
-        // Build Householder vector from column k below the subdiagonal
-        let col_len = n - k - 1;
-        let mut x: Vec<C64> = (0..col_len).map(|i| h[[k + 1 + i, k]]).collect();
-        let norm_x: f64 = x.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
-        if norm_x < 1e-15 {
-            continue;
-        }
-        // Phase of first element
-        let phase = if x[0].norm() < 1e-15 {
-            Complex::new(1.0, 0.0)
-        } else {
-            x[0] / x[0].norm()
-        };
-        x[0] += phase * norm_x;
-        let norm_v: f64 = x.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
-        if norm_v < 1e-15 {
-            continue;
-        }
-        for c in &mut x {
-            *c /= norm_v;
-        }
-        // H = (I - 2 v v*) H (I - 2 v v*)  — apply from left then right
-        // Left: H[k+1:, k:] -= 2 * v * (v* H[k+1:, k:])
-        for j in k..n {
-            let dot: C64 = x
-                .iter()
-                .enumerate()
-                .map(|(i, vi)| vi.conj() * h[[k + 1 + i, j]])
-                .sum();
-            for i in 0..col_len {
-                h[[k + 1 + i, j]] -= 2.0 * x[i] * dot;
-            }
-        }
-        // Right: H[:, k+1:] -= 2 * (H[:, k+1:] v) v*
-        for i in 0..n {
-            let dot: C64 = x
-                .iter()
-                .enumerate()
-                .map(|(j, vj)| h[[i, k + 1 + j]] * *vj)
-                .sum();
-            for j in 0..col_len {
-                h[[i, k + 1 + j]] -= 2.0 * dot * x[j].conj();
-            }
-        }
-    }
-    h
-}
-
-/// Compute eigenvalues of an upper Hessenberg matrix using shifted QR iteration.
-/// Uses complex Wilkinson shifts for reliable convergence.
-/// Returns eigenvalues as a Vec<C64>.
-fn eig_hessenberg(h_in: &CMatrix) -> Result<Vec<C64>, String> {
-    let n = h_in.nrows();
-    if n == 0 {
-        return Ok(vec![]);
-    }
-    if n == 1 {
-        return Ok(vec![h_in[[0, 0]]]);
-    }
-    if n == 2 {
-        // Direct 2×2 formula
-        let a = h_in[[0, 0]];
-        let b = h_in[[0, 1]];
-        let c = h_in[[1, 0]];
-        let d = h_in[[1, 1]];
-        let tr = a + d;
-        let det = a * d - b * c;
-        let disc = (tr * tr - 4.0 * det).sqrt();
-        return Ok(vec![(tr + disc) / 2.0, (tr - disc) / 2.0]);
-    }
-
-    let mut h = h_in.to_owned();
-    let mut eigenvalues: Vec<C64> = Vec::with_capacity(n);
-    let max_iter_per = 100; // iterations per eigenvalue
-    let mut p = n; // active size: working on h[0..p, 0..p]
-
-    while p > 0 {
-        if p == 1 {
-            eigenvalues.push(h[[0, 0]]);
-            break;
-        }
-        if p == 2 {
-            let a = h[[0, 0]];
-            let b = h[[0, 1]];
-            let c = h[[1, 0]];
-            let d = h[[1, 1]];
-            let tr = a + d;
-            let det = a * d - b * c;
-            let disc = (tr * tr - 4.0 * det).sqrt();
-            eigenvalues.push((tr + disc) / 2.0);
-            eigenvalues.push((tr - disc) / 2.0);
-            break;
-        }
-
-        let mut converged = false;
-        for iter in 0..max_iter_per {
-            let q = p - 1;
-
-            // ── Deflation check ────────────────────────────────────────────
-            // Check all subdiagonals for small values (from bottom up)
-            let mut split_at = None;
-            for i in (1..p).rev() {
-                let tol = 1e-12 * (h[[i - 1, i - 1]].norm() + h[[i, i]].norm());
-                if h[[i, i - 1]].norm() <= tol {
-                    h[[i, i - 1]] = Complex::new(0.0, 0.0);
-                    split_at = Some(i);
-                    break;
-                }
-            }
-            if let Some(i) = split_at {
-                if i == q {
-                    // Single eigenvalue deflated at bottom
-                    eigenvalues.push(h[[q, q]]);
-                    p -= 1;
-                    converged = true;
-                    break;
-                } else if i == q - 1 {
-                    // 2×2 block at bottom
-                    let a = h[[q - 1, q - 1]];
-                    let b = h[[q - 1, q]];
-                    let c = h[[q, q - 1]];
-                    let d = h[[q, q]];
-                    let tr = a + d;
-                    let det = a * d - b * c;
-                    let disc = (tr * tr - 4.0 * det).sqrt();
-                    eigenvalues.push((tr + disc) / 2.0);
-                    eigenvalues.push((tr - disc) / 2.0);
-                    p -= 2;
-                    converged = true;
-                    break;
-                } else {
-                    // Split: recursively handle upper part later, reduce p for lower
-                    // For simplicity, just continue working on 0..p
-                    // (next iteration will check deflation again)
-                }
-            }
-            if converged {
-                break;
-            }
-
-            // ── Shift selection ────────────────────────────────────────────
-            let shift = if iter > 0 && iter % 10 == 0 {
-                // Exceptional (ad-hoc) shift to escape a stall. The Wilkinson
-                // shift is identically 0 for zero-trace, equal-modulus spectra
-                // — e.g. the companion matrix of xⁿ − c (roots of unity), where
-                // a 0 shift never breaks the rotational symmetry and the
-                // iteration would otherwise force-deflate every eigenvalue to 0.
-                // EISPACK-style: perturb the trailing diagonal by 0.75·(sum of
-                // the last two subdiagonal magnitudes).
-                let s = h[[q, q - 1]].norm()
-                    + if q >= 2 { h[[q - 1, q - 2]].norm() } else { 0.0 };
-                h[[q, q]] + Complex::new(0.75 * s, 0.0)
-            } else {
-                // Wilkinson shift: eigenvalue of the bottom 2×2 closest to h[q,q].
-                let a = h[[q - 1, q - 1]];
-                let b = h[[q - 1, q]];
-                let c = h[[q, q - 1]];
-                let d = h[[q, q]];
-                let tr2 = a + d;
-                let det2 = a * d - b * c;
-                let disc = (tr2 * tr2 - 4.0 * det2).sqrt();
-                let e1 = (tr2 + disc) / 2.0;
-                let e2 = (tr2 - disc) / 2.0;
-                if (e1 - d).norm() <= (e2 - d).norm() {
-                    e1
-                } else {
-                    e2
-                }
-            };
-
-            // ── Single-shift QR step using Givens rotations ────────────────
-            // Apply H ← G_k^* H G_k for k = 0..p-2
-            // First rotation eliminates h[1,0] after shift
-            let mut x = h[[0, 0]] - shift;
-            let mut y = h[[1, 0]];
-
-            for k in 0..p - 1 {
-                // Compute Givens rotation [c, s; -s*, c] to zero y using x
-                let r = (x.norm_sqr() + y.norm_sqr()).sqrt();
-                if r < 1e-15 {
-                    continue;
-                }
-                let gc = x / r;
-                let gs = y / r;
-
-                // Left multiply: rows k and k+1, columns k-1..p
-                let jstart = if k > 0 { k - 1 } else { 0 };
-                for j in jstart..p {
-                    let u = h[[k, j]];
-                    let v = h[[k + 1, j]];
-                    h[[k, j]] = gc.conj() * u + gs.conj() * v;
-                    h[[k + 1, j]] = -gs * u + gc * v;
-                }
-                // Right multiply: rows 0..p, columns k and k+1
-                // (only need rows 0..min(k+3, p) for Hessenberg, but use p for correctness)
-                let iend = (k + 3).min(p);
-                for i in 0..iend {
-                    let u = h[[i, k]];
-                    let v = h[[i, k + 1]];
-                    h[[i, k]] = gc * u + gs * v;
-                    h[[i, k + 1]] = -gs.conj() * u + gc.conj() * v;
-                }
-
-                // Next iteration uses the subdiagonal entry created
-                if k + 1 < p - 1 {
-                    x = h[[k + 1, k]];
-                    y = h[[k + 2, k]];
-                }
-            }
-        }
-
-        if !converged {
-            // Force deflation at the bottom even if not fully converged
-            // (prevents infinite loop — take best approximation)
-            eigenvalues.push(h[[p - 1, p - 1]]);
-            p -= 1;
-        }
-    }
-
-    Ok(eigenvalues)
-}
+// The solver itself is `rustlab_core::dense_eig` (Hermitian tridiagonal QL,
+// real double-shift QR, complex single-shift QR, all with Schur-form
+// eigenvectors).
 
 /// eig(M) — eigenvalues of a square matrix.
 /// Returns a complex Vector of length n.
@@ -9822,31 +9631,8 @@ fn compute_eig_dense(
             name
         )));
     }
-    let h = hessenberg_reduce(m);
-    let vals = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(format!("{}: {}", name, e)))?;
-    if !want_v {
-        return Ok((vals, None));
-    }
-    let n = vals.len();
-    let mut v_mat: CMatrix = Array2::zeros((n, n));
-    for (k, &lambda) in vals.iter().enumerate() {
-        let v = inverse_iteration_cx(m, lambda, 40).map_err(|e| {
-            ScriptError::runtime(format!(
-                "{}: eigenvector for λ_{}={} could not be recovered ({}). \
-                 The matrix may be defective (repeated eigenvalues with fewer \
-                 linearly independent eigenvectors than algebraic multiplicity); \
-                 use eig(A) for eigenvalues only.",
-                name,
-                k + 1,
-                lambda,
-                e
-            ))
-        })?;
-        for i in 0..n {
-            v_mat[[i, k]] = v[i];
-        }
-    }
-    Ok((vals, Some(v_mat)))
+    rustlab_core::dense_eig::eig(m, want_v)
+        .map_err(|e| ScriptError::runtime(format!("{}: {}", name, e.to_string().trim_start_matches("eig: "))))
 }
 
 /// Wrap an eigenvalue list as `Value::Matrix`, either an `N×1` column or an
@@ -10670,8 +10456,7 @@ fn builtin_rank(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     // Singular values = sqrt(|eigenvalues of A†A|)
     let ata: CMatrix = m.t().mapv(|c| c.conj()).dot(&m.view());
-    let h = hessenberg_reduce(&ata);
-    let evals = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(e))?;
+    let evals = rustlab_core::dense_eig::eigenvalues(&ata).map_err(|e| ScriptError::runtime(e.to_string()))?;
 
     let svs: Vec<f64> = evals.iter().map(|c| c.norm().sqrt()).collect();
     let max_sv = svs.iter().cloned().fold(0.0_f64, f64::max);
@@ -10715,8 +10500,7 @@ fn builtin_roots(args: Vec<Value>) -> Result<Value, ScriptError> {
         comp[[i, i - 1]] = Complex::new(1.0, 0.0);
     }
 
-    let h = hessenberg_reduce(&comp);
-    let rs = eig_hessenberg(&h).map_err(|e| ScriptError::runtime(e))?;
+    let rs = rustlab_core::dense_eig::eigenvalues(&comp).map_err(|e| ScriptError::runtime(e.to_string()))?;
     Ok(Value::Vector(Array1::from_vec(rs).into()))
 }
 
@@ -11816,67 +11600,6 @@ fn mat_mul_cx(a: &CMatrix, b: &CMatrix) -> CMatrix {
     c
 }
 
-/// Inverse iteration: given matrix M and approximate eigenvalue λ,
-/// return the corresponding eigenvector (2n-dim complex vector).
-fn inverse_iteration_cx(
-    m: &CMatrix,
-    eigenvalue: C64,
-    max_iter: usize,
-) -> Result<CVector, ScriptError> {
-    let n = m.nrows();
-    // Perturb the shift so (M - shift*I) is nonsingular
-    let scale = eigenvalue.norm().max(1.0);
-    let shift = eigenvalue + Complex::new(scale * 1e-6, scale * 1e-6);
-
-    let mut shifted = m.to_owned();
-    for i in 0..n {
-        shifted[[i, i]] -= shift;
-    }
-
-    let inv = matrix_inv(&shifted).map_err(|e| {
-        ScriptError::type_err(format!(
-            "inverse iteration failed (singular shift): {}",
-            e
-        ))
-    })?;
-
-    // Initial vector: a sine-of-index pattern. Diverse enough that for
-    // (near-)triangular shifted matrices the iterate doesn't get trapped
-    // in the e_0 invariant subspace — `e_0` collapses to the eigenvector
-    // for the leading diagonal entry no matter which shift is in use,
-    // which produced wrong eigenvectors for triangular inputs.
-    // Same pattern as the core helper in
-    // `rustlab-core/src/sparse_eig/hessenberg_eig.rs`.
-    let mut v: CVector = Array1::from_iter(
-        (0..n).map(|i| Complex::new(((i + 1) as f64 * 0.7).sin(), 0.0)),
-    );
-    let init_norm: f64 = v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
-    if init_norm > 0.0 {
-        for c in v.iter_mut() {
-            *c /= init_norm;
-        }
-    }
-
-    for _ in 0..max_iter {
-        // v = inv * v
-        let mut new_v: CVector = Array1::zeros(n);
-        for i in 0..n {
-            for j in 0..n {
-                new_v[i] += inv[[i, j]] * v[j];
-            }
-        }
-        let norm: f64 = new_v.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
-        if norm < 1e-15 {
-            break;
-        }
-        for c in new_v.iter_mut() {
-            *c /= norm;
-        }
-        v = new_v;
-    }
-    Ok(v)
-}
-
 // ─── lqr(sys_ss, Q, R) ────────────────────────────────────────────────────────
 
 /// `[K, S, e] = lqr(sys_ss, Q, R)`
@@ -11981,36 +11704,8 @@ fn builtin_lqr(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     }
 
-    // Eigenvalues of H
-    let h_hess = hessenberg_reduce(&ham);
-    let all_eigs = eig_hessenberg(&h_hess).map_err(|e| {
-        ScriptError::type_err(format!("lqr: Hamiltonian eigenvalues failed: {}", e))
-    })?;
-
-    // Select the n stable eigenvalues (Re < 0), sort for determinism
-    let mut stable: Vec<C64> = all_eigs.iter().filter(|e| e.re < -1e-10).cloned().collect();
-
-    if stable.len() < n {
-        return Err(ScriptError::type_err(format!(
-            "lqr: found only {} stable Hamiltonian eigenvalues (need {}); \
-             system may not be stabilizable",
-            stable.len(),
-            n
-        )));
-    }
-
-    // Sort by real part (most negative first) for numerical consistency
-    stable.sort_by(|a, b| a.re.partial_cmp(&b.re).unwrap_or(std::cmp::Ordering::Equal));
-    let stable = &stable[..n];
-
-    // Eigenvectors via inverse iteration  →  V is 2n×n
-    let mut v_mat: CMatrix = Array2::zeros((two_n, n));
-    for (col, &lam) in stable.iter().enumerate() {
-        let v = inverse_iteration_cx(&ham, lam, 40)?;
-        for i in 0..two_n {
-            v_mat[[i, col]] = v[i];
-        }
-    }
+    // Eigenvectors of the n stable eigenvalues  →  V is 2n×n
+    let v_mat = hamiltonian_stable_basis(&ham, n, "lqr")?;
 
     // V1 = top n rows, V2 = bottom n rows
     let mut v1: CMatrix = Array2::zeros((n, n));
@@ -12048,8 +11743,7 @@ fn builtin_lqr(args: Vec<Value>) -> Result<Value, ScriptError> {
             a_cl[[i, j]] -= bk[[i, j]];
         }
     }
-    let a_cl_h = hessenberg_reduce(&a_cl);
-    let cl_eigs = eig_hessenberg(&a_cl_h)
+    let cl_eigs = rustlab_core::dense_eig::eigenvalues(&a_cl)
         .map_err(|e| ScriptError::type_err(format!("lqr: closed-loop eig failed: {}", e)))?;
 
     let e_vec: CVector = Array1::from_vec(cl_eigs);
@@ -12919,6 +12613,28 @@ fn builtin_gram(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// Internal CARE solver: A'P + PA - PBR⁻¹B'P + Q = 0 via Hamiltonian eigendecomposition.
+/// Eigenvectors (2n×n) of the `n` stable eigenvalues (`Re λ < 0`) of the
+/// Hamiltonian `ham`, most negative real part first. Shared by `lqr` and
+/// `care`; the columns come from the Schur form, so repeated stable
+/// eigenvalues (identical decoupled subsystems) get independent vectors.
+fn hamiltonian_stable_basis(ham: &CMatrix, n: usize, name: &str) -> Result<CMatrix, ScriptError> {
+    let (vals, vecs) = rustlab_core::dense_eig::eig(ham, true)
+        .map_err(|e| ScriptError::type_err(format!("{name}: Hamiltonian eigenvalues failed: {e}")))?;
+    let vecs = vecs.expect("eig returns vectors when asked");
+    let mut stable: Vec<usize> = (0..vals.len()).filter(|&k| vals[k].re < -1e-10).collect();
+    if stable.len() < n {
+        return Err(ScriptError::type_err(format!(
+            "{name}: found only {} stable Hamiltonian eigenvalues (need {n}); \
+             system may not be stabilizable",
+            stable.len()
+        )));
+    }
+    // Most negative real part first, for a deterministic column order.
+    stable.sort_by(|&a, &b| vals[a].re.total_cmp(&vals[b].re));
+    let rows = ham.nrows();
+    Ok(Array2::from_shape_fn((rows, n), |(i, c)| vecs[[i, stable[c]]]))
+}
+
 fn solve_care(a: &CMatrix, b: &CMatrix, q: &CMatrix, r: &CMatrix) -> Result<CMatrix, ScriptError> {
     let n = a.nrows();
     let r_inv =
@@ -12936,25 +12652,7 @@ fn solve_care(a: &CMatrix, b: &CMatrix, q: &CMatrix, r: &CMatrix) -> Result<CMat
             ham[[n + i, n + j]] = -a[[j, i]].conj();
         }
     }
-    let all_eigs = eig_hessenberg(&hessenberg_reduce(&ham))
-        .map_err(|e| ScriptError::type_err(format!("care: Hamiltonian eig failed: {}", e)))?;
-    let mut stable: Vec<C64> = all_eigs.iter().filter(|e| e.re < -1e-10).cloned().collect();
-    if stable.len() < n {
-        return Err(ScriptError::type_err(format!(
-            "care: only {} stable eigenvalues (need {}); system not stabilizable",
-            stable.len(),
-            n
-        )));
-    }
-    stable.sort_by(|a, b| a.re.partial_cmp(&b.re).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut v_mat: CMatrix = Array2::zeros((two_n, n));
-    for (col, &lam) in stable[..n].iter().enumerate() {
-        let v = inverse_iteration_cx(&ham, lam, 40)?;
-        for i in 0..two_n {
-            v_mat[[i, col]] = v[i];
-        }
-    }
+    let v_mat = hamiltonian_stable_basis(&ham, n, "care")?;
     let mut v1: CMatrix = Array2::zeros((n, n));
     let mut v2: CMatrix = Array2::zeros((n, n));
     for i in 0..n {
