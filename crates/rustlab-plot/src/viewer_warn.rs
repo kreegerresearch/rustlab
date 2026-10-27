@@ -192,8 +192,19 @@ pub(crate) fn record_scan(samples: u128, elapsed_ns: u128) {
 }
 
 /// Record one msgpack encode. Short frames update latency only.
+/// An aborted send does not call this.
 pub(crate) fn record_encode(bytes: u128, elapsed_ns: u128) {
     cpu_lock().encode.observe(bytes, elapsed_ns, MIN_RATE_BYTES);
+}
+
+#[cfg(test)]
+pub(crate) fn encode_snapshot() -> RateModel {
+    cpu_lock().encode
+}
+
+#[cfg(test)]
+pub(crate) fn restore_encode(model: RateModel) {
+    cpu_lock().encode = model;
 }
 
 /// Estimated wall time and peak extra bytes for one plot send.

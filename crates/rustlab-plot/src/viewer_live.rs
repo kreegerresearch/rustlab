@@ -6,6 +6,7 @@
 
 use crate::decimate::{envelope_decimate, VIEWER_ENVELOPE_COLUMNS, VIEWER_ENVELOPE_MAX_POINTS};
 use crate::figure::{FigureState, LineStyle, PlotKind, Series, SeriesColor, FIGURE};
+use crate::plot_abort::{self, SigintGuard};
 use crate::viewer_client::ViewerClient;
 use crate::viewer_warn::{
     bulk_warning, envelope_warning, print_warning, record_scan, take_warning, CostRates,
@@ -33,8 +34,10 @@ fn next_fig_id() -> u32 {
 /// A live figure backed by the external `rustlab-viewer` process.
 #[derive(Debug)]
 pub struct ViewerFigure {
-    client: ViewerClient,
+    client: Option<ViewerClient>,
     fig_id: u32,
+    rows: usize,
+    cols: usize,
 }
 
 impl ViewerFigure {
@@ -56,22 +59,82 @@ impl ViewerFigure {
             title: String::new(),
         };
         client.send(&msg).ok()?;
-        Some(Self { client, fig_id })
+        Some(Self {
+            client: Some(client),
+            fig_id,
+            rows,
+            cols,
+        })
+    }
+
+    fn dial(&self) -> Option<ViewerClient> {
+        let session = VIEWER_SESSION.with(|s| s.borrow().clone());
+        let mut client = match session.as_deref() {
+            Some(name) => ViewerClient::connect_named(name)?,
+            None => ViewerClient::connect()?,
+        };
+        client
+            .send(&ViewerMsg::FigureOpen {
+                id: self.fig_id,
+                rows: self.rows as u16,
+                cols: self.cols as u16,
+                title: String::new(),
+            })
+            .ok()?;
+        Some(client)
+    }
+
+    fn ensure(&mut self) -> bool {
+        if self.client.is_some() {
+            return true;
+        }
+        self.client = self.dial();
+        self.client.is_some()
+    }
+
+    /// A half-written frame drops this figure's socket. The next update
+    /// opens a new connection and re-sends FigureOpen for the same id.
+    /// A finished frame keeps the socket. Neither path sends Reset, so
+    /// other figures already on the viewer stay.
+    fn note_send(&mut self, err: &PlotError) {
+        match err {
+            PlotError::Interrupted => {
+                plot_abort::report_aborted();
+                if plot_abort::take_partial() {
+                    self.client = None;
+                }
+            }
+            PlotError::ViewerConnection(_) => self.client = None,
+            _ => {}
+        }
     }
 }
 
 impl LivePlot for ViewerFigure {
     fn update_panel(&mut self, idx: usize, x: Vec<f64>, y: Vec<f64>) {
+        let _guard = SigintGuard::arm();
+        if !self.ensure() {
+            if plot_abort::requested() {
+                self.note_send(&PlotError::Interrupted);
+            } else {
+                eprintln!("viewer: reconnect failed — live panel not sent");
+            }
+            return;
+        }
         // Warn before the envelope scan. The slot latches only when a line
         // is actually printed, so a small first frame does not hide a later
         // large one, and a streaming update does not repeat it.
         let n = x.len().min(y.len());
-        let rates = self.client.cost_rates();
+        let rates = self.client.as_ref().unwrap().cost_rates();
         if let Some(line) = live_line_warning(n, &rates) {
             print_warning(&line);
         }
         let prepared = match prepare_series_for_viewer(&PlotKind::Line, &x, &y) {
             Ok(prepared) => prepared,
+            Err(PlotError::Interrupted) => {
+                self.note_send(&PlotError::Interrupted);
+                return;
+            }
             Err(e) => {
                 eprintln!("viewer: {e} — live panel not sent");
                 return;
@@ -90,8 +153,16 @@ impl LivePlot for ViewerFigure {
                 x_labels: None,
             }],
         };
-        if let Err(e @ PlotError::ViewerPayloadTooLarge(_)) = self.client.send_nowait(&msg) {
-            eprintln!("viewer: {e} — live panel not sent");
+        let send = self.client.as_mut().unwrap().send_nowait(&msg);
+        if let Err(ref e) = send {
+            if matches!(e, PlotError::ViewerPayloadTooLarge(_)) {
+                eprintln!("viewer: {e} — live panel not sent");
+            }
+            self.note_send(e);
+        } else if plot_abort::requested() {
+            // The frame finished, so the socket stays in sync. Stop the
+            // script anyway; this send was already recorded.
+            self.note_send(&PlotError::Interrupted);
         }
     }
 
@@ -103,7 +174,9 @@ impl LivePlot for ViewerFigure {
             xlabel: xlabel.to_string(),
             ylabel: ylabel.to_string(),
         };
-        let _ = self.client.send_nowait(&msg);
+        if let Some(client) = self.client.as_mut() {
+            let _ = client.send_nowait(&msg);
+        }
     }
 
     fn set_panel_limits(
@@ -118,7 +191,9 @@ impl LivePlot for ViewerFigure {
             xlim,
             ylim,
         };
-        let _ = self.client.send_nowait(&msg);
+        if let Some(client) = self.client.as_mut() {
+            let _ = client.send_nowait(&msg);
+        }
     }
 
     fn update_panel_heatmap(
@@ -141,7 +216,18 @@ impl LivePlot for ViewerFigure {
             .saturating_mul(ncols)
             .saturating_mul(4)
             .saturating_add(64);
-        let rates = self.client.cost_rates();
+        let _guard = SigintGuard::arm();
+        if !self.ensure() {
+            if plot_abort::requested() {
+                self.note_send(&PlotError::Interrupted);
+            }
+            return;
+        }
+        if plot_abort::requested() {
+            self.note_send(&PlotError::Interrupted);
+            return;
+        }
+        let rates = self.client.as_ref().unwrap().cost_rates();
         if let Some(line) = live_heatmap_warning(ncols, nrows, bytes, &rates) {
             print_warning(&line);
         }
@@ -185,39 +271,66 @@ impl LivePlot for ViewerFigure {
         if rgba.len().saturating_add(64) > MAX_MSG_LEN as usize {
             return;
         }
-        let _ = self.client.send_nowait(&ViewerMsg::PanelHeatmap {
-            fig_id: self.fig_id,
-            panel: idx as u16,
-            heatmap: WireHeatmap {
-                width: ncols as u32,
-                height: nrows as u32,
-                rgba,
-                // `smooth: true` lets egui linearly interpolate between
-                // cells so the spectrogram doesn't show staircase aliasing
-                // when the texture is upscaled to the panel size.
-                smooth: true,
-                // `x_extent` / `y_extent` are populated from the panel's
-                // `plot_limits` on the viewer side at render time —
-                // sending them here would duplicate that state and force
-                // a wire round-trip every time the script tweaks limits.
-                // Leaving them None lets the viewer use plot_limits
-                // (which arrives via a separate PanelLimits message) as
-                // the source of truth.
-                x_extent: None,
-                y_extent: None,
-                value_min: vmin,
-                value_max: vmax,
-                colorscale: colormap.to_string(),
-            },
-        });
+        let send = self
+            .client
+            .as_mut()
+            .unwrap()
+            .send_nowait(&ViewerMsg::PanelHeatmap {
+                fig_id: self.fig_id,
+                panel: idx as u16,
+                heatmap: WireHeatmap {
+                    width: ncols as u32,
+                    height: nrows as u32,
+                    rgba,
+                    // `smooth: true` lets egui linearly interpolate between
+                    // cells so the spectrogram doesn't show staircase aliasing
+                    // when the texture is upscaled to the panel size.
+                    smooth: true,
+                    // `x_extent` / `y_extent` are populated from the panel's
+                    // `plot_limits` on the viewer side at render time —
+                    // sending them here would duplicate that state and force
+                    // a wire round-trip every time the script tweaks limits.
+                    // Leaving them None lets the viewer use plot_limits
+                    // (which arrives via a separate PanelLimits message) as
+                    // the source of truth.
+                    x_extent: None,
+                    y_extent: None,
+                    value_min: vmin,
+                    value_max: vmax,
+                    colorscale: colormap.to_string(),
+                },
+            });
+        if plot_abort::requested() {
+            self.note_send(&PlotError::Interrupted);
+            return;
+        }
+        if let Err(ref e) = send {
+            self.note_send(e);
+        }
     }
 
     fn redraw(&mut self) -> Result<(), PlotError> {
+        let _guard = SigintGuard::arm();
+        if !self.ensure() {
+            if plot_abort::requested() {
+                self.note_send(&PlotError::Interrupted);
+                return Err(PlotError::Interrupted);
+            }
+            return Err(PlotError::ViewerConnection(
+                "viewer reconnect failed".into(),
+            ));
+        }
         let msg = ViewerMsg::Redraw {
             fig_id: self.fig_id,
         };
-        self.client.send(&msg)?;
-        Ok(())
+        let result = self.client.as_mut().unwrap().send(&msg);
+        if let Err(ref e) = result {
+            self.note_send(e);
+        } else if plot_abort::requested() {
+            self.note_send(&PlotError::Interrupted);
+            return Err(PlotError::Interrupted);
+        }
+        result.map(|_| ())
     }
 }
 
@@ -226,7 +339,9 @@ impl Drop for ViewerFigure {
         let msg = ViewerMsg::Close {
             fig_id: self.fig_id,
         };
-        let _ = self.client.send_nowait(&msg);
+        if let Some(client) = self.client.as_mut() {
+            let _ = client.send_nowait(&msg);
+        }
     }
 }
 
@@ -304,10 +419,14 @@ fn connect_viewer_impl(client: Option<ViewerClient>) -> Result<bool, PlotError> 
     // Verify the connection is live
     match client.send(&ViewerMsg::Ping) {
         Ok(rustlab_proto::ViewerReply::Pong) => {}
+        Err(PlotError::Interrupted) => return Err(PlotError::Interrupted),
         _ => return Ok(false),
     }
-    // Clear any figures from previous sessions
-    let _ = client.send(&ViewerMsg::Reset);
+    // Clear any figures from previous sessions. A Ctrl+C here must not
+    // store a half-written socket.
+    if let Err(PlotError::Interrupted) = client.send(&ViewerMsg::Reset) {
+        return Err(PlotError::Interrupted);
+    }
     let fig_id = next_fig_id();
     VIEWER_CONN.with(|c| {
         *c.borrow_mut() = Some(ViewerConn {
@@ -399,7 +518,7 @@ pub fn allocate_viewer_fig_id() -> u32 {
     next_fig_id()
 }
 
-/// Send the current FIGURE state to the viewer. No-op if not connected.
+/// Send the current FIGURE state to the viewer.
 ///
 /// A line that would not fit in one IPC frame is reduced to a min/max
 /// envelope first (see [`envelope_decimate`]). If a payload is still over
@@ -408,7 +527,27 @@ pub fn allocate_viewer_fig_id() -> u32 {
 /// window was closed) tears the connection down, prints that the
 /// connection was lost, and renders the pending figure in the terminal
 /// so the plot is not silently lost.
-pub fn sync_viewer() {
+///
+/// Ctrl+C during the scan or the socket write returns
+/// [`PlotError::Interrupted`]. A frame that already had a byte written
+/// drops this socket only (`VIEWER_SESSION` and `FigureOutput::Viewer`
+/// stay), so the next plot dials again. Local and remote are the same
+/// path: `rustlab remote` forwards this unix socket. The aborted send
+/// is not fed to the rate estimate.
+pub fn sync_viewer() -> Result<(), PlotError> {
+    let _guard = SigintGuard::arm();
+    if plot_abort::requested() {
+        return abort_sync();
+    }
+    match ensure_viewer_conn() {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("viewer: reconnect failed — drawing this figure in the terminal");
+            return draw_terminal_once();
+        }
+        Err(PlotError::Interrupted) => return abort_sync(),
+        Err(err) => return Err(err),
+    }
     // One envelope line and one bulk line per plot call. Live updates use
     // their own slots and are not cleared here.
     reset_static_warning_slots();
@@ -422,14 +561,18 @@ pub fn sync_viewer() {
     });
 
     let Some(err) = send_err else {
-        return;
+        return Ok(());
     };
+    if matches!(err, PlotError::Interrupted) {
+        return abort_sync();
+    }
     if matches!(err, PlotError::ViewerPayloadTooLarge(_)) {
         // Nothing was written for the rejected frame, so the socket is
         // still usable. Draw this figure in the terminal, then put the
         // figure back on the viewer for the next plot. The up-front
         // over-cap warning already names this fallback; print a line
-        // here only when that warning did not.
+        // here only when that warning did not. Terminal mode is set
+        // first so this draw does not call back into sync_viewer.
         if !FALLBACK_WARNED.with(|c| c.get()) {
             eprintln!(
                 "viewer: {err} — drawing this figure in the terminal. The viewer stays connected."
@@ -437,11 +580,13 @@ pub fn sync_viewer() {
         }
         let previous = crate::figure::current_figure_output();
         crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
-        let _ = crate::ascii::render_figure_terminal();
+        let drawn = crate::ascii::render_figure_terminal();
         if viewer_active() {
             crate::figure::set_current_figure_output(previous);
         }
-        return;
+        // Ctrl+C on that screen already printed `plot aborted`. The
+        // socket was not written, so it stays up.
+        return drawn;
     }
     // Drop the dead connection.
     VIEWER_CONN.with(|c| *c.borrow_mut() = None);
@@ -450,7 +595,44 @@ pub fn sync_viewer() {
     crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
     eprintln!("viewer: connection lost ({err}) — falling back to terminal rendering");
     // Best-effort TUI render so the user actually sees their plot.
-    let _ = crate::ascii::render_figure_terminal();
+    crate::ascii::render_figure_terminal()
+}
+
+/// After a partial abort the connection is gone but the figure is still
+/// routed at the viewer. Dial the same session again. Ping and Reset run
+/// inside [`connect_viewer_impl`]; Reset clears figures the viewer still
+/// has open. A live connection is left alone.
+fn ensure_viewer_conn() -> Result<bool, PlotError> {
+    if viewer_active() {
+        return Ok(true);
+    }
+    let session = VIEWER_SESSION.with(|s| s.borrow().clone());
+    let client = match session.as_deref() {
+        Some(name) => ViewerClient::connect_named(name),
+        None => ViewerClient::connect(),
+    };
+    connect_viewer_impl(client)
+}
+
+/// Drop a half-written viewer socket and stop the plot. The session name
+/// and `FigureOutput::Viewer` stay, so the next plot reconnects instead
+/// of switching to the terminal for good.
+fn abort_sync() -> Result<(), PlotError> {
+    plot_abort::report_aborted();
+    if plot_abort::take_partial() {
+        VIEWER_CONN.with(|c| *c.borrow_mut() = None);
+    }
+    Err(PlotError::Interrupted)
+}
+
+/// Draw once in the terminal, then put the figure back on the viewer so
+/// the next plot tries the socket again.
+fn draw_terminal_once() -> Result<(), PlotError> {
+    let previous = crate::figure::current_figure_output();
+    crate::figure::set_current_figure_output(crate::figure::FigureOutput::Terminal);
+    let drawn = crate::ascii::render_figure_terminal();
+    crate::figure::set_current_figure_output(previous);
+    drawn
 }
 
 /// Compute the figure-level (window) title from the FigureState. If the
@@ -707,6 +889,11 @@ fn prepare_series_for_viewer(
     }
     let started = std::time::Instant::now();
     let (dx, dy) = envelope_decimate(x, y, VIEWER_ENVELOPE_COLUMNS);
+    // An aborted scan returns empty vectors. Do not record it, and do
+    // not send the partial envelope.
+    if plot_abort::requested() {
+        return Err(PlotError::Interrupted);
+    }
     if n > VIEWER_ENVELOPE_MAX_POINTS {
         record_scan(n as u128, started.elapsed().as_nanos());
     }

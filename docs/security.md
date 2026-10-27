@@ -280,6 +280,10 @@ connection, so a remote link's round trip counts on the next warning.
 The connect ping is that first sample. Nothing is written to disk.
 The warning says the figures are estimates. The 32 MiB cap is unchanged
 and is not a warning threshold. Notebook renders do not print the warning.
+Ctrl+C during a send stops between 64 KiB chunks. A frame that already
+had a byte written is not left on the socket: rustlab drops that
+connection instead of a truncated length prefix. The next plot opens
+a new one. The viewer process stays up.
 
 On platforms that use TCP `127.0.0.1` instead of a Unix socket, traffic
 remains loopback-only with **no application-level auth** — local-user

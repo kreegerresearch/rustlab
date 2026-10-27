@@ -24,7 +24,11 @@ rustlab 0.3.7 — type 'help' or '?' for help, 'exit' or Ctrl+D to quit
 >> plot(svd(A))                % drawn on your desktop
 ```
 
-The REPL arrives already connected, so the first plot just appears. `Ctrl+D`
+The REPL arrives already connected, so the first plot just appears. Ctrl+C
+during a long plot aborts that send the same way as a local viewer: the
+remote rustlab writes the forwarded unix socket, prints `plot aborted`,
+and drops the socket if a frame was only partly written. The viewer
+process on your desk stays up. The next plot connects again. `Ctrl+D`
 ends the session, tears the forward down, and removes the remote socket file.
 Every session gets a fresh socket name, so a crashed session leaves nothing
 that can block the next one.

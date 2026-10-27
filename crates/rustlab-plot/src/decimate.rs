@@ -37,6 +37,11 @@ pub(crate) fn envelope_decimate(x: &[f64], y: &[f64], columns: usize) -> (Vec<f6
     if columns == 0 || n <= max_points {
         return (x.to_vec(), y.to_vec());
     }
+    // A long scan is the slow part of a large line. Stop between samples
+    // when Ctrl+C is pressed and let the caller discard this partial pass.
+    if crate::plot_abort::requested() {
+        return (Vec::new(), Vec::new());
+    }
 
     let mut runs: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
@@ -46,10 +51,16 @@ pub(crate) fn envelope_decimate(x: &[f64], y: &[f64], columns: usize) -> (Vec<f6
             i += 1;
             while i < n && x[i].is_finite() && y[i].is_finite() {
                 i += 1;
+                if i & 0xFFFF == 0 && crate::plot_abort::requested() {
+                    return (Vec::new(), Vec::new());
+                }
             }
             runs.push((start, i));
         } else {
             i += 1;
+            if i & 0xFFFF == 0 && crate::plot_abort::requested() {
+                return (Vec::new(), Vec::new());
+            }
         }
     }
     if runs.is_empty() {
@@ -87,6 +98,9 @@ pub(crate) fn envelope_decimate(x: &[f64], y: &[f64], columns: usize) -> (Vec<f6
             emitted = true;
         }
         cursor = end;
+        if crate::plot_abort::requested() {
+            return (Vec::new(), Vec::new());
+        }
     }
     (out_x, out_y)
 }
@@ -194,6 +208,9 @@ fn decimate_run(
             let mut min_i = start;
             let mut max_i = start;
             for i in start + 1..end {
+                if i & 0xFFFF == 0 && crate::plot_abort::requested() {
+                    return;
+                }
                 // A new low cannot also be a new high. Ties keep the earlier index.
                 if y[i] < y[min_i] {
                     min_i = i;
@@ -375,6 +392,19 @@ mod tests {
         for w in oy.windows(2) {
             assert!(w[1] >= w[0]);
         }
+    }
+
+    #[test]
+    fn abort_discards_a_partial_envelope() {
+        let _guard = crate::plot_abort::PollGuard::arm();
+        crate::plot_abort::request();
+        let n = 200_000;
+        let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let (ox, oy) = envelope_decimate(&x, &x, 16);
+        assert!(ox.is_empty() && oy.is_empty());
+        crate::plot_abort::clear_request();
+        let (ox, oy) = envelope_decimate(&x, &x, 16);
+        assert!(!ox.is_empty() && ox.len() == oy.len());
     }
 
     /// Local timing for the reported 1e8-point line. Not part of CI.
