@@ -20,6 +20,31 @@
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
 | 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
 
+## Core math audit (2026-10-28)
+
+Checked against closed forms and the MATLAB/Octave conventions named below.
+Fixes landed in 0.3.23. What remains different on purpose:
+
+| Topic | rustlab | MATLAB / Octave | Why it stays |
+|---|---|---|---|
+| `norm(A)` with no `p` | Frobenius | 2-norm (largest singular value) | Documented since the p-norm split. `norm(A, 2)` is the 2-norm, `norm(A, "fro")` is Frobenius |
+| `[V, D] = eigs(...)` | `D` is a vector | `D` is a diagonal matrix | `D(k)` is the k-th eigenvalue. A diagonal matrix would make `D(2)` the structural zero under column-major linear indexing |
+| `sort` of complex values | by real part | by magnitude, then phase | Documented. NaNs compare equal; they are not moved to the end |
+| `median` of complex values | ordered by real part | not defined the same way in every release | Imaginary parts are ignored. A NaN real part returns NaN |
+| `std` / `var` | sample, divide by `n−1`, only. Empty input is 0 | `w` flag selects population variance; empty is NaN | No second flag. Complex data uses `Σ\|x−mean\|²/(n−1)`, which matches MATLAB's complex `std` |
+| `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
+| `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
+| `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
+| backslash `A\b` | not an operator | `mldivide` | Use `linsolve(A, b)` or `spsolve` / `solve`. No new operator in this audit |
+| `qr`, `null` | not implemented | factorizations | `svd` and `rank` cover the singular-vector side. A dense QR or nullspace was not required to fix a wrong answer |
+| `polyfit`, `polyval`, `interp1` | not implemented | polynomial fit and 1-D interpolation | `roots` and `interp_freq` exist. These three are new surface, not a wrong answer |
+| `chol(A)`, `lu(A)` | sparse factor handle for `solve(F, b)` | dense `[L, U, P]` or a matrix factor | Dense solves go through `linsolve` / `inv`. The handle is the factor-once path |
+| `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
+| Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
+| sparse structural zero | entries below `1e-15` are dropped | stored | `1e-16 * speye(n)` is an empty pattern. `1e-14 * speye(n)` factors |
+
+Confirmed in this audit, and not divergences: `inv(A)*A ≈ I`, Hilbert-5 residual, 2×2 and triangular `det`, complex `det`, `linsolve`, sparse `chol`/`lu` on a scaled SPD matrix, SVD reconstruction (wide, tall, complex), `pinv` on a column and on a rank-1 matrix, `eig` of a rotation, a Jordan block, and a Hermitian matrix, `eigs` of a diagonal, `expm` of a rotation, a nilpotent Jordan block, and the Moler–Van Loan matrix, `kron` block form, `diag` with an offset, FFT of length 3 and 4 including non-powers of two, Parseval, `convolve`, overlap-add against direct convolution, symmetric Hann/Hamming/Blackman samples, Kaiser against an independent Bessel series, FIR DC gain, Butterworth −3 dB, `filtfilt` of a constant, a one-pole recurrence, `freqz` of a delay, `mean`/`std`/`var`/`median`/`cumsum` definitions, and `(1+2i)(3+4i)`.
+
 ## Things that already match (no work needed)
 
 Confirmed by audit + numeric suite. Listed here so a future reader doesn't go re-checking these:

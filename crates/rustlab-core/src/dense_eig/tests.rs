@@ -203,3 +203,22 @@ fn zero_and_scalar_and_errors() {
     assert!(eig(&real(&[&[1.0, f64::NAN], &[0.0, 1.0]]), false).is_err());
     assert!(eig(&Array2::zeros((2, 3)), false).is_err());
 }
+
+/// A Jordan block is not diagonalisable. The eigenvalues are still the
+/// repeated diagonal; a full set of independent eigenvectors does not exist,
+/// so this does not check the residual of V.
+#[test]
+fn defective_jordan_block_eigenvalues() {
+    let j2 = real(&[&[2.0, 1.0], &[0.0, 2.0]]);
+    let (vals, _) = eig(&j2, true).unwrap();
+    assert_same_set(&vals, &[c(2.0), c(2.0)], 1e-12);
+
+    let j3 = real(&[&[5.0, 1.0, 0.0], &[0.0, 5.0, 1.0], &[0.0, 0.0, 5.0]]);
+    let vals = eigenvalues(&j3).unwrap();
+    assert_same_set(&vals, &[c(5.0), c(5.0), c(5.0)], 1e-10);
+
+    // Diagonalisable repeated eigenvalue: residual must be tiny.
+    let a = real(&[&[2.0, 0.0, 0.0], &[0.0, 2.0, 0.0], &[0.0, 0.0, 2.0]]);
+    let (vals, _) = check_decomposition(&a, 1e-12);
+    assert_same_set(&vals, &[c(2.0), c(2.0), c(2.0)], 1e-12);
+}

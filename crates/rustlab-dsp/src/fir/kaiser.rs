@@ -1,7 +1,6 @@
 use super::design::{fir_bandpass, fir_highpass, fir_lowpass, FirFilter};
-use crate::convolution::next_power_of_two;
 use crate::error::DspError;
-use crate::fft::fft_raw;
+use crate::fft::fft;
 use crate::window::WindowFunction;
 use ndarray::Array1;
 use num_complex::Complex;
@@ -151,20 +150,35 @@ pub fn freqz(
             "freqz: n_points must be > 0".to_string(),
         ));
     }
-    // fft_size must be >= 2*n_points so that the first n_points DFT bins
-    // cover [0, Nyquist) rather than [0, fs).
-    let fft_size = next_power_of_two((2 * n_points).max(h.len()));
-    let padded: Vec<C64> = h
-        .iter()
-        .copied()
-        .chain(std::iter::repeat(Complex::new(0.0, 0.0)))
-        .take(fft_size)
-        .collect();
-    let spectrum = fft_raw(&padded);
-
+    // n points on [0, Nyquist): f_k = k·fs/(2n), k = 0..n-1. Nyquist itself
+    // is not included. That grid is the first n bins of a length-2n DFT.
+    // Rounding 2n up to a power of two (the previous behaviour) shortened
+    // the span whenever 2n was not already a power of two, so a request for
+    // "up to Nyquist" stopped early. A filter longer than 2n must not be
+    // wrapped by that DFT; it is summed directly at the same frequencies.
+    let nfft = 2 * n_points;
     let freqs: RVector =
-        Array1::from_iter((0..n_points).map(|k| k as f64 * sample_rate / fft_size as f64));
-    let h_out: CVector = Array1::from_iter(spectrum[..n_points].iter().copied());
+        Array1::from_iter((0..n_points).map(|k| k as f64 * sample_rate / nfft as f64));
+    let h_out: CVector = if h.len() <= nfft {
+        let mut padded = vec![Complex::new(0.0, 0.0); nfft];
+        for (i, &c) in h.iter().enumerate() {
+            padded[i] = c;
+        }
+        // `fft` (not the power-of-two kernel) so a length that is not a
+        // power of two still lands on f_k = k·fs/(2 n_points).
+        let spectrum = fft(&Array1::from_vec(padded))?;
+        Array1::from_iter(spectrum.iter().take(n_points).copied())
+    } else {
+        use std::f64::consts::PI;
+        Array1::from_iter((0..n_points).map(|k| {
+            let mut acc = C64::new(0.0, 0.0);
+            for (m, &hm) in h.iter().enumerate() {
+                let ang = -2.0 * PI * (k as f64) * (m as f64) / nfft as f64;
+                acc += hm * Complex::new(ang.cos(), ang.sin());
+            }
+            acc
+        }))
+    };
 
     Ok((freqs, h_out))
 }

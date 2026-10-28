@@ -98,7 +98,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `sqrt(v)` | Square root |
 | `abs(v)` | Absolute value / modulus |
 | `log(v)` | Natural logarithm |
-| `log10(v)`, `log2(v)` | Base-10 and base-2 logarithms |
+| `log10(v)`, `log2(v)` | Base-10 and base-2 logarithms. A negative real is the principal complex value (`log10(-1) = iπ/ln 10`), not NaN |
 | `nextpow2(x)` | Smallest integer `p` with `2^p >= |x|` (complex uses `|z|`). `nextpow2(0)` is 0 |
 | `sin(v)`, `cos(v)` | Trig (radians) |
 | `asin(v)`, `acos(v)`, `atan(v)` | Inverse trig |
@@ -204,10 +204,11 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so the index from `[m, i] = max(v)` always equals `argmax(v)`. (There is no `~` output placeholder — bind to a dummy variable.) |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
 | `median(v)` / `median(M)` / `median(M, dim)` | Median by real part; same axis rules. |
-| `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. |
+| `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. Complex data uses `√(Σ\|x−mean\|²/(n−1))`. Empty or length 1 is 0. |
+| `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. No population (divide-by-n) flag. |
 | `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
 | `median(v)` | Median (real parts; average of two middles for even length) |
-| `std(v)` | Standard deviation (N-1 denominator) |
+| `std(v)` | Standard deviation (N-1 denominator). `var(v)` is its square |
 | `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
@@ -227,11 +228,12 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
 | `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
-| `norm(v)`, `norm(v,p)` | Vector p-norm (1, 2, Inf); matrix Frobenius; works on sparse |
+| `norm(v)`, `norm(v,p)` | Vector p-norm. `norm(A)` is Frobenius (MATLAB's default is the 2-norm). `norm(A, 2)` is spectral, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Sparse matches: `norm(S, 2)` is spectral | 
+| `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
 | `trace(M)` | Trace |
-| `rank(M)` | Numerical rank |
+| `rank(M)` | Numerical rank: count of singular values above `max(m,n)·eps·σ_max` |
 | `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition (`dense_eig`). 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). Hermitian or real symmetric: real eigenvalues, ascending, orthonormal V. |
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
@@ -283,8 +285,9 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `fir_lowpass(taps, cutoff_hz, sr, window)` | FIR lowpass coefficients |
 | `fir_highpass(taps, cutoff_hz, sr, window)` | FIR highpass coefficients |
 | `fir_bandpass(taps, low_hz, high_hz, sr, window)` | FIR bandpass coefficients |
-| `butterworth_lowpass(order, cutoff_hz, sr)` | Butterworth IIR lowpass — returns b (numerator) coefficients only |
-| `butterworth_highpass(order, cutoff_hz, sr)` | Butterworth IIR highpass — returns b (numerator) coefficients only |
+| `butterworth_lowpass(order, cutoff_hz, sr)` | Butterworth IIR lowpass. One output is `b`; `[b, a] = ...` also returns the monic denominator. −3 dB at `cutoff_hz` |
+| `butterworth_highpass(order, cutoff_hz, sr)` | Butterworth IIR highpass. Same one-output / two-output split |
+| `filter(b, a, x)` | Causal direct-form filter. `a` is normalised so `a(1) = 1`. `a = [1]` is an FIR. `x` may be complex |
 | `filtfilt(b, a, x)` | Zero-phase forward-backward IIR filter; use `a=[1]` for FIR |
 | `fir_lowpass_kaiser(cutoff_hz, trans_bw_hz, atten_db, sr)` | Auto-designed Kaiser lowpass |
 | `fir_highpass_kaiser(cutoff_hz, trans_bw_hz, atten_db, sr)` | Auto-designed Kaiser highpass |
@@ -293,7 +296,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `firpm(n_taps, bands, desired)` | Parks-McClellan optimal equiripple FIR |
 | `firpm(n_taps, bands, desired, weights)` | Parks-McClellan with per-band weights |
 | `firpmq(n_taps, bands, desired [, weights [, bits [, n_iter]]])` | Integer-coefficient Parks-McClellan (default bits=16, n_iter=8); returns integer taps. For unit-gain passband use `freqz(h / sum(h), ...)` to normalize. |
-| `freqz(h, n_points, sr)` | Complex frequency response → 2×n matrix |
+| `freqz(h, n_points, sr)` | Complex frequency response → 2×n matrix. `f_k = k·sr/(2n)` on `[0, Nyquist)`, any `n` |
 | `upfirdn(x, h, p, q)` | Upsample·filter·downsample via polyphase decomposition |
 | `window(name, n)` | Window vector; names: `"hann"` `"hamming"` `"blackman"` `"rectangular"` `"kaiser"` |
 

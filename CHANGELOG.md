@@ -6,6 +6,32 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.23
+
+### Added
+- **`filter(b, a, x)`** applies a causal direct-form filter. `a` is normalised so `a(1) = 1`. `a = [1]` is an FIR. `x` may be complex. `[b, a] = butterworth_lowpass(...)` and `[b, a] = butterworth_highpass(...)` now return the monic denominator as well as the numerator; a single output is still just `b`.
+- **`var`** is the sample variance, `std²`, with the same shapes and the same complex rule as `std`. There is no divide-by-n flag.
+- **`cond(A)`** is the 2-norm condition number `σ_max/σ_min`. `cond(A, 1)` and `cond(A, Inf)` are `‖A‖ ‖A⁻¹‖` and require a square matrix. A singular matrix returns `Inf`.
+
+### Fixed
+- **`det` of a matrix with a tiny column.** Elimination used to skip any pivot below `1e-14`, so `det([1e-20, 1; 1e-20, 1e-20])` was `1e-40` instead of `-1e-20`. A nonzero pivot is now used. Only an exact zero is left on the diagonal.
+- **`inv`, `linsolve`, and dense `spsolve` of a well-conditioned but tiny matrix.** `inv(1e-16 * eye(n))` was rejected as singular by an absolute pivot cutoff. The test is now relative to the largest entry (`eps · n · scale`). A genuinely singular matrix still errors. NaN and Inf entries error instead of producing NaN.
+- **Sparse `chol` and `lu` of a small positive-definite matrix.** A pivot below `1e-12` (Cholesky) or `1e-14` (LU) was indefinite or singular even when it was the scale of the whole matrix. `chol` of `1e-14 * speye(n)` now factors. Entries below the sparse drop tolerance `1e-15` are still stored as structural zeros.
+- **`rank`.** It counted `|λ(AᴴA)|` above `sqrt(eps)` times the largest, so a singular value of `1e-10` was dropped and a roundoff-negative eigenvalue could look like a small singular value. Rank now uses the same SVD as `svd` / `pinv`, with the documented cutoff `max(m, n) · eps · σ_max`. A nonzero finite vector has rank 1; only an exact zero has rank 0.
+- **`freqz` frequency grid.** `n` points are `f_k = k · fs / (2n)` on `[0, Nyquist)`. Rounding `2n` up to a power of two used to stop short of Nyquist whenever `2n` was not already a power of two, and a filter longer than that FFT was sampled on the wrong grid. Power-of-two requests are unchanged.
+- **`norm(S, 2)`** is the spectral norm, matching `norm(full(S), 2)`. It was the Frobenius norm. `norm(S)` and `norm(S, "fro")` stay Frobenius. Any other sparse `p` is an error instead of a silent Frobenius.
+- **`log10` and `log2` of a negative real** are the principal complex value (`log10(-1) = iπ/ln 10`), the same branch `log` and `sqrt` already use. They used to return `NaN`.
+- **`median` of a slice containing NaN** returns NaN. It used to panic.
+- **`expm`** reports an error if the Padé denominator cannot be inverted. It used to return the identity.
+
+### Breaking / behavior changes
+- **`rank` can go up.** A singular value between about `1e-8 · σ_max` and `eps · σ_max` now counts. `rank` of a nonzero vector smaller than `1e-12` is 1. Re-check scripts that compared `rank` for exact equality on ill-conditioned or tiny data.
+- **`freqz` moves** when `2 · n_points` is not a power of two, or when the filter is longer than the old padded FFT. `freqz(h, 512, sr)` and `freqz(h, 1024, sr)` are unchanged.
+- **`norm(S, 2)` changes** from Frobenius to the largest singular value. `norm(S)` does not.
+- **`log10(x)` and `log2(x)` for `x < 0`** are complex. Code that tested the result with `isnan` should branch on the sign first, or use `log10(abs(x))`.
+- **`inv` / `linsolve` / `spsolve` / `chol` / `lu` succeed** on some matrices they used to reject, and **error** on NaN or Inf input that used to come back as NaN.
+- **`[b, a] = butterworth_lowpass(...)`** (and the highpass) is new. `b = butterworth_lowpass(...)` is unchanged and is still only the numerator.
+
 ## 0.3.21
 
 ### Breaking / behavior changes

@@ -17,6 +17,8 @@ pub mod window;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod math_audit;
 
 pub use fft::{fft, fft_n, fftfreq, fftshift, ifft, ifft_n, FftTransform};
 pub use fir::design::{fir_bandpass, fir_highpass, fir_lowpass, FirFilter};
