@@ -2219,10 +2219,11 @@ plot(signal, "440 Hz Sinusoid")
 ```
 
 ### `plot(x, v)`
-Line chart with explicit x-axis vector.
+Line chart with explicit x-axis vector. A line spec may follow the pair, as in the multi-pair form below: `plot(t, signal, "r--")` is a red dashed line and `plot(t, signal, "ko")` black markers.
 ```
 t = linspace(0.0, 1.0, 1000)
 plot(t, signal, "label", "sine wave")
+plot(t, signal, "r--")
 ```
 
 ### `plot(x1, y1, x2, y2, ...)`

@@ -6,6 +6,18 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.20
+
+### Added
+- **Communications notebook: Viterbi decoding of convolutional codes** (`examples/notebooks/comm/viterbi_fec.md`, the first notebook under `examples/notebooks/comm/`). It covers:
+  - The constraint-length-7 (133, 171) code at rates 1/3, 1/2, and punctured 2/3 and 3/4.
+  - A soft-decision Viterbi decoder written in rustlab script.
+  - BPSK over AWGN: BER curves simulated with `parmap`, coding gain at 10⁻⁴ against the Shannon limit, hard vs. soft decisions, and decoder error bursts.
+
+### Fixed
+- **`true` and `false` inside user functions.** A function body (and so a `parmap` task that calls one) reported `undefined variable 'true'`. Function scopes now start with every built-in constant, the same list `clear` keeps.
+- **A line spec after a single x/y pair.** `plot(x, y, "r--")`, `plot(x, y, "ko")` and the same in `semilogx`, `semilogy` and `loglog` drew a solid line in the next default color and used the spec as the title. Only a bare color letter (`"r"`) worked. The spec now sets color, style and markers as it does between several pairs. A one-word title such as `plot(y, "Gold")` is unchanged.
+
 ## 0.3.19
 
 ### Added
