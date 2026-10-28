@@ -265,7 +265,25 @@ REPL / `rustlab run` leave the jail unset (no behaviour change).
 ## H5 — Viewer socket + IPC limits
 
 After binding the Unix socket, the viewer sets mode **0600**. Framed IPC
-messages larger than 32 MiB are rejected without allocating the payload.
+messages larger than 32 MiB are rejected. The reader checks the length
+prefix and does not allocate that payload. The writer encodes first,
+then refuses to send a frame over the limit and writes nothing, so a
+long `plot` cannot push a truncated length onto the socket. Line,
+scatter, and stem series are reduced to a min/max envelope before that
+encode (see `docs/functions.md`, viewer). Before that work, rustlab
+estimates the time and the extra memory and prints one stderr warning
+when the estimate is about 1 s or more, or the extra memory is at
+least an eighth of available memory. The estimate starts from fixed
+rates and then follows the scan, encode, and transfer just measured.
+Transfer rate and a fixed per-send latency are kept per viewer
+connection, so a remote link's round trip counts on the next warning.
+The connect ping is that first sample. Nothing is written to disk.
+The warning says the figures are estimates. The 32 MiB cap is unchanged
+and is not a warning threshold. Notebook renders do not print the warning.
+Ctrl+C during a send stops between 64 KiB chunks. A frame that already
+had a byte written is not left on the socket: rustlab drops that
+connection instead of a truncated length prefix. The next plot opens
+a new one. The viewer process stays up.
 
 On platforms that use TCP `127.0.0.1` instead of a Unix socket, traffic
 remains loopback-only with **no application-level auth** — local-user

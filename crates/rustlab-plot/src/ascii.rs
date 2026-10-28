@@ -36,13 +36,31 @@ pub(crate) fn fmt_g(v: f64) -> String {
 
 fn wait_for_key() -> Result<(), PlotError> {
     loop {
+        // Ctrl+C in raw mode is a key, not SIGINT (ISIG is off). Any other
+        // key still dismisses the figure and lets the script continue.
+        if crate::plot_abort::requested() {
+            return abort_key();
+        }
         if event::poll(std::time::Duration::from_millis(100))? {
-            if let event::Event::Key(_) = event::read()? {
+            if let event::Event::Key(key) = event::read()? {
+                let ctrl_c = key.modifiers.contains(event::KeyModifiers::CONTROL)
+                    && matches!(
+                        key.code,
+                        event::KeyCode::Char('c') | event::KeyCode::Char('C')
+                    );
+                if ctrl_c {
+                    return abort_key();
+                }
                 break;
             }
         }
     }
     Ok(())
+}
+
+fn abort_key() -> Result<(), PlotError> {
+    crate::plot_abort::report_aborted();
+    Err(PlotError::Interrupted)
 }
 
 fn restore_terminal() {
@@ -396,8 +414,7 @@ pub fn render_figure_terminal() -> Result<(), PlotError> {
         crate::figure::FigureOutput::Html(_) => return Ok(()),
         #[cfg(feature = "viewer")]
         crate::figure::FigureOutput::Viewer(_) => {
-            crate::viewer_live::sync_viewer();
-            return Ok(());
+            return crate::viewer_live::sync_viewer();
         }
         crate::figure::FigureOutput::Terminal => {}
     }
@@ -514,8 +531,7 @@ pub fn render_heatmap_tui(
         crate::figure::FigureOutput::Html(_) => return Ok(()),
         #[cfg(feature = "viewer")]
         crate::figure::FigureOutput::Viewer(_) => {
-            crate::viewer_live::sync_viewer();
-            return Ok(());
+            return crate::viewer_live::sync_viewer();
         }
         crate::figure::FigureOutput::Terminal => {}
     }
@@ -604,8 +620,7 @@ pub fn render_image_tui(
         crate::figure::FigureOutput::Html(_) => return Ok(()),
         #[cfg(feature = "viewer")]
         crate::figure::FigureOutput::Viewer(_) => {
-            crate::viewer_live::sync_viewer();
-            return Ok(());
+            return crate::viewer_live::sync_viewer();
         }
         crate::figure::FigureOutput::Terminal => {}
     }
