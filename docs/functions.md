@@ -2622,7 +2622,7 @@ contour(X, Y, V, 8, "k");
 Show or hide gridlines.
 
 ### `title(s)` / `xlabel(s)` / `ylabel(s)`
-Set the figure title or axis labels. Strings only.
+Set the subplot title or axis labels. Strings only. A newline in `title` starts another line, and a title wider than its panel wraps, so the text stays above that panel's axes. In a grid, each panel keeps its own axis titles.
 
 ```
 title("Frequency response")

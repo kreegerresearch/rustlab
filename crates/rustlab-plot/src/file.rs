@@ -22,6 +22,72 @@ const COLORBAR_SAMPLES: usize = 64;
 // the colorbar can vertically align with it.
 const CAPTION_H_EST: u32 = 30;
 
+/// How many tick labels fit along an axis of `pixels` without sitting on
+/// each other. A collapsed equal-aspect axis (a Nyquist trace that is
+/// almost a vertical line) used to stamp every label on the same pixel.
+fn tick_budget(pixels: u32, label_px: u32) -> usize {
+    let slot = label_px.saturating_add(16).max(48);
+    if pixels < slot {
+        1
+    } else {
+        (pixels as usize / slot as usize).clamp(2, 8)
+    }
+}
+
+fn measure_px<DB>(area: &DrawingArea<DB, plotters::coord::Shift>, text: &str, size: u32) -> u32
+where
+    DB: DrawingBackend,
+{
+    let style: TextStyle = ("sans-serif", size).into_text_style(area);
+    style
+        .font
+        .box_size(text)
+        .map(|(w, _)| w)
+        .unwrap_or_else(|_| (text.chars().count() as u32).saturating_mul(size) / 2)
+}
+
+/// Wrap `text` so each line is at most `max_px` wide. Explicit newlines are
+/// kept. A single word wider than the panel is left intact.
+fn wrap_px<DB>(
+    area: &DrawingArea<DB, plotters::coord::Shift>,
+    text: &str,
+    size: u32,
+    max_px: u32,
+) -> Vec<String>
+where
+    DB: DrawingBackend,
+{
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let max_px = max_px.max(1);
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let words: Vec<&str> = para.split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+        let mut cur = String::new();
+        for w in words {
+            let next = if cur.is_empty() {
+                w.to_string()
+            } else {
+                format!("{cur} {w}")
+            };
+            if !cur.is_empty() && measure_px(area, &next, size) > max_px {
+                lines.push(std::mem::take(&mut cur));
+                cur = w.to_string();
+            } else {
+                cur = next;
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+    }
+    lines
+}
+
 /// Pre-parsed plotters colors derived from `ThemeColors`. Rendering helpers
 /// take this rather than the raw string-typed `ThemeColors` so the parsing
 /// happens once per figure instead of per draw call.
@@ -430,14 +496,50 @@ where
         ("sans-serif", 14u32, &palette.text).into_text_style(panel);
     let axis_style: ShapeStyle = palette.text.stroke_width(1);
 
+    let (panel_w, _panel_h) = panel.dim_in_pixel();
+    let title_lines = wrap_px(
+        panel,
+        title_str,
+        22,
+        panel_w.saturating_sub(2 * MARGIN).max(40),
+    );
+    // One line uses plotters' caption (same SVG as before). Extra lines are
+    // drawn into a taller top margin so a long or multi-line title stays
+    // inside the panel instead of running through the next subplot.
+    let caption_h = if title_lines.is_empty() {
+        0
+    } else if title_lines.len() == 1 {
+        CAPTION_H_EST
+    } else {
+        8 + 26 * title_lines.len() as u32
+    };
+    let y_sample = if y_log {
+        compact_num(10f64.powf(y_hi))
+    } else {
+        let a = format_linear_tick(y_lo);
+        let b = format_linear_tick(y_hi);
+        if a.chars().count() >= b.chars().count() { a } else { b }
+    };
+    let x_sample = if x_log {
+        compact_num(10f64.powf(x_hi))
+    } else {
+        let a = format_linear_tick(x_lo);
+        let b = format_linear_tick(x_hi);
+        if a.chars().count() >= b.chars().count() { a } else { b }
+    };
+    let y_tick_w = measure_px(panel, &y_sample, 12);
+    let y_desc_w = if ylabel.is_empty() { 0 } else { 18 };
+    let y_area_cap = (panel_w / 3).max(Y_LABEL_AREA);
+    let y_area = (y_tick_w + y_desc_w + 18).clamp(Y_LABEL_AREA, y_area_cap);
+    let x_tick_w = measure_px(panel, &x_sample, 12);
+
     // axis("equal"): shrink the chart area so one data unit on x equals one
     // data unit on y. Without this, plotters maps `[x_lo, x_hi]` and
     // `[y_lo, y_hi]` independently to the panel dimensions, so a unit circle
     // renders as an ellipse on a non-square canvas.
     let chart_area = if sp.axis_equal {
-        let caption_h = if title_str.is_empty() { 0u32 } else { CAPTION_H_EST };
         let (panel_w, panel_h) = panel.dim_in_pixel();
-        let data_w_avail = panel_w.saturating_sub(2 * MARGIN + Y_LABEL_AREA);
+        let data_w_avail = panel_w.saturating_sub(2 * MARGIN + y_area);
         let data_h_avail = panel_h.saturating_sub(2 * MARGIN + X_LABEL_AREA + caption_h);
         let dx = (x_hi - x_lo).abs().max(f64::EPSILON);
         let dy = (y_hi - y_lo).abs().max(f64::EPSILON);
@@ -449,23 +551,42 @@ where
         // not as an amount to subtract. So target final size = data area +
         // margins + label/caption gutters that the chart builder will carve
         // back out via `.margin/.x_label_area_size/.y_label_area_size/.caption`.
-        let final_w = data_w + 2 * MARGIN + Y_LABEL_AREA;
+        let final_w = data_w + 2 * MARGIN + y_area;
         let final_h = data_h + 2 * MARGIN + X_LABEL_AREA + caption_h;
         panel.clone().shrink((0, 0), (final_w, final_h))
     } else {
         panel.clone()
     };
 
-    let mut chart = ChartBuilder::on(&chart_area)
-        .caption(title_str, caption_style)
-        .margin(MARGIN)
+    let mut built = ChartBuilder::on(&chart_area);
+    built.margin(MARGIN)
         .x_label_area_size(X_LABEL_AREA)
-        .y_label_area_size(Y_LABEL_AREA)
+        .y_label_area_size(y_area);
+    if title_lines.len() > 1 {
+        // `margin()` resets every side, so the extra top band is set after it.
+        built.margin_top(MARGIN + caption_h);
+    } else {
+        built.caption(title_str, caption_style.clone());
+    }
+    let mut chart = built
         .build_cartesian_2d(
             AxisTicks::new(x_lo, x_hi, x_log),
             AxisTicks::new(y_lo, y_hi, y_log),
         )
         .map_err(err)?;
+    if title_lines.len() > 1 {
+        let (cw, _) = chart_area.dim_in_pixel();
+        let mut centered = caption_style.clone();
+        centered.pos = plotters::style::text_anchor::Pos::new(
+            plotters::style::text_anchor::HPos::Center,
+            plotters::style::text_anchor::VPos::Top,
+        );
+        for (i, line) in title_lines.iter().enumerate() {
+            chart_area
+                .draw_text(line, &centered, ((cw / 2) as i32, 4 + i as i32 * 26))
+                .map_err(err)?;
+        }
+    }
 
     {
         // Formatter closures must outlive `draw()`, so bind them before the
@@ -493,6 +614,7 @@ where
         // Linear axes keep plotters' exact default `f64` formatting.
         let lin_fmt = |v: &f64| -> String { format_linear_tick(*v) };
 
+        let (pw, ph) = chart.plotting_area().dim_in_pixel();
         let mut mesh = chart.configure_mesh();
         mesh.disable_mesh()
             .axis_style(axis_style)
@@ -504,14 +626,14 @@ where
             let n = sp.x_labels.as_ref().map_or(0, |l| l.len());
             mesh.x_labels(n).x_label_formatter(&cat_fmt);
         } else if x_log {
-            mesh.x_label_formatter(&log_fmt);
+            mesh.x_labels(tick_budget(pw, x_tick_w)).x_label_formatter(&log_fmt);
         } else {
-            mesh.x_label_formatter(&lin_fmt);
+            mesh.x_labels(tick_budget(pw, x_tick_w)).x_label_formatter(&lin_fmt);
         }
         if y_log {
-            mesh.y_label_formatter(&log_fmt);
+            mesh.y_labels(tick_budget(ph, y_tick_w)).y_label_formatter(&log_fmt);
         } else {
-            mesh.y_label_formatter(&lin_fmt);
+            mesh.y_labels(tick_budget(ph, y_tick_w)).y_label_formatter(&lin_fmt);
         }
         mesh.draw().map_err(err)?;
     }
@@ -739,16 +861,24 @@ where
         return Ok(());
     }
 
-    // Caption
+    // Caption. Wrapped so a long title stays inside the panel.
     let (w_pixels, h_pixels) = root.dim_in_pixel();
     let caption_style: TextStyle = ("sans-serif", 18u32, &palette.text).into_text_style(&root);
-    root.draw_text(caption, &caption_style, (MARGIN as i32, 4))
-        .map_err(err)?;
+    let caption_lines = wrap_px(&root, caption, 18, w_pixels.saturating_sub(2 * MARGIN).max(40));
+    let mut centered = caption_style.clone();
+    centered.pos = plotters::style::text_anchor::Pos::new(
+        plotters::style::text_anchor::HPos::Center,
+        plotters::style::text_anchor::VPos::Top,
+    );
+    for (i, line) in caption_lines.iter().enumerate() {
+        root.draw_text(line, &centered, ((w_pixels / 2) as i32, 4 + i as i32 * 22))
+            .map_err(err)?;
+    }
 
     // Plot area inside root (leave margins for caption + axes).
     let pad_l = 50i32;
     let pad_r = 20i32;
-    let pad_t = 34i32;
+    let pad_t = 18 + 22 * caption_lines.len().max(1) as i32;
     let pad_b = 40i32;
     let plot_w = (w_pixels as i32 - pad_l - pad_r).max(50);
     let plot_h = (h_pixels as i32 - pad_t - pad_b).max(50);
@@ -1169,6 +1299,9 @@ where
             .draw()
             .map_err(err)?;
     } else {
+        let (pw, ph) = chart.plotting_area().dim_in_pixel();
+        let x_tick_w = measure_px(&chart_area, &format_linear_tick(x_hi), 12);
+        let y_tick_w = measure_px(&chart_area, &format_linear_tick(y_hi), 12);
         chart
             .configure_mesh()
             .disable_mesh()
@@ -1177,6 +1310,8 @@ where
             .axis_desc_style(desc_style)
             .x_desc(sp.xlabel.as_str())
             .y_desc(sp.ylabel.as_str())
+            .x_labels(tick_budget(pw, x_tick_w))
+            .y_labels(tick_budget(ph, y_tick_w))
             .draw()
             .map_err(err)?;
     }
