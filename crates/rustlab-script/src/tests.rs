@@ -5358,7 +5358,7 @@ mod new_builtins_tests {
 
     #[test]
     fn kron_treats_a_vector_as_a_row() {
-        // Each case's shape and column-major values from Octave. Before 0.3.20
+        // Each case's shape and column-major values from Octave. Before 0.3.21
         // a row vector was taken as a column, so kron(c, v) of a column and a
         // row stacked instead of forming the outer product.
         let cases: [(&str, (usize, usize), &[f64]); 6] = [

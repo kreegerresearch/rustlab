@@ -138,12 +138,12 @@ freq (Hz)
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="1463,429 1463,47 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="1621,429 1621,47 "/>
 <polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="990,352 1295,151 1473,79 1600,114 1698,227 1779,398 "/>
-<rect x="1706" y="52" width="69" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="1706" y="52" width="69" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="1746" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<rect x="1705" y="52" width="70" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="1705" y="52" width="70" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="1745" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 S21
 </text>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="1716,67 1736,67 "/>
+<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="1715,67 1735,67 "/>
 <text x="450" y="525" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="17.741935483870968" opacity="1" fill="#CDD6F4">
 |S12| (dB)
 </text>
@@ -210,12 +210,12 @@ freq (Hz)
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="563,929 563,547 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="721,929 721,547 "/>
 <polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="90,898 395,814 573,743 700,682 798,628 879,579 "/>
-<rect x="806" y="552" width="69" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="806" y="552" width="69" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="846" y="562" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<rect x="805" y="552" width="70" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="805" y="552" width="70" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="845" y="562" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 S12
 </text>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="816,567 836,567 "/>
+<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="815,567 835,567 "/>
 <text x="1350" y="525" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="17.741935483870968" opacity="1" fill="#CDD6F4">
 |S22| (dB)
 </text>
@@ -278,10 +278,10 @@ freq (Hz)
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="1463,929 1463,547 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="1621,929 1621,547 "/>
 <polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="990,579 1295,636 1473,696 1600,759 1698,826 1779,898 "/>
-<rect x="1706" y="552" width="69" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="1706" y="552" width="69" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="1746" y="562" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<rect x="1705" y="552" width="70" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="1705" y="552" width="70" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="1745" y="562" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 S22
 </text>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="1716,567 1736,567 "/>
+<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="1715,567 1735,567 "/>
 </svg>

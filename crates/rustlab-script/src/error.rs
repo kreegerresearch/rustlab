@@ -53,8 +53,10 @@ pub enum ScriptError {
     /// exits 1. The REPL exits 1 as well.
     #[error("keyboard: dbquit")]
     DbQuit,
-    /// User pressed Ctrl-C or 'q' while a live figure was active.
-    /// Treated as a clean exit by the CLI (exit code 0, no error message).
+    /// User pressed Ctrl-C or 'q' while a live figure was active, or
+    /// Ctrl-C during a long viewer plot send (or the terminal figure
+    /// that is waiting for a key). The CLI exits 0 and prints no
+    /// `error:` line. The viewer path prints `plot aborted` on stderr.
     #[error("interrupted")]
     Interrupted,
     /// Cooperative cancellation: an external coordinator set the

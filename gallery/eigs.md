@@ -212,7 +212,7 @@ This implementation is:
   *Numerical Methods for Large Eigenvalue Problems*, ch. 6).
 - Arnoldi for general matrices (Saad ch. 8).
 - Small dense symmetric subproblem via cyclic Jacobi.
-- Small dense Hessenberg subproblem via shifted QR + inverse iteration
-  for eigenvectors.
+- Small dense Hessenberg subproblem via `dense_eig` (Schur form;
+  eigenvectors from back substitution, not inverse iteration).
 
 No `arpack-ng-sys`, no Fortran FFI, no large library dependency.

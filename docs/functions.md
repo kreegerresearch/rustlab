@@ -1353,7 +1353,7 @@ L = -1 * laplacian_2d(nx, ny);
 - Symmetric Lanczos with full reorthogonalization — Saad, *Numerical Methods for Large Eigenvalue Problems*, ch. 6; Golub & Van Loan §10.1.
 - Arnoldi for general matrices — Saad ch. 8; Golub & Van Loan §10.5.
 - Small dense symmetric eigenproblem at the centre of Lanczos via cyclic Jacobi rotations.
-- Small dense Hessenberg eigenproblem via shifted QR + inverse iteration (eigenvectors).
+- Small dense Hessenberg eigenproblem via `dense_eig` (Schur form; eigenvectors from back substitution, not inverse iteration).
 
 ### `ellipke(m)` / `[K, E] = ellipke(m)`
 Complete elliptic integrals of the first kind K(m) and second kind E(m), computed with the arithmetic-geometric mean (quadratic convergence; Abramowitz & Stegun §17.6).
@@ -2130,7 +2130,35 @@ Those limits are applied when the panel first appears and whenever the script
 sends *changed* limits — a zoom is not undone by a live plot redrawing with the
 same limits.
 
-**Automatic fallback.** If the viewer is closed or crashes while still connected, the next plot command detects the broken connection, prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders the current figure in the TUI. Subsequent plots continue to render in the terminal until you run `viewer on` again.
+**Long series.** A line, scatter, or stem with more than 8192 samples is reduced to a min/max envelope before it is sent: about 4096 columns, two samples each (the original points where that column is lowest and highest). Peaks stay at their real x, and the first view matches the full data's range. Zooming in shows that envelope, not the raw samples (at most 8192 points; shared endpoints are not repeated). Bar charts are sent whole.
+
+Before that work, rustlab estimates the wall time and the extra memory of the reduction, encode, and send. The first guess is a few nanoseconds per sample or per byte. Each real send measures the scan, the encode, and the socket write (including the reply, when there is one) and blends that measurement in, half and half, so the next warning uses this machine and this connection. A send under 64 KiB, and a scan under 100,000 samples, updates a fixed per-send latency and not the rate, so a remote viewer's round trip is not mistaken for bandwidth. Scan and encode are one estimate for the process. Transfer rate and latency belong to that viewer connection. The connect ping is the first transfer sample. Nothing is saved to disk, and there is no extra startup probe. The arrays the script already holds are not counted again. The warning says the figures are estimates. It prints one line on stderr when the estimate is at least about 1 s, or the extra memory is at least an eighth of available memory (64 MiB when that figure cannot be read). With the initial rates a 1e8-point line estimates about 0.4 s and stays quiet. A line of about 2.5×10^8 samples estimates 1.0 s and prints:
+
+```
+viewer: warning: plotting 250000000 samples will take an estimated 1.0 s and an estimated 272 KiB extra memory; reducing each line to a min/max envelope of at most 8192 samples (4096 columns, about 144 KiB sent) before sending.
+```
+
+The extra memory there is the envelope plus the message, not the input arrays. A 1e7-point line estimates about 40 ms and stays quiet. After a slow link is measured, a smaller plot can warn on the next send: one 800 ms round trip makes the following 1e8-point line estimate about 1.2 s. Several lines in one plot are summed into that one line.
+
+**Large frames.** A bar chart, heatmap, or surface is not reduced. Under the 32 MiB viewer limit those frames stay quiet unless the time or extra-memory estimate trips. The limit itself is a protocol cap, not a warning threshold. Over it, that figure is drawn in the terminal and the viewer stays connected:
+
+```
+viewer: warning: bar series of 2000000 bars is about 34.3 MiB, over the 32 MiB viewer limit — not sending; drawing this figure in the terminal. The viewer stays connected.
+```
+
+A live heatmap that does not fit is not sent and is not drawn in the terminal:
+
+```
+viewer: warning: heatmap 4096 by 2048 is about 32.0 MiB, over the 32 MiB viewer limit — not sending.
+```
+
+Each `plot` warns at most once for lines and once for a bar, heatmap, or surface. When a frame is over the limit, only the fallback line is printed, because the figure is not scanned. A live update warns once per thread, and a small first frame does not suppress a later large one. Notebook renders do not print these lines.
+
+**Automatic fallback.** A plot that still does not fit in one 32 MiB message is not written to the socket. The warning above is the notice; if it was not printed, rustlab prints `viewer: <reason> — drawing this figure in the terminal. The viewer stays connected.` The next plot still goes to the viewer. If the viewer is closed or crashes while connected, the next plot prints `viewer: connection lost (...) — falling back to terminal rendering`, clears the viewer session, and renders in the terminal. Subsequent plots stay in the terminal until you run `viewer on` again.
+
+**Stopping a long plot.** Ctrl+C during the envelope scan or the socket write aborts that plot. rustlab prints `plot aborted` on stderr and returns to the prompt (or, for `rustlab run`, exits 0 and does not run the rest of the script). The handler is installed only while a plot is in progress and only when stdin is a terminal, then the previous disposition is restored. Ctrl+C at the REPL prompt still prints `(interrupted)`. Ctrl+C while a script is running and not inside a plot still stops the process. A dedicated key or a yes/no prompt is not used: the warning already states the estimate, and another key would have to take the terminal away from the REPL.
+
+Local and remote are the same unix socket. `rustlab remote` forwards it, so Ctrl+C on the remote rustlab aborts the send the same way. The viewer process stays up. A frame that already had a byte written cannot be resumed (the length prefix would no longer match), so rustlab drops that socket and the next plot connects again. That reconnect sends Ping and Reset, which clears figures already open in the viewer. A live figure reconnects with the same figure id and does not Reset, so other figures stay. If the reconnect cannot dial the viewer, that one figure is drawn in the terminal and the next plot tries again. An aborted scan, encode, or transfer is not blended into the time estimate. One msgpack encode, and one heatmap raster, run to completion once started; the flag is checked before and after. Ctrl+C on a terminal figure (the key, because raw mode does not deliver SIGINT) also prints `plot aborted` and stops the script. Any other key still dismisses the figure and the script continues.
 
 **Named sessions** allow multiple viewers to run simultaneously, each receiving plots from different rustlab instances:
 ```

@@ -1,7 +1,7 @@
 <svg width="900" height="500" viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="900" height="500" opacity="1" fill="#1E1E2E" stroke="none"/>
 <text x="245" y="25" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="17.741935483870968" opacity="1" fill="#CDD6F4">
-Smith Chart
+|Γ| = 0.5 circle
 </text>
 <text x="20" y="238" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4" transform="rotate(270, 20, 238)">
 Im(Γ)
@@ -477,16 +477,11 @@ Re(Γ)
 <polyline fill="none" opacity="1" stroke="#AAAAAA" stroke-width="1" points="427,298 429,299 "/>
 <polyline fill="none" opacity="1" stroke="#AAAAAA" stroke-width="1" points="430,301 432,302 "/>
 <polyline fill="none" opacity="1" stroke="#AAAAAA" stroke-width="1" points="434,303 436,304 "/>
-<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="2" points="204,195 220,188 235,185 246,181 258,180 269,180 "/>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="211,226 216,221 221,217 226,214 231,211 237,209 "/>
-<rect x="396" y="52" width="69" height="49" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="396" y="52" width="69" height="49" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="436" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
-S11
+<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="2" points="365,238 365,236 365,233 365,230 364,228 364,225 364,222 363,219 362,217 362,214 361,212 360,209 359,206 358,204 357,201 356,199 354,196 353,194 352,192 350,189 349,187 347,185 345,183 343,181 342,179 340,177 338,175 336,173 334,171 331,170 329,168 327,166 325,165 322,164 320,162 318,161 315,160 313,159 310,158 308,157 305,156 302,155 300,154 297,154 295,153 292,153 289,152 286,152 284,152 281,152 278,152 276,152 273,152 270,152 267,152 265,153 262,153 259,154 257,155 254,155 252,156 249,157 247,158 244,159 242,160 239,162 237,163 234,164 232,166 230,167 228,169 225,170 223,172 221,174 219,176 217,178 216,180 214,182 212,184 210,186 209,188 207,191 206,193 204,195 203,198 202,200 201,203 199,205 198,208 198,210 197,213 196,215 195,218 195,221 194,223 194,226 193,229 193,232 193,234 193,237 193,240 193,243 193,245 193,248 194,251 194,253 195,256 195,259 196,262 197,264 198,267 198,269 199,272 201,274 202,277 203,279 204,282 206,284 207,286 209,289 210,291 212,293 214,295 216,297 217,299 219,301 221,303 223,305 225,306 228,308 230,310 232,311 234,313 237,314 239,315 242,317 244,318 247,319 249,320 252,321 254,322 257,322 259,323 262,324 265,324 267,325 270,325 273,325 276,325 278,325 281,325 284,325 286,325 289,325 292,324 295,324 297,323 300,323 302,322 305,321 308,320 310,319 313,318 315,317 318,316 320,315 322,313 325,312 327,311 329,309 331,307 334,306 336,304 338,302 340,300 342,298 343,296 345,294 347,292 349,290 350,288 352,285 353,283 354,281 356,278 357,276 358,273 359,271 360,268 361,265 362,263 362,260 363,258 364,255 364,252 364,249 365,247 365,244 365,241 365,238 "/>
+<rect x="409" y="52" width="56" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="409" y="52" width="56" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="449" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+Γ
 </text>
-<text x="436" y="80" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
-S22
-</text>
-<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="2" points="406,67 426,67 "/>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="406,85 426,85 "/>
+<polyline fill="none" opacity="1" stroke="#1F77B4" stroke-width="2" points="419,67 439,67 "/>
 </svg>

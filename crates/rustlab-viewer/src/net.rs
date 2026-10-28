@@ -158,9 +158,9 @@ fn handle_connection<S: std::io::Read + std::io::Write>(
                 // restores end-to-end progress.
                 let reply = match &msg {
                     ViewerMsg::Ping => Some(ViewerReply::Pong),
-                    ViewerMsg::FigureOpen { .. }
-                    | ViewerMsg::Redraw { .. }
-                    | ViewerMsg::Reset => Some(ViewerReply::Ok),
+                    ViewerMsg::FigureOpen { .. } | ViewerMsg::Redraw { .. } | ViewerMsg::Reset => {
+                        Some(ViewerReply::Ok)
+                    }
                     _ => None,
                 };
                 let is_ping = matches!(msg, ViewerMsg::Ping);
@@ -178,7 +178,15 @@ fn handle_connection<S: std::io::Read + std::io::Write>(
                 }
             }
             Ok(None) => return, // clean EOF
-            Err(_) => return,   // broken pipe
+            Err(e) => {
+                // A too-large frame is InvalidData, not a dead viewer.
+                // Say so before dropping the socket. Ordinary disconnects
+                // (EOF above, or a broken pipe) stay quiet.
+                if e.kind() == std::io::ErrorKind::InvalidData {
+                    eprintln!("rustlab-viewer: {e}");
+                }
+                return;
+            }
         }
     }
 }

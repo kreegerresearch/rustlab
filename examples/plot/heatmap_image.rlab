@@ -22,16 +22,9 @@
 # A toy 6x6 confusion matrix: stronger diagonal = better classifier.
 classes = {"cat", "dog", "fox", "owl", "bee", "ant"};
 n = length(classes);
-C = zeros(n, n);
-for i = 1:n
-  for j = 1:n
-    if i == j
-      C(i, j) = 80 + 5*sin(i);            # bright diagonal
-    else
-      C(i, j) = 8 * exp(-((i-j)^2) / 4);  # dim off-diagonal noise
-    end
-  end
-end
+[J, I] = meshgrid(1:n, 1:n);             # I(i, j) = i, J(i, j) = j
+C = 8 * exp(-((I - J).^2) / 4);          # dim off-diagonal noise
+C(1:n+1:end) = 80 + 5*sin(1:n);          # bright diagonal (every n+1-th element)
 
 figure();
 heatmap(C, "raw confusion matrix");

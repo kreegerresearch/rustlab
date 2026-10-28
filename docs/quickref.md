@@ -129,7 +129,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
-| `diag(v)` | Diagonal matrix from vector; or extract diagonal |
+| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is `5`); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
@@ -226,13 +226,13 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `dot(u, v)` | Inner (dot) product |
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
-| `kron(A, B)` | Kronecker tensor product |
+| `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
 | `norm(v)`, `norm(v,p)` | Vector p-norm (1, 2, Inf); matrix Frobenius; works on sparse |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
-| `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition. 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). |
+| `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition (`dense_eig`). 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). Hermitian or real symmetric: real eigenvalues, ascending, orthonormal V. |
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
@@ -663,7 +663,7 @@ MP4 / animated SVG / APNG export is not supported in this release — other path
 | `figure(N)` | Switch to figure N (creates if it doesn't exist) |
 | `hold on` / `hold off` | Overlay series on current subplot (also `hold("on")`) |
 | `grid on` / `grid off` | Show / hide grid lines (also `grid("on")`) |
-| `viewer` / `viewer on` / `viewer on <name>` / `viewer off` | Bare `viewer` = status (connection state + current figure routing); `on`/`off` route plots to/from external rustlab-viewer. In the viewer window: scroll = zoom, drag = pan, per-subplot **Home** button / `Home` key / double-click on a 2D plot = reset view (script `xlim`/`ylim` if set, else fit data). 3D: left-drag orbits through the poles, Ctrl/Cmd+drag rolls, double-click toggles fullscreen. `F11` toggles fullscreen. **Expand** (or double-click a panel title) isolates one subplot; **Fill window** expands one of several figures; `Esc` restores both. The window starts near 75% of the screen, is resizable, and has a maximize button. Auto-falls-back to TUI if the viewer dies. Requires `viewer` feature. |
+| `viewer` / `viewer on` / `viewer on <name>` / `viewer off` | Bare `viewer` = status (connection state + current figure routing); `on`/`off` route plots to/from external rustlab-viewer. In the viewer window: scroll = zoom, drag = pan, per-subplot **Home** button / `Home` key / double-click on a 2D plot = reset view (script `xlim`/`ylim` if set, else fit data). 3D: left-drag orbits through the poles, Ctrl/Cmd+drag rolls, double-click toggles fullscreen. `F11` toggles fullscreen. **Expand** (or double-click a panel title) isolates one subplot; **Fill window** expands one of several figures; `Esc` restores both. The window starts near 75% of the screen, is resizable, and has a maximize button. A line longer than 8192 samples is sent as a min/max envelope (peaks kept; zoom shows that envelope). When the estimated reduction, encode, and send is about 1 s or more, or the extra memory is at least an eighth of available memory, rustlab warns once on stderr that the time and extra memory are estimates, before it starts. The estimate starts from fixed rates and then follows measured scan, encode, and transfer time. Transfer is per viewer connection, so a remote link's round trip counts on the next warning. With the initial rates a 1e8-point line estimates about 0.4 s and stays quiet; about 2.5×10^8 samples estimates 1.0 s and warns. Over the 32 MiB frame cap a bar, heatmap, or surface is not sent, and that figure is drawn in the terminal while the viewer stays connected. Notebook renders stay quiet. Ctrl+C during a long viewer plot prints `plot aborted`, drops a half-written frame, and the next plot reconnects (local or remote); that send is not used to update the time estimate. Ctrl+C outside a plot is unchanged. If the viewer process dies, rustlab says the connection was lost and stays on the terminal until `viewer on`. Requires `viewer` feature. |
 | Remote viewer (viewer-feature builds; `make install`) | `rustlab remote <host>` runs rustlab on another machine with plots in your local viewer (SSH forward of the viewer socket; `RUSTLAB_VIEWER_SOCK` is the hook). See docs/remote-viewer.md |
 | `title("text")` | Set subplot title |
 | `xlabel("text")` | Set x-axis label |
