@@ -1,10 +1,10 @@
 <svg width="900" height="500" viewBox="0 0 900 500" xmlns="http://www.w3.org/2000/svg">
 <rect x="0" y="0" width="900" height="500" opacity="1" fill="#1E1E2E" stroke="none"/>
 <text x="450" y="25" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="17.741935483870968" opacity="1" fill="#CDD6F4">
-S21 phase (wrapped, degrees)
+S21 unwrapped phase (degrees)
 </text>
 <text x="20" y="238" dy="0.76em" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4" transform="rotate(270, 20, 238)">
-arg(Sij) (deg)
+unwrapped arg(Sij) (deg)
 </text>
 <text x="485" y="480" dy="-0.5ex" text-anchor="middle" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 freq (Hz)
@@ -74,10 +74,10 @@ freq (Hz)
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="563,429 563,47 "/>
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="721,429 721,47 "/>
 <polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="90,79 395,143 573,207 700,270 798,334 879,398 "/>
-<rect x="806" y="52" width="69" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="806" y="52" width="69" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="846" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<rect x="805" y="52" width="70" height="31" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="805" y="52" width="70" height="31" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="845" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 S21
 </text>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="816,67 836,67 "/>
+<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="815,67 835,67 "/>
 </svg>

@@ -87,14 +87,14 @@ Frequency (GHz)
 <polyline fill="none" opacity="0.3" stroke="#9696B4" stroke-width="1" points="721,429 721,47 "/>
 <polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="90,114 247,88 405,79 563,84 721,98 879,120 "/>
 <polyline fill="none" opacity="1" stroke="#BCBD22" stroke-width="2" points="90,343 247,358 405,375 563,382 721,390 879,398 "/>
-<rect x="794" y="52" width="81" height="49" opacity="0.85" fill="#1E1E2E" stroke="none"/>
-<rect x="794" y="52" width="81" height="49" opacity="0.3" fill="none" stroke="#CDD6F4"/>
-<text x="834" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<rect x="800" y="52" width="75" height="49" opacity="0.85" fill="#1E1E2E" stroke="none"/>
+<rect x="800" y="52" width="75" height="49" opacity="0.3" fill="none" stroke="#CDD6F4"/>
+<text x="840" y="62" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 |S21|
 </text>
-<text x="834" y="80" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
+<text x="840" y="80" dy="0.76em" text-anchor="start" font-family="sans-serif" font-size="11.290322580645162" opacity="1" fill="#CDD6F4">
 |S11|
 </text>
-<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="804,67 824,67 "/>
-<polyline fill="none" opacity="1" stroke="#BCBD22" stroke-width="2" points="804,85 824,85 "/>
+<polyline fill="none" opacity="1" stroke="#17BECF" stroke-width="2" points="810,67 830,67 "/>
+<polyline fill="none" opacity="1" stroke="#BCBD22" stroke-width="2" points="810,85 830,85 "/>
 </svg>
