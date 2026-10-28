@@ -284,6 +284,8 @@ impl BuiltinRegistry {
         r.register("inv", builtin_inv);
         r.register("expm", builtin_expm);
         r.register("linsolve", builtin_linsolve);
+        r.register("mldivide", builtin_mldivide);
+        r.register("mrdivide", builtin_mrdivide);
         r.register_nargout("eig", builtin_eig_nargout);
         r.register("eigs", builtin_eigs);
         // Special functions
@@ -304,6 +306,9 @@ impl BuiltinRegistry {
         // Matrix analysis
         r.register("rank", builtin_rank);
         r.register("roots", builtin_roots);
+        r.register("polyfit", super::linsys::builtin_polyfit);
+        r.register("polyval", super::linsys::builtin_polyval);
+        r.register("interp1", super::interp1::builtin_interp1);
         // Transfer function (Phase 2)
         r.register("tf", builtin_tf);
         r.register("tfdata", builtin_tfdata);
@@ -330,6 +335,9 @@ impl BuiltinRegistry {
         r.register("place", builtin_place);
         r.register("freqresp", builtin_freqresp);
         r.register_nargout("svd", builtin_svd);
+        r.register_nargout("qr", super::linsys::builtin_qr);
+        r.register("null", super::linsys::builtin_null);
+        r.register("orth", super::linsys::builtin_orth);
         r.register("pinv", builtin_pinv);
         // S-parameters (RF Toolbox — Phase 1: type + Touchstone I/O + inspection)
         r.register("sparameters", builtin_sparameters);
@@ -423,7 +431,7 @@ impl BuiltinRegistry {
         r.register_nargout("find", builtin_find_nargout);
         r.register("spsolve", builtin_spsolve);
         r.register("chol", builtin_chol);
-        r.register("lu", builtin_lu);
+        r.register_nargout("lu", builtin_lu);
         r.register("solve", builtin_solve);
         r.register("spdiags", builtin_spdiags);
         r.register("sprand", builtin_sprand);
@@ -13293,7 +13301,7 @@ fn take_columns(a: &Array2<C64>, k: usize) -> Array2<C64> {
 /// non-negative), `V` is `n×n`. Built from the Hermitian eigendecomposition
 /// of the smaller Gram matrix (`A Aᴴ` when `m ≤ n`, else `Aᴴ A`), so a wide
 /// matrix never indexes a left-singular vector past its row count.
-fn svd_full(a: &CMatrix) -> Result<(Array2<C64>, Vec<f64>, Array2<C64>), ScriptError> {
+pub(crate) fn svd_full(a: &CMatrix) -> Result<(Array2<C64>, Vec<f64>, Array2<C64>), ScriptError> {
     if a.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
         return Err(ScriptError::runtime(
             "svd: matrix entries must be finite".to_string(),
@@ -14747,11 +14755,33 @@ fn builtin_chol(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(Value::SparseFactor(factor))
 }
 
-/// `lu(A [, ordering])` — sparse LU factorization with partial pivoting.
-/// Returns an opaque factor handle suitable for `solve(F, b)`. Optional
-/// `ordering` argument matches `chol()`'s semantics.
-fn builtin_lu(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_mldivide(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("mldivide", &args, 2)?;
+    super::linsys::mldivide(args[0].clone(), args[1].clone()).map_err(ScriptError::type_err)
+}
+
+fn builtin_mrdivide(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("mrdivide", &args, 2)?;
+    super::linsys::mrdivide(args[0].clone(), args[1].clone()).map_err(ScriptError::type_err)
+}
+
+/// `lu(A [, ordering])` — sparse factor handle, or dense `[L,U,P] = lu(A)`.
+/// A sparse matrix still returns an opaque factor for `solve(F, b)`.
+/// A dense matrix returns `L` and `U` (`L*U = A`) or `[L, U, P]` with `P*A = L*U`.
+fn builtin_lu(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("lu", &args, 1, 2)?;
+    if matches!(args.first(), Some(Value::SparseMatrix(_))) {
+        if nargout > 1 {
+            return Err(ScriptError::type_err(
+                "lu: a sparse matrix returns a factor handle. Use [L, U, P] = lu(full(A)) for the dense factors".to_string(),
+            ));
+        }
+        return builtin_lu_sparse(args);
+    }
+    super::linsys::builtin_lu_dense(&args, nargout)
+}
+
+fn builtin_lu_sparse(args: Vec<Value>) -> Result<Value, ScriptError> {
     let sm = match &args[0] {
         Value::SparseMatrix(sm) => sm,
         other => {

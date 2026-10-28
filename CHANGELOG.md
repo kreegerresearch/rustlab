@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.24
+
+### Added
+- **`A \ b` and `mldivide(A, b)`.** Left division. A square nonsingular matrix uses LU with partial pivoting. A rectangular matrix, and a square matrix that is singular to working precision, uses column-pivoted QR least squares. A singular or ill-conditioned matrix prints a warning and still returns a basic solution (free variables are 0). A scalar left operand divides element-wise. A vector is a row, so a column right-hand side is `b'`.
+- **`B / A` and `mrdivide(B, A)`** when both sides are matrices, or one side is a row. Solves `X * A = B`. A scalar on either side of `/` is unchanged (still element-wise). Two vectors with `/` are still an error; use `./`.
+- **`qr`.** `[Q, R] = qr(A)` is an unpivoted Householder factorization. `qr(A, 0)` (also `"econ"` / `"economy"`) is the economy form. One output is `R`. The diagonal of `R` is real and non-negative.
+- **Dense `lu`.** `[L, U, P] = lu(A)` returns `P * A = L * U`. `[L, U] = lu(A)` absorbs the permutation so `L * U = A`. A sparse `lu` is unchanged: it still returns a factor handle for `solve`. One output of a dense `lu` is an error.
+- **`polyfit(x, y, n)` and `polyval(p, x)`.** `polyfit` is QR least squares on the Vandermonde matrix, coefficients in descending powers. `polyval` is Horner and keeps the shape of `x`.
+- **`interp1(x, y, xi, method)`.** Methods are `linear` (the default), `nearest`, `previous`, `next`, and `spline` (not-a-knot). Outside the range the result is `NaN` unless `"extrap"` is given.
+- **`null(A)` and `orth(A)`.** Orthonormal bases from the SVD, with the same cutoff as `rank` (`max(m, n) · eps · σ_max`).
+
 ## 0.3.23
 
 ### Added

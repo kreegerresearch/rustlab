@@ -35,10 +35,13 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
 | `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
 | `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
-| backslash `A\b` | not an operator | `mldivide` | Use `linsolve(A, b)` or `spsolve` / `solve`. No new operator in this audit |
-| `qr`, `null` | not implemented | factorizations | `svd` and `rank` cover the singular-vector side. A dense QR or nullspace was not required to fix a wrong answer |
-| `polyfit`, `polyval`, `interp1` | not implemented | polynomial fit and 1-D interpolation | `roots` and `interp_freq` exist. These three are new surface, not a wrong answer |
-| `chol(A)`, `lu(A)` | sparse factor handle for `solve(F, b)` | dense `[L, U, P]` or a matrix factor | Dense solves go through `linsolve` / `inv`. The handle is the factor-once path |
+| `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
+| `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
+| `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
+| `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
+| `polyfit` / `polyval` | no `mu` centering output | `polyfit` can return `[p, S, mu]` | Shipped in 0.3.24 as the coefficient row only |
+| `interp1` | no numeric fill value, no `pchip` / `makima`, spline is not-a-knot | those methods and a numeric extrapolation value | Shipped in 0.3.24 for `linear`, `nearest`, `previous`, `next`, `spline`, and `"extrap"` |
+| `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
 | `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
 | sparse structural zero | entries below `1e-15` are dropped | stored | `1e-16 * speye(n)` is an empty pattern. `1e-14 * speye(n)` factors |

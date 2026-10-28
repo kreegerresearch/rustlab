@@ -17,6 +17,8 @@ pub enum Token {
     Minus,
     Star,
     Slash,
+    Backslash, // \  left division
+
     Caret,
     DotStar,       // .*
     DotSlash,      // ./
@@ -233,6 +235,13 @@ pub fn tokenize(source: &str) -> Result<Vec<Spanned>, ScriptError> {
             '/' => {
                 tokens.push(Spanned {
                     token: Token::Slash,
+                    line,
+                });
+                pos += 1;
+            }
+            '\\' => {
+                tokens.push(Spanned {
+                    token: Token::Backslash,
                     line,
                 });
                 pos += 1;

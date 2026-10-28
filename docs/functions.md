@@ -1566,6 +1566,47 @@ b = [5, 10]
 x = linsolve(A, b)   # → [1, 3]
 ```
 
+### `A \ b` / `mldivide(A, b)`
+Left division. A square nonsingular `A` is factored by LU with partial pivoting. A rectangular `A`, and a square `A` that is singular to working precision, uses column-pivoted QR least squares. A singular or ill-conditioned matrix prints a warning and still returns a basic solution, with free variables set to 0. The least-squares residual is orthogonal to the columns of `A`.
+
+A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector is a row, so a column right-hand side is written `b'`. Several columns of `b` are several right-hand sides. A sparse matrix is solved as dense.
+```
+x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
+```
+
+### `B / A` / `mrdivide(B, A)`
+Right division, the solution of `X * A = B`. It is `(A.' \ B.').'` (no conjugate). Two matrices, a matrix and a row, or a row and a matrix take this path.
+
+A scalar on either side of `/` stays element-wise, which is what `2 / M` already did. Two vectors with `/` are still an error; use `./`.
+```
+x = [5, 10] / [2, 1; 1, 3]     # [1, 3]
+```
+
+### `polyfit(x, y, n)`
+Least-squares coefficients of a degree-`n` polynomial, highest power first, from a QR factorization of the Vandermonde matrix. `polyval(p, x)` recovers `y` when `y` is exactly that polynomial. `x` and `y` have the same length. A matrix `y` is one fit per column, and `p` then has one row per column. A rank-deficient Vandermonde warns.
+```
+p = polyfit(0:4, 4*(0:4).^2 + 3*(0:4) + 2, 2)   # [4, 3, 2]
+```
+
+### `polyval(p, x)`
+Evaluate a polynomial by Horner's method. `p` is descending-power coefficients. The result has the same shape as `x`.
+```
+polyval([1, -3, 2], 4)        # 6
+polyval([1, -3, 2], [1, 2])   # [0, 0]
+```
+
+### `interp1(x, y, xi [, method [, "extrap"]])`
+One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, or `"spline"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
+
+`"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them.
+
+A matrix `y` is interpolated down each column. Complex `y` interpolates the real and imaginary parts separately.
+```
+interp1([0, 1, 2], [0, 1, 0], 0.5)                    # 0.5
+interp1([0, 1, 2], [0, 1, 0], 1.2, "previous")        # 1
+interp1([0, 1, 2], [0, 1, 0], 3, "linear", "extrap")  # -1
+```
+
 ### `roots(p)`
 Roots of a polynomial with coefficient vector `p`. Coefficients are in descending order of power (highest degree first).
 ```
@@ -1585,6 +1626,25 @@ Wide matrices (more columns than rows), rank-deficient matrices, complex matrice
 Ahat = U * diag(S) * V'          % every shape
 [Uf, Sf, Vf] = svd(A)            % full
 % non-square full form: Uf(:, 1:k) * diag(Sf) * Vf(:, 1:k)'
+```
+
+### `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)`
+Householder QR, unpivoted. `[Q, R] = qr(A)` returns a full `Q` (`m×m`) and an `R` (`m×n`) with `A = Q R`. `Q` has orthonormal columns and the diagonal of `R` is real and non-negative. `qr(A, 0)`, `qr(A, "econ")`, and `qr(A, "economy")` return the economy factors: `Q` is `m×k` and `R` is `k×n`, with `k = min(m, n)`. One output is `R` only. Column pivoting is used by `\`, not by `qr`.
+```
+[Q, R] = qr([1, 1; 1, 2; 1, 3], 0)
+Q * R    % the original matrix
+```
+
+### `null(A)`
+An orthonormal basis for the nullspace, from the SVD. Columns of `V` whose singular value is at or below `max(m, n) * eps * σ_max`. `Z` is `n×k`, `A * Z ≈ 0`, and `Z' * Z ≈ I`. A full-rank matrix returns `n×0`.
+```
+Z = null([1, 2, 3; 2, 4, 6])    # 3×2
+```
+
+### `orth(A)`
+An orthonormal basis for the column space, from the same cutoff as `null`. `Q` is `m×r` and `Q' * Q ≈ I`.
+```
+Q = orth([1, 2, 3; 2, 4, 6])    # 2×1
 ```
 
 ### `pinv(A)` / `pinv(A, tol)`
@@ -1895,7 +1955,9 @@ The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for
 
 ### `chol(A)` / `chol(A, ordering)`, `lu(A)` / `lu(A, ordering)`, `solve(F, b)`
 
-Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` factors a general sparse matrix as `P·L·U` with partial pivoting (threshold 0.1). `solve(F, b)` runs the cached triangular solves on a right-hand side.
+Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
+
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
@@ -3807,6 +3869,15 @@ a .* b     # element-wise multiply
 a ./ b     # element-wise divide
 a .^ 2     # element-wise square
 ```
+
+### Left and right division: `\` and `/`
+`\` and `/` share precedence with `*` and associate left to right.
+```
+x = A \ b      # solve A*x = b; a column is b'
+X = B / A      # solve X*A = B, when both sides are matrices or a row
+s / M          # still element-wise when one side is a scalar
+```
+`.\` is not an operator. See `mldivide` and `mrdivide` under Linear Algebra.
 
 ### Concatenation: `[a, b, c]`
 ```
