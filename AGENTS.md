@@ -67,6 +67,7 @@ rustlab/
 │   │   ├── tcp.sh            # socat/nc TCP streaming (cross-platform)
 │   │   └── test_filter.sh    # CI-friendly end-to-end test (no mic/speakers)
 │   └── notebooks/          # source `.md` notebooks rendered by `rustlab-notebook`
+│       └── comm/           # communications notebooks (convolutional codes + Viterbi FEC)
 └── docs/
     ├── agent-guide.md      # AI-agent usage guide — execution model, language rules, pitfalls, workflows
     ├── examples.md         # annotated walkthroughs of each example script
@@ -1080,7 +1081,7 @@ opens). Do not reintroduce `request_repaint_after` polling in
 
 **Pre-populated environment constants:** `j = Complex(0,1)`, `i = Complex(0,1)`, `pi = 3.14159…`, `e = 2.71828…`, `Inf = f64::INFINITY`, `NaN = f64::NAN`, `true = Bool(true)`, `false = Bool(false)`, `stdin` (the `fgetl` handle)
 
-**`BUILTIN_CONSTS`:** These constant names (`i`, `j`, `pi`, `e`, `Inf`, `NaN`, `true`, `false`, `stdin`) survive `clear_vars()` — they are re-inserted automatically so the REPL never loses them. `ans` is not one of them: `clear` removes it.
+**`BUILTIN_CONSTS`:** These constant names (`i`, `j`, `pi`, `e`, `Inf`, `NaN`, `true`, `false`, `stdin`) survive `clear_vars()` — they are re-inserted automatically so the REPL never loses them. `ans` is not one of them: `clear` removes it. A user-function scope is seeded from this same list, so `true` and `false` are defined inside a function and inside a `parmap` task that calls one.
 
 **How `Call` nodes are evaluated:** At eval time, if the name exists in `env` as a `Vector`, `Matrix`, `Tuple`, `Str`, or sparse variant, it is treated as 1-based indexing. A single index binds `end` to the element count (column-major on a matrix, so `M(end)` is the last element). Two indexes bind `end` per axis, on both read and write, so `M(end, end)` is the corner. String indexing returns a string: `s(3)` → single char, `s(1:5)` → substring, `s(:)` → full copy. If the name holds a `Lambda`, it is called with its captured environment. Otherwise it is a `BuiltinRegistry` call.
 

@@ -3279,6 +3279,24 @@ end\n\
     }
 
     #[test]
+    fn user_fn_sees_every_builtin_constant() {
+        // Function scopes are seeded from BUILTIN_CONSTS; 0.3.18 and earlier
+        // used a shorter list without `true` / `false`.
+        let src = "\
+function y = consts()\n\
+  y = [true + 0, false + 0, pi, e, Inf, real(j), imag(i)]\n\
+end\n\
+v = consts()\n\
+w = parmap(@(k) k * true + false, 1:3)\n";
+        let ev = eval_str(src);
+        let want = [1.0, 0.0, std::f64::consts::PI, std::f64::consts::E, f64::INFINITY, 0.0, 1.0];
+        let got: Vec<f64> = ev.get("v").unwrap().to_cvector().unwrap().iter().map(|c| c.re).collect();
+        assert_eq!(got, want);
+        let w: Vec<f64> = ev.get("w").unwrap().to_cvector().unwrap().iter().map(|c| c.re).collect();
+        assert_eq!(w, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
     fn user_fn_single_output_classic_form_unchanged() {
         // Pre-existing single-output syntax still works exactly as before.
         let src = "\
@@ -20236,6 +20254,28 @@ mod log_axis_and_legend_tests {
             assert_eq!(sp.title, "", "colour spec must not become the title");
             assert_eq!(sp.series.last().unwrap().color, rustlab_plot::SeriesColor::Red);
         });
+    }
+
+    #[test]
+    fn single_pair_line_spec_sets_style_and_marker() {
+        // `plot(x, y, "r--")` used to draw a solid default-colour line titled
+        // "r--"; log plots pass the spec through `plot` and had the same bug.
+        use rustlab_plot::{LineStyle, PlotKind, SeriesColor};
+        for (src, color, style, kind) in [
+            ("plot([1, 2, 3], [1, 2, 3], \"r--\")", SeriesColor::Red, LineStyle::Dashed, PlotKind::Line),
+            ("plot([1, 2, 3], [1, 2, 3], \"ko\")", SeriesColor::Black, LineStyle::Solid, PlotKind::Scatter),
+            ("semilogy([1, 2, 3], [1, 10, 100], \"b:\")", SeriesColor::Blue, LineStyle::Dashed, PlotKind::Line),
+        ] {
+            run(src);
+            current(|sp| {
+                assert_eq!(sp.title, "", "line spec must not become the title: {src}");
+                assert_eq!(sp.series.len(), 1, "{src}");
+                let s = &sp.series[0];
+                assert_eq!((s.color, s.style.clone(), s.kind.clone()), (color, style, kind), "{src}");
+            });
+        }
+        run("semilogy([1, 2, 3], [1, 10, 100], \"b:\")");
+        current(|sp| assert_eq!(sp.y_scale, AxisScale::Log));
     }
 
     #[test]

@@ -5283,10 +5283,14 @@ struct PlotPair {
 
 /// `plot(x1, y1, x2, y2, ...)` with an optional line spec after each pair.
 ///
-/// Returns `Ok(None)` when the call is a single series (including
-/// `plot(y1, y2)`, which is one x/y pair) so the existing path keeps its
-/// title and colour rules. Two or more pairs are drawn here. A dangling
-/// numeric argument is an error — it is not dropped.
+/// Returns `Ok(None)` when the call is one series without a style or marker
+/// (including `plot(y)`, `plot(y, "title")`, and `plot(y1, y2)`, which is one
+/// x/y pair) so the existing path keeps its title and colour rules. A bare
+/// colour such as `"r"` stays on that path. Two or more pairs are drawn here,
+/// and so is a single pair whose spec names a line style or a marker
+/// (`"r--"`, `"ko"`): the one-series path only knows a bare colour and used
+/// anything longer as the title. A dangling numeric argument is an error —
+/// it is not dropped.
 fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
     // A true 2-D matrix is the column-series form plot(M) / plot(X, M).
     if args
@@ -5297,6 +5301,10 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
     }
     let mut i = 0;
     let mut pairs: Vec<PlotPair> = Vec::new();
+    // A single pair whose spec names a line style or a marker (`"r--"`,
+    // `"ko"`) is drawn here too: the one-series path below only knows a bare
+    // colour and took anything longer for the title.
+    let mut styled = false;
     while i < args.len() && is_plot_xy_data(&args[i]) {
         if i + 1 < args.len() && is_plot_xy_data(&args[i + 1]) {
             let x = plot_real_samples(&args[i])?;
@@ -5319,6 +5327,7 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
             if i < args.len() {
                 if let Ok(s) = args[i].to_str() {
                     if let Some(spec) = parse_line_spec(&s) {
+                        styled |= spec.style.is_some() || spec.marker;
                         pair.color = spec.color;
                         pair.style = spec.style;
                         pair.marker = spec.marker;
@@ -5336,7 +5345,7 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
             ));
         }
     }
-    if pairs.len() < 2 {
+    if pairs.len() < 2 && !styled {
         // One series plus options. A numeric option value (`"linewidth", 3`)
         // is not another series. A vector after a non-spec string is: that
         // used to be dropped after a warning.
