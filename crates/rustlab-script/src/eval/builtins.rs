@@ -36,6 +36,17 @@ use std::io::{Read as IoRead, Write as IoWrite};
 use std::sync::{Arc, Mutex};
 
 pub type BuiltinFn = fn(Vec<Value>) -> Result<Value, ScriptError>;
+
+/// Map a plot result into a script error. `Interrupted` stays a control
+/// signal (clean exit, no `error:` line). Other plot failures stay runtime
+/// errors, which is what `error: interrupted` would have hidden.
+fn finish_plot(result: Result<(), rustlab_plot::PlotError>) -> Result<(), ScriptError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(rustlab_plot::PlotError::Interrupted) => Err(ScriptError::Interrupted),
+        Err(e) => Err(ScriptError::runtime(e.to_string())),
+    }
+}
 /// Nargout-aware builtin signature. The `nargout` argument is the number of
 /// outputs the call site expects: `1` for `e = eig(A)`, `2` for
 /// `[V, D] = eig(A)`, etc. Most builtins ignore it; only the few that
@@ -3765,7 +3776,7 @@ fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
         sp.xlabel = "Frequency (Hz)".to_string();
         sp.ylabel = "PSD (dB/Hz)".to_string();
     });
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
     let pxx_c: CVector =
@@ -3870,8 +3881,15 @@ fn push_db_heatmap(
         });
     });
     let range = (vmax - vmin).max(1e-12);
-    render_heatmap_tui(&z_flat, nrows, ncols, vmin, range, title, colormap)
-        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_heatmap_tui(
+        &z_flat,
+        nrows,
+        ncols,
+        vmin,
+        range,
+        title,
+        colormap,
+    ))?;
     sync_figure_outputs();
     Ok(())
 }
@@ -4417,7 +4435,7 @@ fn builtin_waterfall_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
                 Some(ws.vmax_db),
                 rustlab_plot::HeatmapOrigin::Upper,
             );
-            fig.redraw().map_err(|e| ScriptError::runtime(e.to_string()))?;
+            finish_plot(fig.redraw())?;
         }
     }
     drop(state_lock);
@@ -5265,10 +5283,14 @@ struct PlotPair {
 
 /// `plot(x1, y1, x2, y2, ...)` with an optional line spec after each pair.
 ///
-/// Returns `Ok(None)` when the call is a single series (including
-/// `plot(y1, y2)`, which is one x/y pair) so the existing path keeps its
-/// title and colour rules. Two or more pairs are drawn here. A dangling
-/// numeric argument is an error — it is not dropped.
+/// Returns `Ok(None)` when the call is one series without a style or marker
+/// (including `plot(y)`, `plot(y, "title")`, and `plot(y1, y2)`, which is one
+/// x/y pair) so the existing path keeps its title and colour rules. A bare
+/// colour such as `"r"` stays on that path. Two or more pairs are drawn here,
+/// and so is a single pair whose spec names a line style or a marker
+/// (`"r--"`, `"ko"`): the one-series path only knows a bare colour and used
+/// anything longer as the title. A dangling numeric argument is an error —
+/// it is not dropped.
 fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
     // A true 2-D matrix is the column-series form plot(M) / plot(X, M).
     if args
@@ -5377,7 +5399,7 @@ fn plot_multiple_pairs(args: &[Value]) -> Result<Option<()>, ScriptError> {
             });
         }
     });
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     Ok(Some(()))
 }
 
@@ -5464,7 +5486,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
         FIGURE.with(|fig| {
             fig.borrow_mut().current_mut().x_labels = Some(labels_for_state);
         });
-        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        finish_plot(render_figure_terminal())?;
         sync_figure_outputs();
         return Ok(Value::None);
     }
@@ -5554,7 +5576,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 rustlab_plot::PlotKind::Line
             };
             push_xy_lines(columns, &title, opts.color, opts.style.clone(), kind);
-            render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
+            finish_plot(render_figure_terminal())
         }
         Value::Vector(v) => {
             let x_data: Vec<f64> = match x_opt {
@@ -5590,7 +5612,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 } else {
                     push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
                 }
-                render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
+                finish_plot(render_figure_terminal())
             } else {
                 // Complex: push magnitude + real
                 FIGURE.with(|fig| {
@@ -5620,7 +5642,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
                         kind: rustlab_plot::PlotKind::Line,
                     });
                 });
-                render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
+                finish_plot(render_figure_terminal())
             }
         }
         Value::Scalar(n) => {
@@ -5631,7 +5653,7 @@ fn builtin_plot(args: Vec<Value>) -> Result<Value, ScriptError> {
             } else {
                 push_xy_line(x_data, y_data, label.as_str(), &title, opts.color, opts.style);
             }
-            render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))
+            finish_plot(render_figure_terminal())
         }
         other => Err(ScriptError::type_err(format!(
             "plot: cannot plot {}",
@@ -5678,7 +5700,7 @@ fn builtin_stem(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     }
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -5691,7 +5713,7 @@ fn builtin_plotdb(args: Vec<Value>) -> Result<Value, ScriptError> {
         "Frequency Response".to_string()
     };
     let (freqs, h) = extract_freq_response(&args[0])?;
-    plot_db(&freqs, &h, &title).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(plot_db(&freqs, &h, &title))?;
     Ok(Value::None)
 }
 
@@ -5700,7 +5722,7 @@ fn builtin_savefig(args: Vec<Value>) -> Result<Value, ScriptError> {
     let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
     let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let path = path.to_string_lossy();
-    render_figure_file(&path).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_file(&path))?;
     // The figure reached a file — any pending "not rendered to the
     // terminal" note is moot.
     rustlab_plot::clear_terminal_skips();
@@ -5765,12 +5787,10 @@ fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     match format {
         rustlab_plot::NotebookAnimationFormat::Html => {
-            rustlab_plot::render_animation_html(&path, fps)
-                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+            finish_plot(rustlab_plot::render_animation_html(&path, fps))?;
         }
         rustlab_plot::NotebookAnimationFormat::Gif => {
-            rustlab_plot::render_animation_gif(&path, fps)
-                .map_err(|e| ScriptError::runtime(e.to_string()))?;
+            finish_plot(rustlab_plot::render_animation_gif(&path, fps))?;
         }
     }
     // Frames reached a file — pending terminal-skip notes (e.g. quiver
@@ -5791,7 +5811,10 @@ fn builtin_figure(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError
         // Numeric arg → switch to existing figure (or create it)
         if let Value::Scalar(n) = &args[0] {
             let id = *n as u32;
-            rustlab_plot::figure_switch(id).map_err(|e| ScriptError::runtime(e.to_string()))?;
+            rustlab_plot::figure_switch(id).map_err(|e| match e {
+                rustlab_plot::PlotError::Interrupted => ScriptError::Interrupted,
+                other => ScriptError::runtime(other.to_string()),
+            })?;
             id
         } else {
             // String arg → new HTML figure
@@ -5920,7 +5943,7 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
             });
         }
     });
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -6337,7 +6360,7 @@ fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     };
-    imagesc_terminal(&matrix, "", &colormap).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(imagesc_terminal(&matrix, "", &colormap))?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -6468,8 +6491,15 @@ fn builtin_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         });
     });
 
-    render_heatmap_tui(&vals, nrows, ncols, min_v, range, &title, &colormap)
-        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_heatmap_tui(
+        &vals,
+        nrows,
+        ncols,
+        min_v,
+        range,
+        &title,
+        &colormap,
+    ))?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -6595,8 +6625,7 @@ fn builtin_image(args: Vec<Value>) -> Result<Value, ScriptError> {
         });
     });
 
-    render_image_tui(&rgba, ncols, nrows, "")
-        .map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_image_tui(&rgba, ncols, nrows, ""))?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -7176,7 +7205,7 @@ fn builtin_surf(args: Vec<Value>) -> Result<Value, ScriptError> {
         .map(|r| (0..ncols).map(|c| z_mat[[r, c]].re).collect())
         .collect();
 
-    surf_terminal(z_rows, x, y, "", &colormap).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(surf_terminal(z_rows, x, y, "", &colormap))?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -11497,7 +11526,7 @@ fn builtin_bode(args: Vec<Value>) -> Result<Value, ScriptError> {
         sp.ylabel = "Phase (deg)".to_string();
     });
 
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
     let w_val = Value::Vector(Array1::from_iter(
@@ -11707,7 +11736,7 @@ fn builtin_nyquist(args: Vec<Value>) -> Result<Value, ScriptError> {
         sp.axis_equal = true;
     });
 
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
     let re_val = Value::Vector(Array1::from_iter(
@@ -11791,7 +11820,7 @@ fn builtin_step(args: Vec<Value>) -> Result<Value, ScriptError> {
         sp.xlabel = "Time (s)".to_string();
         sp.ylabel = "Amplitude".to_string();
     });
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
 
     let y_val = Value::Vector(Array1::from_iter(
@@ -12195,7 +12224,7 @@ fn builtin_rlocus(args: Vec<Value>) -> Result<Value, ScriptError> {
         );
     }
 
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -12645,7 +12674,7 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
                 kind: rustlab_plot::PlotKind::Bar,
             });
         });
-        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        finish_plot(render_figure_terminal())?;
         sync_figure_outputs();
         return Ok(Value::None);
     }
@@ -12690,13 +12719,13 @@ fn builtin_bar(args: Vec<Value>) -> Result<Value, ScriptError> {
                 });
             }
         });
-        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        finish_plot(render_figure_terminal())?;
         sync_figure_outputs();
         return Ok(Value::None);
     }
     let (x_data, y_data, title) = extract_xy_with_title(&args, "bar")?;
     push_xy_bar(x_data, y_data, "", &title, None); // no default legend
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -12735,7 +12764,7 @@ fn builtin_scatter(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x_data: Vec<f64> = xv.to_vec();
     let y_data: Vec<f64> = yv.to_vec();
     push_xy_scatter(x_data, y_data, label, &title, opts.color);
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -13711,7 +13740,10 @@ fn builtin_figure_live(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     }
 
-    let fig = LiveFigure::new(rows, cols).map_err(|e| ScriptError::runtime(e.to_string()))?;
+    let fig = LiveFigure::new(rows, cols).map_err(|e| match e {
+        rustlab_plot::PlotError::Interrupted => ScriptError::Interrupted,
+        other => ScriptError::runtime(other.to_string()),
+    })?;
     let boxed: Box<dyn LivePlot> = Box::new(fig);
     Ok(Value::LiveFigure(Arc::new(Mutex::new(Some(boxed)))))
 }
@@ -16414,7 +16446,7 @@ fn builtin_smith(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     finalize_smith_axes();
 
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }
@@ -16959,7 +16991,7 @@ fn builtin_rfplot(args: Vec<Value>) -> Result<Value, ScriptError> {
                 "|S11| (dB)",
             )?;
         }
-        render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+        finish_plot(render_figure_terminal())?;
         sync_figure_outputs();
         return Ok(Value::None);
     }
@@ -17007,7 +17039,7 @@ fn builtin_rfplot(args: Vec<Value>) -> Result<Value, ScriptError> {
         fig.reset();
     });
     push_rf_trace(&freqs_hz, &trace, transform, &label, &panel_title)?;
-    render_figure_terminal().map_err(|e| ScriptError::runtime(e.to_string()))?;
+    finish_plot(render_figure_terminal())?;
     sync_figure_outputs();
     Ok(Value::None)
 }

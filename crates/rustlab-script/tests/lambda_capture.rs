@@ -445,7 +445,7 @@ fn lambda_made_inside_a_function_keeps_the_local_not_the_temp() {
     let f = lambda(&ev, "f");
     assert_eq!(user_keys(f), BTreeSet::from(["a".to_string()]));
     // A user function seeds every built-in constant from its caller (it
-    // left out true/false before 0.3.19). The lambda snapshots that
+    // left out true/false before 0.3.20). The lambda snapshots that
     // environment, so all nine are present — same as a full clone of the
     // function workspace.
     for c in ["i", "j", "pi", "e", "Inf", "NaN", "true", "false", "stdin"] {

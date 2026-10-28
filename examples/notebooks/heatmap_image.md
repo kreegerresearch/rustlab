@@ -32,9 +32,7 @@ classes = {"cat", "dog", "fox", "owl", "bee", "ant"};
 n = length(classes);
 [J, I] = meshgrid(1:n, 1:n);
 C = 8 * exp(-((I - J).^2) / 4);
-for i = 1:n
-  C(i, i) = 80 + 5*sin(i);   % strong diagonal
-end
+C(1:n+1:end) = 80 + 5*sin(1:n);   % strong diagonal: every (n+1)-th element
 print(size(C))
 ```
 

@@ -11,6 +11,11 @@ use std::path::PathBuf;
 /// Hard cap on a single framed IPC message (32 MiB). Large enough for a
 /// dense heatmap RGBA panel; small enough that a malicious peer cannot
 /// force a multi-GB allocation with a forged length prefix.
+///
+/// [`write_msg`] refuses to send a larger payload, and [`read_msg`]
+/// rejects a larger declared length before allocating it. A line of
+/// 1e8 `f64` pairs is about 1.7 GiB of msgpack, so the plot path reduces
+/// it to a min/max envelope before it ever reaches this limit.
 pub const MAX_MSG_LEN: u32 = 32 * 1024 * 1024;
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
@@ -181,14 +186,54 @@ pub struct WireSurface {
 
 // ─── Framing helpers ────────────────────────────────────────────────────────
 
-/// Write a length-prefixed msgpack message.
-pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<()> {
+/// Encode `msg` to msgpack.
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] when the payload is longer
+/// than [`MAX_MSG_LEN`]. Nothing is written.
+pub fn encoded_payload<T: Serialize>(msg: &T) -> std::io::Result<Vec<u8>> {
     let payload = rmp_serde::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if payload.len() > MAX_MSG_LEN as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "IPC frame length {} exceeds maximum {MAX_MSG_LEN} bytes",
+                payload.len()
+            ),
+        ));
+    }
+    Ok(payload)
+}
+
+/// Write an already-encoded payload as a length-prefixed frame.
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] and writes nothing when
+/// `payload` is longer than [`MAX_MSG_LEN`]. The length prefix is a
+/// `u32`, so an unchecked cast would also wrap a multi-gigabyte payload
+/// and make the peer allocate the wrong buffer.
+pub fn write_frame<W: Write>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
+    if payload.len() > MAX_MSG_LEN as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "IPC frame length {} exceeds maximum {MAX_MSG_LEN} bytes",
+                payload.len()
+            ),
+        ));
+    }
     let len = payload.len() as u32;
     w.write_all(&len.to_be_bytes())?;
-    w.write_all(&payload)?;
+    w.write_all(payload)?;
     w.flush()
+}
+
+/// Write a length-prefixed msgpack message.
+///
+/// Returns [`std::io::ErrorKind::InvalidData`] and writes nothing when the
+/// encoded payload is longer than [`MAX_MSG_LEN`].
+pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> std::io::Result<()> {
+    let payload = encoded_payload(msg)?;
+    write_frame(w, &payload)
 }
 
 /// Read a length-prefixed msgpack message.  Returns `None` on clean EOF.
@@ -204,9 +249,7 @@ pub fn read_msg<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> std::io::Re
     if len > MAX_MSG_LEN {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!(
-                "IPC frame length {len} exceeds maximum {MAX_MSG_LEN} bytes"
-            ),
+            format!("IPC frame length {len} exceeds maximum {MAX_MSG_LEN} bytes"),
         ));
     }
     let len = len as usize;
@@ -666,5 +709,39 @@ mod tests {
         let err = read_msg::<_, ViewerMsg>(&mut cursor).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn write_msg_rejects_oversized_plot_without_writing() {
+        // Two million f64 pairs encode to ~36 MiB, just over MAX_MSG_LEN.
+        // This is the failure mode of `plot` on a long line before the
+        // viewer envelope reduction: the frame must not be written, or the
+        // viewer closes the socket and the client only sees a broken pipe.
+        let n = 2_000_000usize;
+        let msg = ViewerMsg::PanelUpdate {
+            fig_id: 1,
+            panel: 0,
+            series: vec![WireSeries {
+                label: String::new(),
+                x: vec![0.0; n],
+                y: vec![1.0; n],
+                color: WireColor::Named("blue".into()),
+                style: WireLineStyle::Solid,
+                kind: WirePlotKind::Line,
+                x_labels: None,
+            }],
+        };
+        let mut buf = Vec::new();
+        let err = write_msg(&mut buf, &msg).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let text = err.to_string();
+        assert!(text.contains("exceeds maximum"), "unexpected error: {text}");
+        assert!(
+            buf.is_empty(),
+            "a rejected frame must not hit the socket, wrote {} bytes",
+            buf.len()
+        );
+        let raw_1e8 = 2 * (5 + 9 * 100_000_000usize);
+        assert!(raw_1e8 > MAX_MSG_LEN as usize);
     }
 }

@@ -219,8 +219,14 @@ impl Evaluator {
     }
 
     /// Return `Err(Cancelled)` if a cancel flag is installed and set.
+    /// A plot abort (Ctrl+C during a viewer send or a terminal figure)
+    /// is the same kind of stop: [`ScriptError::Interrupted`], which the
+    /// CLI treats as a clean exit.
     #[inline]
     fn check_cancelled(&self) -> Result<(), ScriptError> {
+        if rustlab_plot::take_plot_interrupt() {
+            return Err(ScriptError::Interrupted);
+        }
         if let Some(flag) = &self.cancel {
             if flag.load(Ordering::Relaxed) {
                 return Err(ScriptError::Cancelled);
@@ -4817,4 +4823,34 @@ fn is_transpose_expr(e: &Expr) -> bool {
 
 fn is_dense(v: &Value) -> bool {
     matches!(v, Value::Vector(_) | Value::Matrix(_))
+}
+
+#[cfg(test)]
+mod plot_abort_tests {
+    use super::Evaluator;
+    use crate::error::ScriptError;
+    use crate::eval::value::Value;
+    use crate::lexer;
+    use crate::parser;
+
+    fn run_src(ev: &mut Evaluator, src: &str) -> Result<(), ScriptError> {
+        let tokens = lexer::tokenize(src).expect("lex");
+        let stmts = parser::parse(tokens).expect("parse");
+        ev.run(&stmts)
+    }
+
+    #[test]
+    fn sticky_plot_abort_stops_before_the_next_statement() {
+        rustlab_plot::note_plot_aborted();
+        let mut ev = Evaluator::new();
+        let err = run_src(&mut ev, "x = 1\n").expect_err("abort");
+        assert!(matches!(err, ScriptError::Interrupted));
+        assert!(ev.get("x").is_none());
+
+        run_src(&mut ev, "x = 1\n").expect("next statement runs");
+        match ev.get("x") {
+            Some(Value::Scalar(v)) => assert_eq!(*v, 1.0),
+            other => panic!("expected scalar 1, got {other:?}"),
+        }
+    }
 }
