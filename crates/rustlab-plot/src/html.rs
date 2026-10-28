@@ -122,7 +122,7 @@ fn panel_geom(rows: usize, cols: usize, idx: usize, reserve_cbar: bool) -> Panel
     // Multi-column grids need a wider gutter: the right-hand panel's
     // y-axis title and tick labels sit in it. Multi-row grids need a
     // taller gutter for the upper x-axis title and the lower plot title.
-    let mut x_pad = if cols > 1 { 0.05 } else { 0.04 };
+    let mut x_pad = if cols > 1 { 0.06 } else { 0.04 };
     let mut y_pad = if rows > 1 { 0.065 } else { 0.04 };
     if x_pad * 2.0 + 0.12 > col_w {
         x_pad = ((col_w - 0.12) / 2.0).max(0.02);
@@ -364,8 +364,8 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 format_range(panel.ylim)
             };
             layout_axes.push_str(&format!(
-                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], anchor: "{y_id}", automargin: true, title: {{ text: "{xlabel}", standoff: 8, font: {{ color: "{text}", size: 13 }} }}{xrange}{xtype}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
-yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, title: {{ text: "{ylabel}", standoff: 8, font: {{ color: "{text}", size: 13 }} }}{yrange}{ytype}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
+                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], anchor: "{y_id}", automargin: true, ticklabelstandoff: 6, title: {{ text: "{xlabel}", standoff: 10, font: {{ color: "{text}", size: 13 }} }}{xrange}{xtype}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
+yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ticklabelstandoff: 6, title: {{ text: "{ylabel}", standoff: 10, font: {{ color: "{text}", size: 13 }} }}{yrange}{ytype}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
 "#,
                 ax = axis_suffix,
                 x_id = xaxis_ref,
