@@ -1,3 +1,4 @@
+pub mod dense_eig;
 pub mod error;
 pub mod fingerprint;
 pub mod matmul;

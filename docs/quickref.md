@@ -129,7 +129,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
-| `diag(v)` | Diagonal matrix from vector; or extract diagonal |
+| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is `5`); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
@@ -226,13 +226,13 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `dot(u, v)` | Inner (dot) product |
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
-| `kron(A, B)` | Kronecker tensor product |
+| `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
 | `norm(v)`, `norm(v,p)` | Vector p-norm (1, 2, Inf); matrix Frobenius; works on sparse |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
 | `trace(M)` | Trace |
 | `rank(M)` | Numerical rank |
-| `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition. 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). |
+| `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition (`dense_eig`). 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). Hermitian or real symmetric: real eigenvalues, ascending, orthonormal V. |
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |

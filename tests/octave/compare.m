@@ -10,7 +10,15 @@ function result = compare_vectors(name, ref, out, tol)
     result = false;
     return;
   end
-  err = max(abs(ref - out));
+  % max() skips NaN, so a NaN or infinity on one side only must fail here.
+  bad = (isnan(ref) ~= isnan(out)) | ((isinf(ref) | isinf(out)) & (ref ~= out));
+  if any(bad)
+    fprintf('FAIL  %-30s  non-finite mismatch at %d entries\n', name, sum(bad));
+    result = false;
+    return;
+  end
+  fin = isfinite(ref) & isfinite(out);
+  err = max([0, abs(ref(fin) - out(fin))]);
   if err <= tol
     fprintf('PASS  %-30s  max_err=%.2e  (tol=%.2e)\n', name, err, tol);
     result = true;

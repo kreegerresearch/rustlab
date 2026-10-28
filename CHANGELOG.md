@@ -6,10 +6,40 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.21
+## 0.3.22
 
 ### Fixed
 - **Plot titles no longer sit on axis labels.** In notebook HTML and in `notebook watch`, a subplot's x-axis title was drawn on the first row and its y-axis title on the first column, so a lower panel's "Frequency" landed on the title of the panel above and a right-hand "Magnitude (dB)" was drawn on top of the left-hand one. Each axis is now tied to its own panel. The title sits above that panel and grows upward, a newline in `title` starts a new line, and a long title wraps instead of running through the trace or the next subplot. A colour bar stays beside its own panel. On SVG, PNG, GIF, and PDF (the same drawing), a very short axis — an equal-aspect plot that is almost a line — no longer stamps every tick label on one pixel, and a title that does not fit the panel wraps onto more lines inside it. The colours are the theme's text colour on the plot background.
+
+## 0.3.21
+
+### Breaking / behavior changes
+- **`kron` treats a vector as a row.** A vector was taken as a column, so `kron(c, v)` of a column and a row returned a stacked `9×1` column instead of the `3×3` outer product, `kron(v, w)` of two rows a column, and `kron(A, v)` a `6×2` matrix instead of `2×6`. Now a vector is `1×n`, as `size` reports it: `kron(row, column)` and `kron(column, row)` are outer products, `kron(row, row)` is a row, and a `1×1` result is a scalar. Matrix-by-matrix and column-by-column products are unchanged. Migration: a script that relied on the old column result should pass `v'` explicitly.
+- **`eig` of a Hermitian or real symmetric matrix returns real eigenvalues in ascending order**, with orthonormal eigenvectors. They came in convergence order, and a complex Hermitian matrix's eigenvalues carried tiny imaginary parts (around `1e-17`). Code that indexed `eig(S)(1)` expecting a particular eigenvalue should now expect the smallest.
+- **Eigenvector signs and phases may differ** from earlier versions for every `eig` call: they now come from the Schur form, have unit 2-norm, and a complex eigenvector is rotated so its largest component is real. Each column is still an eigenvector; compare `A*V - V*D`, not `V` itself. The order of general (non-Hermitian) eigenvalues and of `roots` can also change.
+- **`eig` of a matrix with `Inf` or `NaN` is an error**, as is a QR iteration that does not converge. Both used to return values.
+
+### Fixed
+- **`eig` of block-diagonal and reducible matrices.** When the matrix split into independent blocks, the QR iteration kept running on the whole matrix and, after 100 iterations, accepted unconverged values: two random 3×3 blocks gave eigenvalues off by up to 77 %, with no warning. Every QR iteration now works on the active block only. The same split affected `roots`, `lqr` and `care`, which use the same solver, and could make the non-symmetric `eigs` path fail.
+- **`eig` with very large or very small entries.** `eig(1e200 * [1 2; 3 4])` returned `NaN` and `eig(1e-200 * [1 2; 3 4])` was 53 % off: the 2×2 formula squared the trace. The matrix is now scaled and balanced first.
+- **`eig` eigenvectors for repeated eigenvalues.** `[V, D] = eig(eye(3))` returned three identical columns, and `[2 1 1; 1 2 1; 1 1 2]` dependent ones, because each vector came from a separate inverse iteration. They now come from the Schur form (or the symmetric solver), so a diagonalisable matrix gets independent eigenvectors. Eigenvectors of close eigenvalues are also accurate again (residuals of `1e-7`–`1e-12` are now about `1e-16`).
+- **Complex eigenvalues of a real matrix are exact conjugate pairs**, and real eigenvalues have real eigenvectors (they differed by about `1e-14`).
+- **`lqr` and `care` with repeated stable closed-loop poles** (for example two identical decoupled subsystems) no longer fail with a singular eigenvector matrix.
+- **`diag` of a column vector.** `diag([1; 2; 3])` and `diag(v')` returned the first element instead of a `3×3` diagonal matrix: an `n×1` (or `1×n`) matrix was read as a matrix to take the diagonal of. Every vector shape now builds a diagonal matrix, as in `diag(v)`.
+- **`diag(5)`** returns `5` (it was an error), and `diag(5, k)` builds the `(1+|k|)`-square matrix.
+- **`diag(v, 1.5)`** is an error: `k` must be an integer. It was truncated to `1`.
+
+## 0.3.20
+
+### Added
+- **Communications notebook: Viterbi decoding of convolutional codes** (`examples/notebooks/comm/viterbi_fec.md`, the first notebook under `examples/notebooks/comm/`). It covers:
+  - The constraint-length-7 (133, 171) code at rates 1/3, 1/2, and punctured 2/3 and 3/4.
+  - A soft-decision Viterbi decoder written in rustlab script.
+  - BPSK over AWGN: BER curves simulated with `parmap`, coding gain at 10⁻⁴ against the Shannon limit, hard vs. soft decisions, and decoder error bursts.
+
+### Fixed
+- **`true` and `false` inside user functions.** A function body (and so a `parmap` task that calls one) reported `undefined variable 'true'`. Function scopes now start with every built-in constant, the same list `clear` keeps.
+- **A line spec after a single x/y pair.** `plot(x, y, "r--")`, `plot(x, y, "ko")` and the same in `semilogx`, `semilogy` and `loglog` drew a solid line in the next default color and used the spec as the title. Only a bare color letter (`"r"`) worked. The spec now sets color, style and markers as it does between several pairs. A one-word title such as `plot(y, "Gold")` is unchanged.
 
 ## 0.3.19
 

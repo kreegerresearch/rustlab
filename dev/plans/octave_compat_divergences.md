@@ -190,6 +190,8 @@ This is the largest item in the plan. Several smaller divergences cluster here, 
 
    The core helper at `crates/rustlab-core/src/sparse_eig/hessenberg_eig.rs:241-244` already uses a sine-of-index initial vector (`((i+1)*0.7).sin()`) to dodge this. The local `inverse_iteration_cx` at `crates/rustlab-script/src/eval/builtins.rs:6854-6855` uses `e_0`, which is wrong for triangular inputs. **One-line fix.** Must land before any eig refactor or the new `[V, D] = eig(A)` will inherit the bug.
 
+   **Superseded in 0.3.21.** `inverse_iteration_cx` is gone. `eig`, `roots`, `lqr`, `care`, and the non-symmetric `eigs` path (`hessenberg_eig`) call `rustlab_core::dense_eig`, which takes eigenvectors from the Schur form. The line numbers above describe the pre-0.3.21 code. The regression test `eig_upper_triangular_residuals_near_zero` still covers the triangular case.
+
 #### Blocker: nargout awareness
 
 `eig` overloading on output count requires the builtin to know whether the caller is doing `e = eig(A)` (single-output) or `[V, D] = eig(A)` (two-output). Today `BuiltinFn = fn(Vec<Value>) -> Result<Value, ScriptError>` — no nargout context. Three approaches:

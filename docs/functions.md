@@ -1258,7 +1258,8 @@ where block `(i,j)` equals `A[i,j] * B`.
 ```
 kron(eye(2), [1,2;3,4])   # → block-diagonal 4×4 matrix
 ```
-- Accepts matrix, vector, or scalar for both arguments.
+- Accepts matrix, vector, or scalar for both arguments. A vector is a 1×n row, as `size` reports it; write `v'` for a column.
+- `kron(row, column)` and `kron(column, row)` are outer products (n×m). A 1×n result is a vector and a 1×1 result a scalar.
 - Essential for multi-qubit state space construction.
 
 ### `expm(M)`
@@ -1275,9 +1276,22 @@ expm(zeros(3,3))          # → eye(3)
 ### `eig(A)` / `[V, D] = eig(A)` / `eig(A, B)` / output-form flag
 
 Dense eigendecomposition (`A` square; `B` square, same size, invertible).
-Hand-rolled Hessenberg reduction + shifted QR (Wilkinson) for the eigenvalues;
-shifted inverse iteration on `A` (or `inv(B)·A` for the generalized form) for
-each eigenvector.
+Hand-rolled (`rustlab_core::dense_eig`), chosen by the structure of `A`:
+
+- **Hermitian or real symmetric** (`A == A'` exactly): tridiagonal reduction
+  and the symmetric QL iteration. Eigenvalues are real and **ascending**;
+  eigenvectors are orthonormal, repeated eigenvalues included.
+- **Real, not symmetric:** Hessenberg reduction and the Francis double-shift
+  QR iteration. Complex eigenvalues come in exact conjugate pairs; real
+  eigenvalues are exactly real and have real eigenvectors.
+- **Complex, not Hermitian:** Hessenberg reduction and the complex QR
+  iteration.
+
+The general cases scale and balance `A` first, so very large or very small
+entries do not overflow, and eigenvectors come from the Schur form, so a
+repeated eigenvalue of a diagonalisable matrix gets independent eigenvectors.
+Each eigenvector has unit 2-norm; a complex one is rotated so its largest
+component is real. `A` must not contain `Inf` or `NaN`.
 
 ```
 v = eig([2,1;1,2])            # N×1 column of eigenvalues, ~[3; 1]
@@ -1298,9 +1312,11 @@ eig(A, "matrix")              # D as N×N diagonal matrix
 - 1-output default is the column vector; 2-output default is the diagonal matrix.
 - The flag is parsed off the tail of the argument list, so it composes with
   both the standard and generalized forms.
-- Eigenvalues are returned in convergence order, not sorted.
-- Defective matrices may produce an ill-conditioned `V`; the eigenvalues
-  remain accurate.
+- Hermitian input: ascending order. Otherwise eigenvalues follow the
+  diagonal of the Schur form and are not sorted; sort them if order matters.
+- Defective matrices (fewer independent eigenvectors than the multiplicity,
+  such as `[1 1; 0 1]`) give nearly parallel columns in `V`, as in any
+  eigensolver; the eigenvalues remain accurate.
 - Generalized form requires `B` invertible. SPD-aware Cholesky reduction is
   a future optimisation; QZ for non-invertible `B` is deferred.
 
@@ -1337,7 +1353,7 @@ L = -1 * laplacian_2d(nx, ny);
 - Symmetric Lanczos with full reorthogonalization — Saad, *Numerical Methods for Large Eigenvalue Problems*, ch. 6; Golub & Van Loan §10.1.
 - Arnoldi for general matrices — Saad ch. 8; Golub & Van Loan §10.5.
 - Small dense symmetric eigenproblem at the centre of Lanczos via cyclic Jacobi rotations.
-- Small dense Hessenberg eigenproblem via shifted QR + inverse iteration (eigenvectors).
+- Small dense Hessenberg eigenproblem via `dense_eig` (Schur form; eigenvectors from back substitution, not inverse iteration).
 
 ### `ellipke(m)` / `[K, E] = ellipke(m)`
 Complete elliptic integrals of the first kind K(m) and second kind E(m), computed with the arithmetic-geometric mean (quadratic convergence; Abramowitz & Stegun §17.6).
@@ -1427,11 +1443,15 @@ transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 - Use `conj(transpose(A))` or `A'` notation for Hermitian (conjugate) transpose.
 - ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
 
-### `diag(v)` / `diag(M)`
-- `diag(v)` — creates an n×n diagonal matrix from vector `v`.
-- `diag(M)` — extracts the main diagonal of matrix `M` as a vector.
+### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
+- `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors; `diag(5)` is `5`.
+- `diag(v, k)` — puts `v` on diagonal `k` (above the main one for `k > 0`, below for `k < 0`) of an `(n+|k|)`-square matrix.
+- `diag(M)` / `diag(M, k)` — extracts diagonal `k` of a matrix with at least two rows and two columns, as a vector (empty when `k` is outside the matrix).
+- `k` must be an integer.
 ```
 diag([1, 2, 3])         # → 3×3 diagonal matrix
+diag([1; 2; 3])         # → the same 3×3 matrix
+diag([1, 2], 1)         # → [0 1 0; 0 0 2; 0 0 0]
 diag([1,2;3,4])         # → [1, 4]
 ```
 
@@ -2219,10 +2239,11 @@ plot(signal, "440 Hz Sinusoid")
 ```
 
 ### `plot(x, v)`
-Line chart with explicit x-axis vector.
+Line chart with explicit x-axis vector. A line spec may follow the pair, as in the multi-pair form below: `plot(t, signal, "r--")` is a red dashed line and `plot(t, signal, "ko")` black markers.
 ```
 t = linspace(0.0, 1.0, 1000)
 plot(t, signal, "label", "sine wave")
+plot(t, signal, "r--")
 ```
 
 ### `plot(x1, y1, x2, y2, ...)`
