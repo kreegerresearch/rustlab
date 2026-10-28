@@ -310,7 +310,13 @@ fn chrome_bin() -> Option<String> {
         "chromium",
         "chromium-browser",
     ] {
-        if Command::new(name).arg("--version").output().is_ok() {
+        let Ok(out) = Command::new(name).arg("--version").output() else {
+            continue;
+        };
+        // A snap stub or a missing library can be spawned and still not be a
+        // browser. Require a successful version line before trusting it.
+        if out.status.success() && String::from_utf8_lossy(&out.stdout).contains(|c: char| c.is_ascii_digit())
+        {
             return Some(name.to_string());
         }
     }
@@ -325,7 +331,12 @@ fn plotly_stress_text_does_not_overlap_in_chrome() {
         eprintln!("skip plotly overlap: chrome not on PATH");
         return;
     };
-    if Command::new("node").arg("--version").output().is_err() {
+    let node_ok = Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !node_ok {
         eprintln!("skip plotly overlap: node not on PATH");
         return;
     }
@@ -359,15 +370,34 @@ import { setTimeout as delay } from "node:timers/promises";
 const chromeBin = process.argv[2];
 const url = process.argv[3];
 const port = 9344 + (process.pid % 1000);
-const chrome = spawn(chromeBin, ["--headless=new","--no-sandbox","--disable-gpu","--disable-dev-shm-usage",`--remote-debugging-port=${port}`,`--user-data-dir=/tmp/rl-overlap-${process.pid}`], {stdio:"ignore"});
+const chrome = spawn(chromeBin, [
+  "--headless=new",
+  "--no-sandbox",
+  "--disable-gpu",
+  "--disable-dev-shm-usage",
+  "--remote-allow-origins=*",
+  `--remote-debugging-port=${port}`,
+  `--user-data-dir=/tmp/rl-overlap-${process.pid}`,
+], {stdio: ["ignore", "ignore", "pipe"]});
+let stderr = "";
+chrome.stderr.on("data", (c) => { stderr += c.toString(); });
 let ws;
 try {
   let info;
-  for (let i = 0; i < 50; i++) {
+  // A cold browser on a loaded CI runner can take well over 5s to bind.
+  for (let i = 0; i < 60; i++) {
+    if (chrome.exitCode !== null) break;
     try { info = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json(); break; }
-    catch { await delay(100); }
+    catch { await delay(500); }
   }
-  if (!info) { console.error("devtools down"); process.exit(2); }
+  if (!info) {
+    // The runner has a browser binary that does not actually open DevTools
+    // (snap stub, missing library, no display). The SVG box check already
+    // ran. Exit 3 so the Rust test skips instead of failing the suite.
+    console.error("devtools unavailable");
+    console.error(stderr.slice(-2000));
+    process.exit(3);
+  }
   ws = new WebSocket(info.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.addEventListener("open", res); ws.addEventListener("error", rej); });
   let id = 0; const pending = new Map();
@@ -410,6 +440,11 @@ try {
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() == Some(3) {
+        eprintln!("skip plotly overlap: chrome did not open DevTools\n{stderr}");
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    }
     assert!(
         output.status.success(),
         "chrome check failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
