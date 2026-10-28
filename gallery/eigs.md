@@ -78,7 +78,7 @@ title("Mode 1 — fundamental drumhead");
 ```
 
 <!-- rustlab:output-start -->
-![plot 1](plots/eigs/plot-1-d041ce35.svg)
+![plot 1](plots/eigs/plot-1-faf23c0d.svg)
 
 <!-- rustlab:output-end -->
 
@@ -126,7 +126,7 @@ print(Dlm(1))     % largest eigenvalue
 
 <!-- rustlab:output-start -->
 ```text
-3128.5075505695604
+3128.5075505695595
 ```
 
 <!-- rustlab:output-end -->
@@ -155,7 +155,7 @@ print(Dg(1))               % smallest λ ≈ smallest eigs(L) / 2
 
 <!-- rustlab:output-start -->
 ```text
-35.74622472905966
+35.746224729058135
 ```
 
 <!-- rustlab:output-end -->
@@ -212,7 +212,7 @@ This implementation is:
   *Numerical Methods for Large Eigenvalue Problems*, ch. 6).
 - Arnoldi for general matrices (Saad ch. 8).
 - Small dense symmetric subproblem via cyclic Jacobi.
-- Small dense Hessenberg subproblem via shifted QR + inverse iteration
-  for eigenvectors.
+- Small dense Hessenberg subproblem via `dense_eig` (Schur form;
+  eigenvectors from back substitution, not inverse iteration).
 
 No `arpack-ng-sys`, no Fortran FFI, no large library dependency.

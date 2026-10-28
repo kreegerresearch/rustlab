@@ -10,7 +10,15 @@ function result = compare_vectors(name, ref, out, tol)
     result = false;
     return;
   end
-  err = max(abs(ref - out));
+  % max() skips NaN, so a NaN or infinity on one side only must fail here.
+  bad = (isnan(ref) ~= isnan(out)) | ((isinf(ref) | isinf(out)) & (ref ~= out));
+  if any(bad)
+    fprintf('FAIL  %-35s  non-finite mismatch at %d entries\n', name, sum(bad));
+    result = false;
+    return;
+  end
+  fin = isfinite(ref) & isfinite(out);
+  err = max([0, abs(ref(fin) - out(fin))]);
   if err <= tol
     fprintf('PASS  %-35s  max_err=%.2e  (tol=%.2e)\n', name, err, tol);
     result = true;
@@ -98,6 +106,13 @@ T_ITER   = 1e-4;
 [p,f]=check('cross',         'ref2_cross.csv',        'out2_cross.csv',        T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('outer',         'ref2_outer.csv',        'out2_outer.csv',        T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('kron',          'ref2_kron.csv',         'out2_kron.csv',         T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('kron row col', 'ref2_kron_row_col.csv', 'out2_kron_row_col.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('kron col row', 'ref2_kron_col_row.csv', 'out2_kron_col_row.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('kron row row', 'ref2_kron_row_row.csv', 'out2_kron_row_row.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('kron mat row', 'ref2_kron_mat_row.csv', 'out2_kron_mat_row.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('kron scalar row', 'ref2_kron_scalar_row.csv', 'out2_kron_scalar_row.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('diag col', 'ref2_diag_col.csv', 'out2_diag_col.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('diag col k', 'ref2_diag_col_k.csv', 'out2_diag_col_k.csv', T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('norm (vector)', 'ref2_norm_vec.csv',     'out2_norm_vec.csv',     T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('norm (matrix)', 'ref2_norm_mat.csv',     'out2_norm_mat.csv',     T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('det',           'ref2_det.csv',          'out2_det.csv',          T_EXACT); pass_count+=p; fail_count+=f;
@@ -178,6 +193,14 @@ T_ITER   = 1e-4;
 [p,f]=check('det diag 2x2',          'ref2_det_diag2.csv',         'out2_det_diag2.csv',         T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('inv diag 2x2',          'ref2_inv_diag2.csv',         'out2_inv_diag2.csv',         T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('eig (eye 3)',           'ref2_eig_eye3.csv',          'out2_eig_eye3.csv',          T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig blockdiag', 'ref2_eig_blockdiag.csv', 'out2_eig_blockdiag.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig block twice', 'ref2_eig_block_twice.csv', 'out2_eig_block_twice.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig huge', 'ref2_eig_huge.csv', 'out2_eig_huge.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig tiny', 'ref2_eig_tiny.csv', 'out2_eig_tiny.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig sym order', 'ref2_eig_sym_order.csv', 'out2_eig_sym_order.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig herm real', 'ref2_eig_herm_real.csv', 'out2_eig_herm_real.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig repeat VtV', 'ref2_eig_repeat_VtV.csv', 'out2_eig_repeat_VtV.csv', T_EXACT); pass_count+=p; fail_count+=f;
+[p,f]=check('eig blockdiag res', 'ref2_eig_blockdiag_res.csv', 'out2_eig_blockdiag_res.csv', T_EXACT); pass_count+=p; fail_count+=f;
 [p,f]=check('norm zero vec',         'ref2_norm_zero.csv',         'out2_norm_zero.csv',         T_EXACT); pass_count+=p; fail_count+=f;
 
 % ── Aggressive edge cases ────────────────────────────────────────────────────
