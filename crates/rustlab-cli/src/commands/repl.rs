@@ -318,7 +318,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "ylabel",   brief: "Set y-axis label",
         detail: "ylabel(\"text\")  — sets the y-axis label on the current subplot" },
     HelpEntry { name: "title",    brief: "Set subplot title",
-        detail: "title(\"text\")  — sets the title of the current subplot" },
+        detail: "title(\"text\")  — sets the title of the current subplot\n\n  A newline starts another line. A title wider than the panel wraps, and the\n  text stays above that panel's axes. In a subplot grid each panel keeps its\n  own axis titles." },
     HelpEntry { name: "xlim",     brief: "Set x-axis limits",
         detail: "xlim([lo, hi])  — fixes the x-axis range on the current subplot" },
     HelpEntry { name: "ylim",     brief: "Set y-axis limits",
