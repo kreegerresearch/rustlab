@@ -142,7 +142,7 @@ Ordered roughly by how often they matter:
 | `min`/`max`/`sort` on complex data compare by magnitude (real part for `sort`/`median`) | Take `abs()`/`real()` explicitly if you mean it |
 | All-NaN input to `min`/`max`/`argmin`/`argmax` is an error, not NaN | Filter NaNs first |
 | `length(M)` is `max(size(M))`, not the element count | Use `numel(M)` for total elements |
-| `butterworth_lowpass`/`_highpass` return numerator (`b`) coefficients only | Apply with `filtfilt(b, [1], x)`; these are FIR-style approximations, not full IIR `[b, a]` pairs |
+| `b = butterworth_lowpass(...)` is only the numerator | Use `[b, a] = butterworth_lowpass(...)` (or the highpass) and `filter(b, a, x)` or `filtfilt(b, a, x)`. A one-output call is not a usable IIR |
 | `contour`, `quiver`, `streamplot` are not rendered in the terminal TUI | Always pair with `savefig("file.svg")` (or `.html`) to see them |
 | `loglog`/`semilogx`/`semilogy` require strictly positive data on the log axes | Clamp or shift data first |
 | `savefig`/`save`/`load` paths are script-relative | Generate output paths relative to the script, or use absolute paths. Inside a notebook every path is jailed to the notebook directory (collection root in directory mode) — an absolute path outside it fails with `path escapes notebook directory`; widen with `rustlab-notebook … --jail-root <DIR>` |
@@ -234,7 +234,7 @@ All function names below are in `docs/quickref.md` with one-line descriptions; f
 | Sparse | `sparse speye spdiags spsolve chol lu solve eigs laplacian_1d/2d/3d full nnz find` | `examples/sparse/`, `examples/pde/` |
 | Statistics | `sum mean median std min max argmax sort cumsum trapz hist all any` | `examples/stats/` |
 | FFT & spectral | `fft ifft fftshift fftfreq spectrum pwelch stft spectrogram cwt waterfall` + `*_stream` variants | `examples/spectral/` |
-| FIR/IIR filters | `fir_lowpass/_highpass/_bandpass` (+`_kaiser`), `fir_notch firpm firpmq freqz filtfilt convolve upfirdn window` | `examples/dsp/` |
+| FIR/IIR filters | `fir_lowpass/_highpass/_bandpass` (+`_kaiser`), `fir_notch firpm firpmq freqz filter filtfilt convolve upfirdn window` | `examples/dsp/` |
 | Fixed-point | `qfmt quantize qadd qmul qconv snr` | `examples/dsp/fixed_point.rlab` |
 | Control systems | `tf ss pole zero bode nyquist step margin rlocus lqr care dare place lyap gram ctrb obsv rk4 freqresp` | `examples/controls/` |
 | RF / S-parameters | `sparameters sij s2z/s2y/s2t/s2abcd cascade deembed newref smith rfplot vswr stabilityk gainmax` | `examples/rf/` |

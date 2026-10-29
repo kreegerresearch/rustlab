@@ -5,7 +5,7 @@ use ndarray::{Array1, Array2, Array3};
 use num_complex::Complex;
 use rand::Rng;
 use rand_distr::{Distribution, Normal, Uniform};
-use rustlab_core::{CMatrix, CVector, SparseMat, SparseVec, C64};
+use rustlab_core::{CMatrix, CVector, Filter, SparseMat, SparseVec, C64};
 use rustlab_core::{IntClass, OverflowMode, RoundMode};
 use rustlab_dsp::convolution::convolve;
 use rustlab_dsp::fixed::{qadd as fixed_qadd, qconv as fixed_qconv, qmul as fixed_qmul};
@@ -77,10 +77,11 @@ impl BuiltinRegistry {
         r.register("fir_lowpass", builtin_fir_lowpass);
         r.register("fir_highpass", builtin_fir_highpass);
         r.register("fir_bandpass", builtin_fir_bandpass);
-        r.register("butterworth_lowpass", builtin_butterworth_lowpass);
-        r.register("butterworth_highpass", builtin_butterworth_highpass);
+        r.register_nargout("butterworth_lowpass", builtin_butterworth_lowpass);
+        r.register_nargout("butterworth_highpass", builtin_butterworth_highpass);
         r.register("convolve", builtin_convolve);
         r.register("filtfilt", builtin_filtfilt);
+        r.register("filter", builtin_filter);
         r.register("upfirdn", builtin_upfirdn);
         r.register("window", builtin_window);
         // FFT
@@ -188,6 +189,7 @@ impl BuiltinRegistry {
         r.register("mean", builtin_mean);
         r.register("median", builtin_median);
         r.register("std", builtin_std);
+        r.register("var", builtin_var);
         r.register_nargout("min", builtin_min_nargout);
         r.register_nargout("max", builtin_max_nargout);
         r.register("sum", builtin_sum);
@@ -277,6 +279,7 @@ impl BuiltinRegistry {
         r.register("outer", builtin_outer);
         r.register("kron", builtin_kron);
         r.register("norm", builtin_norm);
+        r.register("cond", builtin_cond);
         r.register("det", builtin_det);
         r.register("inv", builtin_inv);
         r.register("expm", builtin_expm);
@@ -568,25 +571,70 @@ fn builtin_fir_bandpass(args: Vec<Value>) -> Result<Value, ScriptError> {
     Ok(cvector_to_value(filter.coefficients))
 }
 
-fn builtin_butterworth_lowpass(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn ba_vectors(filter: &IirFilter) -> (Value, Value) {
+    let b: CVector = Array1::from_iter(filter.b.iter().map(|&x| Complex::new(x, 0.0)));
+    let a: CVector = Array1::from_iter(filter.a.iter().map(|&x| Complex::new(x, 0.0)));
+    (Value::Vector(b.into()), Value::Vector(a.into()))
+}
+
+fn butterworth_return(filter: IirFilter, nargout: usize) -> Value {
+    let (b, a) = ba_vectors(&filter);
+    if nargout >= 2 {
+        Value::Tuple(vec![b, a])
+    } else {
+        b
+    }
+}
+
+fn builtin_butterworth_lowpass(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("butterworth_lowpass", &args, 3)?;
     let order = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
     let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
     let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
     let filter = butterworth_lowpass(order, cutoff_hz, sr)?;
-    // Return b coefficients as a complex vector for script use
-    let coeffs: CVector = Array1::from_iter(filter.b.iter().map(|&x| Complex::new(x, 0.0)));
-    Ok(Value::Vector(coeffs.into()))
+    // One output is the numerator, as before. `[b, a] = ...` also returns
+    // the monic denominator, which a single vector cannot carry.
+    Ok(butterworth_return(filter, nargout))
 }
 
-fn builtin_butterworth_highpass(args: Vec<Value>) -> Result<Value, ScriptError> {
+fn builtin_butterworth_highpass(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("butterworth_highpass", &args, 3)?;
     let order = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
     let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
     let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
     let filter = butterworth_highpass(order, cutoff_hz, sr)?;
-    let coeffs: CVector = Array1::from_iter(filter.b.iter().map(|&x| Complex::new(x, 0.0)));
-    Ok(Value::Vector(coeffs.into()))
+    Ok(butterworth_return(filter, nargout))
+}
+
+/// `filter(b, a, x)` — direct-form II transposed filter, the causal
+/// counterpart of `filtfilt`. `a` is normalised so `a[0] = 1` (MATLAB).
+/// Coefficients must be real; `x` may be complex (the parts are filtered
+/// separately). `a = [1]` is an FIR.
+fn builtin_filter(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args("filter", &args, 3)?;
+    let b_cv = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let a_cv = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    let x = args[2].to_cvector().map_err(|e| ScriptError::type_err(e))?;
+    if b_cv.is_empty() || a_cv.is_empty() {
+        return Err(ScriptError::type_err(
+            "filter: b and a must be non-empty".to_string(),
+        ));
+    }
+    if b_cv.iter().chain(a_cv.iter()).any(|c| c.im.abs() > 1e-12) {
+        return Err(ScriptError::type_err(
+            "filter: b and a must be real".to_string(),
+        ));
+    }
+    let a0 = a_cv[0].re;
+    if a0 == 0.0 || !a0.is_finite() {
+        return Err(ScriptError::type_err(
+            "filter: a(1) must be a finite non-zero number".to_string(),
+        ));
+    }
+    let b: Vec<f64> = b_cv.iter().map(|c| c.re / a0).collect();
+    let a: Vec<f64> = a_cv.iter().map(|c| c.re / a0).collect();
+    let y = IirFilter::new(b, a).apply(&x)?;
+    Ok(Value::Vector(y.into()))
 }
 
 fn builtin_convolve(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -1003,15 +1051,25 @@ fn builtin_log(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_log10(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("log10", args, f64::log10, |c: Complex<f64>| {
-        c.ln() / f64::ln(10.0)
-    })
+    // Same branch as `log`: a negative real is the principal complex value
+    // (`log10(-1) = iπ/ln 10`), not `NaN`.
+    apply_scalar_fn_promoting(
+        "log10",
+        args,
+        f64::log10,
+        |c: Complex<f64>| c.ln() / f64::ln(10.0),
+        |x| x < 0.0,
+    )
 }
 
 fn builtin_log2(args: Vec<Value>) -> Result<Value, ScriptError> {
-    apply_scalar_fn_to_value("log2", args, f64::log2, |c: Complex<f64>| {
-        c.ln() / f64::ln(2.0)
-    })
+    apply_scalar_fn_promoting(
+        "log2",
+        args,
+        f64::log2,
+        |c: Complex<f64>| c.ln() / f64::ln(2.0),
+        |x| x < 0.0,
+    )
 }
 
 // ─── atan2(y, x) ──────────────────────────────────────────────────────────────
@@ -2293,9 +2351,14 @@ fn builtin_mean(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// Median of a slice of complex values, comparing by real part.
+/// A NaN real part makes the result NaN (MATLAB `'includenan'`). `Inf`
+/// sorts as a value. Comparing with `partial_cmp().unwrap()` panics on NaN.
 fn median_of_real_slice(vals: &[C64]) -> f64 {
+    if vals.iter().any(|c| c.re.is_nan()) {
+        return f64::NAN;
+    }
     let mut reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
-    reals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    reals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = reals.len();
     if n % 2 == 1 {
         reals[n / 2]
@@ -2351,6 +2414,25 @@ fn builtin_std(args: Vec<Value>) -> Result<Value, ScriptError> {
         |elems| Ok(Value::Scalar(std_of_slice(elems))),
         |m, dim| {
             matrix_axis_collect_then(m, dim, |slice| Complex::new(std_of_slice(slice), 0.0))
+        },
+    )
+}
+
+/// `var` is the square of [`std_of_slice`]: sample variance, divide by `n-1`,
+/// and for complex data `Σ|x − mean|² / (n − 1)`. Same shapes as `std`.
+fn builtin_var(args: Vec<Value>) -> Result<Value, ScriptError> {
+    dispatch_matrix_reduction(
+        "var",
+        &args,
+        |elems| {
+            let s = std_of_slice(elems);
+            Ok(Value::Scalar(s * s))
+        },
+        |m, dim| {
+            matrix_axis_collect_then(m, dim, |slice| {
+                let s = std_of_slice(slice);
+                Complex::new(s * s, 0.0)
+            })
         },
     )
 }
@@ -8884,35 +8966,55 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::SparseMatrix(sm) => {
-            // "fro" maps to 2.0: the p==2 branch below is Frobenius.
-            let p: f64 = if args.len() == 2 {
-                norm_p_arg(&args[1])?.unwrap_or(2.0)
+            // No second argument, or `"fro"`, is the Frobenius norm — the
+            // same default as a dense matrix. `norm(S, 2)` is the spectral
+            // norm, matching `norm(full(S), 2)`. Any other p is an error,
+            // not a silent Frobenius.
+            let requested = if args.len() == 2 {
+                norm_p_arg(&args[1])?
             } else {
-                2.0
+                None
             };
-            if p == 1.0 {
-                // Max absolute column sum
-                let mut col_sums = vec![0.0_f64; sm.cols];
-                for &(_, c, v) in &sm.entries {
-                    col_sums[c] += v.norm();
+            match requested {
+                None => {
+                    let n = sm
+                        .entries
+                        .iter()
+                        .map(|(_, _, c)| c.norm_sqr())
+                        .sum::<f64>()
+                        .sqrt();
+                    Ok(Value::Scalar(n))
                 }
-                Ok(Value::Scalar(col_sums.into_iter().fold(0.0_f64, f64::max)))
-            } else if p == f64::INFINITY {
-                // Max absolute row sum
-                let mut row_sums = vec![0.0_f64; sm.rows];
-                for &(r, _, v) in &sm.entries {
-                    row_sums[r] += v.norm();
+                Some(p) if p == 1.0 => {
+                    let mut col_sums = vec![0.0_f64; sm.cols];
+                    for &(_, c, v) in &sm.entries {
+                        col_sums[c] += v.norm();
+                    }
+                    Ok(Value::Scalar(col_sums.into_iter().fold(0.0_f64, f64::max)))
                 }
-                Ok(Value::Scalar(row_sums.into_iter().fold(0.0_f64, f64::max)))
-            } else {
-                // Frobenius for p=2, or convert to dense for other p
-                let n = sm
-                    .entries
-                    .iter()
-                    .map(|(_, _, c)| c.norm_sqr())
-                    .sum::<f64>()
-                    .sqrt();
-                Ok(Value::Scalar(n))
+                Some(p) if p == f64::INFINITY => {
+                    let mut row_sums = vec![0.0_f64; sm.rows];
+                    for &(r, _, v) in &sm.entries {
+                        row_sums[r] += v.norm();
+                    }
+                    Ok(Value::Scalar(row_sums.into_iter().fold(0.0_f64, f64::max)))
+                }
+                Some(p) if p == 2.0 => {
+                    if sm.rows > 512 || sm.cols > 512 {
+                        return Err(ScriptError::type_err(format!(
+                            "norm: spectral norm of a sparse matrix densifies it; \
+                             {}×{} is over the 512 limit. Use norm(S) for Frobenius \
+                             or norm(S, 1) / norm(S, Inf).",
+                            sm.rows, sm.cols
+                        )));
+                    }
+                    let dense = sm.to_dense();
+                    let (_, sv, _) = svd_full(&dense)?;
+                    Ok(Value::Scalar(sv.first().copied().unwrap_or(0.0)))
+                }
+                Some(p) => Err(ScriptError::type_err(format!(
+                    "norm: sparse matrix p-norm supports p = 1, 2, Inf, or \"fro\" (got {p})"
+                ))),
             }
         }
         other => Err(ScriptError::type_err(format!(
@@ -8922,8 +9024,117 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
 }
 
+/// `cond(A)` / `cond(A, p)` — matrix condition number.
+///
+/// The default and `p = 2` are `σ_max / σ_min` from the SVD (rectangular
+/// matrices included; a zero smallest singular value, or a zero matrix, is
+/// `Inf`). `p = 1` and `p = Inf` are `‖A‖ ‖A⁻¹‖` and require a square
+/// matrix; a singular matrix is `Inf`.
+fn builtin_cond(args: Vec<Value>) -> Result<Value, ScriptError> {
+    check_args_range("cond", &args, 1, 2)?;
+    let p = if args.len() == 2 {
+        match norm_p_arg(&args[1])? {
+            Some(p) => p,
+            None => {
+                return Err(ScriptError::type_err(
+                    "cond: \"fro\" is not a condition number; use 1, 2, or Inf".to_string(),
+                ))
+            }
+        }
+    } else {
+        2.0
+    };
+    let a = to_cmatrix_arg(&args[0], "cond", "A")?;
+    if !matrix_entries_finite(&a) {
+        return Err(ScriptError::type_err(
+            "cond: matrix entries must be finite".to_string(),
+        ));
+    }
+    let cond = if p == 2.0 {
+        let (_, sigma, _) = svd_full(&a)?;
+        let smax = sigma.first().copied().unwrap_or(0.0);
+        let smin = sigma.last().copied().unwrap_or(0.0);
+        if smax == 0.0 || smin == 0.0 {
+            f64::INFINITY
+        } else {
+            smax / smin
+        }
+    } else if p == 1.0 || p.is_infinite() {
+        if a.nrows() != a.ncols() {
+            return Err(ScriptError::type_err(
+                "cond: the 1-norm and Inf-norm condition numbers require a square matrix"
+                    .to_string(),
+            ));
+        }
+        let nrm = if p == 1.0 {
+            induced_norm(&a, true)
+        } else {
+            induced_norm(&a, false)
+        };
+        if nrm == 0.0 {
+            f64::INFINITY
+        } else {
+            match matrix_inv(&a) {
+                Ok(inv) => {
+                    let nrm_inv = if p == 1.0 {
+                        induced_norm(&inv, true)
+                    } else {
+                        induced_norm(&inv, false)
+                    };
+                    nrm * nrm_inv
+                }
+                Err(_) => f64::INFINITY,
+            }
+        }
+    } else {
+        return Err(ScriptError::type_err(format!(
+            "cond: p must be 1, 2, or Inf (got {p})"
+        )));
+    };
+    Ok(Value::Scalar(cond))
+}
+
+/// Induced matrix norm: `columns` selects the 1-norm (max column sum),
+/// otherwise the Inf-norm (max row sum).
+fn induced_norm(m: &CMatrix, columns: bool) -> f64 {
+    if columns {
+        (0..m.ncols())
+            .map(|j| (0..m.nrows()).map(|i| m[[i, j]].norm()).sum::<f64>())
+            .fold(0.0_f64, f64::max)
+    } else {
+        (0..m.nrows())
+            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
+            .fold(0.0_f64, f64::max)
+    }
+}
+
+/// A pivot is numerically zero when it is non-finite or no larger than
+/// `eps · n · scale`, where `scale` is the largest entry of the original
+/// matrix. An absolute cutoff of `1e-14` rejected well-conditioned matrices
+/// such as `1e-16 * eye(n)`.
+fn pivot_is_singular(pivot_norm: f64, scale: f64, n: usize) -> bool {
+    if !pivot_norm.is_finite() || pivot_norm == 0.0 {
+        return true;
+    }
+    let scale = scale.max(pivot_norm);
+    pivot_norm <= f64::EPSILON * (n as f64).max(1.0) * scale
+}
+
+fn matrix_abs_scale(m: &CMatrix) -> f64 {
+    m.iter().map(|c| c.norm()).fold(0.0_f64, f64::max)
+}
+
+fn matrix_entries_finite(m: &CMatrix) -> bool {
+    m.iter().all(|c| c.re.is_finite() && c.im.is_finite())
+}
+
 /// LU decomposition with partial pivoting.
 /// Returns (L*U after in-place elimination, sign of permutation).
+///
+/// A zero pivot is left in place (the determinant product includes it).
+/// A merely tiny pivot is still used as a divisor: skipping it, which the
+/// old `1e-14` cutoff did, leaves the Schur complement unapplied, so the
+/// product of the diagonals is not the determinant.
 fn lu_decompose(m: &CMatrix) -> (CMatrix, C64) {
     let n = m.nrows();
     let mut lu = m.to_owned();
@@ -8948,7 +9159,7 @@ fn lu_decompose(m: &CMatrix) -> (CMatrix, C64) {
             sign = -sign;
         }
         let pivot = lu[[k, k]];
-        if pivot.norm() < 1e-14 {
+        if pivot.norm() == 0.0 || !pivot.re.is_finite() || !pivot.im.is_finite() {
             continue;
         }
         for i in k + 1..n {
@@ -8978,6 +9189,11 @@ fn builtin_det(args: Vec<Value>) -> Result<Value, ScriptError> {
             if n == 0 {
                 return Ok(Value::Scalar(1.0));
             }
+            if !matrix_entries_finite(m) {
+                return Err(ScriptError::type_err(
+                    "det: matrix entries must be finite".to_string(),
+                ));
+            }
             if n == 1 {
                 let c = m[[0, 0]];
                 return if c.im.abs() < 1e-12 {
@@ -8994,7 +9210,22 @@ fn builtin_det(args: Vec<Value>) -> Result<Value, ScriptError> {
                 Ok(Value::Complex(d))
             }
         }
-        Value::Scalar(n) => Ok(Value::Scalar(*n)),
+        Value::Scalar(n) => {
+            if !n.is_finite() {
+                return Err(ScriptError::type_err(
+                    "det: matrix entries must be finite".to_string(),
+                ));
+            }
+            Ok(Value::Scalar(*n))
+        }
+        Value::Complex(c) => {
+            if !c.re.is_finite() || !c.im.is_finite() {
+                return Err(ScriptError::type_err(
+                    "det: matrix entries must be finite".to_string(),
+                ));
+            }
+            Ok(exact_scalar_value(*c))
+        }
         other => Err(ScriptError::type_err(format!(
             "det: expected matrix, got {}",
             other.type_name()
@@ -9012,6 +9243,10 @@ pub(super) fn matrix_inv(m: &CMatrix) -> Result<CMatrix, String> {
             m.ncols()
         ));
     }
+    if !matrix_entries_finite(m) {
+        return Err("inv: matrix entries must be finite".to_string());
+    }
+    let scale = matrix_abs_scale(m);
     // Augmented [A | I]
     let mut aug: Array2<C64> = Array2::zeros((n, 2 * n));
     for i in 0..n {
@@ -9038,7 +9273,7 @@ pub(super) fn matrix_inv(m: &CMatrix) -> Result<CMatrix, String> {
                 aug[[max_idx, j]] = tmp;
             }
         }
-        if aug[[k, k]].norm() < 1e-14 {
+        if pivot_is_singular(aug[[k, k]].norm(), scale, n) {
             return Err("inv: matrix is singular or nearly singular".to_string());
         }
         let pivot = aug[[k, k]];
@@ -9072,12 +9307,30 @@ fn builtin_inv(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Matrix(result.into()))
         }
         Value::Scalar(n) => {
+            if !n.is_finite() {
+                return Err(ScriptError::type_err(
+                    "inv: matrix entries must be finite".to_string(),
+                ));
+            }
             if *n == 0.0 {
                 return Err(ScriptError::type_err(
                     "inv: singular (scalar is zero)".to_string(),
                 ));
             }
             Ok(Value::Scalar(1.0 / n))
+        }
+        Value::Complex(c) => {
+            if !c.re.is_finite() || !c.im.is_finite() {
+                return Err(ScriptError::type_err(
+                    "inv: matrix entries must be finite".to_string(),
+                ));
+            }
+            if c.norm() == 0.0 {
+                return Err(ScriptError::type_err(
+                    "inv: singular (scalar is zero)".to_string(),
+                ));
+            }
+            Ok(Value::Complex(Complex::new(1.0, 0.0) / c))
         }
         other => Err(ScriptError::type_err(format!(
             "inv: expected matrix, got {}",
@@ -9092,7 +9345,20 @@ fn builtin_expm(args: Vec<Value>) -> Result<Value, ScriptError> {
     let m = match &args[0] {
         Value::Matrix(m) => m.clone(),
         Value::Scalar(n) => {
+            if !n.is_finite() {
+                return Err(ScriptError::type_err(
+                    "expm: matrix entries must be finite".to_string(),
+                ));
+            }
             return Ok(Value::Scalar(n.exp()));
+        }
+        Value::Complex(c) => {
+            if !c.re.is_finite() || !c.im.is_finite() {
+                return Err(ScriptError::type_err(
+                    "expm: matrix entries must be finite".to_string(),
+                ));
+            }
+            return Ok(Value::Complex(c.exp()));
         }
         other => {
             return Err(ScriptError::type_err(format!(
@@ -9109,14 +9375,22 @@ fn builtin_expm(args: Vec<Value>) -> Result<Value, ScriptError> {
             m.ncols()
         )));
     }
-    Ok(Value::Matrix(matrix_expm(&m).into()))
+    if !matrix_entries_finite(&m) {
+        return Err(ScriptError::type_err(
+            "expm: matrix entries must be finite".to_string(),
+        ));
+    }
+    let result = matrix_expm(&m).map_err(ScriptError::runtime)?;
+    Ok(Value::Matrix(result.into()))
 }
 
 /// Compute e^A for a square complex matrix.
 /// Uses scaling-and-squaring with a [6/6] Padé approximant.
 /// Coefficients: c_k = m!(2m-k)! / ((2m)! k! (m-k)!) for m=6 — exact rational values.
-/// Threshold theta_6 from Higham 2008, Table A.1.
-fn matrix_expm(a: &CMatrix) -> CMatrix {
+/// The scaling threshold keeps ‖A/2^s‖₁ ≤ 0.537, inside the range where
+/// this [6/6] approximant matches the closed forms locked in by the tests
+/// (a plane rotation, a Jordan block, and the Moler–Van Loan matrix).
+fn matrix_expm(a: &CMatrix) -> Result<CMatrix, String> {
     let n = a.nrows();
 
     // 1-norm (largest column sum of absolute values)
@@ -9158,17 +9432,17 @@ fn matrix_expm(a: &CMatrix) -> CMatrix {
     // expm_s = (V - U)⁻¹ · (U + V)
     let num: CMatrix = &u + &v;
     let den: CMatrix = &v - &u;
-    let den_inv = match matrix_inv(&den) {
-        Ok(m) => m,
-        Err(_) => return Array2::eye(n),
-    };
+    let den_inv = matrix_inv(&den).map_err(|_| {
+        "expm: Padé denominator is singular; the matrix exponential could not be computed"
+            .to_string()
+    })?;
     let mut result = den_inv.dot(&num);
 
     // Undo scaling by repeated squaring
     for _ in 0..s {
         result = result.dot(&result.clone());
     }
-    result
+    Ok(result)
 }
 
 /// linsolve(A, b) — solve the linear system A*x = b via Gaussian elimination
@@ -9201,6 +9475,12 @@ fn builtin_linsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             b.len()
         )));
     }
+    if !matrix_entries_finite(&a) || b.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+        return Err(ScriptError::type_err(
+            "linsolve: A and b must be finite".to_string(),
+        ));
+    }
+    let scale = matrix_abs_scale(&a);
     // Augmented [A | b]
     let mut aug: Array2<C64> = Array2::zeros((n, n + 1));
     for i in 0..n {
@@ -9227,7 +9507,7 @@ fn builtin_linsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
                 aug[[max_idx, j]] = tmp;
             }
         }
-        if aug[[k, k]].norm() < 1e-14 {
+        if pivot_is_singular(aug[[k, k]].norm(), scale, n) {
             return Err(ScriptError::type_err(
                 "linsolve: matrix is singular or nearly singular".to_string(),
             ));
@@ -10470,12 +10750,33 @@ fn builtin_rank(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("rank", &args, 1)?;
     let m = match &args[0] {
         Value::Matrix(m) => m.clone(),
-        // A scalar / vector has rank 1 unless it is (numerically) the zero
-        // scalar / zero vector, in which case the rank is 0.
-        Value::Scalar(s) => return Ok(Value::Scalar(if s.abs() > 1e-12 { 1.0 } else { 0.0 })),
+        // A scalar / vector has rank 1 unless it is the zero scalar / zero
+        // vector. Any nonzero finite entry counts: an absolute cutoff of
+        // 1e-12 reported `rank(1e-20)` as 0.
+        Value::Scalar(s) => {
+            if !s.is_finite() {
+                return Err(ScriptError::runtime(
+                    "rank: entries must be finite".to_string(),
+                ));
+            }
+            return Ok(Value::Scalar(if *s == 0.0 { 0.0 } else { 1.0 }));
+        }
+        Value::Complex(c) => {
+            if !c.re.is_finite() || !c.im.is_finite() {
+                return Err(ScriptError::runtime(
+                    "rank: entries must be finite".to_string(),
+                ));
+            }
+            return Ok(Value::Scalar(if c.norm() == 0.0 { 0.0 } else { 1.0 }));
+        }
         Value::Vector(v) if !v.is_empty() => {
+            if v.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+                return Err(ScriptError::runtime(
+                    "rank: entries must be finite".to_string(),
+                ));
+            }
             let mx = v.iter().map(|c| c.norm()).fold(0.0_f64, f64::max);
-            return Ok(Value::Scalar(if mx > 1e-12 { 1.0 } else { 0.0 }));
+            return Ok(Value::Scalar(if mx > 0.0 { 1.0 } else { 0.0 }));
         }
         other => {
             return Err(ScriptError::type_err(format!(
@@ -10488,17 +10789,16 @@ fn builtin_rank(args: Vec<Value>) -> Result<Value, ScriptError> {
         return Ok(Value::Scalar(0.0));
     }
 
-    // Singular values = sqrt(|eigenvalues of A†A|)
-    let ata: CMatrix = m.t().mapv(|c| c.conj()).dot(&m.view());
-    let evals = rustlab_core::dense_eig::eigenvalues(&ata).map_err(|e| ScriptError::runtime(e.to_string()))?;
-
-    let svs: Vec<f64> = evals.iter().map(|c| c.norm().sqrt()).collect();
-    let max_sv = svs.iter().cloned().fold(0.0_f64, f64::max);
-    // A†A eigenvalue approach squares the matrix, so rounding errors are amplified;
-    // use sqrt(eps) rather than eps to set a robust threshold.
-    let tol = f64::EPSILON.sqrt() * (m.nrows().max(m.ncols()) as f64) * max_sv;
-
-    let r = svs.iter().filter(|&&s| s > tol).count();
+    // Singular values from the same SVD as `svd` / `pinv`. The previous
+    // path took `|λ(AᴴA)|^{1/2}`, which squares the condition number and
+    // turns a roundoff-negative eigenvalue into a spurious singular value,
+    // and compared them with `sqrt(eps)` — about 1e8 times MATLAB's
+    // tolerance — so a singular value of `1e-10` was dropped.
+    let (_, sigma, _) = svd_full(&m)?;
+    let max_sv = sigma.first().copied().unwrap_or(0.0);
+    // MATLAB / NumPy: max(size(A)) * eps * σ_max.
+    let tol = (m.nrows().max(m.ncols()) as f64) * f64::EPSILON * max_sv;
+    let r = sigma.iter().filter(|&&s| s > tol).count();
     Ok(Value::Scalar(r as f64))
 }
 
@@ -14526,6 +14826,12 @@ fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
             b.len()
         )));
     }
+    if !matrix_entries_finite(a) || b.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
+        return Err(ScriptError::type_err(
+            "spsolve: A and b must be finite".to_string(),
+        ));
+    }
+    let scale = matrix_abs_scale(a);
     let mut aug: Array2<C64> = Array2::zeros((n, n + 1));
     for i in 0..n {
         for j in 0..n {
@@ -14550,7 +14856,7 @@ fn dense_lu_solve(a: &CMatrix, b: &CVector) -> Result<CVector, ScriptError> {
                 aug[[max_idx, j]] = tmp;
             }
         }
-        if aug[[k, k]].norm() < 1e-14 {
+        if pivot_is_singular(aug[[k, k]].norm(), scale, n) {
             return Err(ScriptError::type_err(
                 "spsolve: matrix is singular or nearly singular".to_string(),
             ));

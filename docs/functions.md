@@ -109,8 +109,11 @@ Natural logarithm (base e), element-wise. Accepts scalar, complex, vector, or ma
 
 ### `log10(x)`
 Base-10 logarithm, element-wise. Accepts scalar, complex, vector, or matrix.
+A negative real is the principal complex value, the same branch as `log`:
+`log10(-1)` is `iπ/ln(10)`, not `NaN`.
 ```
 log10(1000.0)   # → 3.0
+log10(-1)       # → iπ/ln(10)
 ```
 Commonly used for dB calculations:
 ```
@@ -119,9 +122,11 @@ db = 20.0 * log10(abs(X) + 1e-12)
 
 ### `log2(x)`
 Base-2 logarithm, element-wise. Accepts scalar, complex, vector, or matrix.
+A negative real is the principal complex value: `log2(-1)` is `iπ/ln(2)`, not `NaN`.
 ```
 log2(8.0)    # → 3.0
 log2(1024)   # → 10.0
+log2(-1)     # → iπ/ln(2)
 ```
 Useful for computing bit depths and octave-spaced frequency grids.
 
@@ -336,11 +341,22 @@ median([4.0, 1.0, 3.0, 2.0])   # → 2.5
 ```
 - Scalar input returns the scalar unchanged.
 - Complex vectors: imaginary parts are ignored; result is always a real scalar.
+- A NaN real part makes the result NaN. `Inf` sorts as a value.
 
 ### `std(v)`
 Sample standard deviation (Bessel-corrected, N−1 denominator).
+Complex data uses `sqrt(Σ|x − mean|² / (n − 1))`. Length 0 or 1 returns 0
+(MATLAB returns NaN for an empty input; that divergence is recorded).
 ```
 std(randn(10000))   # → ≈ 1.0
+std([1, 2, 3, 4])   # → sqrt(5/3)
+```
+
+### `var(v)` / `var(M)` / `var(M, dim)`
+Sample variance, `std(x)²`, with the same shapes and the same complex rule.
+There is no population (divide-by-n) flag.
+```
+var([1, 2, 3, 4])   # → 5/3
 ```
 
 ### `sum(v)`
@@ -1014,7 +1030,10 @@ h = fir_notch(1000.0, 200.0, 8000.0, 65, "hann")
 | 100 dB | 10.06 | Demanding applications |
 
 ### `freqz(h, n_points, sample_rate)`
-Complex frequency response of a filter at `n_points` frequencies from 0 to Nyquist.
+Complex frequency response at `n_points` frequencies on `[0, Nyquist)`:
+`f_k = k · sample_rate / (2 · n_points)` for `k = 0 .. n_points-1`. Nyquist
+itself is not a sample. The spacing does not change when `2 · n_points` is
+not a power of two, and a filter longer than `2 · n_points` is not wrapped.
 Returns a **2×n matrix**:
 - Row 1: frequency axis in Hz
 - Row 2: complex H(f)
@@ -1184,19 +1203,29 @@ h = firpmq(63, [0.0, 0.20, 0.30, 1.0], [1.0, 1.0, 0.0, 0.0], [1, 10], 12, 16)
 ## DSP — IIR Filters
 
 ### `butterworth_lowpass(order, cutoff_hz, sample_rate)`
-Butterworth IIR lowpass filter. Higher order gives a steeper rolloff.
+Butterworth IIR lowpass. The −3 dB point is at `cutoff_hz`.
 ```
-h = butterworth_lowpass(4, 1000.0, 44100.0)
-y = convolve(x, h)
+b = butterworth_lowpass(4, 1000.0, 44100.0)          # numerator only
+[b, a] = butterworth_lowpass(4, 1000.0, 44100.0)     # numerator and monic denominator
+y = filter(b, a, x)
 ```
 
 ### `butterworth_highpass(order, cutoff_hz, sample_rate)`
-Butterworth IIR highpass filter.
+Butterworth IIR highpass. Same one-output / two-output split.
 ```
-h = butterworth_highpass(4, 3000.0, 44100.0)
+[b, a] = butterworth_highpass(4, 3000.0, 44100.0)
 ```
 
-> **Note:** `butterworth_lowpass` and `butterworth_highpass` return only the numerator (`b`) coefficients as a vector. For FIR-style filtering, use `convolve(x, h)`. For zero-phase IIR filtering with `filtfilt`, you need both `b` and `a` coefficient vectors.
+One output is still just the numerator, which is not a usable IIR by itself.
+`filter` and `filtfilt` need both `b` and `a`.
+
+### `filter(b, a, x)`
+Causal direct-form II transposed filter. `b` and `a` are real; `a` is
+normalised so `a(1) = 1` (`a(1) = 0` is an error). `x` may be complex.
+`a = [1]` is an FIR. Initial state is zero. For zero phase use `filtfilt`.
+```
+y = filter([1], [1, -0.5], [1, 0, 0, 0])   # → [1, 0.5, 0.25, 0.125]
+```
 
 ### `filtfilt(b, a, x)`
 Zero-phase forward-backward IIR filter. Applies the filter defined by `b` (numerator) and `a` (denominator) coefficients forward and then backward, eliminating phase distortion.
@@ -1468,11 +1497,16 @@ vertcat(eye(2), zeros(3,2))  # → 5×2 matrix
 ```
 
 ### `rank(M)`
-Numerical rank of a matrix (number of singular values above a tolerance threshold).
+Numerical rank: the number of singular values strictly above
+`max(m, n) · eps · σ_max` (the MATLAB / NumPy cutoff). The singular values
+come from the same decomposition as `svd`.
 ```
-rank(eye(4))          # → 4
-rank([1,2;2,4])       # → 1  (linearly dependent rows)
+rank(eye(4))              # → 4
+rank([1,2;2,4])           # → 1  (linearly dependent rows)
+rank([1, 0; 0, 1e-10])    # → 2
 ```
+A nonzero finite vector or scalar has rank 1. Only an exact zero has rank 0.
+Non-finite entries are an error.
 
 ### `dot(u, v)`
 Inner (dot) product of two vectors. Both must have the same length. Returns a scalar (or complex).
@@ -1487,22 +1521,42 @@ cross([1, 0, 0], [0, 1, 0])   # → [0, 0, 1]
 ```
 
 ### `norm(v)` / `norm(v, p)`
-Vector p-norm (default p=2). For matrices, Frobenius norm.
+Vector p-norm (default p=2). For a matrix, `norm(A)` and `norm(A, "fro")` are
+the Frobenius norm. MATLAB's default matrix norm is the 2-norm; that
+divergence is recorded. `norm(A, 2)` is the spectral norm (largest singular
+value), `norm(A, 1)` the max absolute column sum, `norm(A, Inf)` the max
+absolute row sum.
 ```
 norm([3, 4])         # → 5.0  (L2)
 norm([3, 4], 1)      # → 7.0  (L1)
 norm([3, 4], Inf)    # → 4.0  (max abs)
+norm([3, 0; 0, -4], 2)  # → 4.0  (spectral)
+```
+A sparse matrix follows the same split: `norm(S)` is Frobenius and
+`norm(S, 2)` is spectral (the matrix is densified, and a side longer than
+512 is an error). Any other sparse `p` is an error.
+
+### `cond(A)` / `cond(A, p)`
+Condition number. The default and `p = 2` are `σ_max / σ_min`. `p = 1` and
+`p = Inf` are `‖A‖ ‖A⁻¹‖` and require a square matrix. A singular or zero
+matrix returns `Inf`.
+```
+cond([1, 0; 0, 100])   # → 100
+cond([1, 2; 2, 4])     # → Inf
 ```
 
 ### `inv(M)`
-Matrix inverse via LU decomposition with partial pivoting.
+Matrix inverse by Gauss-Jordan elimination with partial pivoting.
 ```
 A = [1, 2; 3, 4]
 B = inv(A)
 A * B   # ≈ eye(2)
 ```
-- `M` must be square and non-singular.
-- `inv(scalar)` returns `1/scalar`.
+- `M` must be square. A pivot that is numerically zero relative to the
+  largest entry (`eps · n · scale`) is an error, as is a NaN or Inf entry.
+  A well-conditioned matrix whose entries are all tiny, such as
+  `1e-16 * eye(n)`, still inverts.
+- `inv(scalar)` returns `1/scalar`. `inv(0)` is an error.
 
 ### `linsolve(A, b)`
 Solve the linear system `A·x = b` for `x`. `A` must be square and non-singular.

@@ -76,6 +76,15 @@ impl<T: SparseScalar> SparseChol<T> {
         let mut next: Vec<usize> = (0..n).map(|j| col_ptr[j] + 1).collect();
 
         // ── Numeric pass — same algorithm, flat-array writes ───────────
+        // Positive pivot test is relative to the largest entry. An absolute
+        // floor of 1e-12 treated `1e-16 * I` as indefinite.
+        let mut scale = 0.0_f64;
+        for j in 0..n {
+            for (_, val) in c.col_iter(j) {
+                scale = scale.max(val.abs());
+            }
+        }
+        let spd_tol = f64::EPSILON * (n as f64).max(1.0) * scale;
         let mut x: Vec<T> = vec![T::zero(); n];
         let mut mark: Vec<usize> = vec![usize::MAX; n];
         let mut s: Vec<usize> = vec![0usize; n];
@@ -129,7 +138,7 @@ impl<T: SparseScalar> SparseChol<T> {
 
             // Diagonal pivot: L(k, k) = sqrt(d). Goes in the reserved
             // slot at col_ptr[k].
-            let pivot = match d.checked_sqrt_real_pos(1e-12) {
+            let pivot = match d.checked_sqrt_real_pos(spd_tol) {
                 Some(p) => p,
                 None => return Err(SparseSolveError::NotSpd { col: k }),
             };

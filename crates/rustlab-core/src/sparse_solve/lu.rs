@@ -69,6 +69,16 @@ impl<T: SparseScalar> SparseLU<T> {
             )));
         }
         let n = a.nrows();
+        // A pivot smaller than eps·n·‖A‖_max is numerically zero. An absolute
+        // cutoff (the old 1e-14) rejected well-conditioned matrices whose
+        // entries all sit below that cutoff, such as `1e-16 * I`.
+        let mut a_scale = 0.0_f64;
+        for col in 0..n {
+            for (_, v) in a.col_iter(col) {
+                a_scale = a_scale.max(v.abs());
+            }
+        }
+        let singular_tol = f64::EPSILON * (n as f64).max(1.0) * a_scale;
         let q = ord.order(a);
 
         // pinv[orig_row] = new_row chosen as pivot for column new_row,
@@ -163,17 +173,17 @@ impl<T: SparseScalar> SparseLU<T> {
                     return Err(SparseSolveError::Singular {
                         col: k,
                         pivot: 0.0,
-                        threshold: 1e-14,
+                        threshold: singular_tol,
                     });
                 }
             };
 
             let pivot = x[ipiv];
-            if pivot.abs() < 1e-14 {
+            if !pivot.abs().is_finite() || pivot.abs() <= singular_tol {
                 return Err(SparseSolveError::Singular {
                     col: k,
                     pivot: pivot.abs(),
-                    threshold: 1e-14,
+                    threshold: singular_tol,
                 });
             }
 
