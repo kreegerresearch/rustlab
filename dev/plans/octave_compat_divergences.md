@@ -1,6 +1,6 @@
 # Octave/MATLAB Compatibility Divergences
 
-**Status:** Mostly shipped — 10 of 11 divergences addressed (see snapshot below). Only #5 (`zeros(n)` returns 1×n instead of n×n) remains open.
+**Status:** All 11 divergences addressed. #5 shipped in 0.3.25: a single size is n×n, and a length-n row is `zeros(1, n)` / `randn(1, n)`.
 **Date opened:** 2026-05-02
 **Source:** Audit run at HEAD `6fba40b`. Numeric baseline: `bash tests/octave/run_compare.sh` — all 150 cases (compare.m + compare_full.m) pass at machine precision (max err ≤ 4.4e-16). Behavioral divergences below were found by spot-checking matlab/octave idioms that the numeric suite doesn't exercise.
 
@@ -12,7 +12,7 @@
 | 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
 | 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **shipped 2026-05-02** (sum/mean/max/min/prod/std/median/cumsum) |
 | 4 | `sum(M, dim)` axis-selector form not supported | **High** | **shipped 2026-05-02** (all reducers + max/min via `[]` placeholder + argmin/argmax dim) |
-| 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
+| 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | **shipped 0.3.25** |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-6 all landed; eig now matches matlab's full surface) |
@@ -34,7 +34,7 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `std` / `var` | sample, divide by `n−1`, only. Empty input is 0 | `w` flag selects population variance; empty is NaN | No second flag. Complex data uses `Σ\|x−mean\|²/(n−1)`, which matches MATLAB's complex `std` |
 | `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
 | `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
-| `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
+| `zeros(n)` / `ones(n)` / `rand(n)` | n×n | n×n | Shipped in 0.3.25. A row is `zeros(1, n)` and stays a matrix |
 | `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
 | `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
 | `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
@@ -105,6 +105,10 @@ Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(
 - Multi-output `[m, i] = min(M)` / `[m, i] = max(M)` for combined value + index. Nargout plumbing is already in place (see §8 PR-3); this is a small follow-on. Same for `[m, i] = min(v)` on a vector.
 
 ### 5. `zeros(n)` is a row vector, not a square matrix
+
+Shipped in 0.3.25 without the deprecation cycle below. A single size is n×n for `zeros`, `ones`, `rand`, `randn`, and `randi(imax, n)`. In-tree length-n calls were rewritten to `zeros(1, n)` / `randn(1, n)` / `randi(imax, 1, n)` in the same change. `zeros(1, n)` remains a matrix, not a vector.
+
+Historical note:
 
 ```
 rustlab> size(zeros(3))

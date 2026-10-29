@@ -6,7 +6,7 @@ t  = linspace(0.0, 1.0, 256)
 sr = 256.0
 
 # ── Reference signal: two sinusoids + noise ───────────────────────────────────
-sig = cos(t * 2.0 * pi * 5.0) * 2.0 + cos(t * 2.0 * pi * 20.0) + randn(256) * 0.3
+sig = cos(t * 2.0 * pi * 5.0) * 2.0 + cos(t * 2.0 * pi * 20.0) + randn(1, 256) * 0.3
 
 # ── sum ──────────────────────────────────────────────────────────────────────
 # Total energy proxy (sum of squared samples)
@@ -19,9 +19,9 @@ cs = cumsum(real(sig) .^ 2)
 plot(real(cs), "Cumulative Signal Energy")
 
 # Normalised CDF of a randn sample
-n_samp = randn(512)
+n_samp = randn(1, 512)
 bins   = sort(n_samp)               # sort ascending — becomes the x-axis of the CDF
-cdf    = cumsum(ones(512)) / 512.0  # uniform weights → empirical CDF
+cdf    = cumsum(ones(1, 512)) / 512.0  # uniform weights → empirical CDF
 scatter(real(bins), real(cdf), "Empirical CDF of N(0,1)")
 
 # ── argmin / argmax ───────────────────────────────────────────────────────────

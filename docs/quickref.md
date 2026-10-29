@@ -120,12 +120,12 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | Function | Description |
 |---|---|
 | `linspace(a, b, n)` | n evenly-spaced points from a to b |
-| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | Zero vector or matrix; accepts `size()` output |
-| `ones(n)` / `ones(m, n)` / `ones([m, n])` | Ones vector or matrix; accepts `size()` output |
+| `zeros(n)` / `zeros(m, n)` / `zeros([m, n])` | n×n zero matrix, or m×n. A row is `zeros(1, n)`. Accepts `size()` output |
+| `ones(n)` / `ones(m, n)` / `ones([m, n])` | Same shapes as `zeros`, filled with ones |
 | `eye(n)` | n×n identity matrix |
-| `rand()` / `rand(n)` / `rand(m, n)` | Single scalar / n-vector / m×n matrix uniform on [0, 1). Zero-arg form added in 0.3.4. |
-| `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). Zero-arg form added in 0.3.4. |
-| `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Random integers |
+| `rand()` / `rand(n)` / `rand(m, n)` | Scalar, n×n, or m×n uniform on [0, 1). A row is `rand(1, n)`. |
+| `randn()` / `randn(n)` / `randn(m, n)` | Same shapes for N(0, 1). A row is `randn(1, n)`. |
+| `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Scalar, n×n, or m×n integers. A row is `randi(imax, 1, n)` |
 | `seed(N)` / `seed()` | Set the RNG seed (deterministic) or re-randomize from system entropy |
 | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `rng(s)` restarts at `Seed`; it does not resume mid-stream |
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |

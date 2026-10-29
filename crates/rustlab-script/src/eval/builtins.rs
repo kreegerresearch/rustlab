@@ -1498,7 +1498,8 @@ fn builtin_curl3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// Unpack size arguments for array constructors like zeros, ones, rand, randn.
 /// Accepts: f(n), f(m,n), or f([m,n]) (vector from size()).
-/// Returns (Some(m), n) for matrix or (None, n) for vector.
+/// `None` for the first element means a single size: the caller builds n×n.
+/// Two sizes, or a 2-element vector, are an m×n matrix.
 fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize), ScriptError> {
     if args.len() == 2 {
         let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
@@ -1532,12 +1533,20 @@ fn peel_int_class(args: &[Value]) -> (Vec<Value>, Option<IntClass>) {
     (args.to_vec(), None)
 }
 
+/// One size is n×n. An explicit second size is m×n.
+fn square_if_one(m: Option<usize>, n: usize) -> (usize, usize) {
+    match m {
+        Some(rows) => (rows, n),
+        None => (n, n),
+    }
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("zeros", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "zeros")?;
+    let (r, c) = square_if_one(m, n);
     if let Some(cls) = cls {
-        let (r, c) = (m.unwrap_or(1), n);
         return Ok(Value::int_array(
             vec![0i128; r * c],
             r,
@@ -1546,19 +1555,15 @@ fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
             OverflowMode::Saturate,
         ));
     }
-    if let Some(m) = m {
-        Ok(Value::real_matrix(Array2::zeros((m, n))))
-    } else {
-        Ok(Value::real_vector(Array1::zeros(n)))
-    }
+    Ok(Value::real_matrix(Array2::zeros((r, c))))
 }
 
 fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("ones", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "ones")?;
+    let (r, c) = square_if_one(m, n);
     if let Some(cls) = cls {
-        let (r, c) = (m.unwrap_or(1), n);
         return Ok(Value::int_array(
             vec![1i128; r * c],
             r,
@@ -1567,11 +1572,7 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
             OverflowMode::Saturate,
         ));
     }
-    if let Some(m) = m {
-        Ok(Value::real_matrix(Array2::from_elem((m, n), 1.0)))
-    } else {
-        Ok(Value::real_vector(Array1::from_elem(n, 1.0)))
-    }
+    Ok(Value::real_matrix(Array2::from_elem((r, c), 1.0)))
 }
 
 fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -1603,13 +1604,10 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "rand")?;
+    let (r, c) = square_if_one(m, n);
     crate::eval::rng::with_rng(|rng| {
-        if let Some(m) = m {
-            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
-            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-        } else {
-            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
-        }
+        let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
+        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
     })
 }
 
@@ -1622,13 +1620,10 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "randn")?;
+    let (r, c) = square_if_one(m, n);
     crate::eval::rng::with_rng(|rng| {
-        if let Some(m) = m {
-            let data: Vec<f64> = (0..m * n).map(|_| dist.sample(rng)).collect();
-            Ok(Value::real_matrix(Array2::from_shape_vec((m, n), data).unwrap()))
-        } else {
-            Ok(Value::real_vector(Array1::from_iter((0..n).map(|_| dist.sample(rng)))))
-        }
+        let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
+        Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
     })
 }
 
@@ -1702,9 +1697,9 @@ fn builtin_randn3(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(ScriptError::type_err(
-            "randi: expected randi(imax) or randi(imax, n) or randi([lo,hi], n)".to_string(),
+            "randi: expected randi(imax), randi(imax, n), randi(imax, m, n), randi([lo, hi], n), or randi([lo, hi], m, n)".to_string(),
         ));
     }
     // First arg: scalar imax → range [1, imax], or 2-element vector [lo, hi]
@@ -1721,15 +1716,27 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
             "randi: lo ({lo}) must be <= hi ({hi})"
         )));
     }
-    crate::eval::rng::with_rng(|rng| {
-        if args.len() == 1 {
-            // Return a single scalar integer
-            Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64))
-        } else {
+    let shape = match args.len() {
+        1 => None,
+        2 => {
             let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            let v: CVector =
-                Array1::from_iter((0..n).map(|_| Complex::new(rng.gen_range(lo..=hi) as f64, 0.0)));
-            Ok(Value::Vector(v.into()))
+            Some((n, n))
+        }
+        _ => {
+            let rows = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            let cols = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            Some((rows, cols))
+        }
+    };
+    crate::eval::rng::with_rng(|rng| match shape {
+        None => Ok(Value::Scalar(rng.gen_range(lo..=hi) as f64)),
+        Some((rows, cols)) => {
+            let data: Vec<f64> = (0..rows * cols)
+                .map(|_| rng.gen_range(lo..=hi) as f64)
+                .collect();
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec((rows, cols), data).expect("randi shape"),
+            ))
         }
     })
 }
@@ -4976,8 +4983,11 @@ fn to_real_vec(v: &Value, name: &str) -> Result<Vec<f64>, ScriptError> {
     match v {
         Value::Scalar(n) => Ok(vec![*n]),
         Value::Vector(v) => Ok(v.iter().map(|c| c.re).collect()),
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(m.iter().map(|c| c.re).collect())
+        }
         other => Err(ScriptError::type_err(format!(
-            "{name}: expected real scalar or vector, got {}",
+            "{name}: expected real scalar, vector, or 1-D matrix, got {}",
             other.type_name()
         ))),
     }
@@ -7413,8 +7423,8 @@ fn to_real_vector(val: &Value) -> Result<rustlab_core::RVector, ScriptError> {
         } if *rows == 1 || *cols == 1 => {
             Ok(ndarray::Array1::from_iter(data.iter().map(|&v| v as f64)))
         }
-        Value::Matrix(m) if m.ncols() == 1 => {
-            Ok(ndarray::Array1::from_iter(m.column(0).iter().map(|c| c.re)))
+        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => {
+            Ok(ndarray::Array1::from_iter(m.iter().map(|c| c.re)))
         }
         other => Err(ScriptError::type_err(format!(
             "cannot plot value of type {other}"
