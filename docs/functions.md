@@ -1571,7 +1571,7 @@ Left division. A square nonsingular `A` is factored by LU with partial pivoting.
 
 A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector on the right is a column, and one solution is `n×1`. An explicit one-row matrix stays a row and does not match a tall `A`. `b'` of a vector is already a column, so that form still solves. Several columns of `b` are several right-hand sides.
 
-A square matrix, including a singular one, uses LU. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver (`spsolve`). A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
+A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver (`spsolve`). A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
 ```
 x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
 ```
@@ -1959,7 +1959,9 @@ The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for
 
 Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
 
-A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+
+A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 

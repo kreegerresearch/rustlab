@@ -9,7 +9,7 @@
 use std::cell::Cell;
 
 use ndarray::Array2;
-use rustlab_core::factor::{lu, qr};
+use rustlab_core::factor::{chol, lu, qr};
 use rustlab_core::C64;
 
 use super::shared::Shared;
@@ -91,6 +91,20 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
         return Ok(pack(&Array2::zeros((n, b.ncols())), real));
     }
     if m == n {
+        if let Some(upper) = triangle_kind(a) {
+            let (x, singular) = triangular_solve(a, b, upper);
+            if singular {
+                warn_singular();
+            }
+            return Ok(pack(&x, real));
+        }
+        if is_hermitian(a) {
+            if let Ok(f) = chol::upper(a) {
+                if f.p == 0 {
+                    return Ok(pack(&chol::solve_upper(&f.factor, b), real));
+                }
+            }
+        }
         let f = lu::lu(a);
         if f.singular {
             warn_singular();
@@ -117,6 +131,95 @@ fn warn_singular() {
     #[cfg(test)]
     SINGULAR_WARNS.with(|c| c.set(c.get().saturating_add(1)));
     eprintln!("warning: matrix is singular to working precision");
+}
+
+/// `Some(true)` when every entry below the diagonal is zero (upper,
+/// including diagonal). `Some(false)` when every entry above the diagonal
+/// is zero. A matrix that is both is reported as upper.
+fn triangle_kind(a: &Array2<C64>) -> Option<bool> {
+    let n = a.nrows();
+    let mut upper = true;
+    let mut lower = true;
+    for i in 0..n {
+        for j in 0..n {
+            if a[[i, j]].norm() == 0.0 {
+                continue;
+            }
+            if i > j {
+                upper = false;
+            }
+            if i < j {
+                lower = false;
+            }
+            if !upper && !lower {
+                return None;
+            }
+        }
+    }
+    if upper {
+        Some(true)
+    } else if lower {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn is_hermitian(a: &Array2<C64>) -> bool {
+    let n = a.nrows();
+    for i in 0..n {
+        if a[[i, i]].im != 0.0 {
+            return false;
+        }
+        for j in (i + 1)..n {
+            let z = a[[i, j]];
+            let w = a[[j, i]];
+            if z.re != w.re || z.im != -w.im {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Forward substitution when `upper` is false, back substitution when it
+/// is true. A zero diagonal sets that unknown to `Inf` or `NaN` and reports
+/// that a pivot vanished. A structural zero does not multiply `Inf` into `NaN`.
+fn triangular_solve(a: &Array2<C64>, b: &Array2<C64>, upper: bool) -> (Array2<C64>, bool) {
+    let n = a.nrows();
+    let p = b.ncols();
+    let mut x = Array2::<C64>::zeros((n, p));
+    let mut singular = false;
+    let idxs: Vec<usize> = if upper { (0..n).rev().collect() } else { (0..n).collect() };
+    for col in 0..p {
+        for &i in &idxs {
+            let mut s = b[[i, col]];
+            let js: Vec<usize> = if upper { ((i + 1)..n).collect() } else { (0..i).collect() };
+            for j in js {
+                let u = a[[i, j]];
+                if u.norm() == 0.0 {
+                    continue;
+                }
+                s -= u * x[[j, col]];
+            }
+            let diag = a[[i, i]];
+            if diag.norm() == 0.0 || !diag.re.is_finite() || !diag.im.is_finite() {
+                singular = true;
+                x[[i, col]] = if s.im == 0.0 {
+                    if s.re == 0.0 {
+                        C64::new(f64::NAN, 0.0)
+                    } else {
+                        C64::new(s.re.signum() * f64::INFINITY, 0.0)
+                    }
+                } else {
+                    s / diag
+                };
+            } else {
+                x[[i, col]] = s / diag;
+            }
+        }
+    }
+    (x, singular)
 }
 
 fn warn_rcond(rcond: f64) {
@@ -270,9 +373,33 @@ fn economy_flag(v: &Value) -> Result<bool, ScriptError> {
 /// Dense `[L, U] = lu(A)` or `[L, U, P] = lu(A)`. `P*A = L*U`.
 /// Two outputs absorb the permutation into `L`, so `L*U = A`.
 pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, ScriptError> {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(format!(
+            "lu: expected 1 or 2 arguments, got {}",
+            args.len()
+        )));
+    }
+    let vector_perm = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) if s.eq_ignore_ascii_case("vector") => true,
+            Value::Str(s) => {
+                return Err(ScriptError::type_err(format!(
+                    "lu: dense second argument must be \"vector\", got \"{s}\". Ordering is only for a sparse factor"
+                )));
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "lu: dense second argument must be \"vector\", got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        false
+    };
+    if vector_perm && nargout != 3 {
         return Err(ScriptError::type_err(
-            "lu: a dense matrix takes one argument; ordering is only for a sparse factor".to_string(),
+            "lu: \"vector\" selects the third output; use [L, U, p] = lu(A, \"vector\")".to_string(),
         ));
     }
     if nargout <= 1 {
@@ -301,8 +428,68 @@ pub(crate) fn builtin_lu_dense(args: &[Value], nargout: usize) -> Result<Value, 
     if nargout == 2 {
         return Ok(Value::Tuple(vec![l, u]));
     }
-    let p = pack(&lu::permutation_matrix(&f.perm), true);
+    let p = if vector_perm {
+        one_based_perm(&f.perm)
+    } else {
+        pack(&lu::permutation_matrix(&f.perm), true)
+    };
     Ok(Value::Tuple(vec![l, u, p]))
+}
+
+fn one_based_perm(perm: &[usize]) -> Value {
+    Value::real_vector(ndarray::Array1::from_iter(perm.iter().map(|&i| (i + 1) as f64)))
+}
+
+/// Dense `R = chol(A)`, `[R, p] = chol(A)`, and `"lower"`.
+pub(crate) fn builtin_chol_dense(args: &[Value], nargout: usize) -> Result<Value, ScriptError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(ScriptError::type_err(format!(
+            "chol: expected 1 or 2 arguments, got {}",
+            args.len()
+        )));
+    }
+    if nargout > 2 {
+        return Err(ScriptError::type_err(
+            "chol: returns at most [R, p]".to_string(),
+        ));
+    }
+    let lower = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) if s.eq_ignore_ascii_case("lower") => true,
+            Value::Str(s) if s.eq_ignore_ascii_case("upper") => false,
+            Value::Str(s) => {
+                return Err(ScriptError::type_err(format!(
+                    "chol: dense second argument must be \"lower\" or \"upper\", got \"{s}\""
+                )));
+            }
+            other => {
+                return Err(ScriptError::type_err(format!(
+                    "chol: dense second argument must be \"lower\" or \"upper\", got {}",
+                    other.type_name()
+                )));
+            }
+        }
+    } else {
+        false
+    };
+    let a = as_matrix(&args[0], "chol")?;
+    if !entries_finite(&a) {
+        return Err(ScriptError::type_err("chol: entries must be finite".to_string()));
+    }
+    let real = value_is_real(&args[0]);
+    let f = if lower { chol::lower(&a) } else { chol::upper(&a) };
+    let f = f.map_err(ScriptError::type_err)?;
+    if nargout <= 1 && f.p != 0 {
+        return Err(ScriptError::type_err(format!(
+            "chol: matrix is not positive definite (failed at pivot {})",
+            f.p
+        )));
+    }
+    let factor = pack(&f.factor, real && f.factor.iter().all(|z| z.im == 0.0));
+    if nargout <= 1 {
+        return Ok(factor);
+    }
+    Ok(Value::Tuple(vec![factor, Value::Scalar(f.p as f64)]))
 }
 
 /// `L2[perm[i], :] = L[i, :]`, so `L2 * U = A`.
