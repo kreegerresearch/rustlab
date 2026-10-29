@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.27
+
+### Added
+- **`[Q, R, p] = qr(A)`.** Three outputs column-pivot. `p` is a 1-based permutation vector and `A(:, p) = Q*R`. A zero column moves to the end. `"vector"` is the same vector. `"matrix"` returns an `n×n` permutation matrix `P` with `A*P = Q*R`. `qr(A, 0)` with three outputs is the economy factor plus `p`. One and two outputs stay the unpivoted factor from 0.3.24.
+
 ## 0.3.24
 
 ### Added

@@ -243,7 +243,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `mldivide(A, b)` / `A\b` | Same solve as `\`. Warns when A is singular or ill-conditioned and still returns a basic solution |
 | `mrdivide(B, A)` / `B/A` | Right division, `X*A = B` |
-| `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)` | Householder QR. Economy form with `0` or `"econ"`. One output is `R` |
+| `qr(A)` / `[Q, R] = qr(A)` / `[Q, R, p] = qr(A)` / `qr(A, 0)` | Householder QR. One or two outputs are unpivoted. Three outputs column-pivot: `p` is 1-based and `A(:, p) = Q*R`. `"matrix"` returns `P` with `A*P = Q*R`. `0` / `"econ"` is economy |
 | `null(A)` | Orthonormal nullspace from the SVD (`n×k`; `n×0` when A has full rank) |
 | `orth(A)` | Orthonormal column space from the SVD |
 | `[L, U, P] = lu(A)` | Dense LU, `P*A = L*U`. `[L, U] = lu(A)` absorbs `P` into `L`. Sparse `lu` still returns a factor handle |

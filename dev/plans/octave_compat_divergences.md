@@ -37,7 +37,7 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
 | `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
 | `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
-| `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
+| `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. Three outputs column-pivot and return a 1-based vector (`"matrix"` returns `P`) | three-output default is a permutation matrix | `[Q, R]` shipped in 0.3.24. `[Q, R, p]` and `"matrix"` landed in 0.3.27. One and two outputs stay unpivoted |
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
 | `polyfit` / `polyval` | no `mu` centering output | `polyfit` can return `[p, S, mu]` | Shipped in 0.3.24 as the coefficient row only |
 | `interp1` | no numeric fill value, no `pchip` / `makima`, spline is not-a-knot | those methods and a numeric extrapolation value | Shipped in 0.3.24 for `linear`, `nearest`, `previous`, `next`, `spline`, and `"extrap"` |

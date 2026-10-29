@@ -236,6 +236,120 @@ fn qr_economy_is_thin() {
 }
 
 #[test]
+fn qr_two_outputs_stay_unpivoted_when_a_column_is_zero() {
+    // A pivoted factor would reconstruct a column permutation, not A.
+    let ev = eval(
+        "A = [0, 0, 5; 0, 0, 4; 0, 0, 3; 1, 2, 0];
+         [Q, R] = qr(A);
+         D = Q * R - A;",
+    );
+    assert_eq!(shape(&ev, "Q"), (4, 4));
+    assert_eq!(shape(&ev, "R"), (4, 3));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_three_outputs_are_a_column_permutation() {
+    // Column norms: col 3 (56) > col 1 (35) > col 2 (0). The zero column
+    // is last. p is 1-based, and A(:, p) = Q*R.
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6];
+         [Q, R, p] = qr(A);
+         [Qv, Rv, pv] = qr(A, \"vector\");
+         B = A(:, p);
+         D = Q * R - B;",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![3.0, 1.0, 2.0]);
+    assert_eq!(vec_re(&ev, "pv"), vec![3.0, 1.0, 2.0]);
+    assert_eq!(shape(&ev, "Q"), (3, 3));
+    assert_eq!(shape(&ev, "R"), (3, 3));
+    assert_eq!(shape(&ev, "p"), (1, 3));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    // "vector" is the same factor as the default third output.
+    let q = mat_re(&ev, "Q");
+    let qv = mat_re(&ev, "Qv");
+    for i in 0..3 {
+        for j in 0..3 {
+            close(q[i][j], qv[i][j]);
+        }
+    }
+}
+
+#[test]
+fn qr_economy_with_three_outputs_is_thin() {
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6; 7, 0, 8];
+         [Q, R, p] = qr(A, 0);
+         D = Q * R - A(:, p);",
+    );
+    assert_eq!(shape(&ev, "Q"), (4, 3));
+    assert_eq!(shape(&ev, "R"), (3, 3));
+    assert_eq!(vec_re(&ev, "p").last().copied(), Some(2.0));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_matrix_permutation_satisfies_a_times_p() {
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6];
+         [Q, R, P] = qr(A, \"matrix\");
+         [Qa, Ra, p] = qr(A);
+         D = A * P - Q * R;",
+    );
+    assert_eq!(shape(&ev, "P"), (3, 3));
+    let pmat = mat_re(&ev, "P");
+    let p = vec_re(&ev, "p");
+    for (j, &idx) in p.iter().enumerate() {
+        let row = idx as usize - 1;
+        for i in 0..3 {
+            close(pmat[i][j], if i == row { 1.0 } else { 0.0 });
+        }
+    }
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_complex_pivoted_reconstructs_permuted_columns() {
+    let ev = eval(
+        "A = [0, 1+j; 0, 2-j; 0, -1];
+         [Q, R, p] = qr(A);
+         D = Q * R - A(:, p);",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![2.0, 1.0]);
+    let d = match ev.get("D").unwrap() {
+        Value::Matrix(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    for z in d.iter() {
+        assert!(z.norm() < 1e-8, "{z}");
+    }
+}
+
+#[test]
+fn qr_output_shape_flag_needs_three_outputs() {
+    let err = eval_err("A = [1, 2; 3, 4]; [Q, R] = qr(A, \"matrix\");");
+    assert!(err.contains("third"), "{err}");
+    let err = eval_err("A = [1, 2; 3, 4]; [Q, R, p, extra] = qr(A);");
+    assert!(err.contains("[Q, R, p]"), "{err}");
+}
+
+#[test]
 fn qr_complex_reconstructs() {
     let ev = eval(
         "A = [1+j, 2-j; 0, 1-j; -1, 4+j];
