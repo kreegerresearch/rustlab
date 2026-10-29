@@ -32,6 +32,11 @@ should re-validate against those entries when upgrading.
 - **`inv` / `linsolve` / `spsolve` / `chol` / `lu` succeed** on some matrices they used to reject, and **error** on NaN or Inf input that used to come back as NaN.
 - **`[b, a] = butterworth_lowpass(...)`** (and the highpass) is new. `b = butterworth_lowpass(...)` is unchanged and is still only the numerator.
 
+## 0.3.22
+
+### Fixed
+- **Plot titles no longer sit on axis labels.** In notebook HTML and in `notebook watch`, a subplot's x-axis title was drawn on the first row and its y-axis title on the first column, so a lower panel's "Frequency" landed on the title of the panel above and a right-hand "Magnitude (dB)" was drawn on top of the left-hand one. Each axis is now tied to its own panel. The title sits above that panel and grows upward, a newline in `title` starts a new line, and a long title wraps instead of running through the trace or the next subplot. A colour bar stays beside its own panel. On SVG, PNG, GIF, and PDF (the same drawing), a very short axis — an equal-aspect plot that is almost a line — no longer stamps every tick label on one pixel, and a title that does not fit the panel wraps onto more lines inside it. The colours are the theme's text colour on the plot background.
+
 ## 0.3.21
 
 ### Breaking / behavior changes

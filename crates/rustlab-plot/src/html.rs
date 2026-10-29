@@ -98,13 +98,121 @@ pub fn render_figure_state_html_themed(
     std::fs::write(path, html).map_err(|e| PlotError::FileOutput(e.to_string()))
 }
 
+/// Paper rectangle of one subplot. `x0..x1` and `y0..y1` are fractions of
+/// the plotting area (Plotly's paper coordinates, y growing upward).
+struct PanelGeom {
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+}
+
+/// Place panel `idx` in a `rows`×`cols` grid.
+///
+/// The pad on each side of a cell is the room for that panel's own axis
+/// titles. A colour bar steals a strip from the right of its own cell so
+/// the next column's labels are not drawn through it.
+fn panel_geom(rows: usize, cols: usize, idx: usize, reserve_cbar: bool) -> PanelGeom {
+    let rows = rows.max(1);
+    let cols = cols.max(1);
+    let row = idx / cols;
+    let col = idx % cols;
+    let col_w = 1.0 / cols as f64;
+    let row_h = 1.0 / rows as f64;
+    // Multi-column grids need a wider gutter: the right-hand panel's
+    // y-axis title and tick labels sit in it. Multi-row grids need a
+    // taller gutter for the upper x-axis title and the lower plot title.
+    let mut x_pad = if cols > 1 { 0.06 } else { 0.04 };
+    let mut y_pad = if rows > 1 { 0.065 } else { 0.04 };
+    if x_pad * 2.0 + 0.12 > col_w {
+        x_pad = ((col_w - 0.12) / 2.0).max(0.02);
+    }
+    if y_pad * 2.0 + 0.10 > row_h {
+        y_pad = ((row_h - 0.10) / 2.0).max(0.02);
+    }
+    let x0 = col as f64 * col_w + x_pad;
+    let mut x1 = (col + 1) as f64 * col_w - x_pad;
+    if reserve_cbar {
+        x1 -= ((x1 - x0) * 0.18).min(0.08);
+    }
+    let y0 = 1.0 - (row + 1) as f64 * row_h + y_pad;
+    let y1 = 1.0 - row as f64 * row_h - y_pad;
+    PanelGeom { x0, x1, y0, y1 }
+}
+
+/// Word-wrap `title` to the width of one column, keeping explicit newlines.
+fn wrap_title_lines(title: &str, cols: usize) -> Vec<String> {
+    if title.is_empty() {
+        return Vec::new();
+    }
+    let width = (56 / cols.max(1)).max(20);
+    let mut lines = Vec::new();
+    for para in title.split('\n') {
+        let words: Vec<&str> = para.split_whitespace().collect();
+        if words.is_empty() {
+            continue;
+        }
+        let mut cur = String::new();
+        for w in words {
+            if cur.is_empty() {
+                cur = w.to_string();
+            } else if cur.len() + 1 + w.len() > width {
+                lines.push(std::mem::take(&mut cur));
+                cur = w.to_string();
+            } else {
+                cur.push(' ');
+                cur.push_str(w);
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+    }
+    lines
+}
+
+/// Plotly annotation text. Newlines and wrapped lines become `<br>` after
+/// each line is escaped, so a literal `<` in the title cannot close the
+/// surrounding `<script>`.
+fn annotation_text(title: &str, cols: usize) -> String {
+    wrap_title_lines(title, cols)
+        .into_iter()
+        .map(|line| escape_js(&line))
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn panel_has_colorbar(panel: &crate::figure::SubplotState) -> bool {
+    if panel.surface.is_some() {
+        return true;
+    }
+    if matches!(
+        panel.heatmap.as_ref().map(|h| &h.kind),
+        Some(crate::figure::HeatmapKind::Imagesc) | Some(crate::figure::HeatmapKind::Heatmap)
+    ) {
+        return true;
+    }
+    panel.contours.iter().any(|c| c.filled)
+}
+
+/// Colour-bar slot for this panel, in paper coordinates, so a bar stays
+/// beside its own subplot instead of spanning the whole figure.
+fn colorbar_attr(g: &PanelGeom, text: &str) -> String {
+    let x = (g.x1 + 0.012).min(1.02);
+    let y = (g.y0 + g.y1) / 2.0;
+    let len = ((g.y1 - g.y0) * 0.86).max(0.05);
+    format!(
+        r#", colorbar: {{ x: {x:.4}, xref: "paper", y: {y:.4}, yref: "paper", len: {len:.4}, thickness: 12, outlinewidth: 0, tickfont: {{ color: "{text}", size: 11 }} }}"#
+    )
+}
+
 /// Render a `FigureState` as a Plotly `<div>` + `<script>` fragment.
 /// The `div_id` is used as the element ID for `Plotly.newPlot()`.
 /// This is the shared building block for both single-file HTML export
 /// and multi-figure report generation.
 pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeColors) -> String {
-    let rows = fig.subplot_rows;
-    let cols = fig.subplot_cols;
+    let rows = fig.subplot_rows.max(1);
+    let cols = fig.subplot_cols.max(1);
     let n_panels = rows * cols;
 
     let mut traces = String::new();
@@ -112,10 +220,26 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
     let mut scenes = String::new();
     let mut annotations = String::new();
 
-    for (idx, panel) in fig.subplots.iter().enumerate().take(n_panels) {
-        let row = idx / cols;
-        let col = idx % cols;
+    // Top-row titles are drawn upward into the top margin. Lower-row titles
+    // sit in the gutter between rows (see `panel_geom`).
+    let top_lines = fig
+        .subplots
+        .iter()
+        .take(cols)
+        .map(|p| wrap_title_lines(&p.title, cols).len())
+        .max()
+        .unwrap_or(0);
+    let any_cbar = fig.subplots.iter().take(n_panels).any(panel_has_colorbar);
+    let margin_t = if top_lines == 0 {
+        28
+    } else {
+        28 + 18 * top_lines
+    };
+    let margin_b = 64;
+    let margin_l = 78;
+    let margin_r = if any_cbar { 100 } else { 36 };
 
+    for (idx, panel) in fig.subplots.iter().enumerate().take(n_panels) {
         // Plotly subplot axis naming: xaxis, xaxis2, xaxis3, ...
         let axis_suffix = if idx == 0 {
             String::new()
@@ -124,16 +248,17 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
         };
         let xaxis_ref = format!("x{}", axis_suffix);
         let yaxis_ref = format!("y{}", axis_suffix);
-
-        // Domain computation for subplot positioning
-        let col_width = 1.0 / cols as f64;
-        let row_height = 1.0 / rows as f64;
-        let gap = 0.08;
-        let x_start = col as f64 * col_width + gap / 2.0;
-        let x_end = (col + 1) as f64 * col_width - gap / 2.0;
-        // Plotly y-axis goes bottom-to-top, but we want row 0 at top
-        let y_start = 1.0 - (row + 1) as f64 * row_height + gap / 2.0;
-        let y_end = 1.0 - row as f64 * row_height - gap / 2.0;
+        // Bind each x axis to its own y axis (and the reverse). Without
+        // this, Plotly anchors every extra axis to `x`/`y`, so a lower
+        // panel's x-axis title is drawn on the first row — on top of the
+        // next panel's title — and a right-hand y-axis title is drawn on
+        // top of the left-hand one.
+        let geom = panel_geom(rows, cols, idx, panel_has_colorbar(panel));
+        let x_start = geom.x0;
+        let x_end = geom.x1;
+        let y_start = geom.y0;
+        let y_end = geom.y1;
+        let cbar = colorbar_attr(&geom, theme.text);
 
         // Axis layout
         let show_grid = if panel.grid { "true" } else { "false" };
@@ -208,7 +333,7 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 format!("scene{}", idx + 1)
             };
             scenes.push_str(&format!(
-                r#"{scene_key}: {{ domain: {{ x: [{x0:.4}, {x1:.4}], y: [{y0:.4}, {y1:.4}] }}, xaxis: {{ title: {{ text: "{xlabel}" }}, color: "{text}" }}, yaxis: {{ title: {{ text: "{ylabel}" }}, color: "{text}" }}, zaxis: {{ color: "{text}" }}, bgcolor: "{plot_bg}" }},
+                r#"{scene_key}: {{ domain: {{ x: [{x0:.4}, {x1:.4}], y: [{y0:.4}, {y1:.4}] }}, xaxis: {{ title: {{ text: "{xlabel}", font: {{ color: "{text}", size: 13 }} }}, color: "{text}" }}, yaxis: {{ title: {{ text: "{ylabel}", font: {{ color: "{text}", size: 13 }} }}, color: "{text}" }}, zaxis: {{ color: "{text}" }}, bgcolor: "{plot_bg}" }},
 "#,
                 scene_key = scene_key,
                 x0 = x_start, x1 = x_end,
@@ -239,14 +364,17 @@ pub fn render_figure_plotly_div(fig: &FigureState, div_id: &str, theme: &ThemeCo
                 format_range(panel.ylim)
             };
             layout_axes.push_str(&format!(
-                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], title: {{ text: "{xlabel}" }}{xrange}{xtype}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
-yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{ytype}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
+                r#"xaxis{ax}: {{ domain: [{x0:.4}, {x1:.4}], anchor: "{y_id}", automargin: true, ticklabelstandoff: 6, title: {{ text: "{xlabel}", standoff: 10, font: {{ color: "{text}", size: 13 }} }}{xrange}{xtype}, showgrid: {grid}, gridcolor: "{plot_grid}"{xtick} }},
+yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ticklabelstandoff: 6, title: {{ text: "{ylabel}", standoff: 10, font: {{ color: "{text}", size: 13 }} }}{yrange}{ytype}, showgrid: {grid}, gridcolor: "{plot_grid}"{yextra} }},
 "#,
                 ax = axis_suffix,
+                x_id = xaxis_ref,
+                y_id = yaxis_ref,
                 x0 = x_start, x1 = x_end,
                 y0 = y_start, y1 = y_end,
                 grid = show_grid,
                 plot_grid = theme.plot_grid,
+                text = theme.text,
                 xlabel = escape_js(&panel.xlabel),
                 ylabel = escape_js(&panel.ylabel),
                 xtick = xtick_extra,
@@ -254,14 +382,16 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
             ));
         }
 
-        // Title as annotation
+        // Title sits on the top edge of this panel and grows upward into
+        // the gutter (or the top margin), so it cannot land on the axes.
         if !panel.title.is_empty() {
             annotations.push_str(&format!(
-                r#"{{ text: "{title}", xref: "paper", yref: "paper", x: {cx:.4}, y: {ty:.4}, showarrow: false, font: {{ size: 14 }} }},
+                r#"{{ text: "{title}", xref: "paper", yref: "paper", x: {cx:.4}, y: {ty:.4}, xanchor: "center", yanchor: "bottom", yshift: 6, showarrow: false, font: {{ size: 14, color: "{color}" }} }},
 "#,
-                title = escape_js(&panel.title),
+                title = annotation_text(&panel.title, cols),
                 cx = (x_start + x_end) / 2.0,
-                ty = y_end + 0.03,
+                ty = y_end,
+                color = theme.text,
             ));
         }
 
@@ -283,7 +413,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
             let x_json = json_f64_array(&sf.x);
             let y_json = json_f64_array(&sf.y);
             traces.push_str(&format!(
-                r#"{{ type: "surface", z: {z}, x: {x}, y: {y}, colorscale: "{cmap}", showscale: true, scene: "{scene}" }},
+                r#"{{ type: "surface", z: {z}, x: {x}, y: {y}, colorscale: "{cmap}", showscale: true{cbar}, scene: "{scene}" }},
 "#,
                 z = z_json,
                 x = x_json,
@@ -315,7 +445,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
                         _ => String::new(),
                     };
                     traces.push_str(&format!(
-                        r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true{zr}, xaxis: "{xa}", yaxis: "{ya}" }},
+                        r#"{{ z: {z}, type: "heatmap", colorscale: "{cmap}", showscale: true{cbar}{zr}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
                         z = z_json,
                         cmap = plotly_cmap,
@@ -342,7 +472,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
                         None => String::new(),
                     };
                     traces.push_str(&format!(
-                        r#"{{ z: {z}{xfield}{yfield}, type: "heatmap", colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
+                        r#"{{ z: {z}{xfield}{yfield}, type: "heatmap", colorscale: "{cmap}", showscale: true{cbar}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
                         z = z_json,
                         xfield = x_field,
@@ -418,7 +548,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], title: {{ text: "{ylabel}" }}{yrange}{
                     _ => "Viridis",
                 };
                 traces.push_str(&format!(
-                    r#"{{ z: {z}, x: {x}, y: {y}, type: "contour", contours: {{ coloring: "fill", start: {s}, end: {e}, size: {step} }}, colorscale: "{cmap}", showscale: true, xaxis: "{xa}", yaxis: "{ya}" }},
+                    r#"{{ z: {z}, x: {x}, y: {y}, type: "contour", contours: {{ coloring: "fill", start: {s}, end: {e}, size: {step} }}, colorscale: "{cmap}", showscale: true{cbar}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
                     z = z_json,
                     x = x_json,
@@ -675,7 +805,7 @@ var layout_{js_var} = {{
     out.push_str(&annotations);
     out.push_str(&format!(
         r##"],
-  margin: {{ t: 60, b: 60, l: 70, r: 30 }},
+  margin: {{ t: {margin_t}, b: {margin_b}, l: {margin_l}, r: {margin_r} }},
   barmode: "group",
 }};
 Plotly.newPlot("{div_id}", data_{js_var}, layout_{js_var}, {{ responsive: true }});
@@ -1016,6 +1146,72 @@ mod tests {
         assert!(
             !div2.contains("scaleanchor"),
             "non-heatmap panel without axis_equal must not emit scaleanchor"
+        );
+    }
+
+    #[test]
+    fn subplot_axis_titles_anchor_to_their_own_panel() {
+        // A lower panel's x-axis used to be anchored to the first y-axis, so
+        // its title was drawn on the row above, through that row's title.
+        let mut fig = FigureState::new();
+        fig.set_subplot(2, 2, 1);
+        for (idx, name) in [(1, "TL"), (2, "TR"), (3, "BL"), (4, "BR")] {
+            fig.set_subplot(2, 2, idx);
+            let sp = fig.current_mut();
+            sp.title = format!("Title {name}");
+            sp.xlabel = format!("X {name}");
+            sp.ylabel = format!("Y {name}");
+            sp.series.push(Series {
+                label: String::new(),
+                x_data: vec![0.0, 1.0],
+                y_data: vec![0.0, 1.0],
+                color: SeriesColor::Cyan,
+                style: LineStyle::Solid,
+                kind: PlotKind::Line,
+            });
+        }
+        let div = render_figure_plotly_div(&fig, "plot", Theme::default().colors());
+        for (x, y) in [("x", "y"), ("x2", "y2"), ("x3", "y3"), ("x4", "y4")] {
+            assert!(
+                div.contains(&format!(r#"anchor: "{y}""#)),
+                "{x} must anchor to {y}"
+            );
+            assert!(
+                div.contains(&format!(r#"anchor: "{x}""#)),
+                "{y} must anchor to {x}"
+            );
+        }
+        assert!(
+            div.contains(r#"yanchor: "bottom""#),
+            "panel titles must sit above the axes, growing upward"
+        );
+        assert!(
+            div.contains("automargin: true"),
+            "long tick labels must be allowed to grow the margin"
+        );
+    }
+
+    #[test]
+    fn multiline_title_becomes_a_break_and_keeps_theme_color() {
+        let mut fig = FigureState::new();
+        fig.current_mut().title = "First line of the title\nSecond line stays clear".into();
+        fig.current_mut().series.push(Series {
+            label: String::new(),
+            x_data: vec![0.0, 1.0],
+            y_data: vec![1.0, 2.0],
+            color: SeriesColor::Cyan,
+            style: LineStyle::Solid,
+            kind: PlotKind::Line,
+        });
+        let theme = Theme::default().colors();
+        let div = render_figure_plotly_div(&fig, "plot", theme);
+        assert!(
+            div.contains("First line of the title<br>Second line stays clear"),
+            "newline in a title must be a Plotly line break; got:\n{div}"
+        );
+        assert!(
+            div.contains(&format!(r#"color: "{}""#, theme.text)),
+            "title text must use the theme foreground"
         );
     }
 
