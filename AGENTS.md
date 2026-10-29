@@ -1358,8 +1358,12 @@ primary     = NUMBER | STRING | IDENT
 | `butterworth_highpass` | `butterworth_highpass(order, cutoff_hz, sr)` / `[b, a] = ...` | Same one-output / two-output split as the lowpass |
 | `filter` | `filter(b, a, x)` | Causal direct-form II transposed filter. `a` is normalised so `a(1) = 1`. `a = [1]` is an FIR. `x` may be complex |
 | `gelu_grad` | `gelu_grad(x)` | Derivative of `gelu` (tanh approximation), element-wise; for backprop through `gelu` |
-| `median` | `median(v)` | Median of real parts; scalar for odd length, average of two middles for even. A NaN real part returns NaN |
-| `var` | `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. Same shapes and complex rule as `std`. No divide-by-n flag |
+| `median` | `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; scalar for odd length, average of two middles for even. Complex input is an error. Empty is NaN. A NaN in the data makes that reduction NaN |
+| `std` | `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1), 1 (divide by n), or a nonnegative weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; the dimension is the third argument (`std(M, 0, 2)`) |
+| `var` | `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same weights, shapes, and complex rule |
+| `sort` | `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `[s, i] = sort(A)` | Real values sort numerically. Any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given. A vector is a row |
+| `diag` | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Build a diagonal matrix, or extract diagonal `k`. A length-1 input is a 1×1 matrix (`size(diag(5))` is `[1, 1]`) |
+| `trace` | `trace(M)` | Sum of the main diagonal. The matrix must be square |
 | `cond` | `cond(A)` / `cond(A, p)` | 2-norm condition number `σ_max/σ_min` by default. `p = 1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular returns `Inf` |
 | `convolve` | `convolve(x, h)` | Convolved Vector (length = len(x)+len(h)-1) |
 | `filtfilt` | `filtfilt(b, a, x)` | Zero-phase forward-backward filter; uses odd-reflection signal extension + steady-state IC (matches Octave); use `a=[1]` for FIR |

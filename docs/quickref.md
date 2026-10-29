@@ -131,7 +131,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `len(v)` / `length(v)` | Number of elements. `length(scalar)` / `length(complex)` / `length(bool)` return `1` (since 0.3.4); `length(matrix)` returns `max(size(M))`; `length(Tensor3)` returns the longest axis. Use `numel` for total element count. |
 | `size(v)` | `[rows, cols]` as a Vector |
 | `numel(v)` | Total element count |
-| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is `5`); or extract diagonal `k` (`k` an integer) |
+| `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Diagonal matrix from a row, column, or scalar (`diag(5)` is a 1×1 matrix); or extract diagonal `k` (`k` an integer) |
 | `reshape(M, r, c)` / `reshape(M, r, c, p)` | Reshape to r×c (Matrix) or r×c×p (Tensor3); column-major walk |
 | `fliplr(A)` | Reverse columns. A vector is a row, so it reverses; an N×1 matrix is unchanged |
 | `repmat(M, r, c)` | Tile M r×c times |
@@ -205,13 +205,13 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `min(v)`, `max(v)` / `min(M)`, `max(M)` / `min(a,b)`, `max(a,b)` / `min(M, [], dim)`, `max(M, [], dim)` / `[m, i] = max(v)` | Min/max of vector or 1-D matrix → scalar; matrix → row of column mins (default dim 1); two-argument form is elementwise over scalars/vectors/matrices with `+`-style broadcast (per element, NaN loses to non-NaN). **Multi-return** `[m, i]` returns the 1-based first-occurrence index alongside the value (vector / matrix / 3-arg axis forms only — not the two-argument elementwise form). Comparison key: real value for purely-real input, magnitude `|z|` for complex (diverges from MATLAB on equal magnitudes — first-occurrence wins). NaN skipped; all-NaN input errors. |
 | `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so the index from `[m, i] = max(v)` always equals `argmax(v)`. (There is no `~` output placeholder — bind to a dummy variable.) |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
-| `median(v)` / `median(M)` / `median(M, dim)` | Median by real part; same axis rules. |
-| `std(v)` / `std(M)` / `std(M, dim)` | Sample stddev (N−1); same axis rules. Complex data uses `√(Σ\|x−mean\|²/(n−1))`. Empty or length 1 is 0. |
-| `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. No population (divide-by-n) flag. |
+| `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; same axis rules. Complex input is an error. Empty is NaN. |
+| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; `std(M, 0, 2)` is per row. |
+| `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same `w` and the same shapes. |
 | `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
-| `median(v)` | Median (real parts; average of two middles for even length) |
-| `std(v)` | Standard deviation (N-1 denominator). `var(v)` is its square |
-| `sort(v)` / `sort(v, "ascend")` / `sort(v, "descend")` / `[s, idx] = sort(v)` | Sort by real part; default ascending. Multi-output returns sorted values + 1-based permutation indices. |
+| `median(v)` | Median of real values (average of the two middle elements when the length is even). Complex input is an error. Empty is NaN |
+| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN |
+| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
 | `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times. Vectors keep orientation; matrices default to dim 1 |
@@ -234,7 +234,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |
-| `trace(M)` | Trace |
+| `trace(M)` | Sum of the main diagonal. The matrix must be square |
 | `rank(M)` | Numerical rank: count of singular values above `max(m,n)·eps·σ_max` |
 | `eig(A)` / `[V, D] = eig(A)` | Dense eigendecomposition (`dense_eig`). 1-output returns the N×1 column vector of eigenvalues; 2-output returns V (eigenvector matrix) + D (diagonal matrix of eigenvalues, matlab convention). Hermitian or real symmetric: real eigenvalues, ascending, orthonormal V. |
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |

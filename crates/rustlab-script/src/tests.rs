@@ -2920,12 +2920,13 @@ r3 = norm(A * V(:,3)' - D(3) * V(:,3)');
     }
 
     #[test]
-    fn sort_descend_complex_uses_real_part() {
-        // Complex sort orders by real part (matches the existing 1-arg behavior).
+    fn sort_descend_complex_uses_magnitude() {
+        // |3+i| > |1-2i| > |2|, so descending magnitude starts at 3+i.
         let ev = eval_str("v = sort([3+1*j, 1-2*j, 2+0*j], \"descend\")");
         let vals = get_complex_vector(&ev, "v");
-        let reals: Vec<f64> = vals.iter().map(|c| c.re).collect();
-        assert_eq!(reals, vec![3.0, 2.0, 1.0]);
+        let mags: Vec<f64> = vals.iter().map(|c| c.norm()).collect();
+        assert!(mags[0] > mags[1] && mags[1] > mags[2], "{mags:?} {vals:?}");
+        assert!((vals[0].re - 3.0).abs() < 1e-12 && (vals[0].im - 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -18180,7 +18181,7 @@ mod eval_edge_semantics_tests {
             "M = [1, 2, 3; 4, 5, 6];
              s = sum(M, 2);
              m = mean(M, 2);
-             d = std(M, 2);",
+             d = std(M, 0, 2);",
         );
         let s = get_matrix(&ev, "s");
         assert_eq!(s.dim(), (2, 1));
@@ -18250,10 +18251,10 @@ mod eval_edge_semantics_tests {
 
     #[test]
     fn sum_and_std_of_empty_vector() {
-        // sum of nothing is the additive identity; std of nothing is 0.
+        // sum of nothing is the additive identity; std of nothing is NaN.
         let ev = run("s = sum([]);\nd = std([]);");
         assert!(close(get_scalar(&ev, "s"), 0.0));
-        assert!(close(get_scalar(&ev, "d"), 0.0));
+        assert!(get_scalar(&ev, "d").is_nan());
     }
 
     #[test]

@@ -18,7 +18,7 @@
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-6 all landed; eig now matches matlab's full surface) |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
-| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
+| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form). `sort(A, dim)` and `sort(A, dim, direction)` shipped in 0.3.25 |
 
 ## Core math audit (2026-10-28)
 
@@ -29,11 +29,11 @@ Fixes landed in 0.3.23. What remains different on purpose:
 |---|---|---|---|
 | `norm(A)` with no `p` | Frobenius | 2-norm (largest singular value) | Documented since the p-norm split. `norm(A, 2)` is the 2-norm, `norm(A, "fro")` is Frobenius |
 | `[V, D] = eigs(...)` | `D` is a vector | `D` is a diagonal matrix | `D(k)` is the k-th eigenvalue. A diagonal matrix would make `D(2)` the structural zero under column-major linear indexing |
-| `sort` of complex values | by real part | by magnitude, then phase | Documented. NaNs compare equal; they are not moved to the end |
-| `median` of complex values | ordered by real part | not defined the same way in every release | Imaginary parts are ignored. A NaN real part returns NaN |
-| `std` / `var` | sample, divide by `n−1`, only. Empty input is 0 | `w` flag selects population variance; empty is NaN | No second flag. Complex data uses `Σ\|x−mean\|²/(n−1)`, which matches MATLAB's complex `std` |
-| `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
-| `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
+| `sort` of complex values | magnitude, then phase. NaNs sort above `+Inf`. A matrix sorts along a dimension | same | Closed in 0.3.25. It used to sort by the real part, and `sort` rejected a full matrix |
+| `median` of complex values | error | not defined | Closed in 0.3.25. Imaginary parts used to be ignored. `median([])` is NaN |
+| `std` / `var` | `w` is 0 (n−1), 1 (n), or a weight vector. Empty is NaN. Dimension is the third argument | same | Closed in 0.3.25. `std(M, 2)` used to mean dimension 2; it is now `std(M, 0, 2)` |
+| `trace` of a non-square matrix | error | error | Closed in 0.3.25. It used to sum `min(rows, cols)` diagonal entries |
+| `diag` of a length-1 vector | a 1×1 matrix | a 1×1 matrix | Closed in 0.3.25. `diag(5)` used to be the scalar 5 |
 | `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
 | `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
 | `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |

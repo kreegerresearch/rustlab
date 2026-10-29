@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.25
+
+### Breaking / behavior changes
+- **`std` and `var` take a weight, then a dimension.** `std(x)` is still the sample standard deviation (divide by `n − 1`). `std(x, 1)` and `var(x, 1)` divide by `n`. A nonnegative weight vector divides by the sum of the weights. The dimension is the third argument: `std(M, 0, 2)` is the old `std(M, 2)`. `std(M, 2)` is now an error, because `2` is not a weight. Empty input is NaN (it was 0). One observation is still 0. A NaN in the data makes that reduction NaN. Complex data is still `Σ|x − mean|²` over the same divisor.
+- **`median` rejects complex input.** A nonzero imaginary part is an error. `median([])` is NaN (it was an error). Real medians are unchanged, including the even-length average of the two middle values.
+- **`sort` compares complex values by magnitude, then phase, and sorts a matrix along a dimension.** Real values still sort numerically. NaN is higher than `+Inf`: ascending leaves NaNs last, descending leaves them first. Ties keep their original order. `sort(M)` sorts each column; `sort(M, 2)` sorts each row; `sort(A, dim, "descend")` does both. A vector is a row, so `sort(v)` sorts along its length and `sort(v, 1)` leaves it in place. `[s, i] = sort(A)` still returns 1-based indices.
+- **`diag` of one element is a 1×1 matrix.** `diag(5)` and `diag([5])` have `size` `[1, 1]` and entry 5. They used to be the scalar 5. `diag([1, 2])` is still 2×2. A 1×1 matrix still adds and multiplies with a scalar.
+- **`trace` requires a square matrix.** `trace` of a rectangle is an error. It used to sum `min(rows, cols)` diagonal entries. A square trace is unchanged, and `trace` of a scalar is still that scalar.
+
 ## 0.3.24
 
 ### Added
