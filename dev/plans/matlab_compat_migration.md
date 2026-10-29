@@ -5,9 +5,9 @@
 **Base:** `0.3.24` (`9e7c6ad`, PR #100), merged into this branch. Workspace version `0.3.24` has shipped, so each phase that changes observable behavior bumps the version in the same PR (workflow rule 12).
 **Date:** 2026-10-29
 
-Break existing script behavior where that is what it takes to match MATLAB. This is pre-1.0. Do not take a performance regression on a hot path to buy a match that scripts do not need. Core math stays hand-rolled Rust. No new dependencies (workflow rule 10).
+**Direction (Michael, 2026-10-29):** match MATLAB whenever that is possible, including `\`. A behavior that is not MATLAB's stays only when this plan states a quantified performance reason. Every MATLAB-matching change still has a cost note and a mitigation. This is pre-1.0, so breaks are allowed. Core math stays hand-rolled Rust. No new dependencies (workflow rule 10).
 
-This plan starts from the "Core math audit (2026-10-28)" table and open item **#5** in [`octave_compat_divergences.md`](octave_compat_divergences.md). It does not reopen the ten divergences that table already marks shipped (`eig` shapes, `sum`/`mean` along columns, `find`, deletion assignment, and the rest). It also does not rebuild what `0.3.24` already shipped. Phases 3–7 below are only the gaps left against that release.
+This plan starts from the "Core math audit (2026-10-28)" table and open item **#5** in [`octave_compat_divergences.md`](octave_compat_divergences.md). It does not reopen the ten divergences that table already marks shipped (`eig` shapes, `sum`/`mean` along columns, `find`, deletion assignment, and the rest). It also does not rebuild what `0.3.24` already shipped. Later phases are only the gaps left against that release, plus the MATLAB matches decided below.
 
 ## Already on main (`0.3.24`)
 
@@ -15,8 +15,8 @@ Leave these alone. The audit table on `main` already records them.
 
 | Shipped | What it does | Not in this plan |
 |---|---|---|
-| `A \ b`, `mldivide` | Square nonsingular: LU with partial pivoting. Otherwise column-pivoted QR. Singular or ill-conditioned: warning, then a **basic** solution (free variables are 0). A scalar on the left divides element-wise. | A new solver. Min-norm is a question, not a rewrite, see phase 5. |
-| `B / A`, `mrdivide` | Two matrices, or a row, solve `X * A = B`. A scalar on either side of `/` stays element-wise. Two vectors with `/` still error (`./`). | Making `2 / v` an error. `0.3.24` kept the element-wise scalar. |
+| `A \ b`, `mldivide` | Square nonsingular: LU. Rectangular, and a square matrix the LU calls singular: column-pivoted QR, free variables 0. A vector on the right is a **row** (`b'`). A sparse matrix is densified (`docs/functions.md`). A scalar on the left divides element-wise. | The rectangular basic solution stays (it is MATLAB). Phase 5 changes the vector right-hand side, the square-singular `Inf` case, and square sparse dispatch. |
+| `B / A`, `mrdivide` | Two matrices, or a row, solve `X * A = B`. A scalar on either side of `/` stays element-wise. Two vectors with `/` still error (`./`). The transpose is non-conjugate (`.'`). | Phase 3 makes a scalar numerator over an array into `mrdivide`, and uses conjugate transpose. Array `/` scalar stays element-wise. |
 | `qr` | Unpivoted Householder `[Q, R]`. `qr(A, 0)` / `"econ"` / `"economy"` is the thin factor. One output is `R`. `diag(R)` is real and non-negative. | Rebuilding QR. Phase 4 only adds column pivoting and `P`. |
 | Dense `lu` | `[L, U, P] = lu(A)` with `P` a permutation **matrix**, `P*A = L*U`. `[L, U]` absorbs the pivot so `L*U = A`. One dense output errors. Sparse `lu` is still the factor handle. | A second LU. Phase 6 adds a permutation **vector** and dense `chol`. |
 | `polyfit`, `polyval` | QR least squares, coefficients in descending powers, one row. `polyval` is Horner and keeps the shape of `x`. `x` is real; `y` may be complex. | `[p, S, mu]`. Phase 7. |
@@ -27,7 +27,7 @@ Leave these alone. The audit table on `main` already records them.
 
 ## How to read a row
 
-Each item has the same six parts. "Proposed change" is the recommendation. Items in [Do not change](#do-not-change) are still spelled out, so a later reader can see the rejection and not relitigate it.
+Each item has the same six parts. "Proposed change" is the recommendation. Items in [Kept, with a quantified reason](#kept-with-a-quantified-reason) are the only non-MATLAB behaviors this plan still accepts.
 
 **Measure.** Before and after, on the same machine, two runs:
 
@@ -37,9 +37,9 @@ Each item has the same six parts. "Proposed change" is the recommendation. Items
 
 **Acceptance, unless the item says otherwise.**
 
-- Elementwise work (`./`, `/` by a scalar, `sum`, a length-`1e5` `randn` that is still a vector): within 10% of the before run, and the same `[widen]` / `[promote]` counts.
-- Square `A \ b` keeps the `0.3.24` LU path, and sparse `spsolve` keeps today's algorithm and timing. Do not put a new QR on those paths.
-- `norm(A)` with one argument keeps today's Frobenius timing.
+- Elementwise work (`./`, `/` with a scalar denominator, `sum`, a length-`1e5` `randn` that is still a vector): within 10% of the before run, and the same `[widen]` / `[promote]` counts. A scalar numerator over a non-scalar is not this path (phase 3).
+- `spsolve` on a 5-point Laplacian stays within 10%. Square dense `\` may get a faster Cholesky or triangular branch (phase 6); it must not get slower, and it must not grow a second rectangular solver.
+- Sparse `norm(S)` with one argument keeps today's Frobenius timing. Dense `norm(A)` does not (phase 9).
 
 Where Octave and MATLAB disagree, do not lock the octave harness to the MATLAB answer. Put a hand-checked fixture in `crates/rustlab-script/src/math_audit.rs` and say so in the test.
 
@@ -53,16 +53,19 @@ Separate PRs. Do not start the next phase until the current one is green, includ
 
 | Phase | PR | Why this order |
 |---|---|---|
-| 1 | `std` / `var` `w`, empty → NaN; `median` on complex and empty; `sort` of complex and NaN; `trace` on a non-square | Small, localized, no new algorithm, no hot-path kernel change. Fixes wrong answers. |
-| 2 | `zeros` / `ones` / `rand` / `randn` / `randi` single-arg shape (open item #5) | Highest-value break. Also the easiest way to OOM a bench. The sweep is the work. |
-| 3 | `.\` only | Still no token. Reuse the `./` kernel. Nothing old changes. |
-| 4 | `[Q, R, P] = qr(A)` on the existing column-pivoted QR | `0.3.24` already returns unpivoted `[Q, R]` and economy `qr(A, 0)`. `\` already pivots and discards `P`. This PR returns that permutation. |
-| 5 | Right-hand side shape of `\`, and the min-norm question | `0.3.24` treats a vector as a row (`b'`) and returns a basic solution. This phase only changes that if you say so. Default recommendation: leave both. |
-| 6 | Dense `chol`, and a permutation **vector** from dense `lu` | `[L, U, P]` with a permutation matrix already shipped. Sparse handles stay. |
-| 7 | `polyfit` `[p, S, mu]`; `interp1` `pchip` / `makima` / numeric fill | One-output `polyfit` / `polyval` and `interp1` (`linear`, `nearest`, `previous`, `next`, `spline`, `"extrap"`) already shipped. Do not retune them. |
-| 8 | `freqz` grid includes Nyquist | Reopens a decision locked in 0.3.23. Same cost, different samples. Octave's `freqz` is the wrong oracle. |
+| 1 | `std` / `var` (`w` = 0 or 1, then a weight vector), empty → NaN; `median`; `sort` (complex, NaN, stable, then `sort(M, dim)`); `trace`; `diag` of length 1 → 1×1 | Small. No hot-path kernel change except the sort stability gate below. |
+| 2 | `zeros` / `ones` / `rand` / `randn` / `randi` single-arg shape, including `randi(imax, n)` → n×n | Decided. The sweep is the work, and the OOM risk. |
+| 3 | `.\`, and `/` when the numerator is a non-scalar's counterpart (scalar numerator over an array becomes `mrdivide`) | `./` and array/scalar `/` stay on the elementwise kernel. |
+| 4 | `[Q, R, P] = qr(A)` on the existing column-pivoted QR | Two-output `qr(A)` stays full and unpivoted. |
+| 5 | `\` matches MATLAB: vector right-hand side is a column, one solution is n×1, rectangular solve stays the basic QR solution, square singular follows LU (including `Inf`), square sparse uses `spsolve` | Not a min-norm rewrite. MathWorks' published vectors are the oracle. |
+| 6 | Dense `chol`, `lu(..., "vector")`, and the faster square branches (SPD Cholesky, triangular solve) | `[L, U, P]` with a matrix already shipped. Sparse factor handles stay. |
+| 7 | `polyfit` `[p, S, mu]`; `interp1` `pchip` / `makima` / numeric fill | Do not retune the shipped one-output fit or the not-a-knot spline. |
+| 8 | `freqz` includes Nyquist | Decided. Octave's `freqz` is the wrong oracle. Same cost. |
+| 9 | Dense `norm(A)` with no `p` becomes the 2-norm | Sparse `norm(S)` stays Frobenius. The reason is quantified below. |
+| 10 | Sparse drop becomes exact zero only | Pivot tests inside `chol` / `lu` stay. Timing gate on a grid Laplacian. |
+| 11 | `xcorr` / `xcov` | Not implemented. New surface. FFT when the lag span is long, direct when `maxlag` is short. |
 
-`sort(M)` / `sort(M, dim)` (the leftover of octave item #11) is a follow-on after phase 1, not part of it. Column sort changes every 2-D `sort` from an error into a per-column result. Ship the complex key first.
+`sort(M, dim)` is the second commit of phase 1, not a separate decision. Ship the complex key and the NaN rule first so a 2-D sort does not land on the old comparator.
 
 ---
 
@@ -102,27 +105,26 @@ Before rewriting call sites, time `a = zeros(n); a .* a` against `b = zeros(1, n
 
 ---
 
-## 2. Vectors are rows, and the right-hand side of `\`
+## 2. Vector right-hand side of `\`
 
-Phase 5. `0.3.24` already chose the row.
+Phase 5. Decided: match MATLAB. A rustlab vector on the right is a column, and one solution is n×1.
 
-**Current (`0.3.24`).** A `Value::Vector` is a 1-D buffer. `size` reports `[1, n]`. `value_to_matrix` in `eval/linsys.rs` turns that vector into a **1×n row** before `A \ b`. A length mismatch says `hint: a vector is a row; pass a column as b'`. An n×1 matrix on the right is already one column. `pack` returns a scalar for 1×1, a vector for a single row, and a matrix otherwise, so one column of a tall solution is already n×1. Several columns stay n×k. `linsolve` is still the square elimination. `spsolve` is unchanged.
+**Current (`0.3.24`).** A `Value::Vector` is a 1-D buffer and `size` reports `[1, n]`. `value_to_matrix` in `eval/linsys.rs` turns that vector into a **1×n row** before `A \ b`. A length mismatch says `hint: a vector is a row; pass a column as b'`. An explicit n×1 matrix is already one column. `pack` returns a scalar for 1×1, a vector for a single row, and a matrix otherwise, so a tall single solution is already n×1 once the right-hand side has n rows. `docs/functions.md` documents the row rule. `*` of two vectors and `M * v` stay row-shaped; this phase does not change them.
 
-**MATLAB.** `A\b` needs as many rows as `A`. A 1×n row is a dimension error. People write `A\b` with `b` an n×1 column.
+**MATLAB.** `A` and `B` must have the same number of rows (`mldivide` reference). A 1×n row against a tall `A` is a dimension error. One right-hand side returns n×1. MathWorks' square example is `magic(3) \ [15;15;15]`, a 3×1 of ones. Several columns of `B` return n×p.
 
-**Proposed change.** Do not merge `Vector` and `Matrix`. Recommendation: **keep the `0.3.24` row rule.** It matches `size`, it matches `M * v`, and it is what the changelog and `backslash_row_count_mismatch_names_the_column` just locked. Flipping a vector on the right to a column one release later breaks every script that followed `b'`.
+**Proposed change.** Only the right-hand operand of `\` (not `*`, not a vector on the left of `/`):
 
-If you answer question 2 with "make it a column", the change is only the right-hand operand of `\` (not `/`, not `*`):
+- Read a `Value::Vector` as n×1 in place. Do not clone it into a matrix.
+- An explicit 1×n matrix stays a row and still errors against a tall `A`. That is the MATLAB row.
+- `pack` already returns n×1 for that solution. `linsolve` of one vector should return the same n×1 shape, by calling this path, so the two square solvers do not disagree.
+- `b'` where `b` is a vector is already n×1, so scripts that followed the 0.3.24 hint keep working. Scripts that wrote `A \ v` and got the row error start to solve.
 
-- Read the vector as n×1 in place. Do not clone it into a matrix first.
-- An explicit 1×n matrix stays a row and still errors against a tall `A`, matching MATLAB.
-- The existing `pack` already returns n×1 for that solution. Do not also change `linsolve`'s return shape in this phase.
+**Breaking impact.** `backslash_row_count_mismatch_names_the_column` and the `docs/functions.md` sentence flip. A vector that today is a one-row system (a wide `A` with one row, or `scalar \ vector` which is element-wise and must stay element-wise) is the case to re-test: a length-1 vector is still a scalar-like 1×1, which `scalar_like` already special-cases. Do not route a scalar left operand through the column rule.
 
-**Breaking impact.** None if we keep the row. If we flip: every `A \ v` that today errors, or that today treats `v` as a one-row system, changes. The hint test and the `0.3.24` changelog sentence have to move. `spsolve` stays.
+**Performance.** The next line is often `y = x .* h` with `h` a vector. An n×1 matrix can miss `real_ops` and show up as `[widen]`. Acceptance: a real length-1e6 `x .* h`, with `x` the n×1 solution, is within 15% of the same multiply of two vectors, and `[widen]` / `[promote]` stay 0. If that fails, special-case a contiguous real n×1 in `real_ops` in this same phase (the same idea as a real 1×n in phase 2). Do not widen. Do not allocate a copy of `b`.
 
-**Performance.** Only if we flip. The next line is often `y = x .* h` with `h` a vector. An n×1 matrix may miss `real_ops` and show up as `[widen]`. Acceptance: on a real length-`1e6` residual, `x .* h` is within 15% of the same multiply where both are vectors, and `[widen]` / `[promote]` stay 0. If that fails, special-case a contiguous real n×1 in `real_ops` the same way phase 2 special-cases a real 1×n. Do not widen. Do not allocate a copy of `b`.
-
-**Tests.** If we keep the row: leave `solve_factor.rs` as it is. If we flip: `size(A \ v)` is `[n, 1]` for a length-n vector, an explicit 1×n matrix still errors, and `A \ B` for an n×2 matrix is unchanged. Square residuals stay under the existing tolerance. Do not retune the LU path.
+**Tests.** `size(A \ v)` is `[n, 1]` for a length-n vector. `A \ [1, 2, …]` as an explicit row errors. `magic`-style `A \ column` matches the ones vector. `A \ B` for n×2 is unchanged. Square residuals stay under the existing tolerance. The LU factor for a nonsingular square matrix stays; this phase does not replace it.
 
 ---
 
@@ -132,13 +134,15 @@ If you answer question 2 with "make it a column", the change is only the right-h
 
 **MATLAB.** `norm(A)` for a matrix is the 2-norm. `norm(A, "fro")` is Frobenius. Vector `norm(v)` is already the 2-norm.
 
-**Proposed change.** Leave the default. `norm(A, 2)` is the MATLAB default for anyone who wants it.
+**Proposed change.** Phase 9. Dense `norm(A)` with no `p` becomes the 2-norm, the same value as `norm(A, 2)`. `norm(A, "fro")` stays the one-pass residual and is what the swept examples should call when they want today's number. Vector `norm(v)` is already the 2-norm.
 
-**Breaking impact.** None if we leave it. If we flipped it, these call sites change meaning and cost: `examples/pde/dielectric.rlab`, `laplacian.rlab`, `laplacian_bc.rlab`, `examples/notebooks/parallel_montecarlo.md` (`norm` of a tensor slice difference), `examples/linalg/eig.rlab` (residual `norm(A*V - V*D)`), and the matching notebooks. One-arg `norm` appears 73 times in 27 files; many are vectors, where 2-norm and Frobenius match. The matrix residuals are the ones that would move.
+Sparse `norm(S)` **stays Frobenius.** Reason, quantified: `norm(S, 2)` densifies and already errors when a side is over 512. A 512×512 complex Gram is `512² × 16` bytes ≈ 4 MB, and the Hermitian eig on top is O(n³) ≈ 1×10⁸ flops. A 2-D Laplacian on a 2000×2000 grid has `n = 4×10⁶` nodes and about `5n` nonzeros (tens of megabytes). The dense matrix for a 2-norm is `n² × 16` bytes, about 256 TB, so that call cannot run. Frobenius on the same sparse matrix is one pass over the nonzeros. There is no sparse 2-norm in tree that avoids the densify. `norm(S, 2)` remains available under the 512 cap for people who want MATLAB's number on a small pattern.
 
-**Performance.** Frobenius is one pass, O(mn) or O(nnz). The 2-norm is a Gram matrix plus a Hermitian eigensolve, O(min(m, n)³) after an O(max(m, n) · min(m, n)²) product, and it squares the condition. `svd_full` is that path. Sparse spectral norm already exists and is capped because it densifies. Putting that on every unqualified `norm(A)` makes residual checks in the PDE examples and in `math_audit.rs` an SVD. `perf/bench` does not call `norm(A)`, so `make perf` would stay green while real notebooks got slower. That is the wrong trade.
+**Breaking impact.** Dense matrix residuals change value and cost. Known sites: `examples/pde/dielectric.rlab`, `laplacian.rlab`, `laplacian_bc.rlab`, `examples/notebooks/parallel_montecarlo.md`, `examples/linalg/eig.rlab` (`norm(A*V - V*D)`), and the matching notebooks. One-arg `norm` appears 73 times in 27 files; vector calls do not move. Rewrite residual checks that want a cheap number to `norm(..., "fro")` in the same PR. The octave pair that passes `'fro'` only on the Octave side (`reference_full.m` versus `rustlab_full.rlab`) must pass `'fro'` on both sides, or the rustlab side must expect the 2-norm.
 
-**Tests.** Keep the current Frobenius fixtures, including the octave pair that already passes `'fro'` only on the Octave side. Add nothing that expects `norm(A) == norm(A, 2)` for a non-vector.
+**Performance.** Frobenius is one pass, O(mn). The dense 2-norm is `svd_full`: a Gram product O(max(m, n)·min(m, n)²) plus a Hermitian eig O(min(m, n)³). At n = 256 that Gram is about `2×256³ ≈ 3×10⁷` flops, which `perf/bench_linalg.rlab` already does as a multiply, plus the eig. `make perf` does not call unqualified `norm(A)`, so the bench threshold is not the guard. Guard: time one `norm(A)` and one `norm(A, "fro")` at 256×256 and record both in the PR. Do not call `norm(A)` inside a per-step training loop; nothing in `perf/` does. Sparse `norm(S)` timing must be unchanged.
+
+**Tests.** Dense `norm([1, -2; -3, 4])` equals `norm(..., 2)`. `norm(..., "fro")` keeps today's value. The octave fixture is explicit about which norm it compares. Sparse `norm(speye(4))` stays `2` (Frobenius of `I₄`), and `norm(S, 2)` on that matrix still matches. A side of 513 still errors for `norm(S, 2)`.
 
 ---
 
@@ -169,15 +173,14 @@ If you answer question 2 with "make it a column", the change is only the right-h
 - Real data: keep numeric order. Move NaNs to the end.
 - Any nonzero imaginary part: order by `norm`, then `atan2(im, re)`. The "any imaginary" scan already exists; do not pay `hypot` on a real vector.
 - `median` of a value with a nonzero imaginary part errors. Pure-real storage, including a complex number whose imaginary part is exactly 0, stays on today's path. Empty `median` returns NaN instead of erroring.
-- Do not land `sort(M, dim)` in this PR. It is a follow-on. The comparator has to be the one above when that lands.
-
-Stable versus unstable is a performance question, not a numeric one for distinct keys. See below. Recommendation: stable only if the benchmark passes; otherwise document that ties keep today's unstable order and NaNs still move to the end (a linear partition, then the existing sort on the finite prefix).
+- The second commit of this phase adds `sort(M)` / `sort(M, dim)` on that comparator. `sort(M)` sorts each column.
+- `sort` is stable on ties, which is MATLAB. NaNs are partitioned to the end first so the stable sort does not have to order NaN keys.
 
 **Breaking impact.** Scripts that `sort` a genuinely complex vector and expect real-part order. In-tree `sort(` shows up in docs, octave fixtures (real data), and tests; examples are few (`sort` is not a common example call). `median` of complex is unlikely in examples; `math_audit.rs` covers real medians. Empty `median` currently errors, so changing it to NaN breaks tests that expect the error, not user scripts that succeeded.
 
-**Performance.** Real path: a NaN partition is O(n), then the same sort. Acceptance: `sort` of 1e6 and 1e7 real doubles (no NaNs) within 10% of today if we keep `sort_unstable`. If we switch to a stable sort, the ceiling is 2× on 1e6 doubles; over that, keep unstable and record the decision in the PR. Complex path is O(n log n) `hypot`+`atan2` compares instead of one `f64` compare. That path is not in `bench_builtins`. Do not route real data through it. No allocation beyond today's sorted output. No `[widen]` on a real vector: sort the `f64` slice, then write a real vector back.
+**Performance.** Real path: a NaN partition is O(n), then a stable sort. Acceptance: `sort` of 1e6 real doubles (no NaNs) within 2× of today's `sort_unstable`, and 1e7 within that same ratio. If the stable sort is slower than that, stop and put the timings in the PR instead of silently shipping unstable order. That gate is the mitigation, not a license to skip MATLAB on the first try. Complex path is O(n log n) `hypot`+`atan2` and is not in `bench_builtins`. Do not route real data through it. No `[widen]` on a real vector.
 
-**Tests.** Real vector with negatives and NaNs: NaNs at the end, negatives at the start, ties keep relative order only if we went stable. Complex: `sort([1+1j, -2, 1-1j])` matches magnitude-then-phase against a hand-computed expected vector (Octave's complex `sort` matches this; add the octave case). `median(1+1j)` errors. `median([])` is NaN. Real median fixtures stay bit-identical, including the even-length average.
+**Tests.** Real vector with negatives and NaNs: NaNs at the end, negatives at the start, ties keep input order. Complex: `sort([1+1j, -2, 1-1j])` matches magnitude-then-phase (Octave agrees; add the case). `sort(M)` column fixture. `median(1+1j)` errors. `median([])` is NaN. Real median fixtures stay bit-identical, including the even-length average.
 
 ---
 
@@ -185,9 +188,9 @@ Stable versus unstable is a performance question, not a numeric one for distinct
 
 **Current.** `std` and `var` are the sample forms, divide by `n - 1` only. There is no `w`. Empty and length-1 both return 0 (`std_of_slice`). A matrix reduces down columns to a 1×n row, same as `mean`. Complex data uses `Σ|x − mean|² / (n − 1)`, which already matches MATLAB's complex `std`. `var` is `std²` in the same pass structure. 0.3.23 changelog: "There is no divide-by-n flag."
 
-**MATLAB.** `std(x)` and `var(x)` default to `w = 0` (divide by `n - 1`). `std(x, 1)` and `var(x, 1)` divide by `n`. `std(x, w, dim)` selects the axis. `std([])` is NaN. A length-1 input is 0. A weight **vector** is a third form (`std(x, w)` with `w` the same length as `x`); leave that out of this phase.
+**MATLAB.** `std(x)` and `var(x)` default to `w = 0` (divide by `n - 1`). `std(x, 1)` and `var(x, 1)` divide by `n`. `std(x, w, dim)` selects the axis. `std([])` is NaN. A length-1 input is 0. A weight vector `w` the same length as `x` is the normalized weighted form.
 
-**Proposed change.** Optional second argument `w` is 0 or 1. A vector in that slot is an error with a message that names the missing weight-vector form, not a silent sample variance. `dim` stays the argument after `w` when present (`std(M, w, dim)`). Empty input returns NaN (a 1×ncols or nrows×1 row of NaNs when reducing an empty matrix along an axis, not a scalar 0). Length 1 stays 0. Complex formula unchanged.
+**Proposed change.** `w` is 0 or 1, or a weight vector of the same length. `dim` is the argument after `w` (`std(M, w, dim)`). Empty input returns NaN (a row or column of NaNs when an empty matrix is reduced along an axis, not a scalar 0). Length 1 stays 0. Complex formula unchanged. The weight vector is the same phase: it is one extra multiply in the sum, not a second algorithm, so there is no performance reason to omit it.
 
 **Breaking impact.** `std(` appears about 33 times in 15 files, `var(` about 17 times in 5, mostly docs and tests. Sample-variance callers (`w` omitted) keep their numbers. Empty→0 callers flip to NaN; `math_audit.rs` and any test that asserts `std` of empty is 0 must move. Examples under `examples/stats/` use non-empty data.
 
@@ -219,13 +222,13 @@ Stable versus unstable is a performance question, not a numeric one for distinct
 
 **MATLAB.** `diag(5)` and `diag([5])` are 1×1 matrices. They print like a scalar. `size` is `[1, 1]`.
 
-**Proposed change.** Leave it. A 1×1 matrix here would disagree with the collapse used by `kron` and `linsolve`, and it would push a scalar off the `f64` fast path (`Value::binop`'s scalar arm) onto a matrix kernel for `diag(v) + 1` when `v` has one entry.
+**Proposed change.** Phase 1. `diag` of a length-1 vector or a scalar returns a 1×1 matrix, so `size(diag(5))` is `[1, 1]`. Do not change the 1×1 collapse in `kron` or in `pack` for a 1×1 `\` solution in this phase. Those are separate call sites; a length-1 `diag` is not on the scalar hot path.
 
-**Breaking impact.** None if we leave it. The displayed number already matches.
+**Breaking impact.** `diag([5]) + 1` and any test that expects a `Value::Scalar` move. The printed number can stay the same. Search `diag(` (about 82 mentions in 12 files, mostly square diagonals of length greater than 1).
 
-**Performance.** The collapse is the cheap path. The MATLAB shape is a type change with no numeric benefit. Not worth a sweep of every 1-element result.
+**Performance.** One 1×1 allocation per call. Not a loop. The scalar `f64` arm in `Value::binop` stays for actual scalars. A 1×1 matrix plus a scalar already has a broadcast path; acceptance is that `diag([5]) + 1` is correct, not that it matches scalar `5+1` in nanoseconds. No `[widen]` on a real 1×1.
 
-**Tests.** Keep `diag([5])` as a scalar. Document in the function help that a length-1 diagonal is a scalar.
+**Tests.** `size(diag(5))` and `size(diag([5]))` are `[1, 1]`, and the entry is 5. `diag([1, 2])` stays 2×2. `kron` of two scalars stays a scalar.
 
 ---
 
@@ -269,13 +272,13 @@ Stable versus unstable is a performance question, not a numeric one for distinct
 
 **MATLAB.** `sparse` stores every nonzero, including `1e-16`. Only exact zeros are structural zeros.
 
-**Proposed change.** Leave the tolerance on construction and on arithmetic.
+**Proposed change.** Phase 10. Drop only exact zeros, on construction and after arithmetic. There is no measured reason to keep `1e-15`: a 5-point Laplacian never stores those entries, so its `nnz` does not depend on the tolerance. The old "fill becomes O(n²)" claim is not what this cutoff prevents. A cancelled stored entry becomes a tiny stored entry and keeps the same index. That is MATLAB.
 
-An opt-in `sparse(..., "exact")` that drops only exact zeros is possible later. It is not in these phases. Default path must stay byte-identical.
+Mitigation, because a tiny pivot must not become a healthy factor: the relative pivot tests inside sparse `chol` / `lu` (0.3.23) stay. `1e-16 * speye(n)` is stored and then fails or warns on the pivot test if it is scaled like a singular matrix; it is not deleted before the factor sees it. Acceptance: `spsolve` on `laplacian_2d(64, 64)` is within 10% of today and `nnz` of that Laplacian is unchanged. If that gate fails, stop and report the numbers. Do not silently put the tolerance back.
 
-**Breaking impact.** None if we leave it. If we removed the drop, `1e-16 * speye(n)` would become a factorization, and any subtraction that leaves roundoff would add fill. Laplacian `spsolve` (the PDE examples and `perf` sparse notes) depends on that pattern staying sparse.
+**Breaking impact.** `nnz(1e-16 * speye(n))` becomes `n`, not 0. The 0.3.23 note that `1e-16 * speye` is an empty pattern moves. `1e-14 * speye` already factored and still should.
 
-**Performance.** Fill-in is not a constant factor. A residual subtract on an n×n grid can turn O(n) nonzeros into O(n²). AMD, sparse Cholesky, and sparse LU then dominate. `make perf` does not cover that grid; a removed drop could pass `make perf` and still slow `examples/pde/laplacian.rlab`. Acceptance for "we did not touch it": `nnz(1e-16 * speye(4))` stays 0, and a profile of `spsolve` on `laplacian_2d` matches the before run within 10%.
+**Performance.** One compare per entry either way (`== 0` instead of `< 1e-15`). No extra asymptotic term on a clean Laplacian. The gate above is the check that roundoff stored in a residual does not blow the factor. `make perf` does not cover that grid, so the phase times `spsolve` itself.
 
 **Tests.** Keep the 0.3.23 factor-of-`1e-14 * speye` test and the empty-pattern test for `1e-16`.
 
@@ -294,6 +297,8 @@ An opt-in `sparse(..., "exact")` that drops only exact zeros is possible later. 
 **Performance.** Must be the `./` kernel. Acceptance: real length-1e7 `b .\ a` within 10% of `a ./ b`, zero `[widen]` / `[promote]`, no extra allocation proportional to length. Same `PAR_MIN_LEN` cutoff. Add the op to the existing elementwise bit-identical tests rather than a new driver.
 
 **Tests.** ` [2, 4] .\ [2, 8] ` is `[1, 2]`. Broadcasting matches `./` with arguments swapped, including the real-storage cases in `tests/storage_modes.rs` if that harness walks operators by list (add `.\` to the list). Octave `.\` agrees; add one compare case.
+
+Same phase, because it is the other half of MATLAB division and it is not a new kernel: a **scalar numerator** over a non-scalar (`2 / v`, `2 / M`) becomes `mrdivide`, not element-wise. Array or vector divided by a scalar stays on today's `./` scale path. Detect a scalar denominator before any factor. MATLAB `2/M` for a square `M` is a dimension error (`X*M` cannot be 1×1). `M/2` stays a scale. `scalar_divide_matrix_stays_elementwise` changes. Complex `mrdivide` must use conjugate transpose `(A'\B')'`; `0.3.24` uses `.'` (`linsys.rs`). Conjugate is one pass, not a reason to keep the mismatch. Two vectors with `/` stay an error (`./`), which matches MATLAB for two rows.
 
 ---
 
@@ -315,21 +320,34 @@ Phase 4. Unpivoted QR already shipped.
 
 ---
 
-## 14. Underdetermined `\` is a basic solution
+## 14. Underdetermined `\` is MATLAB's basic solution
 
-Phase 5, together with section 2. The operator itself shipped.
+Phase 5, with section 2. Verified against MathWorks, not against Octave.
 
-**Current (`0.3.24`).** Square nonsingular `A \ b` uses `factor::lu`. Rectangular, and a square matrix that is singular to working precision, uses column-pivoted QR (`least_squares`). Free variables are 0. A warning is printed. `pinv(A)*b` is still the minimum-norm solution, and it is a different vector on a wide full-rank system. Overdetermined full-rank least squares matches MATLAB and Octave. Octave's underdetermined `\` is minimum-norm, so the octave harness must not be the oracle for that case.
+**What MATLAB does.** The `mldivide` reference says a rectangular solve "may not be the minimum-norm solution" and points minimum-norm at `lsqminnorm` or `pinv(A)*B`. The linear-equations guide says an underdetermined system returns a **basic** solution with at most `m` nonzero components, from QR with column pivoting: the first selected columns are solved, the rest stay 0. Two published vectors:
 
-**MATLAB.** Same basic solution as `0.3.24`. Minimum-norm is `pinv`.
+- `A = [1 2 0; 0 4 3]`, `b = [8; 18]` → `[0; 4; 2/3]`. Column 1 is the free variable.
+- `R = [6 8 7 3; 3 5 4 1]`, `b = [7; 8]` → `[0; 17/7; 0; -29/7]`. Nonzeros sit on the columns picked by remaining norm (column 2, then column 4).
 
-**Proposed change.** Leave the basic solution. Switching to minimum-norm would match Octave and break MATLAB, and it would replace a factored triangular solve with a wider pseudoinverse. Do it only if question 1 says so. If it does: change only the `m < n` full-row-rank branch, keep free-variable behavior for rank-deficient systems documented, and do not form `A * A'`.
+A square singular example on the same page is different: `[1 0; 0 0] \ [1; 1]` warns "singular to working precision" and returns `[1; Inf]`, which is LU dividing by zero, not a finite QR basic solution. `magic(4)` warns "close to singular" and still returns a finite LU solution.
 
-**Breaking impact.** None if we leave it. If we switch: every underdetermined `A \ b` changes, including `singular_consistent_system_still_solves` only when that fixture is wide. Square and tall least-squares tests stay.
+**Current (`0.3.24`).** `least_squares` in `factor/qr.rs` already does the basic solution: column-norm pivoting, back-substitution on the accepted rank, free variables 0 (`y` is allocated as zeros). That is the MATLAB rectangular path. It is **not** minimum-norm. `pinv` remains the min-norm function. Do not add `lsqminnorm` in this phase, and do not switch `\` to `pinv`. Octave's underdetermined `\` is minimum-norm, so `compare_full.m` must not be the oracle here.
 
-**Performance.** A min-norm switch is a second factorization (QR of `A'` or an SVD). Acceptance if it happens: square `\` LU time unchanged, and `make perf` unchanged. Do not densify sparse `spsolve`.
+The square path does **not** match the singular example. If LU reports singular, rustlab warns and falls through to QR, which returns a finite basic solution instead of `[1; Inf]`.
 
-**Tests.** Keep a hand-built wide system whose basic solution and `pinv` solution differ, so a silent switch fails the test. That fixture belongs next to `solve_factor.rs`.
+Sparse `A \ b` calls `to_dense()` (`value_to_matrix`). MATLAB keeps a sparse square matrix on a sparse factor.
+
+**Proposed change.**
+
+- Rectangular: keep QR with column pivoting and free variables 0. Adjust the rank tolerance only if the two published vectors disagree (our cutoff is `eps * max(m,n) * max|entry|`). Do not form `A*A'` and do not call the SVD.
+- Square singular: stay on LU and return its result, including `Inf`, with the singular warning. Do not replace that result with the QR basic solution. Nonsingular square LU is unchanged.
+- Square sparse: do not densify. Call the existing `spsolve` dispatch (Cholesky when it already would, else sparse LU).
+
+**Breaking impact.** Wide systems that already matched the basic solution do not move. Square singular results can change from a finite QR vector to LU's `Inf`/`NaN`. Sparse square `\` stops allocating a dense matrix. The row-hint test moves with section 2.
+
+**Performance.** Rectangular cost stays one pivoted QR, which is what we already pay. A min-norm SVD would be a second, slower factor; we are not adding it. Square sparse is the win: a 128×128 grid is `n = 16384` unknowns, and a dense complex matrix is `n² × 16` bytes ≈ 4 GB before the LU factor. Sparse chol does not allocate that. Acceptance: `spsolve` time on `laplacian_2d` unchanged (same solver), and a dense 64×64 nonsingular `\` within 10% of today. Rectangular sparse has no sparse QR in tree (SuiteSparseQR is C++ and out of rule 10). Densify those only when `m*n <= 2_000_000` (about 32 MB of complex entries); larger rectangular sparse `\` errors and names the cap. That cap is the quantified reason not to pretend we have a sparse QR.
+
+**Tests.** Both MathWorks vectors, exactly (rationals, not a loose residual). A third wide system where `pinv(A)*b` differs, so a min-norm "fix" fails. `[1 0; 0 0] \ [1; 1]` is `[1; Inf]` plus the singular warning. Nonsingular square residuals stay. One Laplacian `sparse \ b` matches `spsolve` and does not call `to_dense`.
 
 ---
 
@@ -347,7 +365,7 @@ Phase 6. Dense `[L, U, P] = lu` already shipped. `P` is a matrix.
 - Do not change the default third output of `lu`. Add `"vector"` so `[L, U, p] = lu(A, "vector")` returns the 1-based `perm` already in the factor, instead of building `permutation_matrix`. Two-output `lu` stays the absorbed form.
 - Sparse `chol` / `lu` keep returning the handle.
 
-Do not route square `A \ b` through dense `chol`. The LU path just shipped. A faster SPD `\` is a later optimization with its own residual check.
+After dense `chol` exists, square `A \ b` uses it when the matrix is real symmetric or complex Hermitian and the factor succeeds. That is MATLAB's full-matrix dispatch, and it is faster: Cholesky is `n³/3` flops against LU's `2n³/3` (about half). At `n = 256` that is about `5.6×10⁶` versus `1.1×10⁷` flops. If Cholesky fails, fall back to today's LU. A triangular matrix uses a triangular solve, `O(n²)`: at `n = 1024` that is about `10⁶` flops against about `7×10⁸` for LU. The scan that detects the triangle is `O(n²)` and is cheap next to LU. General nonsingular squares stay on LU. Do not send a rectangular system through Cholesky.
 
 **Breaking impact.** None for current `lu` calls: they do not pass `"vector"`. Dense `chol` is a new success on a matrix that today errors with "must be sparse". Update help that says dense `chol` does not exist. Sparse call sites stay on the handle.
 
@@ -407,34 +425,60 @@ Slopes are computed once per call. Do not recompute them per query. No crate.
 
 **Breaking impact.** None.
 
-**Performance.** Unifying is the hazard: extra rank checks, missed `as_slice` fast paths, accidental widens. Leaving the types alone costs nothing.
+**Performance.** This is the one representation we do not merge, and the reason is measured. `real_storage.md` records the `rustlab_llm` training step going from about 56 ms to about 29 ms in 0.3.17 by keeping a 1-D real buffer (8 bytes) instead of a complex one (16). The same note counts about 1,150 `Vector` / `Matrix` / `Tensor3` match sites. Collapsing the two types would put every DSP buffer through the matrix arms and risks a `[widen]` on the elementwise kernels that produced that speedup. MATLAB's visible shapes are done locally: `size` of a vector is already `[1, n]`, phase 2 makes `zeros(n)` square, phase 5 makes a vector on the right of `\` a column. None of those need one storage type.
 
-**Tests.** None new. Phase 2 and phase 5 tests are the guards that 1-D kernels still run.
+**Tests.** None new for the type split. Phase 2 and phase 5 tests are the guards that the 1-D kernels still run.
 
 ---
 
-## Do not change
+## 19. `xcorr` and `xcov`
+
+Phase 11. They do not exist. Checked the builtin registry, `docs/quickref.md`, and the tree: no `xcorr`, `xcov`, `corrcoef`, or other correlation builtin. `convolve` is linear convolution, length `len(x)+len(h)-1`, direct `O(n·m)` (`crates/rustlab-dsp/src/convolution.rs`). `overlap_add` is the long-filter FFT path for convolution. Neither returns lags, a scale option, or a zero-lag-centered correlation. Do not overload `convolve` into `xcorr`.
+
+**MATLAB.** `r = xcorr(x)` and `r = xcorr(x, y)`. Output length is `2N-1` when `maxlag` is omitted (`N` is the longer input; the shorter is zero-padded). `xcorr(x, y, maxlag)` returns length `2*maxlag+1`. Lags run from `-maxlag` to `+maxlag`, zero lag in the middle. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`. Positive lag `m` is `sum_n x(n+m) conj(y(n))`.
+
+`scaleopt`, default `'none'`:
+
+| Flag | Scale |
+|---|---|
+| `'none'` | raw sums |
+| `'biased'` | divide by `N` |
+| `'unbiased'` | divide by `N - abs(m)` |
+| `'normalized'` or `'coeff'` | divide so the zero-lag autocorrelation is 1; for two inputs, divide by `sqrt(r_xx(0) r_yy(0))` |
+
+A column input returns a column; a row returns a row. A matrix is one signal per column, and `xcorr(X)` returns every column-pair (width `ncols²`). `xcov` is `xcorr` after each signal has its mean removed. The same `maxlag` and `scaleopt` apply.
+
+**Proposed change.** New `xcorr` and `xcov` in `rustlab-dsp`, pure Rust, no crate. `xcov` subtracts the mean and calls the same kernel. One output is `r`. Two outputs are `[r, lags]`. A rustlab `Value::Vector` returns a `Value::Vector` (size `[1, 2N-1]`, the row MATLAB returns for a row). An n×1 matrix returns an `(2n-1)×1` matrix. Real inputs stay real (`conj` is a no-op); do not widen.
+
+**Breaking impact.** None. New names. `convolve` stays.
+
+**Performance.** Direct correlation is `O(N · L)` with `L = 2·maxlag+1`. FFT correlation zero-pads to at least `2N-1`, multiplies `fft(x)` by `conj(fft(y))` (with `y` placed so the lag shift is a rotation, not a flipped temporary of length `2N`), and `ifft`s. That is `O(N log N)` and uses the in-tree FFT, including Bluestein when the length is not a power of two.
+
+Use direct when `N * maxlag` is the smaller bill, and FFT otherwise. Concrete switch: direct when `maxlag <= 32` or `N < 256`; FFT when `maxlag` is the default `N-1` and `N >= 256`. At `N = 4096` and full lags, direct is about `4096² ≈ 1.7×10⁷` multiply-adds and an 8192-point FFT is a few times `8192 × 13` butterflies, so FFT wins. At `N = 10⁵` and `maxlag = 20`, direct is about `2×10⁶` operations and an FFT of length `2×10⁵` is wasted work. Do not implement full-lag `xcorr` by calling `convolve` on a reversed copy: that is the direct algorithm plus an extra length-`N` buffer, and it cannot apply `maxlag` without computing lags that are then thrown away.
+
+Acceptance: `make perf` unchanged (nothing in `perf/` calls `xcorr`). Report one full-lag FFT run at `N = 10⁵` and one `maxlag = 20` direct run at the same `N`. The two algorithms must match on `N = 256` to `1e-9` relative, including `'unbiased'` at the ends. Real data: zero `[widen]`.
+
+**Tests.** A 4-point hand sum for lags `-3:3`, including `conj` on a complex `y`. Length `2N-1`, zero lag at index `N` (1-based). `[r, lags]` lags equal `-maxlag:maxlag`. `'biased'` is `r/N`. `'coeff'` has zero-lag 1 on an autocorrelation. `xcov` of a constant is zero. Column in, column out. Octave's `xcorr` (signal package) matches MATLAB's lag order; add one compare case if `xcorr` exists in the Octave we run, otherwise the hand sum is the oracle. Do not compare against `conv`, which is not centered.
+
+---
+
+## Kept, with a quantified reason
+
+Everything from the old "leave it" list that is not in this table is a phase above.
 
 | Item | Why it stays |
 |---|---|
-| `norm(A)` default (Frobenius) | 2-norm is `svd_full`. Matrix residuals in the PDE examples and `eig.rlab` would become SVDs and change value. `norm(A, 2)` already exists. Octave fixture depends on the Frobenius default. |
-| Sparse `1e-15` drop | Exact-zero-only storage lets roundoff densify `chol` / `lu`. Laplacian `spsolve` is the path that would pay. `1e-14 * speye` already factors (0.3.23). |
-| `Vector` vs `Matrix` unification | About 1,150 match sites. Real-storage elementwise, SIMD, and `parmap` assume a 1-D buffer. `size` already says a vector is a row. |
-| `diag` of length 1 as a scalar | Same collapse as `kron` and one-element `linsolve`. A 1×1 matrix misses the scalar `f64` arm. The printed value already matches. |
-| Butterworth one-output = `b` | That is MATLAB nargout. The Hz + sample-rate signature stays; `butter(n, Wn)` would silently retune every filter. |
-| Sparse `chol` / `lu` return a handle | The handle is the factor-once path. Dense `chol` is a new overload. Dense `lu` already returns factors. |
-| Square `A \ b` LU, and sparse `spsolve` | `0.3.24` just switched the square operator to LU. Do not replace it with chol or a min-norm SVD. Rectangular `\` stays pivoted QR. |
-| Scalar `/` and scalar `\` | `0.3.24` kept both element-wise (`scalar_divide_matrix_stays_elementwise`, `backslash_scalar_is_elementwise`). MATLAB `2/A` is a solve. Reopening that now fights a release that just landed. `.\` is the element-wise left divide that is still missing. |
-| Unpivoted `qr` default (full `Q`) | `0.3.24` tests lock it. Phase 4 adds a third output. It does not flip two-output `qr(A)` to economy. |
-| Dense `lu` third output is a matrix | That is MATLAB's default and what `lu_permutation_identity` locks. `"vector"` is opt-in. |
-| `null` / `orth` signs | `0.3.24` says the basis is some orthonormal SVD basis. Check the products, not the entries. |
-| Not-a-knot `interp1` `"spline"` and `"extrap"` | Shipped. Phase 7 adds methods. It does not retune the cubic. |
-| One-output `polyfit` / `polyval` | Shipped, unscaled. `[p, S, mu]` must not change that row. |
-| Normal equations | Squares the condition. The existing QR is the solver for `\` and for `polyfit`. |
-| `sort(M, dim)` inside phase 1 | Real follow-on, but it turns an error into per-column results. Ship the complex key first so the two breaks are not one PR. |
-| `std` / `var` weight **vectors** | Normalization rules are a second feature. `w = 0` or `1` is the MATLAB default switch. A vector `w` errors until a later plan. |
-| `freqz` return shape (2×n matrix) | Including Nyquist is the MATLAB numeric change. `[H, f] = freqz(...)` is a second break on top of `plotdb`. |
-| Real-storage layout, SME matmul, elementwise driver structure | Out of scope. Phases may add a 1×n or n×1 fast-path **branch** that calls those kernels. They may not replace them. |
+| `Vector` and `Matrix` stay two types | Measured. Real 1-D storage cut the training step from about 56 ms to about 29 ms (`real_storage.md`, 0.3.17) and there are about 1,150 match sites. MATLAB shape is applied locally (phases 2 and 5), not by merging the types. |
+| Sparse `norm(S)` stays Frobenius | A 2000×2000 grid is `4×10⁶` nodes. Dense storage for a 2-norm is `n² × 16` bytes ≈ 256 TB. `norm(S, 2)` already refuses a side over 512, where the Gram alone is about 4 MB. Dense `norm(A)` does change (phase 9). |
+| Rectangular sparse `\` may densify, under a cap | No sparse QR in tree. SuiteSparseQR is C++ (rule 10). Cap `m*n <= 2_000_000` (~32 MB complex). Square sparse `\` does not densify (phase 5). |
+| Sparse `chol` / `lu` still return a handle | The handle is factor-once. Numeric Cholesky of a 2-D grid is `O(n^{1.5})`; each `solve` is much smaller. Returning only a numeric factor would repeat that factor on every right-hand side. Dense `chol` is a separate overload (phase 6). |
+| Butterworth one-output stays `b` | This already is MATLAB nargout. It is not a kept divergence. The Hz + sample-rate arguments stay because a silent switch to normalized `Wn` would design the wrong filter. That is a unit bug, not a speed tradeoff. |
+| `null` / `orth` signs | The subspace is what MATLAB defines. A particular sign is not unique. Tests check `A*Z ≈ 0` and `Z'*Z ≈ I`. |
+| Normal equations | They square the condition. `\` and `polyfit` already use QR. |
+| `freqz` stays a 2×n matrix | Phase 8 moves the samples to include Nyquist. `[H, f] = freqz(...)` would also break `plotdb`, which reads row 0 and row 1. One break at a time. |
+| Real-storage layout, SME matmul, elementwise drivers | Phases may add a 1×n or n×1 branch that calls those kernels. They may not replace them. |
+
+Unpivoted full `qr(A)` and dense `lu`'s permutation matrix stay because they already match MATLAB's defaults. `"vector"` and `[Q,R,P]` are additions (phases 4 and 6), not replacements.
 
 ---
 
@@ -444,14 +488,14 @@ Checked before writing this. Implementation PRs should update the pointed-to sta
 
 | Document | Conflict |
 |---|---|
-| [`octave_compat_divergences.md`](octave_compat_divergences.md) "Core math audit" | Updated on `main` for `0.3.24`. Phases 3–7 match the gaps that table still lists (`.\`, `[Q,R,P]`, dense `chol`, `lu` vector, `[p,S,mu]`, pchip/makima/fill, row RHS, basic vs min-norm). Phases 1, 2, and 8 still propose changing rows that table marks as staying (`eigs` `D`, complex `sort`, `std`/`var`, `trace`, `zeros(n)`, `freqz`). `norm`, the sparse drop, length-1 `diag`, and butter one-output stay in both docs. |
+| [`octave_compat_divergences.md`](octave_compat_divergences.md) "Core math audit" | Its "why it stays" rows for `norm`, the sparse drop, length-1 `diag`, row `\` , and the min-norm note are superseded here: dense `norm` and the drop become phases 9 and 10, `diag` becomes phase 1, and `\` follows MATLAB (column right-hand side, basic QR, not min-norm). Sparse `norm(S)` still stays, with the size argument above. |
 | Same file, item #5 | Asks for a deprecation warning and a release of bake time before `zeros(n)` flips. This plan flips in the same PR as the sweep. Pre-1.0, and the migration is the decision. |
 | [`roadmap.md`](roadmap.md) C12 | `zeros(n)` "needs a decision". Phase 2 is that decision. Mark C12 done when phase 2 lands. |
-| 0.3.23 changelog | Locks the half-open `freqz` grid, Frobenius `norm(S)`, the `1e-15` drop, butter one-output = `b`, and "`var` has no divide-by-n flag". Phase 1 changes the `var` sentence. Phase 8 changes the `freqz` sentence. The others stay, on purpose. |
+| 0.3.23 changelog | Locks the half-open `freqz` grid, Frobenius `norm`, the `1e-15` drop, butter one-output = `b`, and "`var` has no divide-by-n flag". Phases 1, 8, 9, and 10 change the `var`, `freqz`, dense-`norm`, and drop sentences. Sparse `norm(S)` and butter's one-output value stay. Butter stays because it already matches MATLAB, not because the changelog froze a divergence. |
 | [`real_storage.md`](real_storage.md), perf flywheel iterations 01–03 | Vector kernels and "do not widen" are the acceptance tests for phases 2 and 5. A phase that shows a new `[widen]` on real data is not done. |
 | [`closed/matrix_vector_coercion.md`](closed/matrix_vector_coercion.md) | Vectors are rows; `randn(1, n)` is a matrix. Phase 2 must not collapse that matrix into a vector to make the sweep easier. |
 | [`integer_types.md`](integer_types.md) | Hybrid MATLAB, with two named deviations (integer+double, opt-in wrap). Do not reopen those. Do include `zeros(n, "int32")` in the shape flip. The integer plan never specified single-arg shape. |
-| [`closed/sparameters.md`](closed/sparameters.md) "MATLAB-as-reference policy", and [`examples_notebooks_bug_hunt.md`](examples_notebooks_bug_hunt.md) POL1 | Shipped docs, REPL help, and examples should describe the behavior (shapes, flags, errors) without calling it a MATLAB port. This plan is allowed to say MATLAB because it is the spec. 0.3.23 help text already contains the word in a few `eig` lines. See open question 7. |
+| [`closed/sparameters.md`](closed/sparameters.md) "MATLAB-as-reference policy", and [`examples_notebooks_bug_hunt.md`](examples_notebooks_bug_hunt.md) POL1 | Shipped docs and REPL help should describe shapes and flags without naming MATLAB. This plan is the spec and does name it. See the one open question below. |
 | [`closed/rename_r_to_rlab.md`](closed/rename_r_to_rlab.md) | rustlab is not a MATLAB dialect. This migration is numeric behavior of existing and new math functions, not syntax cosplay and not a language rename. `break` / `continue` stay unsupported. Notebook-only features stay rustlab's. |
 | [`em_lesson_review_2026_07.md`](em_lesson_review_2026_07.md) | `polyfit` / `polyval` were deferred. `0.3.24` shipped the coefficient row. Phase 7 is only `[p, S, mu]`. |
 | Workflow rule 9 (plot backends) | No plot-backend change in these phases. `freqz` moves sample locations; `plotdb` reads the same 2×n layout. Confirm one DSP notebook render after phase 8, not a four-backend rewrite. |
@@ -460,17 +504,22 @@ Checked before writing this. Implementation PRs should update the pointed-to sta
 
 ---
 
-## Open questions for Michael
+## Decided
 
-`0.3.24` already answered these, so they are not questions anymore: `\` and matrix `/` exist; underdetermined `\` is a basic solution; a vector on the right is a row; scalar `/` stays element-wise; `qr` without a flag is a full unpivoted factor; dense `lu`'s third output is a permutation matrix; `polyfit` returns one unscaled row; `interp1` has `spline` and `"extrap"`.
+Michael's direction (match MATLAB whenever possible) closes the earlier questions:
 
-1. **Min-norm `\`.** Leave the basic solution (MATLAB, and what just shipped), or switch the wide full-rank case to minimum-norm (Octave)? Recommendation: leave it. `pinv(A)*b` stays the min-norm answer.
-2. **Column right-hand side.** Leave "a vector is a row, pass `b'`", or treat a `Value::Vector` on the right of `\` as a column? Recommendation: leave the row. It matches `size` and the `0.3.24` tests. A yes means phase 5 breaks that hint and may have to teach `real_ops` about n×1.
-3. **`zeros(n)` without a warning release.** Confirm we skip the deprecation cycle in the octave plan and break in one PR.
-4. **`freqz` includes Nyquist** even though 0.3.23 and Octave's `freqz` use the half-open DFT grid. Confirm phase 8 is wanted. If not, drop phase 8.
-5. **`norm(A)` stays Frobenius.** Confirm. The alternative is an SVD on every unqualified matrix norm.
-6. **Sparse drop stays `1e-15`.** Confirm. The alternative is denser factorizations after roundoff.
-7. **The word "MATLAB" in shipped help.** POL1 and the S-parameter plan say shipped docs should not name MATLAB. This plan uses it as the spec. Implementation PRs will describe shapes and flags in rustlab's words unless you want the help text to say MATLAB explicitly.
-8. **`sort` stability.** NaNs move to the end either way. Stable tie-break only if `sort` of 1e6 real doubles stays within 2× of today's unstable sort. Confirm that gate.
-9. **`randi(imax, n)` becomes n×n** together with `randn(n)`. Confirm. `randi(6, 5000)` in `examples/math/random.rlab` has to become `randi(6, 1, 5000)`.
-10. **`interp1` additions.** Confirm phase 7 adds `pchip`, `makima`, and a numeric fill, and does not change the not-a-knot spline or `"extrap"`.
+- `\` with a vector on the right is a column, and one solution is n×1 (phase 5).
+- Underdetermined `\` stays a basic solution from QR with column pivoting. MathWorks documents that this is not the minimum-norm solution; `pinv` / `lsqminnorm` are. Do not implement min-norm `\` (phase 5).
+- `zeros(n)` / `randi(imax, n)` flip to n×n in one PR, no warning release (phase 2).
+- `freqz` includes Nyquist (phase 8).
+- Dense `norm(A)` becomes the 2-norm (phase 9). Sparse `norm(S)` stays Frobenius for the size reason above.
+- The `1e-15` sparse drop becomes exact-zero only, with a Laplacian timing gate (phase 10).
+- `diag` of length 1 becomes a 1×1 matrix (phase 1).
+- `sort` is stable unless the 2× gate fails, in which case the PR stops and reports the number instead of quietly keeping unstable order.
+- `std` / `var` gain `w` and the weight-vector form (phase 1).
+- `interp1` gains `pchip`, `makima`, and a numeric fill without retuning `"spline"` (phase 7).
+- Scalar-numerator `/` becomes `mrdivide` (phase 3). Array divided by a scalar stays element-wise, which is also MATLAB.
+
+## Open question
+
+1. **The word "MATLAB" in shipped help.** POL1 and the S-parameter plan say REPL help and `docs/functions.md` should not name MATLAB. Implementation PRs will describe the shapes and flags in rustlab's words unless you want those pages to say MATLAB. This plan file is the spec and keeps the name.
