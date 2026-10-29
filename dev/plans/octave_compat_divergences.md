@@ -39,8 +39,8 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
 | `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
-| `polyfit` / `polyval` | no `mu` centering output | `polyfit` can return `[p, S, mu]` | Shipped in 0.3.24 as the coefficient row only |
-| `interp1` | no numeric fill value, no `pchip` / `makima`, spline is not-a-knot | those methods and a numeric extrapolation value | Shipped in 0.3.24 for `linear`, `nearest`, `previous`, `next`, `spline`, and `"extrap"` |
+| `polyfit` / `polyval` | `[p, S, mu]` centers `x`; one output stays unscaled. `polyval(p, x, S, mu)` undoes it | the error-estimate output of `polyval` | `[p, S, mu]` landed in 0.3.30. One-output `p` is unchanged |
+| `interp1` | `pchip` (Fritsch–Carlson), `makima`, and a numeric fill outside the range. Spline stays not-a-knot | — | `pchip`, `makima`, and the fill landed in 0.3.30. `"extrap"` is unchanged |
 | `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
 | `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |

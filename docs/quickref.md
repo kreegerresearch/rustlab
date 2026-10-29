@@ -248,9 +248,9 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `orth(A)` | Orthonormal column space from the SVD |
 | `[L, U, P] = lu(A)` | Dense LU, `P*A = L*U`. `[L, U] = lu(A)` absorbs `P` into `L`. Sparse `lu` still returns a factor handle |
 | `roots(p)` | Roots of polynomial with coefficients p |
-| `polyfit(x, y, n)` | Degree-n least-squares polynomial, descending powers, via QR |
-| `polyval(p, x)` | Horner evaluation; result has the shape of `x` |
-| `interp1(x, y, xi [, method [, "extrap"]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot). NaN outside the range unless `"extrap"` |
+| `polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)` | Degree-n least-squares polynomial, descending powers, via QR. `S` has `R`, `df`, `normr`. `mu` centers `x` and changes `p` |
+| `polyval(p, x)` / `polyval(p, x, S, mu)` | Horner evaluation; result has the shape of `x`. With `mu`, `x` is centered first |
+| `interp1(x, y, xi [, method [, "extrap" or fill]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot), `pchip`, `makima`. NaN outside the range unless `"extrap"` or a numeric fill |
 
 ---
 

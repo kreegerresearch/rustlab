@@ -265,18 +265,37 @@ fn permuted_l(f: &lu::Lu) -> Array2<C64> {
     l2
 }
 
-pub(crate) fn builtin_polyfit(args: Vec<Value>) -> Result<Value, ScriptError> {
+pub(crate) fn builtin_polyfit(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     if args.len() != 3 {
         return Err(ScriptError::type_err(format!(
             "polyfit: expected (x, y, n), got {} arguments",
             args.len()
         )));
     }
+    if nargout > 3 {
+        return Err(ScriptError::type_err(
+            "polyfit: returns at most [p, S, mu]".to_string(),
+        ));
+    }
     let n = args[2].to_usize().map_err(ScriptError::type_err)?;
-    let x = real_samples(&args[0], "polyfit x")?;
-    let y = series_matrix(x.len(), &args[1], "polyfit")?;
-    let m = x.len();
+    let x_raw = real_samples(&args[0], "polyfit x")?;
+    let y = series_matrix(x_raw.len(), &args[1], "polyfit")?;
+    let m = x_raw.len();
     let cols = n + 1;
+    if (m as u64).saturating_mul(cols as u64) > 100_000_000 {
+        return Err(ScriptError::type_err(format!(
+            "polyfit: Vandermonde would have {} entries; the limit is 100000000",
+            (m as u64).saturating_mul(cols as u64)
+        )));
+    }
+    // Centering only when mu is requested. One- and two-output fits use x as given.
+    let (x, mu) = if nargout >= 3 {
+        let (mean, std) = mean_std(&x_raw)?;
+        let scaled: Vec<f64> = x_raw.iter().map(|t| (t - mean) / std).collect();
+        (scaled, Some((mean, std)))
+    } else {
+        (x_raw, None)
+    };
     let mut v = Array2::zeros((m, cols));
     for i in 0..m {
         for j in 0..cols {
@@ -301,25 +320,151 @@ pub(crate) fn builtin_polyfit(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     // One row of coefficients per column of y. A single series is a row vector.
     let rows = coeff.ncols();
-    let cols = coeff.nrows();
-    let flipped = Array2::from_shape_fn((rows, cols), |(i, j)| coeff[[j, i]]);
+    let flipped = Array2::from_shape_fn((rows, coeff.nrows()), |(i, j)| coeff[[j, i]]);
     let packed = pack(&flipped, real);
-    if y.ncols() == 1 {
-        Ok(as_row(packed))
-    } else {
-        Ok(packed)
+    let p = if y.ncols() == 1 { as_row(packed) } else { packed };
+    if nargout <= 1 {
+        return Ok(p);
     }
+    let s = fit_struct(&v, &y, &coeff, &f, m, cols);
+    if nargout == 2 {
+        return Ok(Value::Tuple(vec![p, s]));
+    }
+    let (mean, std) = mu.expect("three outputs center x");
+    let mu_v = Value::real_vector(ndarray::Array1::from_vec(vec![mean, std]));
+    Ok(Value::Tuple(vec![p, s, mu_v]))
+}
+
+fn mean_std(x: &[f64]) -> Result<(f64, f64), ScriptError> {
+    if x.len() < 2 {
+        return Err(ScriptError::type_err(
+            "polyfit: centering needs at least two x values".to_string(),
+        ));
+    }
+    let mean = x.iter().sum::<f64>() / x.len() as f64;
+    let mut acc = 0.0;
+    for t in x {
+        let d = t - mean;
+        acc += d * d;
+    }
+    let std = (acc / (x.len() - 1) as f64).sqrt();
+    if !(std > 0.0) || !std.is_finite() {
+        return Err(ScriptError::type_err(
+            "polyfit: x has zero standard deviation".to_string(),
+        ));
+    }
+    Ok((mean, std))
+}
+
+/// `S.R` is the triangular factor of this fit's QR. `S.df` is
+/// `length(x) - (degree + 1)`. `S.normr` is the residual norm of each column.
+fn fit_struct(
+    v: &Array2<C64>,
+    y: &Array2<C64>,
+    coeff: &Array2<C64>,
+    f: &qr::Qr,
+    m: usize,
+    ncoeff: usize,
+) -> Value {
+    let r = qr::r_factor(f);
+    let real_r = r.iter().all(|z| z.im == 0.0);
+    let mut norms = Vec::with_capacity(y.ncols());
+    for s in 0..y.ncols() {
+        let mut ss = 0.0;
+        for i in 0..y.nrows() {
+            let mut pred = C64::new(0.0, 0.0);
+            for j in 0..v.ncols() {
+                pred += v[[i, j]] * coeff[[j, s]];
+            }
+            ss += (y[[i, s]] - pred).norm_sqr();
+        }
+        norms.push(ss.sqrt());
+    }
+    let normr = if norms.len() == 1 {
+        Value::Scalar(norms[0])
+    } else {
+        Value::real_vector(ndarray::Array1::from_vec(norms))
+    };
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("R".to_string(), pack(&r, real_r));
+    fields.insert("df".to_string(), Value::Scalar(m as f64 - ncoeff as f64));
+    fields.insert("normr".to_string(), normr);
+    Value::Struct(fields)
 }
 
 pub(crate) fn builtin_polyval(args: Vec<Value>) -> Result<Value, ScriptError> {
+    if args.len() == 4 {
+        if !matches!(&args[2], Value::Struct(_)) {
+            return Err(ScriptError::type_err(
+                "polyval: the third argument must be the struct from polyfit".to_string(),
+            ));
+        }
+        let (mean, std) = mu_pair(&args[3])?;
+        let coeffs = coeff_row(&args[0])?;
+        let scaled = scale_by_mu(&args[1], mean, std)?;
+        return horner(&coeffs, &scaled);
+    }
     if args.len() != 2 {
         return Err(ScriptError::type_err(format!(
-            "polyval: expected (p, x), got {} arguments",
+            "polyval: expected (p, x) or (p, x, S, mu), got {} arguments",
             args.len()
         )));
     }
     let coeffs = coeff_row(&args[0])?;
     horner(&coeffs, &args[1])
+}
+
+fn mu_pair(v: &Value) -> Result<(f64, f64), ScriptError> {
+    let xs: Vec<f64> = match v {
+        Value::Vector(a) if a.len() == 2 => a.iter().map(|z| z.re).collect(),
+        Value::Matrix(m) if m.len() == 2 => m.iter().map(|z| z.re).collect(),
+        _ => {
+            return Err(ScriptError::type_err(
+                "polyval: mu must be [mean, std]".to_string(),
+            ))
+        }
+    };
+    if !xs[0].is_finite() || !(xs[1] > 0.0) || !xs[1].is_finite() {
+        return Err(ScriptError::type_err(
+            "polyval: mu must be a finite mean and a positive standard deviation".to_string(),
+        ));
+    }
+    Ok((xs[0], xs[1]))
+}
+
+fn scale_by_mu(x: &Value, mean: f64, std: f64) -> Result<Value, ScriptError> {
+    let scale = |z: C64| -> Result<C64, ScriptError> {
+        if z.im.abs() > 1e-12 {
+            return Err(ScriptError::type_err(
+                "polyval: x must be real when mu is given".to_string(),
+            ));
+        }
+        Ok(C64::new((z.re - mean) / std, 0.0))
+    };
+    match x {
+        Value::Scalar(s) => Ok(Value::Scalar(scale(C64::new(*s, 0.0))?.re)),
+        Value::Complex(z) => Ok(Value::Scalar(scale(*z)?.re)),
+        Value::Vector(v) => {
+            let mut out = Vec::with_capacity(v.len());
+            for z in v.iter() {
+                out.push(scale(*z)?.re);
+            }
+            Ok(Value::real_vector(ndarray::Array1::from_vec(out)))
+        }
+        Value::Matrix(m) => {
+            let mut data = Vec::with_capacity(m.len());
+            for z in m.iter() {
+                data.push(scale(*z)?.re);
+            }
+            Ok(Value::real_matrix(
+                Array2::from_shape_vec(m.dim(), data).expect("same shape"),
+            ))
+        }
+        other => Err(ScriptError::type_err(format!(
+            "polyval: x must be numeric, got {}",
+            other.type_name()
+        ))),
+    }
 }
 
 fn as_row(v: Value) -> Value {
