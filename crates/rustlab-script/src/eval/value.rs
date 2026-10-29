@@ -1785,6 +1785,13 @@ impl Value {
             }));
         }
 
+        // `A\b`. Scalar `A` is element-wise; everything else is a linear solve.
+        if op == LeftDiv {
+            let lhs = Self::widen_int(lhs);
+            let rhs = Self::widen_int(rhs);
+            return super::linsys::mldivide(lhs, rhs);
+        }
+
         // Integer-typed operands (dev/plans/integer_types.md). Same-class
         // int⊗int stays integer; cross-class errors; int⊗double promotes to
         // double (Deviation A). Handled before the scalar/array arms below.
@@ -2116,10 +2123,7 @@ impl Value {
                 Add | Sub | ElemMul | ElemDiv => {
                     Self::elementwise_with_broadcast(a, b, op).map(|m| Value::Matrix(m.into()))
                 }
-                Div => Err(
-                    "use ./ for element-wise matrix division; or inv(A)*B for left-divide"
-                        .to_string(),
-                ),
+                Div => super::linsys::mrdivide(Value::Matrix(a.clone()), Value::Matrix(b.clone())),
                 ElemPow | Pow => {
                     Self::elementwise_with_broadcast(a, b, op).map(|m| Value::Matrix(m.into()))
                 }
@@ -2159,6 +2163,7 @@ impl Value {
                         let v_row = Self::vector_to_row_matrix(v);
                         Self::elementwise_with_broadcast(m, &v_row, op).map(|m| Value::Matrix(m.into()))
                     }
+                    Div => super::linsys::mrdivide(Value::Matrix(m.clone()), Value::Vector(v.clone())),
                     _ => Err(format!(
                         "operator {:?} not defined for matrix and vector; use .* ./ .^ for element-wise ops",
                         op
@@ -2195,6 +2200,7 @@ impl Value {
                         let v_row = Self::vector_to_row_matrix(v);
                         Self::elementwise_with_broadcast(&v_row, m, op).map(|m| Value::Matrix(m.into()))
                     }
+                    Div => super::linsys::mrdivide(Value::Vector(v.clone()), Value::Matrix(m.clone())),
                     _ => Err(format!(
                         "operator {:?} not defined for vector and matrix; use .* ./ .^ for element-wise ops",
                         op

@@ -209,7 +209,7 @@ impl<'a> Scanner<'a> {
     }
 
     /// Multi-char and single-char operators, matching lexer tokens.
-    /// Lone `&`, `|`, `~`, and `\` are not operators.
+    /// Lone `&`, `|`, and `~` are not operators. `\` is left division.
     fn match_op(&self) -> Option<usize> {
         let r = self.rest();
         const TWO: &[&str] = &[
@@ -222,7 +222,9 @@ impl<'a> Scanner<'a> {
         }
         let ch = self.peek()?;
         match ch {
-            '+' | '-' | '*' | '/' | '^' | ':' | '=' | '<' | '>' | '!' | '@' => Some(ch.len_utf8()),
+            '+' | '-' | '*' | '/' | '\\' | '^' | ':' | '=' | '<' | '>' | '!' | '@' => {
+                Some(ch.len_utf8())
+            }
             '.' => {
                 let next = r.chars().nth(1)?;
                 if next.is_alphabetic() || next == '_' {
@@ -515,11 +517,10 @@ mod tests {
         let s = kinds("\"unterminated");
         assert_eq!(s[0].0, HlKind::String);
         assert_eq!(s[0].1, "\"unterminated");
-        // Backslash is plain, not an operator, and scanning continues.
         assert!(kinds("a \\ b")
             .iter()
-            .any(|(k, t)| *k == HlKind::Text && t.contains('\\')));
-        assert!(crate::lexer::tokenize("a \\ b").is_err());
+            .any(|(k, t)| *k == HlKind::Operator && *t == "\\"));
+        assert!(crate::lexer::tokenize("a \\ b").is_ok());
     }
 
     #[test]

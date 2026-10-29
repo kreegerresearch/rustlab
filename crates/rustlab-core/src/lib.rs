@@ -1,5 +1,6 @@
 pub mod dense_eig;
 pub mod error;
+pub mod factor;
 pub mod fingerprint;
 pub mod matmul;
 pub mod sparse_eig;
