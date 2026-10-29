@@ -36,7 +36,7 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `1:5`, `0:0.5:2`, `10:-1:1` | Range: `start:stop` or `start:step:stop` |
 | `.*`, `./`, `.^` | Element-wise multiply, divide, power |
 | `*` | Matrix multiply |
-| `\` | Left division `A\b`. Square nonsingular `A` uses LU; rectangular and singular `A` use QR least squares. A vector is a row, so a column right-hand side is `b'`. A scalar left side divides element-wise |
+| `\` | Left division `A\b`. A vector on the right is a column and one solution is `n×1`. Square `A` uses LU, including a zero pivot (`Inf`). Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. Square sparse `A` uses `spsolve` |
 | `/` | Right division `B/A` when both sides are matrices or a row (`X*A = B`). A scalar on either side stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
@@ -240,7 +240,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `eig(A, "vector")` / `eig(A, "matrix")` | Output-form override (matlab convention): force D to a column vector or a diagonal matrix regardless of nargout. Composes with the generalized form: `eig(A, B, "vector")`. |
 | `eig(A, B)` / `[V, D] = eig(A, B)` | Generalized eig: solves `A·v = λ·B·v` by reducing to standard `eig(inv(B)·A)`. Requires B invertible. |
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
-| `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
+| `linsolve(A, b)` | Square solve, same path as `A\b`. A vector is a column; a dense solution is `n×1` |
 | `mldivide(A, b)` / `A\b` | Same solve as `\`. Warns when A is singular or ill-conditioned and still returns a basic solution |
 | `mrdivide(B, A)` / `B/A` | Right division, `X*A = B` |
 | `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)` | Householder QR. Economy form with `0` or `"econ"`. One output is `R` |

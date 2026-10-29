@@ -35,7 +35,7 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
 | `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
 | `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
-| `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
+| `A \ b` | a vector on the right is a column and one solution is `n×1`. Square systems stay on LU, including `Inf` from a zero pivot. Rectangular systems return a basic QR solution (free variables 0), not the minimum-norm solution. Square sparse uses `spsolve` | `mldivide` | Vector columns, singular LU, and square sparse landed in 0.3.28. Scalar `A` still divides element-wise. An explicit one-row matrix stays a row |
 | `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
 | `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |

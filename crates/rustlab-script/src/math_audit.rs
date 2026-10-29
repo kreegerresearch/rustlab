@@ -202,7 +202,16 @@ fn linsolve_known_system_and_complex() {
         Complex64::new(1.0, 1.0),
         1e-12,
     );
-    assert!(eval_err("x = linsolve([1, 2; 2, 4], [1; 2])").contains("singular"));
+    // A singular square system warns and returns the LU result, the same
+    // value `\` returns. It is not a hard error.
+    let ev = eval("A = [1, 2; 2, 4]; b = [1; 2]; x = linsolve(A, b); y = A \\ b;");
+    let x = vec_c(&ev, "x");
+    let y = vec_c(&ev, "y");
+    for (a, b) in x.iter().zip(y.iter()) {
+        let same = (a.re.is_nan() && b.re.is_nan() && a.im == 0.0 && b.im == 0.0)
+            || (*a - *b).norm() < 1e-8;
+        assert!(same, "linsolve {a} vs \\ {b}");
+    }
     assert!(eval_err("x = linsolve([1, 2, 3; 4, 5, 6], [1; 2])").contains("square"));
 }
 

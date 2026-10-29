@@ -123,9 +123,119 @@ fn backslash_scalar_is_elementwise() {
 }
 
 #[test]
-fn backslash_row_count_mismatch_names_the_column() {
-    let err = eval_err("A = [1, 0; 0, 1]; x = A \\ [1, 2];");
-    assert!(err.contains("b'"), "{err}");
+fn backslash_explicit_row_is_not_a_column() {
+    // `[1, 2]` is a vector, so it is a column and solves. An explicit
+    // 1×2 matrix still has one row.
+    let ev = eval("A = [1, 0; 0, 1]; v = [1, 2]; x = A \\ v;");
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 2.0);
+    let err = eval_err(
+        "A = [1, 0; 0, 1];
+         row = zeros(1, 2);
+         row(1, 1) = 1;
+         row(1, 2) = 2;
+         x = A \\ row;",
+    );
+    assert!(err.contains("1 rows"), "{err}");
+    assert!(err.contains("column"), "{err}");
+}
+
+#[test]
+fn backslash_vector_solution_is_a_column() {
+    let ev = eval(
+        "A = [2, 1; 1, 3];
+         v = [5, 10];
+         x = A \\ v;
+         y = linsolve(A, v);",
+    );
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    assert_eq!(shape(&ev, "y"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 3.0);
+    let y = mat_re(&ev, "y");
+    close(y[0][0], 1.0);
+    close(y[1][0], 3.0);
+}
+
+#[test]
+fn underdetermined_backslash_is_the_basic_solution() {
+    // Published basic solutions. The minimum-norm solution is different.
+    let ev = eval(
+        "A = [1, 2, 0; 0, 4, 3];
+         x = A \\ [8, 18];
+         z = pinv(A) * [8; 18];
+         d = max(abs(x - z));",
+    );
+    assert_eq!(shape(&ev, "x"), (3, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 0.0);
+    close(x[1][0], 4.0);
+    close(x[2][0], 2.0 / 3.0);
+    let d = re(&ev, "d");
+    assert!(d > 1e-6, "basic solution matched pinv, diff {d}");
+
+    let ev = eval("R = [6, 8, 7, 3; 3, 5, 4, 1]; x = R \\ [7, 8];");
+    assert_eq!(shape(&ev, "x"), (4, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 0.0);
+    close(x[1][0], 17.0 / 7.0);
+    close(x[2][0], 0.0);
+    close(x[3][0], -29.0 / 7.0);
+}
+
+#[test]
+fn singular_square_backslash_divides_by_zero() {
+    let _ = crate::eval::linsys::take_singular_warns();
+    let ev = eval("A = [1, 0; 0, 0]; x = A \\ [1, 1];");
+    assert!(crate::eval::linsys::take_singular_warns() >= 1);
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    assert!(x[1][0].is_infinite() && x[1][0] > 0.0, "{}", x[1][0]);
+}
+
+#[test]
+fn square_sparse_backslash_matches_spsolve() {
+    let ev = eval(
+        "L = laplacian_2d(4, 4);
+         b = ones(16);
+         x = L \\ b;
+         y = spsolve(L, b);
+         d = max(abs(x - y));",
+    );
+    close(re(&ev, "d"), 0.0);
+}
+
+#[test]
+fn rectangular_sparse_backslash_has_a_dense_cap() {
+    let ev = eval("A = spzeros(2, 3); A(1, 1) = 1; A(2, 2) = 1; x = A \\ [4, 5];");
+    assert_eq!(shape(&ev, "x"), (3, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 4.0);
+    close(x[1][0], 5.0);
+    close(x[2][0], 0.0);
+    let err = eval_err("A = spzeros(2001, 1000); x = A \\ ones(2001);");
+    assert!(err.contains("2000000"), "{err}");
+}
+
+#[test]
+fn column_times_vector_is_elementwise() {
+    let ev = eval(
+        "x = [2; 3; 4];
+         h = [5, 6, 7];
+         y = x .* h;
+         z = [2, 3, 4] .* h;",
+    );
+    assert_eq!(shape(&ev, "y"), (1, 3));
+    let y = vec_re(&ev, "y");
+    let z = vec_re(&ev, "z");
+    assert_eq!(y, z);
+    close(y[0], 10.0);
+    close(y[1], 18.0);
+    close(y[2], 28.0);
 }
 
 #[test]
@@ -143,11 +253,18 @@ fn least_squares_residual_orthogonal_to_columns() {
 }
 
 #[test]
-fn singular_consistent_system_still_solves() {
-    let ev = eval("A = [1, 2; 2, 4]; x = A \\ [3; 6]; r = A * x - [3; 6];");
-    for v in vec_re(&ev, "r") {
-        close(v, 0.0);
-    }
+fn singular_consistent_square_stays_on_lu() {
+    // A consistent singular square system used to fall through to a finite
+    // QR solution. It now stays on LU, so a zero pivot makes the result
+    // non-finite, and the singular warning is printed.
+    let _ = crate::eval::linsys::take_singular_warns();
+    let ev = eval("A = [1, 2; 2, 4]; x = A \\ [3; 6];");
+    assert!(crate::eval::linsys::take_singular_warns() >= 1);
+    let x = mat_re(&ev, "x");
+    assert!(
+        x.iter().flatten().any(|v| !v.is_finite()),
+        "expected a non-finite LU result, got {x:?}"
+    );
 }
 
 #[test]

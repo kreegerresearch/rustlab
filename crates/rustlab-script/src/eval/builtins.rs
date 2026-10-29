@@ -9456,9 +9456,12 @@ fn matrix_expm(a: &CMatrix) -> Result<CMatrix, String> {
 /// linsolve(A, b) — solve the linear system A*x = b via Gaussian elimination
 fn builtin_linsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("linsolve", &args, 2)?;
-    let a = match &args[0] {
-        Value::Matrix(m) => m.clone(),
-        Value::SparseMatrix(sm) => sm.to_dense().into(),
+    let (m, n) = match &args[0] {
+        Value::Matrix(a) => {
+            let (r, c) = a.dim();
+            (r, c)
+        }
+        Value::SparseMatrix(sm) => (sm.rows, sm.cols),
         other => {
             return Err(ScriptError::type_err(format!(
                 "linsolve: A must be a matrix, got {}",
@@ -9466,87 +9469,86 @@ fn builtin_linsolve(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     };
-    let b = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let n = a.nrows();
-    if n != a.ncols() {
+    if m != n {
         return Err(ScriptError::type_err(format!(
-            "linsolve: A must be square (got {}×{})",
-            n,
-            a.ncols()
+            "linsolve: A must be square (got {m}×{n})"
         )));
     }
-    if n != b.len() {
-        return Err(ScriptError::type_err(format!(
-            "linsolve: A is {}×{} but b has length {}",
-            n,
-            n,
-            b.len()
-        )));
+    // Same factor and the same column-vector rule as `\`.
+    super::linsys::mldivide(args[0].clone(), args[1].clone()).map_err(ScriptError::type_err)
+}
+
+/// Square sparse `A \ b`. One column returns the same value as `spsolve`.
+/// Several columns reuse one factor. An explicit one-row matrix is not a column.
+pub(crate) fn sparse_square_mldivide(
+    sm: &rustlab_core::SparseMat,
+    b: &Value,
+) -> Result<Value, String> {
+    let n = sm.rows;
+    let columns = sparse_rhs_columns(n, b)?;
+    if columns.len() == 1 {
+        return sparse_auto_one(sm, &columns[0]);
     }
-    if !matrix_entries_finite(&a) || b.iter().any(|c| !c.re.is_finite() || !c.im.is_finite()) {
-        return Err(ScriptError::type_err(
-            "linsolve: A and b must be finite".to_string(),
-        ));
-    }
-    let scale = matrix_abs_scale(&a);
-    // Augmented [A | b]
-    let mut aug: Array2<C64> = Array2::zeros((n, n + 1));
-    for i in 0..n {
-        for j in 0..n {
-            aug[[i, j]] = a[[i, j]];
+    let mut solved = Vec::with_capacity(columns.len());
+    if sm.is_spd_estimate(1e-10) {
+        if let Ok(factor) = factor_sparse_cholesky(sm, OrderingChoice::Auto) {
+            for col in &columns {
+                solved.push(solve_with_factor(&factor, col).map_err(|e| format!("mldivide: {e}"))?);
+            }
+            return Ok(pack_sparse_columns(&solved));
         }
-        aug[[i, n]] = b[i];
     }
-    // Forward elimination with partial pivoting
-    for k in 0..n {
-        let mut max_idx = k;
-        let mut max_val = aug[[k, k]].norm();
-        for i in k + 1..n {
-            let v = aug[[i, k]].norm();
-            if v > max_val {
-                max_val = v;
-                max_idx = i;
+    let factor = factor_sparse_lu(sm, OrderingChoice::Auto).map_err(|e| format!("mldivide: {e}"))?;
+    for col in &columns {
+        solved.push(solve_with_factor(&factor, col).map_err(|e| format!("mldivide: {e}"))?);
+    }
+    Ok(pack_sparse_columns(&solved))
+}
+
+fn sparse_auto_one(sm: &rustlab_core::SparseMat, b: &CVector) -> Result<Value, String> {
+    if sm.is_spd_estimate(1e-10) {
+        if let Ok(x) = try_sparse_cholesky(sm, b, OrderingChoice::Auto) {
+            return Ok(spsolve_pack(x));
+        }
+    }
+    try_sparse_lu(sm, b, OrderingChoice::Auto)
+        .map(spsolve_pack)
+        .map_err(|e| format!("mldivide: {e}"))
+}
+
+fn sparse_rhs_columns(n: usize, b: &Value) -> Result<Vec<CVector>, String> {
+    let rows_err = |rows: usize| {
+        format!(
+            "mldivide: A is {n}×{n} but b has {rows} rows\n  hint: a vector is a column; an explicit row has one row"
+        )
+    };
+    match b {
+        Value::Matrix(m) if m.nrows() == 1 && n != 1 => Err(rows_err(1)),
+        Value::Matrix(m) if m.nrows() == n => {
+            Ok((0..m.ncols()).map(|j| m.column(j).to_owned()).collect())
+        }
+        Value::Matrix(m) => Err(rows_err(m.nrows())),
+        other => {
+            let v = other.to_cvector()?;
+            if v.len() != n {
+                Err(rows_err(v.len()))
+            } else {
+                Ok(vec![v])
             }
         }
-        if max_idx != k {
-            for j in 0..n + 1 {
-                let tmp = aug[[k, j]];
-                aug[[k, j]] = aug[[max_idx, j]];
-                aug[[max_idx, j]] = tmp;
-            }
-        }
-        if pivot_is_singular(aug[[k, k]].norm(), scale, n) {
-            return Err(ScriptError::type_err(
-                "linsolve: matrix is singular or nearly singular".to_string(),
-            ));
-        }
-        for i in k + 1..n {
-            let factor = aug[[i, k]] / aug[[k, k]];
-            for j in k..n + 1 {
-                let sub = factor * aug[[k, j]];
-                aug[[i, j]] -= sub;
-            }
-        }
     }
-    // Back substitution
-    let mut x: CVector = Array1::zeros(n);
-    for i in (0..n).rev() {
-        let mut s = aug[[i, n]];
-        for j in i + 1..n {
-            s -= aug[[i, j]] * x[j];
-        }
-        x[i] = s / aug[[i, i]];
-    }
-    // Return as scalar if 1-element, else vector
-    if x.len() == 1 {
-        let c = x[0];
-        if c.im.abs() < 1e-12 {
-            Ok(Value::Scalar(c.re))
-        } else {
-            Ok(Value::Complex(c))
-        }
+}
+
+fn pack_sparse_columns(cols: &[CVector]) -> Value {
+    let n = cols[0].len();
+    let p = cols.len();
+    let real = cols.iter().all(|c| c.iter().all(|z| z.im == 0.0));
+    if real {
+        Value::real_matrix(ndarray::Array2::from_shape_fn((n, p), |(i, j)| cols[j][i].re))
     } else {
-        Ok(Value::Vector(x.into()))
+        Value::Matrix(
+            ndarray::Array2::from_shape_fn((n, p), |(i, j)| cols[j][i]).into(),
+        )
     }
 }
 
