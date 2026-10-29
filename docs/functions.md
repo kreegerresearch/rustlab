@@ -1030,10 +1030,11 @@ h = fir_notch(1000.0, 200.0, 8000.0, 65, "hann")
 | 100 dB | 10.06 | Demanding applications |
 
 ### `freqz(h, n_points, sample_rate)`
-Complex frequency response at `n_points` frequencies on `[0, Nyquist)`:
-`f_k = k · sample_rate / (2 · n_points)` for `k = 0 .. n_points-1`. Nyquist
-itself is not a sample. The spacing does not change when `2 · n_points` is
-not a power of two, and a filter longer than `2 · n_points` is not wrapped.
+Complex frequency response at `n_points` frequencies from DC through Nyquist:
+`f_k = k · sample_rate / (2 · (n_points - 1))` for `k = 0 .. n_points-1`
+when `n_points > 1`. The last sample is `sample_rate / 2`. `n_points = 1`
+is that Nyquist sample alone. A filter longer than `2 · (n_points - 1)` is
+summed on this grid instead of being wrapped by the DFT.
 Returns a **2×n matrix**:
 - Row 1: frequency axis in Hz
 - Row 2: complex H(f)

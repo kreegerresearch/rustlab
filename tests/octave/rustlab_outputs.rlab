@@ -53,10 +53,8 @@ save("out_fir_hp.csv", real(h_hp))
 h_bp = fir_bandpass(33, 500.0, 2000.0, 8000.0, "hann")
 save("out_fir_bp.csv", real(h_bp))
 
-# ── 10. freqz magnitude (512 points, LP 33-tap Hann at 1000 Hz / 8000 sr) ───
-Hz = freqz(h_lp, 512, 8000.0)
-save("out_freqz_hz.csv",  real(Hz(1,:)))
-save("out_freqz_mag.csv", abs(Hz(2,:)))
+# ── 10. freqz ────────────────────────────────────────────────────────────────
+# Not compared with Octave. Octave's freqz stops short of Nyquist.
 
 # ── 11. Hamming window filter (33 taps, LP at 1000 Hz, sr=8000) ──────────────
 h_hamming = fir_lowpass(33, 1000.0, 8000.0, "hamming")

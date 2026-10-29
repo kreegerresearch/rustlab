@@ -635,10 +635,10 @@ fn freqz_delay_and_lowpass_dc() {
          dc = sum(h)\n\
          w = window(\"hann\", 4)",
     );
-    assert_re(&ev, "f2", 200.0, 1e-9);
-    // H(fs/5) of a one-sample delay is exp(-j 2π/5). Bin 3 (1-based) is k=2,
-    // f = 200 Hz, phase = -2π * 0.2.
-    let ang = -2.0 * std::f64::consts::PI * 0.2;
+    assert_re(&ev, "f2", 250.0, 1e-9);
+    // Bin 3 (1-based) is k=2. f = 2·1000/(2·4) = 250 Hz.
+    // A one-sample delay there is exp(-j 2π · 0.25) = -j.
+    let ang = -2.0 * std::f64::consts::PI * 0.25;
     assert_c(num(&ev, "h2"), Complex64::new(ang.cos(), ang.sin()), 1e-9);
     assert_re(&ev, "dc", 1.0, 1e-12);
     let w = vec_c(&ev, "w");

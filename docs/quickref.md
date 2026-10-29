@@ -307,7 +307,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `firpm(n_taps, bands, desired)` | Parks-McClellan optimal equiripple FIR |
 | `firpm(n_taps, bands, desired, weights)` | Parks-McClellan with per-band weights |
 | `firpmq(n_taps, bands, desired [, weights [, bits [, n_iter]]])` | Integer-coefficient Parks-McClellan (default bits=16, n_iter=8); returns integer taps. For unit-gain passband use `freqz(h / sum(h), ...)` to normalize. |
-| `freqz(h, n_points, sr)` | Complex frequency response → 2×n matrix. `f_k = k·sr/(2n)` on `[0, Nyquist)`, any `n` |
+| `freqz(h, n_points, sr)` | Complex frequency response → 2×n matrix. `f_k = k·sr/(2(n-1))` from DC through Nyquist. `n = 1` is Nyquist |
 | `upfirdn(x, h, p, q)` | Upsample·filter·downsample via polyphase decomposition |
 | `window(name, n)` | Window vector; names: `"hann"` `"hamming"` `"blackman"` `"rectangular"` `"kaiser"` |
 

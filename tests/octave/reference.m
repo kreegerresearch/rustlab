@@ -75,10 +75,9 @@ h_hi = h_hi / sum(h_hi);
 h_bp = h_hi - h_lo;
 csvwrite('ref_fir_bp.csv', h_bp);
 
-% ── 10. freqz (512 points, 0 to Nyquist) ─────────────────────────────────────
-[H, w_hz] = freqz(h, 1, 512, sr);
-csvwrite('ref_freqz_hz.csv',  w_hz');
-csvwrite('ref_freqz_mag.csv', abs(H)');
+% ── 10. freqz ────────────────────────────────────────────────────────────────
+% Not an Octave oracle. Octave's freqz stops short of Nyquist; rustlab
+% includes it. See the comment in compare.m.
 
 % ── 11. Hamming window filter (33 taps, LP at 1000 Hz, sr=8000) ──────────────
 w_hamming33 = 0.54 - 0.46*cos(2*pi*(0:N-1)/(N-1));

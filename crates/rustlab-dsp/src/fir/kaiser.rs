@@ -128,15 +128,12 @@ pub fn fir_notch(
     })
 }
 
-/// Compute the complex frequency response of a filter.
+/// Complex frequency response of a filter.
 ///
-/// Pads `h` to the next power of two above `max(n_points, h.len())`, runs the
-/// FFT, and returns the first `n_points` bins together with the corresponding
-/// frequency axis.
-///
-/// # Returns
-/// `(freqs, H)` where `freqs[k] = k * sample_rate / fft_size` and `H[k]` is
-/// the complex frequency response at that frequency.
+/// For `n_points > 1` the frequencies are `f_k = k · fs / (2(n-1))`,
+/// `k = 0 .. n-1`, so the last sample is Nyquist. That is the first `n`
+/// bins of a length-`2(n-1)` DFT. `n_points == 1` is Nyquist alone.
+/// A filter longer than the DFT is summed directly on the same grid.
 ///
 /// # Errors
 /// Returns [`DspError::InvalidParameter`] if `n_points == 0`.
@@ -150,13 +147,21 @@ pub fn freqz(
             "freqz: n_points must be > 0".to_string(),
         ));
     }
-    // n points on [0, Nyquist): f_k = k·fs/(2n), k = 0..n-1. Nyquist itself
-    // is not included. That grid is the first n bins of a length-2n DFT.
-    // Rounding 2n up to a power of two (the previous behaviour) shortened
-    // the span whenever 2n was not already a power of two, so a request for
-    // "up to Nyquist" stopped early. A filter longer than 2n must not be
-    // wrapped by that DFT; it is summed directly at the same frequencies.
-    let nfft = 2 * n_points;
+    if n_points == 1 {
+        let mut acc = C64::new(0.0, 0.0);
+        for (m, &hm) in h.iter().enumerate() {
+            let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
+            acc += hm * Complex::new(sign, 0.0);
+        }
+        return Ok((
+            Array1::from_elem(1, sample_rate / 2.0),
+            Array1::from_vec(vec![acc]),
+        ));
+    }
+    // Length 2(n-1). Bin k = n-1 is exactly fs/2. When that length is
+    // not a power of two the FFT is Bluestein, which is slower than the
+    // old length-2n radix-2 transform (n = 4096: 8190 vs 8192).
+    let nfft = 2 * (n_points - 1);
     let freqs: RVector =
         Array1::from_iter((0..n_points).map(|k| k as f64 * sample_rate / nfft as f64));
     let h_out: CVector = if h.len() <= nfft {
@@ -164,8 +169,6 @@ pub fn freqz(
         for (i, &c) in h.iter().enumerate() {
             padded[i] = c;
         }
-        // `fft` (not the power-of-two kernel) so a length that is not a
-        // power of two still lands on f_k = k·fs/(2 n_points).
         let spectrum = fft(&Array1::from_vec(padded))?;
         Array1::from_iter(spectrum.iter().take(n_points).copied())
     } else {

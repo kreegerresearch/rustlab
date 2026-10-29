@@ -17612,9 +17612,11 @@ mod builtin_coverage_tests {
             "h = fir_lowpass(31, 100, 1000, \"hamming\");
              H = freqz(h, 64, 1000);
              f0 = real(H(1, 1));
+             fN = real(H(1, 64));
              dc = abs(H(2, 1));",
         );
         assert!(close(get_scalar(&ev, "f0"), 0.0), "first bin is DC");
+        assert!(close(get_scalar(&ev, "fN"), 500.0), "last bin is Nyquist");
         // Windowed-sinc lowpass is normalized to unity DC gain.
         assert!(
             (get_scalar(&ev, "dc") - 1.0).abs() < 1e-9,

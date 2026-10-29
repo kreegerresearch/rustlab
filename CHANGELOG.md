@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.31
+
+### Breaking / behavior changes
+- **`freqz` includes Nyquist.** For `n > 1`, `f_k = k · fs / (2(n - 1))`, so the last sample is `fs/2`. `n = 1` is that single Nyquist sample. Every interior bin moves, not only the last one. `freqz(h, 512, sr)` moves; a length-1024 FFT is no longer used for 512 points. DC is still `sum(h)`. The return is still a 2×n matrix.
+
 ## 0.3.24
 
 ### Added

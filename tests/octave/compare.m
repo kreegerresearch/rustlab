@@ -68,8 +68,10 @@ T_FIRPM   = 1e-4;   % Parks-McClellan: different implementations may vary slight
 [p,f]=check('fir_highpass Hann','ref_fir_hp.csv',         'out_fir_hp.csv',        T_FILTER); pass_count+=p; fail_count+=f;
 [p,f]=check('fir_bandpass Hann','ref_fir_bp.csv',         'out_fir_bp.csv',        T_FILTER); pass_count+=p; fail_count+=f;
 [p,f]=check('fir_lowpass Hamming','ref_fir_hamming.csv',  'out_fir_hamming.csv',   T_FILTER); pass_count+=p; fail_count+=f;
-[p,f]=check('freqz Hz axis',    'ref_freqz_hz.csv',       'out_freqz_hz.csv',      T_FILTER); pass_count+=p; fail_count+=f;
-[p,f]=check('freqz magnitude',  'ref_freqz_mag.csv',      'out_freqz_mag.csv',     T_FILTER); pass_count+=p; fail_count+=f;
+% Octave's freqz uses a half-open grid [0, Nyquist). rustlab's freqz
+% includes Nyquist (spacing fs/(2(n-1))). Do not compare the two.
+% The fixture is the unit test: DC equals sum(h), the last bin is fs/2,
+% and H matches a direct sum on that grid.
 [p,f]=check('firpm LP 63-tap',  'ref_firpm_lp.csv',       'out_firpm_lp.csv',      T_FIRPM);  pass_count+=p; fail_count+=f;
 [p,f]=check('firpm BP 79-tap',  'ref_firpm_bp.csv',       'out_firpm_bp.csv',      T_FIRPM);  pass_count+=p; fail_count+=f;
 [p,f]=check('Kaiser LP',        'ref_kaiser_lp.csv',      'out_kaiser_lp.csv',     T_FILTER); pass_count+=p; fail_count+=f;

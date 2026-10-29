@@ -1,6 +1,8 @@
 # Octave Validation Report
 
 **Date:** 2026-04-04
+
+The `freqz` rows below record the half-open grid of that date. As of 0.3.31 the live grid includes Nyquist, and Octave's `freqz` is not the reference.
 **Rustlab commit:** 6268ed2
 **Octave version:** GNU Octave 11.1.0 (aarch64-apple-darwin25.2.0)
 **Octave packages:** signal 4.x, control 4.x

@@ -241,7 +241,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "firpm",    brief: "Parks-McClellan optimal equiripple FIR filter",
         detail: "firpm(n_taps, bands, desired)\nfirpm(n_taps, bands, desired, weights)\n  bands   — normalized frequency edges [0,1], 1 = Nyquist; pairs define each band\n  desired — target amplitude at each band edge (piecewise-linear)\n  weights — optional, one value per band pair (default: all 1.0)\n  Example (lowpass): firpm(63, [0,0.2,0.3,1], [1,1,0,0])" },
     HelpEntry { name: "freqz",    brief: "Complex frequency response of a filter",
-        detail: "freqz(h, n_points, sample_rate)  — 2×n matrix: row 1 = Hz, row 2 = H(f)\n  n points on [0, Nyquist): f_k = k·sample_rate/(2·n_points), k = 0..n-1.\n  Nyquist itself is not included. The grid does not depend on n being a power of two." },
+        detail: "freqz(h, n_points, sample_rate)  — 2×n matrix: row 1 = Hz, row 2 = H(f)\n  For n > 1, f_k = k·sample_rate/(2·(n-1)), k = 0..n-1.\n  The last sample is Nyquist. n = 1 is Nyquist alone.\n  A filter longer than 2·(n-1) is summed on that grid." },
     // Plotting
     // ML / activation functions
     HelpEntry { name: "softmax",   brief: "Softmax probability distribution",

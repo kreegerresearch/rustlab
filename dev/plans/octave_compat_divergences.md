@@ -42,7 +42,7 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `polyfit` / `polyval` | no `mu` centering output | `polyfit` can return `[p, S, mu]` | Shipped in 0.3.24 as the coefficient row only |
 | `interp1` | no numeric fill value, no `pchip` / `makima`, spline is not-a-knot | those methods and a numeric extrapolation value | Shipped in 0.3.24 for `linear`, `nearest`, `previous`, `next`, `spline`, and `"extrap"` |
 | `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
-| `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
+| `freqz` grid | for `n > 1`, `f_k = k·fs/(2(n-1))`, last sample is Nyquist. `n = 1` is Nyquist | Octave's `freqz` is the half-open grid and is not the oracle | Landed in 0.3.31. Return is still a 2×n matrix |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
 | sparse structural zero | entries below `1e-15` are dropped | stored | `1e-16 * speye(n)` is an empty pattern. `1e-14 * speye(n)` factors |
 

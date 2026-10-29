@@ -274,14 +274,16 @@ fn freqz_grid_reaches_toward_nyquist_for_any_length() {
     let h = real(&[0.0, 1.0]);
     let (freqs, resp) = freqz(&h, 5, 1000.0).unwrap();
     assert_eq!(freqs.len(), 5);
-    // f_k = k * 1000 / 10.
+    // f_k = k * 1000 / (2*4) = k * 125. The last bin is Nyquist.
     for k in 0..5 {
-        assert!((freqs[k] - k as f64 * 100.0).abs() < 1e-12);
+        assert!((freqs[k] - k as f64 * 125.0).abs() < 1e-12);
         let ang = -2.0 * PI * freqs[k] / 1000.0;
         assert_close(resp[k], c(ang.cos(), ang.sin()), 1e-10);
     }
-    // The last bin is just below Nyquist, not fs/16 (the old power-of-two pad).
-    assert!((freqs[4] - 400.0).abs() < 1e-12);
+    assert!((freqs[4] - 500.0).abs() < 1e-12);
+    let (one, hone) = freqz(&h, 1, 1000.0).unwrap();
+    assert!((one[0] - 500.0).abs() < 1e-12);
+    assert_close(hone[0], c(-1.0, 0.0), 1e-12);
 }
 
 #[test]
@@ -289,7 +291,7 @@ fn freqz_of_a_long_filter_is_the_dtft() {
     // Longer than 2 * n_points, so an FFT of length 2n would time-alias it.
     let h = real(&(0..20).map(|k| 0.05 * (k as f64)).collect::<Vec<_>>());
     let (freqs, resp) = freqz(&h, 4, 800.0).unwrap();
-    assert!((freqs[3] - 300.0).abs() < 1e-12);
+    assert!((freqs[3] - 400.0).abs() < 1e-12);
     for (k, &hk) in resp.iter().enumerate() {
         let mut acc = c(0.0, 0.0);
         for (m, hm) in h.iter().enumerate() {
