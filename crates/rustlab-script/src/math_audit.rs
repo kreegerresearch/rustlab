@@ -312,8 +312,15 @@ fn norm_known_values() {
     assert_re(&eval("n = norm([1, -2; -3, 4], 1)"), "n", 6.0, 1e-12);
     // Inf-norm is the max row sum: 3 and 7.
     assert_re(&eval("n = norm([1, -2; -3, 4], Inf)"), "n", 7.0, 1e-12);
+    // Default matrix norm is the 2-norm, the same value as norm(A, 2).
     assert_re(
         &eval("n = norm([1, -2; -3, 4])"),
+        "n",
+        5.464985704219043,
+        1e-9,
+    );
+    assert_re(
+        &eval("n = norm([1, -2; -3, 4], \"fro\")"),
         "n",
         30.0_f64.sqrt(),
         1e-12,

@@ -230,7 +230,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `cross(u, v)` | 3-element cross product |
 | `outer(u, v)` | Outer product → N×M matrix |
 | `kron(A, B)` | Kronecker product. A vector is a `1×n` row, so a row with a column is an outer product |
-| `norm(v)`, `norm(v,p)` | Vector p-norm. `norm(A)` is Frobenius (MATLAB's default is the 2-norm). `norm(A, 2)` is spectral, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Sparse matches: `norm(S, 2)` is spectral | 
+| `norm(v)`, `norm(v,p)` | Vector p-norm. Dense `norm(A)` is the 2-norm (same as `norm(A, 2)`). `norm(A, "fro")` is Frobenius, `norm(A, 1)` max column sum, `norm(A, Inf)` max row sum. Sparse `norm(S)` stays Frobenius; `norm(S, 2)` is spectral | 
 | `cond(A)` / `cond(A, p)` | Condition number. Default and `p=2` are `σ_max/σ_min`. `p=1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular → `Inf` |
 | `inv(M)` | Matrix inverse |
 | `det(M)` | Determinant |

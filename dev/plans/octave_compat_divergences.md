@@ -23,11 +23,10 @@
 ## Core math audit (2026-10-28)
 
 Checked against closed forms and the MATLAB/Octave conventions named below.
-Fixes landed in 0.3.23. What remains different on purpose:
+Fixes landed in 0.3.23. Dense `norm(A)` with no `p` is the 2-norm as of 0.3.32 (`norm(A, "fro")` is the one-pass sum). Sparse `norm(S)` stays Frobenius: the 2-norm densifies, and a grid with millions of nodes cannot be stored that way. What remains different on purpose:
 
 | Topic | rustlab | MATLAB / Octave | Why it stays |
 |---|---|---|---|
-| `norm(A)` with no `p` | Frobenius | 2-norm (largest singular value) | Documented since the p-norm split. `norm(A, 2)` is the 2-norm, `norm(A, "fro")` is Frobenius |
 | `[V, D] = eigs(...)` | `D` is a vector | `D` is a diagonal matrix | `D(k)` is the k-th eigenvalue. A diagonal matrix would make `D(2)` the structural zero under column-major linear indexing |
 | `sort` of complex values | by real part | by magnitude, then phase | Documented. NaNs compare equal; they are not moved to the end |
 | `median` of complex values | ordered by real part | not defined the same way in every release | Imaginary parts are ignored. A NaN real part returns NaN |

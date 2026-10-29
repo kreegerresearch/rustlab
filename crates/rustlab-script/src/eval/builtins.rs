@@ -8866,7 +8866,7 @@ fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
     })
 }
 
-/// norm(v)    — Euclidean (L2) norm of a vector, or Frobenius norm of a matrix
+/// norm(v)    — Euclidean (L2) norm of a vector, or 2-norm of a dense matrix
 /// norm(v, p) — p-norm (p=1 or p=2 supported; p="fro" for Frobenius)
 /// Resolve `norm`'s second argument: a numeric p, or the strings
 /// `"fro"` / `"inf"` (case-insensitive, MATLAB/Octave convention).
@@ -8909,10 +8909,10 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::Matrix(m) => {
-            // No second argument (or explicit "fro") → Frobenius
-            // (this library's default).
+            // No second argument is the 2-norm (largest singular value).
+            // "fro" stays the one-pass sum of squares.
             let p: f64 = match if args.len() < 2 {
-                None
+                Some(2.0)
             } else {
                 norm_p_arg(&args[1])?
             } {
@@ -8974,10 +8974,11 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::SparseMatrix(sm) => {
-            // No second argument, or `"fro"`, is the Frobenius norm — the
-            // same default as a dense matrix. `norm(S, 2)` is the spectral
-            // norm, matching `norm(full(S), 2)`. Any other p is an error,
-            // not a silent Frobenius.
+            // No second argument, or `"fro"`, is the Frobenius norm.
+            // A dense matrix's default is the 2-norm; a sparse default stays
+            // this one-pass sum because the 2-norm densifies the pattern.
+            // `norm(S, 2)` is the spectral norm, matching `norm(full(S), 2)`.
+            // Any other p is an error, not a silent Frobenius.
             let requested = if args.len() == 2 {
                 norm_p_arg(&args[1])?
             } else {

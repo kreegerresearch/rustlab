@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.32
+
+### Breaking / behavior changes
+- **Dense `norm(A)` is the 2-norm.** With no second argument it is the largest singular value, the same number as `norm(A, 2)`. `norm(A, "fro")` is the one-pass Frobenius norm, which is what an unqualified `norm(A)` used to return. A vector is unchanged. Sparse `norm(S)` stays Frobenius: the 2-norm densifies the matrix, and a grid with millions of nodes cannot be stored that way. `norm(S, 2)` is still the spectral norm under the 512 cap.
+
 ## 0.3.24
 
 ### Added

@@ -18368,17 +18368,25 @@ mod round2_regressions {
         assert_eq!(scalar(&eval("r = rank(0)"), "r"), 0.0);
     }
 
-    // E12 — dense matrix p-norms honor p (1, 2, Inf), default stays Frobenius.
+    // Dense matrix p-norms honor p (1, 2, Inf). The default is the 2-norm.
     #[test]
     fn norm_matrix_honors_p() {
         let ev = eval(
             "a = norm([1,-2;-3,4], 1)\nb = norm([1,-2;-3,4], Inf)\n\
-             c = norm([1,-2;-3,4], 2)\nd = norm([1,-2;-3,4])",
+             c = norm([1,-2;-3,4], 2)\nd = norm([1,-2;-3,4])\n\
+             f = norm([1,-2;-3,4], \"fro\")\n\
+             g = norm([3, 0; 0, -4])\nh = norm([3, 0; 0, -4], \"fro\")\n\
+             w = norm([1, 2, 3; 4, 5, 6])\nv = norm([1, 2, 3; 4, 5, 6], 2)",
         );
         assert!((scalar(&ev, "a") - 6.0).abs() < 1e-9);
         assert!((scalar(&ev, "b") - 7.0).abs() < 1e-9);
         assert!((scalar(&ev, "c") - 5.464985704219043).abs() < 1e-6);
-        assert!((scalar(&ev, "d") - 30.0_f64.sqrt()).abs() < 1e-9); // Frobenius
+        assert!((scalar(&ev, "d") - scalar(&ev, "c")).abs() < 1e-12);
+        assert!((scalar(&ev, "f") - 30.0_f64.sqrt()).abs() < 1e-9);
+        // A diagonal's 2-norm is the largest |entry|; Frobenius is larger.
+        assert!((scalar(&ev, "g") - 4.0).abs() < 1e-9);
+        assert!((scalar(&ev, "h") - 5.0).abs() < 1e-9);
+        assert!((scalar(&ev, "w") - scalar(&ev, "v")).abs() < 1e-12);
     }
 
     // E12 follow-up — the strict-p fix regressed `norm(M, "fro")` (used by
