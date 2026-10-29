@@ -6,6 +6,14 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.26
+
+### Breaking / behavior changes
+- **A single size is a square matrix.** `zeros(n)`, `ones(n)`, `rand(n)`, `randn(n)`, and `randi(imax, n)` (also `randi([lo, hi], n)`) allocate n×n. They used to allocate a length-n vector. A row is `zeros(1, n)`, `randn(1, n)`, or `randi(imax, 1, n)`. A column is `zeros(n, 1)`. `zeros(1, n)` stays a matrix, not a vector. `rand()` and `randi(imax)` stay scalars. `eye(n)` was already n×n.
+- **`randi` takes a second size.** `randi(imax, m, n)` and `randi([lo, hi], m, n)` are m×n.
+- **Integer constructors follow the same shape.** `zeros(n, "int32")` and `ones(n, "int32")` are n×n. A row is `zeros(1, n, "int32")`.
+- In-tree scripts, notebooks, gallery sources, and `perf/` benches that wanted a length-n sequence now pass `1` as the row count. `perf/bench_builtins.rlab` uses `randn(1, N)` with `N = 100000`, and `bench_convolve.rlab` uses `randn(1, 48000)`, so those benches do not allocate an n×n matrix.
+
 ## 0.3.25
 
 ### Breaking / behavior changes
