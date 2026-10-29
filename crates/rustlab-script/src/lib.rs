@@ -46,6 +46,8 @@ pub mod purity;
 mod tests;
 #[cfg(test)]
 mod math_audit;
+#[cfg(test)]
+mod solve_factor;
 
 pub use error::ScriptError;
 pub use eval::line_io::{

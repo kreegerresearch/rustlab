@@ -211,6 +211,8 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// `A\b` — left division. Same precedence as `*` and `/`.
+    LeftDiv,
     Pow,
     /// Element-wise: .*  ./  .^
     ElemMul,

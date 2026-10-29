@@ -1589,7 +1589,7 @@ impl Parser {
         Ok(lhs)
     }
 
-    // term = unary (('*' | '/' | '.*' | './') unary)*
+    // term = unary (('*' | '/' | '\' | '.*' | './') unary)*
     fn parse_term(&mut self) -> Result<Expr, ScriptError> {
         let mut lhs = self.parse_unary()?;
         loop {
@@ -1608,6 +1608,15 @@ impl Parser {
                     let r = self.parse_unary()?;
                     lhs = Expr::BinOp {
                         op: BinOp::Div,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(r),
+                    };
+                }
+                Token::Backslash => {
+                    self.advance();
+                    let r = self.parse_unary()?;
+                    lhs = Expr::BinOp {
+                        op: BinOp::LeftDiv,
                         lhs: Box::new(lhs),
                         rhs: Box::new(r),
                     };
