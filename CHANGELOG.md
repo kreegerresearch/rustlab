@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.33
+
+### Breaking / behavior changes
+- **Sparse storage drops only an exact zero.** An entry whose norm is below `1e-15` used to be removed on construction, on `set`, and after arithmetic. `nnz(1e-16 * speye(n))` was 0; it is now `n`. `+0` and `-0` are still structural zeros, including when two stored entries cancel to an exact zero. NaN and Inf stay stored. The relative pivot tests in sparse `chol` and `lu` are unchanged, so `1e-14 * speye(n)` still factors and a genuinely singular matrix still fails.
+
 ## 0.3.24
 
 ### Added

@@ -514,7 +514,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | Function | Description |
 |---|---|
 | `sparse(I, J, V, m, n)` | Build m×n sparse matrix from 1-based index/value vectors |
-| `sparse(A)` | Convert dense matrix/vector to sparse (drops near-zeros) |
+| `sparse(A)` | Convert dense matrix/vector to sparse (drops exact zeros only) |
 | `sparsevec(I, V, n)` | Build sparse vector of length n from 1-based indices |
 | `speye(n)` | n×n sparse identity matrix |
 | `spzeros(m, n)` | m×n all-zero sparse matrix |

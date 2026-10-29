@@ -753,7 +753,7 @@ pub const HELP: &[HelpEntry] = &[
         detail: "iscell(x) — returns true if x is a string array ({...}), false otherwise\n\nExamples:\n  iscell({'a', 'b'})  % true\n  iscell([1, 2])      % false" },
     // Sparse
     HelpEntry { name: "sparse", brief: "Build sparse matrix or convert dense→sparse",
-        detail: "sparse(I, J, V, m, n)  — build m×n sparse matrix from 1-based row/col/value vectors\nsparse(A)              — convert dense matrix/vector to sparse (drops near-zeros)\n\nDuplicate (i,j) entries are summed.\n\nExamples:\n  S = sparse([1,2,3], [1,2,3], [10,20,30], 3, 3)\n  S2 = sparse(eye(3))" },
+        detail: "sparse(I, J, V, m, n)  — build m×n sparse matrix from 1-based row/col/value vectors\nsparse(A)              — convert dense matrix/vector to sparse (drops exact zeros)\n\nDuplicate (i,j) entries are summed.\n\nExamples:\n  S = sparse([1,2,3], [1,2,3], [10,20,30], 3, 3)\n  S2 = sparse(eye(3))" },
     HelpEntry { name: "sparsevec", brief: "Build sparse vector from indices and values",
         detail: "sparsevec(I, V, n)  — build sparse vector of length n\n  I — 1-based index vector\n  V — value vector (same length as I)\n  n — total length\n\nExample:\n  sv = sparsevec([1, 5, 9], [1.0, -2.0, 3.0], 10)" },
     HelpEntry { name: "speye", brief: "Sparse identity matrix",
