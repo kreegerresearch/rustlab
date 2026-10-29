@@ -1,4 +1,5 @@
 pub mod convolution;
+pub mod xcorr;
 pub mod error;
 pub mod fft;
 pub mod fir;
@@ -51,3 +52,4 @@ pub use welch_stream::{
     waterfall_stream_init, PwelchState, StftState, WaterfallState,
 };
 pub use window::WindowFunction;
+pub use xcorr::{xcorr_c64, xcorr_f64, XcorrMethod, XcorrScale};

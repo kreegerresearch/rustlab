@@ -1362,6 +1362,8 @@ primary     = NUMBER | STRING | IDENT
 | `var` | `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. Same shapes and complex rule as `std`. No divide-by-n flag |
 | `cond` | `cond(A)` / `cond(A, p)` | 2-norm condition number `σ_max/σ_min` by default. `p = 1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular returns `Inf` |
 | `convolve` | `convolve(x, h)` | Convolved Vector (length = len(x)+len(h)-1) |
+| `xcorr` | `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` / `[r, lags] = xcorr(...)` | Cross-correlation, lags `-maxlag:maxlag`, zero lag in the middle. Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `scale` is `none` (default), `biased`, `unbiased`, or `normalized`/`coeff`. A vector stays a row; an n×1 matrix returns a column. Several columns are one signal each, and the result has one column per pair |
+| `xcov` | `xcov(...)` | Same arguments as `xcorr`, after each signal's mean is removed |
 | `filtfilt` | `filtfilt(b, a, x)` | Zero-phase forward-backward filter; uses odd-reflection signal extension + steady-state IC (matches Octave); use `a=[1]` for FIR |
 | `prod` | `prod(v)` | Product of all elements (Vector or Matrix); returns Scalar |
 | `firpmq` | `firpmq(n_taps, bands, desired [, weights [, bits [, n_iter]]])` | Integer-coefficient Parks-McClellan; defaults bits=16, n_iter=8. Returns integer-valued taps. For unit-gain passband, `sum(h_int)` equals the scale factor — use `freqz(h_int / sum(h_int), ...)` to verify. |

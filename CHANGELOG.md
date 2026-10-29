@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.34
+
+### Added
+- **`xcorr` and `xcov`.** Cross-correlation with the zero lag in the middle. Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `[r, lags] = xcorr(x, y, maxlag, scale)` returns lags from `-maxlag` to `+maxlag`. With `maxlag` omitted the result has length `2N−1`, `N` the longer input. `scale` is `"none"` (the default), `"biased"`, `"unbiased"`, or `"normalized"` / `"coeff"`. A vector stays a row and an n×1 matrix returns a column. A matrix with several columns correlates every column pair. `xcov` removes each signal's mean first. `convolve` is unchanged.
+
 ## 0.3.24
 
 ### Added
