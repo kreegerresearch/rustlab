@@ -216,7 +216,13 @@ function send(method, params = {}) {
 }
 async function evalJs(expression) {
   const msg = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (msg.result && msg.result.exceptionDetails) {
+  // A navigation destroys the execution context. Chrome then answers
+  // without `result` (an error object, or an empty reply). Callers that
+  // are waiting for the next page retry; a missing reply is not a script error.
+  if (!msg.result || !msg.result.result) {
+    throw new Error('no-result ' + JSON.stringify(msg.error || msg));
+  }
+  if (msg.result.exceptionDetails) {
     throw new Error(JSON.stringify(msg.result.exceptionDetails));
   }
   return msg.result.result.value;
@@ -224,9 +230,11 @@ async function evalJs(expression) {
 async function goto(url) {
   await send('Page.navigate', { url });
   for (let i = 0; i < 40; i++) {
-    const state = await evalJs('document.readyState');
-    const banner = await evalJs('!!document.querySelector("main")');
-    if (state === 'complete' && banner) break;
+    try {
+      const state = await evalJs('document.readyState');
+      const banner = await evalJs('!!document.querySelector("main")');
+      if (state === 'complete' && banner) break;
+    } catch (e) {}
     await sleep(100);
   }
   await sleep(250);
