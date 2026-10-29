@@ -126,6 +126,10 @@ fn in_place<'a>(op: BinOp, mut l: Operand<'a>, mut r: Operand<'a>) -> Result<Val
         _ => None,
     };
     if let Some((s, scalar_left)) = arr_scalar {
+        // `scalar / array` is right-division, not a scale.
+        if scalar_left && op == BinOp::Div {
+            return Err((l, r));
+        }
         let arr = if scalar_left { &mut r } else { &mut l };
         let Some(d) = owned_real(arr) else { return Err((l, r)) };
         match op {
@@ -262,6 +266,9 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
                 R::Vec(d) | R::Mat(d, _, _) => d,
                 R::Scalar(_) => unreachable!("one side is an array"),
             };
+            if scalar_left && op == Div {
+                return None;
+            }
             match op {
                 Add | Sub | Mul | ElemMul | Div | ElemDiv => {}
                 Pow | ElemPow if pow_is_real(data, s, scalar_left) => {}

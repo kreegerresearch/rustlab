@@ -152,7 +152,7 @@ fn singular_consistent_system_still_solves() {
 
 #[test]
 fn right_division_solves_x_times_a() {
-    // X * A = B. Solving A.' \ B.' and transposing gives
+    // X * A = B. For this real system (A' \ B')' is
     // X = [9/5, 7/5; 17/5, 16/5].
     let ev = eval(
         "A = [2, 1; 1, 3];
@@ -181,13 +181,62 @@ fn right_division_of_a_row() {
 }
 
 #[test]
-fn scalar_divide_matrix_stays_elementwise() {
-    let ev = eval("M = [2, 4; 6, 8]; Y = 2 / M;");
+fn scalar_numerator_over_a_matrix_is_right_division() {
+    // 2/M solves X*M = 2. A 1×1 left side cannot match a 2-column M.
+    let err = eval_err("M = [2, 4; 6, 8]; Y = 2 / M;");
+    assert!(err.contains("rows") || err.contains("dimension") || err.contains("mldivide"), "{err}");
+    // Dividing by a scalar stays a scale.
+    let ev = eval("M = [2, 4; 6, 8]; Y = M / 2;");
     let y = mat_re(&ev, "Y");
     close(y[0][0], 1.0);
-    close(y[0][1], 0.5);
-    close(y[1][0], 2.0 / 6.0);
-    close(y[1][1], 0.25);
+    close(y[0][1], 2.0);
+    close(y[1][0], 3.0);
+    close(y[1][1], 4.0);
+    // Two vectors with / stay an error.
+    let err = eval_err("a = [1, 2]; b = [3, 4]; c = a / b;");
+    assert!(err.contains("./"), "{err}");
+    // A scalar over a row is right division, so the shapes do not match.
+    let err = eval_err("v = [2, 4, 8]; y = 2 / v;");
+    assert!(err.contains("rows") || err.contains("mldivide"), "{err}");
+}
+
+#[test]
+fn elementwise_left_division_swaps_operands() {
+    let ev = eval("y = [2, 4] .\\ [2, 8];");
+    let y = vec_re(&ev, "y");
+    close(y[0], 1.0);
+    close(y[1], 2.0);
+    // Same broadcasting as ./ with the arguments swapped.
+    let ev = eval("A = [1, 2; 3, 4]; y = 2 .\\ A; z = A ./ 2;");
+    let y = mat_re(&ev, "y");
+    let z = mat_re(&ev, "z");
+    for i in 0..2 {
+        for j in 0..2 {
+            close(y[i][j], z[i][j]);
+        }
+    }
+    let ev = eval("s = 4 .\\ 2;");
+    close(re(&ev, "s"), 0.5);
+}
+
+#[test]
+fn complex_right_division_uses_conjugate_transpose() {
+    // inv([1, i; 0, 1]) = [1, -i; 0, 1]. Non-conjugate transposition
+    // would put +i in the (1, 2) entry.
+    let ev = eval("A = [1, j; 0, 1]; B = eye(2); X = B / A;");
+    let Value::Matrix(x) = ev.get("X").unwrap() else {
+        panic!("expected a matrix");
+    };
+    let want = [
+        [Complex64::new(1.0, 0.0), Complex64::new(0.0, -1.0)],
+        [Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+    ];
+    for i in 0..2 {
+        for j in 0..2 {
+            let d = (x[[i, j]] - want[i][j]).norm();
+            assert!(d < 1e-8, "X[{i},{j}] = {} want {}", x[[i, j]], want[i][j]);
+        }
+    }
 }
 
 #[test]

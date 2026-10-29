@@ -34,10 +34,10 @@ Look up builtins from the shell: `rustlab docs <name>` (detail), `rustlab docs d
 | `[A, B]` / `[A; B]` | Horizontal / vertical concatenation |
 | `[X, Y] = f(...)` | Destructuring assignment |
 | `1:5`, `0:0.5:2`, `10:-1:1` | Range: `start:stop` or `start:step:stop` |
-| `.*`, `./`, `.^` | Element-wise multiply, divide, power |
+| `.*`, `./`, `.\`, `.^` | Element-wise multiply, divide, swapped divide (`A .\ B` is `B ./ A`), power |
 | `*` | Matrix multiply |
 | `\` | Left division `A\b`. Square nonsingular `A` uses LU; rectangular and singular `A` use QR least squares. A vector is a row, so a column right-hand side is `b'`. A scalar left side divides element-wise |
-| `/` | Right division `B/A` when both sides are matrices or a row (`X*A = B`). A scalar on either side stays element-wise. Two vectors are still an error; use `./` |
+| `/` | Right division `B/A` (`X*A = B`), including a scalar numerator (`2/M`). A scalar denominator (`M/2`) stays element-wise. Two vectors are still an error; use `./` |
 | `'` | Conjugate transpose — **conjugates complex values**; to reshape complex data use `.'` (e.g. `src(:).'`, not `src(:)'`) |
 | `.'` | Non-conjugate transpose |
 | `&&`, `\|\|` | Short-circuit logical and / or; scalar operands (truthy = non-zero); rhs only evaluated if lhs is not decisive |
@@ -242,7 +242,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `expm(M)` | Matrix exponential $e^M$ (Padé approximant) |
 | `linsolve(A, b)` | Solve A·x = b (A may be dense or sparse); returns x |
 | `mldivide(A, b)` / `A\b` | Same solve as `\`. Warns when A is singular or ill-conditioned and still returns a basic solution |
-| `mrdivide(B, A)` / `B/A` | Right division, `X*A = B` |
+| `mrdivide(B, A)` / `B/A` | Right division, `X*A = B`, via `(A' \ B')'` |
 | `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)` | Householder QR. Economy form with `0` or `"econ"`. One output is `R` |
 | `null(A)` | Orthonormal nullspace from the SVD (`n×k`; `n×0` when A has full rank) |
 | `orth(A)` | Orthonormal column space from the SVD |
