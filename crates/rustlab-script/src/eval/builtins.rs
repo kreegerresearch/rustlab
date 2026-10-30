@@ -2549,9 +2549,18 @@ fn std_or_var(name: &str, args: &[Value], as_var: bool) -> Result<Value, ScriptE
             Ok(Value::Scalar(dev(&[z])?))
         }
         Value::Vector(v) => {
-            // A vector is a row. Dim 1 is one observation per column.
+            // A vector is a row. Dim 1 is one observation per column:
+            // 0 when that sample is finite, NaN when it is Inf or NaN.
             if dim_arg == Some(1) {
-                return singleton_axis_result(name, &weight, Shared::len(v));
+                let finite: Vec<bool> = if let Some(re) = Shared::real_slice(v) {
+                    re.iter().map(|x| x.is_finite()).collect()
+                } else {
+                    v.iter()
+                        .map(|z| z.re.is_finite() && z.im.is_finite())
+                        .collect()
+                };
+                let data = one_observation_values(name, &weight, &finite, as_var)?;
+                return Ok(Value::real_vector(ndarray::Array1::from_vec(data)));
             }
             if let Some(re) = Shared::real_slice(v) {
                 let var = super::order_stats::variance_f64(name, re, &weight)?;
@@ -2593,14 +2602,16 @@ fn reduction_dim_value(name: &str, v: &Value) -> Result<usize, ScriptError> {
     Ok(d as usize)
 }
 
-/// One observation along the reduced axis of a vector (a row). Unweighted
-/// that is 0. A weight vector must have length 1; a zero total weight is NaN.
-fn singleton_axis_result(
+/// One observation along the reduced axis. A finite sample is 0. `Inf`
+/// and `NaN` are NaN (`std(Inf)` / `var(Inf)`). A weight vector must have
+/// length 1; a zero weight is NaN.
+fn one_observation_values(
     name: &str,
     weight: &super::order_stats::Weight,
-    n_out: usize,
-) -> Result<Value, ScriptError> {
-    let nan = match weight {
+    finite: &[bool],
+    as_var: bool,
+) -> Result<Vec<f64>, ScriptError> {
+    let zero_weight = match weight {
         super::order_stats::Weight::Vector(w) => {
             if w.len() != 1 {
                 return Err(ScriptError::type_err(format!(
@@ -2617,40 +2628,13 @@ fn singleton_axis_result(
         }
         _ => false,
     };
-    Ok(if nan {
-        Value::real_vector(ndarray::Array1::from_elem(n_out, f64::NAN))
-    } else {
-        Value::real_vector(ndarray::Array1::zeros(n_out))
-    })
-}
-
-fn singleton_matrix(
-    name: &str,
-    weight: &super::order_stats::Weight,
-    shape: (usize, usize),
-) -> Result<Value, ScriptError> {
-    let nan = match weight {
-        super::order_stats::Weight::Vector(w) => {
-            if w.len() != 1 {
-                return Err(ScriptError::type_err(format!(
-                    "{name}: weight vector has length {} but the axis has length 1",
-                    w.len()
-                )));
-            }
-            if w.iter().any(|wi| !wi.is_finite() || *wi < 0.0) {
-                return Err(ScriptError::type_err(format!(
-                    "{name}: weights must be finite and nonnegative"
-                )));
-            }
-            w[0] == 0.0
-        }
-        _ => false,
-    };
-    Ok(if nan {
-        Value::real_matrix(Array2::from_elem(shape, f64::NAN))
-    } else {
-        Value::real_matrix(Array2::zeros(shape))
-    })
+    Ok(finite
+        .iter()
+        .map(|&ok| {
+            let var = if zero_weight || !ok { f64::NAN } else { 0.0 };
+            if as_var { var } else { var.sqrt() }
+        })
+        .collect())
 }
 
 fn matrix_std_real(
@@ -2685,8 +2669,16 @@ fn matrix_std_real(
         return Ok(empty_axis_nans(nrows, ncols, dim));
     }
     if reduction_along_singleton(nrows, ncols, dim) {
+        let finite: Vec<bool> = if dim == 1 {
+            (0..ncols).map(|j| re[j].is_finite()).collect()
+        } else {
+            (0..nrows).map(|i| re[i * ncols].is_finite()).collect()
+        };
+        let data = one_observation_values(name, weight, &finite, as_var)?;
         let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
-        return singleton_matrix(name, weight, shape);
+        return Ok(Value::real_matrix(
+            Array2::from_shape_vec(shape, data).expect("std shape"),
+        ));
     }
     let mut tmp = Vec::new();
     let data: Result<Vec<f64>, ScriptError> = if dim == 1 {
@@ -2744,8 +2736,26 @@ fn matrix_std(
         return Ok(empty_axis_nans(nrows, ncols, dim));
     }
     if reduction_along_singleton(nrows, ncols, dim) {
+        let finite: Vec<bool> = if dim == 1 {
+            (0..ncols)
+                .map(|j| {
+                    let z = m[[0, j]];
+                    z.re.is_finite() && z.im.is_finite()
+                })
+                .collect()
+        } else {
+            (0..nrows)
+                .map(|i| {
+                    let z = m[[i, 0]];
+                    z.re.is_finite() && z.im.is_finite()
+                })
+                .collect()
+        };
+        let data = one_observation_values(name, weight, &finite, as_var)?;
         let shape = if dim == 1 { (1, ncols) } else { (nrows, 1) };
-        return singleton_matrix(name, weight, shape);
+        return Ok(Value::real_matrix(
+            Array2::from_shape_vec(shape, data).expect("std shape"),
+        ));
     }
     let data: Result<Vec<f64>, ScriptError> = if dim == 1 {
         (0..ncols)

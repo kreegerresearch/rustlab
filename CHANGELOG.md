@@ -11,6 +11,17 @@ should re-validate against those entries when upgrading.
 ### Changed
 - **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
 
+## 0.3.39
+
+### Breaking / behavior changes
+- **`std(Inf)` and `var(Inf)` are NaN.** A finite scalar is still 0 (`std(7)`). A length-1 `Inf`, and the one-observation axis of a row (`std([1, Inf, 3], 0, 1)`), are NaN in that position. Previously a single `Inf` was 0.
+- **`sort` treats `-0` and `+0` as equal.** A stable sort keeps input order and the sign bit, ascending and descending. Previously `-0` sorted before `+0`.
+- **`xcorr([])` is an empty row.** It no longer errors. A `0×N` matrix returns a `0×N²` matrix. A second sequence that is empty against a non-empty one still errors.
+- **Matrix `xcorr` accepts only scale `"none"`.** `"biased"`, `"unbiased"`, `"normalized"`, and `"coeff"` error when the input has several columns. A vector or a single column still takes every scale.
+
+### Fixed
+- **`[L, U, p] = lu(A, "vector")` is a 1×n row.** `size(p)` is `[1, n]`, matching MATLAB's `whos` line (`1×1000`). `A(p, :) = L*U` is unchanged.
+
 ## 0.3.38
 
 ### Fixed

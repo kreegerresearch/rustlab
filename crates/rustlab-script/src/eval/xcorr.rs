@@ -51,6 +51,8 @@ struct Signal {
     orient: Orient,
     /// More than one column, each longer than one sample.
     multi: bool,
+    rows: usize,
+    cols: usize,
 }
 
 fn correlate(
@@ -97,8 +99,23 @@ fn correlate(
             )))
         }
     };
-    if x.columns.is_empty() || x.columns[0].len() == 0 {
-        return Err(ScriptError::type_err(format!("{name}: input is empty")));
+    if x.multi && scale != XcorrScale::None {
+        // MATLAB's column-pair form accepts only the raw sum. "biased",
+        // "unbiased", "normalized", and "coeff" are the two-sequence scales.
+        return Err(ScriptError::type_err(format!(
+            "{name}: scale must be \"none\" for a matrix with several columns"
+        )));
+    }
+    let x_empty = x.columns.is_empty() || x.columns.iter().all(|c| c.len() == 0);
+    if x_empty {
+        if y.as_ref()
+            .is_some_and(|y| y.columns.iter().any(|c| c.len() != 0))
+        {
+            return Err(ScriptError::type_err(format!("{name}: input is empty")));
+        }
+        // No samples: the correlation has no lags. `[]` is an empty row.
+        // A 0×N matrix is 0×N² (one empty pair per column pair).
+        return empty_autocorr(&x, nargout);
     }
     if let Some(y) = &y {
         if x.multi || y.multi {
@@ -106,7 +123,7 @@ fn correlate(
                 "{name}: a second sequence must be one signal; a matrix is one signal per column"
             )));
         }
-        if y.columns[0].len() == 0 {
+        if y.columns.is_empty() || y.columns[0].len() == 0 {
             return Err(ScriptError::type_err(format!("{name}: input is empty")));
         }
     }
@@ -161,6 +178,43 @@ impl Signal {
     fn orient_tag(&self) -> Orient {
         self.orient
     }
+}
+
+/// Autocorrelation of an input with no samples. The result has no lags.
+/// A vector stays an empty row. A 0×N matrix is 0×N². An M×0 matrix is
+/// (2M−1)×0, the column-pair width with no columns.
+fn empty_autocorr(sig: &Signal, nargout: usize) -> Result<Value, ScriptError> {
+    let r = match sig.orient {
+        Orient::Vector => Value::real_vector(Array1::zeros(0)),
+        _ => {
+            let (h, w) = empty_matrix_hw(sig.rows, sig.cols);
+            Value::real_matrix(Array2::zeros((h, w)))
+        }
+    };
+    if nargout == 2 {
+        let lags = match sig.orient {
+            Orient::Vector => Value::real_vector(Array1::zeros(0)),
+            Orient::Row => Value::real_matrix(Array2::zeros((1, 0))),
+            Orient::Column => {
+                let h = if sig.rows == 0 { 0 } else { sig.rows * 2 - 1 };
+                Value::real_matrix(Array2::zeros((h, 1)))
+            }
+        };
+        Ok(Value::Tuple(vec![r, lags]))
+    } else {
+        Ok(r)
+    }
+}
+
+fn empty_matrix_hw(rows: usize, cols: usize) -> (usize, usize) {
+    if rows == 0 && cols == 0 {
+        return (0, 0);
+    }
+    if cols == 0 {
+        return (rows * 2 - 1, 0);
+    }
+    let width = if cols == 1 { 1 } else { cols * cols };
+    (0, width)
 }
 
 fn one_pair(x: Samples, y: Samples, maxlag: usize, scale: XcorrScale) -> Pair {
@@ -349,16 +403,22 @@ fn signal(name: &str, v: &Value) -> Result<Signal, ScriptError> {
             columns: vec![Samples::Real(vec![*x])],
             orient: Orient::Vector,
             multi: false,
+            rows: 1,
+            cols: 1,
         }),
         Value::Complex(c) => Ok(Signal {
             columns: vec![Samples::Complex(vec![*c])],
             orient: Orient::Vector,
             multi: false,
+            rows: 1,
+            cols: 1,
         }),
         Value::Vector(v) => Ok(Signal {
             columns: vec![vector_samples(v)],
             orient: Orient::Vector,
             multi: false,
+            rows: 1,
+            cols: Shared::len(v),
         }),
         Value::Matrix(m) => matrix_signal(m),
         other => Err(ScriptError::type_err(format!(
@@ -386,10 +446,24 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
     let shape = Shared::shape(m);
     let (rows, cols) = (shape[0], shape[1]);
     if rows == 0 || cols == 0 {
+        let columns = if cols == 0 {
+            Vec::new()
+        } else {
+            vec![Samples::Real(Vec::new()); cols]
+        };
+        // A 1×0 matrix is an empty row. Every other empty shape is a
+        // column or a column-pair matrix, so the lag axis is a column.
+        let orient = if rows == 1 && cols == 0 {
+            Orient::Row
+        } else {
+            Orient::Column
+        };
         return Ok(Signal {
-            columns: vec![Samples::Real(vec![])],
-            orient: Orient::Vector,
+            columns,
+            orient,
             multi: false,
+            rows,
+            cols,
         });
     }
     if Shared::is_real(m) {
@@ -409,6 +483,8 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
                 columns: vec![Samples::Real(data)],
                 orient,
                 multi: false,
+                rows,
+                cols,
             });
         }
         let mut columns = Vec::with_capacity(cols);
@@ -419,6 +495,8 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
             columns,
             orient: Orient::Column,
             multi: true,
+            rows,
+            cols,
         })
     } else {
         let a: &CMatrix = m;
@@ -437,6 +515,8 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
                 columns: vec![Samples::Complex(data)],
                 orient,
                 multi: false,
+                rows,
+                cols,
             });
         }
         let mut columns = Vec::with_capacity(cols);
@@ -447,6 +527,8 @@ fn matrix_signal(m: &Shared<CMatrix>) -> Result<Signal, ScriptError> {
             columns,
             orient: Orient::Column,
             multi: true,
+            rows,
+            cols,
         })
     }
 }

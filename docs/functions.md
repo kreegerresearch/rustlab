@@ -346,7 +346,7 @@ median([4.0, 1.0, 3.0, 2.0])   # → 2.5
 ### `std(x)` / `std(x, w)` / `std(x, w, dim)`
 Standard deviation. `w` selects the divisor:
 
-- `0` (the default) divides by `n − 1`. One observation is 0.
+- `0` (the default) divides by `n − 1`. One finite observation is 0. `std(Inf)` and `var(Inf)` are NaN.
 - `1` divides by `n`.
 - A nonnegative weight vector divides by the sum of the weights. The weighted mean is `sum(w .* x) / sum(w)`.
 
@@ -355,13 +355,13 @@ std([1, 2, 3, 4])              # → sqrt(5/3)
 std([1, 2, 3], 1)              # → sqrt(2/3)
 std([1; 3; -9], [1; 1; 0.5])   # → sqrt(20.16)
 ```
-- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN.
+- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN. A single `Inf` (or a length-1 vector of `Inf`) is NaN, not 0. `std(7)` is still 0.
 - Complex data uses `sqrt(Σ w |x − mean|² / Σ w)` (or `n − 1` / `n` when `w` is `0` or `1`).
 - `std(M)` is the sample standard deviation of each column, a `1×ncols` row. `std(M, 0, 2)` is each row, an `nrows×1` column. The second argument is a weight, not a dimension: `std(M, 2)` is an error.
-- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is a vector of zeros (one observation per column).
+- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is one result per column: 0 when that sample is finite, NaN when it is `Inf` or NaN.
 
 ### `var(x)` / `var(x, w)` / `var(x, w, dim)`
-Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule.
+Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule, including `var(Inf)` = NaN.
 ```
 var([1, 2, 3, 4])    # → 5/3
 var([1, 2, 3], 1)    # → 2/3
@@ -403,7 +403,7 @@ argmax(A, 2)                    # column index of each row's max, nrows×1
 - Always agrees with the index returned by `[m, i] = max(...)` on the same input.
 
 ### `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `sort(A, dim, direction)`
-Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order.
+Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order. `-0` and `+0` compare equal, so that order keeps each sign bit where it was.
 ```
 sort([3.0, 1.0, 2.0])              # → [1.0, 2.0, 3.0]
 sort([3, 1, 2], "descend")         # → [3, 2, 1]
@@ -959,9 +959,9 @@ Cross-correlation, with the zero lag in the middle. `xcov` subtracts the mean of
 
 Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`.
 
-`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0).
+`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0). A matrix with several columns accepts only `"none"`; the other scales are the two-sequence forms.
 
-A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`.
+A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`. An empty input does not error: `xcorr([])` is an empty row, and `xcorr` of a `0×N` matrix is `0×N²`.
 ```
 r = xcorr([1, 2, 3, 4])          # [4, 11, 20, 30, 20, 11, 4]
 [r, lags] = xcorr([1, 2, 3, 4])  # lags = -3:3, zero lag at r(4)
@@ -2002,7 +2002,7 @@ The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for
 
 Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
 
-A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation row (`size(p)` is `[1, n]`, matching MATLAB's `1×n` `whos` line), and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
 
 A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 1×1 matrix (`chol(4)` is `2`). `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. A diagonal entry that is not real fails that pivot. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
