@@ -306,7 +306,7 @@ impl BuiltinRegistry {
         // Matrix analysis
         r.register("rank", builtin_rank);
         r.register("roots", builtin_roots);
-        r.register("polyfit", super::linsys::builtin_polyfit);
+        r.register_nargout("polyfit", super::linsys::builtin_polyfit);
         r.register("polyval", super::linsys::builtin_polyval);
         r.register("interp1", super::interp1::builtin_interp1);
         // Transfer function (Phase 2)

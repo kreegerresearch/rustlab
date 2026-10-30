@@ -668,12 +668,42 @@ fn polyfit_recovers_an_exact_quadratic() {
     let ev = eval(
         "x = 0:4;
          y = 4 * x .^ 2 + 3 * x + 2;
-         p = polyfit(x, y, 2);",
+         p = polyfit(x, y, 2);
+         [p2, S] = polyfit(x, y, 2);
+         df = S.df;
+         nr = S.normr;
+         [p3, S3, mu] = polyfit(x, y, 2);
+         yhat = polyval(p3, x, S3, mu);",
     );
     let p = vec_re(&ev, "p");
     close(p[0], 4.0);
     close(p[1], 3.0);
     close(p[2], 2.0);
+    let p2 = vec_re(&ev, "p2");
+    close(p2[0], 4.0);
+    close(p2[1], 3.0);
+    close(p2[2], 2.0);
+    close(re(&ev, "df"), 2.0);
+    assert!(re(&ev, "nr").abs() < 1e-8);
+    let mu = vec_re(&ev, "mu");
+    close(mu[0], 2.0);
+    close(mu[1], (2.5_f64).sqrt());
+    let p3 = vec_re(&ev, "p3");
+    assert!(
+        (p3[0] - 4.0).abs() > 1e-6 || (p3[1] - 3.0).abs() > 1e-6,
+        "centered coefficients should differ from the raw fit: {p3:?}"
+    );
+    let yhat = vec_re(&ev, "yhat");
+    let y = vec_re(&ev, "y");
+    for (a, b) in yhat.iter().zip(y.iter()) {
+        close(*a, *b);
+    }
+}
+
+#[test]
+fn polyfit_refuses_a_huge_vandermonde() {
+    let err = eval_err("p = polyfit(1:1000, 1:1000, 100000);");
+    assert!(err.contains("100000000"), "{err}");
 }
 
 #[test]
@@ -740,6 +770,29 @@ fn interp1_spline_reproduces_a_cubic() {
 }
 
 #[test]
+fn interp1_pchip_slope_and_makima_and_fill() {
+    // Fritsch–Carlson on [0, 1, 2] / [0, 1, 0]: interior slope 0 (the
+    // secants change sign), left slope 2. At 0.5 the Hermite value is 0.75,
+    // not the linear 0.5.
+    let ev = eval(
+        "x = [0, 1, 2];
+         y = [0, 1, 0];
+         q = interp1(x, y, 0.5, \"pchip\");
+         nodes = interp1(x, y, x, \"pchip\");
+         m = interp1([0, 1, 2, 3], [0, 1, 2, 1], 2.5, \"makima\");
+         z = interp1(x, y, -1, \"linear\", 0);
+         inside = interp1(x, y, 0.5, \"linear\", 0);",
+    );
+    close(re(&ev, "q"), 0.75);
+    let nodes = vec_re(&ev, "nodes");
+    close(nodes[0], 0.0);
+    close(nodes[1], 1.0);
+    close(nodes[2], 0.0);
+    close(re(&ev, "m"), 1.7625);
+    close(re(&ev, "z"), 0.0);
+    close(re(&ev, "inside"), 0.5);
+}
+
 fn interp1_matrix_columns_and_nonmonotonic_error() {
     let ev = eval(
         "x = [0, 1, 2];

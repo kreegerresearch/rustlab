@@ -6,6 +6,12 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.31
+
+### Added
+- **`[p, S] = polyfit(x, y, n)` and `[p, S, mu] = polyfit(x, y, n)`.** One output is unchanged. `S.R` is the triangular factor from the fit's QR, `S.df` is `length(x) - (n + 1)`, and `S.normr` is the residual norm. `mu` is `[mean(x), std(x)]` with the sample standard deviation, and the three-output coefficients are for the centered variable. `polyval(p, x, S, mu)` evaluates that fit. A Vandermonde larger than 100,000,000 entries errors before it is allocated.
+- **`interp1` methods `"pchip"` and `"makima"`.** `"pchip"` is Fritsch–Carlson. `"makima"` is modified Akima. A numeric fifth argument fills queries outside the data range. `"extrap"` is unchanged.
+
 ## 0.3.30
 
 ### Added

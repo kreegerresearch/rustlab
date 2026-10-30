@@ -77,6 +77,33 @@ pub fn qr(a: &Array2<C64>, pivoted: bool) -> Qr {
     }
 }
 
+/// Economy `R` only: `k × n` with `k = min(m, n)`, diagonal real and
+/// non-negative. Does not form `Q`. Pivoted input: `A[:, piv] = Q R`
+/// for the `Q` `explicit` would build.
+pub fn r_factor(qrf: &Qr) -> Array2<C64> {
+    let (_m, n) = qrf.fac.dim();
+    let k = qrf.reflectors;
+    let mut r = Array2::<C64>::zeros((k, n));
+    for i in 0..k {
+        for j in i..n {
+            r[[i, j]] = qrf.fac[[i, j]];
+        }
+    }
+    for col in 0..k.min(n) {
+        let d = r[[col, col]];
+        let mag = d.norm();
+        if mag == 0.0 || !mag.is_finite() {
+            continue;
+        }
+        let conj = (d / mag).conj();
+        for j in col..n {
+            r[[col, j]] *= conj;
+        }
+        r[[col, col]] = C64::new(mag, 0.0);
+    }
+    r
+}
+
 /// `(Q, R)`. `economy` gives `Q` as `m × k` and `R` as `k × n`
 /// (`k = min(m, n)`); otherwise `Q` is `m × m` and `R` is `m × n`.
 /// Unpivoted: `A = Q R`. Pivoted: `A[:, piv] = Q R`.

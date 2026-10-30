@@ -1599,29 +1599,36 @@ A scalar denominator (`M / 2`, `v / 2`) stays an element-wise scale. Two vectors
 x = [5, 10] / [2, 1; 1, 3]     # [1, 3]
 ```
 
-### `polyfit(x, y, n)`
-Least-squares coefficients of a degree-`n` polynomial, highest power first, from a QR factorization of the Vandermonde matrix. `polyval(p, x)` recovers `y` when `y` is exactly that polynomial. `x` and `y` have the same length. A matrix `y` is one fit per column, and `p` then has one row per column. A rank-deficient Vandermonde warns.
+### `polyfit(x, y, n)` / `[p, S] = polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)`
+Least-squares coefficients of a degree-`n` polynomial, highest power first, from a QR factorization of the Vandermonde matrix. `polyval(p, x)` recovers `y` when `y` is exactly that polynomial. `x` and `y` have the same length. A matrix `y` is one fit per column, and `p` then has one row per column. A rank-deficient Vandermonde warns. A Vandermonde with more than 100,000,000 entries errors before it is allocated.
+
+`[p, S] = polyfit(x, y, n)` returns the same `p` as one output. `S` is a struct: `S.R` is the triangular factor from that QR, `S.df` is `length(x) - (n + 1)`, and `S.normr` is the residual norm (one value per column of `y`).
+
+`[p, S, mu] = polyfit(x, y, n)` centers and scales `x` by `mu = [mean(x), std(x)]` (`std` divides by `n - 1`) and fits that variable. Those coefficients are not the one-output coefficients. `polyval(p, x, S, mu)` undoes the scaling.
 ```
 p = polyfit(0:4, 4*(0:4).^2 + 3*(0:4) + 2, 2)   # [4, 3, 2]
+[p, S, mu] = polyfit(0:4, y, 2)
+polyval(p, 0:4, S, mu)                           # y
 ```
 
-### `polyval(p, x)`
-Evaluate a polynomial by Horner's method. `p` is descending-power coefficients. The result has the same shape as `x`.
+### `polyval(p, x)` / `polyval(p, x, S, mu)`
+Evaluate a polynomial by Horner's method. `p` is descending-power coefficients. The result has the same shape as `x`. With `mu`, `x` is scaled as `(x - mu(1)) / mu(2)` first. `S` is the struct from `polyfit` and is not used for the value.
 ```
 polyval([1, -3, 2], 4)        # 6
 polyval([1, -3, 2], [1, 2])   # [0, 0]
 ```
 
-### `interp1(x, y, xi [, method [, "extrap"]])`
-One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, or `"spline"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
+### `interp1(x, y, xi [, method [, "extrap" or fill]])`
+One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
 
-`"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them.
+`"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them. `"pchip"` is the Fritsch–Carlson cubic Hermite interpolant. `"makima"` is modified Akima. Both pass through the nodes. Slopes are computed once per call.
 
 A matrix `y` is interpolated down each column. Complex `y` interpolates the real and imaginary parts separately.
 ```
 interp1([0, 1, 2], [0, 1, 0], 0.5)                    # 0.5
 interp1([0, 1, 2], [0, 1, 0], 1.2, "previous")        # 1
 interp1([0, 1, 2], [0, 1, 0], 3, "linear", "extrap")  # -1
+interp1([0, 1, 2], [0, 1, 0], -1, "linear", 0)       # 0
 ```
 
 ### `roots(p)`
