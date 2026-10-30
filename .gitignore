@@ -50,6 +50,7 @@ examples/notebooks/*.s2p
 # Design mockups are source, not generated notebook HTML.
 !dev/plans/mockups/**/*.html
 !dev/plans/mockups/**/*.svg
+!dev/prototypes/watch-layout/**/*.html
 
 # Notebook rendered output — sources live at examples/notebooks/*.md.
 # `make notebooks` writes everything into gallery/:
