@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prototype C — tabbed sidebar</title>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var state = q.get('state') || 'expanded';
+  document.documentElement.dataset.state = state;
+  if (state === 'collapsed') document.documentElement.classList.add('is-collapsed');
+  if (q.get('shot') === '1') document.documentElement.classList.add('shot');
+})();
+</script>
+<style>
+
+:root {
+  --topbar-h: 2.6rem;
+  --bg: #1e1e2e;
+  --bg2: #181825;
+  --text: #cdd6f4;
+  --dim: #a6adc8;
+  --border: #313244;
+  --border2: #45475a;
+  --accent: #cba6f7;
+  --accent2: #89b4fa;
+  --accent3: #74c7ec;
+  --code: #11111b;
+  --green: #a6e3a1;
+  --mark: #554f4e;
+  --files-w: 16.5rem;
+  --toc-w: 220px;
+  --rail: 2.75rem;
+  --cm: 14rem;
+  --left: calc(var(--files-w) + var(--toc-w));
+  --prose-max: 760px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+html { background: var(--bg); }
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+html.shot, html.shot body { height: 100%; overflow: hidden; }
+button, summary { font: inherit; color: inherit; }
+a { color: var(--accent2); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.topbar {
+  position: fixed; inset: 0 0 auto 0; height: var(--topbar-h); z-index: 300;
+  display: flex; align-items: center; gap: 0.7rem;
+  padding: 0 0.9rem;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  font-size: 0.85rem; color: var(--dim);
+}
+.topbar a { color: var(--accent2); text-decoration: none; white-space: nowrap; }
+.topbar a:hover { text-decoration: underline; }
+.topbar .index { color: var(--accent); font-weight: 650; }
+.topbar .crumb { display: flex; align-items: center; gap: 0.45rem; min-width: 0; flex: 1; }
+.topbar .sep { color: var(--border2); }
+.topbar .current { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar .prev, .topbar .next { max-width: 18%; overflow: hidden; text-overflow: ellipsis; }
+.topbar .next { margin-left: auto; }
+.badge, .meter {
+  flex: none;
+  font-size: 0.72rem; letter-spacing: 0.01em;
+  border: 1px solid var(--border2); border-radius: 999px;
+  padding: 0.12rem 0.5rem; color: var(--dim); background: var(--bg);
+}
+.meter { color: var(--accent3); font-variant-numeric: tabular-nums; }
+kbd {
+  font: 0.75rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  border: 1px solid var(--border2); border-bottom-width: 2px; border-radius: 4px;
+  padding: 0.05rem 0.32rem; color: var(--text); background: var(--bg);
+}
+main {
+  margin-left: var(--left);
+  padding: calc(var(--topbar-h) + 2rem) 2.5rem 2rem;
+  min-width: 0;
+}
+.sheet {
+  display: grid;
+  grid-template-columns: minmax(0, var(--prose-max)) var(--cm);
+  column-gap: 1rem;
+  align-items: start;
+  width: min(100%, calc(var(--prose-max) + var(--cm) + 1rem));
+}
+html.is-collapsed .sheet { margin-inline: auto; }
+.read { min-width: 0; }
+.read h1 {
+  font-size: 1.8rem; line-height: 1.25; color: var(--accent);
+  margin: 0.2rem 0 0.8rem; padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+}
+.read h2 { font-size: 1.35rem; line-height: 1.3; color: var(--accent2); margin: 1.6rem 0 0.55rem; }
+.read p { margin: 0 0 0.85rem; }
+.read code, .card code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em; background: var(--border); padding: 0.08rem 0.32rem; border-radius: 3px;
+}
+.math { font-family: "Iowan Old Style", Palatino, Georgia, serif; }
+.eq {
+  font-family: "Iowan Old Style", Palatino, Georgia, serif;
+  background: var(--bg2); border-radius: 8px; padding: 0.55rem 0.9rem;
+  overflow-x: auto;
+}
+mark.hl { background: var(--mark); color: inherit; border-bottom: 1px solid var(--accent2); padding: 0 0.08em; }
+sup.ref { font-size: 0.72rem; font-weight: 700; color: var(--accent); margin-left: 0.12em; cursor: pointer; }
+sup.ref::before { content: "["; } sup.ref::after { content: "]"; }
+.cell { margin: 0.8rem 0 1.1rem; }
+.src {
+  background: var(--code); border-radius: 8px 8px 0 0;
+  border-left: 3px solid var(--accent);
+}
+.plot + .src, .src:last-child { border-radius: 8px; }
+.src summary {
+  cursor: pointer; color: var(--dim); font-size: 0.75rem; letter-spacing: 0.04em;
+  padding: 0.35rem 0.75rem 0.15rem; text-transform: lowercase;
+}
+pre { margin: 0; padding: 0.15rem 0.85rem 0.75rem; overflow: auto; }
+pre code {
+  background: transparent; padding: 0; border-radius: 0;
+  font-size: 0.82rem; line-height: 1.45; color: var(--text);
+}
+.syn-fn { color: #89b4fa; }
+.syn-num { color: #fab387; }
+.syn-str { color: #a6e3a1; }
+.syn-op { color: #89dceb; }
+.plot {
+  margin: 0; background: var(--code);
+  border: 1px solid var(--border); border-top: 0;
+  border-radius: 0 0 8px 8px; overflow: hidden;
+}
+.plot svg { display: block; width: 100%; height: auto; }
+.plot figcaption { color: var(--dim); font-size: 0.75rem; padding: 0.15rem 0.75rem 0.5rem; }
+table { border-collapse: collapse; margin: 0.8rem 0 1rem; width: 100%; font-size: 0.92rem; }
+th, td { border: 1px solid var(--border2); padding: 0.35rem 0.7rem; text-align: left; }
+th { background: var(--border); color: var(--accent); font-weight: 650; }
+.page-nav { display: flex; gap: 0.5rem; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.page-nav a {
+  flex: 1; text-decoration: none; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0.55rem 0.8rem; min-width: 0;
+}
+.page-nav .label { display: block; color: var(--dim); font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.page-nav .title { display: block; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.page-nav .next { text-align: right; } .page-nav .index { text-align: center; }
+footer { color: #81859c; font-size: 0.78rem; margin-top: 1.6rem; }
+.comments { position: relative; min-width: 0; }
+.cm-label {
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--dim); margin: 0.2rem 0 0.45rem;
+}
+.card {
+  background: var(--bg2); border: 1px solid var(--accent2); border-radius: 6px;
+  padding: 0.4rem 0.55rem 0.5rem; margin: 0 0 0.55rem; font-size: 0.85rem; line-height: 1.35;
+}
+.card header { display: flex; gap: 0.4rem; align-items: baseline; margin-bottom: 0.15rem; }
+.num { font-weight: 700; color: var(--accent2); }
+.meta { color: var(--dim); font-size: 0.75rem; }
+.card p { margin: 0; }
+.cm-row { display: flex; align-items: center; gap: 0.35rem; margin: 0 0 0.45rem; }
+.cm-row .cm-label { margin: 0; }
+.cm-collapse {
+  margin-left: auto; width: 1.25rem; height: 1.25rem; padding: 0; flex: none;
+  border: 1px solid var(--accent2); border-radius: 4px; background: var(--bg2);
+  cursor: pointer; line-height: 1;
+}
+.files, .toc, .side, .drawer {
+  background: var(--bg2); color: var(--text); border-right: 1px solid var(--border);
+}
+.panel-hd, .drawer-hd, .side-hd {
+  display: flex; align-items: center; gap: 0.4rem;
+  padding: 0.75rem 0.75rem 0.6rem; border-bottom: 1px solid var(--border);
+  color: var(--accent); font-weight: 700;
+}
+.panel-hd span, .drawer-hd span, .side-hd span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn, .tab, .rail-btn {
+  flex: none; cursor: pointer; background: transparent; border: 1px solid transparent;
+  border-radius: 6px; color: var(--text); padding: 0.2rem; line-height: 0;
+}
+.icon-btn { margin-left: auto; border-color: var(--border); }
+.icon-btn svg, .rail-btn svg, .tab svg { width: 16px; height: 16px; display: block; }
+.tree, .tree ul { list-style: none; margin: 0; padding: 0.25rem 0 0.4rem; }
+.tree a, .toc a, .drawer a {
+  display: block; text-decoration: none; color: var(--text);
+  padding: 0.22rem 0.75rem 0.22rem 0.9rem; font-size: 0.82rem;
+}
+.fname { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; overflow-wrap: anywhere; }
+.tree a.current, .toc a.current { background: var(--border); box-shadow: inset 3px 0 0 var(--accent); }
+.tree a:hover, .toc a:hover, .drawer a:hover { background: var(--border); }
+.tree details summary {
+  cursor: pointer; list-style: none; color: var(--dim); font-size: 0.78rem; font-weight: 650;
+  padding: 0.28rem 0.75rem;
+}
+.tree details summary::-webkit-details-marker { display: none; }
+.tree details summary::before { content: "▸ "; color: var(--accent); }
+.tree details[open] > summary::before { content: "▾ "; }
+.tree details ul { padding-left: 0.7rem; }
+.toc a.h2 { padding-left: 1.35rem; font-size: 0.8rem; color: var(--dim); }
+.toc a.h2.current { color: var(--text); }
+.hint {
+  flex: none; display: flex; gap: 0.45rem; align-items: center;
+  font-size: 0.72rem; color: var(--dim); white-space: nowrap;
+}
+html.shot .page-nav, html.shot footer { display: none; }
+@media (max-width: 1100px) {
+  .topbar .prev, .topbar .next { max-width: 14%; }
+  .badge { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+
+:root { --side: 280px; --left: var(--side); --files-w: 0px; --toc-w: 0px; }
+.side {
+  position: fixed; top: var(--topbar-h); left: 0; bottom: 0; width: var(--side);
+  z-index: 160; display: flex; flex-direction: column; min-width: 0;
+}
+.side-hd { gap: 0.25rem; }
+.tabs { display: flex; gap: 0.25rem; min-width: 0; }
+.tab {
+  border: 1px solid var(--border); padding: 0.2rem 0.45rem; font-size: 0.78rem; font-weight: 650;
+  color: var(--dim); display: inline-flex; align-items: center; gap: 0.3rem;
+}
+.tab[aria-selected="true"] { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+.tab svg { width: 14px; height: 14px; }
+.side .pane { overflow: auto; flex: 1; min-height: 0; }
+.side .pane[hidden] { display: none; }
+.resizer {
+  position: absolute; top: 0; right: -3px; bottom: 0; width: 8px; cursor: col-resize; z-index: 2;
+}
+.resizer::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: var(--accent2); opacity: 0.45;
+}
+.remembered { margin-left: auto; font-size: 0.68rem; font-weight: 600; color: var(--accent3); letter-spacing: 0; }
+html.is-collapsed { --side: var(--rail); }
+html.is-collapsed .pane,
+html.is-collapsed .remembered,
+html.is-collapsed .resizer,
+html.is-collapsed .tab span { display: none; }
+html.is-collapsed .side-hd { flex-direction: column; align-items: center; border-bottom: 0; padding: 0.45rem 0.2rem; gap: 0.4rem; }
+html.is-collapsed .tabs { flex-direction: column; }
+html.is-collapsed .tab { padding: 0.35rem; }
+html.is-collapsed .icon-btn { margin-left: 0; }
+html.cm-collapsed { --cm: 2.5rem; }
+html.cm-collapsed .card-body, html.cm-collapsed .meta, html.cm-collapsed .cm-label { display: none; }
+html.cm-collapsed .card { text-align: center; padding: 0.25rem 0.1rem; }
+@media (max-width: 768px) {
+  :root { --left: 0px; }
+  .side { width: min(20rem, 88vw); transform: translateX(calc(-100% + var(--rail))); box-shadow: none; }
+  html:not(.is-collapsed) .side { transform: none; box-shadow: 8px 0 28px rgba(0,0,0,.4); z-index: 240; }
+}
+
+</style>
+</head>
+<body>
+<header class="topbar">
+  <a class="prev" href="#">← Sparse solve</a>
+  <a class="index" href="#">Index</a>
+  <span class="crumb"><span class="sep">/</span><span class="current">Spectral Estimation</span></span>
+  <a class="next" href="#">String arrays →</a>
+  <div class="hint"><span>Files or Sections</span><span>drag the edge</span></div>
+  <span class="badge">C · tabbed sidebar</span>
+  <span class="meter" id="meter">text …</span>
+</header>
+
+<aside class="side" id="side" aria-label="Notebooks and sections">
+  <div class="resizer" id="resizer" role="separator" aria-orientation="vertical" aria-label="Sidebar width" tabindex="0"></div>
+  <div class="side-hd">
+    <div class="tabs" role="tablist">
+      <button type="button" class="tab" id="tab-files" role="tab" aria-selected="true" aria-controls="pane-files"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.6 4.2h4.1l1.3-1.6h7.4V13H1.6z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span>Files</span></button>
+      <button type="button" class="tab" id="tab-sections" role="tab" aria-selected="false" aria-controls="pane-sections"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span>Sections</span></button>
+    </div>
+    <span class="remembered" id="remembered" title="Width saved in this browser">280px</span>
+    <button type="button" class="icon-btn" id="side-toggle" aria-expanded="true" aria-label="Collapse sidebar">⟨</button>
+  </div>
+  <div class="pane" id="pane-files" role="tabpanel"><ul class="tree"><li><a class="file" href="#"><span class="fname">README.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">amplifier_analysis.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">animation.md</span></a></li>
+<li class="dir"><details><summary>comm</summary><ul>
+<li><a class="file" href="#"><span class="fname">viterbi_fec.md</span></a></li>
+</ul></details></li>
+<li><a class="file" href="#"><span class="fname">contour_plots.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">electrostatics.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">filter_analysis.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">laplacian.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">mandelbrot.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">nyquist_stability.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">quick_look.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">sparse_solve.md</span></a></li>
+<li><a class="file current" href="#" aria-current="page"><span class="fname">spectral_estimation.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">string_arrays.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">surface_plots.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">vector_fields.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">waterfall.md</span></a></li>
+<li><a class="file" href="#"><span class="fname">widgets_demo.md</span></a></li></ul></div>
+  <div class="pane toc" id="pane-sections" role="tabpanel" hidden><div class="nav"><a class="h1 current" href="#spectral-estimation" aria-current="location">Spectral Estimation</a>
+<a class="h2" href="#test-signal">Test Signal</a>
+<a class="h2" href="#direct-fft-periodogram">Direct FFT (Periodogram)</a>
+<a class="h2" href="#windowed-fft-hann">Windowed FFT (Hann)</a>
+<a class="h2" href="#welchs-method">Welch&#x27;s Method</a>
+<a class="h2" href="#comparison">Comparison</a>
+<a class="h2" href="#see-also">See also</a></div></div>
+</aside>
+
+<main>
+  <div class="sheet">
+    <div class="read" id="read">
+
+<h1 id="spectral-estimation">Spectral Estimation</h1>
+<p>Comparing two approaches to estimating the power spectral density of a <mark class="hl">noisy multi-tone signal</mark><sup class="ref" data-for="cm-1">1</sup>.</p>
+<h2 id="test-signal">Test Signal</h2>
+<p>Two sinusoids at <span class="math">f<sub>1</sub> = 0.15</span> and <span class="math">f<sub>2</sub> = 0.18</span> cycles/sample, plus additive white Gaussian noise:</p>
+<p class="eq">x[n] = sin(2π f<sub>1</sub> n) + 0.8 sin(2π f<sub>2</sub> n) + 0.3 w[n]</p>
+<p>These frequencies are <mark class="hl">intentionally close together</mark><sup class="ref" data-for="cm-2">2</sup> to test resolution.</p>
+<div class="cell"><details class="src" open><summary>rustlab</summary><pre><code><span class="syn-fn">seed</span>(<span class="syn-num">42</span>)
+N <span class="syn-op">=</span> <span class="syn-num">1024</span>;
+n <span class="syn-op">=</span> <span class="syn-num">0</span>:N<span class="syn-op">-</span><span class="syn-num">1</span>;
+x <span class="syn-op">=</span> <span class="syn-fn">sin</span>(<span class="syn-num">2</span><span class="syn-op">*</span><span class="syn-fn">pi</span><span class="syn-op">*</span><span class="syn-num">0.15</span><span class="syn-op">*</span>n) <span class="syn-op">+</span> <span class="syn-num">0.8</span><span class="syn-op">*</span><span class="syn-fn">sin</span>(<span class="syn-num">2</span><span class="syn-op">*</span><span class="syn-fn">pi</span><span class="syn-op">*</span><span class="syn-num">0.18</span><span class="syn-op">*</span>n) <span class="syn-op">+</span> <span class="syn-num">0.3</span><span class="syn-op">*</span><span class="syn-fn">randn</span>(<span class="syn-num">1</span>, N);
+<span class="syn-fn">plot</span>(x(<span class="syn-num">1</span>:<span class="syn-num">200</span>))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Test Signal (first 200 samples)&quot;</span>)
+<span class="syn-fn">xlabel</span>(<span class="syn-str">&quot;Sample&quot;</span>)
+<span class="syn-fn">grid</span> <span class="syn-fn">on</span></code></pre></details><figure class="plot">
+<svg viewBox="0 0 640 168" role="img" aria-label="Test signal, first 200 samples">
+  <rect width="640" height="168" fill="#11111b"/>
+  <g stroke="rgba(150,150,180,0.3)" stroke-width="1">
+    <line x1="36" y1="20" x2="36" y2="148"/>
+    <line x1="36" y1="148" x2="616" y2="148"/>
+    <line x1="36" y1="84" x2="616" y2="84" stroke-dasharray="3 4"/>
+  </g>
+  <polyline fill="none" stroke="#89b4fa" stroke-width="1.4" points="36.0,92.0 39.0,50.0 41.9,59.8 44.9,133.1 47.9,131.0 50.9,73.2 53.8,45.7 56.8,75.6 59.8,111.5 62.8,112.0 65.7,91.8 68.7,70.3 71.7,95.9 74.7,88.0 77.6,92.4 80.6,112.2 83.6,93.5 86.6,75.9 89.5,74.8 92.5,105.9 95.5,134.8 98.5,107.7 101.4,50.7 104.4,49.3 107.4,122.0 110.4,132.6 113.3,101.7 116.3,43.8 119.3,60.4 122.3,130.1 125.2,130.4 128.2,74.6 131.2,49.7 134.2,80.4 137.1,117.9 140.1,117.1 143.1,92.0 146.1,70.5 149.0,95.2 152.0,83.6 155.0,99.8 158.0,106.9 160.9,96.4 163.9,77.8 166.9,73.6 169.9,97.9 172.8,126.2 175.8,102.2 178.8,48.6 181.8,49.0 184.7,119.0 187.7,135.2 190.7,105.5 193.7,38.0 196.6,64.7 199.6,124.8 202.6,131.8 205.6,78.3 208.5,56.3 211.5,86.2 214.5,123.3 217.5,120.1 220.4,90.6 223.4,70.6 226.4,91.9 229.4,85.6 232.3,103.5 235.3,99.6 238.3,101.7 241.3,77.6 244.2,71.7 247.2,90.3 250.2,120.7 253.2,101.2 256.1,50.7 259.1,51.0 262.1,116.6 265.1,138.3 268.0,104.1 271.0,38.6 274.0,68.6 277.0,117.2 279.9,135.2 282.9,81.6 285.9,60.7 288.9,86.1 291.8,121.4 294.8,117.4 297.8,86.7 300.8,70.0 303.7,89.2 306.7,90.6 309.7,100.1 312.7,95.7 315.6,108.2 318.6,75.4 321.6,70.9 324.6,85.8 327.5,121.7 330.5,108.1 333.5,58.9 336.5,55.5 339.4,114.6 342.4,139.9 345.4,101.8 348.4,45.5 351.3,66.4 354.3,110.2 357.3,140.1 360.3,83.5 363.2,62.4 366.2,80.5 369.2,113.0 372.2,110.2 375.1,81.7 378.1,69.6 381.1,88.4 384.1,94.7 387.0,93.2 390.0,99.2 393.0,111.4 396.0,72.6 398.9,71.7 401.9,83.4 404.9,125.9 407.9,117.8 410.8,68.3 413.8,59.0 416.8,111.3 419.8,139.4 422.7,101.3 425.7,53.0 428.7,57.9 431.7,108.7 434.6,143.9 437.6,84.3 440.6,62.9 443.6,73.9 446.5,105.7 449.5,106.0 452.5,80.5 455.5,71.8 458.4,89.5 461.4,96.7 464.4,88.0 467.4,106.3 470.3,107.7 473.3,72.6 476.3,73.0 479.3,81.6 482.2,129.2 485.2,123.4 488.2,71.3 491.2,56.5 494.1,104.4 497.1,136.8 500.1,102.9 503.1,57.7 506.0,49.3 509.0,113.4 512.0,143.1 515.0,85.8 517.9,63.3 520.9,69.2 523.9,103.5 526.9,109.7 529.8,86.7 532.8,77.9 535.8,92.0 538.8,96.8 541.7,85.9 544.7,110.8 547.7,100.3 550.7,78.3 553.6,72.4 556.6,80.2 559.6,130.3 562.6,124.1 565.5,67.3 568.5,47.8 571.5,94.6 574.5,133.7 577.4,106.2 580.4,60.1 583.4,45.0 586.4,118.0 589.3,136.7 592.3,90.7 595.3,62.9 598.3,66.6 601.2,104.6 604.2,117.5 607.2,95.9 610.2,84.6 613.1,93.6 616.1,95.1 619.1,85.5 622.1,110.7 625.0,96.2 628.0,87.3"/>
+  <text x="36" y="14" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">Amplitude</text>
+  <text x="560" y="162" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">Sample</text>
+</svg>
+<figcaption>Test Signal (first 200 samples)</figcaption>
+</figure></div>
+<h2 id="direct-fft-periodogram">Direct FFT (Periodogram)</h2>
+<p>The periodogram estimates the PSD as the magnitude-squared DFT, normalized by <span class="math">N</span>:</p>
+<p class="eq">P&#770;<sub>xx</sub>[k] = (1/N) | Σ<sub>n=0</sub><sup>N−1</sup> x[n] e<sup>−j2πkn/N</sup> |<sup>2</sup></p>
+<div class="cell"><details class="src" open><summary>rustlab</summary><pre><code>X <span class="syn-op">=</span> <span class="syn-fn">fft</span>(x);
+Pxx <span class="syn-op">=</span> <span class="syn-fn">abs</span>(X(<span class="syn-num">1</span>:<span class="syn-fn">end</span><span class="syn-op">/</span><span class="syn-num">2</span>))<span class="syn-op">.</span><span class="syn-op">^</span><span class="syn-num">2</span> <span class="syn-op">/</span> N;
+f <span class="syn-op">=</span> <span class="syn-fn">linspace</span>(<span class="syn-num">0</span>, <span class="syn-num">0.5</span>, N<span class="syn-op">/</span><span class="syn-num">2</span>);
+<span class="syn-fn">plot</span>(f, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pxx))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Periodogram&quot;</span>)
+<span class="syn-fn">xlabel</span>(<span class="syn-str">&quot;Frequency (cycles/sample)&quot;</span>)
+<span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;Power (dB)&quot;</span>)
+<span class="syn-fn">grid</span> <span class="syn-fn">on</span></code></pre></details><figure class="plot">
+<svg viewBox="0 0 640 168" role="img" aria-label="Periodogram">
+  <rect width="640" height="168" fill="#11111b"/>
+  <g stroke="rgba(150,150,180,0.3)" stroke-width="1">
+    <line x1="36" y1="16" x2="36" y2="148"/>
+    <line x1="36" y1="148" x2="616" y2="148"/>
+  </g>
+  <polyline fill="none" stroke="#cba6f7" stroke-width="1.6" points="36.0,142.9 38.5,141.6 41.0,142.1 43.4,142.2 45.9,141.9 48.4,143.3 50.9,144.4 53.3,143.6 55.8,143.3 58.3,143.4 60.8,142.0 63.2,141.2 65.7,142.3 68.2,142.7 70.7,142.7 73.2,144.0 75.6,144.5 78.1,143.1 80.6,142.6 83.1,142.7 85.5,141.6 88.0,141.4 90.5,143.0 93.0,143.5 95.4,143.3 97.9,144.2 100.4,144.0 102.9,142.3 105.4,142.0 107.8,142.3 110.3,141.7 112.8,142.1 115.3,143.8 117.7,144.0 120.2,143.4 122.7,143.8 125.2,143.2 127.6,141.6 130.1,141.7 132.6,142.5 135.1,142.2 137.6,143.0 140.0,144.4 142.5,144.0 145.0,143.0 147.5,143.1 149.9,142.4 152.4,141.2 154.9,142.0 157.4,143.1 159.8,143.0 162.3,143.6 164.8,144.5 167.3,143.4 169.8,142.3 172.2,142.5 174.7,142.0 177.2,141.4 179.7,142.7 182.1,143.9 184.6,143.5 187.1,143.8 189.6,144.1 192.1,142.6 194.5,141.6 197.0,142.0 199.5,141.1 202.0,137.8 204.4,130.2 206.9,112.1 209.4,84.6 211.9,61.6 214.3,57.0 216.8,72.4 219.3,98.9 221.8,122.8 224.3,135.7 226.7,141.0 229.2,143.8 231.7,144.2 234.2,142.4 236.6,140.3 239.1,134.4 241.6,119.9 244.1,98.6 246.5,77.7 249.0,67.4 251.5,76.4 254.0,99.4 256.5,120.8 258.9,133.2 261.4,139.4 263.9,141.7 266.4,141.5 268.8,142.4 271.3,144.0 273.8,143.8 276.3,143.4 278.7,143.9 281.2,142.9 283.7,141.4 286.2,141.9 288.7,142.5 291.1,142.2 293.6,143.3 296.1,144.5 298.6,143.7 301.0,143.0 303.5,143.1 306.0,142.1 308.5,141.2 310.9,142.3 313.4,143.1 315.9,143.0 318.4,143.9 320.9,144.5 323.3,143.1 325.8,142.2 328.3,142.5 330.8,141.8 333.2,141.5 335.7,143.0 338.2,143.8 340.7,143.4 343.1,143.9 345.6,143.9 348.1,142.3 350.6,141.6 353.1,142.3 355.5,142.0 358.0,142.2 360.5,143.9 363.0,144.3 365.4,143.4 367.9,143.4 370.4,143.1 372.9,141.5 375.3,141.5 377.8,142.6 380.3,142.7 382.8,143.0 385.3,144.4 387.7,144.1 390.2,142.8 392.7,142.7 395.2,142.4 397.6,141.3 400.1,141.9 402.6,143.4 405.1,143.3 407.5,143.5 410.0,144.4 412.5,143.5 415.0,142.0 417.5,142.2 419.9,142.2 422.4,141.6 424.9,142.7 427.4,144.1 429.8,143.7 432.3,143.5 434.8,143.8 437.3,142.6 439.7,141.4 442.2,142.1 444.7,142.5 447.2,142.3 449.7,143.6 452.1,144.5 454.6,143.5 457.1,143.0 459.6,143.1 462.0,141.9 464.5,141.2 467.0,142.5 469.5,143.1 471.9,143.0 474.4,144.1 476.9,144.4 479.4,142.9 481.9,142.3 484.3,142.5 486.8,141.6 489.3,141.6 491.8,143.3 494.2,143.8 496.7,143.4 499.2,144.0 501.7,143.7 504.2,142.0 506.6,141.7 509.1,142.3 511.6,141.9 514.1,142.4 516.5,144.1 519.0,144.1 521.5,143.3 524.0,143.5 526.4,142.9 528.9,141.4 531.4,141.7 533.9,142.7 536.4,142.6 538.8,143.3 541.3,144.5 543.8,143.9 546.3,142.7 548.7,142.8 551.2,142.2 553.7,141.2 556.2,142.2 558.6,143.5 561.1,143.3 563.6,143.7 566.1,144.4 568.6,143.2 571.0,141.9 573.5,142.2 576.0,142.0 578.5,141.6 580.9,143.0 583.4,144.2 585.9,143.6 588.4,143.6 590.8,143.8 593.3,142.3 595.8,141.4 598.3,142.2 600.8,142.4 603.2,142.4 605.7,143.8 608.2,144.5 610.7,143.3 613.1,143.0 615.6,143.0 618.1,141.6 620.6,141.3 623.0,142.7 625.5,143.1 628.0,143.1"/>
+  <text x="300" y="162" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">Frequency (cycles/sample)</text>
+  <text x="36" y="12" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">dB</text>
+</svg>
+<figcaption>Periodogram</figcaption>
+</figure></div>
+<p>Both tones are visible, but the periodogram is noisy due to spectral leakage from the implicit rectangular window.</p>
+<h2 id="windowed-fft-hann">Windowed FFT (Hann)</h2>
+<p>Applying a Hann window <span class="math">w[n] = 0.5 − 0.5 cos(2π n / N)</span> reduces sidelobe leakage at the cost of slightly wider main lobes:</p>
+<p class="eq">P&#770;<sub>ww</sub>[k] = (1 / Σ w[n]<sup>2</sup>) | Σ x[n] w[n] e<sup>−j2πkn/N</sup> |<sup>2</sup></p>
+<div class="cell"><details class="src" open><summary>rustlab</summary><pre><code>w <span class="syn-op">=</span> <span class="syn-fn">window</span>(<span class="syn-str">&quot;hann&quot;</span>, N);
+xw <span class="syn-op">=</span> x <span class="syn-op">.</span><span class="syn-op">*</span> w;
+Xw <span class="syn-op">=</span> <span class="syn-fn">fft</span>(xw);
+Pww <span class="syn-op">=</span> <span class="syn-fn">abs</span>(Xw(<span class="syn-num">1</span>:<span class="syn-fn">end</span><span class="syn-op">/</span><span class="syn-num">2</span>))<span class="syn-op">.</span><span class="syn-op">^</span><span class="syn-num">2</span> <span class="syn-op">/</span> <span class="syn-fn">sum</span>(w<span class="syn-op">.</span><span class="syn-op">^</span><span class="syn-num">2</span>);
+<span class="syn-fn">plot</span>(f, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pww))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Hann-Windowed Periodogram&quot;</span>)
+<span class="syn-fn">xlabel</span>(<span class="syn-str">&quot;Frequency (cycles/sample)&quot;</span>)
+<span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;Power (dB)&quot;</span>)
+<span class="syn-fn">grid</span> <span class="syn-fn">on</span></code></pre></details><figure class="plot">
+<svg viewBox="0 0 640 168" role="img" aria-label="Hann-Windowed Periodogram">
+  <rect width="640" height="168" fill="#11111b"/>
+  <g stroke="rgba(150,150,180,0.3)" stroke-width="1">
+    <line x1="36" y1="16" x2="36" y2="148"/>
+    <line x1="36" y1="148" x2="616" y2="148"/>
+  </g>
+  <polyline fill="none" stroke="#cba6f7" stroke-width="1.6" points="36.0,145.7 38.5,144.4 41.0,144.9 43.4,145.0 45.9,144.8 48.4,146.2 50.9,147.2 53.3,146.5 55.8,146.2 58.3,146.3 60.8,144.9 63.2,144.1 65.7,145.2 68.2,145.6 70.7,145.6 73.2,146.9 75.6,147.3 78.1,146.0 80.6,145.5 83.1,145.5 85.5,144.4 88.0,144.3 90.5,145.8 93.0,146.3 95.4,146.2 97.9,147.0 100.4,146.8 102.9,145.2 105.4,144.8 107.8,145.2 110.3,144.5 112.8,145.0 115.3,146.7 117.7,146.8 120.2,146.3 122.7,146.7 125.2,146.0 127.6,144.4 130.1,144.6 132.6,145.3 135.1,145.1 137.6,145.9 140.0,147.3 142.5,146.8 145.0,145.8 147.5,146.0 149.9,145.2 152.4,144.0 154.9,144.8 157.4,145.9 159.8,145.8 162.3,146.5 164.8,147.4 167.3,146.3 169.8,145.1 172.2,145.3 174.7,144.8 177.2,144.2 179.7,145.6 182.1,146.7 184.6,146.3 187.1,146.6 189.6,146.9 192.1,145.4 194.5,144.4 197.0,144.9 199.5,143.9 202.0,140.6 204.4,133.0 206.9,115.0 209.4,87.4 211.9,64.5 214.3,59.8 216.8,75.3 219.3,101.8 221.8,125.6 224.3,138.6 226.7,143.8 229.2,146.7 231.7,147.0 234.2,145.3 236.6,143.2 239.1,137.3 241.6,122.8 244.1,101.5 246.5,80.5 249.0,70.3 251.5,79.3 254.0,102.2 256.5,123.7 258.9,136.1 261.4,142.3 263.9,144.5 266.4,144.3 268.8,145.3 271.3,146.9 273.8,146.7 276.3,146.3 278.7,146.7 281.2,145.7 283.7,144.3 286.2,144.7 288.7,145.3 291.1,145.1 293.6,146.1 296.1,147.4 298.6,146.6 301.0,145.8 303.5,146.0 306.0,145.0 308.5,144.0 310.9,145.1 313.4,146.0 315.9,145.8 318.4,146.7 320.9,147.3 323.3,146.0 325.8,145.1 328.3,145.3 330.8,144.6 333.2,144.3 335.7,145.9 338.2,146.7 340.7,146.3 343.1,146.8 345.6,146.8 348.1,145.1 350.6,144.5 353.1,145.1 355.5,144.9 358.0,145.1 360.5,146.7 363.0,147.1 365.4,146.2 367.9,146.3 370.4,145.9 372.9,144.4 375.3,144.3 377.8,145.5 380.3,145.5 382.8,145.9 385.3,147.3 387.7,147.0 390.2,145.6 392.7,145.6 395.2,145.2 397.6,144.1 400.1,144.8 402.6,146.2 405.1,146.2 407.5,146.4 410.0,147.2 412.5,146.3 415.0,144.8 417.5,145.0 419.9,145.0 422.4,144.4 424.9,145.6 427.4,147.0 429.8,146.6 432.3,146.4 434.8,146.7 437.3,145.4 439.7,144.2 442.2,144.9 444.7,145.3 447.2,145.1 449.7,146.4 452.1,147.4 454.6,146.4 457.1,145.8 459.6,145.9 462.0,144.7 464.5,144.1 467.0,145.3 469.5,146.0 471.9,145.9 474.4,146.9 476.9,147.2 479.4,145.7 481.9,145.1 484.3,145.3 486.8,144.5 489.3,144.5 491.8,146.2 494.2,146.6 496.7,146.3 499.2,146.9 501.7,146.6 504.2,144.9 506.6,144.6 509.1,145.2 511.6,144.8 514.1,145.3 516.5,147.0 519.0,147.0 521.5,146.1 524.0,146.3 526.4,145.7 528.9,144.2 531.4,144.5 533.9,145.6 536.4,145.5 538.8,146.1 541.3,147.4 543.8,146.7 546.3,145.5 548.7,145.6 551.2,145.1 553.7,144.1 556.2,145.0 558.6,146.3 561.1,146.1 563.6,146.5 566.1,147.2 568.6,146.0 571.0,144.8 573.5,145.1 576.0,144.9 578.5,144.5 580.9,145.9 583.4,147.0 585.9,146.4 588.4,146.4 590.8,146.6 593.3,145.1 595.8,144.2 598.3,145.1 600.8,145.2 603.2,145.2 605.7,146.7 608.2,147.3 610.7,146.2 613.1,145.9 615.6,145.8 618.1,144.5 620.6,144.2 623.0,145.6 625.5,145.9 628.0,146.0"/>
+  <text x="300" y="162" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">Frequency (cycles/sample)</text>
+  <text x="36" y="12" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">dB</text>
+</svg>
+<figcaption>Hann-Windowed Periodogram</figcaption>
+</figure></div>
+<p>The noise floor drops and the two tones at <span class="math">f<sub>1</sub></span> and <span class="math">f<sub>2</sub></span> are clearly resolved.</p>
+<h2 id="welchs-method">Welch's Method</h2>
+<p>A windowed periodogram is still based on one segment, so its variance is fixed. <strong>Welch's method</strong> splits the signal into overlapping segments, windows each, computes a periodogram per segment, and averages them:</p>
+<p class="eq">P&#770;<sub>welch</sub>[k] = (1/K) Σ<sub>i=0</sub><sup>K−1</sup> P&#770;<sub>ww</sub><sup>(i)</sup>[k]</p>
+<p>Averaging <span class="math">K</span> independent (or near-independent) periodograms cuts the variance by roughly <span class="math">1/K</span> at the cost of widening each effective frequency bin. The <code>pwelch</code> builtin handles the segmentation, windowing, and averaging in one call.</p>
+<div class="cell"><details class="src" open><summary>rustlab</summary><pre><code>[Pw, fw] <span class="syn-op">=</span> <span class="syn-fn">pwelch</span>(x, <span class="syn-num">1.0</span>)
+<span class="syn-fn">plot</span>(fw, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pw))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Welch&#x27;s PSD&quot;</span>)
+<span class="syn-fn">xlabel</span>(<span class="syn-str">&quot;Frequency (cycles/sample)&quot;</span>)
+<span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;dB/Hz&quot;</span>)
+<span class="syn-fn">grid</span> <span class="syn-fn">on</span></code></pre></details><figure class="plot">
+<svg viewBox="0 0 640 168" role="img" aria-label="Welch&#x27;s PSD">
+  <rect width="640" height="168" fill="#11111b"/>
+  <g stroke="rgba(150,150,180,0.3)" stroke-width="1">
+    <line x1="36" y1="16" x2="36" y2="148"/>
+    <line x1="36" y1="148" x2="616" y2="148"/>
+  </g>
+  <polyline fill="none" stroke="#cba6f7" stroke-width="1.6" points="36.0,147.1 38.5,146.7 41.0,146.9 43.4,146.9 45.9,146.8 48.4,147.3 50.9,147.7 53.3,147.4 55.8,147.3 58.3,147.3 60.8,146.9 63.2,146.6 65.7,146.9 68.2,147.1 70.7,147.1 73.2,147.5 75.6,147.7 78.1,147.2 80.6,147.1 83.1,147.1 85.5,146.7 88.0,146.6 90.5,147.2 93.0,147.4 95.4,147.3 97.9,147.6 100.4,147.5 102.9,147.0 105.4,146.8 107.8,146.9 110.3,146.7 112.8,146.9 115.3,147.5 117.7,147.5 120.2,147.3 122.7,147.5 125.2,147.2 127.6,146.7 130.1,146.7 132.6,147.0 135.1,146.9 137.6,147.2 140.0,147.7 142.5,147.5 145.0,147.2 147.5,147.2 149.9,147.0 152.4,146.5 154.9,146.8 157.4,147.2 159.8,147.1 162.3,147.3 164.8,147.5 167.3,146.9 169.8,146.2 172.2,145.7 174.7,144.8 177.2,143.3 179.7,142.1 182.1,140.0 184.6,136.4 187.1,132.1 189.6,126.6 192.1,119.3 194.5,111.1 197.0,102.6 199.5,93.4 202.0,84.1 204.4,75.9 206.9,68.5 209.4,62.2 211.9,58.1 214.3,56.2 216.8,55.8 219.3,57.6 221.8,61.0 224.3,64.7 226.7,68.2 229.2,71.3 231.7,73.0 234.2,72.8 236.6,71.9 239.1,70.3 241.6,68.0 244.1,66.6 246.5,66.6 249.0,67.4 251.5,69.9 254.0,74.4 256.5,80.0 258.9,86.5 261.4,94.3 263.9,102.5 266.4,110.2 268.8,117.9 271.3,125.1 273.8,130.6 276.3,135.1 278.7,138.8 281.2,141.2 283.7,142.7 286.2,144.3 288.7,145.4 291.1,146.0 293.6,146.7 296.1,147.4 298.6,147.3 301.0,147.1 303.5,147.2 306.0,146.9 308.5,146.5 310.9,146.9 313.4,147.2 315.9,147.2 318.4,147.5 320.9,147.7 323.3,147.2 325.8,146.9 328.3,147.0 330.8,146.8 333.2,146.7 335.7,147.2 338.2,147.5 340.7,147.3 343.1,147.5 345.6,147.5 348.1,146.9 350.6,146.7 353.1,146.9 355.5,146.8 358.0,146.9 360.5,147.5 363.0,147.6 365.4,147.3 367.9,147.3 370.4,147.2 372.9,146.7 375.3,146.7 377.8,147.1 380.3,147.1 382.8,147.2 385.3,147.7 387.7,147.6 390.2,147.1 392.7,147.1 395.2,147.0 397.6,146.6 400.1,146.8 402.6,147.3 405.1,147.3 407.5,147.4 410.0,147.7 412.5,147.4 415.0,146.8 417.5,146.9 419.9,146.9 422.4,146.7 424.9,147.1 427.4,147.6 429.8,147.4 432.3,147.4 434.8,147.5 437.3,147.0 439.7,146.6 442.2,146.9 444.7,147.0 447.2,146.9 449.7,147.4 452.1,147.7 454.6,147.4 457.1,147.2 459.6,147.2 462.0,146.8 464.5,146.6 467.0,147.0 469.5,147.2 471.9,147.2 474.4,147.6 476.9,147.7 479.4,147.1 481.9,146.9 484.3,147.0 486.8,146.7 489.3,146.7 491.8,147.3 494.2,147.5 496.7,147.3 499.2,147.5 501.7,147.4 504.2,146.8 506.6,146.7 509.1,147.0 511.6,146.8 514.1,147.0 516.5,147.6 519.0,147.6 521.5,147.3 524.0,147.4 526.4,147.1 528.9,146.6 531.4,146.7 533.9,147.1 536.4,147.1 538.8,147.3 541.3,147.7 543.8,147.5 546.3,147.1 548.7,147.1 551.2,146.9 553.7,146.6 556.2,146.9 558.6,147.4 561.1,147.3 563.6,147.4 566.1,147.7 568.6,147.2 571.0,146.8 573.5,146.9 576.0,146.9 578.5,146.7 580.9,147.2 583.4,147.6 585.9,147.4 588.4,147.4 590.8,147.5 593.3,146.9 595.8,146.6 598.3,146.9 600.8,147.0 603.2,147.0 605.7,147.5 608.2,147.7 610.7,147.3 613.1,147.2 615.6,147.2 618.1,146.7 620.6,146.6 623.0,147.1 625.5,147.2 628.0,147.2"/>
+  <text x="300" y="162" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">Frequency (cycles/sample)</text>
+  <text x="36" y="12" fill="#a6adc8" font-size="11" font-family="ui-sans-serif, system-ui, sans-serif">dB</text>
+</svg>
+<figcaption>Welch&#x27;s PSD</figcaption>
+</figure></div>
+<p>Default settings: a <strong>Hamming</strong> window of length ⌊2N/9⌋ (so the signal divides into eight segments at 50% overlap), <code>nfft</code> equal to the segment length, no detrending, and one-sided output for real input. Calling <code>pwelch(x, fs)</code> without capture would auto-plot the dB PSD on the current subplot; the multi-return form <code>[Pw, fw] = …</code> captures the data without plotting.</p>
+<h2 id="comparison">Comparison</h2>
+<div class="cell"><details class="src" open><summary>rustlab</summary><pre><code><span class="syn-fn">subplot</span>(<span class="syn-num">3</span>,<span class="syn-num">1</span>,<span class="syn-num">1</span>)
+<span class="syn-fn">plot</span>(f, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pxx))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Periodogram (no window)&quot;</span>); <span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;dB&quot;</span>); <span class="syn-fn">grid</span> <span class="syn-fn">on</span>
+<span class="syn-fn">subplot</span>(<span class="syn-num">3</span>,<span class="syn-num">1</span>,<span class="syn-num">2</span>)
+<span class="syn-fn">plot</span>(f, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pww))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Hann-Windowed Periodogram&quot;</span>); <span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;dB&quot;</span>); <span class="syn-fn">grid</span> <span class="syn-fn">on</span>
+<span class="syn-fn">subplot</span>(<span class="syn-num">3</span>,<span class="syn-num">1</span>,<span class="syn-num">3</span>)
+<span class="syn-fn">plot</span>(fw, <span class="syn-num">10</span><span class="syn-op">*</span><span class="syn-fn">log10</span>(Pw))
+<span class="syn-fn">title</span>(<span class="syn-str">&quot;Welch&#x27;s PSD (Hamming, 8 segments)&quot;</span>); <span class="syn-fn">ylabel</span>(<span class="syn-str">&quot;dB&quot;</span>); <span class="syn-fn">xlabel</span>(<span class="syn-str">&quot;Frequency&quot;</span>); <span class="syn-fn">grid</span> <span class="syn-fn">on</span></code></pre></details></div>
+<p>The two tones become progressively easier to read as we move from raw periodogram to windowed periodogram to Welch averaging — at the cost of frequency resolution (fewer bins on the x-axis under pwelch).</p>
+<table>
+<thead><tr><th>Method</th><th>Variance reduction</th><th>Frequency resolution</th></tr></thead>
+<tbody>
+<tr><td>Periodogram</td><td>None</td><td>Highest</td></tr>
+<tr><td>Hann-windowed</td><td>None</td><td>Slightly reduced</td></tr>
+<tr><td>Welch's PSD (<code>pwelch</code>)</td><td>~ 1/K for K segments</td><td>Reduced by ~ 1/K</td></tr>
+</tbody>
+</table>
+<table>
+<thead><tr><th>Window</th><th>Main lobe width</th><th>First sidelobe</th></tr></thead>
+<tbody>
+<tr><td>Rectangular</td><td>2/N</td><td>−13 dB</td></tr>
+<tr><td>Hann</td><td>4/N</td><td>−31 dB</td></tr>
+<tr><td>Hamming</td><td>4/N</td><td>−41 dB</td></tr>
+</tbody>
+</table>
+<h2 id="see-also">See also</h2>
+<p><code>pwelch</code> assumes the signal is stationary — its spectrum doesn't change with time. When that assumption breaks (chirps, transients, speech, modulated RF) reach for the <strong>Short-Time Fourier Transform</strong> and its heatmap visualisation, the spectrogram. See the companion notebook <a href="#">Time-Frequency Analysis</a>.</p>
+<nav class="page-nav" aria-label="Notebooks">
+  <a class="prev" href="#"><span class="label">Previous</span><span class="title">Sparse solve</span></a>
+  <a class="index" href="#"><span class="label">Index</span><span class="title">Notebooks</span></a>
+  <a class="next" href="#"><span class="label">Next</span><span class="title">String arrays</span></a>
+</nav>
+<footer>Mockup of <code>notebook watch</code> — content from <code>examples/notebooks/spectral_estimation.md</code>. Figures are stand-ins. Sample margin notes are not in that file.</footer>
+
+    </div>
+
+<aside class="comments" id="comments" aria-label="Comments">
+  <div class="cm-row">
+    <div class="cm-label">Comments</div>
+    <button type="button" class="cm-collapse" id="cm-collapse" aria-pressed="false" aria-label="Collapse comments">‹</button>
+  </div>
+  <article class="card" id="cm-1">
+    <header><span class="num">1</span><span class="meta">sample note</span></header>
+    <p class="card-body">Worth naming the two tones in the opening sentence. The rest of the page is about whether 0.03 cycles/sample is resolvable.</p>
+  </article>
+  <article class="card" id="cm-2">
+    <header><span class="num">2</span><span class="meta">sample note</span></header>
+    <p class="card-body"><code>seed(42)</code> is what keeps a re-rendered gallery figure from drifting. Don't drop it when editing the cell.</p>
+  </article>
+</aside>
+
+  </div>
+</main>
+<script>
+
+function measure() {
+  var el = document.getElementById('read');
+  var m = document.getElementById('meter');
+  if (!el || !m) return;
+  m.textContent = 'text ' + Math.round(el.getBoundingClientRect().width) + 'px';
+}
+window.addEventListener('resize', measure);
+requestAnimationFrame(function () { requestAnimationFrame(measure); });
+
+
+var root = document.documentElement;
+var KEY = 'rl-proto-c-width';
+var remembered = document.getElementById('remembered');
+function applyWidth(px, save) {
+  px = Math.max(200, Math.min(420, Math.round(px)));
+  root.style.setProperty('--side', px + 'px');
+    remembered.textContent = px + 'px';
+  remembered.title = 'Width saved in this browser';
+  document.getElementById('resizer').setAttribute('aria-valuenow', String(px));
+  if (save) { try { localStorage.setItem(KEY, String(px)); } catch (e) {} }
+  measure();
+}
+if (!root.classList.contains('is-collapsed')) {
+  var initial = 280;
+  if (!root.classList.contains('shot')) {
+    try { initial = parseInt(localStorage.getItem(KEY) || '280', 10) || 280; } catch (e) {}
+  }
+  applyWidth(initial, true);
+}
+function showTab(name) {
+  var files = name === 'files';
+  document.getElementById('pane-files').hidden = !files;
+  document.getElementById('pane-sections').hidden = files;
+  document.getElementById('tab-files').setAttribute('aria-selected', files ? 'true' : 'false');
+  document.getElementById('tab-sections').setAttribute('aria-selected', files ? 'false' : 'true');
+  if (root.classList.contains('is-collapsed')) {
+    root.classList.remove('is-collapsed');
+    var px = 280;
+    try { px = parseInt(localStorage.getItem(KEY) || '280', 10) || 280; } catch (e) {}
+    applyWidth(px, false);
+    document.getElementById('side-toggle').setAttribute('aria-expanded', 'true');
+  }
+}
+document.getElementById('tab-files').addEventListener('click', function () { showTab('files'); });
+document.getElementById('tab-sections').addEventListener('click', function () { showTab('sections'); });
+document.getElementById('side-toggle').addEventListener('click', function () {
+  var collapsed = root.classList.toggle('is-collapsed');
+  this.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  this.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+  this.textContent = collapsed ? '⟩' : '⟨';
+  if (!collapsed) {
+    var px = 280;
+    try { px = parseInt(localStorage.getItem(KEY) || '280', 10) || 280; } catch (e) {}
+    applyWidth(px, false);
+  } else measure();
+});
+if (root.classList.contains('is-collapsed')) {
+  document.getElementById('side-toggle').setAttribute('aria-expanded', 'false');
+  document.getElementById('side-toggle').textContent = '⟩';
+}
+var resizer = document.getElementById('resizer');
+var dragging = false;
+resizer.addEventListener('pointerdown', function (e) {
+  if (root.classList.contains('is-collapsed')) return;
+  dragging = true; resizer.setPointerCapture(e.pointerId);
+});
+resizer.addEventListener('pointermove', function (e) {
+  if (!dragging) return;
+  applyWidth(e.clientX, false);
+});
+resizer.addEventListener('pointerup', function () {
+  if (!dragging) return;
+  dragging = false;
+  var px = parseInt(getComputedStyle(root).getPropertyValue('--side'), 10);
+  applyWidth(px, true);
+});
+resizer.addEventListener('keydown', function (e) {
+  var px = parseInt(getComputedStyle(root).getPropertyValue('--side'), 10) || 280;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); applyWidth(px - 16, true); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); applyWidth(px + 16, true); }
+});
+document.getElementById('cm-collapse').addEventListener('click', function () {
+  var on = root.classList.toggle('cm-collapsed');
+  this.setAttribute('aria-pressed', on ? 'true' : 'false');
+  measure();
+});
+
+if (!document.documentElement.classList.contains('shot')) {
+  var cur = document.querySelector('.tree a.current');
+  if (cur) cur.scrollIntoView({block:'center'});
+}
+document.querySelectorAll('sup.ref').forEach(function (el) {
+  el.addEventListener('click', function () {
+    var t = document.getElementById(el.getAttribute('data-for'));
+    if (t) t.scrollIntoView({block:'nearest'});
+  });
+});
+</script>
+</body>
+</html>
