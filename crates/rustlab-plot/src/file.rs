@@ -433,40 +433,14 @@ where
 {
     let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
 
-    // Log-scaled axes (semilogx/semilogy/loglog): position data by log10 while
-    // keeping the stored data real. We render a transformed copy whose series
-    // (and limits) are log10'd, then label ticks with the real decade values.
+    // Log-scaled axes (semilogx/semilogy/loglog): draw a log10 copy of the
+    // series and of any scripted limits, then label ticks with the real
+    // decade values. Plotly keeps native log axes and does not use this view.
     let x_log = sp.x_scale == AxisScale::Log;
     let y_log = sp.y_scale == AxisScale::Log;
     let log_owned;
     let sp: &SubplotState = if x_log || y_log {
-        let mut c = sp.clone();
-        for s in &mut c.series {
-            if x_log {
-                for v in &mut s.x_data {
-                    *v = v.log10();
-                }
-            }
-            if y_log {
-                for v in &mut s.y_data {
-                    *v = v.log10();
-                }
-            }
-        }
-        let logify = |o: &mut Option<f64>| {
-            if let Some(v) = o.as_mut() {
-                *v = v.log10();
-            }
-        };
-        if x_log {
-            logify(&mut c.xlim.0);
-            logify(&mut c.xlim.1);
-        }
-        if y_log {
-            logify(&mut c.ylim.0);
-            logify(&mut c.ylim.1);
-        }
-        log_owned = c;
+        log_owned = sp.log_scaled_view();
         &log_owned
     } else {
         sp
@@ -1621,32 +1595,15 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
-    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
-    if arrows.is_empty() {
-        return Ok(());
-    }
+    let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Quiver {
+        u: &qd.u,
+        v: &qd.v,
+        x: &qd.x,
+        y: &qd.y,
+        scale: qd.scale,
+    });
     let color = qd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
-    let style = ShapeStyle {
-        color: color.to_rgba(),
-        filled: false,
-        stroke_width: 1,
-    };
-    for a in arrows {
-        chart
-            .draw_series(std::iter::once(PathElement::new(
-                vec![a.shaft.0, a.shaft.1],
-                style,
-            )))
-            .map_err(err)?;
-        chart
-            .draw_series(std::iter::once(PathElement::new(
-                vec![a.head[0], a.head[1], a.head[2]],
-                style,
-            )))
-            .map_err(err)?;
-    }
-    Ok(())
+    draw_overlay_strokes(chart, &strokes, color)
 }
 
 fn render_streamlines_to_backend<DB>(
@@ -1660,46 +1617,43 @@ where
     DB: DrawingBackend,
     DB::ErrorType: std::error::Error + Send + Sync + 'static,
 {
-    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
-    let seeds = match &sd.seeds {
-        Some(s) => s.clone(),
-        None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
-    };
-    if seeds.is_empty() {
-        return Ok(());
-    }
-    let step = crate::streamline::default_step(&sd.x, &sd.y);
-    let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
+    let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Stream {
+        u: &sd.u,
+        v: &sd.v,
+        x: &sd.x,
+        y: &sd.y,
+        density: sd.density,
+        seeds: sd.seeds.as_deref(),
+    });
     let color = sd.color.unwrap_or(SeriesColor::Cyan).to_plotters();
+    draw_overlay_strokes(chart, &strokes, color)
+}
+
+fn draw_overlay_strokes<DB>(
+    chart: &mut ChartContext<
+        DB,
+        Cartesian2d<plotters::coord::types::RangedCoordf64, plotters::coord::types::RangedCoordf64>,
+    >,
+    strokes: &[Vec<(f64, f64)>],
+    color: plotters::style::RGBColor,
+) -> Result<(), PlotError>
+where
+    DB: DrawingBackend,
+    DB::ErrorType: std::error::Error + Send + Sync + 'static,
+{
+    let err = |e: DrawingAreaErrorKind<DB::ErrorType>| PlotError::FileOutput(e.to_string());
     let style = ShapeStyle {
         color: color.to_rgba(),
         filled: false,
         stroke_width: 1,
     };
-    for (sx, sy) in seeds {
-        let pts = crate::streamline::integrate(
-            &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
-        );
-        if pts.len() < 2 {
+    for stroke in strokes {
+        if stroke.len() < 2 {
             continue;
         }
         chart
-            .draw_series(std::iter::once(PathElement::new(pts.clone(), style)))
+            .draw_series(std::iter::once(PathElement::new(stroke.clone(), style)))
             .map_err(err)?;
-        if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
-            chart
-                .draw_series(std::iter::once(PathElement::new(
-                    vec![a.shaft.0, a.shaft.1],
-                    style,
-                )))
-                .map_err(err)?;
-            chart
-                .draw_series(std::iter::once(PathElement::new(
-                    vec![a.head[0], a.head[1], a.head[2]],
-                    style,
-                )))
-                .map_err(err)?;
-        }
     }
     Ok(())
 }
@@ -2212,6 +2166,60 @@ mod tests {
             );
         }
         assert!(!svg.contains("log10"), "log10 descriptor should be gone");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scripted_xlim_survives_log_axes_on_terminal_and_svg() {
+        // semilogx + xlim([10, 100]) on data that spans 1..1000.
+        // The terminal draws in log space, so the scripted window is
+        // log10(10)..log10(100). SVG keeps real decade labels for that
+        // window and does not show the samples outside it.
+        FIGURE.with(|fig| fig.borrow_mut().reset());
+        push_xy_line(
+            vec![1.0, 10.0, 100.0, 1000.0],
+            vec![1.0, 2.0, 3.0, 4.0],
+            "",
+            "",
+            None,
+            LineStyle::Solid,
+        );
+        FIGURE.with(|fig| {
+            let mut fig = fig.borrow_mut();
+            let sp = fig.current_mut();
+            sp.x_scale = crate::figure::AxisScale::Log;
+            sp.xlim = (Some(10.0), Some(100.0));
+        });
+
+        let (x0, x1) = FIGURE.with(|fig| {
+            let fig = fig.borrow();
+            let sp = fig.current().clone();
+            let view = sp.log_scaled_view();
+            assert_eq!(sp.series[0].x_data, vec![1.0, 10.0, 100.0, 1000.0]);
+            assert_eq!(sp.xlim, (Some(10.0), Some(100.0)));
+            let (x0, x1, _, _) = crate::figure::compute_axis_bounds(&view).expect("bounds");
+            (x0, x1)
+        });
+        assert!((x0 - 1.0).abs() < 1e-12, "terminal log-space xmin {x0}");
+        assert!((x1 - 2.0).abs() < 1e-12, "terminal log-space xmax {x1}");
+
+        let path = tmp_path("_logx_xlim.svg");
+        render_figure_file(&path).expect("render should succeed");
+        let svg = std::fs::read_to_string(&path).expect("read SVG");
+        let texts: Vec<String> = svg
+            .split("</text>")
+            .filter_map(|seg| seg.rsplit_once('>').map(|(_, t)| t.trim().to_string()))
+            .collect();
+        for real in ["10", "100"] {
+            assert!(
+                texts.iter().any(|t| t == real),
+                "svg missing real decade tick {real} for xlim([10, 100]); texts={texts:?}"
+            );
+        }
+        assert!(
+            !texts.iter().any(|t| t == "1000" || t.contains("1e10")),
+            "svg axis ignored xlim or forgot to log it; texts={texts:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

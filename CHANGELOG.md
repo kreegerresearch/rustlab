@@ -6,6 +6,14 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.37
+
+### Fixed
+- **A scripted `xlim` / `ylim` on a log axis is honoured in the terminal.** `semilogx` (and `semilogy` / `loglog`) already drew samples in log space and logged the limits for SVG and PNG. The terminal logged the samples and left the limits in real units, so `xlim([1, 1000])` did not frame the chart. Both backends now use `SubplotState::log_scaled_view`, which log10s the series and the limits together. Plotly still uses native log axes. Tick labels stay real decades (`10`, `100`).
+
+### Changed
+- Internal. Plotly colorscale names go through one `plotly_colorscale` helper. Quiver and streamline strokes for HTML and for SVG/PNG come from `overlay_polylines`. The 95th-percentile arrow scale, `"normalized"`, and the viewer path are unchanged. A streamline's HTML figure is one trace (path and midpoint arrow) instead of two traces with the same style.
+
 ## 0.3.32
 
 ### Breaking / behavior changes

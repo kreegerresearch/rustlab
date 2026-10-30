@@ -2633,7 +2633,7 @@ f = logspace(0, 4, 200);
 semilogx(f, 20 * log10(abs(H)))
 ```
 
-`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`.
+`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`. `xlim` and `ylim` are in the same units as the data. The terminal, SVG, and PNG all frame that window; HTML leaves the log axis to Plotly.
 
 ### `polar(theta, r [, opts])`
 
