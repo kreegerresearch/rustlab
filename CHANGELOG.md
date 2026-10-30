@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.36
+
+### Changed
+- Internal only. Windowed-sinc FIR builtins, SISO Bode/Nyquist frequency response, and the four `laplacian_*` constructors share helpers. `arg_usize` / `arg_f64` / `arg_str` replace the repeated unprefixed argument conversions. Script results and error text are unchanged, including Laplacian `Identity` ordering hints.
+
 ## 0.3.32
 
 ### Breaking / behavior changes
