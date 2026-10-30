@@ -80,9 +80,9 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "median", brief: "Median of real values",
         detail: "median(v)      — middle value of a vector or 1-D matrix → scalar\nmedian(M)      — column medians → 1×N row matrix\nmedian(M, 1)   — explicit dim-1\nmedian(M, 2)   — dim-2 → N×1 column\n\n  Odd length: middle element; even length: average of the two middle elements.\n  Ordered by the real value. A nonzero imaginary part is an error.\n  Empty input is NaN. A NaN in the data makes that reduction NaN." },
     HelpEntry { name: "std",    brief: "Standard deviation",
-        detail: "std(x)            — sample stddev (divide by n−1)\nstd(x, w)         — w is 0 (n−1), 1 (divide by n), or a weight vector\nstd(x, w, dim)    — same, along dimension dim\nstd(M)            — per-column sample stddev → 1×N row\nstd(M, 0, 2)      — per-row → N×1 column\n\n  A weight vector divides by sum(w). The weighted mean is\n  sum(w .* x) / sum(w). Complex data uses |x − mean|².\n  Empty input is NaN. One observation is 0. A NaN in the data,\n  or a weight vector that sums to 0, is NaN.\n  The second argument is a weight, not a dimension: std(M, 2) errors.\n\n  std([1, 2, 3, 4])  →  sqrt(5/3)\n  std([1, 2, 3], 1)  →  sqrt(2/3)" },
+        detail: "std(x)            — sample stddev (divide by n−1)\nstd(x, w)         — w is 0 (n−1), 1 (divide by n), or a weight vector\nstd(x, w, dim)    — same, along dimension dim\nstd(M)            — per-column sample stddev → 1×N row\nstd(M, 0, 2)      — per-row → N×1 column\n\n  A weight vector divides by sum(w). The weighted mean is\n  sum(w .* x) / sum(w). Complex data uses |x − mean|².\n  Empty input is NaN. One finite observation is 0. std(Inf) and\n  var(Inf) are NaN. A NaN in the data, or a weight vector that sums\n  to 0, is NaN.\n  The second argument is a weight, not a dimension: std(M, 2) errors.\n\n  std([1, 2, 3, 4])  →  sqrt(5/3)\n  std([1, 2, 3], 1)  →  sqrt(2/3)" },
     HelpEntry { name: "var",    brief: "Variance",
-        detail: "var(x)            — sample variance (divide by n−1)\nvar(x, w)         — w is 0 (n−1), 1 (divide by n), or a weight vector\nvar(x, w, dim)    — same, along dimension dim\n\n  var is std before the square root: same shapes, same weights,\n  same complex rule Σ|x − mean|². Empty input is NaN.\n  One observation is 0.\n\n  var([1, 2, 3, 4])     →  5/3\n  var([1, 2, 3], 1)     →  2/3" },
+        detail: "var(x)            — sample variance (divide by n−1)\nvar(x, w)         — w is 0 (n−1), 1 (divide by n), or a weight vector\nvar(x, w, dim)    — same, along dimension dim\n\n  var is std before the square root: same shapes, same weights,\n  same complex rule Σ|x − mean|². Empty input is NaN.\n  One finite observation is 0. var(Inf) is NaN.\n\n  var([1, 2, 3, 4])     →  5/3\n  var([1, 2, 3], 1)     →  2/3" },
     HelpEntry { name: "sum",    brief: "Sum of elements",
         detail: "sum(v)         — sum of a vector or 1-D matrix → scalar\nsum(M)         — column sums → 1×N row matrix (octave default)\nsum(M, 1)      — explicit dim-1 (column-wise)\nsum(M, 2)      — dim-2 (row-wise) → N×1 column\nsum(sum(M))    — total of all elements (matlab idiom)\n\n  Returns complex if any imaginary part is non-negligible." },
     HelpEntry { name: "cumsum", brief: "Cumulative sum",
@@ -92,7 +92,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "argmax", brief: "1-based position of the maximum",
         detail: "argmax(v)      — 1-based index of the max in a vector or 1-D matrix → scalar\nargmax(M)      — per-column argmax → 1×N row matrix\nargmax(M, 2)   — per-row argmax → N×1 column\n\n  Same comparison-key and NaN rules as `argmin`. Always agrees with\n  the index from [m, i] = max(...)." },
     HelpEntry { name: "sort",   brief: "Sort along a dimension",
-        detail: "sort(A)                 — ascending (default)\nsort(A, \"ascend\")       — explicit ascending\nsort(A, \"descend\")      — descending\nsort(A, dim)             — along dimension 1 or 2\nsort(A, dim, \"descend\") — both\n[s, i] = sort(A)        — sorted values and 1-based indices\n\n  Real values sort numerically. Any nonzero imaginary part sorts\n  that slice by magnitude, then by phase. NaN is higher than +Inf,\n  so ascending leaves NaNs last and descending leaves them first.\n  Ties keep their original order.\n  A matrix sorts each column unless dim is given. A vector is a row,\n  so the default axis is its length; sort(v, 1) leaves v in place.\n\n  sort([3,1,2])                → [1, 2, 3]\n  sort([3,1,2], \"descend\")     → [3, 2, 1]\n  sort([3, 1; 1, 2])           → each column, top to bottom" },
+        detail: "sort(A)                 — ascending (default)\nsort(A, \"ascend\")       — explicit ascending\nsort(A, \"descend\")      — descending\nsort(A, dim)             — along dimension 1 or 2\nsort(A, dim, \"descend\") — both\n[s, i] = sort(A)        — sorted values and 1-based indices\n\n  Real values sort numerically. Any nonzero imaginary part sorts\n  that slice by magnitude, then by phase. NaN is higher than +Inf,\n  so ascending leaves NaNs last and descending leaves them first.\n  Ties keep their original order. -0 and +0 compare equal, so each\n  sign stays where it was.\n  A matrix sorts each column unless dim is given. A vector is a row,\n  so the default axis is its length; sort(v, 1) leaves v in place.\n\n  sort([3,1,2])                → [1, 2, 3]\n  sort([3,1,2], \"descend\")     → [3, 2, 1]\n  sort([3, 1; 1, 2])           → each column, top to bottom" },
     HelpEntry { name: "trapz",  brief: "Trapezoidal numerical integration (vectors and matrix columns)",
         detail: "trapz(v)      — integrate with unit spacing → scalar\ntrapz(x, v)   — integrate using x as sample positions → scalar\ntrapz(M)      — integrate each column of a matrix → 1×ncols row\ntrapz(x, M)   — per-column with shared x (length(x) == rows(M))\n\n  Double integral idiom:\n    row_int = trapz(xs, F);        % integrate columns\n    total   = trapz(ys, row_int);  % then the resulting row" },
     HelpEntry { name: "hist", brief: "Histogram — plot and return bin counts",
@@ -192,7 +192,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "convolve", brief: "Linear convolution of two vectors",
         detail: "convolve(x, h)  — returns x convolved with h" },
     HelpEntry { name: "xcorr", brief: "Cross-correlation, zero lag in the middle",
-        detail: "r = xcorr(x)\nr = xcorr(x, y)\nr = xcorr(x, y, maxlag)\nr = xcorr(..., scale)\n[r, lags] = xcorr(...)\n\n  Positive lag m is sum_n x(n+m) conj(y(n)). lags runs from -maxlag\n  to +maxlag. With maxlag omitted, the longer input has length N and\n  the result has length 2N-1. The shorter input is treated as\n  zero-padded at the end.\n\n  scale is \"none\" (raw sums, the default), \"biased\" (divide by N),\n  \"unbiased\" (divide by N-|m|), or \"normalized\" / \"coeff\"\n  (divide by sqrt of the two zero-lag energies).\n\n  A vector stays a row. An n×1 matrix returns an (2N-1)×1 column.\n  A matrix with several columns is one signal per column; the result\n  has one column per pair, column (i-1)*n+j correlating column i\n  with column j.\n\n  xcov is the same after each signal has its mean removed." },
+        detail: "r = xcorr(x)\nr = xcorr(x, y)\nr = xcorr(x, y, maxlag)\nr = xcorr(..., scale)\n[r, lags] = xcorr(...)\n\n  Positive lag m is sum_n x(n+m) conj(y(n)). lags runs from -maxlag\n  to +maxlag. With maxlag omitted, the longer input has length N and\n  the result has length 2N-1. The shorter input is treated as\n  zero-padded at the end.\n\n  scale is \"none\" (raw sums, the default), \"biased\" (divide by N),\n  \"unbiased\" (divide by N-|m|), or \"normalized\" / \"coeff\"\n  (divide by sqrt of the two zero-lag energies). A matrix with\n  several columns accepts only \"none\".\n\n  A vector stays a row. An n×1 matrix returns an (2N-1)×1 column.\n  A matrix with several columns is one signal per column; the result\n  has one column per pair, column (i-1)*n+j correlating column i\n  with column j. xcorr([]) is an empty row. A 0×N matrix returns\n  a 0×N² matrix.\n\n  xcov is the same after each signal has its mean removed." },
     HelpEntry { name: "xcov", brief: "Cross-covariance (xcorr of demeaned signals)",
         detail: "xcov(...)  — same arguments and lag axis as xcorr, after each\n  signal has its mean removed. A constant input is all zeros." },
     HelpEntry { name: "window",   brief: "Generate a window function vector",
@@ -271,11 +271,11 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "hline",     brief: "Horizontal reference line",
         detail: "hline(y)               — dashed horizontal line at y\nhline(y, \"color\")       — with color (\"r\", \"b\", \"green\", etc.)\nhline(y, \"color\", \"label\")  — with color and legend label\nhline([y1, y2, ...])   — multiple horizontal lines\n  Best used with hold(\"on\") to overlay on existing plots.\n  yline() is an alias." },
     HelpEntry { name: "loglog",    brief: "Log-log line plot (real data, logarithmic axes)",
-        detail: "loglog(x, y [, opts])  — both axes use a logarithmic scale\n  x and y stay the values you passed (they are not replaced by log10).\n  Both must be strictly positive. Tick marks are decades (1, 10, 100, …).\n  Same option syntax as plot().\n\nExample:\n  x = logspace(0, 3, 50);\n  y = x .^ 2;             % power law\n  loglog(x, y)            % straight line, slope 2" },
+        detail: "loglog(x, y [, opts])  — both axes use a logarithmic scale\n  x and y stay the values you passed (they are not replaced by log10).\n  Both must be strictly positive. Tick marks are decades (1, 10, 100, …).\n  xlim and ylim are in those same units (terminal, SVG, and PNG).\n  Same option syntax as plot().\n\nExample:\n  x = logspace(0, 3, 50);\n  y = x .^ 2;             % power law\n  loglog(x, y)            % straight line, slope 2" },
     HelpEntry { name: "semilogx",  brief: "Log-x, linear-y line plot",
-        detail: "semilogx(x, y [, opts])  — logarithmic x-axis, linear y-axis\n  x stays the values you passed (not log10(x)). x must be strictly positive.\n  Tick marks on x are decades. Same option syntax as plot()." },
+        detail: "semilogx(x, y [, opts])  — logarithmic x-axis, linear y-axis\n  x stays the values you passed (not log10(x)). x must be strictly positive.\n  Tick marks on x are decades. xlim and ylim are in the same units\n  as the data (terminal, SVG, and PNG). Same option syntax as plot()." },
     HelpEntry { name: "semilogy",  brief: "Linear-x, log-y line plot",
-        detail: "semilogy(x, y [, opts])  — linear x-axis, logarithmic y-axis\n  y stays the values you passed (not log10(y)). y must be strictly positive.\n  Tick marks on y are decades. Same option syntax as plot()." },
+        detail: "semilogy(x, y [, opts])  — linear x-axis, logarithmic y-axis\n  y stays the values you passed (not log10(y)). y must be strictly positive.\n  Tick marks on y are decades. xlim and ylim are in the same units\n  as the data (terminal, SVG, and PNG). Same option syntax as plot()." },
     HelpEntry { name: "polar",     brief: "Polar coordinate plot via Cartesian pre-transform",
         detail: "polar(theta, r [, opts])  — plot (r·cos θ, r·sin θ)\n  theta in radians, r in arbitrary units. Both real-valued.\n  Axes are labeled \"r·cos(θ)\", \"r·sin(θ)\". A future enhancement will\n  add radial gridlines via a proper polar plot kind in the renderer.\n\nExample:\n  theta = linspace(0, 2*pi, 360);\n  r = 1 + 0.3 * cos(3 * theta);   % three-petal rose\n  polar(theta, r)" },
     HelpEntry { name: "yline",     brief: "Horizontal reference line (alias for hline)",
@@ -779,7 +779,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "chol", brief: "Cholesky: dense R, or a sparse factor handle",
         detail: "R = chol(A)            — dense upper factor, A = R' * R\nL = chol(A, \"lower\")   — dense lower factor, A = L * L'\n[R, p] = chol(A)        — p is 0 on success, else the failing pivot (no error)\n  A diagonal that is not real fails that pivot.\n  A scalar is a 1×1 matrix: chol(4) is 2.\nF = chol(A)\nF = chol(A, ordering)\n  ordering — \"auto\" (default), \"identity\" (alias \"natural\"), or \"amd\"\n\n  Return an opaque sparse Cholesky factor for SPD A. Pair with\n  solve(F, b) to back-solve as many right-hand sides as you like without\n  re-factoring. Canonical fast path for parameter sweeps, animations,\n  and any inner-loop where A is fixed and b varies.\n\n  A must be a Hermitian-positive-definite sparse matrix. Real-only A\n  routes through the f64 solver path automatically (≈4× cheaper than\n  complex Cholesky). chol() errors on indefinite or non-Hermitian A —\n  no auto fallback to LU; use lu(A) or spsolve(A, b) for that.\n\n  Ordering: \"auto\" reads the matrix's hint (laplacian_* sets identity)\n  and otherwise picks AMD; \"identity\" forces natural ordering (~5×\n  faster than AMD on grid Laplacians); \"amd\" forces approximate\n  minimum degree.\n\nExample:\n  L = -1 * laplacian_2d(100, 100);\n  F = chol(L);                      % ~0.03 s, identity ordering via hint\n  for k = 1:50\n    rho = randn(10000, 1);\n    v = solve(F, rho);              % ~0.005 s each\n    % …\n  end" },
     HelpEntry { name: "lu", brief: "LU factorization: sparse factor, or dense [L, U, P]",
-        detail: "F = lu(A)                 — sparse A: opaque factor for solve(F, b)\nF = lu(A, ordering)       — ordering \"auto\" | \"identity\" | \"amd\" (sparse only)\n[L, U] = lu(A)            — dense: L*U = A, permutation absorbed into L\n[L, U, P] = lu(A)         — dense: P*A = L*U, L unit lower, U upper\n[L, U, p] = lu(A, \"vector\") — p is 1-based and A(p, :) = L*U\n\n  A sparse matrix still returns a factor handle (partial pivoting,\n  threshold 0.1), including indefinite, non-Hermitian, and complex A.\n  Real-only sparse A uses the f64 path. Asking for [L, U, P] of a sparse\n  matrix is an error; use lu(full(A)).\n  A dense matrix does not return a factor handle. One output is an error\n  that points at [L, U] or [L, U, P].\n\nExample:\n  A = sparse([1+j, 2; 3, 4-j]);\n  F = lu(A);\n  x1 = solve(F, [1; j]);\n  [L, U, P] = lu([1, 2; 3, 4]);" },
+        detail: "F = lu(A)                 — sparse A: opaque factor for solve(F, b)\nF = lu(A, ordering)       — ordering \"auto\" | \"identity\" | \"amd\" (sparse only)\n[L, U] = lu(A)            — dense: L*U = A, permutation absorbed into L\n[L, U, P] = lu(A)         — dense: P*A = L*U, L unit lower, U upper\n[L, U, p] = lu(A, \"vector\") — p is a 1×n row and A(p, :) = L*U\n\n  A sparse matrix still returns a factor handle (partial pivoting,\n  threshold 0.1), including indefinite, non-Hermitian, and complex A.\n  Real-only sparse A uses the f64 path. Asking for [L, U, P] of a sparse\n  matrix is an error; use lu(full(A)).\n  A dense matrix does not return a factor handle. One output is an error\n  that points at [L, U] or [L, U, P].\n\nExample:\n  A = sparse([1+j, 2; 3, 4-j]);\n  F = lu(A);\n  x1 = solve(F, [1; j]);\n  [L, U, P] = lu([1, 2; 3, 4]);" },
     HelpEntry { name: "solve", brief: "Back-solve through a cached chol/lu factor",
         detail: "x = solve(F, b)  — apply factor F to right-hand side b\n\n  F must be a sparse-factor handle returned by chol() or lu(). b must\n  match the dimension of the factored matrix. A real factor refuses a\n  complex b — refactor with chol/lu on the complex matrix in that case.\n\nExample:\n  L = -1 * laplacian_2d(50, 50);\n  F = chol(L);\n  x = solve(F, ones(2500, 1));      % single solve\n  x2 = solve(F, randn(2500, 1));    % cheap second solve" },
     HelpEntry { name: "spdiags", brief: "Build sparse matrix from diagonals",
@@ -804,8 +804,6 @@ pub const HELP: &[HelpEntry] = &[
         detail: "ijk2k(i, j, kk, ny, nx)  — return 1-based flat index\n  k = ((kk-1)*nx + (j-1))*ny + i\n  Last two arguments are ny (rows), nx (cols) — same as Tensor3 / laplacian_3d.\n\nExample:\n  k = ijk2k(2, 3, 4, 5, 6)  → 102" },
     HelpEntry { name: "k2ijk", brief: "Column-major-of-pages 3-D flat index → (i, j, kk)",
         detail: "[i, j, kk] = k2ijk(k, ny, nx)  — inverse of ijk2k. 1-based.\n\nExample:\n  [i, j, kk] = k2ijk(102, 5, 6)  → i = 2, j = 3, kk = 4" },
-    HelpEntry { name: "plot_limits", brief: "Set axis limits for a live figure panel",
-        detail: "plot_limits(fig, panel, xmin, xmax, ymin, ymax)  — fix axes for one panel\n\nExample:\n  plot_limits(fig, 1, 0, 1000, -100, 0)" },
     // Integer types (dev/plans/integer_types.md)
     HelpEntry { name: "int8", brief: "Cast to 8-bit signed integer",
         detail: "int8(x [, \"saturate\"|\"wrap\"])  — range −128..127\n  Reals round half away from zero; out-of-range saturates (default) or\n  wraps. int8(200) → 127; int8(2.5) → 3; int8(200, \"wrap\") → -56." },
@@ -1645,7 +1643,127 @@ mod history_arg_tests {
 #[cfg(test)]
 mod help_coverage_tests {
     use super::*;
+    use rustlab_script::eval::BuiltinRegistry;
     use std::collections::HashSet;
+
+    /// HELP topics that are not `BuiltinRegistry` entries.
+    ///
+    /// The first group is callables the evaluator dispatches itself, ahead
+    /// of the registry. The rest are language keywords, constants, and REPL
+    /// topics. A new HELP name must be a registered builtin or added here.
+    const HELP_NOT_REGISTERED: &[&str] = &[
+        "Inf",
+        "NaN",
+        "arrayfun",
+        "cache",
+        "cd",
+        "chained_index",
+        "clf",
+        "clear",
+        "compound_assign",
+        "e",
+        "elseif",
+        "feval",
+        "for",
+        "format",
+        "function",
+        "fzero",
+        "history",
+        "i / j",
+        "if",
+        "index",
+        "index_assign",
+        "ls",
+        "parmap",
+        "pi",
+        "profile",
+        "profile_report",
+        "pwd",
+        "range",
+        "remote",
+        "rk4",
+        "run",
+        "rustlabrc",
+        "stdin",
+        "str_index",
+        "switch",
+        "underscores",
+        "viewer",
+        "widget",
+    ];
+
+    #[test]
+    fn help_names_are_unique() {
+        let mut seen = HashSet::new();
+        let mut dups = Vec::new();
+        for entry in HELP {
+            if !seen.insert(entry.name) {
+                dups.push(entry.name);
+            }
+        }
+        assert!(dups.is_empty(), "duplicate HELP names: {dups:?}");
+    }
+
+    #[test]
+    fn every_builtin_has_a_help_entry() {
+        let reg = BuiltinRegistry::with_defaults();
+        let help: HashSet<&str> = HELP.iter().map(|e| e.name).collect();
+        let mut missing: Vec<String> = reg
+            .all_names()
+            .into_iter()
+            .filter(|n| !help.contains(n.as_str()))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "registry names with no HELP entry: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn callable_help_is_registered_or_allowlisted() {
+        let reg = BuiltinRegistry::with_defaults();
+        let allow: HashSet<&str> = HELP_NOT_REGISTERED.iter().copied().collect();
+        assert_eq!(
+            allow.len(),
+            HELP_NOT_REGISTERED.len(),
+            "HELP_NOT_REGISTERED contains duplicates"
+        );
+
+        let mut stale = Vec::new();
+        let mut registered = Vec::new();
+        for name in HELP_NOT_REGISTERED {
+            if !HELP.iter().any(|e| e.name == *name) {
+                stale.push(*name);
+            }
+            if reg.contains(name) {
+                registered.push(*name);
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "allowlist names with no HELP entry: {stale:?}"
+        );
+        assert!(
+            registered.is_empty(),
+            "allowlist names that are registered builtins (drop them from HELP_NOT_REGISTERED): {registered:?}"
+        );
+
+        let mut stray = Vec::new();
+        for entry in HELP {
+            if !reg.contains(entry.name) && !allow.contains(entry.name) {
+                stray.push(entry.name);
+            }
+        }
+        stray.sort();
+        stray.dedup();
+        assert!(
+            stray.is_empty(),
+            "HELP names neither registered nor on HELP_NOT_REGISTERED \
+             (arrayfun, feval, fzero, parmap, profile, profile_report, rk4, widget, \
+             plus language keywords): {stray:?}"
+        );
+    }
 
     /// Every entry in `HELP` must appear in exactly one `CategoryRow`. Catches
     /// drift when new builtins are added without a category, and detects

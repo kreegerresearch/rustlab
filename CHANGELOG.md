@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.41
+
+### Changed
+- **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
+
 ## 0.3.40
 
 ### Breaking / behavior changes
@@ -14,6 +19,36 @@ should re-validate against those entries when upgrading.
 
 ### Changed
 - **The matrix 2-norm does not compute a full SVD.** It is the square root of the largest eigenvalue of the smaller of `A'A` and `AA'`, from Lanczos on that product. Singular vectors are not built. `norm(A, "fro")`, `norm(A, 1)`, and `norm(A, Inf)` are unchanged.
+
+## 0.3.39
+
+### Breaking / behavior changes
+- **`std(Inf)` and `var(Inf)` are NaN.** A finite scalar is still 0 (`std(7)`). A length-1 `Inf`, and the one-observation axis of a row (`std([1, Inf, 3], 0, 1)`), are NaN in that position. Previously a single `Inf` was 0.
+- **`sort` treats `-0` and `+0` as equal.** A stable sort keeps input order and the sign bit, ascending and descending. Previously `-0` sorted before `+0`.
+- **`xcorr([])` is an empty row.** It no longer errors. A `0×N` matrix returns a `0×N²` matrix. A second sequence that is empty against a non-empty one still errors.
+- **Matrix `xcorr` accepts only scale `"none"`.** `"biased"`, `"unbiased"`, `"normalized"`, and `"coeff"` error when the input has several columns. A vector or a single column still takes every scale.
+
+### Fixed
+- **`[L, U, p] = lu(A, "vector")` is a 1×n row.** `size(p)` is `[1, n]`, matching MATLAB's `whos` line (`1×1000`). `A(p, :) = L*U` is unchanged.
+
+## 0.3.38
+
+### Fixed
+- **A scripted `xlim` / `ylim` on a log axis is honoured in the terminal.** `semilogx` (and `semilogy` / `loglog`) already drew samples in log space and logged the limits for SVG and PNG. The terminal logged the samples and left the limits in real units, so `xlim([1, 1000])` did not frame the chart. Both backends now use `SubplotState::log_scaled_view`, which log10s the series and the limits together. Plotly still uses native log axes. Tick labels stay real decades (`10`, `100`).
+
+### Changed
+- Internal. Plotly colorscale names go through one `plotly_colorscale` helper. Quiver and streamline strokes for HTML and for SVG/PNG come from `overlay_polylines`. The 95th-percentile arrow scale, `"normalized"`, and the viewer path are unchanged. A streamline's HTML figure is one trace (path and midpoint arrow) instead of two traces with the same style.
+
+## 0.3.37
+
+### Changed
+- Internal only. Windowed-sinc FIR builtins, SISO Bode/Nyquist frequency response, and the four `laplacian_*` constructors share helpers. `arg_usize` / `arg_f64` / `arg_str` replace the repeated unprefixed argument conversions. Array sizes stay on `count_arg` with the 0.3.35 allocation checks. Script results and error text are unchanged, including Laplacian `Identity` ordering hints.
+
+## 0.3.36
+
+### Fixed
+- **`help plot_limits` documents the signature the builtin accepts.** The entry is `plot_limits(fig, panel, xlim, ylim)` with `[lo, hi]` vectors. A second help entry described a six-number form (`xmin, xmax, ymin, ymax`) that `plot_limits` rejects. That entry is gone. The vector form is unchanged.
+- **`llms.txt` no longer hard-codes a builtin count.** The count drifted from the registry. The live index is `rustlab docs --json`.
 
 ## 0.3.35
 

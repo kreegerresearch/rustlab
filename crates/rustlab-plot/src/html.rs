@@ -397,12 +397,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
 
         // 3D surface trace (takes precedence over heatmap and series)
         if let Some(sf) = &panel.surface {
-            let plotly_cmap = match sf.colorscale.as_str() {
-                "jet" => "Jet",
-                "hot" => "Hot",
-                "gray" => "Greys",
-                _ => "Viridis",
-            };
+            let plotly_cmap = plotly_colorscale(&sf.colorscale);
             let scene_key = if axis_suffix.is_empty() {
                 "scene".to_string()
             } else {
@@ -428,12 +423,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
         if let Some(hm) = &panel.heatmap {
             match hm.kind {
                 crate::figure::HeatmapKind::Imagesc => {
-                    let plotly_cmap = match hm.colorscale.as_str() {
-                        "jet" => "Jet",
-                        "hot" => "Hot",
-                        "gray" => "Greys",
-                        _ => "Viridis",
-                    };
+                    let plotly_cmap = plotly_colorscale(&hm.colorscale);
                     let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
                     let z_json = format!("[{}]", z_rows.join(","));
                     // Fixed colour range, when set on the HeatmapData, becomes
@@ -455,12 +445,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                     ));
                 }
                 crate::figure::HeatmapKind::Heatmap => {
-                    let plotly_cmap = match hm.colorscale.as_str() {
-                        "jet" => "Jet",
-                        "hot" => "Hot",
-                        "gray" => "Greys",
-                        _ => "Viridis",
-                    };
+                    let plotly_cmap = plotly_colorscale(&hm.colorscale);
                     let z_rows: Vec<String> = hm.z.iter().map(|row| json_f64_array(row)).collect();
                     let z_json = format!("[{}]", z_rows.join(","));
                     let x_field = match &hm.x_labels {
@@ -541,12 +526,7 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 (s, e, step.max(f64::MIN_POSITIVE))
             };
             if cd.filled {
-                let plotly_cmap = match cd.colorscale.as_str() {
-                    "jet" => "Jet",
-                    "hot" => "Hot",
-                    "gray" => "Greys",
-                    _ => "Viridis",
-                };
+                let plotly_cmap = plotly_colorscale(&cd.colorscale);
                 traces.push_str(&format!(
                     r#"{{ z: {z}, x: {x}, y: {y}, type: "contour", contours: {{ coloring: "fill", start: {s}, end: {e}, size: {step} }}, colorscale: "{cmap}", showscale: true{cbar}, xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
@@ -589,12 +569,18 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
         // with `null` separators between arrows so Plotly draws each as an
         // independent polyline (shaft + arrowhead).
         for qd in &panel.quivers {
-            let arrows = crate::quiver::build_arrows(&qd.u, &qd.v, &qd.x, &qd.y, qd.scale);
-            if arrows.is_empty() {
+            let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Quiver {
+                u: &qd.u,
+                v: &qd.v,
+                x: &qd.x,
+                y: &qd.y,
+                scale: qd.scale,
+            });
+            if strokes.is_empty() {
                 continue;
             }
             let color = color_to_css(qd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
-            let (xs, ys) = arrows_to_polyline(&arrows);
+            let (xs, ys) = paths_to_polyline(&strokes);
             traces.push_str(&format!(
                 r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
@@ -609,34 +595,19 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
         // Streamline overlays: integrate each seed and emit one scatter(lines)
         // trace per StreamlineData with null-separated polylines.
         for sd in &panel.streamlines {
-            let seeds = match &sd.seeds {
-                Some(s) => s.clone(),
-                None => crate::streamline::default_seeds(&sd.x, &sd.y, sd.density),
-            };
-            if seeds.is_empty() {
-                continue;
-            }
-            let step = crate::streamline::default_step(&sd.x, &sd.y);
-            let ref_len = crate::quiver::cell_distance(&sd.x, &sd.y) * 0.5;
-            let mut paths: Vec<Vec<(f64, f64)>> = Vec::new();
-            let mut arrowheads: Vec<crate::quiver::Arrow> = Vec::new();
-            for (sx, sy) in seeds {
-                let pts = crate::streamline::integrate(
-                    &sd.u, &sd.v, &sd.x, &sd.y, sx, sy, step, 400, 1e-10,
-                );
-                if pts.len() < 2 {
-                    continue;
-                }
-                if let Some(a) = crate::quiver::midpoint_arrow(&pts, ref_len) {
-                    arrowheads.push(a);
-                }
-                paths.push(pts);
-            }
-            if paths.is_empty() {
+            let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Stream {
+                u: &sd.u,
+                v: &sd.v,
+                x: &sd.x,
+                y: &sd.y,
+                density: sd.density,
+                seeds: sd.seeds.as_deref(),
+            });
+            if strokes.is_empty() {
                 continue;
             }
             let color = color_to_css(sd.color.as_ref().unwrap_or(&SeriesColor::Cyan));
-            let (xs, ys) = paths_to_polyline(&paths);
+            let (xs, ys) = paths_to_polyline(&strokes);
             traces.push_str(&format!(
                 r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
 "#,
@@ -646,18 +617,6 @@ yaxis{ax}: {{ domain: [{y0:.4}, {y1:.4}], anchor: "{x_id}", automargin: true, ti
                 xa = xaxis_ref,
                 ya = yaxis_ref,
             ));
-            if !arrowheads.is_empty() {
-                let (hxs, hys) = arrows_to_polyline(&arrowheads);
-                traces.push_str(&format!(
-                    r#"{{ x: {x}, y: {y}, type: "scatter", mode: "lines", connectgaps: false, line: {{ color: "{color}", width: 1.25 }}, showlegend: false, hoverinfo: "skip", xaxis: "{xa}", yaxis: "{ya}" }},
-"#,
-                    x = hxs,
-                    y = hys,
-                    color = color,
-                    xa = xaxis_ref,
-                    ya = yaxis_ref,
-                ));
-            }
         }
 
         // Traces for each series
@@ -818,39 +777,21 @@ Plotly.newPlot("{div_id}", data_{js_var}, layout_{js_var}, {{ responsive: true }
     out
 }
 
+/// Plotly colorscale name for a rustlab colormap (`viridis`, `jet`, `hot`, `gray`).
+fn plotly_colorscale(name: &str) -> &'static str {
+    match name {
+        "jet" => "Jet",
+        "hot" => "Hot",
+        "gray" => "Greys",
+        _ => "Viridis",
+    }
+}
+
 /// Delegates to [`SeriesColor::to_rgb`] so the Plotly backend can't drift from
 /// the SVG one — the two tables used to be maintained by hand, side by side.
 fn color_to_css(c: &SeriesColor) -> String {
     let (r, g, b) = c.to_rgb();
     format!("rgb({},{},{})", r, g, b)
-}
-
-/// Flatten a slice of arrow glyphs into a pair of Plotly JSON arrays
-/// (`x`, `y`) with `null` separators between arrows. Each arrow is emitted
-/// as `tail, tip, leftBarb, tip, rightBarb, null`.
-fn arrows_to_polyline(arrows: &[crate::quiver::Arrow]) -> (String, String) {
-    let mut out_x = String::from("[");
-    let mut out_y = String::from("[");
-    let mut first = true;
-    for a in arrows {
-        let pts: [(f64, f64); 5] = [a.shaft.0, a.shaft.1, a.head[0], a.head[1], a.head[2]];
-        if !first {
-            out_x.push_str(",null");
-            out_y.push_str(",null");
-        }
-        for (i, p) in pts.iter().enumerate() {
-            if i > 0 || !first {
-                out_x.push(',');
-                out_y.push(',');
-            }
-            let _ = write!(out_x, "{}", p.0);
-            let _ = write!(out_y, "{}", p.1);
-        }
-        first = false;
-    }
-    out_x.push(']');
-    out_y.push(']');
-    (out_x, out_y)
 }
 
 /// Flatten a slice of polylines into Plotly JSON arrays with `null`
@@ -1342,28 +1283,20 @@ mod tests {
     }
 
     #[test]
-    fn arrows_to_polyline_emits_tail_tip_barbs_with_null_separators() {
-        use crate::quiver::Arrow;
-        assert_eq!(
-            arrows_to_polyline(&[]),
-            ("[]".to_string(), "[]".to_string())
-        );
-
-        let arrows = [
-            Arrow {
-                shaft: ((0.0, 0.0), (1.0, 0.0)),
-                head: [(0.8, 0.1), (1.0, 0.0), (0.8, -0.1)],
-            },
-            Arrow {
-                shaft: ((2.0, 1.0), (3.0, 1.0)),
-                head: [(2.8, 1.1), (3.0, 1.0), (2.8, 0.9)],
-            },
-        ];
-        let (xs, ys) = arrows_to_polyline(&arrows);
-        // Per arrow: tail, tip, head[0], head[1], head[2]; arrows separated
-        // by a null so Plotly draws disconnected glyphs in one trace.
-        assert_eq!(xs, "[0,1,0.8,1,0.8,null,2,3,2.8,3,2.8]");
-        assert_eq!(ys, "[0,0,0.1,0,-0.1,null,1,1,1.1,1,0.9]");
+    fn quiver_strokes_are_null_separated_shaft_then_head() {
+        let strokes = crate::quiver::overlay_polylines(crate::quiver::Overlay::Quiver {
+            u: &[vec![1.0]],
+            v: &[vec![0.0]],
+            x: &[0.0],
+            y: &[0.0],
+            scale: 1.0,
+        });
+        assert_eq!(strokes.len(), 2, "shaft then head");
+        assert_eq!(strokes[0].len(), 2);
+        assert_eq!(strokes[1].len(), 3);
+        let (xs, ys) = paths_to_polyline(&strokes);
+        assert!(xs.contains("null"), "{xs}");
+        assert!(ys.contains("null"), "{ys}");
     }
 
     #[test]

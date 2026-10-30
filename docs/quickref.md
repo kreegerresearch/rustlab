@@ -206,12 +206,12 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `argmin(v)`, `argmax(v)` / `argmin(M)`, `argmax(M)` / `argmin(M, dim)`, `argmax(M, dim)` | 1-based position of min / max; vector → scalar; matrix → row of per-column positions (default), or column of per-row with dim=2. Same comparison-key and NaN rules as `min` / `max`, so the index from `[m, i] = max(v)` always equals `argmax(v)`. (There is no `~` output placeholder — bind to a dummy variable.) |
 | `mean(v)` / `mean(M)` / `mean(M, dim)` | Arithmetic mean; same axis rules as `sum`. |
 | `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; same axis rules. Complex input is an error. Empty is NaN. |
-| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; `std(M, 0, 2)` is per row. |
+| `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1, the default), 1 (divide by n), or a weight vector (divide by the sum of the weights). Empty is NaN. One finite observation is 0. `std(Inf)` and `var(Inf)` are NaN. `std(M)` is per column; `std(M, 0, 2)` is per row. |
 | `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same `w` and the same shapes. |
 | `prod(v)` / `prod(M)` / `prod(M, dim)` | Product; same axis rules. |
 | `median(v)` | Median of real values (average of the two middle elements when the length is even). Complex input is an error. Empty is NaN |
-| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN |
-| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given |
+| `std(v)` / `var(v)` | `std(v, w, dim)` and `var`. `w` is 0, 1, or a weight vector. Empty is NaN. `std(Inf)` and `var(Inf)` are NaN |
+| `sort(A)` / `sort(A, dim)` / `sort(A, "descend")` / `[s, i] = sort(A)` | Sort. Real values are numeric; any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order, and `-0` equals `+0`. A matrix sorts each column unless `dim` is given |
 | `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)` | Trapezoidal integration (unit or explicit spacing); matrices integrate per column → 1×n row |
 | `cumtrapz(Y)` / `cumtrapz(X, Y)` / `cumtrapz(Y, dim)` | Cumulative trapezoid. First sample is 0. Vectors keep orientation; matrices default to down columns |
 | `diff(X)` / `diff(X, n)` / `diff(X, n, dim)` | Adjacent difference, repeated `n` times. Vectors keep orientation; matrices default to dim 1 |
@@ -262,7 +262,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `laguerre(n, alpha, x)` | Associated Laguerre polynomial $L_n^\alpha(x)$, element-wise |
 | `legendre(l, m, x)` | Associated Legendre polynomial $P_l^m(x)$, element-wise |
 | `convolve(x, h)` | Linear convolution (output length = len(x)+len(h)-1) |
-| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff`. `[r, lags]` returns the lag axis |
+| `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` | Cross-correlation, zero lag in the middle. Length `2N−1` when `maxlag` is omitted. `scale`: `none`, `biased`, `unbiased`, `normalized`/`coeff` (a matrix with several columns accepts only `none`). `xcorr([])` is an empty row. `[r, lags]` returns the lag axis |
 | `xcov(...)` | `xcorr` after each signal's mean is removed |
 | `factor(n)` | Prime factorization |
 
@@ -524,7 +524,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
 | `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
-| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1-based permutation with `A(p, :) = L*U` |
+| `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1×n row with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |
 | `[V, D] = eigs(A, B, n [, which])` | Generalized form `A x = λ B x` for B Hermitian positive-definite. |
@@ -619,9 +619,9 @@ Mixed sparse+dense pairs auto-promote to dense.
 | `contourf(Z)` / `contourf(X, Y, Z [, n|levels])` | Filled contours; HTML uses Plotly polygon fill, SVG uses per-cell band approximation |
 | `quiver(X, Y, U, V [, scale | "normalized" | "title" | "c"])` / `quiver(U, V)` | 2-D vector-field arrows; 95th-percentile auto-scale with per-arrow clamp (outliers cannot blank the plot); `"normalized"` = unit-length arrows; decimate via stride indexing. NaN cells skipped. Overlays on `imagesc` / `contour` under `hold on`. Terminal: not rendered. |
 | `streamplot(X, Y, U, V [, density | seeds | "title" | "c"])` | RK4 streamlines from a default 10×10 seed grid or an explicit Nx2 seeds matrix; midpoint arrowhead per line. Same overlay/backend behaviour as `quiver`. |
-| `loglog(x, y [, opts])` | Log-log axes (x, y > 0). Data is not replaced by log10; ticks are decades |
-| `semilogx(x, y [, opts])` | Logarithmic x, linear y (x > 0). Real data, decade ticks |
-| `semilogy(x, y [, opts])` | Linear x, logarithmic y (y > 0). Real data, decade ticks |
+| `loglog(x, y [, opts])` | Log-log axes (x, y > 0). Data is not replaced by log10; ticks are decades. `xlim`/`ylim` are in those units |
+| `semilogx(x, y [, opts])` | Logarithmic x, linear y (x > 0). Real data, decade ticks. `xlim`/`ylim` are in data units |
+| `semilogy(x, y [, opts])` | Linear x, logarithmic y (y > 0). Real data, decade ticks. `xlim`/`ylim` are in data units |
 | `polar(theta, r [, opts])` | Polar plot via Cartesian pre-transform `(r·cos θ, r·sin θ)` |
 
 ---

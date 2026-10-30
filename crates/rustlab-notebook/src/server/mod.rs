@@ -18,6 +18,7 @@ pub mod auth;
 pub mod browser;
 pub mod cell;
 pub mod diff;
+pub mod drawer;
 pub mod http;
 pub mod page;
 pub mod render_loop;

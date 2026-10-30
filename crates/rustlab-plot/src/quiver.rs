@@ -150,6 +150,82 @@ pub fn midpoint_arrow(path: &[(f64, f64)], length: f64) -> Option<Arrow> {
     arrow_at(tx - length * ux, ty - length * uy, length * ux, length * uy)
 }
 
+/// A quiver field or a streamline field. Scale and `"normalized"` are already
+/// resolved: [`build_arrows`] still applies the 95th-percentile auto-scale.
+pub enum Overlay<'a> {
+    Quiver {
+        u: &'a [Vec<f64>],
+        v: &'a [Vec<f64>],
+        x: &'a [f64],
+        y: &'a [f64],
+        scale: f64,
+    },
+    Stream {
+        u: &'a [Vec<f64>],
+        v: &'a [Vec<f64>],
+        x: &'a [f64],
+        y: &'a [f64],
+        density: f64,
+        seeds: Option<&'a [(f64, f64)]>,
+    },
+}
+
+/// Strokes for one quiver or streamline overlay, in draw order.
+///
+/// A quiver arrow is the shaft (two points) then the head (left barb, tip,
+/// right barb). A streamline is the integrated path, then that same pair
+/// when a midpoint arrow exists. HTML joins the strokes with gaps. SVG/PNG
+/// draws each stroke. The viewer does not use this helper.
+pub fn overlay_polylines(src: Overlay<'_>) -> Vec<Vec<(f64, f64)>> {
+    match src {
+        Overlay::Quiver { u, v, x, y, scale } => arrow_strokes(&build_arrows(u, v, x, y, scale)),
+        Overlay::Stream {
+            u,
+            v,
+            x,
+            y,
+            density,
+            seeds,
+        } => {
+            let owned;
+            let seeds: &[(f64, f64)] = match seeds {
+                Some(s) => s,
+                None => {
+                    owned = crate::streamline::default_seeds(x, y, density);
+                    &owned
+                }
+            };
+            if seeds.is_empty() {
+                return Vec::new();
+            }
+            let step = crate::streamline::default_step(x, y);
+            let ref_len = cell_distance(x, y) * 0.5;
+            let mut strokes = Vec::new();
+            for &(sx, sy) in seeds {
+                let pts = crate::streamline::integrate(u, v, x, y, sx, sy, step, 400, 1e-10);
+                if pts.len() < 2 {
+                    continue;
+                }
+                let arrow = midpoint_arrow(&pts, ref_len);
+                strokes.push(pts);
+                if let Some(a) = arrow {
+                    strokes.extend(arrow_strokes(&[a]));
+                }
+            }
+            strokes
+        }
+    }
+}
+
+fn arrow_strokes(arrows: &[Arrow]) -> Vec<Vec<(f64, f64)>> {
+    let mut out = Vec::with_capacity(arrows.len() * 2);
+    for a in arrows {
+        out.push(vec![a.shaft.0, a.shaft.1]);
+        out.push(vec![a.head[0], a.head[1], a.head[2]]);
+    }
+    out
+}
+
 /// Build default `X, Y` coordinate vectors for the `quiver(U, V)` shortcut.
 /// Uses 1-based indexing (columns → `1..=ncols`, rows → `1..=nrows`) to
 /// match the convention used elsewhere in the script layer.
