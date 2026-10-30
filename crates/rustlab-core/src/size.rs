@@ -3,19 +3,11 @@
 //! A dimension product that overflows, a count above MATLAB's maximum
 //! variable size (`2^48 − 1` elements), or a byte length that overflows or
 //! does not fit in `isize`, is rejected here. Nothing is allocated.
-//!
-//! Byte lengths of 16 GiB or more are rejected as well. Zero-filling a
-//! larger buffer is killed by the OS when overcommit is on, so the failure
-//! would not come back as an error. `zeros(2^32, 1, "int8")` stores `2^32`
-//! `i128`s (64 GiB) and takes this path. `isize::MAX` alone does not.
 
 use crate::CoreError;
 
 /// MATLAB's maximum number of elements in one array (`2^48 − 1`).
 pub const MAX_ELEMENTS: u64 = (1 << 48) - 1;
-
-/// Largest byte length this process will try to allocate (16 GiB).
-pub const MAX_BYTES: u64 = 1 << 34;
 
 /// Stored width of an `f64` element.
 pub const ELEM_F64: usize = 8;
@@ -52,7 +44,7 @@ pub fn checked_elems(dims: &[usize], elem_size: usize) -> Result<usize, CoreErro
     let bytes = count
         .checked_mul(elem_size as u128)
         .ok_or(CoreError::VariableTooLarge)?;
-    if bytes > isize::MAX as u128 || bytes >= MAX_BYTES as u128 {
+    if bytes > isize::MAX as u128 {
         return Err(CoreError::VariableTooLarge);
     }
     Ok(count as usize)
@@ -91,10 +83,20 @@ mod tests {
     }
 
     #[test]
-    fn int8_column_of_2_pow_32_is_64_gib() {
-        // 2^32 i128 elements are 2^36 bytes. That fits in isize and is under
-        // 2^48 elements, and it is still rejected: zero-filling it is fatal.
-        assert!(checked_elems(&[1 << 32, 1], ELEM_I128).is_err());
+    fn count_under_the_element_cap_is_a_legal_size() {
+        // 2^32 i128 elements are 64 GiB, and 2^32 f64 elements are 32 GiB.
+        // Both are under 2^48 − 1 and under isize::MAX, so the count is
+        // legal. This multiplies integers; it does not reserve a buffer.
+        assert_eq!(checked_elems(&[1 << 32, 1], ELEM_I128).unwrap(), 1 << 32);
+        assert_eq!(checked_elems(&[1 << 32], ELEM_F64).unwrap(), 1 << 32);
+    }
+
+    #[test]
+    fn byte_length_past_isize_max_errors() {
+        // The element cap is not the only byte check. A wide element can
+        // still make the allocation larger than isize::MAX.
+        let wide = 1usize << 16;
+        assert!(checked_elems(&[MAX_ELEMENTS as usize], wide).is_err());
     }
 
     #[test]

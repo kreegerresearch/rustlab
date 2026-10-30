@@ -21873,6 +21873,8 @@ mod angle_arrays {
 }
 
 /// Oversized constructors must return an error and must not panic or allocate.
+/// A shape under `2^48 − 1` elements whose bytes fit in `isize` is legal, so
+/// `zeros(2^32, 1, "int8")` is not in this list: that call would allocate.
 #[cfg(test)]
 mod size_overflow_tests {
     use crate::{lexer, parser, Evaluator};
@@ -21909,14 +21911,14 @@ mod size_overflow_tests {
         for src in [
             "zeros(2^32, 'int8')",
             "zeros(2^32, 2^32)",
-            "zeros(2^32, 1, 'int8')",
             "ones(2^32)",
             "rand(2^32)",
             "randn(2^32)",
             "eye(2^32)",
             "randi(6, 2^32)",
             "reshape(zeros(1, 0), 2^32, 2^32)",
-            "linspace(0, 1, 2^32)",
+            // 2^48 elements is one past the element cap, so this does not allocate.
+            "linspace(0, 1, 2^48)",
             "diag([1, 2], 2^62)",
         ] {
             assert_too_big(src);

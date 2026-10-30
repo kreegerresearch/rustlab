@@ -13,7 +13,7 @@ pub use error::CoreError;
 pub use fingerprint::Fingerprint;
 pub use size::{
     checked_elems, shape_text, variable_too_large, ELEM_C64, ELEM_F64, ELEM_I128, F64_TWO_POW_64,
-    MAX_BYTES, MAX_ELEMENTS,
+    MAX_ELEMENTS,
 };
 pub use traits::{
     decompose::{

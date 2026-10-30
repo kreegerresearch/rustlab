@@ -567,7 +567,7 @@ zeros(size(A))   # → zero matrix matching A's dimensions
 ```
 `zeros(n, "int32")` (and the other integer class names) is an n×n integer array. `zeros(1, n, "int32")` is a row.
 
-A size must be a finite non-negative integer strictly below `2^64` (a size vector is not rounded). The array is refused, before any buffer is allocated, when the element count exceeds `2^48 − 1` or the stored bytes reach 16 GiB. Integer classes are stored as 16-byte values, so `zeros(2^32, 1, "int8")` is that error. `ones`, `rand`, `randn`, `randi`, and `eye` use the same rule.
+A size must be a finite non-negative integer strictly below `2^64` (a size vector is not rounded). The array is refused, before any buffer is allocated, when the element count exceeds `2^48 − 1` or the stored byte length does not fit in `isize`. `ones`, `rand`, `randn`, `randi`, and `eye` use the same rule.
 
 ### `ones(n)` / `ones(m, n)` / `ones([m, n])`
 Same shapes as `zeros`. One size is n×n. A row is `ones(1, n)`.
