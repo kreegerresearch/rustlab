@@ -1304,12 +1304,12 @@ primary     = NUMBER | STRING | IDENT
 | `sqrt` | `sqrt(x)` | Square root (element-wise) |
 | `exp` | `exp(x)` | e^x (element-wise) |
 | `log` | `log(x)` | Natural log (element-wise) |
-| `zeros` | `zeros(n)` / `zeros(n, m)` | Complex zero vector of length n, or n×m zero matrix |
-| `ones` | `ones(n)` / `ones(n, m)` | Complex ones vector of length n, or n×m ones matrix |
+| `zeros` | `zeros(n)` / `zeros(m, n)` / `zeros(1, n)` | n×n zero matrix, or m×n. A row is `zeros(1, n)` and stays a matrix. `zeros(n, "int32")` is n×n |
+| `ones` | `ones(n)` / `ones(m, n)` / `ones(1, n)` | Same shapes as `zeros`, filled with ones |
 | `linspace` | `linspace(start, stop, n)` | Real vector of n points |
-| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randi` | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Integer scalar or vector drawn uniformly |
+| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar, n×n, or m×n. A row is `rand(1, n)` |
+| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar, n×n, or m×n. A row is `randn(1, n)` |
+| `randi` | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Integer scalar, n×n, or m×n. A row is `randi(imax, 1, n)` |
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
 | `len` | `len(v)` | Number of elements |
@@ -1358,8 +1358,12 @@ primary     = NUMBER | STRING | IDENT
 | `butterworth_highpass` | `butterworth_highpass(order, cutoff_hz, sr)` / `[b, a] = ...` | Same one-output / two-output split as the lowpass |
 | `filter` | `filter(b, a, x)` | Causal direct-form II transposed filter. `a` is normalised so `a(1) = 1`. `a = [1]` is an FIR. `x` may be complex |
 | `gelu_grad` | `gelu_grad(x)` | Derivative of `gelu` (tanh approximation), element-wise; for backprop through `gelu` |
-| `median` | `median(v)` | Median of real parts; scalar for odd length, average of two middles for even. A NaN real part returns NaN |
-| `var` | `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. Same shapes and complex rule as `std`. No divide-by-n flag |
+| `median` | `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; scalar for odd length, average of two middles for even. Complex input is an error. Empty is NaN. A NaN in the data makes that reduction NaN |
+| `std` | `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1), 1 (divide by n), or a nonnegative weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; the dimension is the third argument (`std(M, 0, 2)`) |
+| `var` | `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same weights, shapes, and complex rule |
+| `sort` | `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `[s, i] = sort(A)` | Real values sort numerically. Any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given. A vector is a row |
+| `diag` | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Build a diagonal matrix, or extract diagonal `k`. A length-1 input is a 1×1 matrix (`size(diag(5))` is `[1, 1]`) |
+| `trace` | `trace(M)` | Sum of the main diagonal. The matrix must be square |
 | `cond` | `cond(A)` / `cond(A, p)` | 2-norm condition number `σ_max/σ_min` by default. `p = 1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular returns `Inf` |
 | `convolve` | `convolve(x, h)` | Convolved Vector (length = len(x)+len(h)-1) |
 | `filtfilt` | `filtfilt(b, a, x)` | Zero-phase forward-backward filter; uses odd-reflection signal extension + steady-state IC (matches Octave); use `a=[1]` for FIR |
