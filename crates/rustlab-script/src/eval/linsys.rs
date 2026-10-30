@@ -37,13 +37,14 @@ pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
     solve_ab(&a, &b, a_real && b_real)
 }
 
-/// `B/A`, the solution of `X * A = B`. Scalar `/` stays element-wise and
-/// does not come through here.
+/// `B/A`, the solution of `X * A = B`. A scalar denominator stays
+/// element-wise and does not come through here. A scalar numerator does.
+/// The reduction is `(A' \ B')'`: conjugate transpose, not `.'`.
 pub(crate) fn mrdivide(b: Value, a: Value) -> Result<Value, String> {
-    let bt = b.non_conj_transpose()?;
-    let at = a.non_conj_transpose()?;
+    let bt = b.transpose()?;
+    let at = a.transpose()?;
     let x = mldivide(at, bt)?;
-    x.non_conj_transpose()
+    x.transpose()
 }
 
 fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, String> {

@@ -10,7 +10,7 @@ seed(42)
 N  = 4096;
 fs = 1.0;                  # normalized frequency (cycles/sample)
 n  = 0:N-1;
-x = sin(2*pi*0.15*n) + 0.8*sin(2*pi*0.18*n) + 0.3*randn(N);
+x = sin(2*pi*0.15*n) + 0.8*sin(2*pi*0.18*n) + 0.3*randn(1, N);
 
 # ── 1. Plain periodogram (rectangular window) ────────────────────────────────
 X    = fft(x);

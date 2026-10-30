@@ -5,7 +5,7 @@
 
 N = 100000
 
-x = randn(N);
+x = randn(1, N);
 
 print("abs   n=100000")
 y = abs(x);

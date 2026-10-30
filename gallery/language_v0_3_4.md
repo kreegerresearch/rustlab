@@ -10,7 +10,7 @@ workaround.
 | Gap | Workaround pre-0.3.4 | Form in 0.3.4 |
 |---|---|---|
 | `length(scalar)` | `length([x])` | `length(x)` |
-| `rand()` / `randn()` zero-arg | `rand(1)(1)` | `rand()`, `randn()` |
+| `rand()` / `randn()` zero-arg | `rand(1, 1)(1)` | `rand()`, `randn()` |
 | `A(i, :) = vec` row-write | `A(i) = vec` | `A(i, :) = vec` (preferred) |
 | Strided LHS into a vector | element-by-element loop | `v(1:2:6) = [...]` |
 | `plot(x, zeros(1, N))` | reshape to a Vector first | passes through |
@@ -29,7 +29,7 @@ rustlab now matches.
 print("length(42):", length(42));            % → 1
 print("length(3 + j):", length(3 + j));      % → 1
 print("length(true):", length(true));        % → 1
-print("length(zeros(7)):", length(zeros(7))); % → 7
+print("length(zeros(1, 7)):", length(zeros(1, 7))); % → 7
 print("length(zeros(3, 5)):", length(zeros(3, 5))); % → 5 (longest axis)
 ```
 
@@ -38,7 +38,7 @@ print("length(zeros(3, 5)):", length(zeros(3, 5))); % → 5 (longest axis)
 length(42): 1
 length(3 + j): 1
 length(true): 1
-length(zeros(7)): 7
+length(zeros(1, 7)): 7
 length(zeros(3, 5)): 5
 ```
 
@@ -49,7 +49,7 @@ Use `numel(x)` for total element count and `size(x)` for full shape.
 ## 2. `rand()` and `randn()` accept zero arguments
 
 A single uniform draw is now `rand()`, and a single standard-normal
-draw is `randn()`. The pre-0.3.4 `rand(1)(1)` boxing hack — request a
+draw is `randn()`. The pre-0.3.4 `rand(1, 1)(1)` boxing hack — request a
 1×1 matrix, then chain-index the scalar — is no longer required.
 
 ```rustlab
@@ -72,15 +72,15 @@ The shaped forms still work unchanged:
 
 ```rustlab
 seed(7);
-v = rand(8);                  % length-8 vector
+v = rand(1, 8);                  % length-8 vector
 M = randn(3, 4);              % 3×4 matrix
-print("rand(8) shape:", size(v));
+print("rand(1, 8) shape:", size(v));
 print("randn(3, 4) shape:", size(M));
 ```
 
 <!-- rustlab:output-start -->
 ```text
-rand(8) shape: [1×2]  1.000000  8.000000
+rand(1, 8) shape: [1×2]  1.000000  8.000000
 randn(3, 4) shape: [1×2]  3.000000  4.000000
 ```
 
@@ -195,7 +195,7 @@ selects positions to write:
 ### Strided LHS
 
 ```rustlab
-v = zeros(6);
+v = zeros(1, 6);
 v(1:2:6) = [10, 20, 30];
 print("v:");
 print(v);
@@ -212,7 +212,7 @@ v:
 ### Explicit index list
 
 ```rustlab
-w = zeros(5);
+w = zeros(1, 5);
 w([1, 3, 5]) = [100, 300, 500];
 print("w:");
 print(w);
@@ -229,7 +229,7 @@ w:
 ### Scalar broadcast across the whole vector
 
 ```rustlab
-u = zeros(4);
+u = zeros(1, 4);
 u(:) = 9;
 print("u:");
 print(u);
