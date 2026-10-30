@@ -5,83 +5,8 @@
 
 use crate::eval::shared::{conversion_counts, real_storage, Shared};
 use crate::eval::value::Value;
-use crate::{lexer, parser, Evaluator};
+use crate::testutil::{assert_c, assert_re, eval, eval_err, mat, num, re, vec_c};
 use num_complex::Complex64;
-
-fn eval(src: &str) -> Evaluator {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        ev.exec_stmt(stmt).unwrap();
-    }
-    ev
-}
-
-fn eval_err(src: &str) -> String {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        if let Err(e) = ev.exec_stmt(stmt) {
-            return e.to_string();
-        }
-    }
-    panic!("expected an error from: {src}");
-}
-
-fn num(ev: &Evaluator, name: &str) -> Complex64 {
-    match ev.get(name).unwrap() {
-        Value::Scalar(x) => Complex64::new(*x, 0.0),
-        Value::Complex(c) => *c,
-        Value::Vector(v) if v.len() == 1 => v[0],
-        Value::Matrix(m) if m.nrows() == 1 && m.ncols() == 1 => m[[0, 0]],
-        other => panic!("{name}: expected a scalar, got {other:?}"),
-    }
-}
-
-fn re(ev: &Evaluator, name: &str) -> f64 {
-    let z = num(ev, name);
-    assert!(z.im.abs() < 1e-9, "{name} imag {}", z.im);
-    z.re
-}
-
-fn vec_c(ev: &Evaluator, name: &str) -> Vec<Complex64> {
-    match ev.get(name).unwrap() {
-        Value::Vector(v) => v.iter().copied().collect(),
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => m.iter().copied().collect(),
-        other => panic!("{name}: expected a vector, got {other:?}"),
-    }
-}
-
-fn mat(ev: &Evaluator, name: &str) -> Vec<Vec<Complex64>> {
-    match ev.get(name).unwrap() {
-        Value::Matrix(m) => (0..m.nrows())
-            .map(|r| (0..m.ncols()).map(|c| m[[r, c]]).collect())
-            .collect(),
-        other => panic!("{name}: expected a matrix, got {other:?}"),
-    }
-}
-
-fn assert_c(got: Complex64, want: Complex64, tol: f64) {
-    let d = (got - want).norm();
-    assert!(d <= tol, "got {got}, want {want}, |diff| {d:e}");
-}
-
-fn assert_re(ev: &Evaluator, name: &str, want: f64, tol: f64) {
-    let g = re(ev, name);
-    assert!((g - want).abs() <= tol, "{name} = {g}, want {want}");
-}
 
 // ── inv, det, linsolve ──────────────────────────────────────────────────────
 

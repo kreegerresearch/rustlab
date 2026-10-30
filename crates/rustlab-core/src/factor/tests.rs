@@ -177,6 +177,22 @@ fn chol_negative_pivot_is_reported() {
 }
 
 #[test]
+fn chol_nonreal_diagonal_fails_that_pivot() {
+    // 1+i is not a positive real pivot. The leading block is empty.
+    let a = array![[Complex::new(1.0, 1.0)]];
+    let f = chol::upper(&a).unwrap();
+    assert_eq!(f.p, 1);
+    assert_eq!(f.factor.dim(), (0, 0));
+    // The second diagonal is the one that is not real. The 1×1 leading
+    // factor is sqrt(4).
+    let a = array![[c(4.0), c(0.0)], [c(0.0), Complex::new(1.0, 0.5)]];
+    let f = chol::lower(&a).unwrap();
+    assert_eq!(f.p, 2);
+    assert_eq!(f.factor.dim(), (1, 1));
+    assert!((f.factor[[0, 0]] - c(2.0)).norm() < 1e-12);
+}
+
+#[test]
 fn chol_complex_hermitian_reconstructs() {
     let a = array![
         [c(4.0), Complex::new(1.0, -1.0)],

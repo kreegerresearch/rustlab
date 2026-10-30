@@ -36,24 +36,32 @@ fn factor(a: &Array2<C64>, upper: bool) -> Result<Chol, String> {
         return Err(format!("chol: matrix must be square, got {m}×{n}"));
     }
     if n == 0 {
-        return Ok(Chol { factor: Array2::zeros((0, 0)), p: 0 });
+        return Ok(Chol {
+            factor: Array2::zeros((0, 0)),
+            p: 0,
+        });
     }
     let mut f = Array2::<C64>::zeros((n, n));
     for j in 0..n {
-        let mut diag = a[[j, j]].re;
+        // A Hermitian positive-definite diagonal is real. Using only the
+        // real part would return a factor that does not restore A.
+        let diag_z = a[[j, j]];
+        if diag_z.im != 0.0 {
+            return Ok(Chol {
+                factor: leading_factor(&f, j),
+                p: j + 1,
+            });
+        }
+        let mut diag = diag_z.re;
         for k in 0..j {
             let z = if upper { f[[k, j]] } else { f[[j, k]] };
             diag -= z.norm_sqr();
         }
-        if !(diag > 0.0) || !diag.is_finite() {
-            let q = j;
-            let mut small = Array2::<C64>::zeros((q, q));
-            for r in 0..q {
-                for c in 0..q {
-                    small[[r, c]] = if upper { f[[r, c]] } else { f[[r, c]] };
-                }
-            }
-            return Ok(Chol { factor: small, p: j + 1 });
+        if diag <= 0.0 || !diag.is_finite() {
+            return Ok(Chol {
+                factor: leading_factor(&f, j),
+                p: j + 1,
+            });
         }
         let root = C64::new(diag.sqrt(), 0.0);
         if upper {
@@ -77,6 +85,18 @@ fn factor(a: &Array2<C64>, upper: bool) -> Result<Chol, String> {
         }
     }
     Ok(Chol { factor: f, p: 0 })
+}
+
+/// The leading `q × q` block already written. Both triangles store that
+/// block in the same entries, so upper and lower share this copy.
+fn leading_factor(f: &Array2<C64>, q: usize) -> Array2<C64> {
+    let mut small = Array2::<C64>::zeros((q, q));
+    for r in 0..q {
+        for c in 0..q {
+            small[[r, c]] = f[[r, c]];
+        }
+    }
+    small
 }
 
 /// Solve `R' R X = B` with the upper factor from a successful `upper`.

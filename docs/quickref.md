@@ -250,7 +250,7 @@ stacked = cat(3, [1,2;3,4], [5,6;7,8])    # Tensor3(2, 2, 2)
 | `roots(p)` | Roots of polynomial with coefficients p |
 | `polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)` | Degree-n least-squares polynomial, descending powers, via QR. `S` has `R`, `df`, `normr`. `mu` centers `x` and changes `p` |
 | `polyval(p, x)` / `polyval(p, x, S, mu)` | Horner evaluation; result has the shape of `x`. With `mu`, `x` is centered first |
-| `interp1(x, y, xi [, method [, "extrap" or fill]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot), `pchip`, `makima`. NaN outside the range unless `"extrap"` or a numeric fill |
+| `interp1(x, y, xi [, method [, "extrap" or fill]])` | 1-D interpolation: `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot), `pchip`, `makima`. NaN outside the range unless `"extrap"` or a numeric fill. A NaN query stays NaN. Inf is outside the range |
 
 ---
 
@@ -523,7 +523,7 @@ A matrix is one numeric column per matrix column (`A` → `A1`, `A2`, …). A ve
 | `spdiags(V, D, m, n)` | Build sparse matrix from diagonals (D=0 main, >0 super, <0 sub) |
 | `sprand(m, n, density)` | Random sparse matrix with ~density×m×n non-zeros, values in [0,1) |
 | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto ordering reads the matrix's hint (set by `laplacian_*`) and uses identity on grids (~5× faster than AMD), falling back to AMD elsewhere. |
-| `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. `[R, p]` reports a failed pivot instead of erroring |
+| `chol(A [, ordering])` / `chol(A, "lower")` / `[R, p] = chol(A)` | Sparse `A` returns a factor handle for `solve`. Dense `A` returns upper `R` (`A = R'*R`), or lower `L` with `"lower"`. A diagonal that is not real fails that pivot. `[R, p]` reports a failed pivot instead of erroring |
 | `lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns a factor handle. Dense `A` returns `[L, U]` or `[L, U, P]`. `"vector"` makes the third output a 1-based permutation with `A(p, :) = L*U` |
 | `solve(F, b)` | Back-solve `b` through a cached factor `F` from `chol()` or `lu()`. Canonical fast path for parameter sweeps and animations. |
 | `[V, D] = eigs(A, n [, which])` | Sparse partial eigensolver: n smallest (`"sm"` default) or largest (`"lm"`) eigenpairs. Hermitian → Lanczos; general → Arnoldi. |

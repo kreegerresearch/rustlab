@@ -6,6 +6,13 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.34
+
+### Fixed
+- **`interp1` treats a non-finite query as a number.** A `NaN` query stays a real `NaN` when `y` is real, including when a fill value is set (the fill does not replace a missing query). `Inf` is outside `[min(x), max(x)]`: the default is `NaN`, a numeric fifth argument fills it, and `"extrap"` extends the end interval. Previously both came back as a complex `NaN` and ignored the fill and `"extrap"`.
+- **Dense `chol` rejects a diagonal that is not real.** That pivot is not positive. One output errors. `[R, p] = chol(A)` reports the 1-based pivot and returns the leading factor. Previously the real part was used, so `R' * R` did not restore `A`. A scalar is a 1×1 matrix, so `chol(4)` is `2`. It used to error.
+- **`interp1(..., "linear", "extrap")` of `±Inf` stays on the line.** A zero slope keeps the endpoint. A nonzero slope is `±Inf` with that sign. The old `y0*(1-b) + y1*b` form was `0*Inf` when an endpoint was 0.
+
 ## 0.3.33
 
 ### Added
