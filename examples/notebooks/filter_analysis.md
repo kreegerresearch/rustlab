@@ -50,7 +50,7 @@ $y = h * x$:
 ```rustlab
 seed(42)
 n = 0:255;
-x = sin(2*pi*0.1*n) + 0.5*randn(256);
+x = sin(2*pi*0.1*n) + 0.5*randn(1, 256);
 y = convolve(h, x);
 subplot(2,1,1); plot(x); title("Input (noisy)"); grid on
 subplot(2,1,2); plot(y(1:256)); title("Filtered Output"); grid on

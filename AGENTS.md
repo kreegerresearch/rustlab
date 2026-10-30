@@ -1304,12 +1304,12 @@ primary     = NUMBER | STRING | IDENT
 | `sqrt` | `sqrt(x)` | Square root (element-wise) |
 | `exp` | `exp(x)` | e^x (element-wise) |
 | `log` | `log(x)` | Natural log (element-wise) |
-| `zeros` | `zeros(n)` / `zeros(n, m)` | Complex zero vector of length n, or n×m zero matrix |
-| `ones` | `ones(n)` / `ones(n, m)` | Complex ones vector of length n, or n×m ones matrix |
+| `zeros` | `zeros(n)` / `zeros(m, n)` / `zeros(1, n)` | n×n zero matrix, or m×n. A row is `zeros(1, n)` and stays a matrix. `zeros(n, "int32")` is n×n |
+| `ones` | `ones(n)` / `ones(m, n)` / `ones(1, n)` | Same shapes as `zeros`, filled with ones |
 | `linspace` | `linspace(start, stop, n)` | Real vector of n points |
-| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randi` | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Integer scalar or vector drawn uniformly |
+| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar, n×n, or m×n. A row is `rand(1, n)` |
+| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar, n×n, or m×n. A row is `randn(1, n)` |
+| `randi` | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Integer scalar, n×n, or m×n. A row is `randi(imax, 1, n)` |
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
 | `len` | `len(v)` | Number of elements |

@@ -28,7 +28,7 @@ The block below is hidden — it sets up a noisy sinusoid:
 seed(42)
 N = 200;
 t = linspace(0, 2, N);
-x = sin(2*pi*3*t) + 0.3*randn(N);
+x = sin(2*pi*3*t) + 0.3*randn(1, N);
 ```
 
 The signal `x` and its time axis `t` are now in scope. The hidden block
