@@ -593,6 +593,18 @@ impl Value {
         (exp * ln_base).exp()
     }
 
+    fn sparse_matrix_dense(sm: &rustlab_core::SparseMat) -> Result<Value, String> {
+        sm.to_dense()
+            .map(|m| Value::Matrix(m.into()))
+            .map_err(|_| rustlab_core::variable_too_large("to_dense", &[sm.rows, sm.cols]))
+    }
+
+    fn sparse_vector_dense(sv: &rustlab_core::SparseVec) -> Result<Value, String> {
+        sv.to_dense()
+            .map(|v| Value::Vector(v.into()))
+            .map_err(|_| rustlab_core::variable_too_large("to_dense", &[sv.len]))
+    }
+
     /// Octave/matlab implicit expansion: broadcast two matrices to a common
     /// shape. Each dimension must be equal between the two, or one of them
     /// must be 1 (the singleton dimension is repeated to fill the other).
@@ -623,6 +635,10 @@ impl Value {
                 an, bn
             ));
         };
+        // Once per call, before either expanded buffer is allocated.
+        if rustlab_core::checked_elems(&[nrows, ncols], rustlab_core::ELEM_C64).is_err() {
+            return Err(rustlab_core::variable_too_large("broadcast", &[nrows, ncols]));
+        }
         let a_exp = if (am, an) == (nrows, ncols) {
             a.clone()
         } else {
@@ -1449,7 +1465,7 @@ impl Value {
                     }
                     _ => {
                         // Fall back to dense for complex indexing
-                        Value::Matrix(sm.to_dense().into()).index_2d(row_idx, col_idx)
+                        Self::sparse_matrix_dense(sm)?.index_2d(row_idx, col_idx)
                     }
                 }
             }
@@ -1753,6 +1769,9 @@ impl Value {
                 class,
                 overflow,
             } => {
+                // Release builds keep the multiply. Debug builds refuse a
+                // wrapped product before that repeat expression runs.
+                debug_assert_eq!(rows.checked_mul(cols), Some(data.len()), "integer transpose size");
                 let mut nd = vec![0i128; rows * cols];
                 for r in 0..rows {
                     for c in 0..cols {
@@ -2166,7 +2185,10 @@ impl Value {
                                 a.nrows(), a.ncols(), b.nrows(), b.ncols()
                             ));
                     }
-                    Ok(Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()))
+                    let product = rustlab_core::matmul::matmul(&a.view(), &b.view()).map_err(|_| {
+                        rustlab_core::variable_too_large("*", &[a.nrows(), b.ncols()])
+                    })?;
+                    Ok(Value::Matrix(product.into()))
                 }
                 Add | Sub | ElemMul | ElemDiv => {
                     Self::elementwise_with_broadcast(a, b, op).map(|m| Value::Matrix(m.into()))
@@ -2194,6 +2216,9 @@ impl Value {
                         // Real inputs give a real result (no `0·Inf` NaN
                         // in the imaginary part), as for `.*`.
                         let (nrows, ncols) = (m.nrows(), v.len());
+                        if rustlab_core::checked_elems(&[nrows, ncols], rustlab_core::ELEM_C64).is_err() {
+                            return Err(rustlab_core::variable_too_large("*", &[nrows, ncols]));
+                        }
                         let real = Self::matrix_all_real(m) && Self::vector_all_real(v);
                         let mut data: Vec<C64> = Vec::with_capacity(nrows * ncols);
                         for r in 0..nrows {
@@ -2235,8 +2260,9 @@ impl Value {
                         // Row vector (1×n) * matrix (n×k) → row vector (1×k)
                         let k = m.ncols();
                         let row = v.view().insert_axis(ndarray::Axis(0));
-                        let result: CVector = rustlab_core::matmul::matmul(&row, &m.view())
-                            .index_axis_move(ndarray::Axis(0), 0);
+                        let product = rustlab_core::matmul::matmul(&row, &m.view())
+                            .map_err(|_| rustlab_core::variable_too_large("*", &[1, k]))?;
+                        let result: CVector = product.index_axis_move(ndarray::Axis(0), 0);
                         // Collapse 1×1 result to scalar (e.g. v * v' gives scalar)
                         if k == 1 {
                             let c = result[0];
@@ -2534,7 +2560,7 @@ impl Value {
                     Sub => Ok(Value::SparseMatrix(a.sub(&b).map_err(|e| e)?)),
                     _ => {
                         // Fall back to dense for other ops between two sparse matrices
-                        Self::binop(op, Value::Matrix(a.to_dense().into()), Value::Matrix(b.to_dense().into()))
+                        Self::binop(op, Self::sparse_matrix_dense(a)?, Self::sparse_matrix_dense(b)?)
                     }
                 }
             }
@@ -2542,59 +2568,59 @@ impl Value {
             // SparseMatrix * Scalar / Scalar * SparseMatrix
             (Value::SparseMatrix(sm), Value::Scalar(s)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(Complex::new(*s, 0.0)))),
-                Add => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
-                Sub => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+                Add => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
+                Sub => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
                 Div | ElemDiv => Ok(Value::SparseMatrix(sm.scale(Complex::new(1.0 / s, 0.0)))),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+                _ => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
             },
             (Value::Scalar(s), Value::SparseMatrix(sm)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(Complex::new(*s, 0.0)))),
-                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
+                _ => Self::binop(op, lhs, Self::sparse_matrix_dense(sm)?),
             },
             (Value::SparseMatrix(sm), Value::Complex(c)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(*c))),
                 Div | ElemDiv => Ok(Value::SparseMatrix(sm.scale(Complex::new(1.0, 0.0) / c))),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+                _ => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
             },
             (Value::Complex(c), Value::SparseMatrix(sm)) => match op {
                 Mul | ElemMul => Ok(Value::SparseMatrix(sm.scale(*c))),
-                _ => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
+                _ => Self::binop(op, lhs, Self::sparse_matrix_dense(sm)?),
             },
 
             // SparseMatrix * Matrix (SpMM)
             (Value::SparseMatrix(sm), Value::Matrix(ref b)) => match op {
                 Mul => Ok(Value::Matrix(sm.spmm(b).map_err(|e| e)?.into())),
-                _ => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
+                _ => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
             },
 
             // Matrix * SparseMatrix → dense fallback
             (Value::Matrix(_), Value::SparseMatrix(sm)) => {
-                Self::binop(op, lhs, Value::Matrix(sm.to_dense().into()))
+                Self::binop(op, lhs, Self::sparse_matrix_dense(sm)?)
             }
 
             // SparseVector + SparseVector, SparseVector - SparseVector
             (Value::SparseVector(a), Value::SparseVector(b)) => match op {
                 Add => Ok(Value::SparseVector(a.add(&b).map_err(|e| e)?)),
                 Sub => Ok(Value::SparseVector(a.sub(&b).map_err(|e| e)?)),
-                _ => Self::binop(op, Value::Vector(a.to_dense().into()), Value::Vector(b.to_dense().into())),
+                _ => Self::binop(op, Self::sparse_vector_dense(a)?, Self::sparse_vector_dense(b)?),
             },
 
             // SparseVector * Scalar / Scalar * SparseVector
             (Value::SparseVector(sv), Value::Scalar(s)) => match op {
                 Mul | ElemMul => Ok(Value::SparseVector(sv.scale(Complex::new(*s, 0.0)))),
                 Div | ElemDiv => Ok(Value::SparseVector(sv.scale(Complex::new(1.0 / s, 0.0)))),
-                _ => Self::binop(op, Value::Vector(sv.to_dense().into()), rhs),
+                _ => Self::binop(op, Self::sparse_vector_dense(sv)?, rhs),
             },
             (Value::Scalar(s), Value::SparseVector(sv)) => match op {
                 Mul | ElemMul => Ok(Value::SparseVector(sv.scale(Complex::new(*s, 0.0)))),
-                _ => Self::binop(op, lhs, Value::Vector(sv.to_dense().into())),
+                _ => Self::binop(op, lhs, Self::sparse_vector_dense(sv)?),
             },
 
             // Remaining sparse fallback: promote to dense
-            (Value::SparseVector(sv), _) => Self::binop(op, Value::Vector(sv.to_dense().into()), rhs),
-            (_, Value::SparseVector(sv)) => Self::binop(op, lhs, Value::Vector(sv.to_dense().into())),
-            (Value::SparseMatrix(sm), _) => Self::binop(op, Value::Matrix(sm.to_dense().into()), rhs),
-            (_, Value::SparseMatrix(sm)) => Self::binop(op, lhs, Value::Matrix(sm.to_dense().into())),
+            (Value::SparseVector(sv), _) => Self::binop(op, Self::sparse_vector_dense(sv)?, rhs),
+            (_, Value::SparseVector(sv)) => Self::binop(op, lhs, Self::sparse_vector_dense(sv)?),
+            (Value::SparseMatrix(sm), _) => Self::binop(op, Self::sparse_matrix_dense(sm)?, rhs),
+            (_, Value::SparseMatrix(sm)) => Self::binop(op, lhs, Self::sparse_matrix_dense(sm)?),
 
             (a, b) => Err(format!(
                 "unsupported operand types for {:?}: {} and {}",
@@ -2887,7 +2913,9 @@ impl Value {
             Value::Complex(c) => Ok(Array1::from_vec(vec![*c])),
             Value::Matrix(m) if m.ncols() == 1 => Ok(m.column(0).to_owned()),
             Value::Matrix(m) if m.nrows() == 1 => Ok(m.row(0).to_owned()),
-            Value::SparseVector(sv) => Ok(sv.to_dense()),
+            Value::SparseVector(sv) => sv.to_dense().map_err(|_| {
+                rustlab_core::variable_too_large("to_dense", &[sv.len])
+            }),
             other => Err(format!("expected vector, got {}", other.type_name())),
         }
     }
@@ -2902,13 +2930,21 @@ impl Value {
         }
     }
 
-    /// Convert to usize.
-    pub fn to_usize(&self) -> Result<usize, String> {
-        let n = self.to_scalar()?;
-        if n < 0.0 || n.fract() != 0.0 {
-            return Err(format!("expected non-negative integer, got {}", n));
+    /// A size or a count: finite, ≥ 0, integral, and strictly below `2^64`.
+    ///
+    /// Compare with `2^64` in `f64`. `usize::MAX as f64` is also `2^64`, so
+    /// `n > usize::MAX as f64` would accept `n == 2^64`, and `as usize`
+    /// would saturate to `usize::MAX`.
+    pub fn count_from_f64(n: f64) -> Result<usize, String> {
+        if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n >= rustlab_core::F64_TWO_POW_64 {
+            return Err(format!("expected non-negative integer, got {n}"));
         }
         Ok(n as usize)
+    }
+
+    /// Convert to usize. Same rules as [`Self::count_from_f64`].
+    pub fn to_usize(&self) -> Result<usize, String> {
+        Self::count_from_f64(self.to_scalar()?)
     }
 
     /// Convert to String.

@@ -567,6 +567,8 @@ zeros(size(A))   # → zero matrix matching A's dimensions
 ```
 `zeros(n, "int32")` (and the other integer class names) is an n×n integer array. `zeros(1, n, "int32")` is a row.
 
+A size must be a finite non-negative integer strictly below `2^64` (a size vector is not rounded). The array is refused, before any buffer is allocated, when the element count exceeds `2^48 − 1` or the stored byte length does not fit in `isize`. `ones`, `rand`, `randn`, `randi`, and `eye` use the same rule.
+
 ### `ones(n)` / `ones(m, n)` / `ones([m, n])`
 Same shapes as `zeros`. One size is n×n. A row is `ones(1, n)`.
 ```
@@ -950,6 +952,21 @@ Approximate stopband attenuation by window:
 Linear convolution. Output length = `len(x) + len(h) − 1`.
 ```
 y = convolve(signal, h)
+```
+
+### `xcorr(x)` / `xcorr(x, y [, maxlag] [, scale])` / `xcov(...)`
+Cross-correlation, with the zero lag in the middle. `xcov` subtracts the mean of each signal and then calls the same sums, so a constant input is all zeros.
+
+Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `lags` runs from `-maxlag` to `+maxlag`. When `maxlag` is omitted, `N` is the longer length and the result has length `2N−1`. The shorter input is treated as zero-padded at the end. `[r, lags] = xcorr(...)` returns that lag axis in the same orientation as `r`.
+
+`scale` is `"none"` (raw sums, the default), `"biased"` (divide by `N`), `"unbiased"` (divide by `N−|m|`; a non-positive denominator is `NaN`), or `"normalized"` / `"coeff"` (divide by `sqrt` of the two zero-lag energies, so an autocorrelation is 1 at lag 0).
+
+A vector stays a row. An n×1 matrix returns an `(2N−1)×1` column. A matrix with several columns is one signal per column. The result has one column per pair: column `(i−1)·n+j` is the correlation of column `i` with column `j`.
+```
+r = xcorr([1, 2, 3, 4])          # [4, 11, 20, 30, 20, 11, 4]
+[r, lags] = xcorr([1, 2, 3, 4])  # lags = -3:3, zero lag at r(4)
+c = xcorr([1; 2; 3; 4])          # 7×1 column
+z = xcov([5, 5, 5, 5])           # zeros
 ```
 
 ### `upfirdn(x, h, p, q)`
@@ -1619,7 +1636,7 @@ polyval([1, -3, 2], [1, 2])   # [0, 0]
 ```
 
 ### `interp1(x, y, xi [, method [, "extrap" or fill]])`
-One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
+One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `Inf` is outside that interval. A `NaN` query stays `NaN` and is not replaced by the fill. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
 
 `"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them. `"pchip"` is the Fritsch–Carlson cubic Hermite interpolant. `"makima"` is modified Akima. Both pass through the nodes. Slopes are computed once per call.
 
@@ -1987,7 +2004,7 @@ Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factor
 
 A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
 
-A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
+A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 1×1 matrix (`chol(4)` is `2`). `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. A diagonal entry that is not real fails that pivot. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
@@ -2105,7 +2122,7 @@ Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`,
 ```
 # Parallel plates at ±5 V on an ny×nx grid:
 A = laplacian_2d(nx, ny);
-b = zeros(nx*ny);
+b = zeros(nx*ny, 1);
 [A, b] = pin_dirichlet(A, b, top_plate, 5.0);
 [A, b] = pin_dirichlet(A, b, bot_plate, -5.0);
 V = reshape(spsolve(A, b), ny, nx);

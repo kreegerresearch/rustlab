@@ -3,84 +3,10 @@
 //! Each case is a closed form, a small integer identity, or a MATLAB/Octave
 //! convention called out in the assertion. Reference vectors are literals.
 
+use crate::eval::shared::{conversion_counts, real_storage, Shared};
 use crate::eval::value::Value;
-use crate::{lexer, parser, Evaluator};
+use crate::testutil::{assert_c, assert_re, eval, eval_err, mat, num, re, vec_c};
 use num_complex::Complex64;
-
-fn eval(src: &str) -> Evaluator {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        ev.exec_stmt(stmt).unwrap();
-    }
-    ev
-}
-
-fn eval_err(src: &str) -> String {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        if let Err(e) = ev.exec_stmt(stmt) {
-            return e.to_string();
-        }
-    }
-    panic!("expected an error from: {src}");
-}
-
-fn num(ev: &Evaluator, name: &str) -> Complex64 {
-    match ev.get(name).unwrap() {
-        Value::Scalar(x) => Complex64::new(*x, 0.0),
-        Value::Complex(c) => *c,
-        Value::Vector(v) if v.len() == 1 => v[0],
-        Value::Matrix(m) if m.nrows() == 1 && m.ncols() == 1 => m[[0, 0]],
-        other => panic!("{name}: expected a scalar, got {other:?}"),
-    }
-}
-
-fn re(ev: &Evaluator, name: &str) -> f64 {
-    let z = num(ev, name);
-    assert!(z.im.abs() < 1e-9, "{name} imag {}", z.im);
-    z.re
-}
-
-fn vec_c(ev: &Evaluator, name: &str) -> Vec<Complex64> {
-    match ev.get(name).unwrap() {
-        Value::Vector(v) => v.iter().copied().collect(),
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => m.iter().copied().collect(),
-        other => panic!("{name}: expected a vector, got {other:?}"),
-    }
-}
-
-fn mat(ev: &Evaluator, name: &str) -> Vec<Vec<Complex64>> {
-    match ev.get(name).unwrap() {
-        Value::Matrix(m) => (0..m.nrows())
-            .map(|r| (0..m.ncols()).map(|c| m[[r, c]]).collect())
-            .collect(),
-        other => panic!("{name}: expected a matrix, got {other:?}"),
-    }
-}
-
-fn assert_c(got: Complex64, want: Complex64, tol: f64) {
-    let d = (got - want).norm();
-    assert!(d <= tol, "got {got}, want {want}, |diff| {d:e}");
-}
-
-fn assert_re(ev: &Evaluator, name: &str, want: f64, tol: f64) {
-    let g = re(ev, name);
-    assert!((g - want).abs() <= tol, "{name} = {g}, want {want}");
-}
 
 // ── inv, det, linsolve ──────────────────────────────────────────────────────
 
@@ -741,6 +667,96 @@ fn sort_order_and_indices() {
     assert!(infs[0].re.is_infinite() && infs[0].re.is_sign_negative());
     assert!((infs[1].re - 1.0).abs() < 1e-15);
     assert!(infs[2].re.is_infinite() && infs[2].re.is_sign_positive());
+}
+
+#[test]
+fn xcorr_hand_sum_lags_scale_and_column() {
+    // Positive lag m is sum_n x[n+m] conj(y[n]). Lags -3..3, zero lag at
+    // index 4. y = [1+j, 2], so the products use conj(y).
+    let r = vec_c(
+        &eval("r = xcorr([1, 2, 3, 4], [1+j, 2])"),
+        "r",
+    );
+    let want = [
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (5.0, -1.0),
+        (8.0, -2.0),
+        (11.0, -3.0),
+        (4.0, -4.0),
+    ];
+    assert_eq!(r.len(), 7);
+    for (g, (re, im)) in r.iter().zip(want) {
+        assert_c(*g, Complex64::new(re, im), 1e-9);
+    }
+    let ev = eval("[r, lags] = xcorr([1, 2, 3, 4])\nb = xcorr([1, 2, 3, 4], \"biased\")\nc = xcorr([1, 2, 3, 4], \"coeff\")");
+    let lags = vec_c(&ev, "lags");
+    for (k, lag) in lags.iter().enumerate() {
+        assert_c(*lag, Complex64::new(k as f64 - 3.0, 0.0), 0.0);
+    }
+    let auto = vec_c(&ev, "r");
+    assert_c(auto[3], Complex64::new(30.0, 0.0), 1e-12);
+    let biased = vec_c(&ev, "b");
+    assert_c(biased[3], Complex64::new(30.0 / 4.0, 0.0), 1e-12);
+    let coeff = vec_c(&ev, "c");
+    assert_c(coeff[3], Complex64::new(1.0, 0.0), 1e-12);
+
+    let ev = eval("x = [1; 2; 3; 4];\n[r, lags] = xcorr(x);\nsr = size(r);\nsl = size(lags);");
+    let sr = vec_c(&ev, "sr");
+    let sl = vec_c(&ev, "sl");
+    assert_c(sr[0], Complex64::new(7.0, 0.0), 0.0);
+    assert_c(sr[1], Complex64::new(1.0, 0.0), 0.0);
+    assert_c(sl[0], Complex64::new(7.0, 0.0), 0.0);
+    assert_c(sl[1], Complex64::new(1.0, 0.0), 0.0);
+    let col = vec_c(&ev, "r");
+    assert_c(col[3], Complex64::new(30.0, 0.0), 1e-12);
+
+    let z = vec_c(&eval("z = xcov([5, 5, 5, 5])"), "z");
+    assert!(z.iter().all(|c| c.norm() < 1e-12));
+    assert!(eval_err("r = xcorr([1, 2], \"nope\")").contains("scale"));
+    assert!(eval_err("[a, b, c] = xcorr([1, 2])").contains("at most"));
+
+    // Columns of [1, 3; 2, 4] are [1, 2] and [3, 4].
+    // Column (i-1)*2+j is the correlation of column i with column j.
+    let m = mat(&eval("M = xcorr([1, 3; 2, 4])"), "M");
+    assert_eq!(m.len(), 3);
+    assert_eq!(m[0].len(), 4);
+    let expect = [
+        [2.0, 4.0, 6.0, 12.0],
+        [5.0, 11.0, 11.0, 25.0],
+        [2.0, 6.0, 4.0, 12.0],
+    ];
+    for (row, exp) in m.iter().zip(expect) {
+        for (g, w) in row.iter().zip(exp) {
+            assert_c(*g, Complex64::new(w, 0.0), 1e-12);
+        }
+    }
+}
+
+#[test]
+fn xcorr_of_a_real_vector_does_not_widen() {
+    let (w0, p0) = conversion_counts();
+    // `ones(1, n)` is a real-stored row. A range literal is a complex buffer
+    // of real values, so it is not the case this gate is about. `ones(n)` is
+    // n×n, which would correlate every column pair.
+    let ev = eval("x = ones(1, 256);\nr = xcorr(x);\nc = ones(8, 1);\nd = xcorr(c);");
+    let (w1, p1) = conversion_counts();
+    assert_eq!(w1.calls, w0.calls, "widen calls");
+    assert_eq!(p1.calls, p0.calls, "promote calls");
+    if real_storage() {
+        match ev.get("r").unwrap() {
+            Value::Matrix(m) => {
+                assert_eq!(m.nrows(), 1, "a row stays a row");
+                assert!(Shared::is_real(m), "result left real storage");
+            }
+            other => panic!("expected a row, got {other:?}"),
+        }
+        match ev.get("d").unwrap() {
+            Value::Matrix(m) => assert!(Shared::is_real(m), "column result left real storage"),
+            other => panic!("expected a column, got {other:?}"),
+        }
+    }
 }
 
 /// Reference values for the 0.3.25 changes to `std` / `var` / `median` /
