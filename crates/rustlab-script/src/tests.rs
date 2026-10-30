@@ -21871,3 +21871,77 @@ mod angle_arrays {
         assert!(t.iter().all(|c| c.re == PI && c.im == 0.0));
     }
 }
+
+/// Oversized constructors must return an error and must not panic or allocate.
+/// A shape under `2^48 − 1` elements whose bytes fit in `isize` is legal, so
+/// `zeros(2^32, 1, "int8")` is not in this list: that call would allocate.
+#[cfg(test)]
+mod size_overflow_tests {
+    use crate::{lexer, parser, Evaluator};
+
+    fn eval_err(src: &str) -> String {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        match ev.run(&stmts) {
+            Ok(_) => panic!("expected an error for:\n{src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn eval_ok(src: &str) {
+        let src = format!("{src}\n");
+        let tokens = lexer::tokenize(&src).unwrap();
+        let stmts = parser::parse(tokens).unwrap();
+        let mut ev = Evaluator::new();
+        ev.run(&stmts).unwrap_or_else(|e| panic!("{src}\n{e}"));
+    }
+
+    fn assert_too_big(src: &str) {
+        let msg = eval_err(src);
+        assert!(
+            msg.contains("exceeds the maximum possible variable size"),
+            "{src}\n{msg}"
+        );
+    }
+
+    #[test]
+    fn oversized_constructors_return_the_size_error() {
+        for src in [
+            "zeros(2^32, 'int8')",
+            "zeros(2^32, 2^32)",
+            "ones(2^32)",
+            "rand(2^32)",
+            "randn(2^32)",
+            "eye(2^32)",
+            "randi(6, 2^32)",
+            "reshape(zeros(1, 0), 2^32, 2^32)",
+            // 2^48 elements is one past the element cap, so this does not allocate.
+            "linspace(0, 1, 2^48)",
+            "diag([1, 2], 2^62)",
+        ] {
+            assert_too_big(src);
+        }
+    }
+
+    #[test]
+    fn infinite_size_vector_is_rejected() {
+        let msg = eval_err("zeros([Inf, 1])");
+        assert!(msg.contains("non-negative integer"), "Inf is not a size\n{msg}");
+    }
+
+    #[test]
+    fn size_vector_is_not_rounded() {
+        let msg = eval_err("zeros([1.5, 2])");
+        assert!(msg.contains("non-negative integer"), "{msg}");
+        eval_ok("A = zeros([2, 3]); B = zeros(2, 3); C = ones(1, 4, 'int8')");
+    }
+
+    #[test]
+    fn magnitude_at_2_pow_64_is_not_a_usize() {
+        let msg = eval_err("zeros(2^64)");
+        assert!(msg.contains("non-negative integer"), "{msg}");
+        assert_too_big("zeros(2^63, 1)");
+    }
+}

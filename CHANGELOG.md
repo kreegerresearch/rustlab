@@ -6,6 +6,13 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.35
+
+### Breaking / behavior changes
+- **An array that cannot exist is an error, not a panic or a wrapped empty buffer.** `zeros(2^32, "int8")` used to square the size and multiply with a wrapping `usize` product: debug builds panicked, and release builds allocated nothing and then panicked on print. `zeros`, `ones`, `rand`, `randn`, `randi`, `eye`, and the other constructors now refuse that request before allocating. The same check covers `diag`, `reshape`, `repmat`, `kron`, `outer`, `meshgrid`, `cat` along pages, `sprand`, `full` / sparse `to_dense`, `linspace`, `window`, `fft` / `ifft` (including the Bluestein length `next_power_of_two(2n−1)`), `upfirdn`, `convolve`, `laplacian_2d`, an NPY shape before the payload is read, matrix-product and broadcast result buffers, and a plot RGBA byte product.
+- **A size must be a finite integral value strictly below `2^64`.** `zeros([Inf, 1])` used to become a `usize::MAX` dimension because the `[m, n]` form rounded and cast. It is now an error, and a non-integer size vector is not rounded. `n >= 2^64` (compared in `f64`) is rejected; `as usize` no longer saturates a too-large size to `usize::MAX`.
+- The element cap is MATLAB's `2^48 − 1`. The byte length must also fit in `isize` (the product is a checked multiply, so a wrapped `usize` count is an error). The message is `<fn>: requested AxB array exceeds the maximum possible variable size`.
+
 ## 0.3.34
 
 ### Fixed

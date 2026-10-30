@@ -1,7 +1,7 @@
 use crate::error::DspError;
 use ndarray::Array1;
 use num_complex::Complex;
-use rustlab_core::CVector;
+use rustlab_core::{checked_elems, variable_too_large, CVector, ELEM_C64};
 
 /// Upsample by `p`, apply FIR filter `h`, then downsample by `q`.
 ///
@@ -59,7 +59,15 @@ pub fn upfirdn(x: &CVector, h: &[f64], p: usize, q: usize) -> Result<CVector, Ds
 
     // Output length (full linear-convolution result, then decimated)
     // n_out = floor(((n_x - 1)*p + n_h - 1) / q) + 1
-    let n_out = ((n_x - 1) * p + n_h - 1) / q + 1;
+    let n_out = (n_x - 1)
+        .checked_mul(p)
+        .and_then(|t| t.checked_add(n_h - 1))
+        .map(|t| t / q + 1)
+        .ok_or_else(|| {
+            DspError::InvalidParameter(variable_too_large("upfirdn", &[n_x, p, n_h, q]))
+        })?;
+    checked_elems(&[n_out], ELEM_C64)
+        .map_err(|_| DspError::InvalidParameter(variable_too_large("upfirdn", &[n_out])))?;
 
     let mut y: CVector = Array1::zeros(n_out);
 

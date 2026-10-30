@@ -1,7 +1,13 @@
 use crate::fft::{fft_raw, ifft_raw};
 use ndarray::Array1;
 use num_complex::Complex;
-use rustlab_core::{CVector, CoreError, C64};
+use rustlab_core::{checked_elems, variable_too_large, CVector, CoreError, C64, ELEM_C64};
+
+fn len_ok(name: &str, n: usize) -> Result<(), CoreError> {
+    checked_elems(&[n], ELEM_C64)
+        .map(|_| ())
+        .map_err(|_| CoreError::InvalidParameter(variable_too_large(name, &[n])))
+}
 
 /// Compute the linear convolution of two complex signals using a direct O(n·m) algorithm.
 ///
@@ -25,7 +31,11 @@ pub fn convolve(x: &CVector, h: &CVector) -> Result<CVector, CoreError> {
         return Ok(Array1::zeros(0));
     }
 
-    let out_len = nx + nh - 1;
+    let out_len = nx
+        .checked_add(nh)
+        .and_then(|s| s.checked_sub(1))
+        .ok_or_else(|| CoreError::InvalidParameter(variable_too_large("convolve", &[nx, nh])))?;
+    len_ok("convolve", out_len)?;
     let mut output: CVector = Array1::zeros(out_len);
 
     for n in 0..out_len {
@@ -71,7 +81,14 @@ pub fn overlap_add(x: &CVector, h: &CVector, block_size: usize) -> Result<CVecto
     }
 
     // FFT size must be at least block_size + nh - 1
-    let fft_size = next_power_of_two(block_size + nh - 1);
+    let need = block_size
+        .checked_add(nh)
+        .and_then(|s| s.checked_sub(1))
+        .ok_or_else(|| {
+            CoreError::InvalidParameter(variable_too_large("overlap_add", &[block_size, nh]))
+        })?;
+    let fft_size = next_power_of_two(need);
+    len_ok("overlap_add", fft_size)?;
 
     // Pad h to fft_size and compute its FFT
     let h_padded: Vec<C64> = h
@@ -82,7 +99,11 @@ pub fn overlap_add(x: &CVector, h: &CVector, block_size: usize) -> Result<CVecto
         .collect();
     let h_freq = fft_raw(&h_padded);
 
-    let out_len = nx + nh - 1;
+    let out_len = nx
+        .checked_add(nh)
+        .and_then(|s| s.checked_sub(1))
+        .ok_or_else(|| CoreError::InvalidParameter(variable_too_large("overlap_add", &[nx, nh])))?;
+    len_ok("overlap_add", out_len)?;
     let mut output: Vec<C64> = vec![Complex::new(0.0, 0.0); out_len];
 
     // Process each block; the zero-padded block and frequency-product
