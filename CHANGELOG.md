@@ -6,6 +6,17 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.39
+
+### Breaking / behavior changes
+- **`std(Inf)` and `var(Inf)` are NaN.** A finite scalar is still 0 (`std(7)`). A length-1 `Inf`, and the one-observation axis of a row (`std([1, Inf, 3], 0, 1)`), are NaN in that position. Previously a single `Inf` was 0.
+- **`sort` treats `-0` and `+0` as equal.** A stable sort keeps input order and the sign bit, ascending and descending. Previously `-0` sorted before `+0`.
+- **`xcorr([])` is an empty row.** It no longer errors. A `0×N` matrix returns a `0×N²` matrix. A second sequence that is empty against a non-empty one still errors.
+- **Matrix `xcorr` accepts only scale `"none"`.** `"biased"`, `"unbiased"`, `"normalized"`, and `"coeff"` error when the input has several columns. A vector or a single column still takes every scale.
+
+### Fixed
+- **`[L, U, p] = lu(A, "vector")` is a 1×n row.** `size(p)` is `[1, n]`, matching MATLAB's `whos` line (`1×1000`). `A(p, :) = L*U` is unchanged.
+
 ## 0.3.34
 
 ### Fixed

@@ -8,7 +8,8 @@
 //!
 //! Variance matches the three weights: `0` divides by `n−1`, `1`
 //! divides by `n`, and a weight vector divides by the sum of the weights.
-//! An empty slice is NaN. A single observation is 0.
+//! An empty slice is NaN. One finite observation is 0. A single `Inf`
+//! or `NaN` is NaN, which is what `std(Inf)` and `var(Inf)` return.
 
 use rustlab_core::C64;
 
@@ -16,7 +17,7 @@ use crate::error::ScriptError;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Weight {
-    /// Divide by `n − 1`. One observation is 0.
+    /// Divide by `n − 1`. One finite observation is 0.
     Sample,
     /// Divide by `n`.
     Population,
@@ -44,7 +45,15 @@ fn cmp_ascend(a: C64, b: C64, by_magnitude: bool) -> std::cmp::Ordering {
             std::cmp::Ordering::Equal => a.arg().total_cmp(&b.arg()),
             other => other,
         },
-        (false, false) => a.re.total_cmp(&b.re),
+        // `-0` and `+0` compare equal (`==`), so the stable index
+        // tie-break keeps input order. `total_cmp` would put `-0` first.
+        (false, false) => {
+            if a.re == b.re {
+                std::cmp::Ordering::Equal
+            } else {
+                a.re.total_cmp(&b.re)
+            }
+        }
     }
 }
 
@@ -81,7 +90,7 @@ pub(crate) fn variance_f64(name: &str, vals: &[f64], weight: &Weight) -> Result<
     match weight {
         Weight::Sample | Weight::Population => {
             if n == 1 {
-                return Ok(0.0);
+                return Ok(if vals[0].is_finite() { 0.0 } else { f64::NAN });
             }
             let nf = n as f64;
             let mean = vals.iter().sum::<f64>() / nf;
@@ -152,7 +161,14 @@ fn cmp_real(a: f64, b: f64) -> std::cmp::Ordering {
         (true, true) => std::cmp::Ordering::Equal,
         (true, false) => std::cmp::Ordering::Greater,
         (false, true) => std::cmp::Ordering::Less,
-        (false, false) => a.total_cmp(&b),
+        // Same signed-zero rule as [`cmp_ascend`]: `-0 == +0`.
+        (false, false) => {
+            if a == b {
+                std::cmp::Ordering::Equal
+            } else {
+                a.total_cmp(&b)
+            }
+        }
     }
 }
 
@@ -199,12 +215,15 @@ fn directed_cmp(a: f64, b: f64, descending: bool) -> std::cmp::Ordering {
 
 /// Integer rank with the same order as [`cmp_real`]: every NaN is above
 /// `+Inf` and ties with every other NaN. The sign-bit transform orders
-/// finite values and infinities, and keeps `-0` below `+0`.
+/// finite values and infinities. `-0` and `+0` share one key so a stable
+/// pass keeps input order instead of sorting on the sign bit.
 fn rank_key(x: f64, descending: bool) -> u64 {
     if x.is_nan() {
         return if descending { 0 } else { u64::MAX };
     }
     let bits = x.to_bits();
+    // Both signed zeros have a zero magnitude. Collapse them onto `+0`.
+    let bits = if bits << 1 == 0 { 0 } else { bits };
     let ordered = if bits >> 63 == 0 {
         bits | (1u64 << 63)
     } else {
@@ -281,7 +300,8 @@ fn radix_sort_usize(idx: &mut [usize], keys: &mut [u64]) {
 }
 
 /// Sample, population, or weighted variance. Empty input and a non-finite
-/// weight sum are NaN. One unweighted observation is 0.
+/// weight sum are NaN. One finite unweighted observation is 0. One `Inf`
+/// is NaN.
 pub(crate) fn variance(name: &str, vals: &[C64], weight: &Weight) -> Result<f64, ScriptError> {
     let n = vals.len();
     if n == 0 {
@@ -293,7 +313,12 @@ pub(crate) fn variance(name: &str, vals: &[C64], weight: &Weight) -> Result<f64,
     match weight {
         Weight::Sample | Weight::Population => {
             if n == 1 {
-                return Ok(0.0);
+                let z = vals[0];
+                return Ok(if z.re.is_finite() && z.im.is_finite() {
+                    0.0
+                } else {
+                    f64::NAN
+                });
             }
             let nf = n as f64;
             let mean = vals.iter().copied().sum::<C64>() / nf;
@@ -515,6 +540,48 @@ mod tests {
         let (desc, _) = sort_real(&v, true);
         assert!(desc[0].is_nan());
         assert!(desc[1].is_infinite() && desc[1].is_sign_positive());
+    }
+
+    /// `-0` and `+0` are one key. A stable sort keeps the input order and
+    /// the sign bit, including on the radix path (64 elements and up).
+    #[test]
+    fn sort_real_treats_signed_zero_as_a_tie() {
+        let short = [0.0, -0.0, 0.0, -0.0];
+        let (sorted, idx) = sort_real(&short, false);
+        assert_eq!(idx, vec![0, 1, 2, 3]);
+        assert!(sorted[0].is_sign_positive());
+        assert!(sorted[1].is_sign_negative());
+        let (desc, didx) = sort_real(&short, true);
+        assert_eq!(didx, vec![0, 1, 2, 3]);
+        assert_eq!(desc[1].to_bits(), (-0.0f64).to_bits());
+        let mut long = vec![1.0; 80];
+        for (i, x) in long.iter_mut().enumerate() {
+            *x = if i % 2 == 0 { 0.0 } else { -0.0 };
+        }
+        let (sorted, idx) = sort_real(&long, false);
+        assert_eq!(idx, (0..80).collect::<Vec<_>>());
+        for (i, x) in sorted.iter().enumerate() {
+            assert_eq!(x.to_bits(), long[i].to_bits());
+        }
+        let values = sort_real_values(&long, false);
+        for (a, b) in values.iter().zip(sorted.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+        let z = [C64::new(0.0, 0.0), C64::new(-0.0, 0.0)];
+        let (sorted, idx) = sort_indexed(&z, false);
+        assert_eq!(idx, vec![0, 1]);
+        assert_eq!(sorted[1].re.to_bits(), (-0.0f64).to_bits());
+    }
+
+    #[test]
+    fn variance_of_one_infinity_is_nan() {
+        assert!(variance_f64("std", &[f64::INFINITY], &Weight::Sample)
+            .unwrap()
+            .is_nan());
+        assert!(variance("var", &[C64::new(f64::INFINITY, 0.0)], &Weight::Population)
+            .unwrap()
+            .is_nan());
+        assert_eq!(variance_f64("std", &[4.0], &Weight::Sample).unwrap(), 0.0);
     }
 
     /// Release timings for the phase-1 gates. Not part of `cargo test`.

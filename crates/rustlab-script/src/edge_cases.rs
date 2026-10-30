@@ -124,8 +124,30 @@ fn stats_shapes_and_published_values() {
         ("m = median([1, 3, 2, 100]);", "m", 2.5, 0.0),
         ("v = var([1, 2, 3, 4], 1);", "v", 1.25, 1e-12),
         ("s = std(7);", "s", 0.0, 0.0),
-        ("s = std([Inf]);", "s", 0.0, 0.0),
+        ("s = std([4]);", "s", 0.0, 0.0),
+        ("v = var(4);", "v", 0.0, 0.0),
     ]);
+    // MATLAB: a finite scalar is 0, and Inf is NaN (the mean is not finite).
+    for src in [
+        "s = std(Inf);",
+        "s = std(-Inf);",
+        "s = std([Inf]);",
+        "v = var(Inf);",
+        "v = var([Inf]);",
+        "v = var(-Inf, 1);",
+    ] {
+        let name = if src.starts_with("v ") { "v" } else { "s" };
+        real_nan(&eval(src), name);
+    }
+    // Dim 1 of a row is one observation per column. Inf is NaN; a finite
+    // sample stays 0.
+    let row = vec_re(&eval("s = std([1, Inf, 3], 0, 1);"), "s");
+    assert_eq!(row[0], 0.0);
+    assert!(row[1].is_nan());
+    assert_eq!(row[2], 0.0);
+    let row_v = vec_re(&eval("v = var([1, Inf, 3], 0, 1);"), "v");
+    assert!(row_v[1].is_nan());
+    assert_eq!(row_v[0], 0.0);
     // std([1, 2, 3, 4], 1): mean 2.5, population variance
     // ((1.5²+0.5²+0.5²+1.5²)/4) = (2.25+0.25+0.25+2.25)/4 = 5/4 = 1.25.
     let ev = eval("m = median([1, NaN]);");
@@ -173,6 +195,28 @@ fn sort_edges_keep_order_and_rank_nonfinite() {
     assert_eq!(vec_re(&ev, "c"), vec![1.0, 2.0, 3.0]);
     assert_eq!(vec_re(&ev, "u"), vec![3.0, 1.0, 2.0]);
     assert!(vec_re(&ev, "j").iter().all(|v| *v == 1.0));
+    // MATLAB treats -0 and +0 as equal. A stable sort keeps input order
+    // and the sign bit, ascending and descending, for a row and a column.
+    let ev = eval(
+        "[s, i] = sort([0, -0]);
+         q = 1 ./ s;
+         [d, id] = sort([0, -0], \"descend\");
+         qd = 1 ./ d;
+         [c, ic] = sort([0; -0]);
+         qc = 1 ./ c;",
+    );
+    assert_eq!(vec_re(&ev, "i"), vec![1.0, 2.0]);
+    assert_eq!(vec_re(&ev, "id"), vec![1.0, 2.0]);
+    assert_eq!(vec_re(&ev, "ic"), vec![1.0, 2.0]);
+    let q = vec_re(&ev, "q");
+    assert!(q[0].is_infinite() && q[0].is_sign_positive(), "{q:?}");
+    assert!(q[1].is_infinite() && q[1].is_sign_negative(), "{q:?}");
+    let qd = vec_re(&ev, "qd");
+    assert!(qd[0].is_infinite() && qd[0].is_sign_positive(), "{qd:?}");
+    assert!(qd[1].is_infinite() && qd[1].is_sign_negative(), "{qd:?}");
+    let qc = vec_re(&ev, "qc");
+    assert!(qc[0].is_infinite() && qc[0].is_sign_positive(), "{qc:?}");
+    assert!(qc[1].is_infinite() && qc[1].is_sign_negative(), "{qc:?}");
     check_err(&[("s = sort([1, 2], 3);", "dim")]);
 }
 
@@ -341,6 +385,19 @@ fn chol_and_lu_edges() {
     close(re(&ev, "L"), 1.0);
     close(re(&ev, "U"), 4.0);
     close(vec_re(&ev, "p")[0], 1.0);
+    // MATLAB's whos example is `p` as 1×n, a row. size of a vector is [1, n].
+    let wide = eval(
+        "A = [0, 1; 2, 0; 1, 1];
+         [L, U, p] = lu(A, \"vector\");
+         sp = size(p);
+         D = A(p, :) - L * U;",
+    );
+    assert_eq!(vec_re(&wide, "sp"), vec![1.0, 3.0]);
+    for row in mat_re(&wide, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
     for row in mat_re(&ev, "D") {
         for v in row {
             close(v, 0.0);
@@ -571,8 +628,39 @@ fn xcorr_unequal_lengths_maxlag_and_scales() {
     assert_eq!(matrix_dim(&ev, "r"), (3, 1));
     assert_eq!(matrix_dim(&ev, "lags"), (3, 1));
     assert_eq!(vec_re(&ev, "lags"), vec![-1.0, 0.0, 1.0]);
+    // MATLAB does not error on xcorr([]). An empty row has no lags, so
+    // both outputs are empty rows. A 0×N matrix is 0×N².
+    let ev = eval(
+        "[r, lags] = xcorr([]);
+         sr = size(r);
+         sl = size(lags);
+         M = xcorr(zeros(0, 2));
+         sm = size(M);
+         c = xcorr(zeros(0, 1));
+         sc = size(c);
+         row = xcorr(zeros(1, 0));
+         srow = size(row);",
+    );
+    assert_eq!(vec_re(&ev, "sr"), vec![1.0, 0.0]);
+    assert_eq!(vec_re(&ev, "sl"), vec![1.0, 0.0]);
+    assert!(vec_re(&ev, "r").is_empty());
+    assert_eq!(vec_re(&ev, "sm"), vec![0.0, 4.0]);
+    assert_eq!(vec_re(&ev, "sc"), vec![0.0, 1.0]);
+    assert_eq!(vec_re(&ev, "srow"), vec![1.0, 0.0]);
+    // A matrix with several columns takes only "none". A column is one signal.
+    let col = vec_re(&eval("b = xcorr([1; 2; 3], \"biased\");"), "b");
+    assert_eq!(col.len(), 5);
+    assert!((col[2] - 14.0 / 3.0).abs() < 1e-12, "{col:?}");
     check_err(&[
-        ("r = xcorr([]);", "empty"),
+        ("r = xcorr([1, 2; 3, 4], \"biased\");", "several columns"),
+        ("r = xcorr([1, 2; 3, 4], \"unbiased\");", "several columns"),
+        ("r = xcorr([1, 2; 3, 4], \"coeff\");", "several columns"),
+        (
+            "r = xcorr([1, 2; 3, 4], \"normalized\");",
+            "several columns",
+        ),
+        ("r = xcorr([1, 2; 3, 4], 1, \"biased\");", "several columns"),
+        ("r = xcorr([], [1, 2]);", "empty"),
         ("r = xcorr([1, 2], -1);", "non-negative"),
         ("r = xcorr([1, 2], 1.5);", "integer"),
         ("r = xcorr([1, 2], Inf);", "integer"),
