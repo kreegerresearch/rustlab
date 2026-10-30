@@ -286,6 +286,30 @@ mod tests {
     }
 
     #[test]
+    fn unequal_lengths_and_a_lag_past_the_end() {
+        // Hand sum. x = [1, 2, 3], y = [4, 5], lags −2..2.
+        let x = [1.0, 2.0, 3.0];
+        let y = [4.0, 5.0];
+        let want = [0.0, 5.0, 14.0, 23.0, 12.0];
+        let direct = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Direct);
+        assert_eq!(direct, want);
+        let fft = xcorr_f64(&x, &y, 2, XcorrScale::None, XcorrMethod::Fft);
+        for (i, (g, w)) in fft.iter().zip(want).enumerate() {
+            assert!((g - w).abs() < 1e-9, "fft lag index {i}: {g} vs {w}");
+        }
+        // maxlag 4 pads past N−1 = 2. |m| = N makes the unbiased divisor 0.
+        let wide = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Fft);
+        let direct = xcorr_f64(&x, &x, 4, XcorrScale::None, XcorrMethod::Direct);
+        assert_eq!(direct, vec![0.0, 0.0, 3.0, 8.0, 14.0, 8.0, 3.0, 0.0, 0.0]);
+        for (i, (a, b)) in wide.iter().zip(direct.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-9, "lag index {i}: {a} vs {b}");
+        }
+        let u = xcorr_f64(&x, &x, 3, XcorrScale::Unbiased, XcorrMethod::Fft);
+        assert!(u[0].is_nan() && u[6].is_nan());
+        assert!((u[1] - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn fft_matches_direct_at_length_256_including_unbiased_ends() {
         let x: Vec<f64> = (0..256).map(|k| ((k * 17) % 11) as f64 - 5.0).collect();
         let y: Vec<f64> = (0..256).map(|k| ((k * 3) % 7) as f64 - 2.0).collect();
