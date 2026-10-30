@@ -6,11 +6,30 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.35
+## 0.3.36
 
 ### Fixed
 - **`help plot_limits` documents the signature the builtin accepts.** The entry is `plot_limits(fig, panel, xlim, ylim)` with `[lo, hi]` vectors. A second help entry described a six-number form (`xmin, xmax, ymin, ymax`) that `plot_limits` rejects. That entry is gone. The vector form is unchanged.
 - **`llms.txt` no longer hard-codes a builtin count.** The count drifted from the registry. The live index is `rustlab docs --json`.
+
+## 0.3.35
+
+### Breaking / behavior changes
+- **An array that cannot exist is an error, not a panic or a wrapped empty buffer.** `zeros(2^32, "int8")` used to square the size and multiply with a wrapping `usize` product: debug builds panicked, and release builds allocated nothing and then panicked on print. `zeros`, `ones`, `rand`, `randn`, `randi`, `eye`, and the other constructors now refuse that request before allocating. The same check covers `diag`, `reshape`, `repmat`, `kron`, `outer`, `meshgrid`, `cat` along pages, `sprand`, `full` / sparse `to_dense`, `linspace`, `window`, `fft` / `ifft` (including the Bluestein length `next_power_of_two(2n−1)`), `upfirdn`, `convolve`, `laplacian_2d`, an NPY shape before the payload is read, matrix-product and broadcast result buffers, and a plot RGBA byte product.
+- **A size must be a finite integral value strictly below `2^64`.** `zeros([Inf, 1])` used to become a `usize::MAX` dimension because the `[m, n]` form rounded and cast. It is now an error, and a non-integer size vector is not rounded. `n >= 2^64` (compared in `f64`) is rejected; `as usize` no longer saturates a too-large size to `usize::MAX`.
+- The element cap is MATLAB's `2^48 − 1`. The byte length must also fit in `isize` (the product is a checked multiply, so a wrapped `usize` count is an error). The message is `<fn>: requested AxB array exceeds the maximum possible variable size`.
+
+## 0.3.34
+
+### Fixed
+- **`interp1` treats a non-finite query as a number.** A `NaN` query stays a real `NaN` when `y` is real, including when a fill value is set (the fill does not replace a missing query). `Inf` is outside `[min(x), max(x)]`: the default is `NaN`, a numeric fifth argument fills it, and `"extrap"` extends the end interval. Previously both came back as a complex `NaN` and ignored the fill and `"extrap"`.
+- **Dense `chol` rejects a diagonal that is not real.** That pivot is not positive. One output errors. `[R, p] = chol(A)` reports the 1-based pivot and returns the leading factor. Previously the real part was used, so `R' * R` did not restore `A`. A scalar is a 1×1 matrix, so `chol(4)` is `2`. It used to error.
+- **`interp1(..., "linear", "extrap")` of `±Inf` stays on the line.** A zero slope keeps the endpoint. A nonzero slope is `±Inf` with that sign. The old `y0*(1-b) + y1*b` form was `0*Inf` when an endpoint was 0.
+
+## 0.3.33
+
+### Added
+- **`xcorr` and `xcov`.** Cross-correlation with the zero lag in the middle. Positive lag `m` is `sum_n x(n+m) conj(y(n))`. `[r, lags] = xcorr(x, y, maxlag, scale)` returns lags from `-maxlag` to `+maxlag`. With `maxlag` omitted the result has length `2N−1`, `N` the longer input. `scale` is `"none"` (the default), `"biased"`, `"unbiased"`, or `"normalized"` / `"coeff"`. A vector stays a row and an n×1 matrix returns a column. A matrix with several columns correlates every column pair. `xcov` removes each signal's mean first. `convolve` is unchanged.
 
 ## 0.3.32
 

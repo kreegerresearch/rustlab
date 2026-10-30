@@ -121,9 +121,14 @@ pub(crate) fn binop(op: BinOp, l: Operand, r: Operand) -> Result<Value, String> 
         // Matrix product: same check and kernel as `binop`, without copying
         // the operands first. A dimension mismatch takes the fallback so the
         // error message is `binop`'s.
-        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => Ok(
-            Value::Matrix(rustlab_core::matmul::matmul(&a.view(), &b.view()).into()),
-        ),
+        (Value::Matrix(a), Value::Matrix(b)) if op == Mul && Shared::shape(a)[1] == Shared::shape(b)[0] => {
+            // Size check lives in `matmul` (once per call). The elementwise
+            // kernels above are unchanged.
+            let product = rustlab_core::matmul::matmul(&a.view(), &b.view()).map_err(|_| {
+                rustlab_core::variable_too_large("*", &[Shared::shape(a)[0], Shared::shape(b)[1]])
+            })?;
+            Ok(Value::Matrix(product.into()))
+        }
         _ => Value::binop(op, l.into_owned(), r.into_owned()),
     }
 }

@@ -5,89 +5,8 @@
 //! when a single numeric answer would not.
 
 use crate::eval::value::Value;
-use crate::{lexer, parser, Evaluator};
+use crate::testutil::{close, eval, eval_err, mat_re, re, shape, vec_re};
 use num_complex::Complex64;
-
-fn eval(src: &str) -> Evaluator {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        ev.exec_stmt(stmt).unwrap();
-    }
-    ev
-}
-
-fn eval_err(src: &str) -> String {
-    let src = if src.ends_with('\n') {
-        src.to_string()
-    } else {
-        format!("{src}\n")
-    };
-    let tokens = lexer::tokenize(&src).unwrap();
-    let stmts = parser::parse(tokens).unwrap();
-    let mut ev = Evaluator::new();
-    for stmt in &stmts {
-        if let Err(e) = ev.exec_stmt(stmt) {
-            return e.to_string();
-        }
-    }
-    panic!("expected an error from: {src}");
-}
-
-fn re(ev: &Evaluator, name: &str) -> f64 {
-    match ev.get(name).unwrap() {
-        Value::Scalar(x) => *x,
-        Value::Complex(z) => {
-            assert!(z.im.abs() < 1e-9, "{name} imag {}", z.im);
-            z.re
-        }
-        Value::Vector(v) if v.len() == 1 => {
-            assert!(v[0].im.abs() < 1e-9);
-            v[0].re
-        }
-        Value::Matrix(m) if m.len() == 1 => {
-            assert!(m[[0, 0]].im.abs() < 1e-9);
-            m[[0, 0]].re
-        }
-        other => panic!("{name}: expected a scalar, got {other:?}"),
-    }
-}
-
-fn vec_re(ev: &Evaluator, name: &str) -> Vec<f64> {
-    match ev.get(name).unwrap() {
-        Value::Vector(v) => v.iter().map(|z| z.re).collect(),
-        Value::Matrix(m) if m.nrows() == 1 || m.ncols() == 1 => m.iter().map(|z| z.re).collect(),
-        other => panic!("{name}: expected a vector, got {other:?}"),
-    }
-}
-
-fn mat_re(ev: &Evaluator, name: &str) -> Vec<Vec<f64>> {
-    match ev.get(name).unwrap() {
-        Value::Matrix(m) => (0..m.nrows())
-            .map(|i| (0..m.ncols()).map(|j| m[[i, j]].re).collect())
-            .collect(),
-        other => panic!("{name}: expected a matrix, got {other:?}"),
-    }
-}
-
-fn shape(ev: &Evaluator, name: &str) -> (usize, usize) {
-    match ev.get(name).unwrap() {
-        Value::Matrix(m) => m.dim(),
-        Value::Vector(v) => (1, v.len()),
-        Value::Scalar(_) | Value::Complex(_) => (1, 1),
-        other => panic!("{name}: no shape, got {other:?}"),
-    }
-}
-
-fn close(a: f64, b: f64) {
-    assert!((a - b).abs() < 1e-8, "{a} != {b}");
-}
 
 #[test]
 fn backslash_square_known_solution() {
@@ -626,6 +545,7 @@ fn triangular_backslash_is_exact() {
     close(x[1][0], 2.0);
 }
 
+#[test]
 fn lu_permutation_identity() {
     let ev = eval(
         "A = [1, 2; 3, 4];
@@ -793,6 +713,7 @@ fn interp1_pchip_slope_and_makima_and_fill() {
     close(re(&ev, "inside"), 0.5);
 }
 
+#[test]
 fn interp1_matrix_columns_and_nonmonotonic_error() {
     let ev = eval(
         "x = [0, 1, 2];

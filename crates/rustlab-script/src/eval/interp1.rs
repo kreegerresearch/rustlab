@@ -137,7 +137,8 @@ fn parse_method(v: &Value) -> Result<Method, ScriptError> {
 }
 
 fn strictly_increasing(x: &[f64]) -> bool {
-    x.windows(2).all(|w| w[1] > w[0] && w[0].is_finite() && w[1].is_finite())
+    x.windows(2)
+        .all(|w| w[1] > w[0] && w[0].is_finite() && w[1].is_finite())
 }
 
 fn reverse_rows(y: &Array2<C64>) -> Array2<C64> {
@@ -199,8 +200,16 @@ fn eval_one(
     outside: Outside,
     seconds: Option<&[C64]>,
 ) -> C64 {
-    if !xi.is_finite() {
-        return C64::new(f64::NAN, f64::NAN);
+    // A NaN query is missing, not a point outside the interval: a fill value
+    // does not replace it. Real data stays real (imaginary part 0). Inf falls
+    // through and is outside [min(x), max(x)].
+    if xi.is_nan() {
+        let im = if y.iter().any(|z| z.im != 0.0) {
+            f64::NAN
+        } else {
+            0.0
+        };
+        return C64::new(f64::NAN, im);
     }
     let n = x.len();
     let inside = bracket(x, xi);
@@ -218,7 +227,11 @@ fn eval_one(
                     let d0 = xi - x[i];
                     let d1 = x[i + 1] - xi;
                     // A tie goes to the sample with the larger x.
-                    if d0 < d1 { i } else { i + 1 }
+                    if d0 < d1 {
+                        i
+                    } else {
+                        i + 1
+                    }
                 }
                 None if xi < x[0] => 0,
                 None => n - 1,
@@ -252,7 +265,13 @@ fn eval_one(
             let h = x[i + 1] - x[i];
             let b = (xi - x[i]) / h;
             let a = 1.0 - b;
-            let mut s = y[i] * a + y[i + 1] * b;
+            // `y0*(1-b) + y1*b` is `0*Inf` when an endpoint is 0 and the
+            // query is infinite. The slope form stays on the line.
+            let mut s = if method == Method::Linear && !b.is_finite() {
+                linear_at_infinity(y[i], y[i + 1], b)
+            } else {
+                y[i] * a + y[i + 1] * b
+            };
             if method == Method::Spline {
                 let m = seconds.expect("spline seconds");
                 let a3 = a * a * a - a;
@@ -271,6 +290,25 @@ fn eval_one(
             let d = seconds.expect("hermite slopes");
             hermite(x, y, d, xi, i)
         }
+    }
+}
+
+/// Value of the line through `(y0, y1)` at an infinite fraction `b`.
+/// A zero slope stays at `y0`. A real slope follows `sign(slope*b)*Inf`.
+fn linear_at_infinity(y0: C64, y1: C64, b: f64) -> C64 {
+    let dy = y1 - y0;
+    if dy.re == 0.0 && dy.im == 0.0 {
+        return y0;
+    }
+    let sgn = if b.is_sign_positive() { 1.0 } else { -1.0 };
+    C64::new(signed_inf(dy.re, sgn), signed_inf(dy.im, sgn))
+}
+
+fn signed_inf(component: f64, sgn: f64) -> f64 {
+    if component == 0.0 {
+        0.0
+    } else {
+        component.signum() * sgn * f64::INFINITY
     }
 }
 
@@ -301,7 +339,12 @@ fn hermite_slopes(
         } else {
             slopes(x, &im)
         };
-        out.push(sr.into_iter().zip(si).map(|(r, i)| C64::new(r, i)).collect());
+        out.push(
+            sr.into_iter()
+                .zip(si)
+                .map(|(r, i)| C64::new(r, i))
+                .collect(),
+        );
     }
     Ok(out)
 }
@@ -512,9 +555,10 @@ fn pack_queries(xi_value: &Value, cols: &[Vec<C64>]) -> Result<Value, ScriptErro
     // Several columns of y: one row per query, one column per series.
     let nxi = cols[0].len();
     if real {
-        Ok(Value::real_matrix(Array2::from_shape_fn((nxi, p), |(i, j)| {
-            cols[j][i].re
-        })))
+        Ok(Value::real_matrix(Array2::from_shape_fn(
+            (nxi, p),
+            |(i, j)| cols[j][i].re,
+        )))
     } else {
         Ok(Value::Matrix(
             Array2::from_shape_fn((nxi, p), |(i, j)| cols[j][i]).into(),
