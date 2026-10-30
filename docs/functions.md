@@ -1643,11 +1643,15 @@ Ahat = U * diag(S) * V'          % every shape
 % non-square full form: Uf(:, 1:k) * diag(Sf) * Vf(:, 1:k)'
 ```
 
-### `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)`
-Householder QR, unpivoted. `[Q, R] = qr(A)` returns a full `Q` (`m×m`) and an `R` (`m×n`) with `A = Q R`. `Q` has orthonormal columns and the diagonal of `R` is real and non-negative. `qr(A, 0)`, `qr(A, "econ")`, and `qr(A, "economy")` return the economy factors: `Q` is `m×k` and `R` is `k×n`, with `k = min(m, n)`. One output is `R` only. Column pivoting is used by `\`, not by `qr`.
+### `qr(A)` / `[Q, R] = qr(A)` / `[Q, R, p] = qr(A)` / `qr(A, 0)`
+Householder QR. `[Q, R] = qr(A)` is unpivoted: a full `Q` (`m×m`) and an `R` (`m×n`) with `A = Q R`. `Q` has orthonormal columns and the diagonal of `R` is real and non-negative. `qr(A, 0)`, `qr(A, "econ")`, and `qr(A, "economy")` return the economy factors: `Q` is `m×k` and `R` is `k×n`, with `k = min(m, n)`. One output is `R` only.
+
+Three outputs column-pivot. `p` is a 1-based permutation vector of length `n`, and `A(:, p) = Q R`. A zero column moves to the end. `"vector"` is the same vector. `"matrix"` returns an `n×n` permutation matrix `P` with `A * P = Q R`. `qr(A, 0)` with three outputs is the economy factor and the vector `p`. `"vector"` and `"matrix"` are an error unless three outputs are requested. One and two outputs stay unpivoted.
 ```
 [Q, R] = qr([1, 1; 1, 2; 1, 3], 0)
-Q * R    % the original matrix
+Q * R                              % the original matrix
+[Q, R, p] = qr([1, 0, 2; 3, 0, 4; 5, 0, 6])
+A(:, p)                            % Q * R
 ```
 
 ### `null(A)`
