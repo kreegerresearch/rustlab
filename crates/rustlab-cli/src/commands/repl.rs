@@ -800,8 +800,6 @@ pub const HELP: &[HelpEntry] = &[
         detail: "ijk2k(i, j, kk, ny, nx)  — return 1-based flat index\n  k = ((kk-1)*nx + (j-1))*ny + i\n  Last two arguments are ny (rows), nx (cols) — same as Tensor3 / laplacian_3d.\n\nExample:\n  k = ijk2k(2, 3, 4, 5, 6)  → 102" },
     HelpEntry { name: "k2ijk", brief: "Column-major-of-pages 3-D flat index → (i, j, kk)",
         detail: "[i, j, kk] = k2ijk(k, ny, nx)  — inverse of ijk2k. 1-based.\n\nExample:\n  [i, j, kk] = k2ijk(102, 5, 6)  → i = 2, j = 3, kk = 4" },
-    HelpEntry { name: "plot_limits", brief: "Set axis limits for a live figure panel",
-        detail: "plot_limits(fig, panel, xmin, xmax, ymin, ymax)  — fix axes for one panel\n\nExample:\n  plot_limits(fig, 1, 0, 1000, -100, 0)" },
     // Integer types (dev/plans/integer_types.md)
     HelpEntry { name: "int8", brief: "Cast to 8-bit signed integer",
         detail: "int8(x [, \"saturate\"|\"wrap\"])  — range −128..127\n  Reals round half away from zero; out-of-range saturates (default) or\n  wraps. int8(200) → 127; int8(2.5) → 3; int8(200, \"wrap\") → -56." },
@@ -1641,7 +1639,127 @@ mod history_arg_tests {
 #[cfg(test)]
 mod help_coverage_tests {
     use super::*;
+    use rustlab_script::eval::BuiltinRegistry;
     use std::collections::HashSet;
+
+    /// HELP topics that are not `BuiltinRegistry` entries.
+    ///
+    /// The first group is callables the evaluator dispatches itself, ahead
+    /// of the registry. The rest are language keywords, constants, and REPL
+    /// topics. A new HELP name must be a registered builtin or added here.
+    const HELP_NOT_REGISTERED: &[&str] = &[
+        "Inf",
+        "NaN",
+        "arrayfun",
+        "cache",
+        "cd",
+        "chained_index",
+        "clf",
+        "clear",
+        "compound_assign",
+        "e",
+        "elseif",
+        "feval",
+        "for",
+        "format",
+        "function",
+        "fzero",
+        "history",
+        "i / j",
+        "if",
+        "index",
+        "index_assign",
+        "ls",
+        "parmap",
+        "pi",
+        "profile",
+        "profile_report",
+        "pwd",
+        "range",
+        "remote",
+        "rk4",
+        "run",
+        "rustlabrc",
+        "stdin",
+        "str_index",
+        "switch",
+        "underscores",
+        "viewer",
+        "widget",
+    ];
+
+    #[test]
+    fn help_names_are_unique() {
+        let mut seen = HashSet::new();
+        let mut dups = Vec::new();
+        for entry in HELP {
+            if !seen.insert(entry.name) {
+                dups.push(entry.name);
+            }
+        }
+        assert!(dups.is_empty(), "duplicate HELP names: {dups:?}");
+    }
+
+    #[test]
+    fn every_builtin_has_a_help_entry() {
+        let reg = BuiltinRegistry::with_defaults();
+        let help: HashSet<&str> = HELP.iter().map(|e| e.name).collect();
+        let mut missing: Vec<String> = reg
+            .all_names()
+            .into_iter()
+            .filter(|n| !help.contains(n.as_str()))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "registry names with no HELP entry: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn callable_help_is_registered_or_allowlisted() {
+        let reg = BuiltinRegistry::with_defaults();
+        let allow: HashSet<&str> = HELP_NOT_REGISTERED.iter().copied().collect();
+        assert_eq!(
+            allow.len(),
+            HELP_NOT_REGISTERED.len(),
+            "HELP_NOT_REGISTERED contains duplicates"
+        );
+
+        let mut stale = Vec::new();
+        let mut registered = Vec::new();
+        for name in HELP_NOT_REGISTERED {
+            if !HELP.iter().any(|e| e.name == *name) {
+                stale.push(*name);
+            }
+            if reg.contains(name) {
+                registered.push(*name);
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "allowlist names with no HELP entry: {stale:?}"
+        );
+        assert!(
+            registered.is_empty(),
+            "allowlist names that are registered builtins (drop them from HELP_NOT_REGISTERED): {registered:?}"
+        );
+
+        let mut stray = Vec::new();
+        for entry in HELP {
+            if !reg.contains(entry.name) && !allow.contains(entry.name) {
+                stray.push(entry.name);
+            }
+        }
+        stray.sort();
+        stray.dedup();
+        assert!(
+            stray.is_empty(),
+            "HELP names neither registered nor on HELP_NOT_REGISTERED \
+             (arrayfun, feval, fzero, parmap, profile, profile_report, rk4, widget, \
+             plus language keywords): {stray:?}"
+        );
+    }
 
     /// Every entry in `HELP` must appear in exactly one `CategoryRow`. Catches
     /// drift when new builtins are added without a category, and detects

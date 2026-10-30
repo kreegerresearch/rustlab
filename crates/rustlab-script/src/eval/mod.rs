@@ -4646,8 +4646,18 @@ const IMPURE_BUILTINS: &[&str] = &[
     "title",
     "xlabel",
     "ylabel",
-    "zlabel",
 ];
+
+/// Names on the parmap denylist that [`builtins::BuiltinRegistry`] does not
+/// contain.
+///
+/// `clf` is the bare statement `clf`, dispatched before the registry, and
+/// `clf()` inside a parallel lambda is still refused. `zlabel` used to be
+/// listed here and was removed: it is not a builtin, so the check never
+/// applied to a real call. This slice is separate from
+/// `crate::purity::IMPURE_RESERVED` (the cache denylist).
+#[cfg(test)]
+const PARMAP_IMPURE_RESERVED: &[&str] = &["clf"];
 
 // Compile-time assertion that Evaluator and Value are Send + Sync.
 // `parmap` depends on this: rayon workers carry per-thread `Evaluator`
@@ -4857,6 +4867,49 @@ mod plot_abort_tests {
         match ev.get("x") {
             Some(Value::Scalar(v)) => assert_eq!(*v, 1.0),
             other => panic!("expected scalar 1, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod parmap_denylist_tests {
+    use super::{builtins::BuiltinRegistry, IMPURE_BUILTINS, PARMAP_IMPURE_RESERVED};
+
+    /// Every parmap-denylist name is a real builtin or on
+    /// [`PARMAP_IMPURE_RESERVED`]. The cache denylist in `purity.rs` is a
+    /// separate list and is not checked here.
+    #[test]
+    fn parmap_impure_names_are_registered_or_reserved() {
+        let reg = BuiltinRegistry::with_defaults();
+        let reserved: std::collections::BTreeSet<&str> =
+            PARMAP_IMPURE_RESERVED.iter().copied().collect();
+        assert_eq!(
+            reserved.len(),
+            PARMAP_IMPURE_RESERVED.len(),
+            "PARMAP_IMPURE_RESERVED contains duplicates"
+        );
+
+        let mut unknown = Vec::new();
+        for name in IMPURE_BUILTINS {
+            let is_reg = reg.contains(name);
+            let is_reserved = reserved.contains(name);
+            assert!(
+                !(is_reg && is_reserved),
+                "{name} is both a registered builtin and on PARMAP_IMPURE_RESERVED"
+            );
+            if !is_reg && !is_reserved {
+                unknown.push(*name);
+            }
+        }
+        assert!(
+            unknown.is_empty(),
+            "parmap IMPURE_BUILTINS names neither registered nor reserved: {unknown:?}"
+        );
+        for name in PARMAP_IMPURE_RESERVED {
+            assert!(
+                IMPURE_BUILTINS.contains(name),
+                "{name} is reserved but not on the parmap denylist"
+            );
         }
     }
 }
