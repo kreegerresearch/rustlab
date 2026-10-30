@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.29
+
+### Breaking / behavior changes
+- **`A \ b` reads a vector as a column.** One solution is `n×1`. `A \ v` for a length-`n` vector solves. An explicit one-row matrix still has one row and does not match a tall `A`. `b'` of a vector is already a column, so scripts that transposed keep working.
+- **A singular square `\` stays on LU.** A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. It no longer replaces that result with a finite QR solution. A rectangular `\` is still the basic QR solution (free variables 0), not the minimum-norm solution.
+- **Square sparse `A \ b` uses `spsolve`.** It does not build a dense matrix. One column returns the same value as `spsolve`. A rectangular sparse matrix densifies only up to 2,000,000 entries; a larger one errors.
+- **`linsolve` uses the same path as `\`.** A dense solution is `n×1`. A singular matrix warns and returns the LU result instead of raising an error.
+- **A real `n×1` column combined with a same-length vector is element-wise.** `x .* h` has length `n`. It does not expand to an `n×n` matrix. `x * h` is still the outer product.
+
 ## 0.3.28
 
 ### Added

@@ -1506,7 +1506,11 @@ mod matrix_tests {
         // x1=(7*11-1*13)/9=(77-13)/9=64/9≈7.11, x2=(-5*11+2*13)/9=(-55+26)/9=-29/9≈-3.22
         // Let's use a simpler system: [1,0;0,1] * x = [3;7] → x=[3,7]
         let ev = eval_str("x = linsolve([1,0;0,1], [3;7])");
-        let x = get_vector(&ev, "x");
+        let x = match ev.get("x").unwrap() {
+            Value::Matrix(m) => m.column(0).iter().map(|c| c.re).collect::<Vec<_>>(),
+            Value::Vector(v) => v.iter().map(|c| c.re).collect(),
+            other => panic!("expected a column, got {other:?}"),
+        };
         assert!(close(x[0], 3.0, 1e-10), "x[0] should be 3.0, got {}", x[0]);
         assert!(close(x[1], 7.0, 1e-10), "x[1] should be 7.0, got {}", x[1]);
     }

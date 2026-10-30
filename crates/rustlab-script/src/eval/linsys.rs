@@ -1,19 +1,37 @@
 //! `A\b`, `B/A`, and the dense factorizations behind `qr` and `lu`.
 //!
-//! A square nonsingular system uses LU with partial pivoting. A rectangular
-//! system, and a square system whose pivot is numerically zero, uses
-//! column-pivoted Householder QR. A singular or ill-conditioned matrix
-//! prints a warning and still returns a basic solution (free variables are 0).
+//! A square system uses LU with partial pivoting, including a zero pivot
+//! (`Inf` when the residual is nonzero). A rectangular system uses
+//! column-pivoted Householder QR and a basic solution (free variables are 0).
+//! A vector on the right is a column. An explicit one-row matrix stays a row.
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use ndarray::Array2;
 use rustlab_core::factor::{lu, qr};
 use rustlab_core::C64;
 
+use super::shared::Shared;
 use super::value::Value;
 use crate::ast::BinOp;
 use crate::error::ScriptError;
 
 const ILL_RCOND: f64 = 1e-12;
+/// Rectangular sparse `\` densifies only up to this many entries.
+const RECT_SPARSE_CELLS: u64 = 2_000_000;
+
+#[cfg(test)]
+thread_local! {
+    static SINGULAR_WARNS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// How many singular warnings the current thread has printed since the
+/// last take. Tests use this; the text still goes to stderr.
+#[cfg(test)]
+pub(crate) fn take_singular_warns() -> u32 {
+    SINGULAR_WARNS.with(|c| c.replace(0))
+}
 
 pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
     if let Some(s) = scalar_like(&a) {
@@ -30,11 +48,23 @@ pub(crate) fn mldivide(a: Value, b: Value) -> Result<Value, String> {
         };
         return Value::binop(BinOp::Div, b, denom);
     }
+    if let Value::SparseMatrix(sm) = &a {
+        if sm.rows == sm.cols {
+            return super::builtins::sparse_square_mldivide(sm, &b);
+        }
+        let cells = (sm.rows as u64).saturating_mul(sm.cols as u64);
+        if cells > RECT_SPARSE_CELLS {
+            return Err(format!(
+                "mldivide: rectangular sparse A is {}×{} ({} entries); the dense limit is {RECT_SPARSE_CELLS} entries",
+                sm.rows, sm.cols, cells
+            ));
+        }
+    }
     let a_real = value_is_real(&a);
     let b_real = value_is_real(&b);
+    let b_cols = rhs_columns(&b)?;
     let a = value_to_matrix(a, "mldivide")?;
-    let b = value_to_matrix(b, "mldivide")?;
-    solve_ab(&a, &b, a_real && b_real)
+    solve_ab(&a, &b_cols, a_real && b_real)
 }
 
 /// `B/A`, the solution of `X * A = B`. A scalar denominator stays
@@ -52,7 +82,7 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
     let (mb, _) = b.dim();
     if m != mb {
         return Err(format!(
-            "mldivide: A is {m}×{n} but b has {mb} rows\n  hint: a vector is a row; pass a column as b'"
+            "mldivide: A is {m}×{n} but b has {mb} rows\n  hint: a vector is a column; an explicit row has one row"
         ));
     }
     if !entries_finite(a) || !entries_finite(b) {
@@ -63,13 +93,12 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
     }
     if m == n {
         let f = lu::lu(a);
-        if !f.singular {
-            if f.rcond < ILL_RCOND {
-                warn_rcond(f.rcond);
-            }
-            return Ok(pack(&lu::solve(&f, b), real));
+        if f.singular {
+            warn_singular();
+        } else if f.rcond < ILL_RCOND {
+            warn_rcond(f.rcond);
         }
-        warn_singular();
+        return Ok(pack(&lu::solve(&f, b), real));
     }
     let f = qr::qr(a, true);
     let (x, rank, rcond) = qr::least_squares(&f, b);
@@ -86,6 +115,8 @@ fn solve_ab(a: &Array2<C64>, b: &Array2<C64>, real: bool) -> Result<Value, Strin
 }
 
 fn warn_singular() {
+    #[cfg(test)]
+    SINGULAR_WARNS.with(|c| c.set(c.get().saturating_add(1)));
     eprintln!("warning: matrix is singular to working precision");
 }
 
@@ -112,12 +143,34 @@ fn value_is_real(v: &Value) -> bool {
     match v {
         Value::Scalar(_) | Value::Bool(_) => true,
         Value::Complex(z) => z.im == 0.0,
-        Value::Vector(a) => a.iter().all(|z| z.im == 0.0),
-        Value::Matrix(m) => m.iter().all(|z| z.im == 0.0),
-        Value::SparseVector(sv) => sv.to_dense().iter().all(|z| z.im == 0.0),
-        Value::SparseMatrix(sm) => sm.to_dense().iter().all(|z| z.im == 0.0),
+        Value::Vector(a) => Shared::is_real(a) || a.iter().all(|z| z.im == 0.0),
+        Value::Matrix(m) => Shared::is_real(m) || m.iter().all(|z| z.im == 0.0),
+        Value::SparseVector(sv) => sv.entries.iter().all(|(_, z)| z.im == 0.0),
+        Value::SparseMatrix(sm) => sm.entries.iter().all(|(_, _, z)| z.im == 0.0),
         _ => false,
     }
+}
+
+/// Right-hand side of `\`. A vector is an `n×1` column read from its
+/// storage. A real vector is copied once into that column and is not widened.
+/// An explicit matrix keeps its shape, so a `1×n` row stays one row.
+fn rhs_columns(b: &Value) -> Result<Array2<C64>, String> {
+    match b {
+        Value::Vector(v) => Ok(vector_as_column(v)),
+        other => value_to_matrix(other.clone(), "mldivide"),
+    }
+}
+
+fn vector_as_column(v: &Shared<ndarray::Array1<C64>>) -> Array2<C64> {
+    if let Some(re) = Shared::real_slice(v) {
+        let mut col = Array2::zeros((re.len(), 1));
+        for (i, &x) in re.iter().enumerate() {
+            col[[i, 0]] = C64::new(x, 0.0);
+        }
+        return col;
+    }
+    let n = Shared::len(v);
+    Array2::from_shape_fn((n, 1), |(i, _)| v[i])
 }
 
 fn value_to_matrix(v: Value, name: &str) -> Result<Array2<C64>, String> {

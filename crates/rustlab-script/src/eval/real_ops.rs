@@ -286,6 +286,16 @@ fn binop_ref(op: BinOp, l: &Operand, r: &Operand) -> Option<Value> {
             let out = with_rop!(op, f => zip(x, y, f));
             Some(Value::real_vector(Array1::from_vec(out)))
         }
+        // A real n×1 column and a same-length vector are element-wise.
+        // Broadcasting them as n×1 against 1×n would build an n×n matrix.
+        (R::Mat(d, r, 1), R::Vec(v)) if r == v.len() && is_column_elem(op) => {
+            let out = with_rop!(op, f => zip(d, v, f));
+            Some(Value::real_vector(Array1::from_vec(out)))
+        }
+        (R::Vec(v), R::Mat(d, r, 1)) if r == v.len() && is_column_elem(op) => {
+            let out = with_rop!(op, f => zip(v, d, f));
+            Some(Value::real_vector(Array1::from_vec(out)))
+        }
         _ => {
             let (x, xr, xc) = a.grid()?;
             let (y, yr, yc) = b.grid()?;
@@ -325,6 +335,10 @@ fn pow_re(x: f64, y: f64) -> f64 {
     } else {
         Value::pow_c64(C64::new(x, 0.0), C64::new(y, 0.0)).re
     }
+}
+
+fn is_column_elem(op: BinOp) -> bool {
+    matches!(op, BinOp::Add | BinOp::Sub | BinOp::ElemMul | BinOp::ElemDiv | BinOp::ElemPow | BinOp::Pow)
 }
 
 /// Broadcast extent of one dimension (equal, or one side 1).

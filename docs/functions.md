@@ -1574,17 +1574,19 @@ A * B   # ≈ eye(2)
 - `inv(scalar)` returns `1/scalar`. `inv(0)` is an error.
 
 ### `linsolve(A, b)`
-Solve the linear system `A·x = b` for `x`. `A` must be square and non-singular.
+Solve the square system `A·x = b`. This is the same path as `A \ b`: a vector `b` is a column, one solution is `n×1`, and a singular `A` warns and returns the LU result.
 ```
 A = [2, 1; 1, 3]
 b = [5, 10]
-x = linsolve(A, b)   # → [1, 3]
+x = linsolve(A, b)   # [1; 3]
 ```
 
 ### `A \ b` / `mldivide(A, b)`
-Left division. A square nonsingular `A` is factored by LU with partial pivoting. A rectangular `A`, and a square `A` that is singular to working precision, uses column-pivoted QR least squares. A singular or ill-conditioned matrix prints a warning and still returns a basic solution, with free variables set to 0. The least-squares residual is orthogonal to the columns of `A`.
+Left division. A square `A`, including a singular one, is factored by LU with partial pivoting. A rectangular `A` uses column-pivoted QR least squares. An ill-conditioned rectangular matrix prints a warning and still returns a basic solution, with free variables set to 0. The least-squares residual is orthogonal to the columns of `A`.
 
-A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector is a row, so a column right-hand side is written `b'`. Several columns of `b` are several right-hand sides. A sparse matrix is solved as dense.
+A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector on the right is a column, and one solution is `n×1`. An explicit one-row matrix stays a row and does not match a tall `A`. `b'` of a vector is already a column, so that form still solves. Several columns of `b` are several right-hand sides.
+
+A square matrix, including a singular one, uses LU. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver (`spsolve`). A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
 ```
 x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
 ```
@@ -3894,7 +3896,7 @@ a .^ 2     # element-wise square
 ### Left and right division: `\` and `/`
 `\` and `/` share precedence with `*` and associate left to right.
 ```
-x = A \ b      # solve A*x = b; a column is b'
+x = A \ b      # solve A*x = b; a vector on the right is a column
 X = B / A      # solve X*A = B
 M / 2          # element-wise scale (scalar denominator)
 2 / M          # right division: solve X*M = 2

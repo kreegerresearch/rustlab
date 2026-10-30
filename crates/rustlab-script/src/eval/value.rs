@@ -465,6 +465,45 @@ impl Value {
         m.iter().all(|c| c.im.abs() < f64::EPSILON)
     }
 
+    /// Element-wise `n×1` column with a length-`n` vector. `None` when the
+    /// matrix is not that column, so the caller keeps the `n×n` broadcast.
+    /// The result is a vector, the same length as `v .* v`.
+    fn column_elem(
+        col: &CMatrix,
+        v: &CVector,
+        op: BinOp,
+        col_left: bool,
+    ) -> Option<Result<Value, String>> {
+        if col.ncols() != 1 || col.nrows() != v.len() {
+            return None;
+        }
+        let n = v.len();
+        let real = Self::matrix_all_real(col) && Self::vector_all_real(v);
+        let mut data = Vec::with_capacity(n);
+        for i in 0..n {
+            let (a, b) = if col_left {
+                (col[[i, 0]], v[i])
+            } else {
+                (v[i], col[[i, 0]])
+            };
+            let z = match op {
+                BinOp::Add => a + b,
+                BinOp::Sub => a - b,
+                BinOp::ElemMul => a * b,
+                BinOp::ElemDiv => Self::div_c64(a, b),
+                BinOp::ElemPow | BinOp::Pow => Self::pow_c64(a, b),
+                _ => return None,
+            };
+            data.push(if real { C64::new(z.re, 0.0) } else { z });
+        }
+        let arr = Array1::from_vec(data);
+        Some(Ok(if real {
+            Value::real_vector(arr.mapv(|z| z.re))
+        } else {
+            Value::Vector(arr.into())
+        }))
+    }
+
     /// The real-output rule for array ∘ scalar: with `+ - * .* / ./` and a
     /// real scalar, real array elements give real results, so `[1 Inf] * 2`
     /// is `[2 Inf]` and not `Inf + NaN·i` from `0·Inf` in the complex
@@ -2167,6 +2206,9 @@ impl Value {
                             .map_err(|e| e.to_string())?.into()))
                     }
                     Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
+                        if let Some(y) = Self::column_elem(m, v, op, true) {
+                            return y;
+                        }
                         // Implicit expansion: treat the row Vector as a 1×N row
                         // matrix and broadcast against the M×K matrix.
                         let v_row = Self::vector_to_row_matrix(v);
@@ -2204,6 +2246,9 @@ impl Value {
                         }
                     }
                     Add | Sub | ElemMul | ElemDiv | ElemPow | Pow => {
+                        if let Some(y) = Self::column_elem(m, v, op, false) {
+                            return y;
+                        }
                         // Implicit expansion: row Vector promoted to 1×N matrix
                         // on the lhs, then broadcast against M×K rhs.
                         let v_row = Self::vector_to_row_matrix(v);

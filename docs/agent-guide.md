@@ -137,7 +137,7 @@ Ordered roughly by how often they matter:
 | No `break`/`continue` in loops | Restructure with a flag in the `while` condition or bounded `for` |
 | No `~` placeholder in destructuring (`[~, i] = ...` is a lex error) | Bind unwanted outputs to a dummy variable, or use `argmin`/`argmax` |
 | `*` vs `.*` on same-shaped matrices | `*` is matrix product; use `.*` for element-wise |
-| `A \ b` treats a vector as a row | A column right-hand side is `b'` or `[1; 2; 3]`. `\` is LU for a square nonsingular matrix and QR least squares otherwise. `/` between two matrices, and a scalar numerator (`2 / M`), is right division. A scalar denominator (`M / 2`) stays element-wise. `A .\ B` is `B ./ A` |
+| `A \ b` treats a vector as a column | One solution is `n×1`. An explicit one-row matrix stays a row. Square `A` uses LU, including a zero pivot. Rectangular `A` uses QR and a basic solution. A scalar left side divides element-wise. `/` between two matrices, and a scalar numerator (`2 / M`), is right division. A scalar denominator (`M / 2`) stays element-wise. `A .\ B` is `B ./ A` |
 | `'` conjugates | On complex data use `.'` if you only want a transpose |
 | `fft(v)` is length-preserving (`length(fft(v)) == length(v)`) | Build axes with `fftfreq(length(X), sr)` — always correct; use `fft(v, n)` when you want explicit zero-padding or truncation |
 | `min`/`max`/`sort` on complex data compare by magnitude (real part for `sort`/`median`) | Take `abs()`/`real()` explicitly if you mean it |
