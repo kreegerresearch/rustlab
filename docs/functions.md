@@ -23,9 +23,9 @@ Numeric literals also accept an imaginary suffix: `2j`, `1.5i`, and `3e8j` are i
 
 ### Type-preservation note for element-wise operators
 
-rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
+rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, `.\`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
 
-Division by a real number (`./`, or `/` by a scalar) divides each part directly, so `x ./ y` on real arrays equals scalar `x / y` bit for bit, and `(a + bj) ./ y` is `a/y + (b/y)j`. Negating a real value keeps it real, and a zero imaginary part counts as real whatever its sign, so `angle(-1)` is `π` and `sqrt(-4)` is `2j`.
+Division by a real number (`./`, `.\`, or `/` by a scalar denominator) divides each part directly, so `x ./ y` on real arrays equals scalar `x / y` bit for bit, and `(a + bj) ./ y` is `a/y + (b/y)j`. `A .\ B` is that same division with the arguments swapped (`B ./ A`). Negating a real value keeps it real, and a zero imaginary part counts as real whatever its sign, so `angle(-1)` is `π` and `sqrt(-4)` is `2j`.
 
 ```
 u = [1.0, 2.0, 3.0]
@@ -330,33 +330,41 @@ max(M1, M2)                            # elementwise — union of two 0/1 masks
 Arithmetic mean. Returns a complex scalar for complex vectors.
 ```
 mean([1.0, 2.0, 3.0])   # → 2.0
-mean(randn(1000))        # → ≈ 0.0
+mean(randn(1, 1000))     # → ≈ 0.0
 ```
 
-### `median(v)`
-Median value, computed on real parts. For even-length vectors returns the average of the two middle elements.
+### `median(v)` / `median(M)` / `median(M, dim)`
+Median of the real values. An odd length returns the middle element; an even length returns the average of the two middle elements. A matrix defaults to one median per column (`1×ncols`); `median(M, 2)` is one per row.
 ```
 median([3.0, 1.0, 2.0])         # → 2.0
 median([4.0, 1.0, 3.0, 2.0])   # → 2.5
 ```
-- Scalar input returns the scalar unchanged.
-- Complex vectors: imaginary parts are ignored; result is always a real scalar.
-- A NaN real part makes the result NaN. `Inf` sorts as a value.
+- A scalar is returned unchanged.
+- Genuinely complex input (any nonzero imaginary part) is an error.
+- An empty input is NaN. A NaN in the data makes that reduction NaN. `Inf` sorts as a value.
 
-### `std(v)`
-Sample standard deviation (Bessel-corrected, N−1 denominator).
-Complex data uses `sqrt(Σ|x − mean|² / (n − 1))`. Length 0 or 1 returns 0
-(MATLAB returns NaN for an empty input; that divergence is recorded).
-```
-std(randn(10000))   # → ≈ 1.0
-std([1, 2, 3, 4])   # → sqrt(5/3)
-```
+### `std(x)` / `std(x, w)` / `std(x, w, dim)`
+Standard deviation. `w` selects the divisor:
 
-### `var(v)` / `var(M)` / `var(M, dim)`
-Sample variance, `std(x)²`, with the same shapes and the same complex rule.
-There is no population (divide-by-n) flag.
+- `0` (the default) divides by `n − 1`. One observation is 0.
+- `1` divides by `n`.
+- A nonnegative weight vector divides by the sum of the weights. The weighted mean is `sum(w .* x) / sum(w)`.
+
 ```
-var([1, 2, 3, 4])   # → 5/3
+std([1, 2, 3, 4])              # → sqrt(5/3)
+std([1, 2, 3], 1)              # → sqrt(2/3)
+std([1; 3; -9], [1; 1; 0.5])   # → sqrt(20.16)
+```
+- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN.
+- Complex data uses `sqrt(Σ w |x − mean|² / Σ w)` (or `n − 1` / `n` when `w` is `0` or `1`).
+- `std(M)` is the sample standard deviation of each column, a `1×ncols` row. `std(M, 0, 2)` is each row, an `nrows×1` column. The second argument is a weight, not a dimension: `std(M, 2)` is an error.
+- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is a vector of zeros (one observation per column).
+
+### `var(x)` / `var(x, w)` / `var(x, w, dim)`
+Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule.
+```
+var([1, 2, 3, 4])    # → 5/3
+var([1, 2, 3], 1)    # → 2/3
 ```
 
 ### `sum(v)`
@@ -364,9 +372,9 @@ Sum of all elements. Accepts scalar, complex, vector, or matrix. Returns complex
 imaginary part is non-negligible, otherwise scalar.
 ```
 sum([1.0, 2.0, 3.0])   # → 6.0
-sum(ones(4) * j)        # → 0+4i
+sum(ones(1, 4) * j)     # → 0+4i
 ```
-A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `std`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
+A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
 
 ### `cumsum(v)`
 Cumulative sum of a vector. Returns a vector of the same length where each element is the
@@ -394,14 +402,18 @@ argmax(A, 2)                    # column index of each row's max, nrows×1
 ```
 - Always agrees with the index returned by `[m, i] = max(...)` on the same input.
 
-### `sort(v)`
-Sort a vector ascending by real part. Imaginary components are preserved.
+### `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `sort(A, dim, direction)`
+Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order.
 ```
-sort([3.0, 1.0, 2.0])         # → [1.0, 2.0, 3.0]
-sort([3.0, -1.0, 0.5])        # → [-1.0, 0.5, 3.0]
+sort([3.0, 1.0, 2.0])              # → [1.0, 2.0, 3.0]
+sort([3, 1, 2], "descend")         # → [3, 2, 1]
+[s, i] = sort([3, 1, 2])           # s = [1, 2, 3], i = [2, 3, 1]
+sort([3, 1; 1, 2; 2, 0])           # each column, top to bottom
 ```
-- Returns a scalar unchanged.
-- Useful for top-K sampling: sort logits descending, slice, apply softmax.
+- A matrix sorts along dimension 1 (each column) unless `dim` is given. `sort(M, 2)` sorts each row.
+- A vector is a row, so the default axis is its length. `sort(v, 1)` returns `v` unchanged and an index vector of ones.
+- `[s, i] = sort(...)` also returns 1-based indices into the sorted axis. `s` and `i` have the shape of `A`.
+- A scalar is unchanged, with index 1.
 
 ### `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)`
 Trapezoidal numerical integration. With one argument, assumes unit spacing between samples; with two, uses `x` as the sample positions.
@@ -546,17 +558,20 @@ tanh([-2.0, 0.0, 2.0])   # → [~-0.964, 0.0, ~0.964]
 ## Array Construction
 
 ### `zeros(n)` / `zeros(m, n)` / `zeros([m, n])`
-Returns a length-n complex zero vector, or an m×n zero matrix when two arguments (or a 2-element vector) are given. Accepts the output of `size()` directly.
+One size is an n×n matrix. Two sizes, or a 2-element vector from `size()`, are m×n. A row is `zeros(1, n)`. A column is `zeros(n, 1)`. `zeros(1, n)` is a matrix, not a vector.
 ```
-zeros(4)         # → [0+0j, 0+0j, 0+0j, 0+0j]
+zeros(3)         # → 3×3 matrix of zeros
+zeros(1, 4)      # → 1×4 row
 zeros(2, 3)      # → 2×3 matrix of zeros
 zeros(size(A))   # → zero matrix matching A's dimensions
 ```
+`zeros(n, "int32")` (and the other integer class names) is an n×n integer array. `zeros(1, n, "int32")` is a row.
 
 ### `ones(n)` / `ones(m, n)` / `ones([m, n])`
-Returns a length-n complex ones vector, or an m×n matrix of ones when two arguments (or a 2-element vector) are given. Accepts the output of `size()` directly.
+Same shapes as `zeros`. One size is n×n. A row is `ones(1, n)`.
 ```
-ones(3)          # → [1+0j, 1+0j, 1+0j]
+ones(3)          # → 3×3 matrix of ones
+ones(1, 3)       # → 1×3 row
 ones(2, 3)       # → 2×3 matrix of ones
 ones(size(A))    # → ones matrix matching A's dimensions
 ```
@@ -600,34 +615,35 @@ Useful for frequency vectors in Bode plots and log-scale analysis.
 ### `rand()` / `rand(n)` / `rand(m, n)`
 Samples drawn uniformly from `[0, 1)`.
 - `rand()` — single scalar.
-- `rand(n)` — length-n vector.
-- `rand(m, n)` — m×n matrix.
+- `rand(n)` — n×n matrix.
+- `rand(m, n)` — m×n matrix. A row of n samples is `rand(1, n)`.
 ```
 u  = rand()         # one scalar in [0, 1)
-v  = rand(512)      # length-512 noise vector
-M  = rand(8, 8)
+v  = rand(1, 512)   # 1×512 row
+M  = rand(8)        # 8×8 matrix
 ```
 
 ### `randn()` / `randn(n)` / `randn(m, n)`
 Samples from the standard normal distribution (μ=0, σ=1).
 - `randn()` — single scalar.
-- `randn(n)` — length-n vector.
-- `randn(m, n)` — m×n matrix.
+- `randn(n)` — n×n matrix.
+- `randn(m, n)` — m×n matrix. A row of n samples is `randn(1, n)`.
 ```
 z     = randn()                  # one scalar from N(0, 1)
-noise = randn(1024) * 0.1        # length-1024 noise vector
+noise = randn(1, 1024) * 0.1     # 1×1024 noise row
 W     = randn(64, 128)           # weight matrix for a linear layer
 W     = randn(128, 64) * 0.02    # Xavier-style small-weight init
 ```
 All values are real (zero imaginary part).
 
-### `randi(imax)` / `randi(imax, n)` / `randi([lo, hi], n)`
-Random integers.
+### `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo, hi], n)`
+Random integers. One size is n×n. Two sizes are m×n. A row is `randi(imax, 1, n)`.
 ```
-randi(6)          # single integer in [1, 6]  — one die roll
-randi(6, 100)     # 100 integers in [1, 6]
-randi([0, 1], 8)  # 8 random bits
-randi([-5, 5], 50)  # 50 integers in [-5, 5]
+randi(6)            # single integer in [1, 6]  — one die roll
+randi(6, 1, 100)    # 1×100 row of integers in [1, 6]
+randi(6, 4)         # 4×4 matrix
+randi([0, 1], 1, 8) # 8 random bits
+randi([-5, 5], 1, 50)  # 50 integers in [-5, 5]
 ```
 
 ### `seed(N)` / `seed()`
@@ -638,7 +654,7 @@ Set the shared RNG seed for `rand`, `randn`, `randi`, `sprand`, etc.
 
 ```
 seed(42)              # all subsequent random draws are deterministic
-x = randn(100)
+x = randn(1, 100)
 seed()                # back to non-deterministic
 ```
 
@@ -1144,7 +1160,7 @@ db = snr(y_ref, y_quantized)
 h = firpm(63, [0.0, 0.20, 0.30, 1.0], [1.0, 1.0, 0.0, 0.0])
 # Scale randn to stay inside the Q1.14 range (±2); unscaled N(0,1) saturates
 # ~5 % of samples, which swamps the coefficient-quantization noise floor.
-x = randn(1024) * 0.3
+x = randn(1, 1024) * 0.3
 y_ref = real(convolve(x, real(h)))
 
 fmt_data = qfmt(16, 14, "round_even", "saturate")
@@ -1262,7 +1278,7 @@ y = filtfilt(b, a, x)
 ## Linear Algebra
 
 ### `trace(M)`
-Sum of the main diagonal elements of a square (or rectangular) matrix `M`.
+Sum of the main diagonal of a square matrix `M`. A non-square matrix is an error.
 ```
 M = [1,2;3,4]
 trace(M)    # → 5.0  (1 + 4)
@@ -1270,7 +1286,6 @@ trace(M)    # → 5.0  (1 + 4)
 A = [1+j,0;0,2]
 trace(A)    # → complex 3+1i
 ```
-- Works on non-square matrices: sums `min(rows, cols)` diagonal elements.
 - Returns a scalar if the imaginary part is negligible, otherwise complex.
 - `trace(scalar)` returns the scalar unchanged.
 
@@ -1488,7 +1503,7 @@ transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 - ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
 
 ### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
-- `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors; `diag(5)` is `5`.
+- `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors. A length-1 input is a `1×1` matrix: `size(diag(5))` is `[1, 1]` and the entry is 5.
 - `diag(v, k)` — puts `v` on diagonal `k` (above the main one for `k > 0`, below for `k < 0`) of an `(n+|k|)`-square matrix.
 - `diag(M)` / `diag(M, k)` — extracts diagonal `k` of a matrix with at least two rows and two columns, as a vector (empty when `k` is outside the matrix).
 - `k` must be an integer.
@@ -1574,52 +1589,61 @@ A * B   # ≈ eye(2)
 - `inv(scalar)` returns `1/scalar`. `inv(0)` is an error.
 
 ### `linsolve(A, b)`
-Solve the linear system `A·x = b` for `x`. `A` must be square and non-singular.
+Solve the square system `A·x = b`. This is the same path as `A \ b`: a vector `b` is a column, one solution is `n×1`, and a singular `A` warns and returns the LU result.
 ```
 A = [2, 1; 1, 3]
 b = [5, 10]
-x = linsolve(A, b)   # → [1, 3]
+x = linsolve(A, b)   # [1; 3]
 ```
 
 ### `A \ b` / `mldivide(A, b)`
-Left division. A square nonsingular `A` is factored by LU with partial pivoting. A rectangular `A`, and a square `A` that is singular to working precision, uses column-pivoted QR least squares. A singular or ill-conditioned matrix prints a warning and still returns a basic solution, with free variables set to 0. The least-squares residual is orthogonal to the columns of `A`.
+Left division. A rectangular `A` uses column-pivoted QR least squares. An ill-conditioned rectangular matrix prints a warning and still returns a basic solution, with free variables set to 0. The least-squares residual is orthogonal to the columns of `A`.
 
-A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector is a row, so a column right-hand side is written `b'`. Several columns of `b` are several right-hand sides. A sparse matrix is solved as dense.
+A scalar `A` divides element-wise (`2 \ [2, 4]` is `[1, 2]`). A vector on the right is a column, and one solution is `n×1`. An explicit one-row matrix stays a row and does not match a tall `A`. `b'` of a vector is already a column, so that form still solves. Several columns of `b` are several right-hand sides.
+
+A square matrix uses a triangular solve when it is triangular, Cholesky when it is Hermitian and positive definite, and LU otherwise. A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. A Hermitian matrix that is not positive definite falls back to LU. A rectangular matrix uses column-pivoted QR and a basic solution (free variables are 0), which is not the minimum-norm solution. A square sparse matrix uses the sparse solver (`spsolve`). A rectangular sparse matrix is solved dense only when it has at most 2,000,000 entries; a larger one errors.
 ```
 x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
 ```
 
 ### `B / A` / `mrdivide(B, A)`
-Right division, the solution of `X * A = B`. It is `(A.' \ B.').'` (no conjugate). Two matrices, a matrix and a row, or a row and a matrix take this path.
+Right division, the solution of `X * A = B`. It is `(A' \ B')'` (conjugate transpose). Two matrices, a matrix and a row, a row and a matrix, or a scalar numerator (`2 / M`, `2 / v`) take this path.
 
-A scalar on either side of `/` stays element-wise, which is what `2 / M` already did. Two vectors with `/` are still an error; use `./`.
+A scalar denominator (`M / 2`, `v / 2`) stays an element-wise scale. Two vectors with `/` are still an error; use `./`.
 ```
 x = [5, 10] / [2, 1; 1, 3]     # [1, 3]
 ```
 
-### `polyfit(x, y, n)`
-Least-squares coefficients of a degree-`n` polynomial, highest power first, from a QR factorization of the Vandermonde matrix. `polyval(p, x)` recovers `y` when `y` is exactly that polynomial. `x` and `y` have the same length. A matrix `y` is one fit per column, and `p` then has one row per column. A rank-deficient Vandermonde warns.
+### `polyfit(x, y, n)` / `[p, S] = polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)`
+Least-squares coefficients of a degree-`n` polynomial, highest power first, from a QR factorization of the Vandermonde matrix. `polyval(p, x)` recovers `y` when `y` is exactly that polynomial. `x` and `y` have the same length. A matrix `y` is one fit per column, and `p` then has one row per column. A rank-deficient Vandermonde warns. A Vandermonde with more than 100,000,000 entries errors before it is allocated.
+
+`[p, S] = polyfit(x, y, n)` returns the same `p` as one output. `S` is a struct: `S.R` is the triangular factor from that QR, `S.df` is `length(x) - (n + 1)`, and `S.normr` is the residual norm (one value per column of `y`).
+
+`[p, S, mu] = polyfit(x, y, n)` centers and scales `x` by `mu = [mean(x), std(x)]` (`std` divides by `n - 1`) and fits that variable. Those coefficients are not the one-output coefficients. `polyval(p, x, S, mu)` undoes the scaling.
 ```
 p = polyfit(0:4, 4*(0:4).^2 + 3*(0:4) + 2, 2)   # [4, 3, 2]
+[p, S, mu] = polyfit(0:4, y, 2)
+polyval(p, 0:4, S, mu)                           # y
 ```
 
-### `polyval(p, x)`
-Evaluate a polynomial by Horner's method. `p` is descending-power coefficients. The result has the same shape as `x`.
+### `polyval(p, x)` / `polyval(p, x, S, mu)`
+Evaluate a polynomial by Horner's method. `p` is descending-power coefficients. The result has the same shape as `x`. With `mu`, `x` is scaled as `(x - mu(1)) / mu(2)` first. `S` is the struct from `polyfit` and is not used for the value.
 ```
 polyval([1, -3, 2], 4)        # 6
 polyval([1, -3, 2], [1, 2])   # [0, 0]
 ```
 
-### `interp1(x, y, xi [, method [, "extrap"]])`
-One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, or `"spline"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
+### `interp1(x, y, xi [, method [, "extrap" or fill]])`
+One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
 
-`"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them.
+`"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them. `"pchip"` is the Fritsch–Carlson cubic Hermite interpolant. `"makima"` is modified Akima. Both pass through the nodes. Slopes are computed once per call.
 
 A matrix `y` is interpolated down each column. Complex `y` interpolates the real and imaginary parts separately.
 ```
 interp1([0, 1, 2], [0, 1, 0], 0.5)                    # 0.5
 interp1([0, 1, 2], [0, 1, 0], 1.2, "previous")        # 1
 interp1([0, 1, 2], [0, 1, 0], 3, "linear", "extrap")  # -1
+interp1([0, 1, 2], [0, 1, 0], -1, "linear", 0)       # 0
 ```
 
 ### `roots(p)`
@@ -1643,11 +1667,15 @@ Ahat = U * diag(S) * V'          % every shape
 % non-square full form: Uf(:, 1:k) * diag(Sf) * Vf(:, 1:k)'
 ```
 
-### `qr(A)` / `[Q, R] = qr(A)` / `qr(A, 0)`
-Householder QR, unpivoted. `[Q, R] = qr(A)` returns a full `Q` (`m×m`) and an `R` (`m×n`) with `A = Q R`. `Q` has orthonormal columns and the diagonal of `R` is real and non-negative. `qr(A, 0)`, `qr(A, "econ")`, and `qr(A, "economy")` return the economy factors: `Q` is `m×k` and `R` is `k×n`, with `k = min(m, n)`. One output is `R` only. Column pivoting is used by `\`, not by `qr`.
+### `qr(A)` / `[Q, R] = qr(A)` / `[Q, R, p] = qr(A)` / `qr(A, 0)`
+Householder QR. `[Q, R] = qr(A)` is unpivoted: a full `Q` (`m×m`) and an `R` (`m×n`) with `A = Q R`. `Q` has orthonormal columns and the diagonal of `R` is real and non-negative. `qr(A, 0)`, `qr(A, "econ")`, and `qr(A, "economy")` return the economy factors: `Q` is `m×k` and `R` is `k×n`, with `k = min(m, n)`. One output is `R` only.
+
+Three outputs column-pivot. `p` is a 1-based permutation vector of length `n`, and `A(:, p) = Q R`. A zero column moves to the end. `"vector"` is the same vector. `"matrix"` returns an `n×n` permutation matrix `P` with `A * P = Q R`. `qr(A, 0)` with three outputs is the economy factor and the vector `p`. `"vector"` and `"matrix"` are an error unless three outputs are requested. One and two outputs stay unpivoted.
 ```
 [Q, R] = qr([1, 1; 1, 2; 1, 3], 0)
-Q * R    % the original matrix
+Q * R                              % the original matrix
+[Q, R, p] = qr([1, 0, 2; 3, 0, 4; 5, 0, 6])
+A(:, p)                            % Q * R
 ```
 
 ### `null(A)`
@@ -1747,7 +1775,7 @@ D(:, :) = 5
 ### Vector strided / indexed write: `v(idx_set) = vec`
 For a Vector LHS, any non-scalar index set — `:`, an explicit list, or any colon range — selects positions to write to. The RHS Vector length must match the index count. A scalar (or complex) RHS broadcasts.
 ```
-v = zeros(6)
+v = zeros(1, 6)
 v(1:2:6) = [10, 20, 30]    % strided positions 1, 3, 5
 v([2, 4, 6]) = [-1, -2, -3] % explicit positions
 v(:) = 9                    % scalar broadcast across the whole vector
@@ -1886,7 +1914,7 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
 
 ### `sparse(I, J, V, m, n)` / `sparse(A)`
-Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse (near-zero entries are dropped).
+Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse. An entry is stored unless it is an exact zero (`+0` or `-0`); a tiny finite value stays.
 ```
 S = sparse([1, 2, 3], [1, 2, 3], [10, 20, 30], 3, 3)   # diagonal sparse
 S = sparse(A)                                            # dense → sparse
@@ -1972,7 +2000,9 @@ The pivot tolerance, real-vs-complex thresholds, and orderings are all sized for
 
 Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factors a Hermitian-positive-definite sparse matrix as `L·L^H` and returns an opaque handle. `lu(A)` on a sparse matrix factors it as `P·L·U` with partial pivoting (threshold 0.1) and returns an opaque handle. `solve(F, b)` runs the cached triangular solves on a right-hand side.
 
-A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
+
+A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
@@ -2425,7 +2455,7 @@ Bar chart histogram of `v`. Default bin count is 10. Displays interactively and 
 - Row 1: bin centers
 - Row 2: counts
 ```
-hist(randn(2000), 30)
+hist(randn(1, 2000), 30)
 H = hist(data, 20)   # capture bin data
 ```
 Alias: `histogram()`
@@ -3878,21 +3908,24 @@ y = a + b + ...
 ```
 Everything after `...` on the line is ignored (treated as a comment).
 
-### Element-wise operators: `.* ./ .^`
+### Element-wise operators: `.* ./ .\ .^`
 ```
 a .* b     # element-wise multiply
 a ./ b     # element-wise divide
+a .\ b     # element-wise divide with the arguments swapped (b ./ a)
 a .^ 2     # element-wise square
 ```
+`A .\ B` uses the same broadcasting and the same real-storage kernel as `B ./ A`. It does not form a reciprocal.
 
 ### Left and right division: `\` and `/`
 `\` and `/` share precedence with `*` and associate left to right.
 ```
-x = A \ b      # solve A*x = b; a column is b'
-X = B / A      # solve X*A = B, when both sides are matrices or a row
-s / M          # still element-wise when one side is a scalar
+x = A \ b      # solve A*x = b; a vector on the right is a column
+X = B / A      # solve X*A = B
+M / 2          # element-wise scale (scalar denominator)
+2 / M          # right division: solve X*M = 2
 ```
-`.\` is not an operator. See `mldivide` and `mrdivide` under Linear Algebra.
+A scalar numerator on the left of `/` is right division. A scalar denominator stays element-wise. Two vectors with `/` are an error; use `./`. See `mldivide` and `mrdivide` under Linear Algebra.
 
 ### Concatenation: `[a, b, c]`
 ```
@@ -4211,7 +4244,7 @@ Rows in brackets are not functions:
 - `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
 - `[matmul]` — matrix products `A * B`, always recorded, including `A' * B` where the transpose is read in place and not written out. In/Out are the stored bytes of the two operands and of the product, so Mbit/s is the throughput of that multiply.
 - `[widen]` and `[promote]` — storage conversions, always recorded when they happen. An array of real numbers is stored as real numbers; `[widen]` counts the times an operation that only handles complex arrays had to build a complex copy of one, and `[promote]` the times a write of complex values (or an operation that only writes complex arrays) converted one in place. Calls, time in the Total column (that time is already inside the caller's Self time, so Self is 0), the real bytes read (In) and the complex bytes built (Out). Results are the same either way; these rows show where time goes to conversions.
-- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
+- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[.\]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
 

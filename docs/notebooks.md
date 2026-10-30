@@ -722,7 +722,7 @@ in one block, analyze it in the next:
 
 ````markdown
 ```rustlab
-x = sin(2*pi*0.15*(0:1023)) + 0.3*randn(1024);
+x = sin(2*pi*0.15*(0:1023)) + 0.3*randn(1, 1024);
 ```
 
 ```rustlab
@@ -1001,7 +1001,7 @@ the narrative.
 % Load data and define constants — reader doesn't need to see this
 fs = 16000;
 N = 1024;
-x = randn(N);
+x = randn(1, N);
 ```
 
 The signal has been sampled at 16 kHz. Now we compute the spectrum:
@@ -1844,7 +1844,7 @@ Unlike file formats, JSON:
     {
       "kind": "code",
       "language": "rustlab",
-      "source": "x = randn(500); plot(x)",
+      "source": "x = randn(1, 500); plot(x)",
       "source_hash": "blake3:649cb9a0a241d775",
       "text_output": "",
       "error": null,
