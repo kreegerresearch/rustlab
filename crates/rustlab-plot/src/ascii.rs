@@ -145,32 +145,20 @@ pub(crate) fn draw_subplots(
             let sp = &subplots[idx];
             let cell = col_areas[c];
 
-            // Log-scaled axes (semilogx/semilogy/loglog): position data by
-            // log10 so the ASCII preview keeps the correct log shape. (The
-            // SVG/HTML backends additionally render real decade tick labels;
-            // the coarse terminal grid keeps log-unit ticks.)
-            let x_log = sp.x_scale == crate::figure::AxisScale::Log;
-            let y_log = sp.y_scale == crate::figure::AxisScale::Log;
+            // Log-scaled axes (semilogx/semilogy/loglog): position data and
+            // scripted limits by log10 so the ASCII preview keeps the log
+            // shape. Decade labels are a file/HTML concern; the coarse
+            // terminal grid keeps log-unit ticks. Plotly is not on this path.
             let log_owned;
-            let sp: &crate::figure::SubplotState = if x_log || y_log {
-                let mut cl = sp.clone();
-                for s in &mut cl.series {
-                    if x_log {
-                        for v in &mut s.x_data {
-                            *v = v.log10();
-                        }
-                    }
-                    if y_log {
-                        for v in &mut s.y_data {
-                            *v = v.log10();
-                        }
-                    }
-                }
-                log_owned = cl;
-                &log_owned
-            } else {
-                sp
-            };
+            let sp: &crate::figure::SubplotState =
+                if sp.x_scale == crate::figure::AxisScale::Log
+                    || sp.y_scale == crate::figure::AxisScale::Log
+                {
+                    log_owned = sp.log_scaled_view();
+                    &log_owned
+                } else {
+                    sp
+                };
 
             // Axis bounds shared with the file backend.
             let Some((mut x_min, mut x_max, mut y_min, mut y_max)) =

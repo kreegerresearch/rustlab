@@ -286,9 +286,13 @@ fn value_to_matrix(v: Value, name: &str) -> Result<Array2<C64>, String> {
         Value::Scalar(x) => Ok(Array2::from_elem((1, 1), C64::new(x, 0.0))),
         Value::Complex(z) => Ok(Array2::from_elem((1, 1), z)),
         Value::Bool(b) => Ok(Array2::from_elem((1, 1), C64::new(if b { 1.0 } else { 0.0 }, 0.0))),
-        Value::SparseMatrix(sm) => Ok(sm.to_dense()),
+        Value::SparseMatrix(sm) => sm.to_dense().map_err(|_| {
+            rustlab_core::variable_too_large("to_dense", &[sm.rows, sm.cols])
+        }),
         Value::SparseVector(sv) => {
-            let d = sv.to_dense();
+            let d = sv.to_dense().map_err(|_| {
+                rustlab_core::variable_too_large("to_dense", &[sv.len])
+            })?;
             let n = d.len();
             Ok(Array2::from_shape_fn((n, 1), |(i, _)| d[i]))
         }

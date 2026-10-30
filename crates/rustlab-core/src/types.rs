@@ -68,12 +68,16 @@ impl SparseVec {
     }
 
     /// Convert to a dense CVector.
-    pub fn to_dense(&self) -> CVector {
+    ///
+    /// Errors before allocating when `len` complex elements exceed the
+    /// maximum variable size.
+    pub fn to_dense(&self) -> Result<CVector, crate::CoreError> {
+        crate::checked_elems(&[self.len], crate::ELEM_C64)?;
         let mut v = Array1::from_elem(self.len, Complex::new(0.0, 0.0));
         for &(i, val) in &self.entries {
             v[i] = val;
         }
-        v
+        Ok(v)
     }
 
     /// Create from a dense CVector, dropping exact zeros.
@@ -325,12 +329,16 @@ impl SparseMat {
     }
 
     /// Convert to a dense CMatrix.
-    pub fn to_dense(&self) -> CMatrix {
+    ///
+    /// Errors before allocating when `rows × cols` complex elements exceed
+    /// the maximum variable size.
+    pub fn to_dense(&self) -> Result<CMatrix, crate::CoreError> {
+        crate::checked_elems(&[self.rows, self.cols], crate::ELEM_C64)?;
         let mut m = Array2::from_elem((self.rows, self.cols), Complex::new(0.0, 0.0));
         for &(r, c, val) in &self.entries {
             m[[r, c]] = val;
         }
-        m
+        Ok(m)
     }
 
     /// Create from a dense CMatrix, dropping exact zeros.

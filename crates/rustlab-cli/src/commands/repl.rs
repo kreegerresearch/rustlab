@@ -58,7 +58,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "log2",   brief: "Base-2 log",    detail: "log2(x)  — element-wise base-2 logarithm, accepts scalar, complex, vector, or matrix\n  A negative real is the principal complex value: log2(-1) = iπ/ln(2), not NaN." },
     // Array / stats
     HelpEntry { name: "zeros",    brief: "Zero matrix",
-        detail: "zeros(n)        — n×n zero matrix\nzeros(m, n)     — m×n zero matrix\nzeros(1, n)     — 1×n row (a matrix, not a vector)\nzeros(n, 1)     — n×1 column\nzeros([m, n])   — same (accepts size() output)\nzeros(size(A))  — zero matrix matching A's dimensions\nzeros(n, \"int32\") — n×n integer array" },
+        detail: "zeros(n)        — n×n zero matrix\nzeros(m, n)     — m×n zero matrix\nzeros(1, n)     — 1×n row (a matrix, not a vector)\nzeros(n, 1)     — n×1 column\nzeros([m, n])   — same (accepts size() output; not rounded)\nzeros(size(A))  — zero matrix matching A's dimensions\nzeros(n, \"int32\") — n×n integer array\n\n  A size must be a finite integer below 2^64. An array past 2^48-1\n  elements, or whose stored bytes do not fit in isize, is an error.\n  ones, rand, randn, randi, and eye use the same limit." },
     HelpEntry { name: "ones",     brief: "Ones matrix",
         detail: "ones(n)        — n×n matrix of ones\nones(m, n)     — m×n matrix of ones\nones(1, n)     — 1×n row (a matrix, not a vector)\nones([m, n])   — same (accepts size() output)\nones(size(A))  — ones matrix matching A's dimensions" },
     HelpEntry { name: "linspace", brief: "Linearly spaced vector",
@@ -271,11 +271,11 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "hline",     brief: "Horizontal reference line",
         detail: "hline(y)               — dashed horizontal line at y\nhline(y, \"color\")       — with color (\"r\", \"b\", \"green\", etc.)\nhline(y, \"color\", \"label\")  — with color and legend label\nhline([y1, y2, ...])   — multiple horizontal lines\n  Best used with hold(\"on\") to overlay on existing plots.\n  yline() is an alias." },
     HelpEntry { name: "loglog",    brief: "Log-log line plot (real data, logarithmic axes)",
-        detail: "loglog(x, y [, opts])  — both axes use a logarithmic scale\n  x and y stay the values you passed (they are not replaced by log10).\n  Both must be strictly positive. Tick marks are decades (1, 10, 100, …).\n  Same option syntax as plot().\n\nExample:\n  x = logspace(0, 3, 50);\n  y = x .^ 2;             % power law\n  loglog(x, y)            % straight line, slope 2" },
+        detail: "loglog(x, y [, opts])  — both axes use a logarithmic scale\n  x and y stay the values you passed (they are not replaced by log10).\n  Both must be strictly positive. Tick marks are decades (1, 10, 100, …).\n  xlim and ylim are in those same units (terminal, SVG, and PNG).\n  Same option syntax as plot().\n\nExample:\n  x = logspace(0, 3, 50);\n  y = x .^ 2;             % power law\n  loglog(x, y)            % straight line, slope 2" },
     HelpEntry { name: "semilogx",  brief: "Log-x, linear-y line plot",
-        detail: "semilogx(x, y [, opts])  — logarithmic x-axis, linear y-axis\n  x stays the values you passed (not log10(x)). x must be strictly positive.\n  Tick marks on x are decades. Same option syntax as plot()." },
+        detail: "semilogx(x, y [, opts])  — logarithmic x-axis, linear y-axis\n  x stays the values you passed (not log10(x)). x must be strictly positive.\n  Tick marks on x are decades. xlim and ylim are in the same units\n  as the data (terminal, SVG, and PNG). Same option syntax as plot()." },
     HelpEntry { name: "semilogy",  brief: "Linear-x, log-y line plot",
-        detail: "semilogy(x, y [, opts])  — linear x-axis, logarithmic y-axis\n  y stays the values you passed (not log10(y)). y must be strictly positive.\n  Tick marks on y are decades. Same option syntax as plot()." },
+        detail: "semilogy(x, y [, opts])  — linear x-axis, logarithmic y-axis\n  y stays the values you passed (not log10(y)). y must be strictly positive.\n  Tick marks on y are decades. xlim and ylim are in the same units\n  as the data (terminal, SVG, and PNG). Same option syntax as plot()." },
     HelpEntry { name: "polar",     brief: "Polar coordinate plot via Cartesian pre-transform",
         detail: "polar(theta, r [, opts])  — plot (r·cos θ, r·sin θ)\n  theta in radians, r in arbitrary units. Both real-valued.\n  Axes are labeled \"r·cos(θ)\", \"r·sin(θ)\". A future enhancement will\n  add radial gridlines via a proper polar plot kind in the renderer.\n\nExample:\n  theta = linspace(0, 2*pi, 360);\n  r = 1 + 0.3 * cos(3 * theta);   % three-petal rose\n  polar(theta, r)" },
     HelpEntry { name: "yline",     brief: "Horizontal reference line (alias for hline)",
@@ -787,7 +787,7 @@ pub const HELP: &[HelpEntry] = &[
     HelpEntry { name: "sprand", brief: "Random sparse matrix with given density",
         detail: "sprand(m, n, density)  — m×n sparse matrix with ~density*m*n non-zeros\n  Values are uniform in [0, 1). Density must be in [0, 1].\n\nExample:\n  S = sprand(100, 100, 0.05)  → ~500 non-zeros" },
     HelpEntry { name: "pin_dirichlet", brief: "Pin Dirichlet boundary values into a linear system",
-        detail: "[A, b] = pin_dirichlet(A, b, mask_or_indices, values)\n\n  For each pinned cell k: row k of A becomes the identity row\n  (diagonal 1, everything else 0) and b(k) is set to the pinned\n  value, so spsolve(A, b) reproduces the boundary potential exactly.\n  Replaces the hand-rolled per-cell pinning loop.\n\n  mask_or_indices — a matrix/tensor mask on the grid (nonzero = pin,\n    column-major linearization matching ij2k/ijk2k and the\n    laplacian_* builders), or a vector of 1-based linear indices.\n  values — scalar (broadcast) or vector aligned with the pins.\n\n  A may be sparse (laplacian_* output; ordering hint preserved) or\n  dense; b keeps its container and orientation. Both outputs must be\n  bound — dropping the modified b silently would be a footgun.\n\nExample (plate at 5 V on a 2-D grid):\n  A = laplacian_2d(nx, ny);  b = zeros(nx*ny);\n  [A, b] = pin_dirichlet(A, b, plate_mask, 5.0);\n  V = reshape(spsolve(A, b), ny, nx);" },
+        detail: "[A, b] = pin_dirichlet(A, b, mask_or_indices, values)\n\n  For each pinned cell k: row k of A becomes the identity row\n  (diagonal 1, everything else 0) and b(k) is set to the pinned\n  value, so spsolve(A, b) reproduces the boundary potential exactly.\n  Replaces the hand-rolled per-cell pinning loop.\n\n  mask_or_indices — a matrix/tensor mask on the grid (nonzero = pin,\n    column-major linearization matching ij2k/ijk2k and the\n    laplacian_* builders), or a vector of 1-based linear indices.\n  values — scalar (broadcast) or vector aligned with the pins.\n\n  A may be sparse (laplacian_* output; ordering hint preserved) or\n  dense; b keeps its container and orientation. Both outputs must be\n  bound — dropping the modified b silently would be a footgun.\n\nExample (plate at 5 V on a 2-D grid):\n  A = laplacian_2d(nx, ny);  b = zeros(nx*ny, 1);\n  [A, b] = pin_dirichlet(A, b, plate_mask, 5.0);\n  V = reshape(spsolve(A, b), ny, nx);" },
     HelpEntry { name: "laplacian_2d", brief: "5-point sparse Laplacian on a 2-D grid",
         detail: "laplacian_2d(nx, ny)                  — dx = dy = 1, Dirichlet\nlaplacian_2d(nx, ny, dx, dy)          — uniform spacing\nlaplacian_2d(nx, ny [, dx, dy], bc)   — bc = \"dirichlet\"|\"neumann\"|\"periodic\"\n\n  Returns an (nx*ny) × (nx*ny) sparse matrix L approximating +∇² on a\n  uniform grid. Sign: Poisson ∇²V = -rho/eps0 solves as V = spsolve(L, -rho/eps0).\n\n  Node ordering: column-major, V(i, j) → k = (j-1)*ny + i (1-based).\n  Use ij2k(i, j, ny) / k2ij(k, ny) for index sugar.\n\n  Boundary conditions:\n    \"dirichlet\" (default) — V = 0 outside grid; standard banded stencil.\n    \"neumann\"             — zero-flux; boundary cells absorb missing\n                            coefficient into diagonal. Constants in null space.\n    \"periodic\"            — wrap. Constants in null space.\n\nExample:\n  nx = 8; ny = 6;\n  L = laplacian_2d(nx, ny);\n  rho = zeros(ny, nx);  rho(ny/2, nx/2) = 1;\n  V = spsolve(L, -rho(:));  V_grid = reshape(V, ny, nx);" },
     HelpEntry { name: "laplacian_1d", brief: "Sparse tridiagonal Laplacian on a 1-D grid",
@@ -804,8 +804,6 @@ pub const HELP: &[HelpEntry] = &[
         detail: "ijk2k(i, j, kk, ny, nx)  — return 1-based flat index\n  k = ((kk-1)*nx + (j-1))*ny + i\n  Last two arguments are ny (rows), nx (cols) — same as Tensor3 / laplacian_3d.\n\nExample:\n  k = ijk2k(2, 3, 4, 5, 6)  → 102" },
     HelpEntry { name: "k2ijk", brief: "Column-major-of-pages 3-D flat index → (i, j, kk)",
         detail: "[i, j, kk] = k2ijk(k, ny, nx)  — inverse of ijk2k. 1-based.\n\nExample:\n  [i, j, kk] = k2ijk(102, 5, 6)  → i = 2, j = 3, kk = 4" },
-    HelpEntry { name: "plot_limits", brief: "Set axis limits for a live figure panel",
-        detail: "plot_limits(fig, panel, xmin, xmax, ymin, ymax)  — fix axes for one panel\n\nExample:\n  plot_limits(fig, 1, 0, 1000, -100, 0)" },
     // Integer types (dev/plans/integer_types.md)
     HelpEntry { name: "int8", brief: "Cast to 8-bit signed integer",
         detail: "int8(x [, \"saturate\"|\"wrap\"])  — range −128..127\n  Reals round half away from zero; out-of-range saturates (default) or\n  wraps. int8(200) → 127; int8(2.5) → 3; int8(200, \"wrap\") → -56." },
@@ -1645,7 +1643,127 @@ mod history_arg_tests {
 #[cfg(test)]
 mod help_coverage_tests {
     use super::*;
+    use rustlab_script::eval::BuiltinRegistry;
     use std::collections::HashSet;
+
+    /// HELP topics that are not `BuiltinRegistry` entries.
+    ///
+    /// The first group is callables the evaluator dispatches itself, ahead
+    /// of the registry. The rest are language keywords, constants, and REPL
+    /// topics. A new HELP name must be a registered builtin or added here.
+    const HELP_NOT_REGISTERED: &[&str] = &[
+        "Inf",
+        "NaN",
+        "arrayfun",
+        "cache",
+        "cd",
+        "chained_index",
+        "clf",
+        "clear",
+        "compound_assign",
+        "e",
+        "elseif",
+        "feval",
+        "for",
+        "format",
+        "function",
+        "fzero",
+        "history",
+        "i / j",
+        "if",
+        "index",
+        "index_assign",
+        "ls",
+        "parmap",
+        "pi",
+        "profile",
+        "profile_report",
+        "pwd",
+        "range",
+        "remote",
+        "rk4",
+        "run",
+        "rustlabrc",
+        "stdin",
+        "str_index",
+        "switch",
+        "underscores",
+        "viewer",
+        "widget",
+    ];
+
+    #[test]
+    fn help_names_are_unique() {
+        let mut seen = HashSet::new();
+        let mut dups = Vec::new();
+        for entry in HELP {
+            if !seen.insert(entry.name) {
+                dups.push(entry.name);
+            }
+        }
+        assert!(dups.is_empty(), "duplicate HELP names: {dups:?}");
+    }
+
+    #[test]
+    fn every_builtin_has_a_help_entry() {
+        let reg = BuiltinRegistry::with_defaults();
+        let help: HashSet<&str> = HELP.iter().map(|e| e.name).collect();
+        let mut missing: Vec<String> = reg
+            .all_names()
+            .into_iter()
+            .filter(|n| !help.contains(n.as_str()))
+            .collect();
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "registry names with no HELP entry: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn callable_help_is_registered_or_allowlisted() {
+        let reg = BuiltinRegistry::with_defaults();
+        let allow: HashSet<&str> = HELP_NOT_REGISTERED.iter().copied().collect();
+        assert_eq!(
+            allow.len(),
+            HELP_NOT_REGISTERED.len(),
+            "HELP_NOT_REGISTERED contains duplicates"
+        );
+
+        let mut stale = Vec::new();
+        let mut registered = Vec::new();
+        for name in HELP_NOT_REGISTERED {
+            if !HELP.iter().any(|e| e.name == *name) {
+                stale.push(*name);
+            }
+            if reg.contains(name) {
+                registered.push(*name);
+            }
+        }
+        assert!(
+            stale.is_empty(),
+            "allowlist names with no HELP entry: {stale:?}"
+        );
+        assert!(
+            registered.is_empty(),
+            "allowlist names that are registered builtins (drop them from HELP_NOT_REGISTERED): {registered:?}"
+        );
+
+        let mut stray = Vec::new();
+        for entry in HELP {
+            if !reg.contains(entry.name) && !allow.contains(entry.name) {
+                stray.push(entry.name);
+            }
+        }
+        stray.sort();
+        stray.dedup();
+        assert!(
+            stray.is_empty(),
+            "HELP names neither registered nor on HELP_NOT_REGISTERED \
+             (arrayfun, feval, fzero, parmap, profile, profile_report, rk4, widget, \
+             plus language keywords): {stray:?}"
+        );
+    }
 
     /// Every entry in `HELP` must appear in exactly one `CategoryRow`. Catches
     /// drift when new builtins are added without a category, and detects

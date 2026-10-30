@@ -567,6 +567,8 @@ zeros(size(A))   # → zero matrix matching A's dimensions
 ```
 `zeros(n, "int32")` (and the other integer class names) is an n×n integer array. `zeros(1, n, "int32")` is a row.
 
+A size must be a finite non-negative integer strictly below `2^64` (a size vector is not rounded). The array is refused, before any buffer is allocated, when the element count exceeds `2^48 − 1` or the stored byte length does not fit in `isize`. `ones`, `rand`, `randn`, `randi`, and `eye` use the same rule.
+
 ### `ones(n)` / `ones(m, n)` / `ones([m, n])`
 Same shapes as `zeros`. One size is n×n. A row is `ones(1, n)`.
 ```
@@ -2120,7 +2122,7 @@ Enforce Dirichlet boundary values on a linear system: for every pinned cell `k`,
 ```
 # Parallel plates at ±5 V on an ny×nx grid:
 A = laplacian_2d(nx, ny);
-b = zeros(nx*ny);
+b = zeros(nx*ny, 1);
 [A, b] = pin_dirichlet(A, b, top_plate, 5.0);
 [A, b] = pin_dirichlet(A, b, bot_plate, -5.0);
 V = reshape(spsolve(A, b), ny, nx);
@@ -2648,7 +2650,7 @@ f = logspace(0, 4, 200);
 semilogx(f, 20 * log10(abs(H)))
 ```
 
-`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`.
+`loglog` requires both `x` and `y` to be strictly positive. `semilogx` requires positive `x`; `semilogy` requires positive `y`. Negative or zero values produce a clear error. Option syntax matches `plot()`. `xlim` and `ylim` are in the same units as the data. The terminal, SVG, and PNG all frame that window; HTML leaves the log axis to Plotly.
 
 ### `polar(theta, r [, opts])`
 

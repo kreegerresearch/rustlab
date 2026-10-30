@@ -6,6 +6,11 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.41
+
+### Changed
+- **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
+
 ## 0.3.39
 
 ### Breaking / behavior changes
@@ -16,6 +21,32 @@ should re-validate against those entries when upgrading.
 
 ### Fixed
 - **`[L, U, p] = lu(A, "vector")` is a 1×n row.** `size(p)` is `[1, n]`, matching MATLAB's `whos` line (`1×1000`). `A(p, :) = L*U` is unchanged.
+
+## 0.3.38
+
+### Fixed
+- **A scripted `xlim` / `ylim` on a log axis is honoured in the terminal.** `semilogx` (and `semilogy` / `loglog`) already drew samples in log space and logged the limits for SVG and PNG. The terminal logged the samples and left the limits in real units, so `xlim([1, 1000])` did not frame the chart. Both backends now use `SubplotState::log_scaled_view`, which log10s the series and the limits together. Plotly still uses native log axes. Tick labels stay real decades (`10`, `100`).
+
+### Changed
+- Internal. Plotly colorscale names go through one `plotly_colorscale` helper. Quiver and streamline strokes for HTML and for SVG/PNG come from `overlay_polylines`. The 95th-percentile arrow scale, `"normalized"`, and the viewer path are unchanged. A streamline's HTML figure is one trace (path and midpoint arrow) instead of two traces with the same style.
+
+## 0.3.37
+
+### Changed
+- Internal only. Windowed-sinc FIR builtins, SISO Bode/Nyquist frequency response, and the four `laplacian_*` constructors share helpers. `arg_usize` / `arg_f64` / `arg_str` replace the repeated unprefixed argument conversions. Array sizes stay on `count_arg` with the 0.3.35 allocation checks. Script results and error text are unchanged, including Laplacian `Identity` ordering hints.
+
+## 0.3.36
+
+### Fixed
+- **`help plot_limits` documents the signature the builtin accepts.** The entry is `plot_limits(fig, panel, xlim, ylim)` with `[lo, hi]` vectors. A second help entry described a six-number form (`xmin, xmax, ymin, ymax`) that `plot_limits` rejects. That entry is gone. The vector form is unchanged.
+- **`llms.txt` no longer hard-codes a builtin count.** The count drifted from the registry. The live index is `rustlab docs --json`.
+
+## 0.3.35
+
+### Breaking / behavior changes
+- **An array that cannot exist is an error, not a panic or a wrapped empty buffer.** `zeros(2^32, "int8")` used to square the size and multiply with a wrapping `usize` product: debug builds panicked, and release builds allocated nothing and then panicked on print. `zeros`, `ones`, `rand`, `randn`, `randi`, `eye`, and the other constructors now refuse that request before allocating. The same check covers `diag`, `reshape`, `repmat`, `kron`, `outer`, `meshgrid`, `cat` along pages, `sprand`, `full` / sparse `to_dense`, `linspace`, `window`, `fft` / `ifft` (including the Bluestein length `next_power_of_two(2n−1)`), `upfirdn`, `convolve`, `laplacian_2d`, an NPY shape before the payload is read, matrix-product and broadcast result buffers, and a plot RGBA byte product.
+- **A size must be a finite integral value strictly below `2^64`.** `zeros([Inf, 1])` used to become a `usize::MAX` dimension because the `[m, n]` form rounded and cast. It is now an error, and a non-integer size vector is not rounded. `n >= 2^64` (compared in `f64`) is rejected; `as usize` no longer saturates a too-large size to `usize::MAX`.
+- The element cap is MATLAB's `2^48 − 1`. The byte length must also fit in `isize` (the product is a checked multiply, so a wrapped `usize` count is an error). The message is `<fn>: requested AxB array exceeds the maximum possible variable size`.
 
 ## 0.3.34
 

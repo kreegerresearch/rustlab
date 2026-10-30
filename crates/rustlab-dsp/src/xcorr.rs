@@ -133,18 +133,25 @@ fn direct_f64(x: &[f64], y: &[f64], maxlag: usize) -> Vec<f64> {
 /// up to a power of two, so a requested lag does not wrap into another.
 fn fft_c64(x: &[C64], y: &[C64], maxlag: usize) -> Vec<C64> {
     let linear = x.len().saturating_add(y.len()).saturating_sub(1).max(1);
-    let wanted = (2 * maxlag + 1).max(linear);
-    let len = wanted.next_power_of_two();
+    let wanted = maxlag.saturating_mul(2).saturating_add(1).max(linear);
+    let Some(len) = wanted.checked_next_power_of_two() else {
+        return direct_c64(x, y, maxlag);
+    };
+    if rustlab_core::checked_elems(&[len], rustlab_core::ELEM_C64).is_err() {
+        return direct_c64(x, y, maxlag);
+    }
     let mut xbuf = vec![Complex::new(0.0, 0.0); len];
     let mut ybuf = vec![Complex::new(0.0, 0.0); len];
     xbuf[..x.len()].copy_from_slice(x);
     ybuf[..y.len()].copy_from_slice(y);
-    dft_any_len(&mut xbuf, false);
-    dft_any_len(&mut ybuf, false);
+    // The length is a power of two bounded by the inputs already in hand.
+    // A refusal here is a size error, not a wrong correlation.
+    dft_any_len(&mut xbuf, false).expect("xcorr fft length");
+    dft_any_len(&mut ybuf, false).expect("xcorr fft length");
     for i in 0..len {
         xbuf[i] *= ybuf[i].conj();
     }
-    dft_any_len(&mut xbuf, true);
+    dft_any_len(&mut xbuf, true).expect("xcorr fft length");
     let mut out = Vec::with_capacity(2 * maxlag + 1);
     for m in -(maxlag as isize)..=(maxlag as isize) {
         let idx = if m >= 0 {

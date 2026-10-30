@@ -539,9 +539,47 @@ fn check_args_range(name: &str, args: &[Value], min: usize, max: usize) -> Resul
     }
 }
 
+
+fn arg_usize(v: &Value) -> Result<usize, ScriptError> {
+    v.to_usize().map_err(ScriptError::type_err)
+}
+
+fn arg_f64(v: &Value) -> Result<f64, ScriptError> {
+    v.to_scalar().map_err(ScriptError::type_err)
+}
+
+fn arg_str(v: &Value) -> Result<String, ScriptError> {
+    v.to_str().map_err(ScriptError::type_err)
+}
+
 fn parse_window(val: &Value) -> Result<WindowFunction, ScriptError> {
-    let s = val.to_str().map_err(|e| ScriptError::type_err(e))?;
+    let s = arg_str(val)?;
     WindowFunction::from_str(&s, None).map_err(ScriptError::Dsp)
+}
+
+/// Shared body of the windowed-sinc FIR builtins.
+///
+/// `args` is `taps, freq…, sample_rate, window`. Lowpass and highpass pass
+/// one frequency; bandpass passes two. The caller checks arity first, so a
+/// wrong count still comes from `check_args`.
+fn fir_design(
+    args: &[Value],
+    design: impl FnOnce(
+        usize,
+        &[f64],
+        f64,
+        WindowFunction,
+    ) -> Result<rustlab_dsp::FirFilter, rustlab_dsp::error::DspError>,
+) -> Result<Value, ScriptError> {
+    let taps = arg_usize(&args[0])?;
+    let sr = arg_f64(&args[args.len() - 2])?;
+    let win = parse_window(&args[args.len() - 1])?;
+    let mut freqs = Vec::with_capacity(args.len() - 3);
+    for a in &args[1..args.len() - 2] {
+        freqs.push(arg_f64(a)?);
+    }
+    let filter = design(taps, &freqs, sr, win)?;
+    Ok(cvector_to_value(filter.coefficients))
 }
 
 fn cvector_to_value(v: CVector) -> Value {
@@ -552,33 +590,19 @@ fn cvector_to_value(v: CVector) -> Value {
 
 fn builtin_fir_lowpass(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_lowpass", &args, 4)?;
-    let num_taps = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let win = parse_window(&args[3])?;
-    let filter = fir_lowpass(num_taps, cutoff_hz, sr, win)?;
-    Ok(cvector_to_value(filter.coefficients))
+    fir_design(&args, |taps, f, sr, win| fir_lowpass(taps, f[0], sr, win))
 }
 
 fn builtin_fir_highpass(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_highpass", &args, 4)?;
-    let num_taps = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let win = parse_window(&args[3])?;
-    let filter = fir_highpass(num_taps, cutoff_hz, sr, win)?;
-    Ok(cvector_to_value(filter.coefficients))
+    fir_design(&args, |taps, f, sr, win| fir_highpass(taps, f[0], sr, win))
 }
 
 fn builtin_fir_bandpass(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_bandpass", &args, 5)?;
-    let num_taps = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let low_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let high_hz = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[3].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let win = parse_window(&args[4])?;
-    let filter = fir_bandpass(num_taps, low_hz, high_hz, sr, win)?;
-    Ok(cvector_to_value(filter.coefficients))
+    fir_design(&args, |taps, f, sr, win| {
+        fir_bandpass(taps, f[0], f[1], sr, win)
+    })
 }
 
 fn ba_vectors(filter: &IirFilter) -> (Value, Value) {
@@ -598,9 +622,9 @@ fn butterworth_return(filter: IirFilter, nargout: usize) -> Value {
 
 fn builtin_butterworth_lowpass(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("butterworth_lowpass", &args, 3)?;
-    let order = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let order = arg_usize(&args[0])?;
+    let cutoff_hz = arg_f64(&args[1])?;
+    let sr = arg_f64(&args[2])?;
     let filter = butterworth_lowpass(order, cutoff_hz, sr)?;
     // One output is the numerator, as before. `[b, a] = ...` also returns
     // the monic denominator, which a single vector cannot carry.
@@ -609,9 +633,9 @@ fn builtin_butterworth_lowpass(args: Vec<Value>, nargout: usize) -> Result<Value
 
 fn builtin_butterworth_highpass(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args("butterworth_highpass", &args, 3)?;
-    let order = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let cutoff_hz = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let order = arg_usize(&args[0])?;
+    let cutoff_hz = arg_f64(&args[1])?;
+    let sr = arg_f64(&args[2])?;
     let filter = butterworth_highpass(order, cutoff_hz, sr)?;
     Ok(butterworth_return(filter, nargout))
 }
@@ -687,8 +711,8 @@ fn builtin_upfirdn(args: Vec<Value>) -> Result<Value, ScriptError> {
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let h_cv = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let h: Vec<f64> = h_cv.iter().map(|c| c.re).collect();
-    let p = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let q = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let p = arg_usize(&args[2])?;
+    let q = arg_usize(&args[3])?;
     let result = upfirdn(&x, &h, p, q)?;
     Ok(Value::Vector(result.into()))
 }
@@ -696,7 +720,8 @@ fn builtin_upfirdn(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_window(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("window", &args, 2)?;
     let win = parse_window(&args[0])?;
-    let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n = count_arg(&args[1])?;
+    require_elems("window", &[n], rustlab_core::ELEM_C64)?;
     let w = win.generate(n);
     // Convert RVector to CVector
     let cv: CVector = Array1::from_iter(w.iter().map(|&x| Complex::new(x, 0.0)));
@@ -1180,6 +1205,7 @@ fn builtin_meshgrid(args: Vec<Value>) -> Result<Value, ScriptError> {
         .map_err(|e| ScriptError::type_err(format!("meshgrid: y: {}", e)))?;
 
     let (m, n) = (xv.len(), yv.len()); // m cols, n rows
+    require_elems("meshgrid", &[n, m], rustlab_core::ELEM_C64)?;
 
     let x_mat = Array2::from_shape_fn((n, m), |(_, j)| xv[j]);
     let y_mat = Array2::from_shape_fn((n, m), |(i, _)| yv[i]);
@@ -1498,20 +1524,39 @@ fn builtin_curl3(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 // ─── Array construction ────────────────────────────────────────────────────
 
+fn too_large(name: &str, dims: &[usize]) -> ScriptError {
+    ScriptError::type_err(rustlab_core::variable_too_large(name, dims))
+}
+
+fn require_elems(name: &str, dims: &[usize], elem_size: usize) -> Result<usize, ScriptError> {
+    rustlab_core::checked_elems(dims, elem_size).map_err(|_| too_large(name, dims))
+}
+
+fn count_arg(v: &Value) -> Result<usize, ScriptError> {
+    v.to_usize().map_err(ScriptError::type_err)
+}
+
+/// One component of a size vector. No rounding: a non-integer is an error,
+/// and so is a non-zero imaginary part or a value that does not fit in `u64`.
+fn count_c64(z: rustlab_core::C64) -> Result<usize, ScriptError> {
+    if z.im.abs() >= 1e-10 {
+        return Err(ScriptError::type_err(format!(
+            "expected non-negative integer, got {z}"
+        )));
+    }
+    Value::count_from_f64(z.re).map_err(ScriptError::type_err)
+}
+
 /// Unpack size arguments for array constructors like zeros, ones, rand, randn.
 /// Accepts: f(n), f(m,n), or f([m,n]) (vector from size()).
 /// `None` for the first element means a single size: the caller builds n×n.
 /// Two sizes, or a 2-element vector, are an m×n matrix.
 fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize), ScriptError> {
     if args.len() == 2 {
-        let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-        let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-        Ok((Some(m), n))
+        Ok((Some(count_arg(&args[0])?), count_arg(&args[1])?))
     } else if let Value::Vector(v) = &args[0] {
         if v.len() == 2 {
-            let m = v[0].re.round() as usize;
-            let n = v[1].re.round() as usize;
-            Ok((Some(m), n))
+            Ok((Some(count_c64(v[0])?), count_c64(v[1])?))
         } else {
             Err(ScriptError::type_err(format!(
                 "{name}: expected scalar or 2-element vector, got {}-element vector",
@@ -1519,8 +1564,7 @@ fn unpack_size_args(args: &[Value], name: &str) -> Result<(Option<usize>, usize)
             )))
         }
     } else {
-        let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-        Ok((None, n))
+        Ok((None, count_arg(&args[0])?))
     }
 }
 
@@ -1543,11 +1587,24 @@ fn square_if_one(m: Option<usize>, n: usize) -> (usize, usize) {
     }
 }
 
+/// Square a single size, then refuse a product that cannot be allocated.
+fn shape_2d(
+    name: &str,
+    m: Option<usize>,
+    n: usize,
+    elem: usize,
+) -> Result<(usize, usize), ScriptError> {
+    let (r, c) = square_if_one(m, n);
+    require_elems(name, &[r, c], elem)?;
+    Ok((r, c))
+}
+
 fn builtin_zeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("zeros", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "zeros")?;
-    let (r, c) = square_if_one(m, n);
+    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let (r, c) = shape_2d("zeros", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
             vec![0i128; r * c],
@@ -1564,7 +1621,8 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (dims, cls) = peel_int_class(&args);
     check_args_range("ones", &dims, 1, 2)?;
     let (m, n) = unpack_size_args(&dims, "ones")?;
-    let (r, c) = square_if_one(m, n);
+    let elem = if cls.is_some() { rustlab_core::ELEM_I128 } else { rustlab_core::ELEM_F64 };
+    let (r, c) = shape_2d("ones", m, n, elem)?;
     if let Some(cls) = cls {
         return Ok(Value::int_array(
             vec![1i128; r * c],
@@ -1579,9 +1637,10 @@ fn builtin_ones(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_linspace(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("linspace", &args, 3)?;
-    let start = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let stop = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let start = arg_f64(&args[0])?;
+    let stop = arg_f64(&args[1])?;
+    let n = count_arg(&args[2])?;
+    require_elems("linspace", &[n], rustlab_core::ELEM_C64)?;
     if n == 0 {
         return Ok(Value::Vector(Array1::zeros(0).into()));
     }
@@ -1606,7 +1665,7 @@ fn builtin_rand(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "rand")?;
-    let (r, c) = square_if_one(m, n);
+    let (r, c) = shape_2d("rand", m, n, rustlab_core::ELEM_F64)?;
     crate::eval::rng::with_rng(|rng| {
         let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
         Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
@@ -1622,7 +1681,7 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
         return crate::eval::rng::with_rng(|rng| Ok(Value::Scalar(dist.sample(rng))));
     }
     let (m, n) = unpack_size_args(&args, "randn")?;
-    let (r, c) = square_if_one(m, n);
+    let (r, c) = shape_2d("randn", m, n, rustlab_core::ELEM_F64)?;
     crate::eval::rng::with_rng(|rng| {
         let data: Vec<f64> = (0..r * c).map(|_| dist.sample(rng)).collect();
         Ok(Value::real_matrix(Array2::from_shape_vec((r, c), data).unwrap()))
@@ -1631,31 +1690,31 @@ fn builtin_randn(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 /// Unpack (m, n, p) from either 3 scalar args or one 3-element vector.
 fn unpack_tensor3_shape(args: &[Value], name: &str) -> Result<(usize, usize, usize), ScriptError> {
-    match args.len() {
-        3 => {
-            let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            let p = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            Ok((m, n, p))
-        }
+    let (m, n, p) = match args.len() {
+        3 => (count_arg(&args[0])?, count_arg(&args[1])?, count_arg(&args[2])?),
         1 => {
             if let Value::Vector(v) = &args[0] {
                 if v.len() == 3 {
-                    return Ok((
-                        v[0].re.round() as usize,
-                        v[1].re.round() as usize,
-                        v[2].re.round() as usize,
-                    ));
+                    (count_c64(v[0])?, count_c64(v[1])?, count_c64(v[2])?)
+                } else {
+                    return Err(ScriptError::type_err(format!(
+                        "{name}: expected (m, n, p) or a 3-element vector"
+                    )));
                 }
+            } else {
+                return Err(ScriptError::type_err(format!(
+                    "{name}: expected (m, n, p) or a 3-element vector"
+                )));
             }
-            Err(ScriptError::type_err(format!(
-                "{name}: expected (m, n, p) or a 3-element vector"
+        }
+        n => {
+            return Err(ScriptError::type_err(format!(
+                "{name}: expected 1 or 3 arguments, got {n}"
             )))
         }
-        n => Err(ScriptError::type_err(format!(
-            "{name}: expected 1 or 3 arguments, got {n}"
-        ))),
-    }
+    };
+    require_elems(name, &[m, n, p], rustlab_core::ELEM_C64)?;
+    Ok((m, n, p))
 }
 
 fn builtin_zeros3(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -1709,7 +1768,7 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
         Value::Vector(v) if v.len() >= 2 => (v[0].re as i64, v[1].re as i64),
         Value::Vector(v) if v.len() == 1 => (1i64, v[0].re as i64),
         _ => {
-            let imax = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))? as i64;
+            let imax = arg_f64(&args[0])? as i64;
             (1i64, imax)
         }
     };
@@ -1721,13 +1780,13 @@ fn builtin_randi(args: Vec<Value>) -> Result<Value, ScriptError> {
     let shape = match args.len() {
         1 => None,
         2 => {
-            let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            Some((n, n))
+            let n = count_arg(&args[1])?;
+            Some(shape_2d("randi", None, n, rustlab_core::ELEM_F64)?)
         }
         _ => {
-            let rows = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            let cols = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-            Some((rows, cols))
+            let rows = count_arg(&args[1])?;
+            let cols = count_arg(&args[2])?;
+            Some(shape_2d("randi", Some(rows), cols, rustlab_core::ELEM_F64)?)
         }
     };
     crate::eval::rng::with_rng(|rng| match shape {
@@ -1761,7 +1820,7 @@ fn builtin_seed(args: Vec<Value>) -> Result<Value, ScriptError> {
             "seed: expected seed() or seed(N) where N is a non-negative integer".to_string(),
         ));
     }
-    let s = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let s = arg_f64(&args[0])?;
     if !s.is_finite() || s < 0.0 || s.fract() != 0.0 {
         return Err(ScriptError::type_err(format!(
             "seed: expected a non-negative integer, got {s}"
@@ -1790,7 +1849,7 @@ fn builtin_rng(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     if args.len() == 2 {
-        let gen = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+        let gen = arg_str(&args[1])?;
         if !matches!(gen.to_lowercase().as_str(), "twister" | "default") {
             return Err(ScriptError::type_err(format!(
                 "rng: unsupported generator '{gen}' (only \"twister\" is available)"
@@ -1820,7 +1879,7 @@ fn apply_rng_setting(arg: &Value) -> Result<(), ScriptError> {
             let seed = map.get("Seed").ok_or_else(|| {
                 ScriptError::type_err("rng: struct must have a Seed field".to_string())
             })?;
-            let s = seed.to_scalar().map_err(|e| ScriptError::type_err(e))?;
+            let s = arg_f64(&seed)?;
             if s.is_nan() {
                 crate::eval::rng::seed_rng_from_entropy();
                 return Ok(());
@@ -1892,7 +1951,7 @@ fn builtin_histogram(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptEr
     }
     let data = to_real_vector(&args[0])?;
     let n_bins = if args.len() == 2 {
-        args[1].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[1])?
     } else {
         10
     };
@@ -3592,7 +3651,7 @@ fn builtin_diff(args: Vec<Value>) -> Result<Value, ScriptError> {
         ));
     }
     let n = if args.len() >= 2 {
-        let s = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        let s = arg_f64(&args[1])?;
         if !s.is_finite() || s < 0.0 || s.fract() != 0.0 {
             return Err(ScriptError::type_err(format!(
                 "diff: n must be a non-negative integer, got {s}"
@@ -3794,7 +3853,7 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
         let s = t.shape();
         let (m, n, p) = (s[0], s[1], s[2]);
         if args.len() == 2 {
-            let dim = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+            let dim = arg_usize(&args[1])?;
             return match dim {
                 1 => Ok(Value::Scalar(m as f64)),
                 2 => Ok(Value::Scalar(n as f64)),
@@ -3828,7 +3887,7 @@ fn builtin_size(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     if args.len() == 2 {
-        let dim = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+        let dim = arg_usize(&args[1])?;
         match dim {
             1 => Ok(Value::Scalar(nrows as f64)),
             2 => Ok(Value::Scalar(ncols as f64)),
@@ -4020,8 +4079,8 @@ fn builtin_fftshift(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_fftfreq(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fftfreq", &args, 2)?;
-    let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let n = arg_usize(&args[0])?;
+    let sr = arg_f64(&args[1])?;
     let freqs = fftfreq(n, sr);
     let cv: CVector = Array1::from_iter(freqs.iter().map(|&f| Complex::new(f, 0.0)));
     Ok(Value::Vector(cv.into()))
@@ -4100,7 +4159,7 @@ fn parse_sided(arg: &Value, fn_name: &str) -> Result<Sided, ScriptError> {
 fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("pwelch", &args, 2, 6)?;
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[1])?;
     let default_len = default_segment_len(x.len()).max(8);
 
     let window = if args.len() >= 3 {
@@ -4110,12 +4169,12 @@ fn builtin_pwelch(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let win_len = window.len();
     let noverlap = if args.len() >= 4 {
-        args[3].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[3])?
     } else {
         win_len / 2
     };
     let nfft = if args.len() >= 5 {
-        args[4].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[4])?
     } else {
         win_len
     };
@@ -4162,9 +4221,7 @@ fn resolve_stft_args(
     let x = args[0]
         .to_cvector()
         .map_err(|e| ScriptError::type_err(e))?;
-    let fs = args[1]
-        .to_scalar()
-        .map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[1])?;
     // Default stft segment length: 128.
     let default_len = 128usize.min(x.len().max(1));
     let window = if args.len() >= 3 {
@@ -4174,12 +4231,12 @@ fn resolve_stft_args(
     };
     let win_len = window.len();
     let noverlap = if args.len() >= 4 {
-        args[3].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[3])?
     } else {
         win_len / 2
     };
     let nfft = if args.len() >= 5 {
-        args[4].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[4])?
     } else {
         win_len
     };
@@ -4359,9 +4416,7 @@ fn resolve_cwt_args(
 ) -> Result<Array1<f64>, ScriptError> {
     // arg[2] (optional): family name string. Phase 3 supports "morlet" only.
     if args.len() >= 3 {
-        let name = args[2]
-            .to_str()
-            .map_err(|e| ScriptError::type_err(e))?;
+        let name = arg_str(&args[2])?;
         if name.to_ascii_lowercase() != "morlet" {
             return Err(ScriptError::type_err(format!(
                 "{fn_name}: only \"morlet\" is currently supported (got \"{name}\")"
@@ -4412,7 +4467,7 @@ fn resolve_cwt_args(
 fn builtin_cwt(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("cwt", &args, 2, 4)?;
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[1])?;
     let scales = resolve_cwt_args(&args, x.len(), "cwt")?;
     let (w, freqs, t) = cwt_morlet(&x, fs, &scales).map_err(ScriptError::Dsp)?;
 
@@ -4449,7 +4504,7 @@ fn builtin_cwt(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_scalogram(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("scalogram", &args, 2, 4)?;
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let fs = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[1])?;
     let scales = resolve_cwt_args(&args, x.len(), "scalogram")?;
     let (w, _freqs, _t) = cwt_morlet(&x, fs, &scales).map_err(ScriptError::Dsp)?;
     let (z_db, vmin, vmax) = db_clip(&w, 80.0);
@@ -4486,12 +4541,12 @@ fn expect_dsp_state(
 /// `pwelch_stream_init(fs, window, noverlap, nfft, ema_alpha)`
 fn builtin_pwelch_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("pwelch_stream_init", &args, 4, 5)?;
-    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[0])?;
     let window = resolve_window_arg(&args[1], 256, "pwelch_stream_init")?;
-    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let noverlap = arg_usize(&args[2])?;
+    let nfft = arg_usize(&args[3])?;
     let ema_alpha = if args.len() == 5 {
-        Some(args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+        Some(arg_f64(&args[4])?)
     } else {
         None
     };
@@ -4531,10 +4586,10 @@ fn builtin_pwelch_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `stft_stream_init(fs, window, noverlap, nfft, sided)`
 fn builtin_stft_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("stft_stream_init", &args, 4, 5)?;
-    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[0])?;
     let window = resolve_window_arg(&args[1], 128, "stft_stream_init")?;
-    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let noverlap = arg_usize(&args[2])?;
+    let nfft = arg_usize(&args[3])?;
     let sided = if args.len() == 5 {
         parse_sided(&args[4], "stft_stream_init")?
     } else {
@@ -4575,8 +4630,8 @@ fn builtin_stft_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `cwt_stream_init(fs, n_samples, n_scales | scales_vector)`
 fn builtin_cwt_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("cwt_stream_init", &args, 2, 3)?;
-    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let n_samples = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[0])?;
+    let n_samples = arg_usize(&args[1])?;
     let scales = if args.len() == 3 {
         // Integer -> default log-spaced grid with that many scales.
         if let Value::Scalar(n) = &args[2] {
@@ -4658,33 +4713,33 @@ fn builtin_cwt_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `smooth_frames = 1` (no smoothing), `update_every = 4`.
 fn builtin_waterfall_stream_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("waterfall_stream_init", &args, 5, 10)?;
-    let fs = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let fs = arg_f64(&args[0])?;
     let window = resolve_window_arg(&args[1], 128, "waterfall_stream_init")?;
-    let noverlap = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let nfft = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let time_history = args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let noverlap = arg_usize(&args[2])?;
+    let nfft = arg_usize(&args[3])?;
+    let time_history = arg_f64(&args[4])?;
     let vmin_db = if args.len() >= 6 {
-        args[5].to_scalar().map_err(|e| ScriptError::type_err(e))?
+        arg_f64(&args[5])?
     } else {
         -100.0
     };
     let vmax_db = if args.len() >= 7 {
-        args[6].to_scalar().map_err(|e| ScriptError::type_err(e))?
+        arg_f64(&args[6])?
     } else {
         0.0
     };
     let colormap = if args.len() >= 8 {
-        args[7].to_str().map_err(|e| ScriptError::type_err(e))?
+        arg_str(&args[7])?
     } else {
         "viridis".to_string()
     };
     let smooth_frames = if args.len() >= 9 {
-        args[8].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[8])?
     } else {
         1
     };
     let update_every = if args.len() >= 10 {
-        args[9].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[9])?
     } else {
         4
     };
@@ -4816,7 +4871,7 @@ fn builtin_waterfall_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_spectrum(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("spectrum", &args, 2)?;
     let x = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let sr = arg_f64(&args[1])?;
     let n = x.len();
     if n == 0 {
         return Err(ScriptError::type_err(
@@ -4847,41 +4902,41 @@ fn builtin_spectrum(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_fir_lowpass_kaiser(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_lowpass_kaiser", &args, 4)?;
-    let cutoff = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let tbw = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let attn = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[3].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let cutoff = arg_f64(&args[0])?;
+    let tbw = arg_f64(&args[1])?;
+    let attn = arg_f64(&args[2])?;
+    let sr = arg_f64(&args[3])?;
     let filter = fir_lowpass_kaiser(cutoff, tbw, attn, sr)?;
     Ok(cvector_to_value(filter.coefficients))
 }
 
 fn builtin_fir_highpass_kaiser(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_highpass_kaiser", &args, 4)?;
-    let cutoff = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let tbw = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let attn = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[3].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let cutoff = arg_f64(&args[0])?;
+    let tbw = arg_f64(&args[1])?;
+    let attn = arg_f64(&args[2])?;
+    let sr = arg_f64(&args[3])?;
     let filter = fir_highpass_kaiser(cutoff, tbw, attn, sr)?;
     Ok(cvector_to_value(filter.coefficients))
 }
 
 fn builtin_fir_bandpass_kaiser(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_bandpass_kaiser", &args, 5)?;
-    let low = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let high = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let tbw = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let attn = args[3].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let low = arg_f64(&args[0])?;
+    let high = arg_f64(&args[1])?;
+    let tbw = arg_f64(&args[2])?;
+    let attn = arg_f64(&args[3])?;
+    let sr = arg_f64(&args[4])?;
     let filter = fir_bandpass_kaiser(low, high, tbw, attn, sr)?;
     Ok(cvector_to_value(filter.coefficients))
 }
 
 fn builtin_fir_notch(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("fir_notch", &args, 5)?;
-    let center = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let bw = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let taps = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let center = arg_f64(&args[0])?;
+    let bw = arg_f64(&args[1])?;
+    let sr = arg_f64(&args[2])?;
+    let taps = arg_usize(&args[3])?;
     let win = parse_window(&args[4])?;
     let filter = fir_notch(center, bw, sr, taps, win)?;
     Ok(cvector_to_value(filter.coefficients))
@@ -4890,8 +4945,8 @@ fn builtin_fir_notch(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_freqz(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("freqz", &args, 3)?;
     let h = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let sr = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let n = arg_usize(&args[1])?;
+    let sr = arg_f64(&args[2])?;
     let (freqs, h_out) = freqz(&h, n, sr).map_err(ScriptError::Dsp)?;
     // Return as 2×n matrix: row 0 = freq axis (real), row 1 = complex response
     use ndarray::Array2;
@@ -4913,7 +4968,7 @@ fn builtin_firpm(args: Vec<Value>) -> Result<Value, ScriptError> {
     if args.len() < 3 || args.len() > 4 {
         return Err(ScriptError::arg_count("firpm".into(), 3, args.len()));
     }
-    let n_taps = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n_taps = arg_usize(&args[0])?;
     let bands = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let desired = args[2].to_cvector().map_err(|e| ScriptError::type_err(e))?;
 
@@ -4944,7 +4999,7 @@ fn builtin_firpmq(args: Vec<Value>) -> Result<Value, ScriptError> {
             "firpmq: expected 3–6 arguments: (n_taps, bands, desired [, weights [, bits [, n_iter]]])".into()
         ));
     }
-    let n_taps = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n_taps = arg_usize(&args[0])?;
     let bands = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let desired = args[2].to_cvector().map_err(|e| ScriptError::type_err(e))?;
 
@@ -4959,13 +5014,13 @@ fn builtin_firpmq(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
 
     let bits = if args.len() >= 5 {
-        args[4].to_usize().map_err(|e| ScriptError::type_err(e))? as u32
+        arg_usize(&args[4])? as u32
     } else {
         16
     };
 
     let n_iter = if args.len() >= 6 {
-        args[5].to_usize().map_err(|e| ScriptError::type_err(e))?
+        arg_usize(&args[5])?
     } else {
         8
     };
@@ -5194,15 +5249,15 @@ fn builtin_qfmt(args: Vec<Value>) -> Result<Value, ScriptError> {
     if args.len() < 2 || args.len() > 4 {
         return Err(ScriptError::arg_count("qfmt".into(), 2, args.len()));
     }
-    let word = args[0].to_usize().map_err(|e| ScriptError::type_err(e))? as u8;
-    let frac = args[1].to_usize().map_err(|e| ScriptError::type_err(e))? as u8;
+    let word = arg_usize(&args[0])? as u8;
+    let frac = arg_usize(&args[1])? as u8;
     let round = if args.len() >= 3 {
-        parse_round_mode(&args[2].to_str().map_err(|e| ScriptError::type_err(e))?)?
+        parse_round_mode(&arg_str(&args[2])?)?
     } else {
         RoundMode::Floor
     };
     let overflow = if args.len() == 4 {
-        parse_overflow_mode(&args[3].to_str().map_err(|e| ScriptError::type_err(e))?)?
+        parse_overflow_mode(&arg_str(&args[3])?)?
     } else {
         OverflowMode::Saturate
     };
@@ -6078,7 +6133,7 @@ fn builtin_stem(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_plotdb(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("plotdb", &args, 1, 2)?;
     let title = if args.len() == 2 {
-        args[1].to_str().map_err(|e| ScriptError::type_err(e))?
+        arg_str(&args[1])?
     } else {
         "Frequency Response".to_string()
     };
@@ -6089,7 +6144,7 @@ fn builtin_plotdb(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_savefig(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("savefig", &args, 1)?;
-    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = arg_str(&args[0])?;
     let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let path = path.to_string_lossy();
     finish_plot(render_figure_file(&path))?;
@@ -6115,7 +6170,7 @@ fn builtin_frame(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// NeuQuant palette). Buffer is cleared on success. `fps` defaults to 10.
 fn builtin_saveanim(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("saveanim", &args, 1, 2)?;
-    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = arg_str(&args[0])?;
     let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let path = path.to_string_lossy().into_owned();
     let fps = if args.len() == 2 {
@@ -6188,7 +6243,7 @@ fn builtin_figure(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError
             id
         } else {
             // String arg → new HTML figure
-            let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let path = arg_str(&args[0])?;
             let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
             let path = path.to_string_lossy();
             let id = rustlab_plot::figure_new_html(&path);
@@ -6217,7 +6272,7 @@ fn builtin_hold(args: Vec<Value>) -> Result<Value, ScriptError> {
     let on = match &args[0] {
         Value::Scalar(n) => *n != 0.0,
         _ => {
-            let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let s = arg_str(&args[0])?;
             s.to_lowercase() == "on" || s == "1"
         }
     };
@@ -6245,7 +6300,7 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     let color = if args.len() >= 2 {
-        let s = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+        let s = arg_str(&args[1])?;
         let c = SeriesColor::parse(&s);
         if c.is_none() {
             // This slot is always a color; a silent palette fallback hid
@@ -6262,7 +6317,7 @@ fn builtin_hline(args: Vec<Value>) -> Result<Value, ScriptError> {
         None
     };
     let label = if args.len() >= 3 {
-        args[2].to_str().map_err(|e| ScriptError::type_err(e))?
+        arg_str(&args[2])?
     } else {
         String::new()
     };
@@ -6324,7 +6379,7 @@ fn builtin_grid(args: Vec<Value>) -> Result<Value, ScriptError> {
     let on = match &args[0] {
         Value::Scalar(n) => *n != 0.0,
         _ => {
-            let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let s = arg_str(&args[0])?;
             s.to_lowercase() == "on" || s == "1"
         }
     };
@@ -6378,7 +6433,7 @@ fn builtin_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
             });
         }
         _ => {
-            let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+            let s = arg_str(&args[0])?;
             match s.to_lowercase().as_str() {
                 "equal" => {
                     FIGURE.with(|fig| fig.borrow_mut().current_mut().axis_equal = true);
@@ -6430,7 +6485,7 @@ fn builtin_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// current panel instead.
 fn builtin_set_default_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("set_default_axis", &args, 1)?;
-    let s = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let s = arg_str(&args[0])?;
     let dir = match s.to_lowercase().as_str() {
         "xy" => rustlab_plot::AxisYDirection::Xy,
         "ij" => rustlab_plot::AxisYDirection::Ij,
@@ -6460,7 +6515,7 @@ fn builtin_set_default_axis(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// xlabel("text") — set x-axis label on current subplot.
 fn builtin_xlabel(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("xlabel", &args, 1)?;
-    let label = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let label = arg_str(&args[0])?;
     FIGURE.with(|fig| fig.borrow_mut().current_mut().xlabel = label);
     sync_figure_outputs();
     Ok(Value::None)
@@ -6469,7 +6524,7 @@ fn builtin_xlabel(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// ylabel("text") — set y-axis label on current subplot.
 fn builtin_ylabel(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("ylabel", &args, 1)?;
-    let label = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let label = arg_str(&args[0])?;
     FIGURE.with(|fig| fig.borrow_mut().current_mut().ylabel = label);
     sync_figure_outputs();
     Ok(Value::None)
@@ -6635,7 +6690,7 @@ fn builtin_polar(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// title("text") — set title on current subplot.
 fn builtin_title(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("title", &args, 1)?;
-    let t = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let t = arg_str(&args[0])?;
     FIGURE.with(|fig| fig.borrow_mut().current_mut().title = t);
     sync_figure_outputs();
     Ok(Value::None)
@@ -6676,9 +6731,9 @@ fn builtin_ylim(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// subplot(rows, cols, idx) — switch to subplot panel (1-based index).
 fn builtin_subplot(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("subplot", &args, 3)?;
-    let rows = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let cols = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let idx = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let rows = arg_usize(&args[0])?;
+    let cols = arg_usize(&args[1])?;
+    let idx = arg_usize(&args[2])?;
     FIGURE.with(|fig| fig.borrow_mut().set_subplot(rows, cols, idx));
     sync_figure_outputs();
     Ok(Value::None)
@@ -6712,7 +6767,7 @@ fn builtin_imagesc(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("imagesc", &args, 1, 2)?;
     warn_non_finite_plot_data("imagesc", &args);
     let colormap = if args.len() == 2 {
-        args[1].to_str().map_err(|e| ScriptError::type_err(e))?
+        arg_str(&args[1])?
     } else {
         "viridis".to_string()
     };
@@ -7546,7 +7601,7 @@ fn builtin_surf(args: Vec<Value>) -> Result<Value, ScriptError> {
             let x = axis_from_value(&args[0], "surf", "X", z.ncols(), false)?;
             let y = axis_from_value(&args[1], "surf", "Y", z.nrows(), true)?;
             let cmap = if n == 4 {
-                args[3].to_str().map_err(|e| ScriptError::type_err(e))?
+                arg_str(&args[3])?
             } else {
                 "viridis".to_string()
             };
@@ -8023,6 +8078,22 @@ fn parse_npy_bytes(bytes: &[u8]) -> Result<Value, String> {
     let fortran =
         header.contains("'fortran_order': True") || header.contains("'fortran_order':True");
     let shape = parse_npy_shape(header)?;
+    // Refuse the shape before the payload is turned into an array. Integer
+    // dtypes are stored as i128, so the in-memory width is 16 even when the
+    // file element is one byte.
+    let stored = if is_c16 {
+        Some(rustlab_core::ELEM_C64)
+    } else if is_f8 {
+        Some(rustlab_core::ELEM_F64)
+    } else if npy_descr(header).and_then(npy_int_dtype).is_some() {
+        Some(rustlab_core::ELEM_I128)
+    } else {
+        None
+    };
+    if let Some(elem) = stored {
+        rustlab_core::checked_elems(&shape, elem)
+            .map_err(|_| rustlab_core::variable_too_large("load", &shape))?;
+    }
     let data = &bytes[hend..];
 
     let rd = |b: &[u8]| -> f64 {
@@ -8332,7 +8403,7 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
             "save: usage:\n  save(\"file.npy\", x)\n  save(\"file.csv\", x)\n  save(\"file.toml\", s)\n  save(\"file.npz\", \"name1\", x1, \"name2\", x2, ...)".to_string()
         ));
     }
-    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = arg_str(&args[0])?;
     let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let path = path.to_string_lossy().into_owned();
 
@@ -8405,7 +8476,7 @@ fn builtin_save(args: Vec<Value>) -> Result<Value, ScriptError> {
 
 fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("load", &args, 1, 2)?;
-    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = arg_str(&args[0])?;
     let path = crate::path_jail::check_path(&path).map_err(ScriptError::runtime)?;
     let path = path.to_string_lossy().into_owned();
 
@@ -8415,7 +8486,7 @@ fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
                 "load: to load all variables use bare load(\"file.npz\") without assignment;\n  to extract one use: x = load(\"file.npz\", \"varname\")".to_string()
             ));
         }
-        let name = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+        let name = arg_str(&args[1])?;
         load_from_npz(&path, &name).map_err(|e| ScriptError::runtime(e))
     } else if path.ends_with(".toml") {
         super::toml_io::load_toml(&path).map_err(|e| ScriptError::runtime(e))
@@ -8433,7 +8504,8 @@ fn builtin_load(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// eye(n) — n×n identity matrix
 fn builtin_eye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("eye", &args, 1)?;
-    let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n = count_arg(&args[0])?;
+    require_elems("eye", &[n, n], rustlab_core::ELEM_C64)?;
     let mut m: CMatrix = Array2::zeros((n, n));
     for i in 0..n {
         m[[i, i]] = Complex::new(1.0, 0.0);
@@ -8469,7 +8541,7 @@ fn exact_scalar_value(c: C64) -> Value {
 fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("diag", &args, 1, 2)?;
     let k: i64 = if args.len() == 2 {
-        let k = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        let k = arg_f64(&args[1])?;
         if k.fract() != 0.0 || !k.is_finite() {
             return Err(ScriptError::type_err(format!(
                 "diag: k must be an integer, got {k}"
@@ -8528,7 +8600,10 @@ fn builtin_diag(args: Vec<Value>) -> Result<Value, ScriptError> {
     }
     // Create diagonal matrix
     let n = v.len();
-    let size = n + k.unsigned_abs() as usize;
+    let size = n.checked_add(k.unsigned_abs() as usize).ok_or_else(|| {
+        too_large("diag", &[n, k.unsigned_abs() as usize])
+    })?;
+    require_elems("diag", &[size, size], rustlab_core::ELEM_C64)?;
     let mut m: CMatrix = Array2::zeros((size, size));
     for (i, &val) in v.iter().enumerate() {
         let (r, c) = if k >= 0 {
@@ -8572,18 +8647,25 @@ fn builtin_trace(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// reshape(A, m, n) — reshape A (vector or matrix) into an m×n matrix (column-major order)
 fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args_range("reshape", &args, 3, 4)?;
-    let m = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let m = count_arg(&args[1])?;
+    let n = count_arg(&args[2])?;
     let p = if args.len() == 4 {
-        Some(args[3].to_usize().map_err(|e| ScriptError::type_err(e))?)
+        Some(count_arg(&args[3])?)
     } else {
         None
     };
+    // Checked product before any `m * n` compare. A wrapping product used to
+    // compare equal to a short source and then allocate the huge shape.
     if p.is_none() {
         if let Some(v) = reshape_2d(&args[0], m, n)? {
             return Ok(v);
         }
     }
+    let dims: Vec<usize> = match p {
+        Some(pv) => vec![m, n, pv],
+        None => vec![m, n],
+    };
+    let total_checked = require_elems("reshape", &dims, rustlab_core::ELEM_C64)?;
     // Flatten source in column-major order (Octave convention).
     let flat: Vec<C64> = match &args[0] {
         Value::Vector(v) => v.iter().copied().collect(),
@@ -8612,10 +8694,7 @@ fn builtin_reshape(args: Vec<Value>) -> Result<Value, ScriptError> {
             )))
         }
     };
-    let total = match p {
-        Some(pv) => m * n * pv,
-        None => m * n,
-    };
+    let total = total_checked;
     if flat.len() != total {
         return Err(ScriptError::type_err(format!(
             "reshape: cannot reshape {} elements into {}{}{} (= {} elements)",
@@ -8672,10 +8751,10 @@ fn reshape_2d_real(src: &Value, m: usize, n: usize) -> Result<Option<Value>, Scr
         _ => return Ok(None),
     };
     let len = data.len();
-    if len != m * n {
+    let prod = require_elems("reshape", &[m, n], rustlab_core::ELEM_F64)?;
+    if len != prod {
         return Err(ScriptError::type_err(format!(
-            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
-            m * n
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {prod} elements)"
         )));
     }
     let in_order = nr == 1 || nc == 1;
@@ -8709,10 +8788,10 @@ fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptEr
     };
     // Not row-major: the general walk handles it.
     let Some(data) = data else { return Ok(None) };
-    if len != m * n {
+    let prod = require_elems("reshape", &[m, n], rustlab_core::ELEM_C64)?;
+    if len != prod {
         return Err(ScriptError::type_err(format!(
-            "reshape: cannot reshape {len} elements into {m}×{n} (= {} elements)",
-            m * n
+            "reshape: cannot reshape {len} elements into {m}×{n} (= {prod} elements)"
         )));
     }
     // Source in column-major order: shared (a vector), as stored (one row
@@ -8742,8 +8821,8 @@ fn reshape_2d(src: &Value, m: usize, n: usize) -> Result<Option<Value>, ScriptEr
 /// repmat(A, m, n) — tile matrix A m times vertically, n times horizontally
 fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("repmat", &args, 3)?;
-    let reps_r = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let reps_c = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let reps_r = count_arg(&args[1])?;
+    let reps_c = count_arg(&args[2])?;
     // Normalise to a matrix block
     let block: CMatrix = match &args[0] {
         Value::Matrix(m) => (**m).clone(),
@@ -8764,6 +8843,7 @@ fn builtin_repmat(args: Vec<Value>) -> Result<Value, ScriptError> {
     };
     let br = block.nrows();
     let bc = block.ncols();
+    require_elems("repmat", &[br, reps_r, bc, reps_c], rustlab_core::ELEM_C64)?;
     let out_r = br * reps_r;
     let out_c = bc * reps_c;
     let mut out: CMatrix = Array2::zeros((out_r, out_c));
@@ -8806,7 +8886,7 @@ fn builtin_cat(args: Vec<Value>) -> Result<Value, ScriptError> {
             "cat: expected cat(dim, A, B, ...), got no arguments".to_string(),
         ));
     }
-    let dim = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let dim = arg_usize(&args[0])?;
     let rest: Vec<Value> = args.into_iter().skip(1).collect();
     if rest.is_empty() {
         return Err(ScriptError::type_err(
@@ -8849,8 +8929,11 @@ fn builtin_cat(args: Vec<Value>) -> Result<Value, ScriptError> {
                         n
                     )));
                 }
-                total_pages += vp;
+                total_pages = total_pages.checked_add(vp).ok_or_else(|| {
+                    too_large("cat", &[m, n, total_pages.saturating_add(vp)])
+                })?;
             }
+            require_elems("cat", &[m, n, total_pages], rustlab_core::ELEM_C64)?;
             let mut out = Array3::<C64>::zeros((m, n, total_pages));
             let mut k0 = 0usize;
             for v in rest.into_iter() {
@@ -9117,6 +9200,7 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     }
     if let (Some(a), Some(b)) = (real_1d(&args[0]), real_1d(&args[1])) {
+        require_elems("outer", &[a.len(), b.len()], rustlab_core::ELEM_F64)?;
         let mut out = Vec::with_capacity(a.len() * b.len());
         for &x in a {
             out.extend(b.iter().map(|&y| x * y));
@@ -9132,6 +9216,7 @@ fn builtin_outer(args: Vec<Value>) -> Result<Value, ScriptError> {
     // Real inputs give a real result (no `0·Inf` NaN in the imaginary
     // part), as for `.*` and `*`.
     let real = a.iter().chain(b.iter()).all(|c| c.im.abs() < f64::EPSILON);
+    require_elems("outer", &[a.len(), b.len()], rustlab_core::ELEM_C64)?;
     let m = Array2::from_shape_fn((a.len(), b.len()), |(i, j)| {
         let z = a[i] * b[j];
         if real { C64::new(z.re, 0.0) } else { z }
@@ -9148,6 +9233,7 @@ fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
     let b = to_cmatrix_arg_row(&args[1], "kron", "B")?;
     let (ma, na) = (a.nrows(), a.ncols());
     let (mb, nb) = (b.nrows(), b.ncols());
+    require_elems("kron", &[ma, mb, na, nb], rustlab_core::ELEM_C64)?;
     let result = Array2::from_shape_fn((ma * mb, na * nb), |(r, c)| {
         a[[r / mb, c / nb]] * b[[r % mb, c % nb]]
     });
@@ -9310,7 +9396,7 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                             sm.rows, sm.cols
                         )));
                     }
-                    let dense = sm.to_dense();
+                    let dense = sm.to_dense().map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
                     let (_, sv, _) = svd_full(&dense)?;
                     Ok(Value::Scalar(sv.first().copied().unwrap_or(0.0)))
                 }
@@ -10381,7 +10467,7 @@ fn unwrap_sparse<'a>(
 
 fn builtin_whos_file(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("whos", &args, 1)?;
-    let path = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let path = arg_str(&args[0])?;
 
     if !path.ends_with(".npz") {
         return Err(ScriptError::type_err(
@@ -10476,7 +10562,7 @@ fn builtin_fprintf(args: Vec<Value>) -> Result<Value, ScriptError> {
             "fprintf: expected a format string".to_string(),
         ));
     }
-    let fmt = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let fmt = arg_str(&args[0])?;
     let output = apply_format(&fmt, &args[1..]).map_err(|e| ScriptError::runtime(e))?;
     super::output::script_print(&output);
     Ok(Value::None)
@@ -10488,7 +10574,7 @@ fn builtin_sprintf(args: Vec<Value>) -> Result<Value, ScriptError> {
             "sprintf: expected a format string".to_string(),
         ));
     }
-    let fmt = args[0].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let fmt = arg_str(&args[0])?;
     let output = apply_format(&fmt, &args[1..]).map_err(|e| ScriptError::runtime(e))?;
     Ok(Value::Str(output))
 }
@@ -11819,21 +11905,28 @@ fn find_crossing(x: &[f64], y: &[f64], target: f64) -> Option<f64> {
     None
 }
 
-/// Evaluate Bode data (mag_dB, phase_deg unwrapped) for a TF over frequency vector w.
-fn bode_compute(num: &[f64], den: &[f64], w: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let h: Vec<C64> = w
-        .iter()
+/// `|den(jw)|` below this is treated as a pole on the frequency axis.
+const TF_DENOM_FLOOR: f64 = 1e-300;
+
+/// `H(jw) = num(jw) / den(jw)` at each frequency in `w` (rad/s).
+fn freqresp_siso(num: &[f64], den: &[f64], w: &[f64]) -> Vec<C64> {
+    w.iter()
         .map(|&wi| {
             let jw = Complex::new(0.0, wi);
             let n = poly_eval_c(num, jw);
             let d = poly_eval_c(den, jw);
-            if d.norm() < 1e-300 {
+            if d.norm() < TF_DENOM_FLOOR {
                 Complex::new(f64::INFINITY, 0.0)
             } else {
                 n / d
             }
         })
-        .collect();
+        .collect()
+}
+
+/// Evaluate Bode data (mag_dB, phase_deg unwrapped) for a TF over frequency vector w.
+fn bode_compute(num: &[f64], den: &[f64], w: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let h = freqresp_siso(num, den, w);
     let mag_db: Vec<f64> = h.iter().map(|v| 20.0 * v.norm().log10()).collect();
     let phase_raw: Vec<f64> = h.iter().map(|v| v.arg().to_degrees()).collect();
     (mag_db, unwrap_phase_deg(&phase_raw))
@@ -11930,23 +12023,11 @@ fn builtin_bode(args: Vec<Value>) -> Result<Value, ScriptError> {
 }
 
 /// Evaluate `G(jω)` for a SISO transfer function over a frequency vector.
-/// Returns parallel `(re, im)` vectors. Mirrors `bode_compute` but keeps the
-/// complex parts directly (no magnitude/phase conversion).
+/// Returns parallel `(re, im)` vectors.
 fn nyquist_compute(num: &[f64], den: &[f64], w: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    let mut re = Vec::with_capacity(w.len());
-    let mut im = Vec::with_capacity(w.len());
-    for &wi in w {
-        let jw = Complex::new(0.0, wi);
-        let n = poly_eval_c(num, jw);
-        let d = poly_eval_c(den, jw);
-        let h = if d.norm() < 1e-300 {
-            Complex::new(f64::INFINITY, 0.0)
-        } else {
-            n / d
-        };
-        re.push(h.re);
-        im.push(h.im);
-    }
+    let h = freqresp_siso(num, den, w);
+    let re = h.iter().map(|c| c.re).collect();
+    let im = h.iter().map(|c| c.im).collect();
     (re, im)
 }
 
@@ -12054,7 +12135,7 @@ fn builtin_nyquist(args: Vec<Value>) -> Result<Value, ScriptError> {
                 ));
             }
             _ => {
-                let s = args[1].to_str().map_err(|e| ScriptError::type_err(e))?;
+                let s = arg_str(&args[1])?;
                 if s == "pos-only" {
                     mirror = false;
                     None
@@ -12163,7 +12244,7 @@ fn builtin_step(args: Vec<Value>) -> Result<Value, ScriptError> {
 
     // Auto t_end: 10 / slowest pole decay rate, capped at 100 s
     let t_end: f64 = if args.len() == 2 {
-        args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?
+        arg_f64(&args[1])?
     } else {
         let poles = builtin_roots(vec![real_poly_to_value(&den)])?;
         let min_decay = match &poles {
@@ -13100,7 +13181,7 @@ fn extract_xy_with_title(
             let xv = to_real_vector(x)?;
             let yv = to_real_vector(y)?;
             check_xy_lengths(name, xv.len(), yv.len())?;
-            let title = t.to_str().map_err(|e| ScriptError::type_err(e))?;
+            let title = arg_str(&t)?;
             Ok((xv.to_vec(), yv.to_vec(), title))
         }
         _ => Err(ScriptError::type_err(format!(
@@ -13218,7 +13299,7 @@ fn lyap_solve(a: &CMatrix, q: &CMatrix) -> Result<CMatrix, String> {
 fn builtin_gram(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("gram", &args, 3)?;
     let a = to_cmatrix_arg(&args[0], "gram", "A")?;
-    let kind = args[2].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let kind = arg_str(&args[2])?;
     let n = a.nrows();
 
     let w = match kind.as_str() {
@@ -13542,7 +13623,7 @@ fn builtin_pinv(args: Vec<Value>) -> Result<Value, ScriptError> {
     let (u, sigma, v) = svd_full(&a)?;
     let smax = sigma.first().copied().unwrap_or(0.0);
     let tol = if args.len() == 2 {
-        let t = args[1].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+        let t = arg_f64(&args[1])?;
         if !t.is_finite() || t < 0.0 {
             return Err(ScriptError::type_err(format!(
                 "pinv: tol must be a non-negative finite number, got {t}"
@@ -13855,7 +13936,7 @@ fn complete_orthonormal(a: &mut Array2<C64>, filled: &[bool]) {
 /// n should be length(h) - 1 where h is the filter coefficient vector.
 fn builtin_state_init(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("state_init", &args, 1)?;
-    let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n = arg_usize(&args[0])?;
     let buf = vec![C64::new(0.0, 0.0); n];
     Ok(Value::FirState(Arc::new(Mutex::new(buf))))
 }
@@ -13943,8 +14024,8 @@ fn builtin_filter_stream(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `audio_in(sr, n)` — create an audio input metadata handle (no hardware opened).
 fn builtin_audio_in(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("audio_in", &args, 2)?;
-    let sample_rate = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let frame_size = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let sample_rate = arg_f64(&args[0])?;
+    let frame_size = arg_usize(&args[1])?;
     Ok(Value::AudioIn {
         sample_rate,
         frame_size,
@@ -13954,8 +14035,8 @@ fn builtin_audio_in(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `audio_out(sr, n)` — create an audio output metadata handle (no hardware opened).
 fn builtin_audio_out(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("audio_out", &args, 2)?;
-    let sample_rate = args[0].to_scalar().map_err(|e| ScriptError::type_err(e))?;
-    let frame_size = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let sample_rate = arg_f64(&args[0])?;
+    let frame_size = arg_usize(&args[1])?;
     Ok(Value::AudioOut {
         sample_rate,
         frame_size,
@@ -14129,17 +14210,17 @@ fn builtin_plot_update_heatmap(args: Vec<Value>) -> Result<Value, ScriptError> {
         }
     };
     let colormap = if args.len() >= 4 {
-        args[3].to_str().map_err(|e| ScriptError::type_err(e))?
+        arg_str(&args[3])?
     } else {
         "viridis".to_string()
     };
     let vmin = if args.len() >= 5 {
-        Some(args[4].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+        Some(arg_f64(&args[4])?)
     } else {
         None
     };
     let vmax = if args.len() >= 6 {
-        Some(args[5].to_scalar().map_err(|e| ScriptError::type_err(e))?)
+        Some(arg_f64(&args[5])?)
     } else {
         None
     };
@@ -14218,9 +14299,9 @@ fn builtin_plot_labels(args: Vec<Value>) -> Result<Value, ScriptError> {
         .to_usize()
         .map_err(|e| ScriptError::runtime(e))?
         .saturating_sub(1);
-    let title = args[2].to_str().map_err(|e| ScriptError::type_err(e))?;
-    let xlabel = args[3].to_str().map_err(|e| ScriptError::type_err(e))?;
-    let ylabel = args[4].to_str().map_err(|e| ScriptError::type_err(e))?;
+    let title = arg_str(&args[2])?;
+    let xlabel = arg_str(&args[3])?;
+    let ylabel = arg_str(&args[4])?;
     fig.lock()
         .unwrap()
         .as_mut()
@@ -14394,8 +14475,8 @@ fn builtin_sparse(args: Vec<Value>) -> Result<Value, ScriptError> {
     let i_vec = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let j_vec = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let v_vec = args[2].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let m = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[4].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let m = arg_usize(&args[3])?;
+    let n = arg_usize(&args[4])?;
     if i_vec.len() != j_vec.len() || i_vec.len() != v_vec.len() {
         return Err(ScriptError::runtime(
             "sparse: I, J, V must have the same length".to_string(),
@@ -14427,7 +14508,7 @@ fn builtin_sparsevec(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("sparsevec", &args, 3)?;
     let i_vec = args[0].to_cvector().map_err(|e| ScriptError::type_err(e))?;
     let v_vec = args[1].to_cvector().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n = arg_usize(&args[2])?;
     if i_vec.len() != v_vec.len() {
         return Err(ScriptError::runtime(
             "sparsevec: I and V must have the same length".to_string(),
@@ -14455,7 +14536,7 @@ fn builtin_sparsevec(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// optimal across the addition.
 fn builtin_speye(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("speye", &args, 1)?;
-    let n = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let n = arg_usize(&args[0])?;
     let entries: Vec<_> = (0..n).map(|i| (i, i, Complex::new(1.0, 0.0))).collect();
     Ok(Value::SparseMatrix(SparseMat {
         rows: n,
@@ -14473,8 +14554,8 @@ fn builtin_speye(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// the user asked for via the `L` operand.
 fn builtin_spzeros(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("spzeros", &args, 2)?;
-    let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let m = arg_usize(&args[0])?;
+    let n = arg_usize(&args[1])?;
     Ok(Value::SparseMatrix(SparseMat {
         rows: m,
         cols: n,
@@ -14513,8 +14594,14 @@ fn builtin_issparse(args: Vec<Value>) -> Result<Value, ScriptError> {
 fn builtin_full(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("full", &args, 1)?;
     match args.into_iter().next().unwrap() {
-        Value::SparseVector(sv) => Ok(Value::Vector(sv.to_dense().into())),
-        Value::SparseMatrix(sm) => Ok(Value::Matrix(sm.to_dense().into())),
+        Value::SparseVector(sv) => {
+            let v = sv.to_dense().map_err(|_| too_large("full", &[sv.len]))?;
+            Ok(Value::Vector(v.into()))
+        }
+        Value::SparseMatrix(sm) => {
+            let m = sm.to_dense().map_err(|_| too_large("full", &[sm.rows, sm.cols]))?;
+            Ok(Value::Matrix(m.into()))
+        }
         other => Ok(other), // identity for dense
     }
 }
@@ -15237,8 +15324,8 @@ fn spsolve_pack(x: CVector) -> Value {
 /// D is a scalar or vector of diagonal offsets (0 = main, >0 super, <0 sub).
 fn builtin_spdiags(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("spdiags", &args, 4)?;
-    let m = args[2].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[3].to_usize().map_err(|e| ScriptError::type_err(e))?;
+    let m = arg_usize(&args[2])?;
+    let n = arg_usize(&args[3])?;
 
     // Parse diagonal offsets
     let diags: Vec<i64> = match &args[1] {
@@ -15354,6 +15441,69 @@ fn parse_bc_arg(name: &str, value: Option<&Value>) -> Result<rustlab_dsp::Bounda
             other.type_name()
         ))),
     }
+}
+
+const SPACING_LABELS: [&str; 3] = ["dx", "dy", "dz"];
+
+fn spacing_scalar(name: &str, v: &Value, which: &str) -> Result<f64, ScriptError> {
+    v.to_scalar()
+        .map_err(|e| ScriptError::type_err(format!("{name}: {which}: {e}")))
+}
+
+/// Optional spacing and boundary condition after the fixed leading arguments.
+///
+/// `n_spacing` is 1, 2, or 3. An empty tail is unit spacing and Dirichlet.
+/// A tail of `n_spacing` numbers is that spacing, still Dirichlet. One extra
+/// argument is the bc string. For a single spacing, a lone string is the bc
+/// (unit `dx`) and a lone number is `dx`.
+fn parse_spacing_and_bc(
+    name: &str,
+    args: &[Value],
+    n_fixed: usize,
+    n_spacing: usize,
+) -> Result<(Vec<f64>, rustlab_dsp::BoundaryCondition), ScriptError> {
+    let tail = &args[n_fixed..];
+    let unit = vec![1.0; n_spacing];
+    let dirichlet = rustlab_dsp::BoundaryCondition::Dirichlet;
+    match tail.len() {
+        0 => Ok((unit, dirichlet)),
+        1 if n_spacing == 1 && !matches!(&tail[0], Value::Str(_)) => {
+            let dx = spacing_scalar(name, &tail[0], "dx")?;
+            Ok((vec![dx], dirichlet))
+        }
+        1 => {
+            let bc = parse_bc_arg(name, Some(&tail[0]))?;
+            Ok((unit, bc))
+        }
+        n if n == n_spacing || n == n_spacing + 1 => {
+            let mut spacing = Vec::with_capacity(n_spacing);
+            for i in 0..n_spacing {
+                spacing.push(spacing_scalar(name, &tail[i], SPACING_LABELS[i])?);
+            }
+            let bc = if n == n_spacing {
+                dirichlet
+            } else {
+                parse_bc_arg(name, Some(&tail[n_spacing]))?
+            };
+            Ok((spacing, bc))
+        }
+        _ if name == "laplacian_3d" => Err(ScriptError::type_err(format!(
+            "laplacian_3d: expected (nx, ny, nz), (nx, ny, nz, bc), \
+             (nx, ny, nz, dx, dy, dz), or (nx, ny, nz, dx, dy, dz, bc); \
+             got {} args",
+            args.len()
+        ))),
+        _ => unreachable!(),
+    }
+}
+
+fn laplacian_value(
+    built: Result<SparseMat, rustlab_dsp::error::DspError>,
+) -> Result<Value, ScriptError> {
+    let l = built.map_err(|e| ScriptError::type_err(e.to_string()))?;
+    Ok(Value::SparseMatrix(
+        l.with_ordering_hint(rustlab_core::OrderingHint::Identity),
+    ))
 }
 
 /// `laplacian_2d(nx, ny [, dx, dy] [, bc])` — sparse 5-point Laplacian on
@@ -15594,44 +15744,11 @@ fn builtin_laplacian_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
     let ny = args[1]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("laplacian_2d: ny: {e}")))?;
-
-    // Argument shape:
-    //   2 args: (nx, ny)
-    //   3 args: (nx, ny, bc)
-    //   4 args: (nx, ny, dx, dy)
-    //   5 args: (nx, ny, dx, dy, bc)
-    let (dx, dy, bc) = match args.len() {
-        2 => (1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
-        3 => {
-            let bc = parse_bc_arg("laplacian_2d", Some(&args[2]))?;
-            (1.0, 1.0, bc)
-        }
-        4 => {
-            let dx = args[2]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
-            let dy = args[3]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
-            (dx, dy, rustlab_dsp::BoundaryCondition::Dirichlet)
-        }
-        5 => {
-            let dx = args[2]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dx: {e}")))?;
-            let dy = args[3]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_2d: dy: {e}")))?;
-            let bc = parse_bc_arg("laplacian_2d", Some(&args[4]))?;
-            (dx, dy, bc)
-        }
-        _ => unreachable!(),
-    };
-
-    let l = rustlab_dsp::laplacian::laplacian_2d_bc(nx, ny, dx, dy, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?
-        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
-    Ok(Value::SparseMatrix(l))
+    // 2: (nx, ny)  3: + bc  4: + dx, dy  5: + dx, dy, bc
+    let (spacing, bc) = parse_spacing_and_bc("laplacian_2d", &args, 2, 2)?;
+    laplacian_value(rustlab_dsp::laplacian::laplacian_2d_bc(
+        nx, ny, spacing[0], spacing[1], bc,
+    ))
 }
 
 /// `laplacian_1d(n [, dx] [, bc])` — sparse tridiagonal Laplacian.
@@ -15640,30 +15757,8 @@ fn builtin_laplacian_1d(args: Vec<Value>) -> Result<Value, ScriptError> {
     let n = args[0]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("laplacian_1d: n: {e}")))?;
-    let (dx, bc) = match args.len() {
-        1 => (1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
-        2 => match &args[1] {
-            Value::Str(_) => (1.0, parse_bc_arg("laplacian_1d", Some(&args[1]))?),
-            _ => {
-                let dx = args[1]
-                    .to_scalar()
-                    .map_err(|e| ScriptError::type_err(format!("laplacian_1d: dx: {e}")))?;
-                (dx, rustlab_dsp::BoundaryCondition::Dirichlet)
-            }
-        },
-        3 => {
-            let dx = args[1]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_1d: dx: {e}")))?;
-            let bc = parse_bc_arg("laplacian_1d", Some(&args[2]))?;
-            (dx, bc)
-        }
-        _ => unreachable!(),
-    };
-    let l = rustlab_dsp::laplacian::laplacian_1d(n, dx, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?
-        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
-    Ok(Value::SparseMatrix(l))
+    let (spacing, bc) = parse_spacing_and_bc("laplacian_1d", &args, 1, 1)?;
+    laplacian_value(rustlab_dsp::laplacian::laplacian_1d(n, spacing[0], bc))
 }
 
 /// `laplacian_3d(nx, ny, nz [, dx, dy, dz] [, bc])` — sparse 7-point Laplacian.
@@ -15678,50 +15773,10 @@ fn builtin_laplacian_3d(args: Vec<Value>) -> Result<Value, ScriptError> {
     let nz = args[2]
         .to_usize()
         .map_err(|e| ScriptError::type_err(format!("laplacian_3d: nz: {e}")))?;
-    let (dx, dy, dz, bc) = match args.len() {
-        3 => (1.0, 1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
-        4 => {
-            let bc = parse_bc_arg("laplacian_3d", Some(&args[3]))?;
-            (1.0, 1.0, 1.0, bc)
-        }
-        6 => {
-            let dx = args[3]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dx: {e}")))?;
-            let dy = args[4]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dy: {e}")))?;
-            let dz = args[5]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dz: {e}")))?;
-            (dx, dy, dz, rustlab_dsp::BoundaryCondition::Dirichlet)
-        }
-        7 => {
-            let dx = args[3]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dx: {e}")))?;
-            let dy = args[4]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dy: {e}")))?;
-            let dz = args[5]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_3d: dz: {e}")))?;
-            let bc = parse_bc_arg("laplacian_3d", Some(&args[6]))?;
-            (dx, dy, dz, bc)
-        }
-        _ => {
-            return Err(ScriptError::type_err(format!(
-                "laplacian_3d: expected (nx, ny, nz), (nx, ny, nz, bc), \
-                 (nx, ny, nz, dx, dy, dz), or (nx, ny, nz, dx, dy, dz, bc); \
-                 got {} args",
-                args.len()
-            )));
-        }
-    };
-    let l = rustlab_dsp::laplacian::laplacian_3d(nx, ny, nz, dx, dy, dz, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?
-        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
-    Ok(Value::SparseMatrix(l))
+    let (spacing, bc) = parse_spacing_and_bc("laplacian_3d", &args, 3, 3)?;
+    laplacian_value(rustlab_dsp::laplacian::laplacian_3d(
+        nx, ny, nz, spacing[0], spacing[1], spacing[2], bc,
+    ))
 }
 
 /// `laplacian_eps_2d(eps_map [, dx, dy] [, bc])` — variable-coefficient
@@ -15738,37 +15793,13 @@ fn builtin_laplacian_eps_2d(args: Vec<Value>) -> Result<Value, ScriptError> {
             )));
         }
     };
-    let (dx, dy, bc) = match args.len() {
-        1 => (1.0, 1.0, rustlab_dsp::BoundaryCondition::Dirichlet),
-        2 => {
-            let bc = parse_bc_arg("laplacian_eps_2d", Some(&args[1]))?;
-            (1.0, 1.0, bc)
-        }
-        3 => {
-            let dx = args[1]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dx: {e}")))?;
-            let dy = args[2]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dy: {e}")))?;
-            (dx, dy, rustlab_dsp::BoundaryCondition::Dirichlet)
-        }
-        4 => {
-            let dx = args[1]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dx: {e}")))?;
-            let dy = args[2]
-                .to_scalar()
-                .map_err(|e| ScriptError::type_err(format!("laplacian_eps_2d: dy: {e}")))?;
-            let bc = parse_bc_arg("laplacian_eps_2d", Some(&args[3]))?;
-            (dx, dy, bc)
-        }
-        _ => unreachable!(),
-    };
-    let l = rustlab_dsp::laplacian::laplacian_eps_2d(eps_map, dx, dy, bc)
-        .map_err(|e| ScriptError::type_err(e.to_string()))?
-        .with_ordering_hint(rustlab_core::OrderingHint::Identity);
-    Ok(Value::SparseMatrix(l))
+    let (spacing, bc) = parse_spacing_and_bc("laplacian_eps_2d", &args, 1, 2)?;
+    laplacian_value(rustlab_dsp::laplacian::laplacian_eps_2d(
+        eps_map,
+        spacing[0],
+        spacing[1],
+        bc,
+    ))
 }
 
 /// `ij2k(i, j, ny)` — convert 1-based grid indices `(i, j)` to flat
@@ -15881,16 +15912,16 @@ fn builtin_k2ij(args: Vec<Value>) -> Result<Value, ScriptError> {
 /// `sprand(m, n, density)` — random sparse matrix with approximately density*m*n non-zeros.
 fn builtin_sprand(args: Vec<Value>) -> Result<Value, ScriptError> {
     check_args("sprand", &args, 3)?;
-    let m = args[0].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let n = args[1].to_usize().map_err(|e| ScriptError::type_err(e))?;
-    let density = args[2].to_scalar().map_err(|e| ScriptError::type_err(e))?;
+    let m = count_arg(&args[0])?;
+    let n = count_arg(&args[1])?;
+    let density = arg_f64(&args[2])?;
     if density < 0.0 || density > 1.0 {
         return Err(ScriptError::runtime(
             "sprand: density must be in [0, 1]".to_string(),
         ));
     }
+    let total = require_elems("sprand", &[m, n], rustlab_core::ELEM_C64)?;
     let val_dist = Uniform::new(0.0_f64, 1.0);
-    let total = m * n;
     let target_nnz = (density * total as f64).round() as usize;
     let entries: Vec<(usize, usize, C64)> = crate::eval::rng::with_rng(|rng| {
         let mut entries: Vec<(usize, usize, C64)> = Vec::with_capacity(target_nnz);
@@ -17429,5 +17460,53 @@ mod real_builtin_tests {
                 assert_eq!(b.im, 0.0);
             }
         }
+    }
+
+    #[test]
+    fn arg_helpers_keep_type_err_text() {
+        let samples = [
+            Value::Str("nope".to_string()),
+            Value::Scalar(-1.5),
+            Value::Scalar(2.0),
+        ];
+        for v in &samples {
+            let direct = v.to_usize().map_err(|e| ScriptError::type_err(e));
+            let via = arg_usize(v);
+            assert_eq!(fmt_err(direct), fmt_err(via));
+            let direct = v.to_scalar().map_err(|e| ScriptError::type_err(e));
+            let via = arg_f64(v);
+            assert_eq!(fmt_err(direct), fmt_err(via));
+            let direct = v.to_str().map_err(|e| ScriptError::type_err(e));
+            let via = arg_str(v);
+            assert_eq!(fmt_err(direct), fmt_err(via));
+        }
+    }
+
+    fn fmt_err(r: Result<impl std::fmt::Debug, ScriptError>) -> String {
+        match r {
+            Ok(v) => format!("ok:{v:?}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn freqresp_siso_matches_bode_and_guards_a_zero_denominator() {
+        // H(s) = 1 / (s + 1). At w = 0, H = 1.
+        let num = [1.0];
+        let den = [1.0, 1.0];
+        let w = [0.0, 1.0];
+        let h = freqresp_siso(&num, &den, &w);
+        assert!((h[0].re - 1.0).abs() < 1e-12);
+        assert!(h[0].im.abs() < 1e-12);
+        let (mag, phase) = bode_compute(&num, &den, &w);
+        assert!((mag[0] - 20.0 * h[0].norm().log10()).abs() < 1e-12);
+        assert!((phase[0] - h[0].arg().to_degrees()).abs() < 1e-9);
+        let (re, im) = nyquist_compute(&num, &den, &w);
+        assert_eq!(re[1].to_bits(), h[1].re.to_bits());
+        assert_eq!(im[1].to_bits(), h[1].im.to_bits());
+        // den(s) = s is zero at w = 0.
+        let pole = freqresp_siso(&num, &[1.0, 0.0], &[0.0]);
+        assert!(pole[0].re.is_infinite());
+        assert_eq!(pole[0].im, 0.0);
     }
 }
