@@ -2,9 +2,10 @@
 
 > Rust-native matrix algebra + DSP toolkit with a scriptable language (`.rlab`),
 > an interactive REPL, a Markdown notebook renderer, and terminal/file/HTML plotting.
-> Numerics are complex-by-default, indexing is 1-based, 349 builtins across
+> Numerics are complex-by-default and indexing is 1-based. Builtins cover
 > math, linear algebra (dense + sparse), statistics, FFT/spectral, FIR/IIR filter
 > design, fixed-point, control systems, RF S-parameters, and vector calculus.
+> The live index is `rustlab docs --json` (do not hard-code a builtin count).
 
 Run a script: `rustlab run script.rlab --plot none`   REPL: `rustlab`
 Render a notebook: `rustlab-notebook render note.md`

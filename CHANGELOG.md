@@ -11,6 +11,12 @@ should re-validate against those entries when upgrading.
 ### Changed
 - **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
 
+## 0.3.36
+
+### Fixed
+- **`help plot_limits` documents the signature the builtin accepts.** The entry is `plot_limits(fig, panel, xlim, ylim)` with `[lo, hi]` vectors. A second help entry described a six-number form (`xmin, xmax, ymin, ymax`) that `plot_limits` rejects. That entry is gone. The vector form is unchanged.
+- **`llms.txt` no longer hard-codes a builtin count.** The count drifted from the registry. The live index is `rustlab docs --json`.
+
 ## 0.3.35
 
 ### Breaking / behavior changes
