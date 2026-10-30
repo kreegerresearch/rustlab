@@ -141,9 +141,10 @@ Gate PASS both runs, trajectory exact.
 - One-row `[…]` of scalars, vectors and 1×N matrices
   (`Value::concat_one_row`): total length first, then `par_fill`; `[v]`
   shares `v`. Taller blocks keep the general path.
-- `zeros`: unchanged. `zeros(811008)` already takes 0.045 ms (the
-  allocation is lazily zeroed), so a zeroed allocation would not measure
-  faster.
+- `zeros`: unchanged at the time. `zeros(811008)` was the pre-0.3.26
+  length-n vector and already took 0.045 ms (the allocation is lazily
+  zeroed), so a zeroed allocation would not measure faster. A length-n
+  row is now `zeros(1, 811008)`; `zeros(811008)` is the square matrix.
 
 Tests: `elementwise::tests::par_transpose_matches_the_definition` (serial
 and parallel, partial rows, conjugate), `tests::reshape_and_concat`

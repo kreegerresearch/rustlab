@@ -3587,7 +3587,13 @@ impl Evaluator {
                 // stays real (the same kernel as the complex path's real
                 // case, so the same bits).
                 let frame = self.profiler.enter_op("[matmul]");
-                let result = Value::real_matrix(rustlab_core::matmul::matmul_real(&a, &b));
+                let product = rustlab_core::matmul::matmul_real(&a, &b).map_err(|_| {
+                    ScriptError::type_err(rustlab_core::variable_too_large(
+                        "*",
+                        &[a.nrows(), b.ncols()],
+                    ))
+                })?;
+                let result = Value::real_matrix(product);
                 let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
                 self.profiler.exit_op(frame, in_bytes, out_bytes);
                 return Ok(result);
@@ -3596,7 +3602,13 @@ impl Evaluator {
         if let (Some((a, conj_a)), Some((b, conj_b))) = (l.view(&self.env), r.view(&self.env)) {
             if a.ncols() == b.nrows() {
                 let frame = self.profiler.enter_op("[matmul]");
-                let result = Value::Matrix(rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b).into());
+                let product = rustlab_core::matmul::matmul_conj(&a, conj_a, &b, conj_b).map_err(|_| {
+                    ScriptError::type_err(rustlab_core::variable_too_large(
+                        "*",
+                        &[a.nrows(), b.ncols()],
+                    ))
+                })?;
+                let result = Value::Matrix(product.into());
                 let out_bytes = if frame.is_some() { Self::value_bytes(&result) } else { 0 };
                 self.profiler.exit_op(frame, in_bytes, out_bytes);
                 return Ok(result);
