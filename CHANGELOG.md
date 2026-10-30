@@ -11,6 +11,14 @@ should re-validate against those entries when upgrading.
 ### Changed
 - **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
 
+## 0.3.38
+
+### Fixed
+- **A scripted `xlim` / `ylim` on a log axis is honoured in the terminal.** `semilogx` (and `semilogy` / `loglog`) already drew samples in log space and logged the limits for SVG and PNG. The terminal logged the samples and left the limits in real units, so `xlim([1, 1000])` did not frame the chart. Both backends now use `SubplotState::log_scaled_view`, which log10s the series and the limits together. Plotly still uses native log axes. Tick labels stay real decades (`10`, `100`).
+
+### Changed
+- Internal. Plotly colorscale names go through one `plotly_colorscale` helper. Quiver and streamline strokes for HTML and for SVG/PNG come from `overlay_polylines`. The 95th-percentile arrow scale, `"normalized"`, and the viewer path are unchanged. A streamline's HTML figure is one trace (path and midpoint arrow) instead of two traces with the same style.
+
 ## 0.3.37
 
 ### Changed
