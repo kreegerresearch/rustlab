@@ -230,12 +230,36 @@ fn sparse_chol_and_lu_solve_a_scaled_system() {
         assert_c(v[0], Complex64::new(2.0 / 3.0, 0.0), 1e-10);
         assert_c(v[1], Complex64::new(1.0 / 3.0, 0.0), 1e-10);
     }
-    // 1e-14 * I is above the sparse drop tolerance (1e-15) and used to be
-    // rejected by Cholesky's absolute pivot floor of 1e-12.
+    // 1e-14 * I used to be rejected by Cholesky's absolute pivot floor of 1e-12.
+    // The pivot test is relative to the largest entry, so this still factors.
     let z = vec_c(&ev, "z");
     assert_c(z[0], Complex64::new(1.0, 0.0), 1e-8);
     assert_c(z[1], Complex64::new(0.0, 0.0), 1e-8);
     assert!(eval_err("A = sparse([1, 2], [1, 2], [1, -1], 2, 2)\nF = chol(A)").contains("chol"));
+}
+
+#[test]
+fn sparse_keeps_a_tiny_entry_and_drops_an_exact_zero() {
+    let ev = eval(
+        "S = 1e-16 * speye(4)\n\
+         k = nnz(S)\n\
+         v = S(1, 1)\n\
+         Z = speye(3) - speye(3)\n\
+         kz = nnz(Z)\n\
+         C = sparse([1, 1], [1, 1], [1, -1], 2, 2)\n\
+         kc = nnz(C)\n\
+         N = sparse([1], [1], [NaN], 2, 2)\n\
+         kn = nnz(N)\n\
+         x = solve(chol(1e-16 * speye(2)), [1e-16; 0])",
+    );
+    assert_re(&ev, "k", 4.0, 0.0);
+    assert_re(&ev, "v", 1e-16, 1e-30);
+    assert_re(&ev, "kz", 0.0, 0.0);
+    assert_re(&ev, "kc", 0.0, 0.0);
+    assert_re(&ev, "kn", 1.0, 0.0);
+    let x = vec_c(&ev, "x");
+    assert_c(x[0], Complex64::new(1.0, 0.0), 1e-8);
+    assert_c(x[1], Complex64::new(0.0, 0.0), 1e-8);
 }
 
 // ── svd, rank, pinv, norm, cond ─────────────────────────────────────────────

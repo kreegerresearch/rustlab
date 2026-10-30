@@ -1899,7 +1899,7 @@ See `examples/linalg/tensor3.rlab` for a full runnable demo.
 Sparse storage keeps only non-zero entries, enabling O(nnz) operations on matrices that would be infeasible in dense form. All indices are 1-based. Sparse matrices participate transparently in arithmetic — mixed sparse+dense pairs auto-promote to dense.
 
 ### `sparse(I, J, V, m, n)` / `sparse(A)`
-Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse (near-zero entries are dropped).
+Build a sparse matrix. With four or five arguments, construct an m×n matrix from 1-based row indices `I`, column indices `J`, and values `V` (COO triples). With one matrix/vector argument, convert a dense input to sparse. An entry is stored unless it is an exact zero (`+0` or `-0`); a tiny finite value stays.
 ```
 S = sparse([1, 2, 3], [1, 2, 3], [10, 20, 30], 3, 3)   # diagonal sparse
 S = sparse(A)                                            # dense → sparse

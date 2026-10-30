@@ -23,7 +23,7 @@
 ## Core math audit (2026-10-28)
 
 Checked against closed forms and the MATLAB/Octave conventions named below.
-Fixes landed in 0.3.23. What remains different on purpose:
+Fixes landed in 0.3.23. As of 0.3.32 a sparse entry is structural only when it is an exact zero (`1e-16 * speye(n)` stores `n` entries). What remains different on purpose:
 
 | Topic | rustlab | MATLAB / Octave | Why it stays |
 |---|---|---|---|
@@ -44,7 +44,6 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
 | `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
-| sparse structural zero | entries below `1e-15` are dropped | stored | `1e-16 * speye(n)` is an empty pattern. `1e-14 * speye(n)` factors |
 
 Confirmed in this audit, and not divergences: `inv(A)*A ≈ I`, Hilbert-5 residual, 2×2 and triangular `det`, complex `det`, `linsolve`, sparse `chol`/`lu` on a scaled SPD matrix, SVD reconstruction (wide, tall, complex), `pinv` on a column and on a rank-1 matrix, `eig` of a rotation, a Jordan block, and a Hermitian matrix, `eigs` of a diagonal, `expm` of a rotation, a nilpotent Jordan block, and the Moler–Van Loan matrix, `kron` block form, `diag` with an offset, FFT of length 3 and 4 including non-powers of two, Parseval, `convolve`, overlap-add against direct convolution, symmetric Hann/Hamming/Blackman samples, Kaiser against an independent Bessel series, FIR DC gain, Butterworth −3 dB, `filtfilt` of a constant, a one-pole recurrence, `freqz` of a delay, `mean`/`std`/`var`/`median`/`cumsum` definitions, and `(1+2i)(3+4i)`.
 
