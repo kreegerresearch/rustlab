@@ -23,11 +23,10 @@
 ## Core math audit (2026-10-28)
 
 Checked against closed forms and the MATLAB/Octave conventions named below.
-Fixes landed in 0.3.23. As of 0.3.32 a sparse entry is structural only when it is an exact zero (`1e-16 * speye(n)` stores `n` entries). What remains different on purpose:
+Fixes landed in 0.3.23. As of 0.3.32 a sparse entry is structural only when it is an exact zero (`1e-16 * speye(n)` stores `n` entries). Dense `norm(A)` with no `p` is the 2-norm as of 0.3.40 (the largest singular value only; `norm(A, "fro")` is the one-pass sum). Sparse `norm(S)` stays Frobenius: the 2-norm densifies, and a grid with millions of nodes cannot be stored that way. What remains different on purpose:
 
 | Topic | rustlab | MATLAB / Octave | Why it stays |
 |---|---|---|---|
-| `norm(A)` with no `p` | Frobenius | 2-norm (largest singular value) | Documented since the p-norm split. `norm(A, 2)` is the 2-norm, `norm(A, "fro")` is Frobenius |
 | `[V, D] = eigs(...)` | `D` is a vector | `D` is a diagonal matrix | `D(k)` is the k-th eigenvalue. A diagonal matrix would make `D(2)` the structural zero under column-major linear indexing |
 | `sort` of complex values | magnitude, then phase. NaNs sort above `+Inf`. A matrix sorts along a dimension | same | Closed in 0.3.25. It used to sort by the real part, and `sort` rejected a full matrix |
 | `median` of complex values | error | not defined | Closed in 0.3.25. Imaginary parts used to be ignored. `median([])` is NaN |
@@ -41,7 +40,7 @@ Fixes landed in 0.3.23. As of 0.3.32 a sparse entry is structural only when it i
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
 | `polyfit` / `polyval` | `[p, S, mu]` centers `x`; one output stays unscaled. `polyval(p, x, S, mu)` undoes it | the error-estimate output of `polyval` | `[p, S, mu]` landed in 0.3.31. One-output `p` is unchanged |
 | `interp1` | `pchip` (Fritsch–Carlson), `makima`, and a numeric fill outside the range. Spline stays not-a-knot | — | `pchip`, `makima`, and the fill landed in 0.3.31. `"extrap"` is unchanged |
-| `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
+| `chol(A)` | dense upper `R` (`A = R'*R`, since 0.3.30). Sparse `chol` is still a factor handle | a dense triangular factor | Sparse `chol` stays a handle for `solve(F, b)`. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
 | `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
 

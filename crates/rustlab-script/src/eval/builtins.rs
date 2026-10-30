@@ -9246,7 +9246,7 @@ fn builtin_kron(args: Vec<Value>) -> Result<Value, ScriptError> {
     })
 }
 
-/// norm(v)    — Euclidean (L2) norm of a vector, or Frobenius norm of a matrix
+/// norm(v)    — Euclidean (L2) norm of a vector, or 2-norm of a dense matrix
 /// norm(v, p) — p-norm (p=1 or p=2 supported; p="fro" for Frobenius)
 /// Resolve `norm`'s second argument: a numeric p, or the strings
 /// `"fro"` / `"inf"` (case-insensitive, MATLAB/Octave convention).
@@ -9263,6 +9263,16 @@ fn norm_p_arg(v: &Value) -> Result<Option<f64>, ScriptError> {
         };
     }
     v.to_scalar().map(Some).map_err(ScriptError::type_err)
+}
+
+/// Largest singular value of a matrix. Real storage stays real.
+fn matrix_spectral_norm(m: &Shared<CMatrix>) -> f64 {
+    if let Some(real) = Shared::as_real(m) {
+        rustlab_core::spectral_norm::largest_singular_value(real)
+    } else {
+        // Complex storage. Deref does not widen that case.
+        rustlab_core::spectral_norm::largest_singular_value_complex(m)
+    }
 }
 
 fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
@@ -9289,10 +9299,10 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::Matrix(m) => {
-            // No second argument (or explicit "fro") → Frobenius
-            // (this library's default).
+            // No second argument is the 2-norm (largest singular value).
+            // "fro" stays the one-pass sum of squares.
             let p: f64 = match if args.len() < 2 {
-                None
+                Some(2.0)
             } else {
                 norm_p_arg(&args[1])?
             } {
@@ -9313,9 +9323,9 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                     .map(|i| (0..m.ncols()).map(|j| m[[i, j]].norm()).sum::<f64>())
                     .fold(0.0_f64, f64::max)
             } else if p == 2.0 {
-                // Spectral norm = largest singular value.
-                let (_, sv, _) = svd_full(m)?;
-                sv.first().copied().unwrap_or(0.0)
+                // Largest singular value only. A full SVD also builds every
+                // vector, which this value does not use.
+                matrix_spectral_norm(m)
             } else {
                 return Err(ScriptError::type_err(format!(
                     "norm: matrix p-norm supports p = 1, 2, or Inf (got {p})"
@@ -9354,10 +9364,11 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
             Ok(Value::Scalar(n))
         }
         Value::SparseMatrix(sm) => {
-            // No second argument, or `"fro"`, is the Frobenius norm — the
-            // same default as a dense matrix. `norm(S, 2)` is the spectral
-            // norm, matching `norm(full(S), 2)`. Any other p is an error,
-            // not a silent Frobenius.
+            // No second argument, or `"fro"`, is the Frobenius norm.
+            // A dense matrix's default is the 2-norm; a sparse default stays
+            // this one-pass sum because the 2-norm densifies the pattern.
+            // `norm(S, 2)` is the spectral norm, matching `norm(full(S), 2)`.
+            // Any other p is an error, not a silent Frobenius.
             let requested = if args.len() == 2 {
                 norm_p_arg(&args[1])?
             } else {
@@ -9397,8 +9408,9 @@ fn builtin_norm(args: Vec<Value>) -> Result<Value, ScriptError> {
                         )));
                     }
                     let dense = sm.to_dense().map_err(|_| too_large("norm", &[sm.rows, sm.cols]))?;
-                    let (_, sv, _) = svd_full(&dense)?;
-                    Ok(Value::Scalar(sv.first().copied().unwrap_or(0.0)))
+                    Ok(Value::Scalar(
+                        rustlab_core::spectral_norm::largest_singular_value_complex(&dense),
+                    ))
                 }
                 Some(p) => Err(ScriptError::type_err(format!(
                     "norm: sparse matrix p-norm supports p = 1, 2, Inf, or \"fro\" (got {p})"

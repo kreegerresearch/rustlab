@@ -138,8 +138,8 @@ csvwrite('ref2_diag_col_k.csv', [size(X), reshape(X, 1, numel(X))]);
 % norm (vector L2)
 csvwrite('ref2_norm_vec.csv', norm([3.0, 4.0]));
 
-% norm (matrix Frobenius)
-csvwrite('ref2_norm_mat.csv', norm([1.0, 2.0; 3.0, 4.0], 'fro'));
+% norm (matrix, default 2-norm)
+csvwrite('ref2_norm_mat.csv', norm([1.0, 2.0; 3.0, 4.0]));
 
 % det
 csvwrite('ref2_det.csv', det(A2));

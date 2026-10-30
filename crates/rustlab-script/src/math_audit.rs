@@ -271,8 +271,15 @@ fn norm_known_values() {
     assert_re(&eval("n = norm([1, -2; -3, 4], 1)"), "n", 6.0, 1e-12);
     // Inf-norm is the max row sum: 3 and 7.
     assert_re(&eval("n = norm([1, -2; -3, 4], Inf)"), "n", 7.0, 1e-12);
+    // Default matrix norm is the 2-norm, the same value as norm(A, 2).
     assert_re(
         &eval("n = norm([1, -2; -3, 4])"),
+        "n",
+        5.464985704219043,
+        1e-9,
+    );
+    assert_re(
+        &eval("n = norm([1, -2; -3, 4], \"fro\")"),
         "n",
         30.0_f64.sqrt(),
         1e-12,
@@ -908,4 +915,56 @@ fn phase1_reference_values() {
     assert_re(&eval("t = trace([1, 2; 3, 4])"), "t", 5.0, 0.0);
     assert!(eval_err("t = trace([1, 2, 3; 4, 5, 6])").contains("square"));
     assert!(eval_err("t = trace(zeros(1, 4))").contains("square"));
+}
+
+/// Release timing of the matrix 2-norm against a full SVD on one 256×256
+/// matrix. Not part of `cargo test`.
+///
+/// ```text
+/// cargo test -p rustlab-script --release --lib bench_matrix_2norm -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn bench_matrix_2norm_against_full_svd() {
+    use std::time::Instant;
+
+    let n = 256;
+    let mut state = 0x9e37_79b9_u64;
+    let mut a = ndarray::Array2::<rustlab_core::C64>::zeros((n, n));
+    for z in a.iter_mut() {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        z.re = ((state >> 33) as f64) / ((1u64 << 31) as f64) - 1.0;
+    }
+    let real = ndarray::Array2::from_shape_fn((n, n), |(i, j)| a[[i, j]].re);
+
+    fn time_ms(reps: usize, mut f: impl FnMut()) -> f64 {
+        f();
+        let start = Instant::now();
+        for _ in 0..reps {
+            f();
+        }
+        start.elapsed().as_secs_f64() * 1e3 / reps as f64
+    }
+
+    let svd_ms = time_ms(3, || {
+        let (_, sv, _) = crate::eval::builtins::svd_full(&a).unwrap();
+        std::hint::black_box(sv[0]);
+    });
+    let spec_ms = time_ms(3, || {
+        std::hint::black_box(rustlab_core::spectral_norm::largest_singular_value(&real));
+    });
+    let fro_ms = time_ms(3, || {
+        let mut s = 0.0;
+        for x in real.iter() {
+            s += x * x;
+        }
+        std::hint::black_box(s.sqrt());
+    });
+    let (_, sv, _) = crate::eval::builtins::svd_full(&a).unwrap();
+    let spec = rustlab_core::spectral_norm::largest_singular_value(&real);
+    eprintln!(
+        "256×256  svd_full {svd_ms:.3} ms  largest singular value {spec_ms:.3} ms  frobenius {fro_ms:.3} ms"
+    );
+    eprintln!("svd {}  spectral {}", sv[0], spec);
+    assert!((sv[0] - spec).abs() <= 1e-6 * sv[0].abs().max(1.0));
 }

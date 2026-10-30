@@ -11,6 +11,15 @@ should re-validate against those entries when upgrading.
 ### Changed
 - **`notebook watch` keeps the file tree and the section outline in one overlay drawer.** The drawer does not reserve width beside the notebook. **Contents** in the top bar opens it, and `\` toggles it (not while typing in a field or the editor). Escape, a click outside, or choosing a file or heading closes it. Clicking a folder summary still only opens or closes that folder. Folders still start closed, except the folders that contain the notebook on the page. On a wide window, headings and plots shift just clear of the open drawer so a plot title or axis label is not covered. Under 768px the open drawer covers the page and a click outside dismisses it. The comment margin, highlights, and the right-click comment menu are unchanged. Static `notebook render` HTML still uses the fixed file browser and the 220px outline.
 
+## 0.3.40
+
+### Breaking / behavior changes
+- **Dense `norm(A)` is the 2-norm.** With no second argument it is the largest singular value, the same number as `norm(A, 2)`. `norm(A, "fro")` is the one-pass Frobenius norm, which is what an unqualified `norm(A)` used to return. A vector is unchanged. Sparse `norm(S)` stays Frobenius: the 2-norm densifies the matrix, and a grid with millions of nodes cannot be stored that way. `norm(S, 2)` is still the spectral norm under the 512 cap.
+- **A non-finite matrix 2-norm follows MATLAB.** `norm(A)` and `norm(A, 2)` return `NaN` when any entry is `NaN`, and `Inf` when any entry is `Inf` and none is `NaN`. They used to error. `svd` still errors on a non-finite matrix. An empty matrix is 0.
+
+### Changed
+- **The matrix 2-norm does not compute a full SVD.** It is the square root of the largest eigenvalue of the smaller of `A'A` and `AA'`, from Lanczos on that product. Singular vectors are not built. `norm(A, "fro")`, `norm(A, 1)`, and `norm(A, Inf)` are unchanged.
+
 ## 0.3.39
 
 ### Breaking / behavior changes

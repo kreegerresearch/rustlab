@@ -161,7 +161,7 @@ heads = parmap(@(h) head_scale(h, X), 1:n_heads);
 print("output shape:", size(heads));
 % Per-page extraction: heads(:, :, k) is the k-th per-call matrix.
 % In this toy, page 2 should equal 2 * page 1.
-err = norm(heads(:, :, 2) - 2 * heads(:, :, 1));
+err = norm(heads(:, :, 2) - 2 * heads(:, :, 1), "fro");
 print("page-2 == 2 * page-1 residual:", err);
 ```
 

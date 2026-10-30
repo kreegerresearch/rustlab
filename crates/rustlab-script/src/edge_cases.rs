@@ -8,7 +8,7 @@ use num_complex::Complex64;
 
 use crate::eval::value::Value;
 use crate::testutil::{
-    assert_c, check_err, check_re, close, eval, mat_re, matrix_dim, re, vec_c, vec_re,
+    assert_c, assert_re, check_err, check_re, close, eval, mat_re, matrix_dim, re, vec_c, vec_re,
 };
 
 fn approx_c(got: &[Complex64], want: &[(f64, f64)], tol: f64) {
@@ -667,4 +667,54 @@ fn xcorr_unequal_lengths_maxlag_and_scales() {
         ("r = xcorr([1, 2], \"nope\");", "scale"),
         ("r = xcorr([1, 2; 3, 4], [1; 2]);", "one signal"),
     ]);
+}
+
+// ── norm: largest singular value, and the edges around it ──────────────────
+
+#[test]
+fn norm_reference_values_and_edges() {
+    let sigma = (15.0 + 221.0_f64.sqrt()).sqrt();
+    check_re(&[
+        ("n = norm(-3.5)", "n", 3.5, 0.0),
+        ("n = norm(3+4j)", "n", 5.0, 1e-12),
+        ("n = norm(diag(-5))", "n", 5.0, 1e-12),
+        ("n = norm(zeros(0))", "n", 0.0, 0.0),
+        ("n = norm(zeros(0, 4))", "n", 0.0, 0.0),
+        ("n = norm(zeros(4, 0))", "n", 0.0, 0.0),
+        ("n = norm(zeros(3, 5))", "n", 0.0, 0.0),
+        // λ_max(AᵀA) = 15 + sqrt(221). Default and p = 2 are that square root.
+        ("n = norm([1, -2; -3, 4])", "n", sigma, 1e-12),
+        ("n = norm([1, -2; -3, 4], 2)", "n", sigma, 1e-12),
+        ("n = norm([1, 2; 3, 4])", "n", sigma, 1e-12),
+        // Rank 1: the nonzero singular value is the Frobenius norm.
+        ("n = norm([1, 2; 2, 4])", "n", 5.0, 1e-12),
+        ("n = norm([1, 2, 3; 2, 4, 6])", "n", 70.0_f64.sqrt(), 1e-12),
+        ("n = norm([1, 2; 2, 4; 3, 6])", "n", 70.0_f64.sqrt(), 1e-12),
+        // AᴴA of [[1, j], [0, 2]] has λ_max = 3 + sqrt(5).
+        (
+            "n = norm([1, j; 0, 2])",
+            "n",
+            (3.0 + 5.0_f64.sqrt()).sqrt(),
+            1e-10,
+        ),
+        (
+            "n = norm([1, j; 0, 2], 2)",
+            "n",
+            (3.0 + 5.0_f64.sqrt()).sqrt(),
+            1e-10,
+        ),
+    ]);
+    // A 1×2 matrix uses the matrix path. Its one singular value is the
+    // Euclidean norm, same as the vector [3, 4].
+    let ev = eval("M = zeros(1, 2); M(1, 1) = 3; M(1, 2) = 4; n = norm(M); f = norm(M, \"fro\")");
+    assert_re(&ev, "n", 5.0, 1e-12);
+    assert_re(&ev, "f", 5.0, 1e-12);
+
+    real_nan(&eval("n = norm([1, NaN; 0, 2])"), "n");
+    real_nan(&eval("n = norm([1, NaN; 0, 2], 2)"), "n");
+    real_nan(&eval("n = norm([Inf, NaN; 0, 1])"), "n");
+    assert!(re(&eval("n = norm([Inf, 0; 0, 1])"), "n").is_infinite());
+    assert!(re(&eval("n = norm([0, 1; Inf, 0], 2)"), "n").is_infinite());
+    // svd still rejects a non-finite matrix. Only the 2-norm returns a value.
+    check_err(&[("s = svd([NaN, 0; 0, 1]);", "finite")]);
 }

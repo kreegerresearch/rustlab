@@ -6,6 +6,7 @@ pub mod matmul;
 pub mod size;
 pub mod sparse_eig;
 pub mod sparse_solve;
+pub mod spectral_norm;
 pub mod traits;
 pub mod types;
 

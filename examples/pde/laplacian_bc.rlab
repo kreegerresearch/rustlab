@@ -36,14 +36,14 @@ A_n = laplacian_2d(nx, ny, dx, dy, "neumann");
 ones_vec = ones(ny * nx, 1);
 test_n = full(A_n) * ones_vec;
 print("Neumann null-space residual norm (should be ~0):");
-print(norm(test_n));
+print(norm(test_n, "fro"));
 
 # ── 4. Periodic — wrap-around ───────────────────────────────────
 # Also singular. Same null-space property — constants are in the kernel.
 A_p = laplacian_2d(nx, ny, dx, dy, "periodic");
 test_p = full(A_p) * ones_vec;
 print("Periodic null-space residual norm (should be ~0):");
-print(norm(test_p));
+print(norm(test_p, "fro"));
 
 # ── 5. Show the structural difference: nnz of each ──────────────
 # Dirichlet drops cross-boundary entries (lowest nnz).

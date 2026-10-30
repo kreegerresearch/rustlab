@@ -1553,20 +1553,23 @@ cross([1, 0, 0], [0, 1, 0])   # → [0, 0, 1]
 ```
 
 ### `norm(v)` / `norm(v, p)`
-Vector p-norm (default p=2). For a matrix, `norm(A)` and `norm(A, "fro")` are
-the Frobenius norm. MATLAB's default matrix norm is the 2-norm; that
-divergence is recorded. `norm(A, 2)` is the spectral norm (largest singular
-value), `norm(A, 1)` the max absolute column sum, `norm(A, Inf)` the max
-absolute row sum.
+Vector p-norm (default p=2). For a dense matrix, `norm(A)` and `norm(A, 2)`
+are the 2-norm, the largest singular value. `norm(A, "fro")` is the Frobenius
+norm, one pass over the entries. `norm(A, 1)` is the max absolute column sum,
+`norm(A, Inf)` the max absolute row sum. An empty matrix is 0. A `NaN` entry
+makes the 2-norm `NaN`. An `Inf` entry makes it `Inf` unless a `NaN` is also
+present.
 ```
-norm([3, 4])         # → 5.0  (L2)
-norm([3, 4], 1)      # → 7.0  (L1)
-norm([3, 4], Inf)    # → 4.0  (max abs)
-norm([3, 0; 0, -4], 2)  # → 4.0  (spectral)
+norm([3, 4])            # → 5.0  (L2)
+norm([3, 4], 1)         # → 7.0  (L1)
+norm([3, 4], Inf)       # → 4.0  (max abs)
+norm([3, 0; 0, -4])     # → 4.0  (2-norm)
+norm([3, 0; 0, -4], "fro")  # → 5.0
+norm([1, -2; -3, 4])    # → 5.464985704219043
 ```
-A sparse matrix follows the same split: `norm(S)` is Frobenius and
-`norm(S, 2)` is spectral (the matrix is densified, and a side longer than
-512 is an error). Any other sparse `p` is an error.
+A sparse matrix keeps the one-pass default: `norm(S)` and `norm(S, "fro")`
+are Frobenius. `norm(S, 2)` is spectral (the matrix is densified, and a side
+longer than 512 is an error). Any other sparse `p` is an error.
 
 ### `cond(A)` / `cond(A, p)`
 Condition number. The default and `p = 2` are `σ_max / σ_min`. `p = 1` and
@@ -1697,7 +1700,7 @@ Moore-Penrose pseudoinverse from the SVD. For an `m×n` matrix, `B` is `n×m` an
 ```
 A = [1, 2, 3; 4, 5, 6]
 B = pinv(A)
-norm(A * B * A - A)    % ~ 0
+norm(A * B * A - A, "fro")    % ~ 0
 ```
 
 ### `fzero(f, x0)` / `fzero(f, [a, b])` / `fzero(f, x0, tol)`
