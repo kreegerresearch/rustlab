@@ -352,8 +352,10 @@ async fn root(State(state): State<Arc<ServerState>>) -> Response {
         &body,
         browser.as_ref(),
     );
-    // The WS client is the only script on the index page; it gets the
-    // nonce here. The index body itself was sanitised at render time.
+    // Same overlay as a notebook page: the index has a file tree and no
+    // section outline. The WS client is the only other script; it gets
+    // the nonce here. The index body itself was sanitised at render time.
+    let html = super::drawer::install_nav_drawer(&html, Some(&state.csp_nonce));
     let html = ws::inject_ws_client_nonced(&html, Some(&state.csp_nonce));
     html_response(&state, html)
 }
@@ -2012,7 +2014,8 @@ mod tests {
 
     /// The CSP nonce must never be added to a `<script>` that arrived
     /// through content: serving is not allowed to post-process nonces
-    /// in. Only the WS client the server injects on `/` carries one.
+    /// in. The index's own scripts (the WS client and the contents
+    /// drawer) carry the nonce. The body script does not.
     #[tokio::test]
     async fn index_page_does_not_bless_content_scripts_with_nonce() {
         let plot_dir = TempDir::new().unwrap();
@@ -2069,10 +2072,14 @@ mod tests {
             s.contains("<script nonce=\"testnonce\">"),
             "server-injected WS client must carry the nonce"
         );
+        assert!(
+            s.contains("rlDrawerAction"),
+            "the contents drawer script is one of the nonced scripts"
+        );
         assert_eq!(
             s.matches("nonce=\"testnonce\"").count(),
-            1,
-            "exactly one nonced script on the index page"
+            2,
+            "WS client and contents drawer are the only nonced scripts"
         );
     }
 
@@ -2532,7 +2539,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1 << 16)
+            .await
+            .unwrap();
         let body = String::from_utf8_lossy(&body);
         assert!(body.contains("git diff is off"), "{body}");
         assert_eq!(crate::gitdiff::git_spawns(), before, "git ran while off");

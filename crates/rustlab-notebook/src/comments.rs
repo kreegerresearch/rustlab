@@ -2925,8 +2925,8 @@ body:has(#rl-comments:not(:checked)) .rl-cm-mark {
 #rl-cm-menu, #rl-cm-pop {
   position: fixed;
   /* Above the TOC sidebar (100), the file browser (120, or 180 when the
-     narrow browser is open), and the top bar (150). The edit toolbar
-     stays higher. */
+     narrow browser is open), the watch contents drawer (240), and the
+     top bar (150). The edit toolbar stays higher. */
   z-index: 400;
   background: var(--rl-cm-note-bg, var(--rl-bg-secondary));
   color: var(--rl-text);
