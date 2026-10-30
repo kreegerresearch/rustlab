@@ -23,9 +23,9 @@ Numeric literals also accept an imaginary suffix: `2j`, `1.5i`, and `3e8j` are i
 
 ### Type-preservation note for element-wise operators
 
-rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
+rustlab stores all vectors and matrices as `Complex<f64>`. The element-wise operators `.*`, `./`, `.\`, and `.^` between two **essentially-real** operands (every imaginary part below `f64::EPSILON ≈ 2.2e-16`) return a result whose imaginary part is exactly zero — no `real(...)` wrapper required to drop floating-point noise.
 
-Division by a real number (`./`, or `/` by a scalar) divides each part directly, so `x ./ y` on real arrays equals scalar `x / y` bit for bit, and `(a + bj) ./ y` is `a/y + (b/y)j`. Negating a real value keeps it real, and a zero imaginary part counts as real whatever its sign, so `angle(-1)` is `π` and `sqrt(-4)` is `2j`.
+Division by a real number (`./`, `.\`, or `/` by a scalar denominator) divides each part directly, so `x ./ y` on real arrays equals scalar `x / y` bit for bit, and `(a + bj) ./ y` is `a/y + (b/y)j`. `A .\ B` is that same division with the arguments swapped (`B ./ A`). Negating a real value keeps it real, and a zero imaginary part counts as real whatever its sign, so `angle(-1)` is `π` and `sqrt(-4)` is `2j`.
 
 ```
 u = [1.0, 2.0, 3.0]
@@ -1590,9 +1590,9 @@ x = [2, 1; 1, 3] \ [5; 10]     # [1; 3]
 ```
 
 ### `B / A` / `mrdivide(B, A)`
-Right division, the solution of `X * A = B`. It is `(A.' \ B.').'` (no conjugate). Two matrices, a matrix and a row, or a row and a matrix take this path.
+Right division, the solution of `X * A = B`. It is `(A' \ B')'` (conjugate transpose). Two matrices, a matrix and a row, a row and a matrix, or a scalar numerator (`2 / M`, `2 / v`) take this path.
 
-A scalar on either side of `/` stays element-wise, which is what `2 / M` already did. Two vectors with `/` are still an error; use `./`.
+A scalar denominator (`M / 2`, `v / 2`) stays an element-wise scale. Two vectors with `/` are still an error; use `./`.
 ```
 x = [5, 10] / [2, 1; 1, 3]     # [1, 3]
 ```
@@ -3878,21 +3878,24 @@ y = a + b + ...
 ```
 Everything after `...` on the line is ignored (treated as a comment).
 
-### Element-wise operators: `.* ./ .^`
+### Element-wise operators: `.* ./ .\ .^`
 ```
 a .* b     # element-wise multiply
 a ./ b     # element-wise divide
+a .\ b     # element-wise divide with the arguments swapped (b ./ a)
 a .^ 2     # element-wise square
 ```
+`A .\ B` uses the same broadcasting and the same real-storage kernel as `B ./ A`. It does not form a reciprocal.
 
 ### Left and right division: `\` and `/`
 `\` and `/` share precedence with `*` and associate left to right.
 ```
 x = A \ b      # solve A*x = b; a column is b'
-X = B / A      # solve X*A = B, when both sides are matrices or a row
-s / M          # still element-wise when one side is a scalar
+X = B / A      # solve X*A = B
+M / 2          # element-wise scale (scalar denominator)
+2 / M          # right division: solve X*M = 2
 ```
-`.\` is not an operator. See `mldivide` and `mrdivide` under Linear Algebra.
+A scalar numerator on the left of `/` is right division. A scalar denominator stays element-wise. Two vectors with `/` are an error; use `./`. See `mldivide` and `mrdivide` under Linear Algebra.
 
 ### Concatenation: `[a, b, c]`
 ```
@@ -4211,7 +4214,7 @@ Rows in brackets are not functions:
 - `[top-level]` — time outside any profiled call (top-level statements and loops). With it, the Self column adds up to the wall time since profiling started; that sum is the `TOTAL` row.
 - `[matmul]` — matrix products `A * B`, always recorded, including `A' * B` where the transpose is read in place and not written out. In/Out are the stored bytes of the two operands and of the product, so Mbit/s is the throughput of that multiply.
 - `[widen]` and `[promote]` — storage conversions, always recorded when they happen. An array of real numbers is stored as real numbers; `[widen]` counts the times an operation that only handles complex arrays had to build a complex copy of one, and `[promote]` the times a write of complex values (or an operation that only writes complex arrays) converted one in place. Calls, time in the Total column (that time is already inside the caller's Self time, so Self is 0), the real bytes read (In) and the complex bytes built (Out). Results are the same either way; these rows show where time goes to conversions.
-- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
+- With `rustlab run --profile=ops` only: one row per operator (`[+]`, `[-]`, `[*]`, `[.*]`, `[./]`, `[.\]`, `[^]`, comparisons, …), `[transpose]`, `[index]` (reading `v(i)`, `M(i, j)`) and `[index-assign]` (writing them). An operator row covers the operation itself, not the evaluation of its operands, and its In/Out are the stored bytes of those operands and of the result. `[index]` and `[index-assign]` leave In/Out at 0. A product with a transposed matrix operand (`A' * B`, `X * W'`) has no `[transpose]` row: the multiply reads the operand transposed in place, and the time is in `[matmul]`.
 
 Calls made inside `parmap` appear as `parmap:<name>` rows (for example `parmap:[matmul]`). They are CPU time summed over the worker threads, so they can exceed wall time and `TOTAL` leaves them out; the `parmap` row is the call's wall time.
 

@@ -36,7 +36,7 @@ Fixes landed in 0.3.23. What remains different on purpose:
 | `diag` of a length-1 vector | a 1×1 matrix | a 1×1 matrix | Closed in 0.3.25. `diag(5)` used to be the scalar 5 |
 | `zeros(n)` / `ones(n)` / `rand(n)` | n×n | n×n | Shipped in 0.3.26. A row is `zeros(1, n)` and stays a matrix |
 | `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
-| `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
+| `/` and `.\` | `A .\ B` is `B ./ A`. A scalar numerator `2/A` is right division. A scalar denominator stays element-wise. Two vectors with `/` are an error (`./`) | `mrdivide`, including `v/w` | `.\` and scalar-numerator `/` landed in 0.3.27. Two-vector `/` is still `./`. Right division is `(A' \ B')'` |
 | `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
 | `polyfit` / `polyval` | no `mu` centering output | `polyfit` can return `[p, S, mu]` | Shipped in 0.3.24 as the coefficient row only |

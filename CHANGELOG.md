@@ -6,6 +6,15 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
+## 0.3.27
+
+### Added
+- **`A .\ B`.** Element-wise division with the arguments swapped: `A .\ B` is `B ./ A`, including the same broadcasting. A scalar `a .\ b` is `b / a`. The operator runs on the existing `./` kernel, so a real array stays real and is not copied first.
+
+### Breaking / behavior changes
+- **A scalar on the left of `/` is right division.** `2 / M` and `2 / v` solve `X * M = 2` instead of dividing element-wise. A 1×1 left side against a matrix with more than one column is a dimension error. `M / 2` and `v / 2` stay an element-wise scale. Two vectors with `/` are still an error; use `./` or `.\`.
+- **`B / A` uses the conjugate transpose.** Right division is `(A' \ B')'`. `eye(2) / [1, j; 0, 1]` is `[1, -j; 0, 1]`. The 0.3.24 reduction used `.'` and put `+j` in that entry. Real matrices are unchanged.
+
 ## 0.3.26
 
 ### Breaking / behavior changes

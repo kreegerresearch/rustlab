@@ -1221,7 +1221,7 @@ stmt        = IDENT ("=" | "+=" | "-=" | "*=" | "/=") range_expr [";"] "\n"  # a
 range_expr  = expr (":" expr (":" expr)?)?     # a:b or a:step:b → Vector
 
 expr        = term (("+"|"-") term)*
-term        = factor (("*"|"/"|"\\"|".*"|"./") factor)*
+term        = factor (("*"|"/"|"\\"|".*"|"./"|".\\") factor)*
 factor      = postfix (("^"|".^") factor)?     # right-associative
 postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")" | "{" arglist "}")*
                 # ' = conjugate transpose; .' = plain transpose
@@ -1278,9 +1278,9 @@ primary     = NUMBER | STRING | IDENT
 | Profile | `profile(fn1, fn2)` / `profile()` | Track named functions (or all); `profile_report()` prints mid-script |
 | Concatenation | `[v1, v2]` | Vectors inside `[...]` are flattened |
 | Transpose | `v'` | Conjugate transpose — conjugates complex values; use `.'` to reshape complex data |
-| Element-wise | `.*` `./` `.^` | Always element-wise on vectors/matrices |
+| Element-wise | `.*` `./` `.\` `.^` | Always element-wise on vectors/matrices. `A .\ B` is `B ./ A` on the same kernel |
 | Left division | `A \ b` | Same precedence as `*` and `/`. Square nonsingular `A` uses LU; rectangular and singular `A` use column-pivoted QR. A vector is a row, so a column right-hand side is `b'`. A scalar `A` divides element-wise |
-| Right division | `B / A` | `X * A = B` when both sides are matrices or a row. A scalar on either side of `/` stays element-wise. Two vectors with `/` are an error; use `./` |
+| Right division | `B / A` | `X * A = B` via `(A' \ B')'`. A scalar numerator (`2 / M`) uses this path. A scalar denominator stays element-wise. Two vectors with `/` are an error; use `./` |
 | Matrix literal | `[1,2; 3,4]` | `;` separates rows |
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
 | Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
@@ -1452,7 +1452,7 @@ primary     = NUMBER | STRING | IDENT
 | `chol` | `F = chol(A [, ordering])` | Sparse Cholesky factor handle for SPD `A`. Pair with `solve(F, b)` to back-solve many RHS without re-factoring (canonical fast path for parameter sweeps and animations). Real-only `A` routes to the f64 path automatically. Errors on indefinite or non-Hermitian `A` — no auto fallback to LU. Optional `ordering` argument matches `spsolve`'s. |
 | `lu` | `F = lu(A [, ordering])` / `[L, U, P] = lu(A)` | Sparse `A` returns an opaque LU factor handle (partial pivoting, threshold 0.1) for `solve(F, b)`. Dense `A` returns `[L, U]` (`L*U = A`, permutation absorbed) or `[L, U, P]` (`P*A = L*U`). One dense output is an error. |
 | `mldivide` | `A \ b` / `mldivide(A, b)` | Square nonsingular systems use LU with partial pivoting. Rectangular and singular systems use column-pivoted QR least squares, warn, and return a basic solution (free variables 0). A scalar `A` divides element-wise. A vector is a row. |
-| `mrdivide` | `B / A` / `mrdivide(B, A)` | Solves `X*A = B` via `(A.' \ B.').'`. Scalar `/` stays element-wise. |
+| `mrdivide` | `B / A` / `mrdivide(B, A)` | Solves `X*A = B` via `(A' \ B')'`. A scalar numerator uses this path. A scalar denominator stays element-wise. |
 | `polyfit` | `polyfit(x, y, n)` | Degree-`n` least-squares polynomial, descending powers, via QR. A matrix `y` is one row of coefficients per column. |
 | `polyval` | `polyval(p, x)` | Horner evaluation. The result has the shape of `x`. |
 | `interp1` | `interp1(x, y, xi [, method [, "extrap"]])` | `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot). NaN outside the range unless `"extrap"`. |

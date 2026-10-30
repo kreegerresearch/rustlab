@@ -3505,6 +3505,7 @@ impl Evaluator {
                     BinOp::Sub => Some(a - b),
                     BinOp::Mul | BinOp::ElemMul => Some(a * b),
                     BinOp::Div | BinOp::ElemDiv => Some(a / b),
+                    BinOp::ElemLeftDiv => Some(b / a),
                     _ => None,
                 };
                 if let Some(x) = fast {
@@ -4682,6 +4683,7 @@ fn profile_op_name(op: BinOp, l: &Value, r: &Value) -> &'static str {
         Pow => "[^]",
         ElemMul => "[.*]",
         ElemDiv => "[./]",
+        ElemLeftDiv => "[.\\]",
         ElemPow => "[.^]",
         Eq => "[==]",
         Ne => "[~=]",
