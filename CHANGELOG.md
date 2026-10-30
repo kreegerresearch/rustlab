@@ -13,6 +13,13 @@ should re-validate against those entries when upgrading.
 - **A size must be a finite integral value strictly below `2^64`.** `zeros([Inf, 1])` used to become a `usize::MAX` dimension because the `[m, n]` form rounded and cast. It is now an error, and a non-integer size vector is not rounded. `n >= 2^64` (compared in `f64`) is rejected; `as usize` no longer saturates a too-large size to `usize::MAX`.
 - The element cap is MATLAB's `2^48 − 1`. The byte length must also fit in `isize` (the product is a checked multiply, so a wrapped `usize` count is an error). The message is `<fn>: requested AxB array exceeds the maximum possible variable size`.
 
+## 0.3.34
+
+### Fixed
+- **`interp1` treats a non-finite query as a number.** A `NaN` query stays a real `NaN` when `y` is real, including when a fill value is set (the fill does not replace a missing query). `Inf` is outside `[min(x), max(x)]`: the default is `NaN`, a numeric fifth argument fills it, and `"extrap"` extends the end interval. Previously both came back as a complex `NaN` and ignored the fill and `"extrap"`.
+- **Dense `chol` rejects a diagonal that is not real.** That pivot is not positive. One output errors. `[R, p] = chol(A)` reports the 1-based pivot and returns the leading factor. Previously the real part was used, so `R' * R` did not restore `A`. A scalar is a 1×1 matrix, so `chol(4)` is `2`. It used to error.
+- **`interp1(..., "linear", "extrap")` of `±Inf` stays on the line.** A zero slope keeps the endpoint. A nonzero slope is `±Inf` with that sign. The old `y0*(1-b) + y1*b` form was `0*Inf` when an endpoint was 0.
+
 ## 0.3.33
 
 ### Added

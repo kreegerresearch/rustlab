@@ -253,7 +253,7 @@ impl SparseMat {
     /// vs O(nnz log nnz). Consecutive duplicate `(row, col)` entries
     /// are summed (handles periodic-BC corner cases at minimum grid
     /// sizes where the wrap column coincides with an interior column).
-    /// Near-zero entries are dropped.
+    /// Exact zeros are dropped. A tiny finite value, NaN, and Inf stay.
     ///
     /// **Caller's contract:** `entries` is sorted ascending by
     /// `(row, col)` lexicographically. Violating the contract produces

@@ -15080,7 +15080,9 @@ fn try_sparse_lu(
 /// `"amd"` (approximate minimum degree).
 fn builtin_chol(args: Vec<Value>, nargout: usize) -> Result<Value, ScriptError> {
     check_args_range("chol", &args, 1, 2)?;
-    if matches!(args.first(), Some(Value::Matrix(_))) {
+    // A scalar and a vector are matrices here, the same as `lu` and `\`.
+    // `chol(4)` is the 1×1 factor. Only a sparse matrix returns a handle.
+    if !matches!(args.first(), Some(Value::SparseMatrix(_))) {
         return super::linsys::builtin_chol_dense(&args, nargout);
     }
     if nargout > 1 {

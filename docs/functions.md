@@ -1636,7 +1636,7 @@ polyval([1, -3, 2], [1, 2])   # [0, 0]
 ```
 
 ### `interp1(x, y, xi [, method [, "extrap" or fill]])`
-One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
+One-dimensional interpolation. `method` is `"linear"` (the default), `"nearest"`, `"previous"`, `"next"`, `"spline"`, `"pchip"`, or `"makima"`. `x` must be strictly monotonic (a decreasing `x` is reversed internally). A query outside `[min(x), max(x)]` is `NaN` unless `"extrap"` is passed, which extends the end interval, or a number is passed, which fills that value. `Inf` is outside that interval. A `NaN` query stays `NaN` and is not replaced by the fill. `"nearest"`, `"previous"`, and `"next"` clamp to the end sample when extrapolating.
 
 `"nearest"` breaks a midpoint tie toward the sample with the larger `x`. `"previous"` holds the left sample on `[x_i, x_{i+1})`. `"next"` holds the right sample on `(x_i, x_{i+1}]`. `"spline"` is the not-a-knot cubic: a sampled cubic is reproduced, two points are a straight line, and three points are the quadratic through them. `"pchip"` is the Fritsch–Carlson cubic Hermite interpolant. `"makima"` is modified Akima. Both pass through the nodes. Slopes are computed once per call.
 
@@ -2004,7 +2004,7 @@ Reusable factor handles for the factor-once-solve-many pattern. `chol(A)` factor
 
 A dense matrix takes the other form. `[L, U, P] = lu(A)` returns a unit lower `L`, an upper `U`, and a permutation matrix with `P * A = L * U`. `[L, U, p] = lu(A, "vector")` returns the same factors with a 1-based permutation vector, and `A(p, :) = L * U`. `[L, U] = lu(A)` absorbs that permutation into `L`, so `L * U = A`. One output of a dense `lu` is an error; a factor handle is only for a sparse matrix. Asking for `[L, U, P]` of a sparse matrix is an error — use `lu(full(A))`.
 
-A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
+A dense `chol(A)` returns the upper factor `R` with `A = R' * R`. A scalar is a 1×1 matrix (`chol(4)` is `2`). `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. A diagonal entry that is not real fails that pivot. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot, with `R` the leading factor up to that pivot. A sparse `chol` is unchanged: it still returns a factor handle.
 
 This is the canonical fast path for parameter sweeps and animations: factor once (the dominant cost), then solve per-frame at a small fraction of the factor cost. The same real-vs-complex auto-routing as `spsolve` applies — real-only `A` produces a real factor that takes ~4× less time and memory than the complex equivalent.
 
