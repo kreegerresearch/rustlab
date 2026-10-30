@@ -1423,9 +1423,10 @@ handle on the column's left edge drags that width, from 10rem up to
 40% of the viewport. Arrow keys move it by 16px, Home and End jump to
 the ends, and a double-click restores 14rem. The width is kept in
 `localStorage` for that browser (`rl-cm-col-px`). Collapse leaves a
-2.5rem strip of the numbered markers (`rl-cm-collapsed`). A directory
+2.5rem strip of the numbered markers (`rl-cm-collapsed`). A static directory
 page with the file browser and the contents sidebar keeps that column
-and shrinks the prose to make room. Cards are one full-width column. A small
+and shrinks the prose to make room. `notebook watch` does not reserve
+those columns, so the comment margin sits beside a wider article. Cards are one full-width column. A small
 script stacks them: the first card whose marker is on a line sits
 level with that line, and the others on that line stack under it. A
 later card starts at its own marker, or below the previous card when
@@ -2063,20 +2064,30 @@ questions and are always both present:
   bar is also appended at the foot of the page, where it is useful after a
   long read.
 
-Directory HTML (`render` of a folder, and `watch` of a folder) adds a
-third: a **file browser** fixed on the left of the index page and of
-every notebook page. It groups notebooks by their real folders, and each
-row shows only the file name (`filters.md`), inside its folder.
-The whole browser and each folder are `<details>` disclosures. The root
-disclosure starts open; closing it shrinks the column. Every folder
-starts closed, except the folders that contain the notebook on this
-page, so that file stays visible. The index has no current notebook, so
-every folder starts closed there. Clicking a folder summary opens or
-closes only that folder. The open notebook is marked. Listing rules match the index (`README.md` included;
-no `index.md`, `_` partials, or dotfiles), and the row order matches
+Directory HTML (`render` of a folder) adds a third: a **file browser**
+fixed on the left of the index page and of every notebook page. It groups
+notebooks by their real folders, and each row shows only the file name
+(`filters.md`), inside its folder. The whole browser and each folder are
+`<details>` disclosures. The root disclosure starts open; closing it
+shrinks the column. Every folder starts closed, except the folders that
+contain the notebook on this page, so that file stays visible. The index
+has no current notebook, so every folder starts closed there. Clicking a
+folder summary opens or closes only that folder. The open notebook is
+marked. Listing rules match the index (`README.md` included; no
+`index.md`, `_` partials, or dotfiles), and the row order matches
 frontmatter `order` then path, with `README.md` first among unordered
-files in its folder. Single-file `render` / `watch` has no
-file browser. LaTeX and PDF do not.
+files in its folder. Single-file `render` has no file browser. LaTeX and
+PDF do not.
+
+`notebook watch` uses the same tree and the same outline, but they do
+not reserve a column. **Contents** (or `\`) opens one drawer that slides
+over the page. Escape, a click outside the drawer, or choosing a file or
+a heading closes it. A folder summary only opens or closes that folder.
+On a wide window the open drawer does not cover headings or a plot's
+title and axis labels: those shift clear of the panel. Under 768px the
+open drawer covers the page until it is dismissed. A single-file watch
+has the outline and no file tree. The comment margin is unchanged.
+`?contents=open` starts the page with the drawer open.
 
 Single-file renders (`rustlab-notebook render file.md`) show the same
 chrome, minus the cross-notebook links, the file browser, and the footer
