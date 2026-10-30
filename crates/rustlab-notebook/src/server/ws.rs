@@ -560,20 +560,21 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
     // frozen at page load: adding, renaming or reordering a heading
     // renumbered the heading-N ids in the body while the TOC kept pointing
     // at the old ones. Swap it too, and handle it appearing/disappearing
-    // when a notebook gains or loses its first heading. The hamburger is a
-    // SIBLING of the sidebar, not a child — sync it with the same lifecycle
-    // or a notebook gaining its first heading has an unreachable mobile TOC
-    // and one losing its last leaves an orphaned button.
-    // `body >` scoping: the unqualified selectors matched author-written
-    // raw HTML inside <main> — on a no-toc page (no real sidebar) a
-    // literal <nav class="sidebar"> in prose got the real TOC written
-    // INTO it, permanently diverging the live DOM from the served page.
-    // Sync order matches server emission (topbar, button, sidebar) so
-    // inserted nodes land in server order and tab order.
+    // when a notebook gains or loses its first heading.
+    // `body >` / `#rl-drawer >` scoping: an unqualified selector matched
+    // author-written raw HTML inside <main>. Watch pages keep both navs
+    // inside #rl-drawer (the overlay). The Contents button lives in the
+    // topbar, so syncing the topbar keeps it. The open/closed class stays
+    // on the body element and is not one of the classes assigned below.
     syncOutsideMain(parsed, 'body > header.topbar', tgt);
-    syncOutsideMain(parsed, 'body > nav.file-browser', tgt);
-    syncOutsideMain(parsed, 'body > button.nav-toggle', tgt);
-    syncOutsideMain(parsed, 'body > nav.sidebar', tgt);
+    if (document.getElementById('rl-drawer')) {
+      syncDrawerNav(parsed, '#rl-drawer > nav.file-browser');
+      syncDrawerNav(parsed, '#rl-drawer > nav.sidebar');
+    } else {
+      syncOutsideMain(parsed, 'body > nav.file-browser', tgt);
+      syncOutsideMain(parsed, 'body > button.nav-toggle', tgt);
+      syncOutsideMain(parsed, 'body > nav.sidebar', tgt);
+    }
     // Only the class the server owns. Assigning the whole className wiped
     // runtime classes — rl-source-open in particular, which closed the
     // source/editor pane on every save and defeated the source/cell-editor
@@ -591,6 +592,19 @@ pub const WS_CLIENT_SCRIPT: &str = r#"<script>
   }
 
   // Reconcile a chrome element that sits outside <main>.
+  function syncDrawerNav(parsed, selector) {
+    const parent = document.getElementById('rl-drawer');
+    const next = parsed.querySelector(selector);
+    const cur = document.querySelector(selector);
+    if (next && cur) {
+      cur.innerHTML = next.innerHTML;
+      cur.className = next.className;
+    } else if (next && !cur && parent) {
+      parent.appendChild(next.cloneNode(true));
+    } else if (!next && cur) {
+      cur.remove();
+    }
+  }
   function syncOutsideMain(parsed, selector, mainTgt) {
     const next = parsed.querySelector(selector);
     const cur = document.querySelector(selector);
@@ -906,9 +920,7 @@ mod tests {
             Some(("win".to_string(), WidgetValue::Text("hann".into()), None)),
         );
         assert_eq!(
-            parse_widget_update(
-                r#"{"kind":"widget_update","name":"gain","value":2.5,"flash":7}"#
-            ),
+            parse_widget_update(r#"{"kind":"widget_update","name":"gain","value":2.5,"flash":7}"#),
             Some(("gain".to_string(), WidgetValue::Number(2.5), Some(7))),
         );
     }
