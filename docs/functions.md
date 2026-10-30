@@ -333,30 +333,38 @@ mean([1.0, 2.0, 3.0])   # → 2.0
 mean(randn(1000))        # → ≈ 0.0
 ```
 
-### `median(v)`
-Median value, computed on real parts. For even-length vectors returns the average of the two middle elements.
+### `median(v)` / `median(M)` / `median(M, dim)`
+Median of the real values. An odd length returns the middle element; an even length returns the average of the two middle elements. A matrix defaults to one median per column (`1×ncols`); `median(M, 2)` is one per row.
 ```
 median([3.0, 1.0, 2.0])         # → 2.0
 median([4.0, 1.0, 3.0, 2.0])   # → 2.5
 ```
-- Scalar input returns the scalar unchanged.
-- Complex vectors: imaginary parts are ignored; result is always a real scalar.
-- A NaN real part makes the result NaN. `Inf` sorts as a value.
+- A scalar is returned unchanged.
+- Genuinely complex input (any nonzero imaginary part) is an error.
+- An empty input is NaN. A NaN in the data makes that reduction NaN. `Inf` sorts as a value.
 
-### `std(v)`
-Sample standard deviation (Bessel-corrected, N−1 denominator).
-Complex data uses `sqrt(Σ|x − mean|² / (n − 1))`. Length 0 or 1 returns 0
-(MATLAB returns NaN for an empty input; that divergence is recorded).
-```
-std(randn(10000))   # → ≈ 1.0
-std([1, 2, 3, 4])   # → sqrt(5/3)
-```
+### `std(x)` / `std(x, w)` / `std(x, w, dim)`
+Standard deviation. `w` selects the divisor:
 
-### `var(v)` / `var(M)` / `var(M, dim)`
-Sample variance, `std(x)²`, with the same shapes and the same complex rule.
-There is no population (divide-by-n) flag.
+- `0` (the default) divides by `n − 1`. One observation is 0.
+- `1` divides by `n`.
+- A nonnegative weight vector divides by the sum of the weights. The weighted mean is `sum(w .* x) / sum(w)`.
+
 ```
-var([1, 2, 3, 4])   # → 5/3
+std([1, 2, 3, 4])              # → sqrt(5/3)
+std([1, 2, 3], 1)              # → sqrt(2/3)
+std([1; 3; -9], [1; 1; 0.5])   # → sqrt(20.16)
+```
+- Empty input is NaN. A NaN in the data makes that reduction NaN. A weight vector whose sum is 0 is NaN.
+- Complex data uses `sqrt(Σ w |x − mean|² / Σ w)` (or `n − 1` / `n` when `w` is `0` or `1`).
+- `std(M)` is the sample standard deviation of each column, a `1×ncols` row. `std(M, 0, 2)` is each row, an `nrows×1` column. The second argument is a weight, not a dimension: `std(M, 2)` is an error.
+- A vector is a row. `std(v)` reduces along its length. `std(v, 0, 1)` is a vector of zeros (one observation per column).
+
+### `var(x)` / `var(x, w)` / `var(x, w, dim)`
+Variance, the square of `std` before the square root. Same `w`, same shapes, same complex rule.
+```
+var([1, 2, 3, 4])    # → 5/3
+var([1, 2, 3], 1)    # → 2/3
 ```
 
 ### `sum(v)`
@@ -366,7 +374,7 @@ imaginary part is non-negligible, otherwise scalar.
 sum([1.0, 2.0, 3.0])   # → 6.0
 sum(ones(4) * j)        # → 0+4i
 ```
-A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `std`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
+A 1×N row or N×1 column follows the vector rule. `sum(r)` and `sum(r, 2)` on a 1×N row are the scalar total; `sum(r, 1)` returns that row unchanged. An N×1 column is the mirror image: `sum(c, 2)` returns the column, and `sum(c)` / `sum(c, 1)` are the scalar. The same rule applies to `mean`, `prod`, `median`, `cumsum`, and to `max`/`min` when a dimension is given (`max(r, [], 1)`). `std` and `var` take the dimension as the third argument (`std(r, 0, 2)`). A default `sum`/`max` of a 1-D matrix stays a scalar. A general matrix still reduces along dim 1 by default.
 
 ### `cumsum(v)`
 Cumulative sum of a vector. Returns a vector of the same length where each element is the
@@ -394,14 +402,18 @@ argmax(A, 2)                    # column index of each row's max, nrows×1
 ```
 - Always agrees with the index returned by `[m, i] = max(...)` on the same input.
 
-### `sort(v)`
-Sort a vector ascending by real part. Imaginary components are preserved.
+### `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `sort(A, dim, direction)`
+Sort ascending (`"ascend"`, the default) or descending (`"descend"`). Real values sort numerically. If any imaginary part is nonzero, that slice sorts by magnitude and then by phase. NaN is higher than every number, including `+Inf`, so an ascending sort leaves NaNs at the end and a descending sort leaves them at the start. Ties keep their original order.
 ```
-sort([3.0, 1.0, 2.0])         # → [1.0, 2.0, 3.0]
-sort([3.0, -1.0, 0.5])        # → [-1.0, 0.5, 3.0]
+sort([3.0, 1.0, 2.0])              # → [1.0, 2.0, 3.0]
+sort([3, 1, 2], "descend")         # → [3, 2, 1]
+[s, i] = sort([3, 1, 2])           # s = [1, 2, 3], i = [2, 3, 1]
+sort([3, 1; 1, 2; 2, 0])           # each column, top to bottom
 ```
-- Returns a scalar unchanged.
-- Useful for top-K sampling: sort logits descending, slice, apply softmax.
+- A matrix sorts along dimension 1 (each column) unless `dim` is given. `sort(M, 2)` sorts each row.
+- A vector is a row, so the default axis is its length. `sort(v, 1)` returns `v` unchanged and an index vector of ones.
+- `[s, i] = sort(...)` also returns 1-based indices into the sorted axis. `s` and `i` have the shape of `A`.
+- A scalar is unchanged, with index 1.
 
 ### `trapz(v)` / `trapz(x, v)` / `trapz(M)` / `trapz(x, M)`
 Trapezoidal numerical integration. With one argument, assumes unit spacing between samples; with two, uses `x` as the sample positions.
@@ -1247,7 +1259,7 @@ y = filtfilt(b, a, x)
 ## Linear Algebra
 
 ### `trace(M)`
-Sum of the main diagonal elements of a square (or rectangular) matrix `M`.
+Sum of the main diagonal of a square matrix `M`. A non-square matrix is an error.
 ```
 M = [1,2;3,4]
 trace(M)    # → 5.0  (1 + 4)
@@ -1255,7 +1267,6 @@ trace(M)    # → 5.0  (1 + 4)
 A = [1+j,0;0,2]
 trace(A)    # → complex 3+1i
 ```
-- Works on non-square matrices: sums `min(rows, cols)` diagonal elements.
 - Returns a scalar if the imaginary part is negligible, otherwise complex.
 - `trace(scalar)` returns the scalar unchanged.
 
@@ -1473,7 +1484,7 @@ transpose([1+j, 2; 3, 4-j])   # same as writing A.'
 - ⚠️ **Reshaping complex data:** postfix `'` conjugates. The innocuous-looking `b = src(:)'` silently flips the sign of every imaginary part when `src` is complex — nothing errors, the values are just wrong. Use `b = src(:).'` (or `transpose`) when the intent is pure reshaping.
 
 ### `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)`
-- `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors; `diag(5)` is `5`.
+- `diag(v)` — creates an n×n diagonal matrix from vector `v`. A row, a column (`n×1`), a `1×n` matrix and a scalar all count as vectors. A length-1 input is a `1×1` matrix: `size(diag(5))` is `[1, 1]` and the entry is 5.
 - `diag(v, k)` — puts `v` on diagonal `k` (above the main one for `k > 0`, below for `k < 0`) of an `(n+|k|)`-square matrix.
 - `diag(M)` / `diag(M, k)` — extracts diagonal `k` of a matrix with at least two rows and two columns, as a vector (empty when `k` is outside the matrix).
 - `k` must be an integer.

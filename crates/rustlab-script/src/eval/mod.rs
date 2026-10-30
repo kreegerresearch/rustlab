@@ -2,6 +2,7 @@ pub mod builtins;
 pub(crate) mod elementwise;
 pub(crate) mod interp1;
 pub(crate) mod linsys;
+pub(crate) mod order_stats;
 pub(crate) mod real_index;
 pub(crate) mod real_ops;
 pub mod line_io;
