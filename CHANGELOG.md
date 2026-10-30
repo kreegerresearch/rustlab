@@ -6,11 +6,60 @@ several PRs while that version is current. **Breaking / behavior changes**
 get their own subsection with migration guidance — downstream script owners
 should re-validate against those entries when upgrading.
 
-## 0.3.30
+## 0.3.31
 
 ### Added
 - **`[p, S] = polyfit(x, y, n)` and `[p, S, mu] = polyfit(x, y, n)`.** One output is unchanged. `S.R` is the triangular factor from the fit's QR, `S.df` is `length(x) - (n + 1)`, and `S.normr` is the residual norm. `mu` is `[mean(x), std(x)]` with the sample standard deviation, and the three-output coefficients are for the centered variable. `polyval(p, x, S, mu)` evaluates that fit. A Vandermonde larger than 100,000,000 entries errors before it is allocated.
 - **`interp1` methods `"pchip"` and `"makima"`.** `"pchip"` is Fritsch–Carlson. `"makima"` is modified Akima. A numeric fifth argument fills queries outside the data range. `"extrap"` is unchanged.
+
+## 0.3.30
+
+### Added
+- **Dense `chol`.** `R = chol(A)` is the upper factor, `A = R' * R`. `chol(A, "lower")` returns `L` with `A = L * L'`. One output errors when a pivot is not positive. `[R, p] = chol(A)` does not error: `p` is `0` on success, and otherwise the 1-based index of the failing pivot. A sparse `chol` still returns a factor handle.
+- **`[L, U, p] = lu(A, "vector")`.** `p` is 1-based and `A(p, :) = L * U`. `[L, U, P] = lu(A)` is still the permutation matrix. Two outputs still absorb the permutation.
+
+### Breaking / behavior changes
+- **A square Hermitian positive-definite `\` uses Cholesky, and a triangular `\` uses a triangular solve.** The value can move in the last digits versus the LU result. A Hermitian matrix that is not positive definite still uses LU. Rectangular `\` is unchanged.
+
+## 0.3.29
+
+### Breaking / behavior changes
+- **`A \ b` reads a vector as a column.** One solution is `n×1`. `A \ v` for a length-`n` vector solves. An explicit one-row matrix still has one row and does not match a tall `A`. `b'` of a vector is already a column, so scripts that transposed keep working.
+- **A singular square `\` stays on LU.** A zero pivot produces `Inf` when the residual is nonzero, and prints `warning: matrix is singular to working precision`. It no longer replaces that result with a finite QR solution. A rectangular `\` is still the basic QR solution (free variables 0), not the minimum-norm solution.
+- **Square sparse `A \ b` uses `spsolve`.** It does not build a dense matrix. One column returns the same value as `spsolve`. A rectangular sparse matrix densifies only up to 2,000,000 entries; a larger one errors.
+- **`linsolve` uses the same path as `\`.** A dense solution is `n×1`. A singular matrix warns and returns the LU result instead of raising an error.
+- **A real `n×1` column combined with a same-length vector is element-wise.** `x .* h` has length `n`. It does not expand to an `n×n` matrix. `x * h` is still the outer product.
+
+## 0.3.28
+
+### Added
+- **`[Q, R, p] = qr(A)`.** Three outputs column-pivot. `p` is a 1-based permutation vector and `A(:, p) = Q*R`. A zero column moves to the end. `"vector"` is the same vector. `"matrix"` returns an `n×n` permutation matrix `P` with `A*P = Q*R`. `qr(A, 0)` with three outputs is the economy factor plus `p`. One and two outputs stay the unpivoted factor from 0.3.24.
+
+## 0.3.27
+
+### Added
+- **`A .\ B`.** Element-wise division with the arguments swapped: `A .\ B` is `B ./ A`, including the same broadcasting. A scalar `a .\ b` is `b / a`. The operator runs on the existing `./` kernel, so a real array stays real and is not copied first.
+
+### Breaking / behavior changes
+- **A scalar on the left of `/` is right division.** `2 / M` and `2 / v` solve `X * M = 2` instead of dividing element-wise. A 1×1 left side against a matrix with more than one column is a dimension error. `M / 2` and `v / 2` stay an element-wise scale. Two vectors with `/` are still an error; use `./` or `.\`.
+- **`B / A` uses the conjugate transpose.** Right division is `(A' \ B')'`. `eye(2) / [1, j; 0, 1]` is `[1, -j; 0, 1]`. The 0.3.24 reduction used `.'` and put `+j` in that entry. Real matrices are unchanged.
+
+## 0.3.26
+
+### Breaking / behavior changes
+- **A single size is a square matrix.** `zeros(n)`, `ones(n)`, `rand(n)`, `randn(n)`, and `randi(imax, n)` (also `randi([lo, hi], n)`) allocate n×n. They used to allocate a length-n vector. A row is `zeros(1, n)`, `randn(1, n)`, or `randi(imax, 1, n)`. A column is `zeros(n, 1)`. `zeros(1, n)` stays a matrix, not a vector. `rand()` and `randi(imax)` stay scalars. `eye(n)` was already n×n.
+- **`randi` takes a second size.** `randi(imax, m, n)` and `randi([lo, hi], m, n)` are m×n.
+- **Integer constructors follow the same shape.** `zeros(n, "int32")` and `ones(n, "int32")` are n×n. A row is `zeros(1, n, "int32")`.
+- In-tree scripts, notebooks, gallery sources, and `perf/` benches that wanted a length-n sequence now pass `1` as the row count. `perf/bench_builtins.rlab` uses `randn(1, N)` with `N = 100000`, and `bench_convolve.rlab` uses `randn(1, 48000)`, so those benches do not allocate an n×n matrix.
+
+## 0.3.25
+
+### Breaking / behavior changes
+- **`std` and `var` take a weight, then a dimension.** `std(x)` is still the sample standard deviation (divide by `n − 1`). `std(x, 1)` and `var(x, 1)` divide by `n`. A nonnegative weight vector divides by the sum of the weights. The dimension is the third argument: `std(M, 0, 2)` is the old `std(M, 2)`. `std(M, 2)` is now an error, because `2` is not a weight. Empty input is NaN (it was 0). One observation is still 0. A NaN in the data makes that reduction NaN. Complex data is still `Σ|x − mean|²` over the same divisor.
+- **`median` rejects complex input.** A nonzero imaginary part is an error. `median([])` is NaN (it was an error). Real medians are unchanged, including the even-length average of the two middle values.
+- **`sort` compares complex values by magnitude, then phase, and sorts a matrix along a dimension.** Real values still sort numerically. NaN is higher than `+Inf`: ascending leaves NaNs last, descending leaves them first. Ties keep their original order. `sort(M)` sorts each column; `sort(M, 2)` sorts each row; `sort(A, dim, "descend")` does both. A vector is a row, so `sort(v)` sorts along its length and `sort(v, 1)` leaves it in place. `[s, i] = sort(A)` still returns 1-based indices.
+- **`diag` of one element is a 1×1 matrix.** `diag(5)` and `diag([5])` have `size` `[1, 1]` and entry 5. They used to be the scalar 5. `diag([1, 2])` is still 2×2. A 1×1 matrix still adds and multiplies with a scalar.
+- **`trace` requires a square matrix.** `trace` of a rectangle is an error. It used to sum `min(rows, cols)` diagonal entries. A square trace is unchanged, and `trace` of a scalar is still that scalar.
 
 ## 0.3.24
 

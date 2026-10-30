@@ -1221,7 +1221,7 @@ stmt        = IDENT ("=" | "+=" | "-=" | "*=" | "/=") range_expr [";"] "\n"  # a
 range_expr  = expr (":" expr (":" expr)?)?     # a:b or a:step:b → Vector
 
 expr        = term (("+"|"-") term)*
-term        = factor (("*"|"/"|"\\"|".*"|"./") factor)*
+term        = factor (("*"|"/"|"\\"|".*"|"./"|".\\") factor)*
 factor      = postfix (("^"|".^") factor)?     # right-associative
 postfix     = primary ("'" | ".'" | "." IDENT ["(" arglist ")"] | "(" arglist ")" | "{" arglist "}")*
                 # ' = conjugate transpose; .' = plain transpose
@@ -1278,9 +1278,9 @@ primary     = NUMBER | STRING | IDENT
 | Profile | `profile(fn1, fn2)` / `profile()` | Track named functions (or all); `profile_report()` prints mid-script |
 | Concatenation | `[v1, v2]` | Vectors inside `[...]` are flattened |
 | Transpose | `v'` | Conjugate transpose — conjugates complex values; use `.'` to reshape complex data |
-| Element-wise | `.*` `./` `.^` | Always element-wise on vectors/matrices |
-| Left division | `A \ b` | Same precedence as `*` and `/`. Square nonsingular `A` uses LU; rectangular and singular `A` use column-pivoted QR. A vector is a row, so a column right-hand side is `b'`. A scalar `A` divides element-wise |
-| Right division | `B / A` | `X * A = B` when both sides are matrices or a row. A scalar on either side of `/` stays element-wise. Two vectors with `/` are an error; use `./` |
+| Element-wise | `.*` `./` `.\` `.^` | Always element-wise on vectors/matrices. `A .\ B` is `B ./ A` on the same kernel |
+| Left division | `A \ b` | Same precedence as `*` and `/`. A vector on the right is a column; one solution is `n×1`. An explicit one-row matrix stays a row. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot (`Inf` plus a singular warning). Rectangular `A` uses column-pivoted QR and a basic solution (free variables 0). A scalar `A` divides element-wise. Square sparse `A` uses `spsolve`. Rectangular sparse `A` densifies only up to 2,000,000 entries |
+| Right division | `B / A` | `X * A = B` via `(A' \ B')'`. A scalar numerator (`2 / M`) uses this path. A scalar denominator stays element-wise. Two vectors with `/` are an error; use `./` |
 | Matrix literal | `[1,2; 3,4]` | `;` separates rows |
 | Sparse types | `SparseVector`, `SparseMatrix` | COO format; 0-based internal, 1-based in script; auto-promote to dense in binops |
 | Rank-3 tensor | `Value::Tensor3` — shape `(m, n, p)` | Built via `zeros3`/`ones3`/`rand3`/`randn3`/`reshape(A, m, n, p)`/`cat(3, ...)`. 1-based indexing `A(i,j,k)`; `A(:,:,k)` returns a Matrix (trailing singleton dropped). No broadcasting between Matrix and Tensor3; no `*`/`/` between two Tensor3s (use `.*`/`./`). Column-major reshape walk. See `dev/plans/closed/tensor3.md` for the full design. |
@@ -1304,12 +1304,12 @@ primary     = NUMBER | STRING | IDENT
 | `sqrt` | `sqrt(x)` | Square root (element-wise) |
 | `exp` | `exp(x)` | e^x (element-wise) |
 | `log` | `log(x)` | Natural log (element-wise) |
-| `zeros` | `zeros(n)` / `zeros(n, m)` | Complex zero vector of length n, or n×m zero matrix |
-| `ones` | `ones(n)` / `ones(n, m)` | Complex ones vector of length n, or n×m ones matrix |
+| `zeros` | `zeros(n)` / `zeros(m, n)` / `zeros(1, n)` | n×n zero matrix, or m×n. A row is `zeros(1, n)` and stays a matrix. `zeros(n, "int32")` is n×n |
+| `ones` | `ones(n)` / `ones(m, n)` / `ones(1, n)` | Same shapes as `zeros`, filled with ones |
 | `linspace` | `linspace(start, stop, n)` | Real vector of n points |
-| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar / vector / matrix. Zero-arg form added in 0.3.4. |
-| `randi` | `randi(imax)` / `randi(imax, n)` / `randi([lo,hi], n)` | Integer scalar or vector drawn uniformly |
+| `rand` | `rand()` / `rand(n)` / `rand(m, n)` | Uniform U[0,1) scalar, n×n, or m×n. A row is `rand(1, n)` |
+| `randn` | `randn()` / `randn(n)` / `randn(m, n)` | Standard-normal N(0,1) scalar, n×n, or m×n. A row is `randn(1, n)` |
+| `randi` | `randi(imax)` / `randi(imax, n)` / `randi(imax, m, n)` / `randi([lo,hi], n)` | Integer scalar, n×n, or m×n. A row is `randi(imax, 1, n)` |
 | `seed` | `seed(N)` / `seed()` | Re-seed the shared RNG with a non-negative integer for reproducible `rand`/`randn`/`randi`/`rand3`/`randn3`/`sprand` sequences. `seed()` (no args) re-seeds from OS entropy. Notebook authors who commit rendered SVG/MD should call `seed(N)` near the top to keep re-renders bit-stable. |
 | `rng` | `rng(seed)` / `rng("shuffle")` / `rng("default")` / `s = rng()` | Same generator as `seed`. `"default"` and `"twister"` use seed 0. `s` is a struct `{Type, Seed}`. `rng(s)` restarts at that seed; it does not resume a stream that has already been drawn. |
 | `len` | `len(v)` | Number of elements |
@@ -1358,8 +1358,12 @@ primary     = NUMBER | STRING | IDENT
 | `butterworth_highpass` | `butterworth_highpass(order, cutoff_hz, sr)` / `[b, a] = ...` | Same one-output / two-output split as the lowpass |
 | `filter` | `filter(b, a, x)` | Causal direct-form II transposed filter. `a` is normalised so `a(1) = 1`. `a = [1]` is an FIR. `x` may be complex |
 | `gelu_grad` | `gelu_grad(x)` | Derivative of `gelu` (tanh approximation), element-wise; for backprop through `gelu` |
-| `median` | `median(v)` | Median of real parts; scalar for odd length, average of two middles for even. A NaN real part returns NaN |
-| `var` | `var(v)` / `var(M)` / `var(M, dim)` | Sample variance, `std²`. Same shapes and complex rule as `std`. No divide-by-n flag |
+| `median` | `median(v)` / `median(M)` / `median(M, dim)` | Median of real values; scalar for odd length, average of two middles for even. Complex input is an error. Empty is NaN. A NaN in the data makes that reduction NaN |
+| `std` | `std(x)` / `std(x, w)` / `std(x, w, dim)` | Standard deviation. `w` is 0 (divide by n−1), 1 (divide by n), or a nonnegative weight vector (divide by the sum of the weights). Empty is NaN. One observation is 0. `std(M)` is per column; the dimension is the third argument (`std(M, 0, 2)`) |
+| `var` | `var(x)` / `var(x, w)` / `var(x, w, dim)` | Variance, `std` before the square root. Same weights, shapes, and complex rule |
+| `sort` | `sort(A)` / `sort(A, dim)` / `sort(A, direction)` / `[s, i] = sort(A)` | Real values sort numerically. Any nonzero imaginary part sorts by magnitude, then phase. NaNs sort above `+Inf`. Ties keep input order. A matrix sorts each column unless `dim` is given. A vector is a row |
+| `diag` | `diag(v)` / `diag(v, k)` / `diag(M)` / `diag(M, k)` | Build a diagonal matrix, or extract diagonal `k`. A length-1 input is a 1×1 matrix (`size(diag(5))` is `[1, 1]`) |
+| `trace` | `trace(M)` | Sum of the main diagonal. The matrix must be square |
 | `cond` | `cond(A)` / `cond(A, p)` | 2-norm condition number `σ_max/σ_min` by default. `p = 1` and `Inf` are `‖A‖‖A⁻¹‖` (square only). Singular returns `Inf` |
 | `convolve` | `convolve(x, h)` | Convolved Vector (length = len(x)+len(h)-1) |
 | `filtfilt` | `filtfilt(b, a, x)` | Zero-phase forward-backward filter; uses odd-reflection signal extension + steady-state IC (matches Octave); use `a=[1]` for FIR |
@@ -1407,7 +1411,7 @@ primary     = NUMBER | STRING | IDENT
 | `s2smm` / `smm2s` | `s2smm(s)` / `smm2s(smm)` | Phase 6: 4-port single-ended ↔ mixed-mode conversion via the standard Bockelman/Eisenstadt orthogonal transformation `M = (1/√2)·[[1,0,-1,0],[0,1,0,-1],[1,0,1,0],[0,1,0,1]]`. Forward: `Smm = M · Sse · Mᵀ`. Inverse: `Sse = Mᵀ · Smm · M`. Port pairing: ports (1, 3) → diff pair 1, (2, 4) → diff pair 2; result port order `[d1, d2, c1, c2]`. Tags transition `S ↔ Smm`. 4-port only. |
 | Touchstone v2 tolerance | n/a (parser behaviour) | Phase 6: reader now accepts `[Version] 2.0` plus `[Number of Ports]`, `[Number of Frequencies]`, `[Number of Noise Frequencies]`, `[Two-Port Data Order]`, `[Matrix Format]`, `[Network Data]`, `[Noise Data]`, `[End]`, `[Begin/End Information]`. `[Reference] <scalar>` overrides the `# R` header default; per-port `[Reference]` lists and `[Mixed-Mode-Order]` tables still error clearly. |
 | `svd` | `svd(A)` / `svd(A, "econ")` / `svd(A, 0)` | SVD of a real or complex matrix, including wide and rank-deficient shapes. `s = svd(A)` → singular-value vector (length `min(m,n)`, descending). `[U, s, V] = svd(A)` → full `U` `m×m`, `V` `n×n`, `s` still a vector. `"econ"` / `0` → thin `U` `m×k`, `V` `n×k`. Economy reconstructs as `U*diag(s)*V'`. |
-| `qr` | `[Q, R] = qr(A)` / `qr(A, 0)` | Unpivoted Householder QR. Full `Q` is `m×m` and `R` is `m×n`. `0` / `"econ"` is economy (`Q` `m×k`, `R` `k×n`). One output is `R`. `R`'s diagonal is real and non-negative. |
+| `qr` | `[Q, R] = qr(A)` / `[Q, R, p] = qr(A)` / `qr(A, 0)` | Householder QR. One or two outputs are unpivoted: full `Q` is `m×m` and `R` is `m×n`. Three outputs column-pivot; `p` is a 1-based vector and `A(:, p) = Q*R`. `"matrix"` returns `P` with `A*P = Q*R`. `0` / `"econ"` is economy (`Q` `m×k`, `R` `k×n`), including with three outputs. One output is `R`. `R`'s diagonal is real and non-negative. |
 | `null` | `null(A)` | Orthonormal nullspace from the SVD. Columns of `V` with `σ ≤ max(m,n)·eps·σ_max`. `n×0` when `A` has full rank. |
 | `orth` | `orth(A)` | Orthonormal column space from the same SVD cutoff. |
 | `pinv` | `pinv(A)` / `pinv(A, tol)` | Moore-Penrose pseudoinverse (`n×m`). Reciprocals only for `σ > tol`. Default tol `max(m,n)*eps*σ_max`. `pinv(0)` is 0. |
@@ -1445,10 +1449,10 @@ primary     = NUMBER | STRING | IDENT
 | `nonzeros` | `nonzeros(S)` | Vector of non-zero values in storage order |
 | `find` | `find(v)` / `find(M)` / `[I, V] = find(v)` / `[I, J] = find(M)` / `[I, J, V] = find(M)` / sparse forms | Nargout-aware. Dense vector → 1-based element indices; dense matrix → column-major linear indices. Multi-output forms return row+col subscripts (and optionally values). Sparse vector → `[I, V]`; sparse matrix → `[I, J, V]`. Element `M(i, j)` sits at linear index `(j - 1) * nrows + i`. |
 | `spsolve` | `spsolve(A, b [, mode] [, ordering])` | Solve A×x = b. `mode` is `"auto"` (default), `"cholesky"`, or `"lu"`. `ordering` is `"auto"` (default), `"identity"`/`"natural"`, or `"amd"`. Auto detects SPD (Hermitian + real-positive diagonal) and routes accordingly; auto ordering reads the matrix's `ordering_hint` (set by `laplacian_*`) and falls back to AMD when no hint is set. Identity ordering is ~5× faster than AMD on grid Laplacians. Real-vs-complex auto-detection at the entries level. Dense Value::Matrix input still uses the legacy dense Gaussian elimination. |
-| `chol` | `F = chol(A [, ordering])` | Sparse Cholesky factor handle for SPD `A`. Pair with `solve(F, b)` to back-solve many RHS without re-factoring (canonical fast path for parameter sweeps and animations). Real-only `A` routes to the f64 path automatically. Errors on indefinite or non-Hermitian `A` — no auto fallback to LU. Optional `ordering` argument matches `spsolve`'s. |
-| `lu` | `F = lu(A [, ordering])` / `[L, U, P] = lu(A)` | Sparse `A` returns an opaque LU factor handle (partial pivoting, threshold 0.1) for `solve(F, b)`. Dense `A` returns `[L, U]` (`L*U = A`, permutation absorbed) or `[L, U, P]` (`P*A = L*U`). One dense output is an error. |
-| `mldivide` | `A \ b` / `mldivide(A, b)` | Square nonsingular systems use LU with partial pivoting. Rectangular and singular systems use column-pivoted QR least squares, warn, and return a basic solution (free variables 0). A scalar `A` divides element-wise. A vector is a row. |
-| `mrdivide` | `B / A` / `mrdivide(B, A)` | Solves `X*A = B` via `(A.' \ B.').'`. Scalar `/` stays element-wise. |
+| `chol` | `F = chol(A [, ordering])` / `R = chol(A)` / `[R, p] = chol(A)` / `chol(A, "lower")` | Sparse `A` returns a Cholesky factor handle for `solve(F, b)`. Dense `A` returns upper `R` with `A = R'*R`, or lower `L` with `"lower"`. One dense output errors if a pivot is not positive. `[R, p]` does not error: `p` is 0 on success, otherwise the 1-based failing pivot. |
+| `lu` | `F = lu(A [, ordering])` / `[L, U, P] = lu(A)` / `[L, U, p] = lu(A, "vector")` | Sparse `A` returns an opaque LU factor handle (partial pivoting, threshold 0.1) for `solve(F, b)`. Dense `A` returns `[L, U]` (`L*U = A`, permutation absorbed) or `[L, U, P]` (`P*A = L*U`). `"vector"` returns a 1-based `p` with `A(p, :) = L*U`. One dense output is an error. |
+| `mldivide` | `A \ b` / `mldivide(A, b)` | A vector on the right is a column; one solution is `n×1`. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square uses LU, including a zero pivot (`Inf` and a singular warning). Rectangular systems use column-pivoted QR and a basic solution (free variables 0). A scalar `A` divides element-wise. Square sparse `A` uses `spsolve`. `linsolve` uses this same path. |
+| `mrdivide` | `B / A` / `mrdivide(B, A)` | Solves `X*A = B` via `(A' \ B')'`. A scalar numerator uses this path. A scalar denominator stays element-wise. |
 | `polyfit` | `polyfit(x, y, n)` / `[p, S, mu] = polyfit(x, y, n)` | Degree-`n` least-squares polynomial, descending powers, via QR. One output is unscaled. `S` has `R`, `df`, `normr`. `mu = [mean(x), std(x)]` centers `x` and changes `p`. |
 | `polyval` | `polyval(p, x)` / `polyval(p, x, S, mu)` | Horner evaluation. The result has the shape of `x`. With `mu`, `x` is centered first. |
 | `interp1` | `interp1(x, y, xi [, method [, "extrap" or fill]])` | `linear` (default), `nearest`, `previous`, `next`, `spline` (not-a-knot), `pchip` (Fritsch–Carlson), `makima`. NaN outside the range unless `"extrap"` or a numeric fill. |

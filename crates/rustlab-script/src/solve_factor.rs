@@ -123,9 +123,119 @@ fn backslash_scalar_is_elementwise() {
 }
 
 #[test]
-fn backslash_row_count_mismatch_names_the_column() {
-    let err = eval_err("A = [1, 0; 0, 1]; x = A \\ [1, 2];");
-    assert!(err.contains("b'"), "{err}");
+fn backslash_explicit_row_is_not_a_column() {
+    // `[1, 2]` is a vector, so it is a column and solves. An explicit
+    // 1×2 matrix still has one row.
+    let ev = eval("A = [1, 0; 0, 1]; v = [1, 2]; x = A \\ v;");
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 2.0);
+    let err = eval_err(
+        "A = [1, 0; 0, 1];
+         row = zeros(1, 2);
+         row(1, 1) = 1;
+         row(1, 2) = 2;
+         x = A \\ row;",
+    );
+    assert!(err.contains("1 rows"), "{err}");
+    assert!(err.contains("column"), "{err}");
+}
+
+#[test]
+fn backslash_vector_solution_is_a_column() {
+    let ev = eval(
+        "A = [2, 1; 1, 3];
+         v = [5, 10];
+         x = A \\ v;
+         y = linsolve(A, v);",
+    );
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    assert_eq!(shape(&ev, "y"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 3.0);
+    let y = mat_re(&ev, "y");
+    close(y[0][0], 1.0);
+    close(y[1][0], 3.0);
+}
+
+#[test]
+fn underdetermined_backslash_is_the_basic_solution() {
+    // Published basic solutions. The minimum-norm solution is different.
+    let ev = eval(
+        "A = [1, 2, 0; 0, 4, 3];
+         x = A \\ [8, 18];
+         z = pinv(A) * [8; 18];
+         d = max(abs(x - z));",
+    );
+    assert_eq!(shape(&ev, "x"), (3, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 0.0);
+    close(x[1][0], 4.0);
+    close(x[2][0], 2.0 / 3.0);
+    let d = re(&ev, "d");
+    assert!(d > 1e-6, "basic solution matched pinv, diff {d}");
+
+    let ev = eval("R = [6, 8, 7, 3; 3, 5, 4, 1]; x = R \\ [7, 8];");
+    assert_eq!(shape(&ev, "x"), (4, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 0.0);
+    close(x[1][0], 17.0 / 7.0);
+    close(x[2][0], 0.0);
+    close(x[3][0], -29.0 / 7.0);
+}
+
+#[test]
+fn singular_square_backslash_divides_by_zero() {
+    let _ = crate::eval::linsys::take_singular_warns();
+    let ev = eval("A = [1, 0; 0, 0]; x = A \\ [1, 1];");
+    assert!(crate::eval::linsys::take_singular_warns() >= 1);
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    assert!(x[1][0].is_infinite() && x[1][0] > 0.0, "{}", x[1][0]);
+}
+
+#[test]
+fn square_sparse_backslash_matches_spsolve() {
+    let ev = eval(
+        "L = laplacian_2d(4, 4);
+         b = ones(16, 1);
+         x = L \\ b;
+         y = spsolve(L, b);
+         d = max(abs(x - y));",
+    );
+    close(re(&ev, "d"), 0.0);
+}
+
+#[test]
+fn rectangular_sparse_backslash_has_a_dense_cap() {
+    let ev = eval("A = spzeros(2, 3); A(1, 1) = 1; A(2, 2) = 1; x = A \\ [4, 5];");
+    assert_eq!(shape(&ev, "x"), (3, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 4.0);
+    close(x[1][0], 5.0);
+    close(x[2][0], 0.0);
+    let err = eval_err("A = spzeros(2001, 1000); x = A \\ ones(2001, 1);");
+    assert!(err.contains("2000000"), "{err}");
+}
+
+#[test]
+fn column_times_vector_is_elementwise() {
+    let ev = eval(
+        "x = [2; 3; 4];
+         h = [5, 6, 7];
+         y = x .* h;
+         z = [2, 3, 4] .* h;",
+    );
+    assert_eq!(shape(&ev, "y"), (1, 3));
+    let y = vec_re(&ev, "y");
+    let z = vec_re(&ev, "z");
+    assert_eq!(y, z);
+    close(y[0], 10.0);
+    close(y[1], 18.0);
+    close(y[2], 28.0);
 }
 
 #[test]
@@ -143,16 +253,23 @@ fn least_squares_residual_orthogonal_to_columns() {
 }
 
 #[test]
-fn singular_consistent_system_still_solves() {
-    let ev = eval("A = [1, 2; 2, 4]; x = A \\ [3; 6]; r = A * x - [3; 6];");
-    for v in vec_re(&ev, "r") {
-        close(v, 0.0);
-    }
+fn singular_consistent_square_stays_on_lu() {
+    // A consistent singular square system used to fall through to a finite
+    // QR solution. It now stays on LU, so a zero pivot makes the result
+    // non-finite, and the singular warning is printed.
+    let _ = crate::eval::linsys::take_singular_warns();
+    let ev = eval("A = [1, 2; 2, 4]; x = A \\ [3; 6];");
+    assert!(crate::eval::linsys::take_singular_warns() >= 1);
+    let x = mat_re(&ev, "x");
+    assert!(
+        x.iter().flatten().any(|v| !v.is_finite()),
+        "expected a non-finite LU result, got {x:?}"
+    );
 }
 
 #[test]
 fn right_division_solves_x_times_a() {
-    // X * A = B. Solving A.' \ B.' and transposing gives
+    // X * A = B. For this real system (A' \ B')' is
     // X = [9/5, 7/5; 17/5, 16/5].
     let ev = eval(
         "A = [2, 1; 1, 3];
@@ -181,13 +298,62 @@ fn right_division_of_a_row() {
 }
 
 #[test]
-fn scalar_divide_matrix_stays_elementwise() {
-    let ev = eval("M = [2, 4; 6, 8]; Y = 2 / M;");
+fn scalar_numerator_over_a_matrix_is_right_division() {
+    // 2/M solves X*M = 2. A 1×1 left side cannot match a 2-column M.
+    let err = eval_err("M = [2, 4; 6, 8]; Y = 2 / M;");
+    assert!(err.contains("rows") || err.contains("dimension") || err.contains("mldivide"), "{err}");
+    // Dividing by a scalar stays a scale.
+    let ev = eval("M = [2, 4; 6, 8]; Y = M / 2;");
     let y = mat_re(&ev, "Y");
     close(y[0][0], 1.0);
-    close(y[0][1], 0.5);
-    close(y[1][0], 2.0 / 6.0);
-    close(y[1][1], 0.25);
+    close(y[0][1], 2.0);
+    close(y[1][0], 3.0);
+    close(y[1][1], 4.0);
+    // Two vectors with / stay an error.
+    let err = eval_err("a = [1, 2]; b = [3, 4]; c = a / b;");
+    assert!(err.contains("./"), "{err}");
+    // A scalar over a row is right division, so the shapes do not match.
+    let err = eval_err("v = [2, 4, 8]; y = 2 / v;");
+    assert!(err.contains("rows") || err.contains("mldivide"), "{err}");
+}
+
+#[test]
+fn elementwise_left_division_swaps_operands() {
+    let ev = eval("y = [2, 4] .\\ [2, 8];");
+    let y = vec_re(&ev, "y");
+    close(y[0], 1.0);
+    close(y[1], 2.0);
+    // Same broadcasting as ./ with the arguments swapped.
+    let ev = eval("A = [1, 2; 3, 4]; y = 2 .\\ A; z = A ./ 2;");
+    let y = mat_re(&ev, "y");
+    let z = mat_re(&ev, "z");
+    for i in 0..2 {
+        for j in 0..2 {
+            close(y[i][j], z[i][j]);
+        }
+    }
+    let ev = eval("s = 4 .\\ 2;");
+    close(re(&ev, "s"), 0.5);
+}
+
+#[test]
+fn complex_right_division_uses_conjugate_transpose() {
+    // inv([1, i; 0, 1]) = [1, -i; 0, 1]. Non-conjugate transposition
+    // would put +i in the (1, 2) entry.
+    let ev = eval("A = [1, j; 0, 1]; B = eye(2); X = B / A;");
+    let Value::Matrix(x) = ev.get("X").unwrap() else {
+        panic!("expected a matrix");
+    };
+    let want = [
+        [Complex64::new(1.0, 0.0), Complex64::new(0.0, -1.0)],
+        [Complex64::new(0.0, 0.0), Complex64::new(1.0, 0.0)],
+    ];
+    for i in 0..2 {
+        for j in 0..2 {
+            let d = (x[[i, j]] - want[i][j]).norm();
+            assert!(d < 1e-8, "X[{i},{j}] = {} want {}", x[[i, j]], want[i][j]);
+        }
+    }
 }
 
 #[test]
@@ -236,6 +402,120 @@ fn qr_economy_is_thin() {
 }
 
 #[test]
+fn qr_two_outputs_stay_unpivoted_when_a_column_is_zero() {
+    // A pivoted factor would reconstruct a column permutation, not A.
+    let ev = eval(
+        "A = [0, 0, 5; 0, 0, 4; 0, 0, 3; 1, 2, 0];
+         [Q, R] = qr(A);
+         D = Q * R - A;",
+    );
+    assert_eq!(shape(&ev, "Q"), (4, 4));
+    assert_eq!(shape(&ev, "R"), (4, 3));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_three_outputs_are_a_column_permutation() {
+    // Column norms: col 3 (56) > col 1 (35) > col 2 (0). The zero column
+    // is last. p is 1-based, and A(:, p) = Q*R.
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6];
+         [Q, R, p] = qr(A);
+         [Qv, Rv, pv] = qr(A, \"vector\");
+         B = A(:, p);
+         D = Q * R - B;",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![3.0, 1.0, 2.0]);
+    assert_eq!(vec_re(&ev, "pv"), vec![3.0, 1.0, 2.0]);
+    assert_eq!(shape(&ev, "Q"), (3, 3));
+    assert_eq!(shape(&ev, "R"), (3, 3));
+    assert_eq!(shape(&ev, "p"), (1, 3));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    // "vector" is the same factor as the default third output.
+    let q = mat_re(&ev, "Q");
+    let qv = mat_re(&ev, "Qv");
+    for i in 0..3 {
+        for j in 0..3 {
+            close(q[i][j], qv[i][j]);
+        }
+    }
+}
+
+#[test]
+fn qr_economy_with_three_outputs_is_thin() {
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6; 7, 0, 8];
+         [Q, R, p] = qr(A, 0);
+         D = Q * R - A(:, p);",
+    );
+    assert_eq!(shape(&ev, "Q"), (4, 3));
+    assert_eq!(shape(&ev, "R"), (3, 3));
+    assert_eq!(vec_re(&ev, "p").last().copied(), Some(2.0));
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_matrix_permutation_satisfies_a_times_p() {
+    let ev = eval(
+        "A = [1, 0, 2; 3, 0, 4; 5, 0, 6];
+         [Q, R, P] = qr(A, \"matrix\");
+         [Qa, Ra, p] = qr(A);
+         D = A * P - Q * R;",
+    );
+    assert_eq!(shape(&ev, "P"), (3, 3));
+    let pmat = mat_re(&ev, "P");
+    let p = vec_re(&ev, "p");
+    for (j, &idx) in p.iter().enumerate() {
+        let row = idx as usize - 1;
+        for i in 0..3 {
+            close(pmat[i][j], if i == row { 1.0 } else { 0.0 });
+        }
+    }
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+}
+
+#[test]
+fn qr_complex_pivoted_reconstructs_permuted_columns() {
+    let ev = eval(
+        "A = [0, 1+j; 0, 2-j; 0, -1];
+         [Q, R, p] = qr(A);
+         D = Q * R - A(:, p);",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![2.0, 1.0]);
+    let d = match ev.get("D").unwrap() {
+        Value::Matrix(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    for z in d.iter() {
+        assert!(z.norm() < 1e-8, "{z}");
+    }
+}
+
+#[test]
+fn qr_output_shape_flag_needs_three_outputs() {
+    let err = eval_err("A = [1, 2; 3, 4]; [Q, R] = qr(A, \"matrix\");");
+    assert!(err.contains("third"), "{err}");
+    let err = eval_err("A = [1, 2; 3, 4]; [Q, R, p, extra] = qr(A);");
+    assert!(err.contains("[Q, R, p]"), "{err}");
+}
+
+#[test]
 fn qr_complex_reconstructs() {
     let ev = eval(
         "A = [1+j, 2-j; 0, 1-j; -1, 4+j];
@@ -267,6 +547,85 @@ fn qr_complex_reconstructs() {
 }
 
 #[test]
+fn chol_reconstructs_a_real_spd_matrix() {
+    let ev = eval(
+        "A = [4, 2; 2, 3];
+         R = chol(A);
+         D = R' * R - A;
+         L = chol(A, \"lower\");
+         E = L * L' - A;",
+    );
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    for row in mat_re(&ev, "E") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    assert!(mat_re(&ev, "R")[1][0].abs() < 1e-12, "R is upper");
+    assert!(mat_re(&ev, "L")[0][1].abs() < 1e-12, "L is lower");
+}
+
+#[test]
+fn chol_two_outputs_report_a_failed_pivot() {
+    let ev = eval("A = [-1, 0; 0, 2]; [R, p] = chol(A);");
+    close(re(&ev, "p"), 1.0);
+    let err = eval_err("A = [-1, 0; 0, 2]; R = chol(A);");
+    assert!(err.contains("positive") || err.contains("pivot"), "{err}");
+}
+
+#[test]
+fn chol_complex_hermitian_reconstructs() {
+    let ev = eval(
+        "A = [4, 1-j; 1+j, 3];
+         R = chol(A);
+         D = R' * R - A;",
+    );
+    let d = match ev.get("D").unwrap() {
+        Value::Matrix(m) => m.clone(),
+        other => panic!("{other:?}"),
+    };
+    for z in d.iter() {
+        assert!(z.norm() < 1e-8, "{z}");
+    }
+}
+
+#[test]
+fn lu_vector_matches_the_permutation_matrix() {
+    let ev = eval(
+        "A = [1, 2; 3, 4];
+         [L, U, P] = lu(A);
+         [Lv, Uv, p] = lu(A, \"vector\");
+         D = A(p, :) - Lv * Uv;
+         E = P * A - L * U;",
+    );
+    assert_eq!(vec_re(&ev, "p"), vec![2.0, 1.0]);
+    for row in mat_re(&ev, "D") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    for row in mat_re(&ev, "E") {
+        for v in row {
+            close(v, 0.0);
+        }
+    }
+    let err = eval_err("A = [1, 2; 3, 4]; [L, U] = lu(A, \"vector\");");
+    assert!(err.contains("third"), "{err}");
+}
+
+#[test]
+fn triangular_backslash_is_exact() {
+    let ev = eval("A = [2, 1; 0, 4]; x = A \\ [4, 8];");
+    assert_eq!(shape(&ev, "x"), (2, 1));
+    let x = mat_re(&ev, "x");
+    close(x[0][0], 1.0);
+    close(x[1][0], 2.0);
+}
+
 fn lu_permutation_identity() {
     let ev = eval(
         "A = [1, 2; 3, 4];

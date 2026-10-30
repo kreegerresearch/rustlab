@@ -22,7 +22,7 @@ f1   = 5000;
 
 # Linear-chirp phase: 2π·(f0·t + (f1−f0)·t²/(2·dur))
 phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
-x     = sin(phase) + 0.05*randn(n);
+x     = sin(phase) + 0.05*randn(1, n);
 
 # Run the waterfall. Argument forms mirror spectrogram: 512-sample Hann
 # window, 75% overlap (hop = 128) for a smooth time axis, 1024-point FFT.

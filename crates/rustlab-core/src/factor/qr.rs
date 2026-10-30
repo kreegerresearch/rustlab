@@ -20,7 +20,7 @@ pub struct Qr {
 }
 
 /// `pivoted` selects columns by remaining norm. The public `qr` builtin
-/// passes `false`.
+/// passes `true` only for three outputs. One and two outputs stay unpivoted.
 pub fn qr(a: &Array2<C64>, pivoted: bool) -> Qr {
     let (m, n) = a.dim();
     let mut fac = a.clone();

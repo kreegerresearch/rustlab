@@ -1,6 +1,6 @@
 # Octave/MATLAB Compatibility Divergences
 
-**Status:** Mostly shipped — 10 of 11 divergences addressed (see snapshot below). Only #5 (`zeros(n)` returns 1×n instead of n×n) remains open.
+**Status:** All 11 divergences addressed. #5 shipped in 0.3.26: a single size is n×n, and a length-n row is `zeros(1, n)` / `randn(1, n)`.
 **Date opened:** 2026-05-02
 **Source:** Audit run at HEAD `6fba40b`. Numeric baseline: `bash tests/octave/run_compare.sh` — all 150 cases (compare.m + compare_full.m) pass at machine precision (max err ≤ 4.4e-16). Behavioral divergences below were found by spot-checking matlab/octave idioms that the numeric suite doesn't exercise.
 
@@ -12,13 +12,13 @@
 | 2 | `sum(M)` collapses to scalar instead of column-reducing | **High** | **shipped 2026-05-02** |
 | 3 | `mean`/`max`/`min`/`std` on matrix collapse to scalar | **High** | **shipped 2026-05-02** (sum/mean/max/min/prod/std/median/cumsum) |
 | 4 | `sum(M, dim)` axis-selector form not supported | **High** | **shipped 2026-05-02** (all reducers + max/min via `[]` placeholder + argmin/argmax dim) |
-| 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | open |
+| 5 | `zeros(n)` returns `1×n` row vector instead of `n×n` | **High** | **shipped 0.3.26** |
 | 6 | `length(M)` returns `nrows` instead of `max(nrows, ncols)` | High | **shipped 2026-05-02** |
 | 7 | Matrix + row/column vector implicit expansion errors | High | **shipped 2026-05-02** |
 | 8 | Eig family: `eig` and `eigsys` are split, no dense generalized `eig(A, B)`, `D` shape, eigenvalue orientation, `eigsys` correctness bug — see §8 detail | High | **shipped 2026-05-02** (PR-1 through PR-6 all landed; eig now matches matlab's full surface) |
 | 9 | `find(M)` on dense matrix errors (sparse-only) | Medium | **shipped 2026-05-02** (single-output form; multi-output `[I, J, V] = find(M)` deferred until nargout) |
 | 10 | `v(2:3) = []` and `M(i, :) = []` deletion errors | Medium | **shipped 2026-05-02** (vector + matrix row/column forms) |
-| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form; numeric-dim form deferred until vector-type unification) |
+| 11 | `sort(v, "descend")` 2-arg form not supported | Medium | **shipped 2026-05-02** (string-flag form). `sort(A, dim)` and `sort(A, dim, direction)` shipped in 0.3.25 |
 
 ## Core math audit (2026-10-28)
 
@@ -29,18 +29,18 @@ Fixes landed in 0.3.23. What remains different on purpose:
 |---|---|---|---|
 | `norm(A)` with no `p` | Frobenius | 2-norm (largest singular value) | Documented since the p-norm split. `norm(A, 2)` is the 2-norm, `norm(A, "fro")` is Frobenius |
 | `[V, D] = eigs(...)` | `D` is a vector | `D` is a diagonal matrix | `D(k)` is the k-th eigenvalue. A diagonal matrix would make `D(2)` the structural zero under column-major linear indexing |
-| `sort` of complex values | by real part | by magnitude, then phase | Documented. NaNs compare equal; they are not moved to the end |
-| `median` of complex values | ordered by real part | not defined the same way in every release | Imaginary parts are ignored. A NaN real part returns NaN |
-| `std` / `var` | sample, divide by `n−1`, only. Empty input is 0 | `w` flag selects population variance; empty is NaN | No second flag. Complex data uses `Σ\|x−mean\|²/(n−1)`, which matches MATLAB's complex `std` |
-| `trace` of a non-square matrix | sum of the main diagonal | error | Harmless for a rectangular matrix; a square trace is unchanged |
-| `diag` of a length-1 vector | a scalar | a 1×1 matrix, which prints as a scalar | Same displayed value |
-| `zeros(n)` / `ones(n)` / `rand(n)` | 1×n row | n×n | Divergence #5, still open. A flip needs a deprecation cycle |
-| `A \ b` | a vector is a row, so the right-hand side of a tall system is `b'`. A singular square system returns a basic QR solution (free variables 0) after a warning, not a min-norm solution | `mldivide` | Shipped in 0.3.24. Scalar `A` divides element-wise. Underdetermined min-norm (`pinv`) is not what `\` returns |
-| `/` | a scalar on either side stays element-wise. Two vectors are an error (`./`) | `mrdivide`, including `2/A` and `v/w` | Shipped in 0.3.24 for two matrices and for a row. `.\` is not an operator |
-| `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. No `[Q, R, P]` | optional column pivoting | Shipped in 0.3.24. `\` pivots internally and does not return `P` |
+| `sort` of complex values | magnitude, then phase. NaNs sort above `+Inf`. A matrix sorts along a dimension | same | Closed in 0.3.25. It used to sort by the real part, and `sort` rejected a full matrix |
+| `median` of complex values | error | not defined | Closed in 0.3.25. Imaginary parts used to be ignored. `median([])` is NaN |
+| `std` / `var` | `w` is 0 (n−1), 1 (n), or a weight vector. Empty is NaN. Dimension is the third argument | same | Closed in 0.3.25. `std(M, 2)` used to mean dimension 2; it is now `std(M, 0, 2)` |
+| `trace` of a non-square matrix | error | error | Closed in 0.3.25. It used to sum `min(rows, cols)` diagonal entries |
+| `diag` of a length-1 vector | a 1×1 matrix | a 1×1 matrix | Closed in 0.3.25. `diag(5)` used to be the scalar 5 |
+| `zeros(n)` / `ones(n)` / `rand(n)` | n×n | n×n | Shipped in 0.3.26. A row is `zeros(1, n)` and stays a matrix |
+| `A \ b` | a vector on the right is a column and one solution is `n×1`. A triangular square uses a triangular solve. A Hermitian positive-definite square uses Cholesky. Any other square stays on LU, including `Inf` from a zero pivot. Rectangular systems return a basic QR solution (free variables 0). Square sparse uses `spsolve` | `mldivide` | Vector columns and square sparse landed in 0.3.29. Cholesky and the triangular solve landed in 0.3.30. Scalar `A` still divides element-wise. An explicit one-row matrix stays a row |
+| `/` and `.\` | `A .\ B` is `B ./ A`. A scalar numerator `2/A` is right division. A scalar denominator stays element-wise. Two vectors with `/` are an error (`./`) | `mrdivide`, including `v/w` | `.\` and scalar-numerator `/` landed in 0.3.27. Two-vector `/` is still `./`. Right division is `(A' \ B')'` |
+| `qr` | unpivoted `[Q, R]` and economy `qr(A, 0)`. Three outputs column-pivot and return a 1-based vector (`"matrix"` returns `P`) | three-output default is a permutation matrix | `[Q, R]` shipped in 0.3.24. `[Q, R, p]` and `"matrix"` landed in 0.3.28. One and two outputs stay unpivoted |
 | `null` / `orth` | the basis is some orthonormal SVD basis, not a particular MATLAB basis | a specific set of signs | Shipped in 0.3.24. Check `A*Z ≈ 0` and `Z'*Z ≈ I`, not the entries |
-| `polyfit` / `polyval` | `[p, S, mu]` centers `x`; one output stays unscaled. `polyval(p, x, S, mu)` undoes it | the error-estimate output of `polyval` | `[p, S, mu]` landed in 0.3.30. One-output `p` is unchanged |
-| `interp1` | `pchip` (Fritsch–Carlson), `makima`, and a numeric fill outside the range. Spline stays not-a-knot | — | `pchip`, `makima`, and the fill landed in 0.3.30. `"extrap"` is unchanged |
+| `polyfit` / `polyval` | `[p, S, mu]` centers `x`; one output stays unscaled. `polyval(p, x, S, mu)` undoes it | the error-estimate output of `polyval` | `[p, S, mu]` landed in 0.3.31. One-output `p` is unchanged |
+| `interp1` | `pchip` (Fritsch–Carlson), `makima`, and a numeric fill outside the range. Spline stays not-a-knot | — | `pchip`, `makima`, and the fill landed in 0.3.31. `"extrap"` is unchanged |
 | `chol(A)` | sparse factor handle for `solve(F, b)` only | a dense triangular factor | Dense Cholesky is not implemented. Dense `lu` gained `[L, U, P]` in 0.3.24; sparse `lu` is still the factor handle |
 | `freqz` grid | `n` points on `[0, Nyquist)`, Nyquist excluded | some releases use `linspace(0, π, n)`, which includes Nyquist | Matches the length-`2n` DFT bins, including when `2n` is not a power of two |
 | Butterworth, one output | `b` only | `[b, a] = butter(...)` | One output is unchanged so existing scripts keep a vector. `[b, a] = butterworth_lowpass(...)` returns both |
@@ -105,6 +105,10 @@ Tests: 11 in-process tests (sum/mean/prod/max/min default + dim 1/2 forms, `sum(
 - Multi-output `[m, i] = min(M)` / `[m, i] = max(M)` for combined value + index. Nargout plumbing is already in place (see §8 PR-3); this is a small follow-on. Same for `[m, i] = min(v)` on a vector.
 
 ### 5. `zeros(n)` is a row vector, not a square matrix
+
+Shipped in 0.3.26 without the deprecation cycle below. A single size is n×n for `zeros`, `ones`, `rand`, `randn`, and `randi(imax, n)`. In-tree length-n calls were rewritten to `zeros(1, n)` / `randn(1, n)` / `randi(imax, 1, n)` in the same change. `zeros(1, n)` remains a matrix, not a vector.
+
+Historical note:
 
 ```
 rustlab> size(zeros(3))

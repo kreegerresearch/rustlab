@@ -214,9 +214,11 @@ pub enum BinOp {
     /// `A\b` — left division. Same precedence as `*` and `/`.
     LeftDiv,
     Pow,
-    /// Element-wise: .*  ./  .^
+    /// Element-wise: .*  ./  .\  .^
     ElemMul,
     ElemDiv,
+    /// `A .\ B` is element-wise `B ./ A`.
+    ElemLeftDiv,
     ElemPow,
     /// Comparison operators
     Eq,

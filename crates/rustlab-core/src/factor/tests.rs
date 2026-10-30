@@ -3,7 +3,7 @@
 use ndarray::array;
 use num_complex::Complex;
 
-use super::{lu, qr};
+use super::{chol, lu, qr};
 use crate::C64;
 
 fn c(re: f64) -> C64 {
@@ -141,4 +141,50 @@ fn lu_singular_is_flagged() {
     let f = lu::lu(&a);
     assert!(f.singular);
     assert!(f.rcond < 1e-12);
+}
+
+#[test]
+fn chol_upper_reconstructs_spd() {
+    let a = array![[c(4.0), c(2.0)], [c(2.0), c(3.0)]];
+    let f = chol::upper(&a).unwrap();
+    assert_eq!(f.p, 0);
+    let rt = f.factor.t().mapv(|z| z.conj());
+    let prod = rt.dot(&f.factor);
+    assert!(max_abs(&(&prod - &a)) < 1e-12);
+    // [4, 2; 2, 3] [1; 2] = [8; 8]
+    let b = array![[c(8.0)], [c(8.0)]];
+    let x = chol::solve_upper(&f.factor, &b);
+    assert!((x[[0, 0]] - c(1.0)).norm() < 1e-10);
+    assert!((x[[1, 0]] - c(2.0)).norm() < 1e-10);
+}
+
+#[test]
+fn chol_lower_reconstructs_spd() {
+    let a = array![[c(4.0), c(2.0)], [c(2.0), c(3.0)]];
+    let f = chol::lower(&a).unwrap();
+    assert_eq!(f.p, 0);
+    let lh = f.factor.t().mapv(|z| z.conj());
+    let prod = f.factor.dot(&lh);
+    assert!(max_abs(&(&prod - &a)) < 1e-12);
+}
+
+#[test]
+fn chol_negative_pivot_is_reported() {
+    let a = array![[c(-1.0), c(0.0)], [c(0.0), c(2.0)]];
+    let f = chol::upper(&a).unwrap();
+    assert_eq!(f.p, 1);
+    assert_eq!(f.factor.dim(), (0, 0));
+}
+
+#[test]
+fn chol_complex_hermitian_reconstructs() {
+    let a = array![
+        [c(4.0), Complex::new(1.0, -1.0)],
+        [Complex::new(1.0, 1.0), c(3.0)]
+    ];
+    let f = chol::upper(&a).unwrap();
+    assert_eq!(f.p, 0);
+    let rt = f.factor.t().mapv(|z| z.conj());
+    let prod = rt.dot(&f.factor);
+    assert!(max_abs(&(&prod - &a)) < 1e-12);
 }

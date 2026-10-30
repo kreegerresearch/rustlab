@@ -30,7 +30,7 @@ t   = (0:(n-1)) / fs;
 f0  = 100;
 f1  = 5000;
 phase = 2*pi*(f0*t + 0.5*(f1 - f0)*t.*t / dur);
-x = sin(phase) + 0.05*randn(n);
+x = sin(phase) + 0.05*randn(1, n);
 plot(t(1:500), x(1:500))
 title("First 50 ms of the chirp")
 xlabel("Time (s)"); ylabel("Amplitude")
